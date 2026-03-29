@@ -1,0 +1,38 @@
+{
+  "name": "veriq",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Browser test recorder powered by Claude Code and agent-browser",
+  "bin": {
+    "veriq": "./bin/veriq.ts"
+  },
+  "files": [
+    "bin/",
+    "src/"
+  ],
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.87",
+    "@anthropic-ai/claude-code": "^2.1.87",
+    "commander": "^14.0.3",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "vitest": ">=2.0.0",
+    "agent-browser": "*"
+  },
+  "peerDependenciesMeta": {
+    "agent-browser": {
+      "optional": false
+    },
+    "vitest": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "trustedDependencies": [
+    "agent-browser"
+  ]
+}
