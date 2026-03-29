@@ -2,7 +2,11 @@
 
 **Your Claude subscription already includes a QA engineer.**
 
-veriq turns Claude Code into a browser test recorder. Write a spec in Markdown, run `veriq trace`, and Claude drives your app via [agent-browser](https://github.com/vercel-labs/agent-browser) — a lightweight headless browser CLI that runs anywhere without a browser driver or Playwright setup. Because the agent controls the browser through a simple CLI interface, it can handle login flows, intermediate screens, and dynamic UI the same way a human would. Every action is recorded as structured data and compiled into a deterministic test script you can run in CI. No extra API key. Just `claude`.
+veriq turns Claude Code into a browser test recorder.
+
+Write a spec in Markdown, run `veriq trace`, and Claude drives your app via [agent-browser](https://github.com/vercel-labs/agent-browser) — a lightweight headless browser CLI that runs anywhere without a browser driver or Playwright setup. Because the agent controls the browser through a simple CLI interface, it can handle login flows, intermediate screens, and dynamic UI the same way a human would.
+
+Every action is recorded as structured data and compiled into a deterministic test script you can run in CI. No extra API key. Just `claude`.
 
 ## How it works
 
