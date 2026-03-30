@@ -35,7 +35,10 @@ export function abAssertVisible(selector: string, timeoutMs = 30_000): void {
 
 /** Assert element is NOT visible (via wait --state hidden). */
 export function abAssertNotVisible(selector: string, timeoutMs = 30_000): void {
-  const { status } = spawnAB(["wait", selector, "--state", "hidden", "--timeout", String(timeoutMs)]);
+  const args = selector.startsWith("text=")
+    ? ["wait", "--text", selector.slice(5), "--state", "hidden", "--timeout", String(timeoutMs)]
+    : ["wait", selector, "--state", "hidden", "--timeout", String(timeoutMs)];
+  const { status } = spawnAB(args);
   if (status !== 0) throw new Error(`Assertion failed: ${JSON.stringify(selector)} still visible after ${timeoutMs}ms`);
 }
 
@@ -47,24 +50,28 @@ export function abAssertUrl(pattern: string): void {
 
 /** Assert element is enabled (via is enabled). */
 export function abAssertEnabled(selector: string): void {
-  const { stdout } = spawnAB(["is", "enabled", selector], "pipe");
+  const { status, stdout } = spawnAB(["is", "enabled", selector], "pipe");
+  if (status !== 0) throw new Error(`Assertion failed: element ${JSON.stringify(selector)} not found`);
   if (stdout !== "true") throw new Error(`Assertion failed: ${JSON.stringify(selector)} is not enabled (got: ${stdout})`);
 }
 
 /** Assert element is disabled (via is enabled). */
 export function abAssertDisabled(selector: string): void {
-  const { stdout } = spawnAB(["is", "enabled", selector], "pipe");
+  const { status, stdout } = spawnAB(["is", "enabled", selector], "pipe");
+  if (status !== 0) throw new Error(`Assertion failed: element ${JSON.stringify(selector)} not found`);
   if (stdout !== "false") throw new Error(`Assertion failed: ${JSON.stringify(selector)} is not disabled (got: ${stdout})`);
 }
 
 /** Assert checkbox is checked (via is checked). */
 export function abAssertChecked(selector: string): void {
-  const { stdout } = spawnAB(["is", "checked", selector], "pipe");
+  const { status, stdout } = spawnAB(["is", "checked", selector], "pipe");
+  if (status !== 0) throw new Error(`Assertion failed: element ${JSON.stringify(selector)} not found`);
   if (stdout !== "true") throw new Error(`Assertion failed: ${JSON.stringify(selector)} is not checked (got: ${stdout})`);
 }
 
 /** Assert checkbox is unchecked (via is checked). */
 export function abAssertUnchecked(selector: string): void {
-  const { stdout } = spawnAB(["is", "checked", selector], "pipe");
+  const { status, stdout } = spawnAB(["is", "checked", selector], "pipe");
+  if (status !== 0) throw new Error(`Assertion failed: element ${JSON.stringify(selector)} not found`);
   if (stdout !== "false") throw new Error(`Assertion failed: ${JSON.stringify(selector)} is not unchecked (got: ${stdout})`);
 }

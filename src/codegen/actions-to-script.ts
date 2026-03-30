@@ -28,6 +28,9 @@ export function actionsToScript(actions: TraceAction[]): string {
     `import { spawnSync } from "node:child_process";`,
     `import { ab, abWait, abAssertTextVisible, abAssertVisible, abAssertNotVisible, abAssertUrl, abAssertEnabled, abAssertDisabled, abAssertChecked, abAssertUnchecked } from ${JSON.stringify(helpersPath)};`,
     "",
+    `// Session is generated at runtime so each test run gets an isolated browser state`,
+    `process.env.AGENT_BROWSER_SESSION = \`veriq-run-\${Date.now()}\`;`,
+    "",
     `test("full flow", () => {`,
     body,
     "}, 5 * 60 * 1000);",
@@ -111,7 +114,7 @@ function actionToLine(action: TraceAction): string | null {
           if (val) assertLine = `abAssertTextVisible(${j(val)});`;
           break;
         case "text_not_visible":
-          if (val) assertLine = `abAssertNotVisible(${j("text=" + val)});`;
+          if (val) assertLine = `abAssertNotVisible(${j("text=" + val)}, 180_000);`;
           break;
         case "element_visible":
           if (sel) assertLine = `abAssertVisible(${j(sel)});`;
@@ -123,10 +126,12 @@ function actionToLine(action: TraceAction): string | null {
           if (val) assertLine = `abAssertUrl(${j(val)});`;
           break;
         case "element_enabled":
-          if (sel) assertLine = `abAssertEnabled(${j(sel)});`;
+          // is enabled is unreliable with text= and [aria-label=] selectors that may not exist in DOM
+          if (sel && !sel.startsWith("text=") && !sel.startsWith("[aria-label=")) assertLine = `abAssertEnabled(${j(sel)});`;
           break;
         case "element_disabled":
-          if (sel) assertLine = `abAssertDisabled(${j(sel)});`;
+          // is enabled is unreliable with text= and [aria-label=] selectors that may not exist in DOM
+          if (sel && !sel.startsWith("text=") && !sel.startsWith("[aria-label=")) assertLine = `abAssertDisabled(${j(sel)});`;
           break;
         case "element_checked":
           if (sel) assertLine = `abAssertChecked(${j(sel)});`;

@@ -166,11 +166,17 @@ After verifying each step, emit \`AB_ACTION|assert\` lines for each signal you c
 - For dynamic counts (e.g. "42 results"): assert on the STABLE part only (e.g. "results"), not the number
 - **PREFER** asserting on: status text, button labels, URL patterns, element enabled/disabled state
 
+**Selector rules for assert actions — CRITICAL:**
+- Use the **same ALLOWED formats** as browser actions — never invent aria-label values
+- Only use \`[aria-label='...']\` if that **exact** aria-label string appears in the current ARIA snapshot output
+- When unsure, prefer \`text_visible\`/\`text_not_visible\` (no selector needed) over guessing a selector
+- For \`element_disabled\`/\`element_enabled\`: use a CSS class selector if no aria-label is confirmed in the snapshot
+
 **Examples:**
 \`\`\`
 AB_ACTION|assert|url_contains|||/dashboard|Navigated to dashboard
-AB_ACTION|assert|element_disabled|[aria-label='Submit']||Submit button disabled before form is valid
-AB_ACTION|assert|element_enabled|[aria-label='Submit']||Submit button enabled after form is filled
+AB_ACTION|assert|element_disabled|.btn-submit||Submit button disabled before form is valid
+AB_ACTION|assert|element_enabled|.btn-submit||Submit button enabled after form is filled
 AB_ACTION|assert|text_visible|||Loading|Operation started
 AB_ACTION|assert|text_visible|||Done|Operation completed
 AB_ACTION|assert|text_visible|||Success|Confirmation message appeared
