@@ -41,7 +41,7 @@ agent-browser --session SESSION cookies clear
 
 ## Selector Rules
 
-**ALLOWED — exactly these four formats:**
+**ALLOWED — these formats only:**
 
 | Format | Use when |
 |--------|----------|
@@ -49,11 +49,13 @@ agent-browser --session SESSION cookies clear
 | \`text=visible text\` | Unique visible text, no aria-label |
 | \`[placeholder='text']\` | Input identified by placeholder |
 | \`[type='password']\` | Password inputs only |
+| \`a[href*='pattern']\` | Links where \`text=\` fails — use the URL pattern from the ARIA snapshot (e.g. \`a[href*='/settings']\`) |
 
 **FORBIDDEN — these will break recorded tests or are not valid commands:**
 
 - \`@ref\` / \`@e1\` / \`e14\` — reference IDs are session-specific and change every run; never use them
 - \`[role='button']\` or \`[type='checkbox']\` alone — matches too many elements
+- Bare tag selectors: \`button\`, \`td\`, \`tr\`, \`main a\`, \`table tbody tr:nth-child(N)\` — these are positional/non-deterministic and will fail on replay
 - \`find ...\`, \`textbox ...\`, \`label ...\` — not valid agent-browser commands; these are **blocked** and will fail
 - JavaScript execution (\`eval\`, \`js\`) — **blocked** at the hook level; cannot bypass this restriction
 
@@ -61,8 +63,10 @@ agent-browser --session SESSION cookies clear
 1. Run \`snapshot\` — read the ARIA tree output carefully
 2. Find the element; note its exact \`aria-label\` value if present
 3. If aria-label present → use \`[aria-label='...']\`; otherwise → use \`text=...\`
-4. For checkboxes: try \`check "text=Label"\` or \`check "[aria-label='Label']"\`
-5. Never guess — if a selector fails once, take a fresh snapshot before retrying
+4. If \`text=...\` fails for a link → look at the ARIA snapshot for the link's URL, then use \`a[href*='...']\` with a distinctive URL substring (e.g. \`a[href*='/dashboard']\`, \`a[href*='filter=active']\`)
+5. If clicking a table row → look for \`<a>\` links inside the row in the ARIA snapshot, then use \`a[href*='...']\` targeting that link's URL pattern
+6. For checkboxes: try \`check "text=Label"\` or \`check "[aria-label='Label']"\`
+7. Never guess — if a selector fails once, take a fresh snapshot before retrying
 
 ## Test Specification
 
@@ -91,10 +95,28 @@ For each step:
 ## Guardrails
 
 - **Stop after 3 consecutive failures on the same step** — emit \`ASSERTION_FAILED\` and report the blocker. Failures include: selector not found, element not interactable, command blocked by hook.
-- **Do NOT use workarounds** — if allowed selectors fail, do NOT fall back to \`mouse move\`, coordinate-based clicks, \`Tab\`+\`Enter\` keyboard navigation, or any other indirect method. These cannot be recorded as reliable test actions. Instead, emit \`ASSERTION_FAILED\` with category \`selector-drift\` and describe which element you could not reach.
+- **Do NOT use workarounds** — if all ALLOWED selectors fail, do NOT fall back to \`mouse move\`, coordinate-based clicks, \`Tab\`+\`Enter\` keyboard navigation, or any other indirect method. These cannot be recorded as reliable test actions. Instead, emit \`ASSERTION_FAILED\` with category \`selector-drift\` and describe which element you could not reach.
+- **Do NOT use bare tag selectors** — never use \`click "button"\`, \`click "td"\`, \`click "main a"\`, or \`click "a"\` alone. These match too many elements and are non-deterministic. Always use a specific ALLOWED selector format.
 - Do NOT retry a selector without taking a fresh snapshot first
 - Do NOT work around blockers (login walls, missing data, captchas) — stop and report
-- Do NOT read source files or explore the filesystem
+
+## Source Code Reference
+
+You have access to **Read**, **Grep**, and **Glob** tools to inspect the application source code. Use them proactively to find correct selectors — do NOT guess \`a[href*='...']\` patterns by trial and error.
+
+**When to read source code:**
+- Before clicking a link: Grep for the link text or URL pattern in the codebase to find the exact \`href\` value
+- Before navigating to a new page: Glob for page/route files to understand the URL structure
+- When the ARIA snapshot shows an element but \`text=\` and \`[aria-label=]\` selectors fail: Read the component to find what HTML attributes the element has
+
+**How:**
+1. Use \`Grep\` to search for UI text, component names, or URL patterns
+2. Use \`Read\` to inspect the component's JSX/TSX and find \`href\`, \`aria-label\`, \`data-testid\`, or class names
+3. Build a precise ALLOWED selector from the discovered attributes
+
+**Rules:**
+- Only READ source files — never modify them
+- Keep source reading focused — search for specific strings, not entire directories
 
 ## Waiting for Async Operations
 
@@ -141,7 +163,7 @@ AB_ACTION|snapshot|<key observation, max 100 chars>
 AB_ACTION|assert|<assertType>|<selector or "">|<value or "">|<observation>
 \`\`\`
 
-The selector in AB_ACTION must be one of the four ALLOWED formats above.
+The selector in AB_ACTION must be one of the ALLOWED formats above.
 
 ## Assertion Protocol
 
@@ -165,6 +187,11 @@ After verifying each step, emit \`AB_ACTION|assert\` lines for each signal you c
 - **NEVER** assert on: timestamps (dates, times), session IDs, exact numeric counts that vary between runs
 - For dynamic counts (e.g. "42 results"): assert on the STABLE part only (e.g. "results"), not the number
 - **PREFER** asserting on: status text, button labels, URL patterns, element enabled/disabled state
+
+**Page context rules — CRITICAL:**
+- After a page navigation (\`open\` or \`click\` that navigates), take a **fresh snapshot** BEFORE emitting any assertions
+- Only assert on text/elements that are visible on the **current** page — never assert on text from the previous page
+- If you navigated away from a page, its text is gone — do not emit \`text_visible\` for it
 
 **Selector rules for assert actions — CRITICAL:**
 - Use the **same ALLOWED formats** as browser actions — never invent aria-label values

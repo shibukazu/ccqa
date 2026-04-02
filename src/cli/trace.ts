@@ -42,6 +42,7 @@ async function runTrace(featureName: string, specName: string): Promise<void> {
     {
       prompt,
       systemPrompt,
+      allowedTools: ["Bash(*)", "Read", "Grep", "Glob"],
       onAbAction: (abAction: string) => {
         const action = parseAbAction(abAction);
         if (action) traceActions.push(action);
