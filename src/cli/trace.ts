@@ -1,8 +1,10 @@
+import { readFile, writeFile, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import { Command } from "commander";
-import { buildTraceSystemPrompt, buildTracePrompt } from "../prompts/trace.ts";
+import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from "../prompts/trace.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { ensureVeriqDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions } from "../store/index.ts";
+import { ensureVeriqDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions, getSetupDir } from "../store/index.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
@@ -22,13 +24,31 @@ async function runTrace(featureName: string, specName: string): Promise<void> {
 
   const specContent = await readSpecFile(featureName, specName);
   const spec = parseTestSpec(specContent);
+  const hasSetups = (spec.setups?.length ?? 0) > 0;
 
   log.meta("spec", spec.title);
   log.meta("url", spec.baseUrl);
+  if (hasSetups) log.meta("setups", spec.setups!.map((s) => s.name).join(", "));
   log.meta("steps", spec.steps.length);
   log.blank();
 
-  const systemPrompt = buildTraceSystemPrompt(spec);
+  // Generate a session name to share between setup execution and trace
+  const sessionName = generateSessionName();
+
+  // Run setups before tracing (same session)
+  if (hasSetups) {
+    log.info("Running setup procedures...");
+    await runSetups(
+      spec.setups as Array<{ name: string; params?: Record<string, string> }>,
+      sessionName,
+    );
+    log.blank();
+  }
+
+  const systemPrompt = buildTraceSystemPrompt(spec, {
+    sessionName,
+    skipCookiesClear: hasSetups,
+  });
   const prompt = buildTracePrompt(spec);
 
   log.info("Running agent-browser session...");
@@ -43,12 +63,12 @@ async function runTrace(featureName: string, specName: string): Promise<void> {
       prompt,
       systemPrompt,
       allowedTools: ["Bash(*)", "Read", "Grep", "Glob"],
+      env: { AGENT_BROWSER_SESSION: sessionName },
       onAbAction: (abAction: string) => {
         const action = parseAbAction(abAction);
         if (action) traceActions.push(action);
       },
       onAbActionFailed: () => {
-        // Roll back the last intercepted AB_ACTION if the browser command failed
         traceActions.pop();
       },
     },
@@ -95,6 +115,59 @@ async function runTrace(featureName: string, specName: string): Promise<void> {
   log.meta("actions", traceActions.length);
   log.meta("status", overallStatus.toUpperCase());
   log.hint(`run 'veriq generate ${featureName}/${specName}' to generate a test script`);
+}
+
+/**
+ * Execute setup procedures by running their test.spec.ts via vitest with a fixed session name.
+ * Creates a temporary runner script that sets the session and imports each setup's test body.
+ */
+async function runSetups(
+  setups: Array<{ name: string; params?: Record<string, string> }>,
+  sessionName: string,
+): Promise<void> {
+  for (const ref of setups) {
+    log.info(`  setup: ${ref.name}`);
+
+    const scriptPath = join(getSetupDir(ref.name), "test.spec.ts");
+    let script = await readFile(scriptPath, "utf-8").catch(() => {
+      throw new Error(`Setup test script not found: ${scriptPath}. Run \`veriq generate-setup ${ref.name}\` first.`);
+    });
+
+    // Replace placeholders with params
+    for (const [key, value] of Object.entries(ref.params ?? {})) {
+      script = script.replaceAll(`{{${key}}}`, value);
+    }
+
+    // Fix the session name to share with the trace phase
+    script = script.replace(
+      /process\.env\.AGENT_BROWSER_SESSION\s*=\s*`.+`;/,
+      `process.env.AGENT_BROWSER_SESSION = ${JSON.stringify(sessionName)};`,
+    );
+
+    // Write temp file, run vitest, clean up
+    const tmpPath = join(getSetupDir(ref.name), `_run.spec.ts`);
+    await writeFile(tmpPath, script, "utf-8");
+
+    try {
+      const proc = Bun.spawn(["bunx", "vitest", "run", tmpPath], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      process.stdout.write(stdout);
+      if (stderr) process.stderr.write(stderr);
+
+      if (exitCode !== 0) {
+        throw new Error(`Setup '${ref.name}' failed (exit ${exitCode})`);
+      }
+    } finally {
+      await unlink(tmpPath).catch(() => {});
+    }
+  }
 }
 
 export function parseStatusLine(text: string): ParsedStatusLine | null {
@@ -155,7 +228,6 @@ export function parseAbAction(line: string): TraceAction | null {
     case "hover":
       return { command, selector: parts[2], label: parts[3] };
     case "wait": {
-      // LLM may emit AB_ACTION|wait|--text|<text> or AB_ACTION|wait|<selector>
       const isTextWait = parts[2] === "--text";
       const selector = isTextWait ? `text=${parts[3]}` : parts[2];
       return { command, selector, label: isTextWait ? parts[4] : parts[3] };

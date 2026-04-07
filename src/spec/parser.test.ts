@@ -106,4 +106,30 @@ User must be logged in as admin.
     const result = parseTestSpec(BASIC_SPEC);
     expect(result.prerequisites).toBeUndefined();
   });
+
+  test("parses setups from frontmatter", () => {
+    const spec = `---
+title: Setup Test
+baseUrl: http://localhost:3000
+setups:
+  - name: login
+    params:
+      email: user@example.com
+      password: secret
+---
+
+### Step 1: Check
+**Instruction**: Do check
+**Expected**: Check done
+`;
+    const result = parseTestSpec(spec);
+    expect(result.setups).toHaveLength(1);
+    expect(result.setups![0]!.name).toBe("login");
+    expect(result.setups![0]!.params).toEqual({ email: "user@example.com", password: "secret" });
+  });
+
+  test("returns undefined for setups when not specified", () => {
+    const result = parseTestSpec(BASIC_SPEC);
+    expect(result.setups).toBeUndefined();
+  });
 });

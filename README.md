@@ -47,22 +47,21 @@ bun add -g agent-browser
 ---
 title: Create a task and mark it complete
 baseUrl: http://localhost:3000
-prerequisites: A user account exists with email user@example.com / password secret
 ---
 
 ## Steps
 
-### step-01: Log in
-- instruction: Fill in email and password, submit the form
-- expected: Redirected to /dashboard, user avatar visible in the header
+### Step 1: Log in
+- **Instruction**: Fill in email and password, submit the form
+- **Expected**: Redirected to /dashboard, user avatar visible in the header
 
-### step-02: Create a new task
-- instruction: Click "New Task", fill in the title "Fix login bug", set priority to High, save
-- expected: Task appears in the task list with status "Open"
+### Step 2: Create a new task
+- **Instruction**: Click "New Task", fill in the title "Fix login bug", set priority to High, save
+- **Expected**: Task appears in the task list with status "Open"
 
-### step-03: Mark the task as complete
-- instruction: Open the task "Fix login bug", click "Mark as complete"
-- expected: Task status changes to "Done", task moves to the completed section
+### Step 3: Mark the task as complete
+- **Instruction**: Open the task "Fix login bug", click "Mark as complete"
+- **Expected**: Task status changes to "Done", task moves to the completed section
 ```
 
 **2. Trace — Claude drives the browser and records every action**
@@ -93,20 +92,87 @@ Running agent-browser session...
 veriq generate tasks/create-and-complete
 ```
 
-```
-▶ generate  tasks/create-and-complete
-  trace     .veriq/features/tasks/test-cases/create-and-complete/actions.json
-  actions   24
-  cleaned   18
-
-  saved     .veriq/features/tasks/test-cases/create-and-complete/test.spec.ts
-```
-
 **4. Run — replay deterministically, no LLM involved**
 
 ```bash
 veriq run tasks/create-and-complete
 ```
+
+## Setup Specs — Reusable shared procedures
+
+Setup specs let you define reusable procedures (login, data preparation, etc.) that run before your test steps. Define once, use across multiple test specs.
+
+### 1. Write a setup spec
+
+```markdown
+<!-- .veriq/setups/login/setup-spec.md -->
+---
+title: "Login"
+placeholders:
+  loginUrl:
+    dummy: "http://localhost:3000/login"
+    description: "Login page URL"
+  email:
+    dummy: "user@example.com"
+    description: "Email address"
+  password:
+    dummy: "secret"
+    description: "Password"
+---
+
+## Steps
+
+### Step 1: Open login page
+- **Instruction**: Navigate to {{loginUrl}}
+- **Expected**: Login form is displayed
+
+### Step 2: Enter credentials and log in
+- **Instruction**: Enter email {{email}} and password {{password}}, then submit
+- **Expected**: Login succeeds
+```
+
+The `placeholders` section defines variables with `dummy` values. During `trace-setup`, the dummy values are used for actual browser operation. During `generate-setup`, they are reverse-replaced with `{{key}}` placeholders.
+
+### 2. Trace the setup
+
+```bash
+veriq trace-setup login
+```
+
+### 3. Generate and validate the setup
+
+```bash
+veriq generate-setup login
+```
+
+This generates `test.dummy.spec.ts` with dummy values, runs vitest to validate, and applies auto-fix. On success, it reverse-replaces dummy values with placeholders and saves `test.spec.ts`.
+
+If auto-fix fails, edit `test.dummy.spec.ts` manually and re-run:
+
+```bash
+veriq generate-setup login --from-dummy
+```
+
+### 4. Reference from test specs
+
+```markdown
+---
+title: Create a task
+baseUrl: http://localhost:3000
+setups:
+  - name: login
+    params:
+      loginUrl: "http://localhost:3000/login"
+      email: "admin@example.com"
+      password: "AdminPass123"
+---
+
+## Steps
+### Step 1: Create a new task
+...
+```
+
+When you run `veriq trace` or `veriq generate`, the setup's test body is loaded, placeholders are replaced with `params` values, and it runs before your test steps — sharing the same browser session.
 
 ## What gets generated
 
@@ -117,34 +183,30 @@ veriq run tasks/create-and-complete
 import { test } from "vitest";
 import { ab, abWait, abAssertUrl, abAssertTextVisible, abAssertEnabled } from "/path/to/test-helpers.ts";
 
-test("full flow", () => {
+process.env.AGENT_BROWSER_SESSION = `veriq-run-${Date.now()}`;
+
+test("setup: login", () => {
   ab("cookies", "clear");
+  ab("open", "http://localhost:3000/login");
+  ab("fill", "[placeholder='Email']", "admin@example.com");
+  ab("fill", "[type='password']", "AdminPass123");
+  ab("press", "Enter");
+}, 3 * 60 * 1000);
+
+test("Create a task", () => {
   ab("open", "http://localhost:3000");
 
-  // step-01: Log in
-  ab("fill", "[placeholder='Email']", "user@example.com"); // → agent-browser fill ...
-  ab("fill", "[type='password']", "secret");
-  ab("press", "Enter");
-  abAssertUrl("/dashboard");                               // → agent-browser get url
-  abAssertTextVisible("Welcome back");                     // → agent-browser wait --text ...
-
-  // step-02: Create a new task
+  // Create a new task
   ab("click", "[aria-label='New Task']");
   ab("fill", "[placeholder='Task title']", "Fix login bug");
   ab("select", "[aria-label='Priority']", "High");
   ab("click", "[aria-label='Save']");
   abAssertTextVisible("Fix login bug");
   abAssertTextVisible("Open");
-
-  // step-03: Mark the task as complete
-  ab("click", "text=Fix login bug");
-  ab("click", "[aria-label='Mark as complete']");
-  abAssertTextVisible("Done");
-  abAssertEnabled("[aria-label='Reopen task']");
 }, 5 * 60 * 1000);
 ```
 
-agent-browser handles all the timing; the test script is just a list of sequential calls.
+Setup and test share the same `AGENT_BROWSER_SESSION` — login state carries over. Each run starts with `cookies clear` to ensure a clean session.
 
 ## Assertions
 
@@ -165,18 +227,39 @@ Assertions are stability-aware: Claude skips timestamps, session IDs, and exact 
 
 ## Auto-fix
 
-If the generated script fails (timing issues, page not ready), `generate` automatically inserts `sleep` before the failing line and retries. Control how many attempts with `--max-retries`:
+If the generated script fails (timing issues, page not ready), `generate` uses an LLM to analyze the failure log and insert `sleep` at the right positions. Control how many attempts with `--max-retries`:
 
 ```bash
-veriq generate auth/login --max-retries 5
+veriq generate tasks/create-and-complete --max-retries 5
 ```
 
 ## Commands
 
 ```
-veriq trace <feature/spec>     Run agent-browser and record actions
-veriq generate <feature/spec>  Generate test script from recorded actions
-veriq run [feature/spec]       Execute generated test scripts
+veriq trace <feature/spec>          Record browser actions for a test spec
+veriq generate <feature/spec>       Generate test script from recorded actions
+veriq run [feature/spec]            Execute generated test scripts
+
+veriq trace-setup <name>            Record browser actions for a setup spec
+veriq generate-setup <name>         Generate and validate setup test script
+  --from-dummy                      Resume from manually edited test.dummy.spec.ts
+```
+
+## File structure
+
+```
+.veriq/
+  setups/
+    login/
+      setup-spec.md              # Setup definition with placeholders
+      test.spec.ts               # Generated setup script (with {{placeholders}})
+  features/
+    tasks/
+      test-cases/
+        create-and-complete/
+          test-spec.md           # Test definition (references setups)
+          actions.json           # Recorded actions from trace
+          test.spec.ts           # Generated test script
 ```
 
 ## Why not write Playwright tests by hand?
@@ -186,6 +269,7 @@ veriq run [feature/spec]       Execute generated test scripts
 | Write selectors | Claude picks them from ARIA snapshots | You inspect the DOM |
 | Handle timing | Recorded wait commands, auto-fix sleep | `waitFor`, `expect().toBeVisible()` |
 | Assertions | Auto-generated from verified signals | Written manually |
+| Login / setup | Shared setup specs with placeholders | Custom fixtures per project |
 | Update after UI change | Re-run `trace` | Find and update every affected locator |
 | Runs in CI | Yes (deterministic replay, no LLM) | Yes |
 

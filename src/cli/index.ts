@@ -2,6 +2,8 @@ import { Command } from "commander";
 import { traceCommand } from "./trace.ts";
 import { generateCommand } from "./generate.ts";
 import { runCommand } from "./run.ts";
+import { traceSetupCommand } from "./trace-setup.ts";
+import { generateSetupCommand } from "./generate-setup.ts";
 
 const program = new Command();
 
@@ -13,5 +15,7 @@ program
 program.addCommand(traceCommand);
 program.addCommand(generateCommand);
 program.addCommand(runCommand);
+program.addCommand(traceSetupCommand);
+program.addCommand(generateSetupCommand);
 
 program.parse();

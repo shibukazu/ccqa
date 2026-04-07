@@ -1,14 +1,20 @@
 import { writeFile } from "node:fs/promises";
 import { Command } from "commander";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   ensureVeriqDir,
   parseSpecPath,
   getTraceActions,
+  getSetupDir,
+  readSpecFile,
   saveTestScript,
 } from "../store/index.ts";
 import { actionsToScript } from "../codegen/actions-to-script.ts";
-import { buildCleanupPrompt } from "../prompts/codegen.ts";
+import type { SetupScript } from "../codegen/actions-to-script.ts";
+import { buildCleanupPrompt, buildAutoFixPrompt } from "../prompts/codegen.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
+import { parseTestSpec } from "../spec/parser.ts";
 import type { TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -30,6 +36,16 @@ async function runGenerate(featureName: string, specName: string, maxRetries: nu
 
   log.meta("trace", actionsPath);
   log.meta("actions", actions.length);
+
+  // Load setup actions if test-spec references setups
+  const specContent = await readSpecFile(featureName, specName);
+  const spec = parseTestSpec(specContent);
+  const setupScripts = await loadSetupScripts(
+    spec.setups as Array<{ name: string; params?: Record<string, string> }> | undefined,
+  );
+  if (setupScripts.length > 0) {
+    log.meta("setups", setupScripts.map((s) => s.name).join(", "));
+  }
   log.blank();
 
   const cleanedActions = await cleanupActions(actions);
@@ -37,7 +53,7 @@ async function runGenerate(featureName: string, specName: string, maxRetries: nu
     log.meta("cleaned", cleanedActions.length);
   }
 
-  const script = actionsToScript(cleanedActions);
+  const script = actionsToScript(cleanedActions, spec.title, setupScripts.length > 0 ? setupScripts : undefined);
   const scriptPath = await saveTestScript(featureName, specName, script);
   log.meta("saved", scriptPath);
   log.blank();
@@ -52,7 +68,7 @@ async function runGenerate(featureName: string, specName: string, maxRetries: nu
     log.info(`auto-fix attempt ${attempt}/${maxRetries}...`);
     log.blank();
 
-    const fixed = insertWaitBeforeFailure(currentScript, output);
+    const fixed = await autoFixWithLLM(currentScript, output);
     if (!fixed) {
       log.warn("could not determine fix from failure log");
       break;
@@ -74,37 +90,103 @@ async function runGenerate(featureName: string, specName: string, maxRetries: nu
 }
 
 /**
- * Inserts a 1-second sleep before the failing line identified in the vitest stack trace.
- * If a sleep already exists before that line, its duration is incremented instead.
+ * Load setup test scripts, extract test body, and replace {{placeholders}} with params values.
  */
-function insertWaitBeforeFailure(script: string, failureLog: string): string | null {
+async function loadSetupScripts(
+  setups?: Array<{ name: string; params?: Record<string, string> }>,
+): Promise<SetupScript[]> {
+  if (!setups?.length) return [];
+
+  const result: SetupScript[] = [];
+  for (const ref of setups) {
+    const scriptPath = join(getSetupDir(ref.name), "test.spec.ts");
+    const script = await readFile(scriptPath, "utf-8").catch(() => {
+      throw new Error(`Setup test script not found: ${scriptPath}. Run \`veriq generate-setup ${ref.name}\` first.`);
+    });
+    const body = extractTestBody(script);
+    const resolved = replacePlaceholders(body, ref.params ?? {});
+    result.push({ name: ref.name, body: resolved });
+  }
+  return result;
+}
+
+/**
+ * Extract the test body (lines inside the first test() block) from a setup test script.
+ */
+function extractTestBody(script: string): string {
+  const lines = script.split("\n");
+  const startIdx = lines.findIndex((l) => /^\s*test\(/.test(l));
+  if (startIdx === -1) return "";
+  // Find the closing });
+  let depth = 0;
+  const bodyLines: string[] = [];
+  for (let i = startIdx; i < lines.length; i++) {
+    if (i === startIdx) { depth = 1; continue; }
+    if (lines[i]!.includes("});") && depth === 1) break;
+    bodyLines.push(lines[i]!);
+  }
+  return bodyLines.join("\n");
+}
+
+function replacePlaceholders(body: string, params: Record<string, string>): string {
+  let result = body;
+  for (const [key, value] of Object.entries(params)) {
+    result = result.replaceAll(`{{${key}}}`, value);
+  }
+  return result;
+}
+
+// --- Auto-fix ---
+
+interface SleepInsert { line: number; seconds: number; reason: string }
+interface SleepIncrease { line: number; increase_to: number; reason: string }
+type AutoFixAction = SleepInsert | SleepIncrease;
+
+async function autoFixWithLLM(script: string, failureLog: string): Promise<string | null> {
+  try {
+    const prompt = buildAutoFixPrompt(script, failureLog);
+    const { result, isError } = await invokeClaudeStreaming(
+      { prompt, disableBuiltinTools: true, maxTurns: 1 },
+      () => {},
+    );
+    if (isError || !result) return null;
+
+    const json = result.trim().replace(/^```(?:json)?\n?([\s\S]*?)\n?```$/, "$1").trim();
+    const fixes = JSON.parse(json) as AutoFixAction[];
+    if (!Array.isArray(fixes) || fixes.length === 0) return null;
+
+    return applySleepFixes(script, fixes);
+  } catch {
+    return null;
+  }
+}
+
+function applySleepFixes(script: string, fixes: AutoFixAction[]): string {
   const lines = script.split("\n");
 
-  const testBodyStart = lines.findIndex((l) => l.includes('test("full flow"')) + 1;
-  if (testBodyStart === 0) return null;
-
-  // Stack trace order: helper line first → caller in test body last.
-  // Take the last occurrence with line > testBodyStart to get the actual call site.
-  const matches = [...failureLog.matchAll(/test\.spec\.ts:(\d+):\d+/g)];
-  const failLine = matches
-    .map((m) => parseInt(m[1]!, 10))
-    .filter((n) => n > testBodyStart)
-    .at(-1);
-
-  if (!failLine) return null;
-
-  const insertAt = failLine - 1;
-  if (insertAt < 0 || insertAt >= lines.length) return null;
-
-  const prevLine = lines[insertAt - 1]?.trim() ?? "";
-  const existingSleep = prevLine.match(/^spawnSync\("sleep",\s*\["(\d+)"\]/);
-  if (existingSleep) {
-    const newSec = parseInt(existingSleep[1]!, 10) + 1;
-    lines[insertAt - 1] = lines[insertAt - 1]!.replace(`["${existingSleep[1]}"]`, `["${newSec}"]`);
-    return lines.join("\n");
+  for (const fix of fixes) {
+    if ("increase_to" in fix) {
+      const idx = fix.line - 1;
+      if (idx >= 0 && idx < lines.length) {
+        lines[idx] = lines[idx]!.replace(
+          /spawnSync\("sleep",\s*\["\d+"\]/,
+          `spawnSync("sleep", ["${fix.increase_to}"]`,
+        );
+      }
+    }
   }
 
-  lines.splice(insertAt, 0, `  spawnSync("sleep", ["1"], { stdio: "inherit" });`);
+  const inserts = fixes
+    .filter((f): f is SleepInsert => "seconds" in f && !("increase_to" in f))
+    .sort((a, b) => b.line - a.line);
+
+  for (const fix of inserts) {
+    const idx = fix.line - 1;
+    if (idx >= 0 && idx <= lines.length) {
+      lines.splice(idx, 0, `  spawnSync("sleep", ["${fix.seconds}"], { stdio: "inherit" });`);
+    }
+  }
+
   return lines.join("\n");
 }
 
@@ -119,7 +201,6 @@ async function runVitest(scriptPath: string): Promise<{ exitCode: number; output
     new Response(proc.stderr).text(),
     proc.exited,
   ]);
-  // Read the script after the process exits to avoid TOCTOU with insertWaitBeforeFailure
   const currentScript = await Bun.file(scriptPath).text();
 
   process.stdout.write(stdoutText);
@@ -135,12 +216,11 @@ async function cleanupActions(actions: TraceAction[]): Promise<TraceAction[]> {
       () => {},
     );
     if (isError || !result) return actions;
-    // Strip markdown code fences that the LLM may wrap the JSON in
     const json = result.trim().replace(/^```(?:json)?\n?([\s\S]*?)\n?```$/, "$1").trim();
     const parsed = JSON.parse(json) as TraceAction[];
     if (Array.isArray(parsed) && parsed.length > 0) return parsed;
   } catch {
-    // Fall through and return original actions on any error (JSON parse failure, API error, etc.)
+    // Fall through
   }
   return actions;
 }

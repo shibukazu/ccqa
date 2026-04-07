@@ -1,7 +1,12 @@
-import type { TestSpec } from "../types.ts";
+import type { TestSpec, SetupSpec } from "../types.ts";
 
-export function buildTraceSystemPrompt(spec: TestSpec): string {
-  const sessionName = `veriq-trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+export function generateSessionName(): string {
+  return `veriq-trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+}
+
+export function buildTraceSystemPrompt(spec: TestSpec, options?: { sessionName?: string; skipCookiesClear?: boolean }): string {
+  const sessionName = options?.sessionName ?? generateSessionName();
+  const skipCookiesClear = options?.skipCookiesClear ?? false;
 
   const stepsText = spec.steps
     .map(
@@ -99,6 +104,7 @@ For each step:
 - **Do NOT use bare tag selectors** — never use \`click "button"\`, \`click "td"\`, \`click "main a"\`, or \`click "a"\` alone. These match too many elements and are non-deterministic. Always use a specific ALLOWED selector format.
 - Do NOT retry a selector without taking a fresh snapshot first
 - Do NOT work around blockers (login walls, missing data, captchas) — stop and report
+- **Do NOT suppress errors** — never use \`2>/dev/null\`, \`|| true\`, \`; other-command\`, or any other technique that hides agent-browser failures. Each \`agent-browser\` command must run standalone so failures are properly detected and recorded.
 
 ## Source Code Reference
 
@@ -232,7 +238,16 @@ ROUTE_STEP|<step-id>|<step-title>|ACTION:<what you did>|OBSERVATION:<what you ve
 
 ## Start
 
+${skipCookiesClear ? `A setup procedure has already been executed in this session. Do NOT clear cookies — keep the existing session state.
+
 \`\`\`bash
+agent-browser --session ${sessionName} open ${spec.baseUrl}
+\`\`\`
+
+Emit:
+\`\`\`
+AB_ACTION|open|${spec.baseUrl}
+\`\`\`` : `\`\`\`bash
 agent-browser --session ${sessionName} cookies clear
 agent-browser --session ${sessionName} open ${spec.baseUrl}
 \`\`\`
@@ -241,11 +256,23 @@ Emit:
 \`\`\`
 AB_ACTION|cookies_clear
 AB_ACTION|open|${spec.baseUrl}
-\`\`\`
+\`\`\``}
 
 Then emit \`STEP_START|step-01|...\` and begin.`;
 }
 
 export function buildTracePrompt(spec: TestSpec): string {
   return `Execute the test for "${spec.title}" at ${spec.baseUrl}.`;
+}
+
+export function buildSetupTraceSystemPrompt(spec: SetupSpec): string {
+  return buildTraceSystemPrompt({
+    title: spec.title,
+    baseUrl: "about:blank",
+    steps: spec.steps,
+  });
+}
+
+export function buildSetupTracePrompt(spec: SetupSpec): string {
+  return `Execute the setup procedure "${spec.title}". Follow each step precisely.`;
 }

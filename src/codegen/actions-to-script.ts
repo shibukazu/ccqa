@@ -5,37 +5,72 @@ import type { TraceAction } from "../types.ts";
  * Uses child_process.spawnSync with explicit argument arrays to avoid shell quoting issues.
  * agent-browser bin is resolved via import.meta.resolve to avoid hardcoded absolute paths.
  */
-export function actionsToScript(actions: TraceAction[]): string {
-  const testLines: string[] = [];
+export interface SetupScript {
+  name: string;
+  body: string;
+}
 
-  // Deduplicate consecutive identical lines (same command + same args)
-  let prevLine: string | null = null;
-  for (const action of actions) {
-    const line = actionToLine(action);
-    if (line === null) continue;
-    if (line === prevLine) continue;
-    testLines.push(line);
-    prevLine = line;
-  }
-
-  const body = testLines.map((l) => `  ${l}`).join("\n");
-
+export function actionsToScript(actions: TraceAction[], title: string, setupScripts?: SetupScript[]): string {
   // Resolve the helpers path relative to this file so it works from any cwd
   const helpersPath = new URL("../runtime/test-helpers.ts", import.meta.url).pathname;
 
-  return [
+  const imports = [
     `import { test } from "vitest";`,
     `import { spawnSync } from "node:child_process";`,
     `import { ab, abWait, abAssertTextVisible, abAssertVisible, abAssertNotVisible, abAssertUrl, abAssertEnabled, abAssertDisabled, abAssertChecked, abAssertUnchecked } from ${JSON.stringify(helpersPath)};`,
     "",
-    `// Session is generated at runtime so each test run gets an isolated browser state`,
+    `// Single session shared across all tests — reset per run via cookies clear in first test`,
     `process.env.AGENT_BROWSER_SESSION = \`veriq-run-\${Date.now()}\`;`,
     "",
-    `test("full flow", () => {`,
+  ];
+
+  const parts: string[] = [...imports];
+
+  // Setup tests (same session — cookies clear in first setup ensures clean state)
+  if (setupScripts?.length) {
+    for (const setup of setupScripts) {
+      parts.push(
+        `test("setup: ${setup.name}", () => {`,
+        setup.body,
+        "}, 3 * 60 * 1000);",
+        "",
+      );
+    }
+  }
+
+  // Main test (same session — setup state is preserved, no cookies clear)
+  const testLines = actionsToLines(actions);
+  const body = testLines.map((l) => `  ${l}`).join("\n");
+  parts.push(
+    `test(${JSON.stringify(title)}, () => {`,
     body,
     "}, 5 * 60 * 1000);",
     "",
-  ].join("\n");
+  );
+
+  return parts.join("\n");
+}
+
+/** Commands that interact with page elements and need the page to be loaded */
+const ELEMENT_COMMANDS = new Set<string>(["click", "dblclick", "fill", "type", "check", "uncheck", "select", "hover", "drag"]);
+
+function actionsToLines(actions: TraceAction[]): string[] {
+  const lines: string[] = [];
+  let prevLine: string | null = null;
+  let prevCommand: string | null = null;
+  for (const action of actions) {
+    const line = actionToLine(action);
+    if (line === null) continue;
+    if (line === prevLine) continue;
+    // After 'open', always insert a sleep — page load is guaranteed to be needed
+    if (prevCommand === "open" && ELEMENT_COMMANDS.has(action.command)) {
+      lines.push(`spawnSync("sleep", ["3"], { stdio: "inherit" });`);
+    }
+    lines.push(line);
+    prevLine = line;
+    prevCommand = action.command;
+  }
+  return lines;
 }
 
 /** Returns true if a selector is a session-specific @ref that cannot be replayed. */
@@ -97,8 +132,8 @@ function actionToLine(action: TraceAction): string | null {
 
     case "wait": {
       const sel = action.selector!;
-      // Numeric waits are not a valid agent-browser command — skip them
-      if (/^\d+$/.test(sel)) return null;
+      // Numeric waits represent sleep durations (from auto-fix)
+      if (/^\d+$/.test(sel)) return `spawnSync("sleep", [${j(sel)}], { stdio: "inherit" });`;
       return `abWait(${j(sel)});`;
     }
 

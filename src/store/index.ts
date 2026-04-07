@@ -59,6 +59,59 @@ export async function saveTraceActions(
   return actionsPath;
 }
 
+// --- Setup (shared procedures) ---
+
+export function getSetupDir(name: string, cwd?: string): string {
+  return join(getVeriqDir(cwd), "setups", name);
+}
+
+export async function readSetupSpecFile(name: string, cwd?: string): Promise<string> {
+  const specPath = join(getSetupDir(name, cwd), "setup-spec.md");
+  return readFile(specPath, "utf-8").catch(() => {
+    throw new Error(`Setup spec not found: ${specPath}`);
+  });
+}
+
+export async function saveSetupActions(name: string, actions: TraceAction[], cwd?: string): Promise<string> {
+  const dir = getSetupDir(name, cwd);
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "actions.json");
+  await writeFile(path, JSON.stringify(actions, null, 2), "utf-8");
+  return path;
+}
+
+export async function getSetupActions(name: string, cwd?: string): Promise<{ path: string; actions: TraceAction[] }> {
+  const path = join(getSetupDir(name, cwd), "actions.json");
+  const content = await readFile(path, "utf-8").catch(() => {
+    throw new Error(`No setup actions found for: ${name}. Run \`veriq trace-setup ${name}\` first.`);
+  });
+  return { path, actions: JSON.parse(content) as TraceAction[] };
+}
+
+export async function saveSetupRoute(name: string, route: Route, cwd?: string): Promise<string> {
+  const dir = getSetupDir(name, cwd);
+  await mkdir(dir, { recursive: true });
+  const routePath = join(dir, "route.md");
+  await writeFile(routePath, routeToMarkdown(route), "utf-8");
+  return routePath;
+}
+
+export async function saveSetupTestScript(name: string, content: string, cwd?: string): Promise<string> {
+  const dir = getSetupDir(name, cwd);
+  await mkdir(dir, { recursive: true });
+  const path = join(dir, "test.spec.ts");
+  await writeFile(path, content, "utf-8");
+  return path;
+}
+
+export async function removeSetupTestScript(name: string, cwd?: string): Promise<void> {
+  const path = join(getSetupDir(name, cwd), "test.spec.ts");
+  const { unlink } = await import("node:fs/promises");
+  await unlink(path).catch(() => {});
+}
+
+// --- Trace Actions ---
+
 export async function getTraceActions(
   featureName: string,
   specName: string,

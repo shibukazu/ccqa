@@ -8,13 +8,32 @@ export const TestStepSchema = z.object({
 });
 export type TestStep = z.infer<typeof TestStepSchema>;
 
+export const SetupRefSchema = z.object({
+  name: z.string(),
+  params: z.record(z.string(), z.string()).optional(),
+});
+export type SetupRef = z.infer<typeof SetupRefSchema>;
+
 export const TestSpecSchema = z.object({
   title: z.string(),
   baseUrl: z.string(),
   prerequisites: z.string().optional(),
+  setups: z.array(SetupRefSchema).optional(),
   steps: z.array(TestStepSchema),
 });
 export type TestSpec = z.infer<typeof TestSpecSchema>;
+
+export const PlaceholderDefSchema = z.object({
+  dummy: z.string(),
+  description: z.string().optional(),
+});
+
+export const SetupSpecSchema = z.object({
+  title: z.string(),
+  placeholders: z.record(z.string(), PlaceholderDefSchema).optional(),
+  steps: z.array(TestStepSchema),
+});
+export type SetupSpec = z.infer<typeof SetupSpecSchema>;
 
 export const RouteStepSchema = z.object({
   title: z.string(),
