@@ -117,12 +117,10 @@ function extractTestBody(script: string): string {
   const lines = script.split("\n");
   const startIdx = lines.findIndex((l) => /^\s*test\(/.test(l));
   if (startIdx === -1) return "";
-  // Find the closing });
-  let depth = 0;
   const bodyLines: string[] = [];
-  for (let i = startIdx; i < lines.length; i++) {
-    if (i === startIdx) { depth = 1; continue; }
-    if (lines[i]!.includes("});") && depth === 1) break;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    // Match closing line: "}, N * 60 * 1000);" or "})" at the end of a test block
+    if (/^\s*\}[\s,);]/.test(lines[i]!)) break;
     bodyLines.push(lines[i]!);
   }
   return bodyLines.join("\n");
