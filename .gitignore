@@ -38,8 +38,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 playwright-report/
 test-results/
 
-# veriq temp files
-/tmp/veriq-*
+# ccqa temp files
+/tmp/ccqa-*
 
-# veriq test
-.veriq/
+# ccqa test
+.ccqa/

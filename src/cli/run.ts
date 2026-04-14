@@ -21,7 +21,7 @@ async function runTests(target?: string): Promise<void> {
 
   if (specs.length === 0) {
     log.error("no test scripts found");
-    log.hint("run 'veriq generate <feature>/<spec>' first to generate tests");
+    log.hint("run 'ccqa generate <feature>/<spec>' first to generate tests");
     process.exit(1);
   }
 

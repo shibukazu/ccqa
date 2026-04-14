@@ -20,7 +20,7 @@ export function actionsToScript(actions: TraceAction[], title: string, setupScri
     `import { ab, abWait, abAssertTextVisible, abAssertVisible, abAssertNotVisible, abAssertUrl, abAssertEnabled, abAssertDisabled, abAssertChecked, abAssertUnchecked } from ${JSON.stringify(helpersPath)};`,
     "",
     `// Single session shared across all tests — reset per run via cookies clear in first test`,
-    `process.env.AGENT_BROWSER_SESSION = \`veriq-run-\${Date.now()}\`;`,
+    `process.env.AGENT_BROWSER_SESSION = \`ccqa-run-\${Date.now()}\`;`,
     "",
   ];
 

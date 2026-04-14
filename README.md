@@ -1,10 +1,10 @@
-# veriq
+# ccqa
 
 **Your Claude subscription already includes a QA engineer.**
 
-veriq turns Claude Code into a browser test recorder.
+ccqa turns Claude Code into a browser test recorder.
 
-Write a spec in Markdown, run `veriq trace`, and Claude drives your app via [agent-browser](https://github.com/vercel-labs/agent-browser) — a lightweight headless browser CLI that runs anywhere without a browser driver or Playwright setup. Because the agent controls the browser through a simple CLI interface, it can handle login flows, intermediate screens, and dynamic UI the same way a human would.
+Write a spec in Markdown, run `ccqa trace`, and Claude drives your app via [agent-browser](https://github.com/vercel-labs/agent-browser) — a lightweight headless browser CLI that runs anywhere without a browser driver or Playwright setup. Because the agent controls the browser through a simple CLI interface, it can handle login flows, intermediate screens, and dynamic UI the same way a human would.
 
 Every action is recorded as structured data and compiled into a deterministic test script you can run in CI. No extra API key. Just `claude`.
 
@@ -12,9 +12,9 @@ Every action is recorded as structured data and compiled into a deterministic te
 
 ```mermaid
 flowchart LR
-    A["Write spec\n(test-spec.md)"] --> B["veriq trace\n(Claude drives browser)"]
-    B --> C["veriq generate\n(LLM → test script)"]
-    C --> D["veriq run\n(deterministic replay)"]
+    A["Write spec\n(test-spec.md)"] --> B["ccqa trace\n(Claude drives browser)"]
+    B --> C["ccqa generate\n(LLM → test script)"]
+    C --> D["ccqa run\n(deterministic replay)"]
 ```
 
 `trace` invokes Claude Code with your spec. Claude drives the browser step by step via [agent-browser](https://github.com/vercel-labs/agent-browser), recording every action as structured data. `generate` compiles that data into a vitest-compatible script. `run` replays it deterministically — no LLM involved.
@@ -22,13 +22,13 @@ flowchart LR
 ## Install
 
 ```bash
-bunx veriq trace tasks/create-and-complete
+bunx ccqa trace tasks/create-and-complete
 ```
 
 Or install globally:
 
 ```bash
-bun add -g veriq
+bun add -g ccqa
 ```
 
 Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [agent-browser](https://github.com/vercel-labs/agent-browser) installed globally:
@@ -43,7 +43,7 @@ bun add -g agent-browser
 **1. Write a spec**
 
 ```markdown
-<!-- .veriq/features/tasks/test-cases/create-and-complete/test-spec.md -->
+<!-- .ccqa/features/tasks/test-cases/create-and-complete/test-spec.md -->
 ---
 title: Create a task and mark it complete
 baseUrl: http://localhost:3000
@@ -67,7 +67,7 @@ baseUrl: http://localhost:3000
 **2. Trace — Claude drives the browser and records every action**
 
 ```bash
-veriq trace tasks/create-and-complete
+ccqa trace tasks/create-and-complete
 ```
 
 ```
@@ -81,7 +81,7 @@ Running agent-browser session...
   ● step-02  Create a new task
   ● step-03  Mark the task as complete
 
-  trace   .veriq/features/tasks/test-cases/create-and-complete/actions.json
+  trace   .ccqa/features/tasks/test-cases/create-and-complete/actions.json
   actions 24
   status  PASSED
 ```
@@ -89,13 +89,13 @@ Running agent-browser session...
 **3. Generate — convert recorded actions into a replayable test**
 
 ```bash
-veriq generate tasks/create-and-complete
+ccqa generate tasks/create-and-complete
 ```
 
 **4. Run — replay deterministically, no LLM involved**
 
 ```bash
-veriq run tasks/create-and-complete
+ccqa run tasks/create-and-complete
 ```
 
 ## Setup Specs — Reusable shared procedures
@@ -105,7 +105,7 @@ Setup specs let you define reusable procedures (login, data preparation, etc.) t
 ### 1. Write a setup spec
 
 ```markdown
-<!-- .veriq/setups/login/setup-spec.md -->
+<!-- .ccqa/setups/login/setup-spec.md -->
 ---
 title: "Login"
 placeholders:
@@ -136,13 +136,13 @@ The `placeholders` section defines variables with `dummy` values. During `trace-
 ### 2. Trace the setup
 
 ```bash
-veriq trace-setup login
+ccqa trace-setup login
 ```
 
 ### 3. Generate and validate the setup
 
 ```bash
-veriq generate-setup login
+ccqa generate-setup login
 ```
 
 This generates `test.dummy.spec.ts` with dummy values, runs vitest to validate, and applies auto-fix. On success, it reverse-replaces dummy values with placeholders and saves `test.spec.ts`.
@@ -150,7 +150,7 @@ This generates `test.dummy.spec.ts` with dummy values, runs vitest to validate, 
 If auto-fix fails, edit `test.dummy.spec.ts` manually and re-run:
 
 ```bash
-veriq generate-setup login --from-dummy
+ccqa generate-setup login --from-dummy
 ```
 
 ### 4. Reference from test specs
@@ -172,18 +172,18 @@ setups:
 ...
 ```
 
-When you run `veriq trace` or `veriq generate`, the setup's test body is loaded, placeholders are replaced with `params` values, and it runs before your test steps — sharing the same browser session.
+When you run `ccqa trace` or `ccqa generate`, the setup's test body is loaded, placeholders are replaced with `params` values, and it runs before your test steps — sharing the same browser session.
 
 ## What gets generated
 
 `ab()` is a thin wrapper around [agent-browser](https://github.com/vercel-labs/agent-browser) — a headless browser CLI. Each call spawns `agent-browser <command>` as a subprocess and throws if it exits non-zero. No browser driver setup, no async/await, no `.waitFor()`.
 
 ```typescript
-// .veriq/features/tasks/test-cases/create-and-complete/test.spec.ts
+// .ccqa/features/tasks/test-cases/create-and-complete/test.spec.ts
 import { test } from "vitest";
 import { ab, abWait, abAssertUrl, abAssertTextVisible, abAssertEnabled } from "/path/to/test-helpers.ts";
 
-process.env.AGENT_BROWSER_SESSION = `veriq-run-${Date.now()}`;
+process.env.AGENT_BROWSER_SESSION = `ccqa-run-${Date.now()}`;
 
 test("setup: login", () => {
   ab("cookies", "clear");
@@ -230,25 +230,25 @@ Assertions are stability-aware: Claude skips timestamps, session IDs, and exact 
 If the generated script fails (timing issues, page not ready), `generate` uses an LLM to analyze the failure log and insert `sleep` at the right positions. Control how many attempts with `--max-retries`:
 
 ```bash
-veriq generate tasks/create-and-complete --max-retries 5
+ccqa generate tasks/create-and-complete --max-retries 5
 ```
 
 ## Commands
 
 ```
-veriq trace <feature/spec>          Record browser actions for a test spec
-veriq generate <feature/spec>       Generate test script from recorded actions
-veriq run [feature/spec]            Execute generated test scripts
+ccqa trace <feature/spec>          Record browser actions for a test spec
+ccqa generate <feature/spec>       Generate test script from recorded actions
+ccqa run [feature/spec]            Execute generated test scripts
 
-veriq trace-setup <name>            Record browser actions for a setup spec
-veriq generate-setup <name>         Generate and validate setup test script
+ccqa trace-setup <name>            Record browser actions for a setup spec
+ccqa generate-setup <name>         Generate and validate setup test script
   --from-dummy                      Resume from manually edited test.dummy.spec.ts
 ```
 
 ## File structure
 
 ```
-.veriq/
+.ccqa/
   setups/
     login/
       setup-spec.md              # Setup definition with placeholders
@@ -264,7 +264,7 @@ veriq generate-setup <name>         Generate and validate setup test script
 
 ## Why not write Playwright tests by hand?
 
-| | veriq | Hand-written Playwright |
+| | ccqa | Hand-written Playwright |
 |---|---|---|
 | Write selectors | Claude picks them from ARIA snapshots | You inspect the DOM |
 | Handle timing | Recorded wait commands, auto-fix sleep | `waitFor`, `expect().toBeVisible()` |

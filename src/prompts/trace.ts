@@ -1,7 +1,7 @@
 import type { TestSpec, SetupSpec } from "../types.ts";
 
 export function generateSessionName(): string {
-  return `veriq-trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  return `ccqa-trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 }
 
 export function buildTraceSystemPrompt(spec: TestSpec, options?: { sessionName?: string; skipCookiesClear?: boolean }): string {

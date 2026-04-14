@@ -2,7 +2,7 @@ import { readFile, writeFile, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { Command } from "commander";
 import {
-  ensureVeriqDir,
+  ensureCcqaDir,
   readSetupSpecFile,
   getSetupActions,
   getSetupDir,
@@ -27,7 +27,7 @@ export const generateSetupCommand = new Command("generate-setup")
 async function runGenerateSetup(name: string, maxRetries: number, fromDummy: boolean): Promise<void> {
   log.header("generate-setup", name);
 
-  await ensureVeriqDir();
+  await ensureCcqaDir();
 
   const specContent = await readSetupSpecFile(name);
   const spec = parseSetupSpec(specContent);
@@ -85,7 +85,7 @@ async function runGenerateSetup(name: string, maxRetries: number, fromDummy: boo
 
     if (exitCode !== 0) {
       log.warn("auto-fix exhausted — setup test still failing");
-      log.hint(`edit ${dummyPath} manually, then run: veriq generate-setup ${name} --from-dummy`);
+      log.hint(`edit ${dummyPath} manually, then run: ccqa generate-setup ${name} --from-dummy`);
       process.exit(1);
     }
   }
