@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "veriq",
+      "name": "ccqa",
       "dependencies": {
         "@anthropic-ai/claude-agent-sdk": "^0.2.87",
         "@anthropic-ai/claude-code": "^2.1.87",

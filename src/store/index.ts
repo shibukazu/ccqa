@@ -2,10 +2,10 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Route, TraceAction } from "../types.ts";
 
-const VERIQ_DIR = ".veriq";
+const CCQA_DIR = ".ccqa";
 
-export function getVeriqDir(cwd: string = process.cwd()): string {
-  return join(cwd, VERIQ_DIR);
+export function getCcqaDir(cwd: string = process.cwd()): string {
+  return join(cwd, CCQA_DIR);
 }
 
 // "tasks/create-and-complete" → { featureName: "tasks", specName: "create-and-complete" }
@@ -18,7 +18,7 @@ export function parseSpecPath(specPath: string): { featureName: string; specName
 }
 
 export function getFeatureDir(featureName: string, cwd?: string): string {
-  return join(getVeriqDir(cwd), "features", featureName);
+  return join(getCcqaDir(cwd), "features", featureName);
 }
 
 export function getSpecDir(featureName: string, specName: string, cwd?: string): string {
@@ -26,8 +26,8 @@ export function getSpecDir(featureName: string, specName: string, cwd?: string):
 }
 
 
-export async function ensureVeriqDir(cwd?: string): Promise<void> {
-  await mkdir(join(getVeriqDir(cwd), "features"), { recursive: true });
+export async function ensureCcqaDir(cwd?: string): Promise<void> {
+  await mkdir(join(getCcqaDir(cwd), "features"), { recursive: true });
 }
 
 
@@ -62,7 +62,7 @@ export async function saveTraceActions(
 // --- Setup (shared procedures) ---
 
 export function getSetupDir(name: string, cwd?: string): string {
-  return join(getVeriqDir(cwd), "setups", name);
+  return join(getCcqaDir(cwd), "setups", name);
 }
 
 export async function readSetupSpecFile(name: string, cwd?: string): Promise<string> {
@@ -83,7 +83,7 @@ export async function saveSetupActions(name: string, actions: TraceAction[], cwd
 export async function getSetupActions(name: string, cwd?: string): Promise<{ path: string; actions: TraceAction[] }> {
   const path = join(getSetupDir(name, cwd), "actions.json");
   const content = await readFile(path, "utf-8").catch(() => {
-    throw new Error(`No setup actions found for: ${name}. Run \`veriq trace-setup ${name}\` first.`);
+    throw new Error(`No setup actions found for: ${name}. Run \`ccqa trace-setup ${name}\` first.`);
   });
   return { path, actions: JSON.parse(content) as TraceAction[] };
 }
@@ -119,7 +119,7 @@ export async function getTraceActions(
 ): Promise<{ path: string; actions: TraceAction[] }> {
   const path = join(getSpecDir(featureName, specName, cwd), "actions.json");
   const content = await readFile(path, "utf-8").catch(() => {
-    throw new Error(`No trace actions found for spec: ${featureName}/${specName}. Run \`veriq trace\` first.`);
+    throw new Error(`No trace actions found for spec: ${featureName}/${specName}. Run \`ccqa trace\` first.`);
   });
   return { path, actions: JSON.parse(content) as TraceAction[] };
 }
@@ -143,7 +143,7 @@ export async function getTestScript(featureName: string, specName: string, cwd?:
 }
 
 export async function listAllSpecs(cwd?: string): Promise<Array<{ featureName: string; specName: string }>> {
-  const featuresDir = join(getVeriqDir(cwd), "features");
+  const featuresDir = join(getCcqaDir(cwd), "features");
   const featureDirs = await readdir(featuresDir).catch(() => []);
 
   const perFeature = await Promise.all(

@@ -4,7 +4,7 @@ import { Command } from "commander";
 import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from "../prompts/trace.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { ensureVeriqDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions, getSetupDir } from "../store/index.ts";
+import { ensureCcqaDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions, getSetupDir } from "../store/index.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
@@ -20,7 +20,7 @@ export const traceCommand = new Command("trace")
 async function runTrace(featureName: string, specName: string): Promise<void> {
   log.header("trace", `${featureName}/${specName}`);
 
-  await ensureVeriqDir();
+  await ensureCcqaDir();
 
   const specContent = await readSpecFile(featureName, specName);
   const spec = parseTestSpec(specContent);
@@ -114,7 +114,7 @@ async function runTrace(featureName: string, specName: string): Promise<void> {
   log.meta("saved", actionsPath);
   log.meta("actions", traceActions.length);
   log.meta("status", overallStatus.toUpperCase());
-  log.hint(`run 'veriq generate ${featureName}/${specName}' to generate a test script`);
+  log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
 }
 
 /**
@@ -130,7 +130,7 @@ async function runSetups(
 
     const scriptPath = join(getSetupDir(ref.name), "test.spec.ts");
     let script = await readFile(scriptPath, "utf-8").catch(() => {
-      throw new Error(`Setup test script not found: ${scriptPath}. Run \`veriq generate-setup ${ref.name}\` first.`);
+      throw new Error(`Setup test script not found: ${scriptPath}. Run \`ccqa generate-setup ${ref.name}\` first.`);
     });
 
     // Replace placeholders with params

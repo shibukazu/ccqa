@@ -1,10 +1,10 @@
 {
-  "name": "veriq",
+  "name": "ccqa",
   "version": "0.1.0",
   "type": "module",
   "description": "Browser test recorder powered by Claude Code and agent-browser",
   "bin": {
-    "veriq": "./bin/veriq.ts"
+    "ccqa": "./bin/ccqa.ts"
   },
   "files": [
     "bin/",

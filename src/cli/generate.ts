@@ -3,7 +3,7 @@ import { Command } from "commander";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  ensureVeriqDir,
+  ensureCcqaDir,
   parseSpecPath,
   getTraceActions,
   getSetupDir,
@@ -30,7 +30,7 @@ export const generateCommand = new Command("generate")
 async function runGenerate(featureName: string, specName: string, maxRetries: number): Promise<void> {
   log.header("generate", `${featureName}/${specName}`);
 
-  await ensureVeriqDir();
+  await ensureCcqaDir();
 
   const { path: actionsPath, actions } = await getTraceActions(featureName, specName);
 
@@ -60,7 +60,7 @@ async function runGenerate(featureName: string, specName: string, maxRetries: nu
 
   let { exitCode, output, currentScript } = await runVitest(scriptPath);
   if (exitCode === 0) {
-    log.hint(`run 'veriq run ${featureName}/${specName}' to execute the test`);
+    log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
     return;
   }
 
@@ -80,7 +80,7 @@ async function runGenerate(featureName: string, specName: string, maxRetries: nu
 
     ({ exitCode, output, currentScript } = await runVitest(scriptPath));
     if (exitCode === 0) {
-      log.hint(`run 'veriq run ${featureName}/${specName}' to execute the test`);
+      log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
       return;
     }
   }
@@ -101,7 +101,7 @@ async function loadSetupScripts(
   for (const ref of setups) {
     const scriptPath = join(getSetupDir(ref.name), "test.spec.ts");
     const script = await readFile(scriptPath, "utf-8").catch(() => {
-      throw new Error(`Setup test script not found: ${scriptPath}. Run \`veriq generate-setup ${ref.name}\` first.`);
+      throw new Error(`Setup test script not found: ${scriptPath}. Run \`ccqa generate-setup ${ref.name}\` first.`);
     });
     const body = extractTestBody(script);
     const resolved = replacePlaceholders(body, ref.params ?? {});

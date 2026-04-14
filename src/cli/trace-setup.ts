@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { buildSetupTraceSystemPrompt, buildSetupTracePrompt } from "../prompts/trace.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { ensureVeriqDir, readSetupSpecFile, saveSetupActions, saveSetupRoute } from "../store/index.ts";
+import { ensureCcqaDir, readSetupSpecFile, saveSetupActions, saveSetupRoute } from "../store/index.ts";
 import { parseSetupSpec } from "../spec/parser.ts";
 import { parseAbAction, parseStatusLine, parseRouteStep } from "./trace.ts";
 import type { Route, RouteStep, TraceAction } from "../types.ts";
@@ -18,7 +18,7 @@ export const traceSetupCommand = new Command("trace-setup")
 async function runTraceSetup(name: string): Promise<void> {
   log.header("trace-setup", name);
 
-  await ensureVeriqDir();
+  await ensureCcqaDir();
 
   const specContent = await readSetupSpecFile(name);
   const spec = parseSetupSpec(specContent);
@@ -98,7 +98,7 @@ async function runTraceSetup(name: string): Promise<void> {
   log.meta("saved", actionsPath);
   log.meta("actions", traceActions.length);
   log.meta("status", overallStatus.toUpperCase());
-  log.hint(`run 'veriq generate-setup ${name}' to generate and validate the setup`);
+  log.hint(`run 'ccqa generate-setup ${name}' to generate and validate the setup`);
 }
 
 function replacePlaceholdersWithDummies(spec: ReturnType<typeof parseSetupSpec>): typeof spec {

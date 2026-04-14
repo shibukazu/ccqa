@@ -8,7 +8,7 @@ import { generateSetupCommand } from "./generate-setup.ts";
 const program = new Command();
 
 program
-  .name("veriq")
+  .name("ccqa")
   .description("E2E test CLI using Claude Code + agent-browser")
   .version("0.1.0");
 

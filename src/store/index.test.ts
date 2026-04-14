@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parseSpecPath, getVeriqDir, getFeatureDir, getSpecDir, routeToMarkdown } from "./index.ts";
+import { parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, routeToMarkdown } from "./index.ts";
 import type { Route } from "../types.ts";
 
 describe("parseSpecPath", () => {
@@ -33,21 +33,21 @@ describe("parseSpecPath", () => {
 });
 
 describe("path helpers", () => {
-  test("getVeriqDir uses process.cwd by default", () => {
-    expect(getVeriqDir()).toBe(`${process.cwd()}/.veriq`);
+  test("getCcqaDir uses process.cwd by default", () => {
+    expect(getCcqaDir()).toBe(`${process.cwd()}/.ccqa`);
   });
 
-  test("getVeriqDir uses provided cwd", () => {
-    expect(getVeriqDir("/custom")).toBe("/custom/.veriq");
+  test("getCcqaDir uses provided cwd", () => {
+    expect(getCcqaDir("/custom")).toBe("/custom/.ccqa");
   });
 
   test("getFeatureDir returns correct path", () => {
-    expect(getFeatureDir("my-feature", "/custom")).toBe("/custom/.veriq/features/my-feature");
+    expect(getFeatureDir("my-feature", "/custom")).toBe("/custom/.ccqa/features/my-feature");
   });
 
   test("getSpecDir returns correct path", () => {
     expect(getSpecDir("my-feature", "my-spec", "/custom")).toBe(
-      "/custom/.veriq/features/my-feature/test-cases/my-spec",
+      "/custom/.ccqa/features/my-feature/test-cases/my-spec",
     );
   });
 

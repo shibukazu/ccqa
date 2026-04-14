@@ -9,7 +9,7 @@ const STEP_ICONS: Record<StepStatus, string> = {
 };
 
 export function header(command: string, target?: string): void {
-  process.stdout.write(`\nveriq ${command}${target ? ` ${target}` : ""}\n\n`);
+  process.stdout.write(`\nccqa ${command}${target ? ` ${target}` : ""}\n\n`);
 }
 
 export function meta(key: string, value: string | number): void {
