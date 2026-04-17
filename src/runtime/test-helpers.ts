@@ -1,6 +1,12 @@
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 
-const AB = new URL(import.meta.resolve("agent-browser/bin/agent-browser.js")).pathname;
+// Use createRequire instead of import.meta.resolve so this module works under
+// Vite/Vitest's SSR transform (which replaces import.meta with a shim that
+// lacks .resolve). import.meta.url survives the transform, so createRequire
+// based on it can still locate peer-installed packages.
+const require = createRequire(import.meta.url);
+const AB = require.resolve("agent-browser/bin/agent-browser.js");
 
 type Result = { status: number | null; stdout: string; stderr: string };
 
