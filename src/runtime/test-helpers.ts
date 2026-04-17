@@ -2,76 +2,126 @@ import { spawnSync } from "node:child_process";
 
 const AB = new URL(import.meta.resolve("agent-browser/bin/agent-browser.js")).pathname;
 
-function spawnAB(args: string[], stdio: "inherit" | "pipe" = "inherit"): { status: number | null; stdout: string } {
-  const result = spawnSync(AB, args, { stdio });
-  return { status: result.status, stdout: result.stdout?.toString().trim() ?? "" };
+type Result = { status: number | null; stdout: string; stderr: string };
+
+function spawnAB(args: string[]): Result {
+  const result = spawnSync(AB, args, { stdio: "pipe" });
+  return {
+    status: result.status,
+    stdout: result.stdout?.toString() ?? "",
+    stderr: result.stderr?.toString() ?? "",
+  };
+}
+
+function logStep(action: string, args: readonly unknown[]): void {
+  const pretty = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join("  ");
+  process.stdout.write(`  ▶ ${action.padEnd(14)} ${pretty}\n`);
+}
+
+function fail(summary: string, result: Result): never {
+  process.stdout.write(`  ✗ ${summary}\n`);
+  const details = [result.stdout, result.stderr].map((s) => s.trim()).filter(Boolean).join("\n");
+  if (details) {
+    for (const line of details.split("\n")) {
+      process.stdout.write(`      ${line}\n`);
+    }
+  }
+  throw new Error(summary);
 }
 
 export function ab(...args: string[]): void {
-  const { status } = spawnAB(args);
-  if (status !== 0) throw new Error(`agent-browser ${args[0]} failed (exit ${status})`);
+  const [command = "", ...rest] = args;
+  logStep(command, rest);
+  const result = spawnAB(args);
+  if (result.status !== 0) {
+    fail(`agent-browser ${command} failed (exit ${result.status})`, result);
+  }
 }
 
 /** Wait for element/text with an explicit timeout so long-running async ops don't hang. */
 export function abWait(selector: string, timeoutMs = 180_000): void {
+  logStep("wait", [selector]);
   const args = selector.startsWith("text=")
     ? ["wait", "--text", selector.slice(5), "--timeout", String(timeoutMs)]
     : ["wait", selector, "--timeout", String(timeoutMs)];
-  const { status } = spawnAB(args);
-  if (status !== 0) throw new Error(`agent-browser wait failed (exit ${status})`);
+  const result = spawnAB(args);
+  if (result.status !== 0) {
+    fail(`wait failed: ${selector}`, result);
+  }
 }
 
 /** Assert stable text is visible on page (via wait --text). */
 export function abAssertTextVisible(text: string, timeoutMs = 30_000): void {
-  const { status } = spawnAB(["wait", "--text", text, "--timeout", String(timeoutMs)]);
-  if (status !== 0) throw new Error(`Assertion failed: text ${JSON.stringify(text)} not found within ${timeoutMs}ms`);
+  logStep("assert.text", [text]);
+  const result = spawnAB(["wait", "--text", text, "--timeout", String(timeoutMs)]);
+  if (result.status !== 0) {
+    fail(`Assertion failed: text ${JSON.stringify(text)} not found within ${timeoutMs}ms`, result);
+  }
 }
 
 /** Assert element is visible (via wait). */
 export function abAssertVisible(selector: string, timeoutMs = 30_000): void {
-  const { status } = spawnAB(["wait", selector, "--timeout", String(timeoutMs)]);
-  if (status !== 0) throw new Error(`Assertion failed: ${JSON.stringify(selector)} not visible within ${timeoutMs}ms`);
+  logStep("assert.visible", [selector]);
+  const result = spawnAB(["wait", selector, "--timeout", String(timeoutMs)]);
+  if (result.status !== 0) {
+    fail(`Assertion failed: ${JSON.stringify(selector)} not visible within ${timeoutMs}ms`, result);
+  }
 }
 
 /** Assert element is NOT visible (via wait --state hidden). */
 export function abAssertNotVisible(selector: string, timeoutMs = 30_000): void {
+  logStep("assert.hidden", [selector]);
   const args = selector.startsWith("text=")
     ? ["wait", "--text", selector.slice(5), "--state", "hidden", "--timeout", String(timeoutMs)]
     : ["wait", selector, "--state", "hidden", "--timeout", String(timeoutMs)];
-  const { status } = spawnAB(args);
-  if (status !== 0) throw new Error(`Assertion failed: ${JSON.stringify(selector)} still visible after ${timeoutMs}ms`);
+  const result = spawnAB(args);
+  if (result.status !== 0) {
+    fail(`Assertion failed: ${JSON.stringify(selector)} still visible after ${timeoutMs}ms`, result);
+  }
 }
 
 /** Assert URL contains a pattern (via get url). */
 export function abAssertUrl(pattern: string): void {
-  const { stdout: url } = spawnAB(["get", "url"], "pipe");
-  if (!url.includes(pattern)) throw new Error(`Assertion failed: URL ${JSON.stringify(url)} does not contain ${JSON.stringify(pattern)}`);
+  logStep("assert.url", [pattern]);
+  const result = spawnAB(["get", "url"]);
+  const url = result.stdout.trim();
+  if (!url.includes(pattern)) {
+    fail(`Assertion failed: URL ${JSON.stringify(url)} does not contain ${JSON.stringify(pattern)}`, result);
+  }
 }
 
 /** Assert element is enabled (via is enabled). */
 export function abAssertEnabled(selector: string): void {
-  const { status, stdout } = spawnAB(["is", "enabled", selector], "pipe");
-  if (status !== 0) throw new Error(`Assertion failed: element ${JSON.stringify(selector)} not found`);
-  if (stdout !== "true") throw new Error(`Assertion failed: ${JSON.stringify(selector)} is not enabled (got: ${stdout})`);
+  logStep("assert.enabled", [selector]);
+  const result = spawnAB(["is", "enabled", selector]);
+  if (result.status !== 0) fail(`Assertion failed: element ${JSON.stringify(selector)} not found`, result);
+  const value = result.stdout.trim();
+  if (value !== "true") fail(`Assertion failed: ${JSON.stringify(selector)} is not enabled (got: ${value})`, result);
 }
 
 /** Assert element is disabled (via is enabled). */
 export function abAssertDisabled(selector: string): void {
-  const { status, stdout } = spawnAB(["is", "enabled", selector], "pipe");
-  if (status !== 0) throw new Error(`Assertion failed: element ${JSON.stringify(selector)} not found`);
-  if (stdout !== "false") throw new Error(`Assertion failed: ${JSON.stringify(selector)} is not disabled (got: ${stdout})`);
+  logStep("assert.disabled", [selector]);
+  const result = spawnAB(["is", "enabled", selector]);
+  if (result.status !== 0) fail(`Assertion failed: element ${JSON.stringify(selector)} not found`, result);
+  const value = result.stdout.trim();
+  if (value !== "false") fail(`Assertion failed: ${JSON.stringify(selector)} is not disabled (got: ${value})`, result);
 }
 
 /** Assert checkbox is checked (via is checked). */
 export function abAssertChecked(selector: string): void {
-  const { status, stdout } = spawnAB(["is", "checked", selector], "pipe");
-  if (status !== 0) throw new Error(`Assertion failed: element ${JSON.stringify(selector)} not found`);
-  if (stdout !== "true") throw new Error(`Assertion failed: ${JSON.stringify(selector)} is not checked (got: ${stdout})`);
+  logStep("assert.checked", [selector]);
+  const result = spawnAB(["is", "checked", selector]);
+  if (result.status !== 0) fail(`Assertion failed: element ${JSON.stringify(selector)} not found`, result);
+  const value = result.stdout.trim();
+  if (value !== "true") fail(`Assertion failed: ${JSON.stringify(selector)} is not checked (got: ${value})`, result);
 }
 
 /** Assert checkbox is unchecked (via is checked). */
 export function abAssertUnchecked(selector: string): void {
-  const { status, stdout } = spawnAB(["is", "checked", selector], "pipe");
-  if (status !== 0) throw new Error(`Assertion failed: element ${JSON.stringify(selector)} not found`);
-  if (stdout !== "false") throw new Error(`Assertion failed: ${JSON.stringify(selector)} is not unchecked (got: ${stdout})`);
+  logStep("assert.unchecked", [selector]);
+  const result = spawnAB(["is", "checked", selector]);
+  if (result.status !== 0) fail(`Assertion failed: element ${JSON.stringify(selector)} not found`, result);
+  const value = result.stdout.trim();
+  if (value !== "false") fail(`Assertion failed: ${JSON.stringify(selector)} is not unchecked (got: ${value})`, result);
 }
