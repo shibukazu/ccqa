@@ -3,6 +3,14 @@
   "version": "0.1.4",
   "type": "module",
   "description": "Browser test recorder powered by Claude Code and agent-browser",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shibukazu/ccqa.git"
+  },
+  "homepage": "https://github.com/shibukazu/ccqa#readme",
+  "bugs": {
+    "url": "https://github.com/shibukazu/ccqa/issues"
+  },
   "bin": {
     "ccqa": "./bin/ccqa.ts"
   },
