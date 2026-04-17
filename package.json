@@ -1,6 +1,6 @@
 {
   "name": "ccqa",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "type": "module",
   "description": "Browser test recorder powered by Claude Code and agent-browser",
   "repository": {
