@@ -11,13 +11,10 @@ export interface SetupScript {
 }
 
 export function actionsToScript(actions: TraceAction[], title: string, setupScripts?: SetupScript[]): string {
-  // Resolve the helpers path relative to this file so it works from any cwd
-  const helpersPath = new URL("../runtime/test-helpers.ts", import.meta.url).pathname;
-
   const imports = [
     `import { test } from "vitest";`,
     `import { spawnSync } from "node:child_process";`,
-    `import { ab, abWait, abAssertTextVisible, abAssertVisible, abAssertNotVisible, abAssertUrl, abAssertEnabled, abAssertDisabled, abAssertChecked, abAssertUnchecked } from ${JSON.stringify(helpersPath)};`,
+    `import { ab, abWait, abAssertTextVisible, abAssertVisible, abAssertNotVisible, abAssertUrl, abAssertEnabled, abAssertDisabled, abAssertChecked, abAssertUnchecked } from "ccqa/test-helpers";`,
     "",
     `// Single session shared across all tests — reset per run via cookies clear in first test`,
     `process.env.AGENT_BROWSER_SESSION = \`ccqa-run-\${Date.now()}\`;`,
