@@ -17,11 +17,6 @@ on:
         type: boolean
         required: false
         default: false
-  # TEMPORARY: run in dry-run mode on every push to this branch
-  # while we iterate on the workflow. Remove before merging.
-  push:
-    branches:
-      - ci/fix-npm-upgrade
 
 permissions:
   contents: write
@@ -31,8 +26,8 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      BUMP: ${{ inputs.bump || 'patch' }}
-      DRY_RUN: ${{ inputs.dry_run == true || github.event_name == 'push' }}
+      BUMP: ${{ inputs.bump }}
+      DRY_RUN: ${{ inputs.dry_run }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
