@@ -1,7 +1,8 @@
 import { Command } from "commander";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import {
   parseSpecPath,
   getTestScript,
@@ -9,6 +10,24 @@ import {
   listSpecsForFeature,
 } from "../store/index.ts";
 import * as log from "./logger.ts";
+
+// Bundled vitest config used when the host project has no .ccqa/vitest.config.ts.
+// Passing --config to vitest prevents it from discovering the host's
+// vitest.config.ts and inheriting setupFiles/environment/aliases that were
+// never meant to apply to ccqa's browser-driving specs.
+const BUNDLED_VITEST_CONFIG = fileURLToPath(
+  new URL("../runtime/vitest.config.ts", import.meta.url),
+);
+const USER_VITEST_CONFIG = resolve(".ccqa/vitest.config.ts");
+
+async function resolveVitestConfig(): Promise<string> {
+  try {
+    await access(USER_VITEST_CONFIG);
+    return USER_VITEST_CONFIG;
+  } catch {
+    return BUNDLED_VITEST_CONFIG;
+  }
+}
 
 type VitestAssertionResult = {
   status: "passed" | "failed" | "skipped" | "pending" | "todo";
@@ -63,6 +82,7 @@ async function runTests(target?: string): Promise<void> {
   const tmpDir = await mkdtemp(join(tmpdir(), "ccqa-run-"));
   const summaries: SpecRunSummary[] = [];
   let overallExitCode = 0;
+  const vitestConfig = await resolveVitestConfig();
 
   try {
     for (let i = 0; i < specs.length; i++) {
@@ -83,6 +103,8 @@ async function runTests(target?: string): Promise<void> {
           "bunx",
           "vitest",
           "run",
+          "--config",
+          vitestConfig,
           scriptFile,
           "--reporter=json",
           `--outputFile.json=${reportFile}`,
