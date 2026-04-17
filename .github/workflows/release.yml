@@ -41,9 +41,6 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Upgrade npm for trusted publishing
-        run: npm install -g npm@latest
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -63,7 +60,7 @@ jobs:
       - name: Bump version
         id: bump
         run: |
-          new_version=$(npm version "$BUMP" --no-git-tag-version)
+          new_version=$(npx -y npm@latest version "$BUMP" --no-git-tag-version)
           echo "version=${new_version}" >> "$GITHUB_OUTPUT"
           echo "Bumped to ${new_version}"
 
@@ -76,7 +73,7 @@ jobs:
           git tag "${VERSION}"
 
       - name: Push to main
-        if: ${{ !inputs.dry_run }}
+        if: ${{ env.DRY_RUN != 'true' }}
         env:
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
@@ -84,9 +81,9 @@ jobs:
           git push origin "${VERSION}"
 
       - name: Publish to npm (trusted publishing + provenance)
-        if: ${{ !inputs.dry_run }}
-        run: npm publish --provenance --access public
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: npx -y npm@latest publish --provenance --access public
 
       - name: Dry-run publish
-        if: ${{ inputs.dry_run }}
-        run: npm publish --dry-run --access public
+        if: ${{ env.DRY_RUN == 'true' }}
+        run: npx -y npm@latest publish --dry-run --access public
