@@ -3,12 +3,14 @@ import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import type { Readable } from "node:stream";
 import {
   parseSpecPath,
   getTestScript,
   listAllSpecs,
   listSpecsForFeature,
 } from "../store/index.ts";
+import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
 import * as log from "./logger.ts";
 
 // Bundled vitest config used when the host project has no .ccqa/vitest.config.ts.
@@ -98,23 +100,18 @@ async function runTests(target?: string): Promise<void> {
       log.blank();
 
       const reportFile = join(tmpDir, `report-${i}.json`);
-      const proc = Bun.spawn(
-        [
-          "bunx",
-          "vitest",
-          "run",
-          "--config",
-          vitestConfig,
-          scriptFile,
-          "--reporter=json",
-          `--outputFile.json=${reportFile}`,
-        ],
-        { stdout: "pipe", stderr: "pipe" },
-      );
+      const proc = spawnVitestStreaming([
+        "run",
+        "--config",
+        vitestConfig,
+        scriptFile,
+        "--reporter=json",
+        `--outputFile.json=${reportFile}`,
+      ]);
 
       await Promise.all([
-        streamFiltered(proc.stdout, Bun.stdout),
-        streamFiltered(proc.stderr, Bun.stderr),
+        streamFiltered(proc.stdout, process.stdout),
+        streamFiltered(proc.stderr, process.stderr),
       ]);
       const exitCode = await proc.exited;
       if (exitCode !== 0) overallExitCode = exitCode;
@@ -234,34 +231,25 @@ function formatDuration(ms: number): string {
 const NOISE_LINE_PATTERNS = [/^JSON report written to /];
 
 async function streamFiltered(
-  source: ReadableStream<Uint8Array>,
-  sink: { write: (chunk: Uint8Array) => unknown },
+  source: Readable,
+  sink: NodeJS.WritableStream,
 ): Promise<void> {
-  const decoder = new TextDecoder();
-  const encoder = new TextEncoder();
+  source.setEncoding("utf8");
   let buffer = "";
-  const reader = source.getReader();
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let nl = buffer.indexOf("\n");
-      while (nl !== -1) {
-        const line = buffer.slice(0, nl);
-        buffer = buffer.slice(nl + 1);
-        if (!NOISE_LINE_PATTERNS.some((p) => p.test(line))) {
-          sink.write(encoder.encode(line + "\n"));
-        }
-        nl = buffer.indexOf("\n");
+  for await (const chunk of source) {
+    buffer += chunk as string;
+    let nl = buffer.indexOf("\n");
+    while (nl !== -1) {
+      const line = buffer.slice(0, nl);
+      buffer = buffer.slice(nl + 1);
+      if (!NOISE_LINE_PATTERNS.some((p) => p.test(line))) {
+        sink.write(line + "\n");
       }
+      nl = buffer.indexOf("\n");
     }
-    buffer += decoder.decode();
-    if (buffer.length > 0 && !NOISE_LINE_PATTERNS.some((p) => p.test(buffer))) {
-      sink.write(encoder.encode(buffer));
-    }
-  } finally {
-    reader.releaseLock();
+  }
+  if (buffer.length > 0 && !NOISE_LINE_PATTERNS.some((p) => p.test(buffer))) {
+    sink.write(buffer);
   }
 }
 

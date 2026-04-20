@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import {
   ensureCcqaDir,
@@ -15,8 +16,13 @@ import type { SetupScript } from "../codegen/actions-to-script.ts";
 import { buildCleanupPrompt, buildAutoFixPrompt } from "../prompts/codegen.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { parseTestSpec } from "../spec/parser.ts";
+import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
 import type { TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
+
+const BUNDLED_VITEST_CONFIG = fileURLToPath(
+  new URL("../runtime/vitest.config.ts", import.meta.url),
+);
 
 export const generateCommand = new Command("generate")
   .argument("<feature/spec>", "Spec to generate test for (e.g. tasks/create-and-complete)")
@@ -189,21 +195,17 @@ function applySleepFixes(script: string, fixes: AutoFixAction[]): string {
 }
 
 async function runVitest(scriptPath: string): Promise<{ exitCode: number; output: string; currentScript: string }> {
-  const proc = Bun.spawn(["bunx", "vitest", "run", scriptPath], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-
-  const [stdoutText, stderrText, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
+  const { exitCode, stdout, stderr } = await spawnVitestCaptured([
+    "run",
+    "--config",
+    BUNDLED_VITEST_CONFIG,
+    scriptPath,
   ]);
-  const currentScript = await Bun.file(scriptPath).text();
+  const currentScript = await readFile(scriptPath, "utf8");
 
-  process.stdout.write(stdoutText);
-  if (stderrText) process.stderr.write(stderrText);
-  return { exitCode, output: stdoutText + stderrText, currentScript };
+  process.stdout.write(stdout);
+  if (stderr) process.stderr.write(stderr);
+  return { exitCode, output: stdout + stderr, currentScript };
 }
 
 async function cleanupActions(actions: TraceAction[]): Promise<TraceAction[]> {

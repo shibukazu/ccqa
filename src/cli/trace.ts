@@ -1,4 +1,5 @@
 import { readFile, writeFile, unlink } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { Command } from "commander";
 import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from "../prompts/trace.ts";
@@ -6,8 +7,13 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ensureCcqaDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions, getSetupDir } from "../store/index.ts";
 import { parseTestSpec } from "../spec/parser.ts";
+import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
 import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
+
+const BUNDLED_VITEST_CONFIG = fileURLToPath(
+  new URL("../runtime/vitest.config.ts", import.meta.url),
+);
 
 export const traceCommand = new Command("trace")
   .argument("<feature/spec>", "Spec to trace (e.g. tasks/create-and-complete)")
@@ -149,14 +155,11 @@ async function runSetups(
     await writeFile(tmpPath, script, "utf-8");
 
     try {
-      const proc = Bun.spawn(["bunx", "vitest", "run", tmpPath], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [stdout, stderr, exitCode] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
+      const { exitCode, stdout, stderr } = await spawnVitestCaptured([
+        "run",
+        "--config",
+        BUNDLED_VITEST_CONFIG,
+        tmpPath,
       ]);
       process.stdout.write(stdout);
       if (stderr) process.stderr.write(stderr);
