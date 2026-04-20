@@ -1,8 +1,11 @@
 # dependencies
 node_modules
 
-# bun lockfile (we ship package-lock.json; bun.lock is for local dev convenience)
+# lockfiles: intentionally untracked. npm's lockfile pins platform-specific
+# optional binaries (see npm/cli#4828) which breaks `npm ci` when the dev
+# platform differs from CI's. bun.lock is local-dev convenience only.
 bun.lock
+package-lock.json
 
 # output
 out

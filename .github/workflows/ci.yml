@@ -18,11 +18,12 @@ jobs:
           node-version: "22"
 
       - name: Install dependencies
-        # Not `npm ci`: the lockfile records optional-dep binaries for the
-        # author's platform only (see npm/cli#4828), so `npm ci` on Linux
-        # fails to resolve @rolldown/binding-linux-x64-gnu. `npm install`
-        # re-resolves optionalDependencies for the current platform.
-        run: npm install --no-audit --no-fund
+        # No committed lockfile (see npm/cli#4828 — npm pins optional
+        # binaries to the author's platform and breaks `npm ci` on Linux).
+        # A plain `npm install` re-resolves optionalDependencies for the
+        # current platform. Reproducibility is bounded by the caret
+        # ranges in package.json, which is acceptable for a CLI package.
+        run: npm install --no-audit --no-fund --no-save
 
       - name: Typecheck
         run: npm run typecheck
