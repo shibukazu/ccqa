@@ -21,8 +21,7 @@ export type RunCcqaOptions = {
 
 // Resolves which binary to invoke for `ccqa`. Controlled by CCQA_CLI env var
 // so the same E2E suite can be retargeted across migration phases:
-//   Phase 1 (default): "bun <repo>/bin/ccqa.ts"
-//   Phase 2:           "node --experimental-strip-types <repo>/bin/ccqa.ts"
+//   Phase 2 (default): "node --experimental-strip-types <repo>/bin/ccqa.ts"
 //   Phase 3:           "<repo>/dist/bin/ccqa.js"
 function resolveCcqaCommand(): { cmd: string; args: string[] } {
   const override = process.env.CCQA_CLI;
@@ -32,7 +31,10 @@ function resolveCcqaCommand(): { cmd: string; args: string[] } {
     if (!cmd) throw new Error("CCQA_CLI is empty after trim");
     return { cmd, args: rest };
   }
-  return { cmd: "bun", args: [resolve(REPO_ROOT, "bin", "ccqa.ts")] };
+  return {
+    cmd: "node",
+    args: ["--experimental-strip-types", resolve(REPO_ROOT, "bin", "ccqa.ts")],
+  };
 }
 
 export function runCcqa(

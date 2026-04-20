@@ -17,16 +17,14 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: npm ci
 
-      - name: Run unit tests
-        run: bun test src/
+      - name: Typecheck
+        run: npm run typecheck
 
-      - name: Run E2E tests
-        run: bunx vitest run tests/e2e
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: E2E tests
+        run: npm run test:e2e
