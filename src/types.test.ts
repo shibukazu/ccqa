@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect } from "vitest";
 import { TestStepSchema, TestSpecSchema, RouteStepSchema, RouteSchema } from "./types.ts";
 
 describe("TestStepSchema", () => {
