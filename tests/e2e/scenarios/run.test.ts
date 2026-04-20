@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
-import { runCcqa } from "./_helpers/cli.ts";
-import { makeFakeProject, type FakeProject } from "./_helpers/fake-project.ts";
-import { noColorEnv, stripAnsi } from "./_helpers/env.ts";
+import { runCcqa } from "../_helpers/cli.ts";
+import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
+import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
 
 describe("ccqa run", () => {
   let project: FakeProject | null = null;
@@ -13,7 +13,7 @@ describe("ccqa run", () => {
     }
   });
 
-  test("S1: passes with exit 0 on a trivially passing spec", async () => {
+  test("passes with exit 0 on a trivially passing spec", async () => {
     project = await makeFakeProject("passing-spec", { linkCcqa: true });
     const result = await runCcqa(["run", "demo/smoke"], {
       cwd: project.cwd,
@@ -24,7 +24,7 @@ describe("ccqa run", () => {
     expect(combined).toMatch(/1\/1\s+passed/);
   });
 
-  test("S2: exits non-zero and renders a failing spec entry", async () => {
+  test("exits non-zero and renders a failing spec entry", async () => {
     project = await makeFakeProject("failing-spec", { linkCcqa: true });
     const result = await runCcqa(["run", "demo/boom"], {
       cwd: project.cwd,

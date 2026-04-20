@@ -1,9 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { runCcqa } from "./_helpers/cli.ts";
-import { makeFakeProject, type FakeProject } from "./_helpers/fake-project.ts";
-import { noColorEnv, stripAnsi } from "./_helpers/env.ts";
+import { runCcqa } from "../_helpers/cli.ts";
+import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
+import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
 
 async function addSpec(cwd: string, feature: string, spec: string, body: string): Promise<void> {
   const dir = join(cwd, ".ccqa", "features", feature, "test-cases", spec);
@@ -21,7 +21,7 @@ describe("ccqa run — summary format is stable", () => {
     }
   });
 
-  test("S5: summary shows Specs/Tests counts and per-spec rows", async () => {
+  test("summary shows Specs/Tests counts and per-spec rows", async () => {
     project = await makeFakeProject("passing-spec", { linkCcqa: true });
     // Add one extra failing spec alongside the passing one so both halves of
     // the summary (passed/failed counts) show up.

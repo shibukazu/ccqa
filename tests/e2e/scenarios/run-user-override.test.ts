@@ -1,9 +1,9 @@
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { runCcqa } from "./_helpers/cli.ts";
-import { makeFakeProject, type FakeProject } from "./_helpers/fake-project.ts";
-import { noColorEnv } from "./_helpers/env.ts";
+import { runCcqa } from "../_helpers/cli.ts";
+import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
+import { noColorEnv } from "../_helpers/env.ts";
 
 // Locks in PR #12 behavior: a .ccqa/vitest.config.ts in the project takes
 // priority over the bundled config. The fixture's config wires up a
@@ -18,7 +18,7 @@ describe("ccqa run — .ccqa/vitest.config.ts overrides bundled config", () => {
     }
   });
 
-  test("S4: user override config is honored", async () => {
+  test("user override config is honored", async () => {
     project = await makeFakeProject("user-override-config", { linkCcqa: true });
     const sentinel = join(project.cwd, "sentinel.txt");
     const result = await runCcqa(["run", "demo/smoke"], {

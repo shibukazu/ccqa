@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { runCcqa } from "./_helpers/cli.ts";
-import { makeFakeProject, type FakeProject } from "./_helpers/fake-project.ts";
-import { noColorEnv, stripAnsi } from "./_helpers/env.ts";
-import { installFakeAgentBrowser } from "./_helpers/fake-ab.ts";
+import { runCcqa } from "../_helpers/cli.ts";
+import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
+import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
+import { installFakeAgentBrowser } from "../_helpers/fake-ab.ts";
 
 describe("ccqa/test-helpers — ab() integration", () => {
   let project: FakeProject | null = null;
@@ -16,7 +16,7 @@ describe("ccqa/test-helpers — ab() integration", () => {
     }
   });
 
-  test("S6: ab() spawns agent-browser with the right argv", async () => {
+  test("ab() spawns agent-browser with the right argv", async () => {
     project = await makeFakeProject("with-test-helpers", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 
@@ -34,7 +34,7 @@ describe("ccqa/test-helpers — ab() integration", () => {
     expect(JSON.parse(lines[0]!)).toEqual(["click", "[data-test=btn]"]);
   });
 
-  test("S7: agent-browser nonzero exit surfaces as a test failure", async () => {
+  test("agent-browser nonzero exit surfaces as a test failure", async () => {
     project = await makeFakeProject("with-test-helpers", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 
