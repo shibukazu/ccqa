@@ -2,14 +2,20 @@ import { spawn } from "node:child_process";
 import { describe, expect, test } from "vitest";
 import { getRepoRoot } from "../_helpers/cli.ts";
 
-// Smoke-tests that the shebang line in bin/ccqa.ts is honored — i.e. the
-// shell can launch the CLI without anyone explicitly prefixing "bun" or
-// "node". In Phase 3 this flips to ./dist/bin/ccqa.js and becomes the
-// contract test for the packaged artifact.
-describe.skipIf(process.platform === "win32")("bin/ccqa shebang", () => {
+// Phase 2: the shebang in bin/ccqa.ts is `#!/usr/bin/env node`, but the file
+// is still .ts, so Node cannot execute it via the shebang without the type-
+// stripping flag. We therefore invoke it explicitly as
+// `node --experimental-strip-types ./bin/ccqa.ts` here. Phase 3 will emit
+// `dist/bin/ccqa.js` (plain JS) and flip this test to target that file via
+// the shebang directly.
+describe.skipIf(process.platform === "win32")("bin/ccqa invocation", () => {
   test("--version exits 0 and prints a semver", async () => {
     const repoRoot = getRepoRoot();
-    const { stdout, exitCode } = await run(`${repoRoot}/bin/ccqa.ts`, ["--version"]);
+    const { stdout, exitCode } = await run("node", [
+      "--experimental-strip-types",
+      `${repoRoot}/bin/ccqa.ts`,
+      "--version",
+    ]);
     expect(exitCode).toBe(0);
     expect(stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });

@@ -12,45 +12,16 @@ export type FakeProject = {
   cleanup: () => Promise<void>;
 };
 
-// Packages we symlink from the repo's node_modules into the fixture so vitest
-// can resolve its own runtime (and transitive deps) when executing specs
-// inside the fixture cwd. We rely on bun's flat node_modules layout here.
-const SHARED_DEPS = [
-  "vitest",
-  "vite",
-  "vite-node",
-  "@vitest",
-  "@vite",
-  "@rollup",
-  "@esbuild",
-  "@esbuild-kit",
-  "esbuild",
-  "rollup",
-  "rolldown",
-  "tinyexec",
-  "tinypool",
-  "tinyrainbow",
-  "tinybench",
-  "tinyspy",
-  "tinyglobby",
-  "magic-string",
-  "chai",
-  "expect-type",
-  "pathe",
-  "picomatch",
-  "std-env",
-  "why-is-node-running",
-  "loupe",
-  "@types",
-  "strip-literal",
-  "cac",
-  "birpc",
-];
-
 // Copies a fixture directory into a fresh temp dir so each test runs in
-// isolation. When `linkCcqa` is true we also symlink:
-//   - node_modules/ccqa → repo root (so fixture specs can import ccqa/test-helpers)
-//   - node_modules/<shared dep> → repo's installed copy (so vitest runs)
+// isolation. When `linkCcqa` is true we also populate node_modules with
+// the minimum needed for `ccqa run` to work inside the fixture:
+//   - node_modules/ccqa: materialized (not symlinked) copy of the repo's
+//     bin/ + src/ + package.json. Symlinking would let Node follow the
+//     link to REPO_ROOT and resolve peer deps (agent-browser) from the
+//     repo's node_modules, bypassing any fakes under <fixture>/node_modules.
+//   - node_modules/vitest: symlink to the repo's installed copy. Under
+//     pnpm the repo link itself points at .pnpm/<pkg>/node_modules/vitest,
+//     so vitest's own transitive deps resolve without us enumerating them.
 export async function makeFakeProject(
   fixtureName: string,
   opts: { linkCcqa?: boolean } = {},
@@ -61,29 +32,12 @@ export async function makeFakeProject(
 
   if (opts.linkCcqa) {
     const nm = join(cwd, "node_modules");
-    const binDir = join(nm, ".bin");
-    await mkdir(binDir, { recursive: true });
-    // Symlink vitest + transitive deps from the repo's node_modules so vitest
-    // can run inside the fixture's cwd without a full install.
-    for (const dep of SHARED_DEPS) {
-      await symlink(
-        join(REPO_ROOT, "node_modules", dep),
-        join(nm, dep),
-        "dir",
-      ).catch(() => {});
-    }
-    // Materialize ccqa as a real (non-symlink) package inside the fixture
-    // so Node's module resolution looks up peer deps (agent-browser) from
-    // the fixture's node_modules rather than the repo's node_modules. A
-    // symlink would be resolved to the repo and peer lookup would walk up
-    // from there, bypassing any fakes we install under <fixture>/node_modules.
+    await mkdir(nm, { recursive: true });
     await materializeCcqaPackage(join(nm, "ccqa"));
-    // .bin/vitest so `bunx vitest` / `npx vitest` resolves without hitting
-    // the network. Without this, bunx will silently download vitest again.
     await symlink(
-      join(REPO_ROOT, "node_modules", ".bin", "vitest"),
-      join(binDir, "vitest"),
-      "file",
+      join(REPO_ROOT, "node_modules", "vitest"),
+      join(nm, "vitest"),
+      "dir",
     ).catch(() => {});
   }
 

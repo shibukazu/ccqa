@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect } from "vitest";
 import { parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, routeToMarkdown } from "./index.ts";
 import type { Route } from "../types.ts";
 

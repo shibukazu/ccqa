@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, Options, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import * as log from "../cli/logger.ts";
@@ -105,7 +106,7 @@ export async function invokeClaudeStreaming(
   let result = "";
   let isError = false;
 
-  const q = query({ prompt, options: sdkOptions });
+  const q = await buildMessageStream(prompt, sdkOptions);
 
   for await (const msg of q) {
     onEvent(msg);
@@ -233,6 +234,26 @@ export function extractAbActionFromBashCommand(cmd: string): string | null {
       return null;
     default:
       return null;
+  }
+}
+
+// Chooses between the real Claude Agent SDK and a JSONL replay. The mock
+// path is guarded behind an env var so production builds never take it.
+async function buildMessageStream(
+  prompt: string,
+  options: Options,
+): Promise<AsyncIterable<SDKMessage>> {
+  const mockFile = process.env["CCQA_CLAUDE_MOCK_FILE"];
+  if (mockFile) return replayMockMessages(mockFile);
+  return query({ prompt, options });
+}
+
+async function* replayMockMessages(path: string): AsyncIterable<SDKMessage> {
+  const raw = await readFile(path, "utf8");
+  for (const line of raw.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    yield JSON.parse(trimmed) as SDKMessage;
   }
 }
 

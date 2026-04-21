@@ -1,5 +1,11 @@
-# dependencies (bun install)
+# dependencies
 node_modules
+
+# pnpm-lock.yaml is the canonical lockfile and IS tracked. bun.lock is
+# local-dev convenience only. package-lock.json is blocked to prevent
+# accidental checkins (pnpm is the repo's package manager).
+bun.lock
+package-lock.json
 
 # output
 out

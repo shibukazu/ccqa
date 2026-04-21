@@ -15,5 +15,5 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true
   },
-  "include": ["bin/**/*", "src/**/*"]
+  "include": ["bin/**/*", "src/**/*", "tests/**/*", "vitest.config.ts"]
 }
