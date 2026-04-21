@@ -1,5 +1,4 @@
 import { readFile, writeFile, stat, unlink } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { Command } from "commander";
 import {
@@ -13,13 +12,10 @@ import { actionsToScript } from "../codegen/actions-to-script.ts";
 import { buildCleanupPrompt, buildAutoFixPrompt } from "../prompts/codegen.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { parseSetupSpec } from "../spec/parser.ts";
+import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
 import type { TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
-
-const BUNDLED_VITEST_CONFIG = fileURLToPath(
-  new URL("../runtime/vitest.config.ts", import.meta.url),
-);
 
 export const generateSetupCommand = new Command("generate-setup")
   .argument("<name>", "Setup name to generate (e.g. login)")
@@ -189,7 +185,7 @@ async function runVitest(scriptPath: string): Promise<{ exitCode: number; output
   const { exitCode, stdout, stderr } = await spawnVitestCaptured([
     "run",
     "--config",
-    BUNDLED_VITEST_CONFIG,
+    bundledVitestConfigPath(),
     scriptPath,
   ]);
   const currentScript = await readFile(scriptPath, "utf8");
