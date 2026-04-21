@@ -3,14 +3,14 @@ import { accessSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { getRepoRoot } from "../_helpers/cli.ts";
 
-// Contract test for the shipped CLI artifact. dist/bin/ccqa.js is emitted
+// Contract test for the shipped CLI artifact. dist/bin/ccqa.mjs is emitted
 // by `pnpm build` with a #!/usr/bin/env node shebang and chmod 0o755, so
 // invoking it directly (no explicit "node" prefix) is the same code path
 // a consumer hits after `pnpm add -D ccqa && ./node_modules/.bin/ccqa`.
 // Skipped if dist/ is not built yet so the rest of the E2E suite stays
 // runnable without a mandatory build step.
 const repoRoot = getRepoRoot();
-const distBin = `${repoRoot}/dist/bin/ccqa.js`;
+const distBin = `${repoRoot}/dist/bin/ccqa.mjs`;
 const distBuilt = (() => {
   try {
     accessSync(distBin);

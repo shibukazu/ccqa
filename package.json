@@ -12,12 +12,12 @@
     "url": "https://github.com/shibukazu/ccqa/issues"
   },
   "bin": {
-    "ccqa": "./dist/bin/ccqa.js"
+    "ccqa": "./dist/bin/ccqa.mjs"
   },
   "exports": {
     "./test-helpers": {
-      "types": "./dist/runtime/test-helpers.d.ts",
-      "import": "./dist/runtime/test-helpers.js"
+      "types": "./dist/runtime/test-helpers.d.mts",
+      "import": "./dist/runtime/test-helpers.mjs"
     }
   },
   "files": [

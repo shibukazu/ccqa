@@ -15,7 +15,7 @@ import { installFakeAgentBrowser } from "../_helpers/fake-ab.ts";
 // Skipped when dist/ or pnpm is missing, so contributors who never built
 // the package locally still see a green suite.
 const repoRoot = getRepoRoot();
-const distBin = join(repoRoot, "dist/bin/ccqa.js");
+const distBin = join(repoRoot, "dist/bin/ccqa.mjs");
 
 const distBuilt = (() => {
   try {

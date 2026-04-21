@@ -3,10 +3,15 @@ import { resolve } from "node:path";
 import { defineConfig } from "tsdown";
 
 // ccqa has two public surfaces:
-//   1. the `ccqa` CLI binary (bin/ccqa.ts) — fully bundled into dist/bin/ccqa.js
-//   2. the `ccqa/test-helpers` subpath export — shipped as dist/runtime/test-helpers.js + .d.ts
-// plus the vitest config used at runtime by `ccqa run --config <this>`, kept
-// as a separate emitted file so it stays loadable by vitest (not bundled in).
+//   1. the `ccqa` CLI binary (bin/ccqa.ts)   → dist/bin/ccqa.mjs
+//   2. the `ccqa/test-helpers` subpath export → dist/runtime/test-helpers.mjs + .d.mts
+// plus the vitest config used at runtime by `ccqa run --config <this>`
+// emitted as dist/runtime/vitest.config.mjs (not bundled in).
+//
+// We keep the default `.mjs` extension rather than renaming to `.js`:
+// - Explicit ESM marker independent of any package.json "type" field
+// - Avoids the tsdown shebang/banner double-emit that happens with .js
+// - Matches how most modern Node CLIs (biome, tsdown itself, ...) ship
 export default defineConfig({
   entry: {
     "bin/ccqa": "./bin/ccqa.ts",
@@ -31,19 +36,15 @@ export default defineConfig({
     "vitest/config",
     "agent-browser",
   ],
-  // Emit a shebang only into the CLI entry so `./dist/bin/ccqa.js` is
-  // directly executable. Other entries stay plain ESM modules.
-  outputOptions: {
-    banner(chunk) {
-      return chunk.name === "bin/ccqa" ? "#!/usr/bin/env node" : "";
-    },
-  },
+  // tsdown injects #!/usr/bin/env node into .mjs outputs that come from
+  // source files starting with a shebang. Our bin/ccqa.ts already has one,
+  // so no banner option is needed here.
   hooks: {
     "build:done": () => {
       // Copy a trimmed package.json into dist/ so:
-      //   - CLI's own version lookup (readFileSync(new URL("../package.json", import.meta.url)))
-      //     resolves correctly from dist/cli/index.js.
-      //   - Downstream tooling that peeks at the package via dist/package.json sees real metadata.
+      //   - CLI's version lookup (readFileSync(new URL("../package.json", import.meta.url)))
+      //     resolves correctly from dist/cli/index.mjs
+      //   - downstream tooling sees a valid manifest inside dist/
       const root = process.cwd();
       const pkg = JSON.parse(
         readFileSync(resolve(root, "package.json"), "utf8"),
@@ -57,7 +58,7 @@ export default defineConfig({
         JSON.stringify(pkg, null, 2) + "\n",
         "utf8",
       );
-      chmodSync(resolve(root, "dist/bin/ccqa.js"), 0o755);
+      chmodSync(resolve(root, "dist/bin/ccqa.mjs"), 0o755);
     },
   },
 });
