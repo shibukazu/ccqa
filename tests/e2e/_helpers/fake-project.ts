@@ -54,19 +54,28 @@ export function fixturePath(fixtureName: string): string {
 }
 
 // Copies the ccqa package contents that consumers actually import into a
-// fresh directory under the fixture's node_modules. We copy the runtime
-// source (needed for `ccqa/test-helpers`) plus package.json (so `exports`
-// is honored), but nothing else — specifically NOT `node_modules`. This
-// matches the layout after a real `pnpm add ccqa` install and makes Node's
-// createRequire resolve peer packages from the fixture, not the repo.
+// fresh directory under the fixture's node_modules. Symlinking would let
+// Node resolve peer deps (agent-browser) from the repo's node_modules,
+// bypassing any fakes the test sets up — so we copy instead.
+//
+// We copy bin/ + src/ and rewrite package.json's bin/exports to point at
+// those source files (not the dist/ paths the real published manifest
+// uses). This lets the E2E suite exercise the CLI without requiring a
+// fresh `pnpm build` to land dist/ first. The install-smoke test is the
+// one scenario that validates the real dist/ distribution path.
 async function materializeCcqaPackage(destDir: string): Promise<void> {
   await mkdir(destDir, { recursive: true });
   const pkgJson = JSON.parse(
     await readFile(join(REPO_ROOT, "package.json"), "utf8"),
   ) as Record<string, unknown>;
-  // Strip dev-only fields and redirect to the copied src/
   delete pkgJson.devDependencies;
   delete pkgJson.scripts;
+  // Redirect to the copied source tree so fixture specs that import
+  // "ccqa/test-helpers" resolve to src/runtime/test-helpers.ts, which
+  // Node can strip at runtime via --experimental-strip-types.
+  pkgJson.bin = { ccqa: "./bin/ccqa.ts" };
+  pkgJson.exports = { "./test-helpers": "./src/runtime/test-helpers.ts" };
+  delete pkgJson.files;
   await writeFile(
     join(destDir, "package.json"),
     JSON.stringify(pkgJson, null, 2),

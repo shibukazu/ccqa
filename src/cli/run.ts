@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
@@ -10,16 +9,13 @@ import {
   listAllSpecs,
   listSpecsForFeature,
 } from "../store/index.ts";
+import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
 import * as log from "./logger.ts";
 
-// Bundled vitest config used when the host project has no .ccqa/vitest.config.ts.
 // Passing --config to vitest prevents it from discovering the host's
 // vitest.config.ts and inheriting setupFiles/environment/aliases that were
 // never meant to apply to ccqa's browser-driving specs.
-const BUNDLED_VITEST_CONFIG = fileURLToPath(
-  new URL("../runtime/vitest.config.ts", import.meta.url),
-);
 const USER_VITEST_CONFIG = resolve(".ccqa/vitest.config.ts");
 
 async function resolveVitestConfig(): Promise<string> {
@@ -27,7 +23,7 @@ async function resolveVitestConfig(): Promise<string> {
     await access(USER_VITEST_CONFIG);
     return USER_VITEST_CONFIG;
   } catch {
-    return BUNDLED_VITEST_CONFIG;
+    return bundledVitestConfigPath();
   }
 }
 

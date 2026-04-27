@@ -1,25 +1,35 @@
 import { spawn } from "node:child_process";
+import { accessSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 import { getRepoRoot } from "../_helpers/cli.ts";
 
-// Phase 2: the shebang in bin/ccqa.ts is `#!/usr/bin/env node`, but the file
-// is still .ts, so Node cannot execute it via the shebang without the type-
-// stripping flag. We therefore invoke it explicitly as
-// `node --experimental-strip-types ./bin/ccqa.ts` here. Phase 3 will emit
-// `dist/bin/ccqa.js` (plain JS) and flip this test to target that file via
-// the shebang directly.
-describe.skipIf(process.platform === "win32")("bin/ccqa invocation", () => {
-  test("--version exits 0 and prints a semver", async () => {
-    const repoRoot = getRepoRoot();
-    const { stdout, exitCode } = await run("node", [
-      "--experimental-strip-types",
-      `${repoRoot}/bin/ccqa.ts`,
-      "--version",
-    ]);
-    expect(exitCode).toBe(0);
-    expect(stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
-  });
-});
+// Contract test for the shipped CLI artifact. dist/bin/ccqa.mjs is emitted
+// by `pnpm build` with a #!/usr/bin/env node shebang and chmod 0o755, so
+// invoking it directly (no explicit "node" prefix) is the same code path
+// a consumer hits after `pnpm add -D ccqa && ./node_modules/.bin/ccqa`.
+// Skipped if dist/ is not built yet so the rest of the E2E suite stays
+// runnable without a mandatory build step.
+const repoRoot = getRepoRoot();
+const distBin = `${repoRoot}/dist/bin/ccqa.mjs`;
+const distBuilt = (() => {
+  try {
+    accessSync(distBin);
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.skipIf(process.platform === "win32" || !distBuilt)(
+  "bin/ccqa shebang",
+  () => {
+    test("--version exits 0 and prints a semver", async () => {
+      const { stdout, exitCode } = await run(distBin, ["--version"]);
+      expect(exitCode).toBe(0);
+      expect(stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+    });
+  },
+);
 
 function run(
   cmd: string,

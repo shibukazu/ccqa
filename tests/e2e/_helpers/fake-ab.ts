@@ -1,14 +1,23 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-// Writes a fake `agent-browser` npm package into <projectCwd>/node_modules/
-// so that ccqa/test-helpers' `createRequire().resolve("agent-browser/...")`
-// locates this stub instead of the real browser driver.
+// Writes a fake `agent-browser` npm package into a target directory so that
+// ccqa/test-helpers' `createRequire().resolve("agent-browser/...")` locates
+// this stub instead of the real browser driver.
 //
 // The stub logs its argv (JSON-serialized, one line per invocation) to the
 // path in $CCQA_FAKE_AB_LOG and exits with $CCQA_FAKE_AB_EXIT (default 0).
-export async function installFakeAgentBrowser(projectCwd: string): Promise<void> {
-  const pkgDir = join(projectCwd, "node_modules", "agent-browser");
+//
+// If `targetDir` is provided, the package is materialized there directly
+// (used by install-smoke, which then installs it via `file:` so pnpm peer-
+// links it into ccqa's isolated store). Otherwise it's written into
+// <projectCwd>/node_modules/agent-browser, which is what the in-tree fixture
+// flow uses (no real install, just drop the package next to ccqa).
+export async function installFakeAgentBrowser(
+  projectCwd: string,
+  targetDir?: string,
+): Promise<void> {
+  const pkgDir = targetDir ?? join(projectCwd, "node_modules", "agent-browser");
   const binDir = join(pkgDir, "bin");
   await mkdir(binDir, { recursive: true });
 

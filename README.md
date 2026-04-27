@@ -21,21 +21,26 @@ flowchart LR
 
 ## Install
 
+Add ccqa as a dev dependency in your project:
+
 ```bash
-bunx ccqa trace tasks/create-and-complete
+pnpm add -D ccqa vitest
+# or
+npm install -D ccqa vitest
 ```
 
-Or install globally:
+Then invoke the CLI via your package runner:
 
 ```bash
-bun add -g ccqa
+pnpm exec ccqa trace tasks/create-and-complete
+# or
+npx ccqa trace tasks/create-and-complete
 ```
 
-Requires [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [agent-browser](https://github.com/vercel-labs/agent-browser) installed globally:
+ccqa requires Node.js **20+** at runtime. The peer dependencies [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [agent-browser](https://github.com/vercel-labs/agent-browser) must also be installed:
 
 ```bash
-npm install -g @anthropic-ai/claude-code
-bun add -g agent-browser
+pnpm add -D @anthropic-ai/claude-code agent-browser
 ```
 
 ## Usage
@@ -181,7 +186,7 @@ When you run `ccqa trace` or `ccqa generate`, the setup's test body is loaded, p
 ```typescript
 // .ccqa/features/tasks/test-cases/create-and-complete/test.spec.ts
 import { test } from "vitest";
-import { ab, abWait, abAssertUrl, abAssertTextVisible, abAssertEnabled } from "/path/to/test-helpers.ts";
+import { ab, abWait, abAssertUrl, abAssertTextVisible, abAssertEnabled } from "ccqa/test-helpers";
 
 process.env.AGENT_BROWSER_SESSION = `ccqa-run-${Date.now()}`;
 

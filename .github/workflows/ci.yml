@@ -27,8 +27,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Build dist/
+        run: pnpm build
+
       - name: Unit tests
         run: pnpm test:unit
 
-      - name: E2E tests
+      - name: E2E tests (includes install-smoke since dist/ is built)
         run: pnpm test:e2e

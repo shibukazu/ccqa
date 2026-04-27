@@ -12,14 +12,16 @@
     "url": "https://github.com/shibukazu/ccqa/issues"
   },
   "bin": {
-    "ccqa": "./bin/ccqa.ts"
+    "ccqa": "./dist/bin/ccqa.mjs"
   },
   "exports": {
-    "./test-helpers": "./src/runtime/test-helpers.ts"
+    "./test-helpers": {
+      "types": "./dist/runtime/test-helpers.d.mts",
+      "import": "./dist/runtime/test-helpers.mjs"
+    }
   },
   "files": [
-    "bin/",
-    "src/"
+    "dist/"
   ],
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.87",
@@ -29,8 +31,8 @@
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "vitest": ">=2.0.0",
-    "agent-browser": "*"
+    "agent-browser": "*",
+    "vitest": ">=2.0.0"
   },
   "peerDependenciesMeta": {
     "agent-browser": {
@@ -42,15 +44,18 @@
   },
   "devDependencies": {
     "@types/node": "^22",
+    "tsdown": "^0.21.9",
     "typescript": "^5",
     "vitest": "^4.1.2"
   },
   "scripts": {
+    "build": "tsdown",
     "dev": "node --experimental-strip-types ./bin/ccqa.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run src/",
-    "test:e2e": "vitest run tests/e2e"
+    "test:e2e": "vitest run tests/e2e",
+    "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
   },
   "engines": {
     "node": ">=20"

@@ -35,16 +35,15 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: pnpm
           registry-url: "https://registry.npmjs.org"
-
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
 
       - name: Configure git
         run: |
@@ -52,10 +51,16 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build dist/
+        run: pnpm build
 
       - name: Run tests
-        run: bun test src/
+        run: pnpm test
 
       - name: Bump version
         id: bump
@@ -63,6 +68,9 @@ jobs:
           new_version=$(npx -y npm@latest version "$BUMP" --no-git-tag-version)
           echo "version=${new_version}" >> "$GITHUB_OUTPUT"
           echo "Bumped to ${new_version}"
+
+      - name: Rebuild dist/ with bumped version
+        run: pnpm build
 
       - name: Commit and tag
         env:
