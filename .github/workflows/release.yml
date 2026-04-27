@@ -65,7 +65,7 @@ jobs:
       - name: Bump version
         id: bump
         run: |
-          new_version=$(npx -y npm@latest version "$BUMP" --no-git-tag-version)
+          new_version=$(pnpm version "$BUMP" --no-git-tag-version)
           echo "version=${new_version}" >> "$GITHUB_OUTPUT"
           echo "Bumped to ${new_version}"
 
@@ -90,8 +90,8 @@ jobs:
 
       - name: Publish to npm (trusted publishing + provenance)
         if: ${{ env.DRY_RUN != 'true' }}
-        run: npx -y npm@latest publish --provenance --access public
+        run: pnpm publish --provenance --access public --no-git-checks
 
       - name: Dry-run publish
         if: ${{ env.DRY_RUN == 'true' }}
-        run: npx -y npm@latest publish --dry-run --access public
+        run: pnpm publish --dry-run --access public --no-git-checks
