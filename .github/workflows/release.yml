@@ -88,18 +88,16 @@ jobs:
           git push origin HEAD:main
           git push origin "${VERSION}"
 
-      # Use `npm publish` (not `pnpm publish`) for the actual upload step.
-      # npm 11.5+ has first-class support for npm Trusted Publishers via
-      # OIDC, and that's how this package was originally configured at
-      # npmjs.com (Settings -> Trusted Publisher -> release.yml). Wrapping
-      # the publish in `pnpm publish` was returning E404 because the OIDC
-      # token wasn't being honored on the registry side. The
-      # prepublishOnly hook runs either way, so typecheck/test/build still
-      # gate the publish.
+      # IMPORTANT: invoke npm via `npx -y npm@latest`, not the bundled
+      # npm that ships with the runner's Node toolchain. npm Trusted
+      # Publishers (OIDC) requires npm 11.5+; the runner ships npm
+      # 10.9.7, which does not propagate the OIDC token in the form the
+      # registry expects and PUTs return E404. v0.1.x releases worked
+      # because that workflow used `npx -y npm@latest publish` directly.
       - name: Publish to npm (trusted publishing + provenance)
         if: ${{ env.DRY_RUN != 'true' }}
-        run: npm publish --provenance --access public
+        run: npx -y npm@latest publish --provenance --access public
 
       - name: Dry-run publish
         if: ${{ env.DRY_RUN == 'true' }}
-        run: npm publish --dry-run --access public
+        run: npx -y npm@latest publish --dry-run --access public
