@@ -17,6 +17,7 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
+import { envRefsToJsExpression, hasEnvRef } from "../runtime/env-vars.ts";
 import type { TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -148,9 +149,32 @@ function extractTestBody(script: string): string {
 function replacePlaceholders(body: string, params: Record<string, string>): string {
   let result = body;
   for (const [key, value] of Object.entries(params)) {
-    result = result.replaceAll(`{{${key}}}`, value);
+    if (hasEnvRef(value)) {
+      // Env-var reference: rewrite the surrounding string literal so the
+      // generated test reads the secret from process.env at run time
+      // instead of baking the value into the script. The placeholder
+      // appears wrapped in either "..." or '...' inside the setup script
+      // (e.g. ab("fill", "...", "{{password}}");), and we replace the
+      // whole literal with a JS template-literal expression.
+      const expr = envRefsToJsExpression(value);
+      // Match `"{{key}}"` or `'{{key}}'` and replace the entire literal.
+      const re = new RegExp(`(["'])\\{\\{${escapeRegExp(key)}\\}\\}\\1`, "g");
+      result = result.replace(re, expr);
+      // Fallback: any remaining bare {{key}} (e.g. inside larger strings)
+      // gets replaced with the resolved env value at generate time. This
+      // path keeps unrelated occurrences working but does NOT scrub the
+      // secret — keep env refs to standalone string literals if you care
+      // about that.
+      result = result.replaceAll(`{{${key}}}`, value);
+    } else {
+      result = result.replaceAll(`{{${key}}}`, value);
+    }
   }
   return result;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // --- Auto-fix ---

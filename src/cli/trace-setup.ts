@@ -5,6 +5,8 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ensureCcqaDir, readSetupSpecFile, saveSetupActions, saveSetupRoute } from "../store/index.ts";
 import { parseSetupSpec } from "../spec/parser.ts";
 import { parseAbAction, parseStatusLine, parseRouteStep } from "./trace.ts";
+import { pathWithAgentBrowserShim } from "../runtime/agent-browser-bin.ts";
+import { hasEnvRef, resolveEnvRefs } from "../runtime/env-vars.ts";
 import type { Route, RouteStep, TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -23,8 +25,15 @@ async function runTraceSetup(name: string): Promise<void> {
   const specContent = await readSetupSpecFile(name);
   const spec = parseSetupSpec(specContent);
 
-  // Replace {{key}} with dummy values for actual browser operation
+  // Replace {{key}} with dummy values for actual browser operation. Env-var
+  // references inside dummies (e.g. dummy: "${AUTH_PASSWORD}") are resolved
+  // here so the browser receives real credentials.
   const resolvedSpec = replacePlaceholdersWithDummies(spec);
+
+  // Reverse map of expanded-secret -> "${VAR}" placeholder, used to scrub
+  // recorded actions before they hit actions.json. Built only for dummies
+  // that contain env refs and resolve to a non-empty value.
+  const secretsToScrub = buildSecretsToScrub(spec);
 
   log.meta("setup", spec.title);
   log.meta("steps", spec.steps.length);
@@ -48,8 +57,9 @@ async function runTraceSetup(name: string): Promise<void> {
       prompt,
       systemPrompt,
       allowedTools: ["Bash(*)", "Read", "Grep", "Glob"],
+      env: { PATH: pathWithAgentBrowserShim(process.env["PATH"]), ANTHROPIC_API_KEY: "" },
       onAbAction: (abAction: string) => {
-        const action = parseAbAction(abAction);
+        const action = parseAbAction(scrubSecrets(abAction, secretsToScrub));
         if (action) traceActions.push(action);
       },
       onAbActionFailed: () => {
@@ -75,7 +85,7 @@ async function runTraceSetup(name: string): Promise<void> {
               if (routeStep.status === "FAILED") overallStatus = "failed";
             }
           } else if (trimmed.startsWith("AB_ACTION|snapshot|") || trimmed.startsWith("AB_ACTION|assert|")) {
-            const action = parseAbAction(trimmed);
+            const action = parseAbAction(scrubSecrets(trimmed, secretsToScrub));
             if (action) traceActions.push(action);
           }
         }
@@ -108,7 +118,10 @@ function replacePlaceholdersWithDummies(spec: ReturnType<typeof parseSetupSpec>)
   const resolve = (text: string): string => {
     let result = text;
     for (const [key, def] of Object.entries(dummies)) {
-      result = result.replaceAll(`{{${key}}}`, def.dummy);
+      // Resolve env refs inside the dummy value so prompts handed to Claude
+      // (and thus agent-browser) receive real credentials when the user
+      // wrote `dummy: "${AUTH_PASSWORD}"`.
+      result = result.replaceAll(`{{${key}}}`, resolveEnvRefs(def.dummy));
     }
     return result;
   };
@@ -121,4 +134,40 @@ function replacePlaceholdersWithDummies(spec: ReturnType<typeof parseSetupSpec>)
       expected: resolve(step.expected),
     })),
   };
+}
+
+/**
+ * Build the substitution map used to scrub real secret values out of
+ * recorded actions before they are written to actions.json.
+ *
+ * For each placeholder whose dummy contains env refs, store
+ *   <resolved-value> -> <original ${VAR} string>
+ * so that an `ab fill ... <secret>` line records the placeholder string
+ * instead of the secret. Empty resolved values are skipped — they would
+ * otherwise replace incidental empty strings in the recorded actions.
+ */
+function buildSecretsToScrub(
+  spec: ReturnType<typeof parseSetupSpec>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!spec.placeholders) return map;
+  const dummies = spec.placeholders as Record<string, { dummy: string; description?: string }>;
+  for (const def of Object.values(dummies)) {
+    if (!hasEnvRef(def.dummy)) continue;
+    const resolved = resolveEnvRefs(def.dummy);
+    if (!resolved) continue;
+    map.set(resolved, def.dummy);
+  }
+  return map;
+}
+
+/** Replace every occurrence of a recorded secret with its `${VAR}` placeholder. */
+function scrubSecrets(line: string, secrets: Map<string, string>): string {
+  if (secrets.size === 0) return line;
+  let result = line;
+  for (const [secret, placeholder] of secrets) {
+    if (!result.includes(secret)) continue;
+    result = result.split(secret).join(placeholder);
+  }
+  return result;
 }

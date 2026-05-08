@@ -9,6 +9,7 @@ import { parseTestSpec } from "../spec/parser.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
 import { pathWithAgentBrowserShim } from "../runtime/agent-browser-bin.ts";
+import { resolveEnvRefs } from "../runtime/env-vars.ts";
 import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -143,9 +144,12 @@ async function runSetups(
       throw new Error(`Setup test script not found: ${scriptPath}. Run \`ccqa generate-setup ${ref.name}\` first.`);
     });
 
-    // Replace placeholders with params
+    // Replace placeholders with params. Env-var references like ${AUTH_PASSWORD}
+    // are resolved at this point so the spawned setup test sees real values
+    // — the original ${VAR} string never leaves params and never makes it
+    // into recorded artifacts (actions.json, route.md).
     for (const [key, value] of Object.entries(ref.params ?? {})) {
-      script = script.replaceAll(`{{${key}}}`, value);
+      script = script.replaceAll(`{{${key}}}`, resolveEnvRefs(value));
     }
 
     // Fix the session name to share with the trace phase
