@@ -14,6 +14,7 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { parseSetupSpec } from "../spec/parser.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
+import { hasEnvRef, resolveEnvRefs } from "../runtime/env-vars.ts";
 import type { TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -63,8 +64,13 @@ async function runGenerateSetup(name: string, maxRetries: number, fromDummy: boo
   }
   log.blank();
 
-  // Phase 2: Run vitest on test.dummy.spec.ts with auto-fix
-  let { exitCode, output, currentScript } = await runVitest(dummyPath);
+  // Phase 2: Run vitest on test.dummy.spec.ts with auto-fix.
+  //
+  // The script generated from actions.json keeps `${VAR}` env refs as
+  // literal text (so the recorded artifacts stay free of secrets). To
+  // actually validate the script we need a transient resolved copy that
+  // hands real credentials to agent-browser.
+  let { exitCode, output, currentScript } = await runVitestResolved(dummyPath);
 
   if (exitCode !== 0) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
@@ -81,7 +87,7 @@ async function runGenerateSetup(name: string, maxRetries: number, fromDummy: boo
       log.meta("saved", dummyPath);
       log.blank();
 
-      ({ exitCode, output, currentScript } = await runVitest(dummyPath));
+      ({ exitCode, output, currentScript } = await runVitestResolved(dummyPath));
       if (exitCode === 0) break;
     }
 
@@ -193,6 +199,39 @@ async function runVitest(scriptPath: string): Promise<{ exitCode: number; output
   process.stdout.write(stdout);
   if (stderr) process.stderr.write(stderr);
   return { exitCode, output: stdout + stderr, currentScript };
+}
+
+/**
+ * Run vitest on `test.dummy.spec.ts`, but transparently expand any `${VAR}`
+ * env refs to real values for the duration of the run. The original file is
+ * preserved unchanged so subsequent reverse-replace still sees the env-ref
+ * literals. Auto-fix edits the original file (via writeFile in callers), so
+ * we always re-read it before each invocation.
+ */
+async function runVitestResolved(
+  scriptPath: string,
+): Promise<{ exitCode: number; output: string; currentScript: string }> {
+  const original = await readFile(scriptPath, "utf8");
+  if (!hasEnvRef(original)) {
+    // No env refs — nothing to resolve, run the file directly.
+    return runVitest(scriptPath);
+  }
+
+  const tmpPath = scriptPath.replace(/\.ts$/, ".__resolved.spec.ts");
+  await writeFile(tmpPath, resolveEnvRefs(original), "utf-8");
+  try {
+    const { exitCode, stdout, stderr } = await spawnVitestCaptured([
+      "run",
+      "--config",
+      bundledVitestConfigPath(),
+      tmpPath,
+    ]);
+    process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+    return { exitCode, output: stdout + stderr, currentScript: original };
+  } finally {
+    await unlink(tmpPath).catch(() => {});
+  }
 }
 
 async function cleanupActions(actions: TraceAction[]): Promise<TraceAction[]> {
