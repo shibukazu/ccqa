@@ -11,14 +11,33 @@ const AB = require.resolve("agent-browser/bin/agent-browser.js");
 type Result = { status: number | null; stdout: string; stderr: string };
 
 // agent-browser surfaces EAGAIN (os error 35 / "Resource temporarily
-// unavailable") when the daemon's state file is being written by a concurrent
-// command and the reader hits the filesystem mid-flush. The daemon usually
-// settles within tens-to-hundreds of ms, so a few short retries hide the
-// flake without masking real failures (selectors that genuinely don't match,
-// timeouts, etc).
+// unavailable") when its state file is being written by a concurrent
+// command and the reader hits the filesystem mid-flush. The flake is most
+// severe right after `open` while a fresh Chrome instance is booting —
+// the daemon's own internal retry budget (~ a couple of seconds) regularly
+// exhausts before the state file stabilises.
+//
+// We wrap spawnSync with an outer retry loop that polls for up to ~30s
+// before giving up. Real failures (selector mismatches, true timeouts,
+// non-zero exits without the EAGAIN signature) are returned on the first
+// attempt — we only loop when stdout/stderr explicitly mentions the
+// EAGAIN signature.
 const EAGAIN_PATTERN = /Resource temporarily unavailable|os error 35/i;
-const EAGAIN_RETRIES = 3;
-const EAGAIN_BACKOFF_MS = [200, 500, 1000] as const;
+const EAGAIN_TOTAL_BUDGET_MS = 30_000;
+const EAGAIN_BACKOFF_MS = [
+  // Quick polls cover the common case (daemon settles in < 2s).
+  100, 200, 300, 500, 700, 1000,
+  // Then back off slowly through the budget for stubborn cases (a few
+  // seconds of state-file contention, especially during fresh `open`).
+  1500, 2000, 2500, 3000, 3000, 3000, 3000, 3000, 3000,
+] as const;
+
+// `ab open` returns as soon as the navigation is dispatched, but the
+// daemon keeps writing to its state file for a beat afterwards. Without
+// this short pause the very next assertion routinely hits EAGAIN even
+// with the retry loop above. 600ms covers the typical settle time
+// observed in practice without adding noticeable latency to the test.
+const POST_OPEN_SETTLE_MS = 600;
 
 function sleepSync(ms: number): void {
   const buf = new SharedArrayBuffer(4);
@@ -36,11 +55,15 @@ function spawnABOnce(args: string[]): Result {
 
 function spawnAB(args: string[]): Result {
   let result = spawnABOnce(args);
-  for (let attempt = 0; attempt < EAGAIN_RETRIES; attempt++) {
-    if (result.status === 0) return result;
+  let elapsed = 0;
+  let attempt = 0;
+  while (result.status !== 0 && elapsed < EAGAIN_TOTAL_BUDGET_MS) {
     const combined = `${result.stdout}\n${result.stderr}`;
     if (!EAGAIN_PATTERN.test(combined)) return result;
-    sleepSync(EAGAIN_BACKOFF_MS[attempt] ?? 1000);
+    const wait = EAGAIN_BACKOFF_MS[attempt] ?? 3000;
+    sleepSync(wait);
+    elapsed += wait;
+    attempt++;
     result = spawnABOnce(args);
   }
   return result;
@@ -69,6 +92,10 @@ export function ab(...args: string[]): void {
   if (result.status !== 0) {
     fail(`agent-browser ${command} failed (exit ${result.status})`, result);
   }
+  // `open` returns before the daemon finishes writing its state file. Pause
+  // briefly so the very next assertion doesn't lose the race and surface as
+  // a spurious EAGAIN.
+  if (command === "open") sleepSync(POST_OPEN_SETTLE_MS);
 }
 
 /** Wait for element/text with an explicit timeout so long-running async ops don't hang. */
