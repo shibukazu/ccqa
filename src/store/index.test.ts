@@ -19,6 +19,32 @@ describe("parseSpecPath", () => {
     expect(() => parseSpecPath("a/b/c")).toThrow();
   });
 
+  test("accepts the on-disk 4-segment form features/<f>/test-cases/<s>", () => {
+    expect(parseSpecPath("features/tasks/test-cases/create-and-complete")).toEqual({
+      featureName: "tasks",
+      specName: "create-and-complete",
+    });
+  });
+
+  test("accepts the .ccqa-prefixed 5-segment form", () => {
+    expect(parseSpecPath(".ccqa/features/tasks/test-cases/create-and-complete")).toEqual({
+      featureName: "tasks",
+      specName: "create-and-complete",
+    });
+  });
+
+  test("tolerates trailing slashes", () => {
+    expect(parseSpecPath("features/tasks/test-cases/create-and-complete/")).toEqual({
+      featureName: "tasks",
+      specName: "create-and-complete",
+    });
+  });
+
+  test("rejects 4-segment paths with the wrong middle structure", () => {
+    expect(() => parseSpecPath("features/tasks/oops/spec")).toThrow();
+    expect(() => parseSpecPath("a/b/c/d")).toThrow();
+  });
+
   test("throws on empty string", () => {
     expect(() => parseSpecPath("")).toThrow();
   });

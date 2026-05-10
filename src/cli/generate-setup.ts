@@ -6,28 +6,58 @@ import {
   readSetupSpecFile,
   getSetupActions,
   getSetupDir,
-  saveSetupTestScript,
 } from "../store/index.ts";
 import { actionsToScript } from "../codegen/actions-to-script.ts";
-import { buildCleanupPrompt, buildAutoFixPrompt } from "../prompts/codegen.ts";
+import { buildCleanupPrompt } from "../prompts/codegen.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { parseSetupSpec } from "../spec/parser.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
-import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
+import { spawnVitestTeed } from "../runtime/spawn-vitest.ts";
 import { hasEnvRef, resolveEnvRefs } from "../runtime/env-vars.ts";
+import { runAutoFixLoop, resolveMode, type FixMode, type RunVitestResult } from "../diagnose/loop.ts";
+import { closeSession } from "../diagnose/snapshot.ts";
 import type { TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
+
+interface GenerateSetupOptions {
+  maxRetries: string;
+  fromDummy?: boolean;
+  auto?: boolean;
+  noInteractive?: boolean;
+  interactive?: boolean;
+  language?: string;
+}
 
 export const generateSetupCommand = new Command("generate-setup")
   .argument("<name>", "Setup name to generate (e.g. login)")
   .description("Clean up, validate, and templatize setup actions")
   .option("--max-retries <n>", "Maximum number of auto-fix retries", "3")
   .option("--from-dummy", "Resume from existing test.dummy.spec.ts (after manual fix)")
-  .action(async (name: string, opts: { maxRetries: string; fromDummy?: boolean }) => {
-    await runGenerateSetup(name, parseInt(opts.maxRetries, 10), opts.fromDummy ?? false);
+  .option("--auto", "Apply auto-fixes without confirmation regardless of confidence (CI use)")
+  .option("--no-interactive", "Never prompt; only auto-apply when confidence is high, otherwise give up")
+  .option(
+    "--language <bcp47>",
+    "Language for diagnose reasoning / hint text (e.g. 'en', 'ja')",
+    "en",
+  )
+  .action(async (name: string, opts: GenerateSetupOptions) => {
+    const mode = resolveMode(opts);
+    await runGenerateSetup(
+      name,
+      parseInt(opts.maxRetries, 10),
+      opts.fromDummy ?? false,
+      mode,
+      opts.language ?? "en",
+    );
   });
 
-async function runGenerateSetup(name: string, maxRetries: number, fromDummy: boolean): Promise<void> {
+async function runGenerateSetup(
+  name: string,
+  maxRetries: number,
+  fromDummy: boolean,
+  mode: FixMode,
+  outputLanguage: string,
+): Promise<void> {
   log.header("generate-setup", name);
 
   await ensureCcqaDir();
@@ -37,9 +67,11 @@ async function runGenerateSetup(name: string, maxRetries: number, fromDummy: boo
   const dummyPath = join(getSetupDir(name), "test.dummy.spec.ts");
   const finalPath = join(getSetupDir(name), "test.spec.ts");
 
-  // Phase 1: Generate or reuse test.dummy.spec.ts
+  // We pass actions to the diagnose loop for context. When --from-dummy
+  // skips the actions.json read, we fall back to an empty array.
+  let cleanedActions: TraceAction[] = [];
+
   if (fromDummy) {
-    // --from-dummy: use existing test.dummy.spec.ts
     const exists = await stat(dummyPath).then(() => true).catch(() => false);
     if (!exists) {
       log.warn(`test.dummy.spec.ts not found. Run without --from-dummy first.`);
@@ -47,13 +79,14 @@ async function runGenerateSetup(name: string, maxRetries: number, fromDummy: boo
     }
     log.info("Resuming from existing test.dummy.spec.ts");
   } else {
-    // Normal: generate from actions.json
     const { actions } = await getSetupActions(name);
     log.meta("setup", spec.title);
     log.meta("actions", actions.length);
+    log.meta("fix-mode", mode);
+    log.meta("language", outputLanguage);
     log.blank();
 
-    const cleanedActions = await cleanupActions(actions);
+    cleanedActions = await cleanupActions(actions);
     if (cleanedActions.length !== actions.length) {
       log.meta("cleaned", cleanedActions.length);
     }
@@ -70,46 +103,62 @@ async function runGenerateSetup(name: string, maxRetries: number, fromDummy: boo
   // literal text (so the recorded artifacts stay free of secrets). To
   // actually validate the script we need a transient resolved copy that
   // hands real credentials to agent-browser.
-  let { exitCode, output, currentScript } = await runVitestResolved(dummyPath);
+  //
+  // Pin the agent-browser session so the auto-fix loop can re-attach for
+  // snapshot capture after a failure. The generated script reads
+  // AGENT_BROWSER_SESSION via `||=`, so this value flows through.
+  const agentBrowserSession = `ccqa-generate-setup-${name}-${Date.now()}`;
+  const runVitestForSession = (path: string) => runVitestResolved(path, agentBrowserSession);
 
-  if (exitCode !== 0) {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      log.info(`auto-fix attempt ${attempt}/${maxRetries}...`);
-      log.blank();
+  // Best-effort cleanup before/after; see the matching block in generate.ts.
+  await closeSession(agentBrowserSession);
+  const signalHandler = () => {
+    void closeSession(agentBrowserSession).finally(() => process.exit(130));
+  };
+  process.once("SIGINT", signalHandler);
+  process.once("SIGTERM", signalHandler);
+  try {
+    const initialRun = await log.timedPhase("vitest run #1", () => runVitestForSession(dummyPath), "run");
 
-      const fixed = await autoFixWithLLM(currentScript, output);
-      if (!fixed) {
-        log.warn("could not determine fix from failure log");
-        break;
-      }
-
-      await writeFile(dummyPath, fixed, "utf-8");
-      log.meta("saved", dummyPath);
-      log.blank();
-
-      ({ exitCode, output, currentScript } = await runVitestResolved(dummyPath));
-      if (exitCode === 0) break;
+    let passed = initialRun.exitCode === 0;
+    if (!passed) {
+      passed = await runAutoFixLoop({
+        scriptPath: dummyPath,
+        initialRun,
+        specMarkdown: specContent,
+        actions: cleanedActions,
+        maxRetries,
+        mode,
+        runVitest: runVitestForSession,
+        agentBrowserSession,
+        outputLanguage,
+      });
     }
 
-    if (exitCode !== 0) {
-      log.warn("auto-fix exhausted — setup test still failing");
+    if (!passed) {
+      log.warn("auto-fix exhausted; setup test still failing");
       log.hint(`edit ${dummyPath} manually, then run: ccqa generate-setup ${name} --from-dummy`);
       process.exit(1);
     }
+
+    // Phase 3: Reverse-replace dummy values → {{placeholders}}, save as test.spec.ts
+    const currentScript = await readFile(dummyPath, "utf8");
+    const templatizedScript = reversePlaceholdersInScript(
+      currentScript,
+      spec.placeholders as Record<string, { dummy: string; description?: string }> | undefined,
+    );
+
+    await writeFile(finalPath, templatizedScript, "utf-8");
+    await unlink(dummyPath).catch(() => {});
+
+    log.blank();
+    log.meta("saved", finalPath);
+    log.hint(`setup '${name}' is ready; reference it in test-spec.md with setups: [{name: ${name}, params: {...}}]`);
+  } finally {
+    process.off("SIGINT", signalHandler);
+    process.off("SIGTERM", signalHandler);
+    await closeSession(agentBrowserSession);
   }
-
-  // Phase 3: Reverse-replace dummy values → {{placeholders}}, save as test.spec.ts
-  const templatizedScript = reversePlaceholdersInScript(
-    currentScript,
-    spec.placeholders as Record<string, { dummy: string; description?: string }> | undefined,
-  );
-
-  await writeFile(finalPath, templatizedScript, "utf-8");
-  await unlink(dummyPath).catch(() => {});
-
-  log.blank();
-  log.meta("saved", finalPath);
-  log.hint(`setup '${name}' is ready — reference it in test-spec.md with setups: [{name: ${name}, params: {...}}]`);
 }
 
 /**
@@ -133,71 +182,14 @@ function reversePlaceholdersInScript(
   return result;
 }
 
-// --- Shared utilities ---
-
-interface SleepInsert { line: number; seconds: number; reason: string }
-interface SleepIncrease { line: number; increase_to: number; reason: string }
-type AutoFixAction = SleepInsert | SleepIncrease;
-
-async function autoFixWithLLM(script: string, failureLog: string): Promise<string | null> {
-  try {
-    const prompt = buildAutoFixPrompt(script, failureLog);
-    const { result, isError } = await invokeClaudeStreaming(
-      { prompt, disableBuiltinTools: true, maxTurns: 1 },
-      () => {},
-    );
-    if (isError || !result) return null;
-
-    const json = result.trim().replace(/^```(?:json)?\n?([\s\S]*?)\n?```$/, "$1").trim();
-    const fixes = JSON.parse(json) as AutoFixAction[];
-    if (!Array.isArray(fixes) || fixes.length === 0) return null;
-
-    return applySleepFixes(script, fixes);
-  } catch {
-    return null;
-  }
-}
-
-function applySleepFixes(script: string, fixes: AutoFixAction[]): string {
-  const lines = script.split("\n");
-
-  for (const fix of fixes) {
-    if ("increase_to" in fix) {
-      const idx = fix.line - 1;
-      if (idx >= 0 && idx < lines.length) {
-        lines[idx] = lines[idx]!.replace(
-          /spawnSync\("sleep",\s*\["\d+"\]/,
-          `spawnSync("sleep", ["${fix.increase_to}"]`,
-        );
-      }
-    }
-  }
-
-  const inserts = fixes
-    .filter((f): f is SleepInsert => "seconds" in f && !("increase_to" in f))
-    .sort((a, b) => b.line - a.line);
-
-  for (const fix of inserts) {
-    const idx = fix.line - 1;
-    if (idx >= 0 && idx <= lines.length) {
-      lines.splice(idx, 0, `  spawnSync("sleep", ["${fix.seconds}"], { stdio: "inherit" });`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-async function runVitest(scriptPath: string): Promise<{ exitCode: number; output: string; currentScript: string }> {
-  const { exitCode, stdout, stderr } = await spawnVitestCaptured([
-    "run",
-    "--config",
-    bundledVitestConfigPath(),
-    scriptPath,
-  ]);
+async function runVitest(scriptPath: string, agentBrowserSession?: string): Promise<RunVitestResult> {
+  const { exitCode, stdout, stderr } = await spawnVitestTeed(
+    ["run", "--config", bundledVitestConfigPath(), scriptPath],
+    agentBrowserSession
+      ? { env: { ...process.env, AGENT_BROWSER_SESSION: agentBrowserSession } }
+      : {},
+  );
   const currentScript = await readFile(scriptPath, "utf8");
-
-  process.stdout.write(stdout);
-  if (stderr) process.stderr.write(stderr);
   return { exitCode, output: stdout + stderr, currentScript };
 }
 
@@ -208,26 +200,21 @@ async function runVitest(scriptPath: string): Promise<{ exitCode: number; output
  * literals. Auto-fix edits the original file (via writeFile in callers), so
  * we always re-read it before each invocation.
  */
-async function runVitestResolved(
-  scriptPath: string,
-): Promise<{ exitCode: number; output: string; currentScript: string }> {
+async function runVitestResolved(scriptPath: string, agentBrowserSession?: string): Promise<RunVitestResult> {
   const original = await readFile(scriptPath, "utf8");
   if (!hasEnvRef(original)) {
-    // No env refs — nothing to resolve, run the file directly.
-    return runVitest(scriptPath);
+    return runVitest(scriptPath, agentBrowserSession);
   }
 
   const tmpPath = scriptPath.replace(/\.ts$/, ".__resolved.spec.ts");
   await writeFile(tmpPath, resolveEnvRefs(original), "utf-8");
   try {
-    const { exitCode, stdout, stderr } = await spawnVitestCaptured([
-      "run",
-      "--config",
-      bundledVitestConfigPath(),
-      tmpPath,
-    ]);
-    process.stdout.write(stdout);
-    if (stderr) process.stderr.write(stderr);
+    const { exitCode, stdout, stderr } = await spawnVitestTeed(
+      ["run", "--config", bundledVitestConfigPath(), tmpPath],
+      agentBrowserSession
+        ? { env: { ...process.env, AGENT_BROWSER_SESSION: agentBrowserSession } }
+        : {},
+    );
     return { exitCode, output: stdout + stderr, currentScript: original };
   } finally {
     await unlink(tmpPath).catch(() => {});

@@ -8,13 +8,36 @@ export function getCcqaDir(cwd: string = process.cwd()): string {
   return join(cwd, CCQA_DIR);
 }
 
-// "tasks/create-and-complete" → { featureName: "tasks", specName: "create-and-complete" }
+/**
+ * Accepts both the canonical 2-segment alias and the on-disk 4-segment path
+ * (which is what shell tab-completion produces):
+ *   - "tasks/create-and-complete"
+ *   - "features/tasks/test-cases/create-and-complete"
+ *   - ".ccqa/features/tasks/test-cases/create-and-complete"
+ * All forms resolve to { featureName: "tasks", specName: "create-and-complete" }.
+ * Trailing slashes are tolerated.
+ */
 export function parseSpecPath(specPath: string): { featureName: string; specName: string } {
-  const parts = specPath.split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw new Error(`Invalid spec path: "${specPath}". Expected format: "<feature>/<spec>"`);
+  const cleaned = specPath.replace(/^\.\/+/, "").replace(/\/+$/, "");
+  const parts = cleaned.split("/").filter((p) => p.length > 0);
+
+  // Strip an optional leading ".ccqa".
+  if (parts[0] === ".ccqa") parts.shift();
+
+  // 4-segment on-disk form: features/<feature>/test-cases/<spec>
+  if (parts.length === 4 && parts[0] === "features" && parts[2] === "test-cases") {
+    return { featureName: parts[1]!, specName: parts[3]! };
   }
-  return { featureName: parts[0], specName: parts[1] };
+
+  // 2-segment alias: <feature>/<spec>
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return { featureName: parts[0], specName: parts[1] };
+  }
+
+  throw new Error(
+    `Invalid spec path: "${specPath}". Expected "<feature>/<spec>" ` +
+      `or "features/<feature>/test-cases/<spec>".`,
+  );
 }
 
 export function getFeatureDir(featureName: string, cwd?: string): string {

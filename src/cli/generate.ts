@@ -1,46 +1,114 @@
-import { writeFile } from "node:fs/promises";
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { join } from "node:path";
 import {
   ensureCcqaDir,
   parseSpecPath,
   getTraceActions,
   getSetupDir,
+  getTestScript,
   readSpecFile,
   saveTestScript,
 } from "../store/index.ts";
 import { actionsToScript } from "../codegen/actions-to-script.ts";
 import type { SetupScript } from "../codegen/actions-to-script.ts";
-import { buildCleanupPrompt, buildAutoFixPrompt } from "../prompts/codegen.ts";
+import { buildCleanupPrompt } from "../prompts/codegen.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
-import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
+import { spawnVitestTeed } from "../runtime/spawn-vitest.ts";
 import { envRefsToJsExpression, hasEnvRef } from "../runtime/env-vars.ts";
+import { runAutoFixLoop, resolveMode, type FixMode, type RunVitestResult } from "../diagnose/loop.ts";
+import { closeSession } from "../diagnose/snapshot.ts";
 import type { TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
 
+interface GenerateOptions {
+  maxRetries: string;
+  auto?: boolean;
+  noInteractive?: boolean;
+  interactive?: boolean;
+  force?: boolean;
+  /** commander stores --no-snapshot as `snapshot: false`. */
+  snapshot?: boolean;
+  language?: string;
+}
+
+// `<feature>/<spec>` is a 2-segment alias of the on-disk path
+// `.ccqa/features/<feature>/test-cases/<spec>/`. Document it on the
+// argument and in the description so `generate --help` is self-explanatory.
 export const generateCommand = new Command("generate")
-  .argument("<feature/spec>", "Spec to generate test for (e.g. tasks/create-and-complete)")
-  .description("Generate agent-browser test script from recorded trace actions")
+  .argument(
+    "<feature/spec>",
+    "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
+  )
+  .description(
+    "Generate agent-browser test script from recorded trace actions. " +
+      "test.spec.ts is regenerated from actions.json on every run; pass --force to overwrite manual edits.",
+  )
   .option("--max-retries <n>", "Maximum number of auto-fix retries", "3")
-  .action(async (specPath: string, opts: { maxRetries: string }) => {
+  .option("--auto", "Apply auto-fixes without confirmation regardless of confidence (CI use)")
+  .option("--no-interactive", "Never prompt; only auto-apply when confidence is high, otherwise give up")
+  .option("--force", "Overwrite an existing test.spec.ts without warning")
+  .option(
+    "--no-snapshot",
+    "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
+  )
+  .option(
+    "--language <bcp47>",
+    "Language for diagnose reasoning / hint text (e.g. 'en', 'ja')",
+    "en",
+  )
+  .action(async (specPath: string, opts: GenerateOptions) => {
     const { featureName, specName } = parseSpecPath(specPath);
-    await runGenerate(featureName, specName, parseInt(opts.maxRetries, 10));
+    const mode = resolveMode(opts);
+    const useSnapshot = opts.snapshot !== false;
+    await runGenerate(
+      featureName,
+      specName,
+      parseInt(opts.maxRetries, 10),
+      mode,
+      opts.force ?? false,
+      useSnapshot,
+      opts.language ?? "en",
+    );
   });
 
-async function runGenerate(featureName: string, specName: string, maxRetries: number): Promise<void> {
+async function runGenerate(
+  featureName: string,
+  specName: string,
+  maxRetries: number,
+  mode: FixMode,
+  force: boolean,
+  useSnapshot: boolean,
+  outputLanguage: string,
+): Promise<void> {
   log.header("generate", `${featureName}/${specName}`);
 
   await ensureCcqaDir();
+
+  // Refuse to overwrite an existing test.spec.ts unless --force.
+  // generate regenerates the script from actions.json, so any manual edits to
+  // test.spec.ts (e.g. patched selectors) are silently lost without this check.
+  // We always confirm interactively (regardless of --auto / --no-interactive),
+  // because overwriting a hand-edited file is a different kind of decision
+  // than auto-applying an auto-fix and warrants an explicit y/N. CI flows
+  // should pass --force.
+  const existingScriptPath = await getTestScript(featureName, specName);
+  if (existingScriptPath && !force) {
+    const proceed = await confirmOverwrite(existingScriptPath);
+    if (!proceed) {
+      log.info("aborted; pass --force to overwrite without prompting");
+      return;
+    }
+  }
 
   const { path: actionsPath, actions } = await getTraceActions(featureName, specName);
 
   log.meta("trace", actionsPath);
   log.meta("actions", actions.length);
 
-  // Load setup actions if test-spec references setups
   const specContent = await readSpecFile(featureName, specName);
   const spec = parseTestSpec(specContent);
   const setupScripts = await loadSetupScripts(
@@ -49,6 +117,8 @@ async function runGenerate(featureName: string, specName: string, maxRetries: nu
   if (setupScripts.length > 0) {
     log.meta("setups", setupScripts.map((s) => s.name).join(", "));
   }
+  log.meta("fix-mode", mode);
+  log.meta("language", outputLanguage);
   log.blank();
 
   const cleanedActions = await cleanupActions(actions);
@@ -61,40 +131,87 @@ async function runGenerate(featureName: string, specName: string, maxRetries: nu
   log.meta("saved", scriptPath);
   log.blank();
 
-  let { exitCode, output, currentScript } = await runVitest(scriptPath);
-  if (exitCode === 0) {
-    log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
-    return;
+  // Pin the agent-browser session so we can re-attach for snapshot capture
+  // after a vitest failure. The generated script reads AGENT_BROWSER_SESSION
+  // via `||=`, so this value flows through unmodified. `--no-snapshot`
+  // disables both the pin and the post-failure snapshot, restoring the
+  // pre-snapshot behavior for debugging.
+  const agentBrowserSession = useSnapshot ? `ccqa-generate-${Date.now()}` : undefined;
+  const runVitestForSession = (path: string) => runVitest(path, agentBrowserSession);
+
+  // Wrap the run in try/finally so a wedged daemon from a previous attempt
+  // never persists across invocations. We close the session on entry too
+  // (in case a stale one shares the name from a crashed prior run) and
+  // again on exit (success, failure, or thrown). The helper is best-effort
+  // and never throws.
+  //
+  // Ctrl-C bypasses try/finally on Node by default, so we also wire a
+  // signal handler that fires close before we exit. SIGINT/SIGTERM both
+  // get the same treatment.
+  let signalHandler: (() => void) | null = null;
+  if (agentBrowserSession) {
+    await closeSession(agentBrowserSession);
+    signalHandler = () => {
+      void closeSession(agentBrowserSession).finally(() => process.exit(130));
+    };
+    process.once("SIGINT", signalHandler);
+    process.once("SIGTERM", signalHandler);
   }
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    log.info(`auto-fix attempt ${attempt}/${maxRetries}...`);
-    log.blank();
-
-    const fixed = await autoFixWithLLM(currentScript, output);
-    if (!fixed) {
-      log.warn("could not determine fix from failure log");
-      break;
-    }
-
-    await writeFile(scriptPath, fixed, "utf-8");
-    log.meta("saved", scriptPath);
-    log.blank();
-
-    ({ exitCode, output, currentScript } = await runVitest(scriptPath));
-    if (exitCode === 0) {
+  try {
+    const initialRun = await log.timedPhase("vitest run #1", () => runVitestForSession(scriptPath), "run");
+    if (initialRun.exitCode === 0) {
       log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
       return;
     }
-  }
 
-  log.warn("auto-fix exhausted — test still failing");
-  process.exit(1);
+    const passed = await runAutoFixLoop({
+      scriptPath,
+      initialRun,
+      specMarkdown: specContent,
+      actions: cleanedActions,
+      maxRetries,
+      mode,
+      runVitest: runVitestForSession,
+      agentBrowserSession,
+      outputLanguage,
+    });
+
+    if (passed) {
+      log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
+      return;
+    }
+
+    log.warn("auto-fix exhausted; test still failing");
+    process.exit(1);
+  } finally {
+    if (signalHandler) {
+      process.off("SIGINT", signalHandler);
+      process.off("SIGTERM", signalHandler);
+    }
+    if (agentBrowserSession) await closeSession(agentBrowserSession);
+  }
 }
 
-/**
- * Load setup test scripts, extract test body, and replace {{placeholders}} with params values.
- */
+async function confirmOverwrite(path: string): Promise<boolean> {
+  // Without a TTY (CI, piped stdin) we can't prompt. Refuse to overwrite —
+  // CI/scripted callers should pass --force explicitly to opt in.
+  if (!process.stdin.isTTY) {
+    log.warn(`${path} exists and stdin is not a TTY; refusing to overwrite. Pass --force to allow.`);
+    return false;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    process.stdout.write("\n");
+    process.stdout.write(`[warn] ${path} already exists.\n`);
+    process.stdout.write(`[warn] generate will regenerate it from actions.json and any manual edits will be lost.\n`);
+    const answer = await new Promise<string>((res) => rl.question("Overwrite? [y/N] ", res));
+    const norm = answer.trim().toLowerCase();
+    return norm === "y" || norm === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
 async function loadSetupScripts(
   setups?: Array<{ name: string; params?: Record<string, string> }>,
 ): Promise<SetupScript[]> {
@@ -150,21 +267,9 @@ function replacePlaceholders(body: string, params: Record<string, string>): stri
   let result = body;
   for (const [key, value] of Object.entries(params)) {
     if (hasEnvRef(value)) {
-      // Env-var reference: rewrite the surrounding string literal so the
-      // generated test reads the secret from process.env at run time
-      // instead of baking the value into the script. The placeholder
-      // appears wrapped in either "..." or '...' inside the setup script
-      // (e.g. ab("fill", "...", "{{password}}");), and we replace the
-      // whole literal with a JS template-literal expression.
       const expr = envRefsToJsExpression(value);
-      // Match `"{{key}}"` or `'{{key}}'` and replace the entire literal.
       const re = new RegExp(`(["'])\\{\\{${escapeRegExp(key)}\\}\\}\\1`, "g");
       result = result.replace(re, expr);
-      // Fallback: any remaining bare {{key}} (e.g. inside larger strings)
-      // gets replaced with the resolved env value at generate time. This
-      // path keeps unrelated occurrences working but does NOT scrub the
-      // secret — keep env refs to standalone string literals if you care
-      // about that.
       result = result.replaceAll(`{{${key}}}`, value);
     } else {
       result = result.replaceAll(`{{${key}}}`, value);
@@ -177,71 +282,14 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// --- Auto-fix ---
-
-interface SleepInsert { line: number; seconds: number; reason: string }
-interface SleepIncrease { line: number; increase_to: number; reason: string }
-type AutoFixAction = SleepInsert | SleepIncrease;
-
-async function autoFixWithLLM(script: string, failureLog: string): Promise<string | null> {
-  try {
-    const prompt = buildAutoFixPrompt(script, failureLog);
-    const { result, isError } = await invokeClaudeStreaming(
-      { prompt, disableBuiltinTools: true, maxTurns: 1 },
-      () => {},
-    );
-    if (isError || !result) return null;
-
-    const json = result.trim().replace(/^```(?:json)?\n?([\s\S]*?)\n?```$/, "$1").trim();
-    const fixes = JSON.parse(json) as AutoFixAction[];
-    if (!Array.isArray(fixes) || fixes.length === 0) return null;
-
-    return applySleepFixes(script, fixes);
-  } catch {
-    return null;
-  }
-}
-
-function applySleepFixes(script: string, fixes: AutoFixAction[]): string {
-  const lines = script.split("\n");
-
-  for (const fix of fixes) {
-    if ("increase_to" in fix) {
-      const idx = fix.line - 1;
-      if (idx >= 0 && idx < lines.length) {
-        lines[idx] = lines[idx]!.replace(
-          /spawnSync\("sleep",\s*\["\d+"\]/,
-          `spawnSync("sleep", ["${fix.increase_to}"]`,
-        );
-      }
-    }
-  }
-
-  const inserts = fixes
-    .filter((f): f is SleepInsert => "seconds" in f && !("increase_to" in f))
-    .sort((a, b) => b.line - a.line);
-
-  for (const fix of inserts) {
-    const idx = fix.line - 1;
-    if (idx >= 0 && idx <= lines.length) {
-      lines.splice(idx, 0, `  spawnSync("sleep", ["${fix.seconds}"], { stdio: "inherit" });`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-async function runVitest(scriptPath: string): Promise<{ exitCode: number; output: string; currentScript: string }> {
-  const { exitCode, stdout, stderr } = await spawnVitestCaptured([
-    "run",
-    "--config",
-    bundledVitestConfigPath(),
-    scriptPath,
-  ]);
+async function runVitest(scriptPath: string, agentBrowserSession?: string): Promise<RunVitestResult> {
+  const { exitCode, stdout, stderr } = await spawnVitestTeed(
+    ["run", "--config", bundledVitestConfigPath(), scriptPath],
+    agentBrowserSession
+      ? { env: { ...process.env, AGENT_BROWSER_SESSION: agentBrowserSession } }
+      : {},
+  );
   const currentScript = await readFile(scriptPath, "utf8");
-
-  process.stdout.write(stdout);
-  if (stderr) process.stderr.write(stderr);
   return { exitCode, output: stdout + stderr, currentScript };
 }
 
