@@ -16,8 +16,10 @@ export function actionsToScript(actions: TraceAction[], title: string, setupScri
     `import { spawnSync } from "node:child_process";`,
     `import { ab, abWait, abAssertTextVisible, abAssertVisible, abAssertNotVisible, abAssertUrl, abAssertEnabled, abAssertDisabled, abAssertChecked, abAssertUnchecked } from "ccqa/test-helpers";`,
     "",
-    `// Single session shared across all tests — reset per run via cookies clear in first test`,
-    `process.env.AGENT_BROWSER_SESSION = \`ccqa-run-\${Date.now()}\`;`,
+    `// Single session shared across all tests — reset per run via cookies clear in first test.`,
+    `// Use ||= so an outer harness (e.g. ccqa generate's auto-fix loop) can pre-set the session`,
+    `// name and inspect the same session after the run finishes.`,
+    `process.env.AGENT_BROWSER_SESSION ||= \`ccqa-run-\${Date.now()}\`;`,
     "",
   ];
 

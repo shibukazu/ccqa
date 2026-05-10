@@ -91,7 +91,7 @@ async function runTests(target?: string): Promise<void> {
         continue;
       }
 
-      log.info(`▶ ${featureName}/${specName}`);
+      log.run(`${featureName}/${specName}`);
       log.meta("test", scriptFile);
       log.blank();
 

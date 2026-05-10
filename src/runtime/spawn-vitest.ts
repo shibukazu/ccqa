@@ -45,6 +45,23 @@ export async function spawnVitestCaptured(
   return { exitCode, stdout, stderr };
 }
 
+// Runs vitest, tees stdout/stderr to the parent's tty in real time AND
+// buffers them so the caller can feed the full transcript to Claude. The
+// captured-only variant above is silent until exit, which makes long auto-fix
+// runs look hung — prefer this version for any CLI command that wants both.
+export async function spawnVitestTeed(
+  args: readonly string[],
+  opts: VitestSpawnOptions = {},
+): Promise<VitestCapturedResult> {
+  const child = spawnVitestChild(args, opts, "pipe");
+  const [stdout, stderr, exitCode] = await Promise.all([
+    teeDrain(child.stdout!, process.stdout),
+    teeDrain(child.stderr!, process.stderr),
+    waitExit(child),
+  ]);
+  return { exitCode, stdout, stderr };
+}
+
 export type VitestStreamingHandle = {
   child: ChildProcess;
   stdout: Readable;
@@ -85,6 +102,16 @@ async function drain(stream: Readable): Promise<string> {
   stream.setEncoding("utf8");
   let buf = "";
   for await (const chunk of stream) buf += chunk;
+  return buf;
+}
+
+async function teeDrain(stream: Readable, sink: NodeJS.WritableStream): Promise<string> {
+  stream.setEncoding("utf8");
+  let buf = "";
+  for await (const chunk of stream) {
+    buf += chunk;
+    sink.write(chunk);
+  }
   return buf;
 }
 

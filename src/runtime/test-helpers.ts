@@ -44,12 +44,21 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(buf), 0, 0, ms);
 }
 
+// Hard ceiling on a single agent-browser invocation. agent-browser is
+// supposed to honor its own --timeout, but if the daemon is wedged (stale
+// session, dead Chrome) spawnSync would otherwise wait forever because
+// stdio never closes. 90s is well past wait --timeout 30000ms + the
+// 30s EAGAIN budget, so legitimate work always completes first.
+const PROCESS_HARD_TIMEOUT_MS = 90_000;
+
 function spawnABOnce(args: string[]): Result {
-  const result = spawnSync(AB, args, { stdio: "pipe" });
+  const result = spawnSync(AB, args, { stdio: "pipe", timeout: PROCESS_HARD_TIMEOUT_MS });
   return {
     status: result.status,
     stdout: result.stdout?.toString() ?? "",
-    stderr: result.stderr?.toString() ?? "",
+    stderr:
+      (result.stderr?.toString() ?? "") +
+      (result.signal === "SIGTERM" ? "\n[ccqa] agent-browser killed after hard timeout" : ""),
   };
 }
 

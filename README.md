@@ -232,23 +232,42 @@ Assertions are stability-aware: Claude skips timestamps, session IDs, and exact 
 
 ## Auto-fix
 
-If the generated script fails (timing issues, page not ready), `generate` uses an LLM to analyze the failure log and insert `sleep` at the right positions. Control how many attempts with `--max-retries`:
+If the generated script fails, `generate` invokes an LLM to diagnose the failure and propose a fix. The diagnosis is one of:
+
+- **TIMING_ISSUE** — insert or extend `sleep` so the page has time to settle.
+- **OVER_ASSERTION** — remove `abAssert*` lines that the spec doesn't actually require.
+- **SELECTOR_DRIFT** — replace a renamed selector with the new one. The diagnose LLM is allowed to `Grep` / `Read` your repository (read-only) to find the actual `aria-label` / `placeholder` / `data-testid` / i18n string in the app source, so renames in the UI code are caught even when the failure log only says "selector not visible".
+- **DATA_MISSING** / **UNKNOWN** — not auto-fixable; the loop bails and reports the diagnosis.
+
+Each diagnosis has a `confidence` score. By default high-confidence fixes are applied automatically; low-confidence fixes drop into an interactive `[a]pply / [s]kip / [m]anual / [q]uit` prompt.
 
 ```bash
+ccqa generate tasks/create-and-complete                  # default: interactive on low confidence
+ccqa generate tasks/create-and-complete --auto           # CI: always auto-apply
+ccqa generate tasks/create-and-complete --no-interactive # CI: auto-apply on high confidence, give up otherwise
 ccqa generate tasks/create-and-complete --max-retries 5
 ```
+
+> **Note**: `generate` regenerates `test.spec.ts` from `actions.json` on every run. Manual edits to `test.spec.ts` are lost on the next `generate`. When an existing `test.spec.ts` is detected, `generate` always asks for `y/N` confirmation before overwriting (even with `--auto` / `--no-interactive`). To skip the prompt in CI, pass `--force`. To persist a fix, re-run `trace` so `actions.json` reflects the new flow.
 
 ## Commands
 
 ```
 ccqa trace <feature/spec>          Record browser actions for a test spec
 ccqa generate <feature/spec>       Generate test script from recorded actions
+  --auto                            Apply auto-fixes without confirmation (CI)
+  --no-interactive                  Auto-apply only on high confidence; never prompt
+  --force                           Overwrite an existing test.spec.ts without prompting
+  --max-retries <n>                 Default: 3
 ccqa run [feature/spec]            Execute generated test scripts
 
 ccqa trace-setup <name>            Record browser actions for a setup spec
 ccqa generate-setup <name>         Generate and validate setup test script
   --from-dummy                      Resume from manually edited test.dummy.spec.ts
+  --auto / --no-interactive         Same semantics as `generate`
 ```
+
+`<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`. Pass the alias, not the full directory path.
 
 ## File structure
 

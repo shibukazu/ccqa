@@ -14,7 +14,10 @@ import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedSta
 import * as log from "./logger.ts";
 
 export const traceCommand = new Command("trace")
-  .argument("<feature/spec>", "Spec to trace (e.g. tasks/create-and-complete)")
+  .argument(
+    "<feature/spec>",
+    "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
+  )
   .description("Run agent-browser, verify assertions, and record structured actions")
   .action(async (specPath: string) => {
     const { featureName, specName } = parseSpecPath(specPath);
@@ -152,9 +155,11 @@ async function runSetups(
       script = script.replaceAll(`{{${key}}}`, resolveEnvRefs(value));
     }
 
-    // Fix the session name to share with the trace phase
+    // Fix the session name to share with the trace phase. The generated
+    // script may use either `=` (legacy) or `||=` (new shape that lets
+    // ccqa pre-set the session from outside) — match both.
     script = script.replace(
-      /process\.env\.AGENT_BROWSER_SESSION\s*=\s*`.+`;/,
+      /process\.env\.AGENT_BROWSER_SESSION\s*\|?\|?=\s*`.+`;/,
       `process.env.AGENT_BROWSER_SESSION = ${JSON.stringify(sessionName)};`,
     );
 
