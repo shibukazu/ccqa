@@ -8,7 +8,12 @@ import { ensureCcqaDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions
 import { parseTestSpec } from "../spec/parser.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
-import { pathWithAgentBrowserShim } from "../runtime/agent-browser-bin.ts";
+import {
+  assertAgentBrowserAvailable,
+  AgentBrowserUnavailableError,
+  formatAgentBrowserUnavailableMessage,
+  pathWithAgentBrowserShim,
+} from "../runtime/agent-browser-bin.ts";
 import { resolveEnvRefs } from "../runtime/env-vars.ts";
 import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
@@ -34,6 +39,17 @@ export const traceCommand = new Command("trace")
 
 async function runTrace(featureName: string, specName: string, model?: string): Promise<void> {
   log.header("trace", `${featureName}/${specName}`);
+
+  try {
+    const binDir = assertAgentBrowserAvailable();
+    log.meta("agent-browser", binDir);
+  } catch (e) {
+    if (e instanceof AgentBrowserUnavailableError) {
+      log.error(formatAgentBrowserUnavailableMessage());
+      process.exit(1);
+    }
+    throw e;
+  }
 
   await ensureCcqaDir();
 

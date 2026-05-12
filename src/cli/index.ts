@@ -6,6 +6,7 @@ import { generateCommand } from "./generate.ts";
 import { runCommand } from "./run.ts";
 import { traceSetupCommand } from "./trace-setup.ts";
 import { generateSetupCommand } from "./generate-setup.ts";
+import { draftCommand } from "./draft.ts";
 
 // package.json location differs between source (dev) and dist builds:
 //   src/cli/index.ts  → ../../package.json  (repo root)
@@ -33,6 +34,7 @@ program
   .description("E2E test CLI using Claude Code + agent-browser")
   .version(version);
 
+program.addCommand(draftCommand);
 program.addCommand(traceCommand);
 program.addCommand(generateCommand);
 program.addCommand(runCommand);

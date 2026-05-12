@@ -105,6 +105,7 @@ For each step:
 - Do NOT retry a selector without taking a fresh snapshot first
 - Do NOT work around blockers (login walls, missing data, captchas) — stop and report
 - **Do NOT suppress errors** — never use \`2>/dev/null\`, \`|| true\`, \`; other-command\`, or any other technique that hides agent-browser failures. Each \`agent-browser\` command must run standalone so failures are properly detected and recorded.
+- **If \`agent-browser\` is not found, stop immediately.** Do not run \`which\`, \`find\`, \`npm ls\`, \`npm install\`, \`npx\`, \`brew\`, or any other discovery / installation command. Do not try alternate paths. The ccqa host already validates the binary before launching you, so if you see \`command not found\` it is a host-environment problem you cannot fix from inside the test run. Emit one line and terminate: \`ASSERTION_FAILED|step-XX|agent-browser binary not available in PATH\`.
 
 ## Source Code Reference
 
