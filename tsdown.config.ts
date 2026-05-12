@@ -31,7 +31,6 @@ export default defineConfig({
     "gray-matter",
     "zod",
     "@anthropic-ai/claude-agent-sdk",
-    "@anthropic-ai/claude-code",
     "vitest",
     "vitest/config",
     "agent-browser",
