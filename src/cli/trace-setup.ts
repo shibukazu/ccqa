@@ -5,7 +5,12 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { ensureCcqaDir, readSetupSpecFile, saveSetupActions, saveSetupRoute } from "../store/index.ts";
 import { parseSetupSpec } from "../spec/parser.ts";
 import { parseAbAction, parseStatusLine, parseRouteStep } from "./trace.ts";
-import { pathWithAgentBrowserShim } from "../runtime/agent-browser-bin.ts";
+import {
+  assertAgentBrowserAvailable,
+  AgentBrowserUnavailableError,
+  formatAgentBrowserUnavailableMessage,
+  pathWithAgentBrowserShim,
+} from "../runtime/agent-browser-bin.ts";
 import { hasEnvRef, resolveEnvRefs } from "../runtime/env-vars.ts";
 import type { Route, RouteStep, TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
@@ -19,6 +24,17 @@ export const traceSetupCommand = new Command("trace-setup")
 
 async function runTraceSetup(name: string): Promise<void> {
   log.header("trace-setup", name);
+
+  try {
+    const binDir = assertAgentBrowserAvailable();
+    log.meta("agent-browser", binDir);
+  } catch (e) {
+    if (e instanceof AgentBrowserUnavailableError) {
+      log.error(formatAgentBrowserUnavailableMessage());
+      process.exit(1);
+    }
+    throw e;
+  }
 
   await ensureCcqaDir();
 

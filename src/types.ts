@@ -82,6 +82,28 @@ export interface TraceAction {
   assertType?: AssertType;
 }
 
+export const DraftIssueSchema = z.object({
+  severity: z.enum(["OK", "WARN", "ERROR"]),
+  category: z.enum(["assertable", "setups", "granularity", "unimplemented"]),
+  stepId: z.string().nullable(),
+  message: z.string(),
+  detail: z.string().optional(),
+});
+export type DraftIssue = z.infer<typeof DraftIssueSchema>;
+
+export const DraftReportSchema = z.object({
+  issues: z.array(DraftIssueSchema),
+  patch: z.string(),
+});
+export type DraftReport = z.infer<typeof DraftReportSchema>;
+
+export const DraftNamingSchema = z.object({
+  featureName: z.string().min(1),
+  specName: z.string().min(1),
+  reason: z.string().optional(),
+});
+export type DraftNaming = z.infer<typeof DraftNamingSchema>;
+
 export type StepStatus = "STEP_START" | "STEP_DONE" | "ASSERTION_FAILED" | "STEP_SKIPPED" | "RUN_COMPLETED";
 
 export interface ParsedStatusLine {

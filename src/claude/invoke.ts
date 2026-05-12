@@ -15,6 +15,10 @@ export interface ClaudeInvokeOptions {
   onAbAction?: (abAction: string) => void;
   /** Called when an agent-browser command fails (exit non-zero); allows rolling back the last AB_ACTION. */
   onAbActionFailed?: () => void;
+  /** When true, suppresses the default per-Bash-tool-call log line. Callers that
+   * want a summary view (e.g. `ccqa draft`) can opt out and tally tool usage
+   * themselves via `onEvent`. */
+  silenceBashLog?: boolean;
 }
 
 export async function invokeClaudeStreaming(
@@ -30,6 +34,7 @@ export async function invokeClaudeStreaming(
     env,
     onAbAction,
     onAbActionFailed,
+    silenceBashLog = false,
   } = options;
 
   // Track the last agent-browser tool_use_id so PostToolUseFailure can roll back
@@ -111,7 +116,7 @@ export async function invokeClaudeStreaming(
   for await (const msg of q) {
     onEvent(msg);
 
-    if (msg.type === "assistant") {
+    if (msg.type === "assistant" && !silenceBashLog) {
       for (const block of msg.message.content ?? []) {
         if (block.type === "tool_use" && block.name === "Bash") {
           const cmd = (block.input as Record<string, unknown>)?.["command"];

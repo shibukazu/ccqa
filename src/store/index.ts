@@ -38,6 +38,29 @@ export async function readSpecFile(featureName: string, specName: string, cwd?: 
   });
 }
 
+export async function tryReadSpecFile(
+  featureName: string,
+  specName: string,
+  cwd?: string,
+): Promise<string | null> {
+  const specPath = join(getSpecDir(featureName, specName, cwd), "test-spec.md");
+  return readFile(specPath, "utf-8").catch(() => null);
+}
+
+export async function saveSpecFile(
+  featureName: string,
+  specName: string,
+  content: string,
+  cwd?: string,
+): Promise<string> {
+  const specDir = getSpecDir(featureName, specName, cwd);
+  await mkdir(specDir, { recursive: true });
+  const specPath = join(specDir, "test-spec.md");
+  const normalized = content.endsWith("\n") ? content : content + "\n";
+  await writeFile(specPath, normalized, "utf-8");
+  return specPath;
+}
+
 export async function saveRoute(featureName: string, specName: string, route: Route, cwd?: string): Promise<string> {
   const specDir = getSpecDir(featureName, specName, cwd);
   await mkdir(specDir, { recursive: true });
@@ -167,6 +190,42 @@ export async function listAllSpecs(cwd?: string): Promise<Array<{ featureName: s
 export async function listSpecsForFeature(featureName: string, cwd?: string): Promise<string[]> {
   const testCasesDir = join(getFeatureDir(featureName, cwd), "test-cases");
   return readdir(testCasesDir).catch(() => []);
+}
+
+export interface FeatureTreeEntry {
+  featureName: string;
+  specs: Array<{ specName: string; hasSpecFile: boolean; title?: string }>;
+}
+
+/**
+ * Lists every feature/spec dir under .ccqa/features/, regardless of whether
+ * the spec is fully drafted yet. Used by `ccqa draft` to suggest non-colliding
+ * feature/spec names that fit the existing structure.
+ */
+export async function listFeatureTree(cwd?: string): Promise<FeatureTreeEntry[]> {
+  const featuresDir = join(getCcqaDir(cwd), "features");
+  const featureDirs = await readdir(featuresDir).catch(() => []);
+
+  return Promise.all(
+    featureDirs.map(async (featureName): Promise<FeatureTreeEntry> => {
+      const testCasesDir = join(featuresDir, featureName, "test-cases");
+      const specDirs = await readdir(testCasesDir).catch(() => []);
+      const specs = await Promise.all(
+        specDirs.map(async (specName) => {
+          const specFile = join(testCasesDir, specName, "test-spec.md");
+          const content = await readFile(specFile, "utf-8").catch(() => null);
+          if (content === null) return { specName, hasSpecFile: false };
+          const titleMatch = content.match(/^title:\s*"?([^"\n]+)"?/m);
+          return {
+            specName,
+            hasSpecFile: true,
+            title: titleMatch?.[1]?.trim(),
+          };
+        }),
+      );
+      return { featureName, specs };
+    }),
+  );
 }
 
 
