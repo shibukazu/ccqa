@@ -33,6 +33,7 @@ interface GenerateOptions {
   /** commander stores --no-snapshot as `snapshot: false`. */
   snapshot?: boolean;
   language?: string;
+  model?: string;
 }
 
 // `<feature>/<spec>` is a 2-segment alias of the on-disk path
@@ -60,6 +61,10 @@ export const generateCommand = new Command("generate")
     "Language for diagnose reasoning / hint text (e.g. 'en', 'ja')",
     "en",
   )
+  .option(
+    "-m, --model <name>",
+    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+  )
   .action(async (specPath: string, opts: GenerateOptions) => {
     const { featureName, specName } = parseSpecPath(specPath);
     const mode = resolveMode(opts);
@@ -72,6 +77,7 @@ export const generateCommand = new Command("generate")
       opts.force ?? false,
       useSnapshot,
       opts.language ?? "en",
+      opts.model,
     );
   });
 
@@ -83,6 +89,7 @@ async function runGenerate(
   force: boolean,
   useSnapshot: boolean,
   outputLanguage: string,
+  model: string | undefined,
 ): Promise<void> {
   log.header("generate", `${featureName}/${specName}`);
 
@@ -121,7 +128,7 @@ async function runGenerate(
   log.meta("language", outputLanguage);
   log.blank();
 
-  const cleanedActions = await cleanupActions(actions);
+  const cleanedActions = await cleanupActions(actions, model);
   if (cleanedActions.length !== actions.length) {
     log.meta("cleaned", cleanedActions.length);
   }
@@ -174,6 +181,7 @@ async function runGenerate(
       runVitest: runVitestForSession,
       agentBrowserSession,
       outputLanguage,
+      model,
     });
 
     if (passed) {
@@ -293,11 +301,11 @@ async function runVitest(scriptPath: string, agentBrowserSession?: string): Prom
   return { exitCode, output: stdout + stderr, currentScript };
 }
 
-async function cleanupActions(actions: TraceAction[]): Promise<TraceAction[]> {
+async function cleanupActions(actions: TraceAction[], model?: string): Promise<TraceAction[]> {
   try {
     const prompt = buildCleanupPrompt(actions);
     const { result, isError } = await invokeClaudeStreaming(
-      { prompt, disableBuiltinTools: true, maxTurns: 1 },
+      { prompt, disableBuiltinTools: true, maxTurns: 1, model },
       () => {},
     );
     if (isError || !result) return actions;

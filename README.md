@@ -267,6 +267,8 @@ ccqa generate-setup <name>         Generate and validate setup test script
   --auto / --no-interactive         Same semantics as `generate`
 ```
 
+All Claude-driven commands (`trace`, `trace-setup`, `generate`, `generate-setup`) accept `-m, --model <name>` to select the Claude model — pass an alias (`sonnet` | `opus` | `haiku`) or a full model ID (e.g. `claude-opus-4-7`). The flag overrides the `CCQA_MODEL` environment variable; when both are unset, the Claude Code CLI default is used. Authentication is handled by your local Claude Code login — no `ANTHROPIC_API_KEY` is required.
+
 `<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`. Pass the alias, not the full directory path.
 
 ## File structure

@@ -26,6 +26,7 @@ interface GenerateSetupOptions {
   noInteractive?: boolean;
   interactive?: boolean;
   language?: string;
+  model?: string;
 }
 
 export const generateSetupCommand = new Command("generate-setup")
@@ -40,6 +41,10 @@ export const generateSetupCommand = new Command("generate-setup")
     "Language for diagnose reasoning / hint text (e.g. 'en', 'ja')",
     "en",
   )
+  .option(
+    "-m, --model <name>",
+    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+  )
   .action(async (name: string, opts: GenerateSetupOptions) => {
     const mode = resolveMode(opts);
     await runGenerateSetup(
@@ -48,6 +53,7 @@ export const generateSetupCommand = new Command("generate-setup")
       opts.fromDummy ?? false,
       mode,
       opts.language ?? "en",
+      opts.model,
     );
   });
 
@@ -57,6 +63,7 @@ async function runGenerateSetup(
   fromDummy: boolean,
   mode: FixMode,
   outputLanguage: string,
+  model: string | undefined,
 ): Promise<void> {
   log.header("generate-setup", name);
 
@@ -86,7 +93,7 @@ async function runGenerateSetup(
     log.meta("language", outputLanguage);
     log.blank();
 
-    cleanedActions = await cleanupActions(actions);
+    cleanedActions = await cleanupActions(actions, model);
     if (cleanedActions.length !== actions.length) {
       log.meta("cleaned", cleanedActions.length);
     }
@@ -132,6 +139,7 @@ async function runGenerateSetup(
         runVitest: runVitestForSession,
         agentBrowserSession,
         outputLanguage,
+        model,
       });
     }
 
@@ -221,11 +229,11 @@ async function runVitestResolved(scriptPath: string, agentBrowserSession?: strin
   }
 }
 
-async function cleanupActions(actions: TraceAction[]): Promise<TraceAction[]> {
+async function cleanupActions(actions: TraceAction[], model?: string): Promise<TraceAction[]> {
   try {
     const prompt = buildCleanupPrompt(actions);
     const { result, isError } = await invokeClaudeStreaming(
-      { prompt, disableBuiltinTools: true, maxTurns: 1 },
+      { prompt, disableBuiltinTools: true, maxTurns: 1, model },
       () => {},
     );
     if (isError || !result) return actions;

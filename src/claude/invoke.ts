@@ -11,10 +11,22 @@ export interface ClaudeInvokeOptions {
   mcpConfigPath?: string;
   maxTurns?: number;
   env?: Record<string, string>;
+  /**
+   * Claude model alias ('sonnet' | 'opus' | 'haiku') or full model ID
+   * (e.g. 'claude-opus-4-7'). Falls back to `CCQA_MODEL`, then to the
+   * Claude Code CLI default when unset.
+   */
+  model?: string;
   /** Called when an agent-browser command is intercepted; receives the AB_ACTION line. */
   onAbAction?: (abAction: string) => void;
   /** Called when an agent-browser command fails (exit non-zero); allows rolling back the last AB_ACTION. */
   onAbActionFailed?: () => void;
+}
+
+export function resolveModel(explicit?: string): string | undefined {
+  if (explicit) return explicit;
+  const envModel = process.env["CCQA_MODEL"];
+  return envModel && envModel.length > 0 ? envModel : undefined;
 }
 
 export async function invokeClaudeStreaming(
@@ -28,9 +40,12 @@ export async function invokeClaudeStreaming(
     disableBuiltinTools = false,
     maxTurns,
     env,
+    model,
     onAbAction,
     onAbActionFailed,
   } = options;
+
+  const resolvedModel = resolveModel(model);
 
   // Track the last agent-browser tool_use_id so PostToolUseFailure can roll back
   let lastAbToolUseId: string | null = null;
@@ -41,6 +56,7 @@ export async function invokeClaudeStreaming(
     allowedTools: allowedTools ?? ["Bash(*)"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
+    ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(env ? { env: { ...process.env, ...env } as Record<string, string | undefined> } : {}),
     ...(disableBuiltinTools ? { tools: [] } : {}),
     hooks:

@@ -37,6 +37,8 @@ export interface AutoFixLoopInput {
   agentBrowserSession?: string;
   /** BCP-47 hint for the language used in `reasoning` / `reason`. Defaults to "en". */
   outputLanguage?: string;
+  /** Claude model to use for the diagnose call. Falls back to CCQA_MODEL / CLI default. */
+  model?: string;
 }
 
 /**
@@ -54,6 +56,7 @@ export async function runAutoFixLoop(input: AutoFixLoopInput): Promise<boolean> 
     runVitest,
     agentBrowserSession,
     outputLanguage,
+    model,
   } = input;
 
   let { exitCode, output, currentScript } = initialRun;
@@ -82,6 +85,7 @@ export async function runAutoFixLoop(input: AutoFixLoopInput): Promise<boolean> 
       pageSnapshot: pageSnapshot ?? undefined,
       mode,
       outputLanguage,
+      model,
     });
     if (!fixed) {
       // diagnoseAndFix has already emitted the [hint] handoff; here we just
@@ -113,21 +117,22 @@ interface DiagnoseAndFixInput {
   pageSnapshot?: string;
   mode: FixMode;
   outputLanguage?: string;
+  model?: string;
 }
 
 async function diagnoseAndFix(input: DiagnoseAndFixInput): Promise<string | null> {
-  const { script, specMarkdown, actions, failureLog, pageSnapshot, mode, outputLanguage } = input;
+  const { script, specMarkdown, actions, failureLog, pageSnapshot, mode, outputLanguage, model } = input;
 
   const outcome: DiagnoseOutcome = await log.timedPhase(
     "diagnose",
-    () => diagnose({ script, specMarkdown, actions, failureLog, pageSnapshot, outputLanguage }),
+    () => diagnose({ script, specMarkdown, actions, failureLog, pageSnapshot, outputLanguage }, { model }),
     "fix",
   );
 
   if (outcome.sdkError) {
     log.fix("diagnose: SDK error talking to Claude");
     if (outcome.raw) log.fix(`diagnose raw: ${truncateForLog(outcome.raw)}`);
-    log.hint("re-run later, or check ANTHROPIC_API_KEY / network connectivity");
+    log.hint("re-run later, or check your Claude Code login / network connectivity");
     return null;
   }
   if (!outcome.result) {
