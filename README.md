@@ -37,10 +37,10 @@ pnpm exec ccqa trace tasks/create-and-complete
 npx ccqa trace tasks/create-and-complete
 ```
 
-ccqa requires Node.js **20+** at runtime. The peer dependencies [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [agent-browser](https://github.com/vercel-labs/agent-browser) must also be installed:
+ccqa requires Node.js **20+** at runtime. The peer dependency [agent-browser](https://github.com/vercel-labs/agent-browser) must also be installed:
 
 ```bash
-pnpm add -D @anthropic-ai/claude-code agent-browser
+pnpm add -D agent-browser
 ```
 
 ## Usage
