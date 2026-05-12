@@ -15,7 +15,10 @@ export interface DiagnoseOutcome {
   sdkError: boolean;
 }
 
-export async function diagnose(input: DiagnosePromptInput): Promise<DiagnoseOutcome> {
+export async function diagnose(
+  input: DiagnosePromptInput,
+  options: { model?: string } = {},
+): Promise<DiagnoseOutcome> {
   const prompt = buildDiagnosePrompt(input);
   // Allow read-only filesystem inspection so the LLM can grep the app's
   // source for the actual aria-label / placeholder / role values when the
@@ -28,6 +31,7 @@ export async function diagnose(input: DiagnosePromptInput): Promise<DiagnoseOutc
       prompt,
       allowedTools: ["Read", "Grep", "Glob"],
       maxTurns: 10,
+      model: options.model,
     },
     () => {},
   );

@@ -10,14 +10,22 @@ import { hasEnvRef, resolveEnvRefs } from "../runtime/env-vars.ts";
 import type { Route, RouteStep, TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
 
+interface TraceSetupOptions {
+  model?: string;
+}
+
 export const traceSetupCommand = new Command("trace-setup")
   .argument("<name>", "Setup name to trace (e.g. login)")
   .description("Trace a setup procedure using dummy placeholder values")
-  .action(async (name: string) => {
-    await runTraceSetup(name);
+  .option(
+    "-m, --model <name>",
+    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+  )
+  .action(async (name: string, opts: TraceSetupOptions) => {
+    await runTraceSetup(name, opts.model);
   });
 
-async function runTraceSetup(name: string): Promise<void> {
+async function runTraceSetup(name: string, model?: string): Promise<void> {
   log.header("trace-setup", name);
 
   await ensureCcqaDir();
@@ -58,6 +66,7 @@ async function runTraceSetup(name: string): Promise<void> {
       systemPrompt,
       allowedTools: ["Bash(*)", "Read", "Grep", "Glob"],
       env: { PATH: pathWithAgentBrowserShim(process.env["PATH"]), ANTHROPIC_API_KEY: "" },
+      model,
       onAbAction: (abAction: string) => {
         const action = parseAbAction(scrubSecrets(abAction, secretsToScrub));
         if (action) traceActions.push(action);

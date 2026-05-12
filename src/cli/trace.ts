@@ -13,18 +13,26 @@ import { resolveEnvRefs } from "../runtime/env-vars.ts";
 import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
+interface TraceOptions {
+  model?: string;
+}
+
 export const traceCommand = new Command("trace")
   .argument(
     "<feature/spec>",
     "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
   )
   .description("Run agent-browser, verify assertions, and record structured actions")
-  .action(async (specPath: string) => {
+  .option(
+    "-m, --model <name>",
+    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+  )
+  .action(async (specPath: string, opts: TraceOptions) => {
     const { featureName, specName } = parseSpecPath(specPath);
-    await runTrace(featureName, specName);
+    await runTrace(featureName, specName, opts.model);
   });
 
-async function runTrace(featureName: string, specName: string): Promise<void> {
+async function runTrace(featureName: string, specName: string, model?: string): Promise<void> {
   log.header("trace", `${featureName}/${specName}`);
 
   await ensureCcqaDir();
@@ -78,6 +86,7 @@ async function runTrace(featureName: string, specName: string): Promise<void> {
         AGENT_BROWSER_SESSION: sessionName,
         PATH: pathWithAgentBrowserShim(process.env["PATH"]),
       },
+      model,
       onAbAction: (abAction: string) => {
         const action = parseAbAction(abAction);
         if (action) traceActions.push(action);
