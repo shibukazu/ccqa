@@ -318,12 +318,61 @@ ccqa generate tasks/create-and-complete --max-retries 5
 
 > **Note**: `generate` regenerates `test.spec.ts` from `actions.json` on every run. Manual edits to `test.spec.ts` are lost on the next `generate`. When an existing `test.spec.ts` is detected, `generate` always asks for `y/N` confirmation before overwriting (even with `--auto` / `--no-interactive`). To skip the prompt in CI, pass `--force`. To persist a fix, re-run `trace` so `actions.json` reflects the new flow.
 
+## Drift detection in CI
+
+`ccqa drift` checks every `test-spec.md` against the current codebase and reports anywhere they have fallen out of sync — renamed aria-labels, removed routes, missing setups, assertions about UI that no longer exists. No browser, no LLM-driven actions, no patches applied: a read-only review designed for CI.
+
+```bash
+ccqa drift                              # check every spec under .ccqa/features/
+ccqa drift tasks/create-and-complete    # single spec
+ccqa drift --format github              # emit GitHub Actions annotations
+ccqa drift --format json                # machine-readable output
+ccqa drift --severity warn              # exit non-zero on WARN or higher (default: error)
+ccqa drift --concurrency 5              # parallel spec checks (default: 3)
+ccqa drift --cwd packages/web           # for monorepos: pin .ccqa root and codebase scope
+```
+
+### Authentication in CI
+
+`ccqa drift` is the one Claude-driven command intended to run unattended, so it accepts an Anthropic API key. Set `ANTHROPIC_API_KEY` in your CI secrets and the SDK picks it up automatically — no Claude Code login required. Locally, the existing Claude Code login keeps working; the API key takes precedence when both are present.
+
+### GitHub Actions example
+
+```yaml
+name: ccqa drift
+on: [pull_request]
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec ccqa drift --format github
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+For a monorepo where each package has its own `.ccqa/`, point `--cwd` at the package root:
+
+```yaml
+      - run: pnpm exec ccqa drift --cwd packages/web --format github
+```
+
 ## Commands
 
 ```
 ccqa draft [feature/spec]          Co-author a test spec with Claude
   --instruction <text>              Single-shot, non-interactive
   --apply                           Auto-apply patches without [y/N] confirmation
+
+ccqa drift [feature/spec]          Check spec ↔ codebase drift (CI-friendly, read-only)
+  --format <text|json|github>       Output format (default: text)
+  --severity <warn|error>           Exit non-zero threshold (default: error)
+  --concurrency <n>                 Parallel spec checks (default: 3)
+  --cwd <path>                      .ccqa root + codebase scope (default: process.cwd())
 
 ccqa trace <feature/spec>          Record browser actions for a test spec
 ccqa generate <feature/spec>       Generate test script from recorded actions
@@ -339,7 +388,7 @@ ccqa generate-setup <name>         Generate and validate setup test script
   --auto / --no-interactive         Same semantics as `generate`
 ```
 
-All Claude-driven commands (`trace`, `trace-setup`, `generate`, `generate-setup`) accept `-m, --model <name>` to select the Claude model — pass an alias (`sonnet` | `opus` | `haiku`) or a full model ID (e.g. `claude-opus-4-7`). The flag overrides the `CCQA_MODEL` environment variable; when both are unset, the Claude Code CLI default is used. Authentication is handled by your local Claude Code login — no `ANTHROPIC_API_KEY` is required.
+All Claude-driven commands (`draft`, `drift`, `trace`, `trace-setup`, `generate`, `generate-setup`) accept `-m, --model <name>` to select the Claude model — pass an alias (`sonnet` | `opus` | `haiku`) or a full model ID (e.g. `claude-opus-4-7`). The flag overrides the `CCQA_MODEL` environment variable; when both are unset, the Claude Code CLI default is used. Interactive commands authenticate via your local Claude Code login by default; `ccqa drift` (the CI-only command) additionally honors `ANTHROPIC_API_KEY` so it can run unattended — see [Drift detection in CI](#drift-detection-in-ci).
 
 `<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`. Pass the alias, not the full directory path.
 
