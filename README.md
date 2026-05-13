@@ -2,11 +2,9 @@
 
 **Your Claude subscription already includes a QA engineer.**
 
-ccqa turns Claude Code into a browser test recorder.
+ccqa turns Claude Code into a browser test recorder. Write a spec in Markdown, run `ccqa trace`, and Claude drives your app via [agent-browser](https://github.com/vercel-labs/agent-browser). Every action is recorded and compiled into a deterministic test script you can run in CI. No extra API key. Just `claude`.
 
-Write a spec in Markdown, run `ccqa trace`, and Claude drives your app via [agent-browser](https://github.com/vercel-labs/agent-browser) — a lightweight headless browser CLI that runs anywhere without a browser driver or Playwright setup. Because the agent controls the browser through a simple CLI interface, it can handle login flows, intermediate screens, and dynamic UI the same way a human would.
-
-Every action is recorded as structured data and compiled into a deterministic test script you can run in CI. No extra API key. Just `claude`.
+[日本語版 README](./docs/README.ja.md)
 
 ## How it works
 
@@ -17,35 +15,19 @@ flowchart LR
     C --> D["ccqa run\n(deterministic replay)"]
 ```
 
-`trace` invokes Claude Code with your spec. Claude drives the browser step by step via [agent-browser](https://github.com/vercel-labs/agent-browser), recording every action as structured data. `generate` compiles that data into a vitest-compatible script. `run` replays it deterministically — no LLM involved.
+`trace` invokes Claude Code with your spec. Claude drives the browser step by step, recording every action as structured data. `generate` compiles that data into a vitest-compatible script. `run` replays it deterministically — no LLM involved.
 
 ## Install
 
-Add ccqa as a dev dependency in your project:
-
 ```bash
-pnpm add -D ccqa vitest
-# or
-npm install -D ccqa vitest
+pnpm add -D ccqa vitest agent-browser
 ```
 
-Then invoke the CLI via your package runner:
+Requires Node.js **20+**. [agent-browser](https://github.com/vercel-labs/agent-browser) is a peer dependency.
 
-```bash
-pnpm exec ccqa trace tasks/create-and-complete
-# or
-npx ccqa trace tasks/create-and-complete
-```
+## Quick start
 
-ccqa requires Node.js **20+** at runtime. The peer dependency [agent-browser](https://github.com/vercel-labs/agent-browser) must also be installed:
-
-```bash
-pnpm add -D agent-browser
-```
-
-## Usage
-
-**1. Write a spec** — by hand, or interactively with [`ccqa draft`](#draft--co-author-test-specmd-with-claude)
+**1. Write a spec** — by hand, or interactively with [`ccqa draft`](./docs/draft.md)
 
 ```markdown
 <!-- .ccqa/features/tasks/test-cases/create-and-complete/test-spec.md -->
@@ -63,334 +45,51 @@ baseUrl: http://localhost:3000
 ### Step 2: Create a new task
 - **Instruction**: Click "New Task", fill in the title "Fix login bug", set priority to High, save
 - **Expected**: Task appears in the task list with status "Open"
-
-### Step 3: Mark the task as complete
-- **Instruction**: Open the task "Fix login bug", click "Mark as complete"
-- **Expected**: Task status changes to "Done", task moves to the completed section
 ```
 
-**2. Trace — Claude drives the browser and records every action**
+**2. Trace** — Claude drives the browser and records every action
 
 ```bash
 ccqa trace tasks/create-and-complete
 ```
 
-```
-▶ trace  tasks/create-and-complete
-  spec    Create a task and mark it complete
-  url     http://localhost:3000
-  steps   3
-
-Running agent-browser session...
-  ● step-01  Log in
-  ● step-02  Create a new task
-  ● step-03  Mark the task as complete
-
-  trace   .ccqa/features/tasks/test-cases/create-and-complete/actions.json
-  actions 24
-  status  PASSED
-```
-
-**3. Generate — convert recorded actions into a replayable test**
+**3. Generate** — convert recorded actions into a replayable test
 
 ```bash
 ccqa generate tasks/create-and-complete
 ```
 
-**4. Run — replay deterministically, no LLM involved**
+**4. Run** — replay deterministically, no LLM involved
 
 ```bash
 ccqa run tasks/create-and-complete
 ```
 
-## Draft — co-author test-spec.md with Claude
+## Features
 
-Writing a `test-spec.md` from scratch means digging into your codebase to find the right aria-labels, URLs, and button text. `ccqa draft` puts Claude in the loop: you describe what you want to test in plain language, Claude reads the relevant code, and you refine the spec interactively.
-
-```bash
-ccqa draft
-```
-
-The first run asks for your intent, proposes a `feature/spec` name, and writes a draft. Each subsequent invocation lets you give a refinement instruction — empty input means "just re-check the current spec against the code." Press `y` at the final "Are you done with this draft?" prompt to end the session.
-
-```
-ccqa draft
-
-What do you want to test? > Select a category on the AI Maintenance page and run a check
-Proposing a feature/spec name based on your intent...
-  proposed: ai-maintenance/run-check-with-category
-Use this name? [y/N/edit] > y
-
-Reading codebase and drafting spec...
-  ✓ 5 Read, 3 Grep, 2 Glob  (4.2s)
-
-── Review  (1 warning, 3 passed) ───────────────────────────────────
-
-  WARNINGS (1)
-    Assertability  step-05
-      Result row may still show "running" right after the click
-      └ ContentQualityCheck.tsx polls every 5s; the status starts at
-        IN_PROGRESS and only flips to SUCCEEDED later.
-
-  PASSED (3)
-    Setup references, Step granularity, Unimplemented checks
-
-────────────────────────────────────────────────────────────────────
-
---- proposed changes ---
-+ ---
-+ title: "AI Maintenance — content quality check"
-...
-
-Apply this patch? [y/N] y
-  saved: .ccqa/features/ai-maintenance/test-cases/run-check-with-category/test-spec.md
-
-How would you like to refine? (empty = re-validate) >
-```
-
-You can also edit `test-spec.md` directly in your editor between turns — `ccqa draft` re-reads the file each iteration.
-
-### What gets reviewed
-
-Every turn Claude grades the spec on four axes and reports issues:
-
-| Check | What it verifies |
+| Feature | Docs |
 |---|---|
-| **Assertability** | Each step's **Expected** references concrete, observable signals (visible text, URL pattern, element state) that actually exist in the code. Flags timestamps, exact counts, and session-specific values that won't be stable across runs. |
-| **Setup references** | Every `setups[].name` in the frontmatter resolves to an existing `.ccqa/setups/<name>/setup-spec.md`, and every `params` key matches that setup's `placeholders`. See [Setup Specs](#setup-specs--reusable-shared-procedures). |
-| **Step granularity** | Steps aren't too coarse (multiple actions in one) or too fine (snapshot-only filler), and the order is logical. |
-| **Unimplemented checks** | Anything the spec describes that Claude couldn't find in the codebase — a hint that you may be specifying behavior that doesn't exist yet. |
-
-Findings with severity `WARN` or `ERROR` are shown in full; `OK` checks collapse to a one-line summary.
-
-### Flags
-
-```
-ccqa draft [feature/spec]               # arg is optional; Claude proposes a name if omitted
-  --instruction <text>                  # single-shot, non-interactive
-  --apply                               # auto-apply patches without [y/N] confirmation
-```
-
-## Setup Specs — Reusable shared procedures
-
-Setup specs let you define reusable procedures (login, data preparation, etc.) that run before your test steps. Define once, use across multiple test specs.
-
-### 1. Write a setup spec
-
-```markdown
-<!-- .ccqa/setups/login/setup-spec.md -->
----
-title: "Login"
-placeholders:
-  loginUrl:
-    dummy: "http://localhost:3000/login"
-    description: "Login page URL"
-  email:
-    dummy: "user@example.com"
-    description: "Email address"
-  password:
-    dummy: "secret"
-    description: "Password"
----
-
-## Steps
-
-### Step 1: Open login page
-- **Instruction**: Navigate to {{loginUrl}}
-- **Expected**: Login form is displayed
-
-### Step 2: Enter credentials and log in
-- **Instruction**: Enter email {{email}} and password {{password}}, then submit
-- **Expected**: Login succeeds
-```
-
-The `placeholders` section defines variables with `dummy` values. During `trace-setup`, the dummy values are used for actual browser operation. During `generate-setup`, they are reverse-replaced with `{{key}}` placeholders.
-
-### 2. Trace the setup
-
-```bash
-ccqa trace-setup login
-```
-
-### 3. Generate and validate the setup
-
-```bash
-ccqa generate-setup login
-```
-
-This generates `test.dummy.spec.ts` with dummy values, runs vitest to validate, and applies auto-fix. On success, it reverse-replaces dummy values with placeholders and saves `test.spec.ts`.
-
-If auto-fix fails, edit `test.dummy.spec.ts` manually and re-run:
-
-```bash
-ccqa generate-setup login --from-dummy
-```
-
-### 4. Reference from test specs
-
-```markdown
----
-title: Create a task
-baseUrl: http://localhost:3000
-setups:
-  - name: login
-    params:
-      loginUrl: "http://localhost:3000/login"
-      email: "admin@example.com"
-      password: "AdminPass123"
----
-
-## Steps
-### Step 1: Create a new task
-...
-```
-
-When you run `ccqa trace` or `ccqa generate`, the setup's test body is loaded, placeholders are replaced with `params` values, and it runs before your test steps — sharing the same browser session.
-
-## What gets generated
-
-`ab()` is a thin wrapper around [agent-browser](https://github.com/vercel-labs/agent-browser) — a headless browser CLI. Each call spawns `agent-browser <command>` as a subprocess and throws if it exits non-zero. No browser driver setup, no async/await, no `.waitFor()`.
-
-```typescript
-// .ccqa/features/tasks/test-cases/create-and-complete/test.spec.ts
-import { test } from "vitest";
-import { ab, abWait, abAssertUrl, abAssertTextVisible, abAssertEnabled } from "ccqa/test-helpers";
-
-process.env.AGENT_BROWSER_SESSION = `ccqa-run-${Date.now()}`;
-
-test("setup: login", () => {
-  ab("cookies", "clear");
-  ab("open", "http://localhost:3000/login");
-  ab("fill", "[placeholder='Email']", "admin@example.com");
-  ab("fill", "[type='password']", "AdminPass123");
-  ab("press", "Enter");
-}, 3 * 60 * 1000);
-
-test("Create a task", () => {
-  ab("open", "http://localhost:3000");
-
-  // Create a new task
-  ab("click", "[aria-label='New Task']");
-  ab("fill", "[placeholder='Task title']", "Fix login bug");
-  ab("select", "[aria-label='Priority']", "High");
-  ab("click", "[aria-label='Save']");
-  abAssertTextVisible("Fix login bug");
-  abAssertTextVisible("Open");
-}, 5 * 60 * 1000);
-```
-
-Setup and test share the same `AGENT_BROWSER_SESSION` — login state carries over. Each run starts with `cookies clear` to ensure a clean session.
-
-## Assertions
-
-During `trace`, Claude verifies each step with at least two independent signals and emits structured assertions. These become typed helper calls in the generated script:
-
-| Assert | What it checks |
-|--------|---------------|
-| `abAssertTextVisible(text)` | Text appears on page (waits up to 30s) |
-| `abAssertUrl(pattern)` | Current URL contains pattern |
-| `abAssertEnabled(selector)` | Button/input is enabled |
-| `abAssertDisabled(selector)` | Button/input is disabled |
-| `abAssertVisible(selector)` | Element is visible |
-| `abAssertNotVisible(selector)` | Element is hidden |
-| `abAssertChecked(selector)` | Checkbox is checked |
-| `abAssertUnchecked(selector)` | Checkbox is unchecked |
-
-Assertions are stability-aware: Claude skips timestamps, session IDs, and exact counts that vary between runs.
-
-## Auto-fix
-
-If the generated script fails, `generate` invokes an LLM to diagnose the failure and propose a fix. The diagnosis is one of:
-
-- **TIMING_ISSUE** — insert or extend `sleep` so the page has time to settle.
-- **OVER_ASSERTION** — remove `abAssert*` lines that the spec doesn't actually require.
-- **SELECTOR_DRIFT** — replace a renamed selector with the new one. The diagnose LLM is allowed to `Grep` / `Read` your repository (read-only) to find the actual `aria-label` / `placeholder` / `data-testid` / i18n string in the app source, so renames in the UI code are caught even when the failure log only says "selector not visible".
-- **DATA_MISSING** / **UNKNOWN** — not auto-fixable; the loop bails and reports the diagnosis.
-
-Each diagnosis has a `confidence` score. By default high-confidence fixes are applied automatically; low-confidence fixes drop into an interactive `[a]pply / [s]kip / [m]anual / [q]uit` prompt.
-
-```bash
-ccqa generate tasks/create-and-complete                  # default: interactive on low confidence
-ccqa generate tasks/create-and-complete --auto           # CI: always auto-apply
-ccqa generate tasks/create-and-complete --no-interactive # CI: auto-apply on high confidence, give up otherwise
-ccqa generate tasks/create-and-complete --max-retries 5
-```
-
-> **Note**: `generate` regenerates `test.spec.ts` from `actions.json` on every run. Manual edits to `test.spec.ts` are lost on the next `generate`. When an existing `test.spec.ts` is detected, `generate` always asks for `y/N` confirmation before overwriting (even with `--auto` / `--no-interactive`). To skip the prompt in CI, pass `--force`. To persist a fix, re-run `trace` so `actions.json` reflects the new flow.
-
-## Drift detection in CI
-
-`ccqa drift` checks every `test-spec.md` against the current codebase and reports anywhere they have fallen out of sync — renamed aria-labels, removed routes, missing setups, assertions about UI that no longer exists. No browser, no LLM-driven actions, no patches applied: a read-only review designed for CI.
-
-```bash
-ccqa drift                              # check every spec under .ccqa/features/
-ccqa drift tasks/create-and-complete    # single spec
-ccqa drift --format github              # emit GitHub Actions annotations
-ccqa drift --format json                # machine-readable output
-ccqa drift --severity warn              # exit non-zero on WARN or higher (default: error)
-ccqa drift --concurrency 5              # parallel spec checks (default: 3)
-ccqa drift --cwd packages/web           # for monorepos: pin .ccqa root and codebase scope
-```
-
-### Authentication in CI
-
-`ccqa drift` is the one Claude-driven command intended to run unattended, so it accepts an Anthropic API key. Set `ANTHROPIC_API_KEY` in your CI secrets and the SDK picks it up automatically — no Claude Code login required. Locally, the existing Claude Code login keeps working; the API key takes precedence when both are present.
-
-### GitHub Actions example
-
-```yaml
-name: ccqa drift
-on: [pull_request]
-jobs:
-  drift:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: pnpm }
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa drift --format github
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-```
-
-For a monorepo where each package has its own `.ccqa/`, point `--cwd` at the package root:
-
-```yaml
-      - run: pnpm exec ccqa drift --cwd packages/web --format github
-```
+| Write specs interactively with Claude | [Draft](./docs/draft.md) |
+| Reuse login and other setup steps | [Setup Specs](./docs/setup-specs.md) |
+| Assertion helper functions | [Assertions](./docs/assertions.md) |
+| Auto-fix failing tests | [Auto-fix](./docs/auto-fix.md) |
+| Detect spec/code drift in CI | [Drift](./docs/drift.md) |
 
 ## Commands
 
 ```
 ccqa draft [feature/spec]          Co-author a test spec with Claude
-  --instruction <text>              Single-shot, non-interactive
-  --apply                           Auto-apply patches without [y/N] confirmation
-
-ccqa drift [feature/spec]          Check spec ↔ codebase drift (CI-friendly, read-only)
-  --format <text|json|github>       Output format (default: text)
-  --severity <warn|error>           Exit non-zero threshold (default: error)
-  --concurrency <n>                 Parallel spec checks (default: 3)
-  --cwd <path>                      .ccqa root + codebase scope (default: process.cwd())
-
-ccqa trace <feature/spec>          Record browser actions for a test spec
+ccqa drift [feature/spec]          Check spec ↔ codebase drift (CI-friendly)
+ccqa trace <feature/spec>          Record browser actions
 ccqa generate <feature/spec>       Generate test script from recorded actions
-  --auto                            Apply auto-fixes without confirmation (CI)
-  --no-interactive                  Auto-apply only on high confidence; never prompt
-  --force                           Overwrite an existing test.spec.ts without prompting
-  --max-retries <n>                 Default: 3
 ccqa run [feature/spec]            Execute generated test scripts
-
-ccqa trace-setup <name>            Record browser actions for a setup spec
+ccqa trace-setup <name>            Record actions for a setup spec
 ccqa generate-setup <name>         Generate and validate setup test script
-  --from-dummy                      Resume from manually edited test.dummy.spec.ts
-  --auto / --no-interactive         Same semantics as `generate`
 ```
 
-All Claude-driven commands (`draft`, `drift`, `trace`, `trace-setup`, `generate`, `generate-setup`) accept `-m, --model <name>` to select the Claude model — pass an alias (`sonnet` | `opus` | `haiku`) or a full model ID (e.g. `claude-opus-4-7`). The flag overrides the `CCQA_MODEL` environment variable; when both are unset, the Claude Code CLI default is used. Interactive commands authenticate via your local Claude Code login by default; `ccqa drift` (the CI-only command) additionally honors `ANTHROPIC_API_KEY` so it can run unattended — see [Drift detection in CI](#drift-detection-in-ci).
+All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` | `haiku`, or a full model ID). The flag overrides `CCQA_MODEL`; when both are unset, the Claude Code CLI default is used. Interactive commands authenticate via your local Claude Code login; `ccqa drift` additionally honors `ANTHROPIC_API_KEY` for CI.
 
-`<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`. Pass the alias, not the full directory path.
+`<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`.
 
 ## File structure
 
@@ -399,26 +98,15 @@ All Claude-driven commands (`draft`, `drift`, `trace`, `trace-setup`, `generate`
   setups/
     login/
       setup-spec.md              # Setup definition with placeholders
-      test.spec.ts               # Generated setup script (with {{placeholders}})
+      test.spec.ts               # Generated setup script
   features/
     tasks/
       test-cases/
         create-and-complete/
-          test-spec.md           # Test definition (references setups)
+          test-spec.md           # Test definition
           actions.json           # Recorded actions from trace
           test.spec.ts           # Generated test script
 ```
-
-## Why not write Playwright tests by hand?
-
-| | ccqa | Hand-written Playwright |
-|---|---|---|
-| Write selectors | Claude picks them from ARIA snapshots | You inspect the DOM |
-| Handle timing | Recorded wait commands, auto-fix sleep | `waitFor`, `expect().toBeVisible()` |
-| Assertions | Auto-generated from verified signals | Written manually |
-| Login / setup | Shared setup specs with placeholders | Custom fixtures per project |
-| Update after UI change | Re-run `trace` | Find and update every affected locator |
-| Runs in CI | Yes (deterministic replay, no LLM) | Yes |
 
 ## License
 
