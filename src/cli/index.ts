@@ -7,6 +7,7 @@ import { runCommand } from "./run.ts";
 import { traceSetupCommand } from "./trace-setup.ts";
 import { generateSetupCommand } from "./generate-setup.ts";
 import { draftCommand } from "./draft.ts";
+import { driftCommand } from "./drift.ts";
 
 // package.json location differs between source (dev) and dist builds:
 //   src/cli/index.ts  → ../../package.json  (repo root)
@@ -35,6 +36,7 @@ program
   .version(version);
 
 program.addCommand(draftCommand);
+program.addCommand(driftCommand);
 program.addCommand(traceCommand);
 program.addCommand(generateCommand);
 program.addCommand(runCommand);

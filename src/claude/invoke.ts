@@ -17,6 +17,12 @@ export interface ClaudeInvokeOptions {
    * Claude Code CLI default when unset.
    */
   model?: string;
+  /**
+   * Working directory the SDK exposes to its tools (Read/Grep/Glob/Bash).
+   * Falls back to `process.cwd()` when unset. Used by `ccqa drift --cwd` to
+   * point Claude at a specific package inside a monorepo.
+   */
+  cwd?: string;
   /** Called when an agent-browser command is intercepted; receives the AB_ACTION line. */
   onAbAction?: (abAction: string) => void;
   /** Called when an agent-browser command fails (exit non-zero); allows rolling back the last AB_ACTION. */
@@ -45,6 +51,7 @@ export async function invokeClaudeStreaming(
     maxTurns,
     env,
     model,
+    cwd,
     onAbAction,
     onAbActionFailed,
     silenceBashLog = false,
@@ -62,6 +69,7 @@ export async function invokeClaudeStreaming(
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     ...(resolvedModel ? { model: resolvedModel } : {}),
+    ...(cwd ? { cwd } : {}),
     ...(env ? { env: { ...process.env, ...env } as Record<string, string | undefined> } : {}),
     ...(disableBuiltinTools ? { tools: [] } : {}),
     hooks:
