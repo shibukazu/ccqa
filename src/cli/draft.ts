@@ -2,6 +2,7 @@ import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
+import { extractJsonBlock } from "../claude/extract-json.ts";
 import {
   buildDraftPrompt,
   buildDraftSystemPrompt,
@@ -436,14 +437,7 @@ export function ensureUnique(
   return { featureName, specName: `${specName}-${Date.now()}` };
 }
 
-export function extractJsonBlock(text: string): string | null {
-  const fenced = text.match(/```(?:json)?\s*\n([\s\S]*?)\n```/);
-  if (fenced && fenced[1]) return fenced[1].trim();
-  // Fallback: bare JSON object at the start/end of the result
-  const trimmed = text.trim();
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) return trimmed;
-  return null;
-}
+export { extractJsonBlock } from "../claude/extract-json.ts";
 
 export function printUnifiedDiff(before: string, after: string): void {
   const beforeLines = before.split("\n");

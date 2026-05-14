@@ -4,7 +4,20 @@ export function generateSessionName(): string {
   return `ccqa-trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 }
 
-export function buildTraceSystemPrompt(spec: TestSpec, options?: { sessionName?: string; skipCookiesClear?: boolean }): string {
+export interface TraceSystemPromptOptions {
+  sessionName?: string;
+  skipCookiesClear?: boolean;
+}
+
+export function buildTraceSystemPrompt(spec: TestSpec, options?: TraceSystemPromptOptions): string {
+  return buildTraceSystemPromptInner(spec, options, true);
+}
+
+function buildTraceSystemPromptInner(
+  spec: TestSpec,
+  options: TraceSystemPromptOptions | undefined,
+  emitRelatedPaths: boolean,
+): string {
   const sessionName = options?.sessionName ?? generateSessionName();
   const skipCookiesClear = options?.skipCookiesClear ?? false;
 
@@ -19,6 +32,8 @@ export function buildTraceSystemPrompt(spec: TestSpec, options?: { sessionName?:
   const prereqText = spec.prerequisites
     ? `## Prerequisites\n${spec.prerequisites}\n\n`
     : "";
+
+  const relatedPathsBlock = emitRelatedPaths ? buildRelatedPathsInstruction() : "";
 
   return `You are an expert QA engineer executing a browser E2E test. Execute each step precisely and record every browser action as a structured log line.
 
@@ -237,7 +252,7 @@ After each step (outside any code block):
 ROUTE_STEP|<step-id>|<step-title>|ACTION:<what you did>|OBSERVATION:<what you verified>|STATUS:<PASSED|FAILED|SKIPPED>
 \`\`\`
 
-## Start
+${relatedPathsBlock}## Start
 
 ${skipCookiesClear ? `A setup procedure has already been executed in this session. Do NOT clear cookies — keep the existing session state.
 
@@ -262,16 +277,51 @@ AB_ACTION|open|${spec.baseUrl}
 Then emit \`STEP_START|step-01|...\` and begin.`;
 }
 
+function buildRelatedPathsInstruction(): string {
+  return `## Post-run: emit \`relatedPaths\` block
+
+After all steps are complete (regardless of pass/fail) and **before** \`RUN_COMPLETED\`, you MUST emit a single \`RELATED_PATHS\` block. The host (not you) writes these paths into the spec's frontmatter — your only job is to emit the block.
+
+\`relatedPaths\` is a list of glob patterns identifying the source files this spec depends on. CI uses them to decide whether a code change should trigger a drift check for this spec.
+
+**Do NOT modify any source files.** You have only \`Read\`, \`Grep\`, and \`Glob\` for source inspection. The block you emit is the only output the host uses to update the spec.
+
+**Inputs to consider:**
+- The URLs you opened (\`AB_ACTION|open|...\`)
+- The aria-labels, placeholders, and visible texts you clicked / filled / waited on
+- The component / page / route files that render those strings (find them with \`Grep\`/\`Read\`/\`Glob\`)
+
+**How to choose paths:**
+1. For each URL the test navigates to, locate the route/page file and include it (e.g. \`src/app/tasks/page.tsx\`, \`src/pages/tasks/index.tsx\`).
+2. For each unique aria-label / placeholder / visible text you interacted with, \`Grep\` the codebase, find the defining component, and include either the file or its parent feature directory.
+3. Prefer **directory globs** (e.g. \`src/features/tasks/**\`) over individual files when several related components live in the same area. Otherwise list specific files.
+4. Skip third-party files (\`node_modules/\`), build output (\`dist/\`, \`.next/\`), and generated code.
+5. Be conservative — false positives (extra paths) are fine; false negatives (missing paths) cause drift to be missed in CI. When unsure whether a path is relevant, include it.
+
+**Output format (STRICT — one line per path, no leading dashes, no commentary inside the block):**
+
+\`\`\`
+RELATED_PATHS_BEGIN
+src/features/tasks/**
+src/app/tasks/page.tsx
+RELATED_PATHS_END
+\`\`\`
+
+Emit the block outside any other code block, on its own lines. If the test could not exercise the feature at all (e.g. blocked early), emit the block anyway with whatever paths you can identify; emit \`RELATED_PATHS_BEGIN\` immediately followed by \`RELATED_PATHS_END\` only if you genuinely could not identify any related file.
+
+`;
+}
+
 export function buildTracePrompt(spec: TestSpec): string {
   return `Execute the test for "${spec.title}" at ${spec.baseUrl}.`;
 }
 
 export function buildSetupTraceSystemPrompt(spec: SetupSpec): string {
-  return buildTraceSystemPrompt({
-    title: spec.title,
-    baseUrl: "about:blank",
-    steps: spec.steps,
-  });
+  return buildTraceSystemPromptInner(
+    { title: spec.title, baseUrl: "about:blank", steps: spec.steps },
+    undefined,
+    false,
+  );
 }
 
 export function buildSetupTracePrompt(spec: SetupSpec): string {

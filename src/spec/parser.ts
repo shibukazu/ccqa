@@ -13,8 +13,20 @@ export function parseTestSpec(content: string): TestSpec {
     baseUrl: String(data["baseUrl"] ?? "http://localhost:3000"),
     prerequisites: prerequisites || undefined,
     setups: parseSetupRefs(data["setups"]),
+    relatedPaths: parseRelatedPaths(data["relatedPaths"]),
     steps,
   };
+}
+
+function parseRelatedPaths(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const paths: string[] = [];
+  for (const item of raw) {
+    if (typeof item === "string" && item.trim().length > 0) {
+      paths.push(item.trim());
+    }
+  }
+  return paths.length > 0 ? paths : undefined;
 }
 
 export function parseSetupSpec(content: string): SetupSpec {

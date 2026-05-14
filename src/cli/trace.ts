@@ -4,7 +4,8 @@ import { Command } from "commander";
 import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from "../prompts/trace.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { ensureCcqaDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions, getSetupDir } from "../store/index.ts";
+import { ensureCcqaDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions, getSetupDir, updateSpecRelatedPaths } from "../store/index.ts";
+import { parseRelatedPathsBlock } from "../drift/parse-related-paths.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
@@ -88,6 +89,9 @@ async function runTrace(featureName: string, specName: string, model?: string): 
   const routeSteps: RouteStep[] = [];
   let overallStatus: "passed" | "failed" = "passed";
   const traceActions: TraceAction[] = [];
+  // Only captures text from RELATED_PATHS_BEGIN onward so a long trace doesn't
+  // accumulate every assistant message in memory just to extract one block.
+  let relatedPathsBuffer: string | null = null;
 
   const { isError } = await invokeClaudeStreaming(
     {
@@ -117,6 +121,12 @@ async function runTrace(featureName: string, specName: string, model?: string): 
       for (const block of msg.message.content ?? []) {
         if (block.type !== "text" || !block.text) continue;
         const text = block.text;
+        if (relatedPathsBuffer !== null) {
+          relatedPathsBuffer += text + "\n";
+        } else {
+          const idx = text.indexOf("RELATED_PATHS_BEGIN");
+          if (idx !== -1) relatedPathsBuffer = text.slice(idx) + "\n";
+        }
 
         const statusLine = parseStatusLine(text);
         if (statusLine) log.step(statusLine.type, statusLine.stepId, statusLine.detail);
@@ -153,8 +163,22 @@ async function runTrace(featureName: string, specName: string, model?: string): 
   log.meta("saved", actionsPath);
   log.meta("actions", traceActions.length);
   log.meta("status", overallStatus.toUpperCase());
+
+  const relatedPaths = relatedPathsBuffer !== null
+    ? parseRelatedPathsBlock(relatedPathsBuffer)
+    : null;
+  if (relatedPaths !== null) {
+    const written = await updateSpecRelatedPaths(featureName, specName, relatedPaths);
+    if (written) {
+      log.meta("relatedPaths", `${relatedPaths.length} path(s) written to ${written}`);
+    }
+  } else {
+    log.warn("trace did not emit a RELATED_PATHS block; drift --changed cannot scope this spec");
+  }
+
   log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
 }
+
 
 /**
  * Execute setup procedures by running their test.spec.ts via vitest with a fixed session name.

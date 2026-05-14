@@ -72,6 +72,7 @@ Frontmatter fields:
 - baseUrl: string (required, e.g. http://localhost:3000)
 - prerequisites: string (optional, free text)
 - setups: array of { name: string, params?: Record<string,string> } (optional)
+- relatedPaths: array of string (optional) — glob patterns identifying source files this spec depends on. Used by \`ccqa drift --changed\` in CI to skip drift checks for unrelated changes.
 
 Body must contain a \`## Steps\` section followed by step blocks:
 
@@ -95,7 +96,8 @@ Body must contain a \`## Steps\` section followed by step blocks:
 
 1. Read the codebase under cwd to find concrete strings: routes, button labels, aria-labels, page titles, placeholders. Use those exact strings in **Expected**.
 2. If the spec references setups, Read \`.ccqa/setups/<name>/setup-spec.md\` and verify each \`params\` key matches the setup's \`placeholders\`.
-3. Validate the (current or proposed) spec on four axes — emit one issue per finding:
+3. Populate \`relatedPaths\` in the frontmatter with **provisional** glob patterns pointing at the source files this spec touches: the route/page file for each URL the spec visits, plus the component files (or their parent feature directory) that render the aria-labels, placeholders, or visible texts the spec asserts on. Prefer directory globs (e.g. \`src/features/tasks/**\`) when several files in one area are involved. Be conservative — include a path if you're unsure rather than omit it. \`ccqa trace\` will refine this list later from real browser observations.
+4. Validate the (current or proposed) spec on four axes — emit one issue per finding:
    - **assertable**: each Expected can be verified against a string/URL/state that exists in code.
    - **setups**: referenced setup exists; params keys match placeholders.
    - **granularity**: not too coarse (multiple actions per step) nor too fine (snapshot-only steps); order is logical.
