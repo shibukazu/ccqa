@@ -132,4 +132,63 @@ setups:
     const result = parseTestSpec(BASIC_SPEC);
     expect(result.setups).toBeUndefined();
   });
+
+  test("parses relatedPaths as a string array", () => {
+    const spec = `---
+title: With related paths
+baseUrl: http://localhost:3000
+relatedPaths:
+  - src/features/tasks/**
+  - src/app/tasks/page.tsx
+---
+
+### Step 1: Check
+**Instruction**: Do check
+**Expected**: Check done
+`;
+    const result = parseTestSpec(spec);
+    expect(result.relatedPaths).toEqual([
+      "src/features/tasks/**",
+      "src/app/tasks/page.tsx",
+    ]);
+  });
+
+  test("returns undefined for relatedPaths when not specified", () => {
+    const result = parseTestSpec(BASIC_SPEC);
+    expect(result.relatedPaths).toBeUndefined();
+  });
+
+  test("returns undefined when relatedPaths is empty array", () => {
+    const spec = `---
+title: Empty related paths
+baseUrl: http://localhost
+relatedPaths: []
+---
+
+### Step 1: Check
+**Instruction**: Do check
+**Expected**: Check done
+`;
+    const result = parseTestSpec(spec);
+    expect(result.relatedPaths).toBeUndefined();
+  });
+
+  test("ignores non-string entries in relatedPaths", () => {
+    const spec = `---
+title: Mixed
+baseUrl: http://localhost
+relatedPaths:
+  - src/a.ts
+  - 42
+  - ""
+  - src/b.ts
+---
+
+### Step 1: Check
+**Instruction**: Do check
+**Expected**: Check done
+`;
+    const result = parseTestSpec(spec);
+    expect(result.relatedPaths).toEqual(["src/a.ts", "src/b.ts"]);
+  });
 });

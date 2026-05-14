@@ -7,6 +7,7 @@ import {
   ensureCcqaDir,
   listFeatureTree,
   parseSpecPath,
+  specKey,
   tryReadSpecFile,
 } from "../store/index.ts";
 import {
@@ -14,7 +15,14 @@ import {
   type DraftIssue,
   type DraftReport,
 } from "../types.ts";
-import { extractJsonBlock } from "./draft.ts";
+import {
+  getChangedFiles,
+  isPathAffectedBy,
+  resolveBaseRef,
+  type ChangedFile,
+} from "../drift/affected.ts";
+import { routeNewFilesToSpecs } from "../drift/route-new-files.ts";
+import { extractJsonBlock } from "../claude/extract-json.ts";
 import * as log from "./logger.ts";
 
 type Format = "text" | "json" | "github";
@@ -26,11 +34,16 @@ interface DriftOptions {
   concurrency?: string;
   model?: string;
   cwd?: string;
+  changed?: boolean;
+  base?: string;
 }
 
 interface SpecTarget {
   featureName: string;
   specName: string;
+  /** null = unscoped spec; treat as always-affected under --changed. */
+  relatedPaths?: string[] | null;
+  title?: string;
 }
 
 export interface SpecResult {
@@ -66,6 +79,14 @@ export const driftCommand = new Command("drift")
     "--cwd <path>",
     "Working directory used as both the .ccqa root and the codebase Claude reads. Useful for monorepos. Defaults to process.cwd().",
   )
+  .option(
+    "--changed",
+    "Restrict drift checks to specs whose relatedPaths intersect the git diff against --base (or, in CI, $GITHUB_BASE_REF, else origin/main). New files are routed to specs via a single lightweight Claude call.",
+  )
+  .option(
+    "--base <ref>",
+    "Base ref to diff against when --changed is set. Defaults to $GITHUB_BASE_REF (CI) or origin/main.",
+  )
   .action(async (specPath: string | undefined, opts: DriftOptions) => {
     const format = parseFormat(opts.format);
     const threshold = parseSeverity(opts.severity);
@@ -74,14 +95,14 @@ export const driftCommand = new Command("drift")
 
     await ensureCcqaDir(cwd);
 
-    const targets = await collectTargets(specPath, cwd);
+    if (opts.changed && specPath) {
+      log.error("--changed and an explicit spec id cannot be combined; --changed only applies to a full sweep");
+      process.exit(2);
+    }
+
+    let targets = await collectTargets(specPath, cwd);
     if (targets.length === 0) {
-      if (format === "json") {
-        process.stdout.write(`${JSON.stringify({ specs: [] }, null, 2)}\n`);
-      } else {
-        log.warn("no test specs found under .ccqa/features/");
-      }
-      process.exit(0);
+      exitWithNoSpecs(format, "no test specs found under .ccqa/features/");
     }
 
     if (format === "text") {
@@ -89,11 +110,96 @@ export const driftCommand = new Command("drift")
       if (opts.cwd) log.meta("cwd", cwd);
     }
 
+    if (opts.changed) {
+      const total = targets.length;
+      targets = await filterByChanged({ targets, cwd, baseOverride: opts.base, format, model: opts.model });
+      if (format === "text") {
+        log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
+      }
+      if (targets.length === 0) {
+        exitWithNoSpecs(format, "no specs intersect the changed file set; nothing to check");
+      }
+    }
+
     const results = await runChecks(targets, concurrency, opts.model, cwd, format);
     emitReport(results, format, cwd);
 
     process.exit(determineExitCode(results, threshold));
   });
+
+function exitWithNoSpecs(format: Format, message: string): never {
+  if (format === "json") {
+    process.stdout.write(`${JSON.stringify({ specs: [] }, null, 2)}\n`);
+  } else if (format === "text") {
+    log.info(message);
+  }
+  process.exit(0);
+}
+
+interface FilterByChangedInput {
+  targets: SpecTarget[];
+  cwd: string;
+  baseOverride: string | undefined;
+  format: Format;
+  model: string | undefined;
+}
+
+async function filterByChanged(input: FilterByChangedInput): Promise<SpecTarget[]> {
+  const { targets, cwd, baseOverride, format, model } = input;
+  const base = resolveBaseRef(baseOverride);
+
+  let changed: ChangedFile[];
+  try {
+    changed = await getChangedFiles(base, cwd);
+  } catch (e) {
+    log.error(`failed to run 'git diff' against ${base}: ${(e as Error).message}`);
+    process.exit(2);
+  }
+
+  if (format === "text") {
+    log.meta("changed-base", base);
+    log.meta("changed-files", changed.length);
+  }
+  if (changed.length === 0) return [];
+
+  const newFiles = changed.filter((f) => f.status === "added");
+  const existingChanges = changed.filter((f) => f.status !== "added");
+
+  // Unscoped specs (no relatedPaths frontmatter) are always in-scope so
+  // --changed is safe to enable before every spec has been traced.
+  const affected = new Set<string>();
+  for (const t of targets) {
+    if (!t.relatedPaths) {
+      affected.add(specKey(t));
+      continue;
+    }
+    const hit = existingChanges.some((f) => isPathAffectedBy(f.path, t.relatedPaths!))
+      || newFiles.some((f) => isPathAffectedBy(f.path, t.relatedPaths!));
+    if (hit) affected.add(specKey(t));
+  }
+
+  if (newFiles.length > 0) {
+    if (format === "text") {
+      log.info(`routing ${newFiles.length} new file(s) to specs via Claude...`);
+    }
+    const routed = await routeNewFilesToSpecs({
+      newFiles: newFiles.map((f) => f.path),
+      specs: targets
+        .filter((t) => t.relatedPaths)
+        .map((t) => ({
+          featureName: t.featureName,
+          specName: t.specName,
+          title: t.title,
+          relatedPaths: t.relatedPaths!,
+        })),
+      cwd,
+      model,
+    });
+    for (const key of routed) affected.add(key);
+  }
+
+  return targets.filter((t) => affected.has(specKey(t)));
+}
 
 async function collectTargets(specPath: string | undefined, cwd: string): Promise<SpecTarget[]> {
   if (specPath) {
@@ -110,9 +216,11 @@ async function collectTargets(specPath: string | undefined, cwd: string): Promis
   const out: SpecTarget[] = [];
   for (const feature of tree) {
     for (const spec of feature.specs) {
-      if (spec.hasSpecFile) {
-        out.push({ featureName: feature.featureName, specName: spec.specName });
-      }
+      if (!spec.hasSpecFile) continue;
+      const t: SpecTarget = { featureName: feature.featureName, specName: spec.specName };
+      if (spec.relatedPaths) t.relatedPaths = spec.relatedPaths;
+      if (spec.title) t.title = spec.title;
+      out.push(t);
     }
   }
   return out;

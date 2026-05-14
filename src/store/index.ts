@@ -1,5 +1,7 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import matter from "gray-matter";
+import { parseTestSpec } from "../spec/parser.ts";
 import type { Route, TraceAction } from "../types.ts";
 
 const CCQA_DIR = ".ccqa";
@@ -17,7 +19,16 @@ export function getCcqaDir(cwd: string = process.cwd()): string {
  * All forms resolve to { featureName: "tasks", specName: "create-and-complete" }.
  * Trailing slashes are tolerated.
  */
-export function parseSpecPath(specPath: string): { featureName: string; specName: string } {
+export interface SpecRef {
+  featureName: string;
+  specName: string;
+}
+
+export function specKey(ref: SpecRef): string {
+  return `${ref.featureName}/${ref.specName}`;
+}
+
+export function parseSpecPath(specPath: string): SpecRef {
   const cleaned = specPath.replace(/^\.\/+/, "").replace(/\/+$/, "");
   const parts = cleaned.split("/").filter((p) => p.length > 0);
 
@@ -81,6 +92,33 @@ export async function saveSpecFile(
   const specPath = join(specDir, "test-spec.md");
   const normalized = content.endsWith("\n") ? content : content + "\n";
   await writeFile(specPath, normalized, "utf-8");
+  return specPath;
+}
+
+/**
+ * Replace (or insert) the `relatedPaths` key in the spec's YAML frontmatter.
+ * Preserves every other frontmatter key and the entire body. Returns the
+ * absolute path that was written, or null if the spec file does not exist.
+ */
+export async function updateSpecRelatedPaths(
+  featureName: string,
+  specName: string,
+  relatedPaths: string[],
+  cwd?: string,
+): Promise<string | null> {
+  const specPath = join(getSpecDir(featureName, specName, cwd), "test-spec.md");
+  const existing = await readFile(specPath, "utf-8").catch(() => null);
+  if (existing === null) return null;
+
+  const parsed = matter(existing);
+  const data: Record<string, unknown> = { ...parsed.data };
+  if (relatedPaths.length > 0) {
+    data["relatedPaths"] = relatedPaths;
+  } else {
+    delete data["relatedPaths"];
+  }
+  const rewritten = matter.stringify(parsed.content, data);
+  await writeFile(specPath, rewritten, "utf-8");
   return specPath;
 }
 
@@ -215,15 +253,23 @@ export async function listSpecsForFeature(featureName: string, cwd?: string): Pr
   return readdir(testCasesDir).catch(() => []);
 }
 
+export interface FeatureTreeSpec {
+  specName: string;
+  hasSpecFile: boolean;
+  title?: string;
+  /** Absent when the spec file is missing or the YAML key is omitted. */
+  relatedPaths?: string[];
+}
+
 export interface FeatureTreeEntry {
   featureName: string;
-  specs: Array<{ specName: string; hasSpecFile: boolean; title?: string }>;
+  specs: FeatureTreeSpec[];
 }
 
 /**
  * Lists every feature/spec dir under .ccqa/features/, regardless of whether
- * the spec is fully drafted yet. Used by `ccqa draft` to suggest non-colliding
- * feature/spec names that fit the existing structure.
+ * the spec is fully drafted yet. Each spec file is read at most once: title
+ * and relatedPaths are both extracted from the same parse.
  */
 export async function listFeatureTree(cwd?: string): Promise<FeatureTreeEntry[]> {
   const featuresDir = join(getCcqaDir(cwd), "features");
@@ -234,16 +280,19 @@ export async function listFeatureTree(cwd?: string): Promise<FeatureTreeEntry[]>
       const testCasesDir = join(featuresDir, featureName, "test-cases");
       const specDirs = await readdir(testCasesDir).catch(() => []);
       const specs = await Promise.all(
-        specDirs.map(async (specName) => {
+        specDirs.map(async (specName): Promise<FeatureTreeSpec> => {
           const specFile = join(testCasesDir, specName, "test-spec.md");
           const content = await readFile(specFile, "utf-8").catch(() => null);
           if (content === null) return { specName, hasSpecFile: false };
-          const titleMatch = content.match(/^title:\s*"?([^"\n]+)"?/m);
-          return {
-            specName,
-            hasSpecFile: true,
-            title: titleMatch?.[1]?.trim(),
-          };
+          try {
+            const spec = parseTestSpec(content);
+            const entry: FeatureTreeSpec = { specName, hasSpecFile: true };
+            if (spec.title && spec.title !== "Untitled") entry.title = spec.title;
+            if (spec.relatedPaths) entry.relatedPaths = spec.relatedPaths;
+            return entry;
+          } catch {
+            return { specName, hasSpecFile: true };
+          }
         }),
       );
       return { featureName, specs };

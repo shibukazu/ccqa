@@ -19,6 +19,7 @@ export const TestSpecSchema = z.object({
   baseUrl: z.string(),
   prerequisites: z.string().optional(),
   setups: z.array(SetupRefSchema).optional(),
+  relatedPaths: z.array(z.string()).optional(),
   steps: z.array(TestStepSchema),
 });
 export type TestSpec = z.infer<typeof TestSpecSchema>;
