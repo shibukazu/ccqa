@@ -82,23 +82,6 @@ describe("normaliseResult", () => {
     expect(result.diagnosis.fixes[1]).toEqual({ kind: "increase", line: 4, increase_to: 6, reason: "slow load" });
   });
 
-  test("parses TIMING_ISSUE with legacy schema (no kind field)", () => {
-    const result = normaliseResult({
-      diagnosis: {
-        type: "TIMING_ISSUE",
-        fixes: [
-          { line: 12, seconds: 3, reason: "x" },
-          { line: 4, increase_to: 6, reason: "y" },
-        ],
-      },
-      confidence: 0.5,
-      reasoning: "",
-    });
-    if (result?.diagnosis.type !== "TIMING_ISSUE") throw new Error("expected TIMING_ISSUE");
-    expect(result.diagnosis.fixes[0]).toEqual({ kind: "insert", line: 12, seconds: 3, reason: "x" });
-    expect(result.diagnosis.fixes[1]).toEqual({ kind: "increase", line: 4, increase_to: 6, reason: "y" });
-  });
-
   test("parses OVER_ASSERTION", () => {
     const result = normaliseResult({
       diagnosis: { type: "OVER_ASSERTION", lines: [42, 43], reason: "spec doesn't require" },

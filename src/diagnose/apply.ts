@@ -54,6 +54,13 @@ export function applyTiming(script: string, fixes: SleepFix[]): FixOutcome {
   return { applied: true, script: lines.join("\n"), summary: summary.join("; ") };
 }
 
+// `abWait` is technically a wait, but in a generated spec it functions as an
+// implicit existence assertion (the line only "exists" because Claude wanted
+// to assert the element appears). Diagnose treats it the same way, so the
+// applier must, too — otherwise OVER_ASSERTION on a `abWait("[aria-label='...']")`
+// line bails out with "no abAssert lines matched" even at high confidence.
+const REMOVABLE_ASSERT_RE = /\b(?:abAssert\w*|abWait)\b/;
+
 export function applyOverAssertion(script: string, lineNumbers: number[]): FixOutcome {
   if (lineNumbers.length === 0) return { applied: false, reason: "no lines to remove" };
   const lines = script.split("\n");
@@ -64,7 +71,7 @@ export function applyOverAssertion(script: string, lineNumbers: number[]): FixOu
     const idx = line - 1;
     if (idx < 0 || idx >= lines.length) continue;
     const content = lines[idx]!;
-    if (!/abAssert/.test(content)) {
+    if (!REMOVABLE_ASSERT_RE.test(content)) {
       // Refuse to delete non-assertion lines — guards against the LLM picking the wrong line.
       continue;
     }
@@ -73,7 +80,7 @@ export function applyOverAssertion(script: string, lineNumbers: number[]): FixOu
   }
 
   if (removed.length === 0) {
-    return { applied: false, reason: "no abAssert lines matched the proposed line numbers" };
+    return { applied: false, reason: "no abAssert/abWait lines matched the proposed line numbers" };
   }
   return { applied: true, script: lines.join("\n"), summary: `removed ${removed.length} assertion(s)` };
 }

@@ -7,10 +7,17 @@ import {
   parseSpecPath,
   getTestScript,
   listAllSpecs,
+  listFeatureTree,
   listSpecsForFeature,
+  loadAvailableBlocks,
 } from "../store/index.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
+import { analyzeDrift } from "../drift/analyze.ts";
+import { renderDrift } from "../drift/format.ts";
+import { determineExitCode } from "../drift/exit-code.ts";
+import { driftAuthAvailable } from "../drift/auth.ts";
+import type { Format, SpecTarget } from "../drift/types.ts";
 import * as log from "./logger.ts";
 
 // Passing --config to vitest prevents it from discovering the host's
@@ -51,7 +58,7 @@ type VitestJsonReport = {
   testResults: VitestTestResult[];
 };
 
-type SpecRunSummary = {
+export type SpecRunSummary = {
   featureName: string;
   specName: string;
   scriptFile: string;
@@ -59,14 +66,35 @@ type SpecRunSummary = {
   exitCode: number;
 };
 
+interface RunOptions {
+  drift?: boolean;
+  driftStrict?: boolean;
+  format?: string;
+  model?: string;
+}
+
 export const runCommand = new Command("run")
   .argument("[target]", "Spec to run: '<feature>/<spec>', '<feature>', or omit for all")
-  .description("Run generated agent-browser test scripts")
-  .action(async (target?: string) => {
-    await runTests(target);
+  .description(
+    "Run generated agent-browser test scripts. " +
+      "Pass --drift to invoke a Claude-driven drift analysis on each failing spec " +
+      "(skipped silently when no test fails). Requires ANTHROPIC_API_KEY or a local Claude login.",
+  )
+  .option("--drift", "On vitest failure, run drift analysis on the failing specs")
+  .option(
+    "--drift-strict",
+    "Treat drift ERROR findings as a run failure (exit 1 even if vitest passed). Implies --drift.",
+  )
+  .option("--format <fmt>", "Output format for the drift block: text | json | github", "text")
+  .option(
+    "-m, --model <name>",
+    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Used by --drift only. Overrides CCQA_MODEL.",
+  )
+  .action(async (target: string | undefined, opts: RunOptions) => {
+    await runTests(target, opts);
   });
 
-async function runTests(target?: string): Promise<void> {
+async function runTests(target: string | undefined, opts: RunOptions): Promise<void> {
   log.header("run", target);
 
   const specs = await resolveSpecs(target);
@@ -118,11 +146,105 @@ async function runTests(target?: string): Promise<void> {
     }
 
     printSummary(summaries);
+    overallExitCode = await maybeRunDrift(summaries, opts, overallExitCode);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
 
   process.exit(overallExitCode);
+}
+
+function failedSpec(s: SpecRunSummary): boolean {
+  if (s.exitCode !== 0) return true;
+  return (s.report?.numFailedTests ?? 0) > 0;
+}
+
+function parseDriftFormat(raw: string | undefined): Format {
+  const v = raw ?? "text";
+  if (v === "text" || v === "json" || v === "github") return v;
+  log.error(`invalid --format: ${v} (expected text|json|github)`);
+  process.exit(2);
+}
+
+/**
+ * Choose which specs to drift-check. `--drift` is a fail-supplement: only the
+ * specs that failed get a drift analysis (the goal is to *explain* a vitest
+ * failure). `--drift-strict` is an audit: even passing specs are checked,
+ * because the CI need is "fail loud if the spec lags behind the source",
+ * which can absolutely happen while vitest is still green against a stale
+ * staging environment.
+ */
+export function selectDriftTargets(
+  summaries: SpecRunSummary[],
+  opts: { drift?: boolean; driftStrict?: boolean },
+): SpecRunSummary[] {
+  if (opts.driftStrict) return summaries;
+  if (opts.drift) return summaries.filter(failedSpec);
+  return [];
+}
+
+/**
+ * Opt-in post-vitest drift hook. With `--drift`, fires only when at least
+ * one spec failed (supplemental signal). With `--drift-strict`, fires
+ * unconditionally so a spec/source divergence is caught even when vitest
+ * passed. Skips silently when auth is unavailable so the run's exit code
+ * is determined by vitest alone.
+ */
+async function maybeRunDrift(
+  summaries: SpecRunSummary[],
+  opts: RunOptions,
+  currentExitCode: number,
+): Promise<number> {
+  const candidates = selectDriftTargets(summaries, opts);
+  if (candidates.length === 0) return currentExitCode;
+
+  const auth = driftAuthAvailable();
+  if (!auth.ok) {
+    log.info(`drift analysis skipped (${auth.reason})`);
+    return currentExitCode;
+  }
+
+  const format = parseDriftFormat(opts.format);
+  const cwd = process.cwd();
+  const tree = await listFeatureTree(cwd);
+  const targets = candidates
+    .map((s): SpecTarget | null => {
+      const feature = tree.find((f) => f.featureName === s.featureName);
+      const spec = feature?.specs.find((sp) => sp.specName === s.specName);
+      if (!spec) return null;
+      const t: SpecTarget = { featureName: s.featureName, specName: s.specName };
+      if (spec.relatedPaths) t.relatedPaths = spec.relatedPaths;
+      if (spec.includedBlocks) t.includedBlocks = spec.includedBlocks;
+      return t;
+    })
+    .filter((t): t is SpecTarget => t !== null);
+
+  if (targets.length === 0) {
+    log.info("drift analysis skipped (no spec.yaml found for failing specs)");
+    return currentExitCode;
+  }
+
+  const blocks = await loadAvailableBlocks(cwd);
+  const results = await analyzeDrift({
+    targets,
+    cwd,
+    blocks,
+    concurrency: Math.min(3, targets.length),
+    ...(opts.model ? { model: opts.model } : {}),
+    onSpecStart: (t) => {
+      if (format === "text") log.info(`drift: checking ${t.featureName}/${t.specName}`);
+    },
+  });
+
+  if (format === "text") {
+    process.stdout.write(`\n${C.cyan}${C.bold}──────── drift analysis ────────${C.reset}\n`);
+  }
+  process.stdout.write(renderDrift(results, format, cwd));
+
+  if (opts.driftStrict && determineExitCode(results, "error") !== 0) {
+    return currentExitCode || 1;
+  }
+  return currentExitCode;
 }
 
 async function readReport(path: string): Promise<VitestJsonReport | null> {

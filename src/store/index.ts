@@ -1,10 +1,19 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import matter from "gray-matter";
-import { parseTestSpec } from "../spec/parser.ts";
-import type { Route, TraceAction } from "../types.ts";
+import { stringify as stringifyYaml } from "yaml";
+import { collectIncludedBlockNames } from "../spec/expand.ts";
+import { parseBlockSpec, parseTestSpec } from "../spec/parser.ts";
+import { isParamRequired } from "../spec/yaml-schema.ts";
+import type { BlockSpec, Route, TestSpec, TraceAction } from "../types.ts";
+
+export interface AvailableBlock {
+  name: string;
+  title: string;
+  params: Array<{ name: string; required: boolean; secret: boolean }>;
+}
 
 const CCQA_DIR = ".ccqa";
+const SPEC_FILE = "spec.yaml";
 
 export function getCcqaDir(cwd: string = process.cwd()): string {
   return join(cwd, CCQA_DIR);
@@ -62,11 +71,12 @@ export function getSpecDir(featureName: string, specName: string, cwd?: string):
 
 export async function ensureCcqaDir(cwd?: string): Promise<void> {
   await mkdir(join(getCcqaDir(cwd), "features"), { recursive: true });
+  await mkdir(join(getCcqaDir(cwd), "blocks"), { recursive: true });
 }
 
 
 export async function readSpecFile(featureName: string, specName: string, cwd?: string): Promise<string> {
-  const specPath = join(getSpecDir(featureName, specName, cwd), "test-spec.md");
+  const specPath = join(getSpecDir(featureName, specName, cwd), SPEC_FILE);
   return readFile(specPath, "utf-8").catch(() => {
     throw new Error(`Spec file not found: ${specPath}`);
   });
@@ -77,7 +87,7 @@ export async function tryReadSpecFile(
   specName: string,
   cwd?: string,
 ): Promise<string | null> {
-  const specPath = join(getSpecDir(featureName, specName, cwd), "test-spec.md");
+  const specPath = join(getSpecDir(featureName, specName, cwd), SPEC_FILE);
   return readFile(specPath, "utf-8").catch(() => null);
 }
 
@@ -89,16 +99,16 @@ export async function saveSpecFile(
 ): Promise<string> {
   const specDir = getSpecDir(featureName, specName, cwd);
   await mkdir(specDir, { recursive: true });
-  const specPath = join(specDir, "test-spec.md");
+  const specPath = join(specDir, SPEC_FILE);
   const normalized = content.endsWith("\n") ? content : content + "\n";
   await writeFile(specPath, normalized, "utf-8");
   return specPath;
 }
 
 /**
- * Replace (or insert) the `relatedPaths` key in the spec's YAML frontmatter.
- * Preserves every other frontmatter key and the entire body. Returns the
- * absolute path that was written, or null if the spec file does not exist.
+ * Replace (or insert) the `relatedPaths` key in the spec. Preserves every
+ * other top-level field and the entire steps array. Returns the absolute
+ * path that was written, or null if the spec file does not exist.
  */
 export async function updateSpecRelatedPaths(
   featureName: string,
@@ -106,20 +116,31 @@ export async function updateSpecRelatedPaths(
   relatedPaths: string[],
   cwd?: string,
 ): Promise<string | null> {
-  const specPath = join(getSpecDir(featureName, specName, cwd), "test-spec.md");
+  const specPath = join(getSpecDir(featureName, specName, cwd), SPEC_FILE);
   const existing = await readFile(specPath, "utf-8").catch(() => null);
   if (existing === null) return null;
 
-  const parsed = matter(existing);
-  const data: Record<string, unknown> = { ...parsed.data };
-  if (relatedPaths.length > 0) {
-    data["relatedPaths"] = relatedPaths;
-  } else {
-    delete data["relatedPaths"];
-  }
-  const rewritten = matter.stringify(parsed.content, data);
-  await writeFile(specPath, rewritten, "utf-8");
+  // Round-trip through our parser so we don't accidentally drop or reorder
+  // fields. parseTestSpec throws on invalid specs — by the time we get here
+  // the file has already been validated upstream (trace reads it before
+  // emitting RELATED_PATHS), so a re-parse should succeed.
+  const spec = parseTestSpec(existing, specPath);
+  const next: TestSpec = {
+    ...spec,
+    relatedPaths: relatedPaths.length > 0 ? relatedPaths : undefined,
+  };
+  // Drop undefined keys so `yaml` doesn't serialise `relatedPaths: null`.
+  const serialised = stringifyYaml(stripUndefined(next), { lineWidth: 0 });
+  await writeFile(specPath, serialised, "utf-8");
   return specPath;
+}
+
+function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v !== undefined) out[k] = v;
+  }
+  return out as T;
 }
 
 export async function saveRoute(featureName: string, specName: string, route: Route, cwd?: string): Promise<string> {
@@ -143,55 +164,96 @@ export async function saveTraceActions(
   return actionsPath;
 }
 
-// --- Setup (shared procedures) ---
+// --- Blocks (reusable shared procedures) ---
 
-export function getSetupDir(name: string, cwd?: string): string {
-  return join(getCcqaDir(cwd), "setups", name);
+export function getBlocksDir(cwd?: string): string {
+  return join(getCcqaDir(cwd), "blocks");
 }
 
-export async function readSetupSpecFile(name: string, cwd?: string): Promise<string> {
-  const specPath = join(getSetupDir(name, cwd), "setup-spec.md");
-  return readFile(specPath, "utf-8").catch(() => {
-    throw new Error(`Setup spec not found: ${specPath}`);
-  });
+export function getBlockDir(name: string, cwd?: string): string {
+  return join(getBlocksDir(cwd), name);
 }
 
-export async function saveSetupActions(name: string, actions: TraceAction[], cwd?: string): Promise<string> {
-  const dir = getSetupDir(name, cwd);
-  await mkdir(dir, { recursive: true });
-  const path = join(dir, "actions.json");
-  await writeFile(path, JSON.stringify(actions, null, 2), "utf-8");
-  return path;
+/**
+ * Inverse of `getBlockDir`. Given a file path that appears in a git diff,
+ * return the block name if the path points at the block's spec.yaml, else
+ * null. Used by `drift --changed` to invalidate specs whose included blocks
+ * were edited. (v0.4 inlines blocks into every spec's own trace, so the
+ * block directory holds only spec.yaml — no per-block actions.json / route
+ * lives here anymore.)
+ */
+export function parseBlockPath(path: string): string | null {
+  const match = path.match(/(?:^|\/)\.ccqa\/blocks\/([^/]+)\/spec\.yaml$/);
+  return match?.[1] ?? null;
 }
 
-export async function getSetupActions(name: string, cwd?: string): Promise<{ path: string; actions: TraceAction[] }> {
-  const path = join(getSetupDir(name, cwd), "actions.json");
+/**
+ * Load every block under `.ccqa/blocks/<name>/spec.yaml`. Used by the trace /
+ * generate / drift entry points to validate include references at parse time.
+ *
+ * A malformed block is fatal — surfaces as a thrown Error with the path that
+ * failed. Missing block directories (no `spec.yaml`) are silently skipped so
+ * stray files don't break the loader.
+ */
+export async function loadAllBlocks(cwd?: string): Promise<Map<string, BlockSpec>> {
+  const dir = getBlocksDir(cwd);
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const entries = await Promise.all(
+    names.map(async (name): Promise<[string, BlockSpec] | null> => {
+      const path = join(dir, name, SPEC_FILE);
+      const content = await readFile(path, "utf-8").catch(() => null);
+      return content === null ? null : [name, parseBlockSpec(content, path)];
+    }),
+  );
+  return new Map(entries.filter((e): e is [string, BlockSpec] => e !== null));
+}
+
+/**
+ * Project the parsed blocks into the shape the draft / drift prompts consume.
+ * Co-located with `loadAllBlocks` so callers don't have to remember the
+ * isParamRequired / secret-default mapping.
+ */
+export async function loadAvailableBlocks(cwd?: string): Promise<AvailableBlock[]> {
+  const blocks = await loadAllBlocks(cwd);
+  return [...blocks.entries()].map(([name, block]) => ({
+    name,
+    title: block.title,
+    params: (block.params ?? []).map((p) => ({
+      name: p.name,
+      required: isParamRequired(p),
+      secret: p.secret === true,
+    })),
+  }));
+}
+
+export async function readBlockSpec(name: string, cwd?: string): Promise<BlockSpec> {
+  const path = join(getBlockDir(name, cwd), SPEC_FILE);
   const content = await readFile(path, "utf-8").catch(() => {
-    throw new Error(`No setup actions found for: ${name}. Run \`ccqa trace-setup ${name}\` first.`);
+    throw new Error(`Block spec not found: ${path}`);
   });
-  return { path, actions: JSON.parse(content) as TraceAction[] };
+  return parseBlockSpec(content, path);
 }
 
-export async function saveSetupRoute(name: string, route: Route, cwd?: string): Promise<string> {
-  const dir = getSetupDir(name, cwd);
-  await mkdir(dir, { recursive: true });
-  const routePath = join(dir, "route.md");
-  await writeFile(routePath, routeToMarkdown(route), "utf-8");
-  return routePath;
-}
-
-export async function saveSetupTestScript(name: string, content: string, cwd?: string): Promise<string> {
-  const dir = getSetupDir(name, cwd);
-  await mkdir(dir, { recursive: true });
-  const path = join(dir, "test.spec.ts");
-  await writeFile(path, content, "utf-8");
-  return path;
-}
-
-export async function removeSetupTestScript(name: string, cwd?: string): Promise<void> {
-  const path = join(getSetupDir(name, cwd), "test.spec.ts");
-  const { unlink } = await import("node:fs/promises");
-  await unlink(path).catch(() => {});
+/**
+ * Probe for orphaned files left over from earlier ccqa versions inside
+ * `.ccqa/blocks/<name>/`. Both pre-v0.4 `test.spec.ts` (function-export
+ * blocks) and the short-lived `actions.json` / `route.md` (recorded-block
+ * variant) are dead in the new "blocks are pure spec templates" model and
+ * should be deleted manually. Returns the absolute paths.
+ */
+export async function findStaleBlockArtifacts(cwd?: string): Promise<string[]> {
+  const dir = getBlocksDir(cwd);
+  const names = await readdir(dir).catch(() => [] as string[]);
+  const stale = await Promise.all(
+    names.flatMap((name) =>
+      ["test.spec.ts", "actions.json", "route.md"].map(async (f) => {
+        const path = join(dir, name, f);
+        const exists = await stat(path).then(() => true).catch(() => false);
+        return exists ? path : null;
+      }),
+    ),
+  );
+  return stale.filter((p): p is string => p !== null);
 }
 
 // --- Trace Actions ---
@@ -256,9 +318,10 @@ export async function listSpecsForFeature(featureName: string, cwd?: string): Pr
 export interface FeatureTreeSpec {
   specName: string;
   hasSpecFile: boolean;
-  title?: string;
-  /** Absent when the spec file is missing or the YAML key is omitted. */
+  /** Absent when the spec file is missing or the field is omitted. */
   relatedPaths?: string[];
+  /** Names of blocks this spec includes. Empty array when none. */
+  includedBlocks?: string[];
 }
 
 export interface FeatureTreeEntry {
@@ -268,8 +331,7 @@ export interface FeatureTreeEntry {
 
 /**
  * Lists every feature/spec dir under .ccqa/features/, regardless of whether
- * the spec is fully drafted yet. Each spec file is read at most once: title
- * and relatedPaths are both extracted from the same parse.
+ * the spec is fully drafted yet. Each spec file is read at most once.
  */
 export async function listFeatureTree(cwd?: string): Promise<FeatureTreeEntry[]> {
   const featuresDir = join(getCcqaDir(cwd), "features");
@@ -281,13 +343,16 @@ export async function listFeatureTree(cwd?: string): Promise<FeatureTreeEntry[]>
       const specDirs = await readdir(testCasesDir).catch(() => []);
       const specs = await Promise.all(
         specDirs.map(async (specName): Promise<FeatureTreeSpec> => {
-          const specFile = join(testCasesDir, specName, "test-spec.md");
+          const specFile = join(testCasesDir, specName, SPEC_FILE);
           const content = await readFile(specFile, "utf-8").catch(() => null);
           if (content === null) return { specName, hasSpecFile: false };
           try {
-            const spec = parseTestSpec(content);
-            const entry: FeatureTreeSpec = { specName, hasSpecFile: true };
-            if (spec.title && spec.title !== "Untitled") entry.title = spec.title;
+            const spec = parseTestSpec(content, specFile);
+            const entry: FeatureTreeSpec = {
+              specName,
+              hasSpecFile: true,
+              includedBlocks: collectIncludedBlockNames(spec),
+            };
             if (spec.relatedPaths) entry.relatedPaths = spec.relatedPaths;
             return entry;
           } catch {

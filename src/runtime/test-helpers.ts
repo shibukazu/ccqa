@@ -1,85 +1,16 @@
-import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
-
-// Use createRequire instead of import.meta.resolve so this module works under
-// Vite/Vitest's SSR transform (which replaces import.meta with a shim that
-// lacks .resolve). import.meta.url survives the transform, so createRequire
-// based on it can still locate peer-installed packages.
-const require = createRequire(import.meta.url);
-const AB = require.resolve("agent-browser/bin/agent-browser.js");
-
-type Result = { status: number | null; stdout: string; stderr: string };
-
-// agent-browser surfaces EAGAIN (os error 35 / "Resource temporarily
-// unavailable") when its state file is being written by a concurrent
-// command and the reader hits the filesystem mid-flush. The flake is most
-// severe right after `open` while a fresh Chrome instance is booting —
-// the daemon's own internal retry budget (~ a couple of seconds) regularly
-// exhausts before the state file stabilises.
-//
-// We wrap spawnSync with an outer retry loop that polls for up to ~30s
-// before giving up. Real failures (selector mismatches, true timeouts,
-// non-zero exits without the EAGAIN signature) are returned on the first
-// attempt — we only loop when stdout/stderr explicitly mentions the
-// EAGAIN signature.
-const EAGAIN_PATTERN = /Resource temporarily unavailable|os error 35/i;
-const EAGAIN_TOTAL_BUDGET_MS = 30_000;
-const EAGAIN_BACKOFF_MS = [
-  // Quick polls cover the common case (daemon settles in < 2s).
-  100, 200, 300, 500, 700, 1000,
-  // Then back off slowly through the budget for stubborn cases (a few
-  // seconds of state-file contention, especially during fresh `open`).
-  1500, 2000, 2500, 3000, 3000, 3000, 3000, 3000, 3000,
-] as const;
+import { sleepSync, spawnAB, type Result } from "./spawn-ab.ts";
 
 // `ab open` returns as soon as the navigation is dispatched, but the
 // daemon keeps writing to its state file for a beat afterwards. Without
 // this short pause the very next assertion routinely hits EAGAIN even
-// with the retry loop above. 600ms covers the typical settle time
-// observed in practice without adding noticeable latency to the test.
+// with the retry loop in `spawn-ab.ts`. 600ms covers the typical settle
+// time observed in practice without adding noticeable latency to the test.
 const POST_OPEN_SETTLE_MS = 600;
 
-function sleepSync(ms: number): void {
-  const buf = new SharedArrayBuffer(4);
-  Atomics.wait(new Int32Array(buf), 0, 0, ms);
-}
-
-// Hard ceiling on a single agent-browser invocation. agent-browser is
-// supposed to honor its own --timeout, but if the daemon is wedged (stale
-// session, dead Chrome) spawnSync would otherwise wait forever because
-// stdio never closes. 90s is well past wait --timeout 30000ms + the
-// 30s EAGAIN budget, so legitimate work always completes first.
-const PROCESS_HARD_TIMEOUT_MS = 90_000;
-
-function spawnABOnce(args: string[]): Result {
-  const result = spawnSync(AB, args, { stdio: "pipe", timeout: PROCESS_HARD_TIMEOUT_MS });
-  return {
-    status: result.status,
-    stdout: result.stdout?.toString() ?? "",
-    stderr:
-      (result.stderr?.toString() ?? "") +
-      (result.signal === "SIGTERM" ? "\n[ccqa] agent-browser killed after hard timeout" : ""),
-  };
-}
-
-function spawnAB(args: string[]): Result {
-  let result = spawnABOnce(args);
-  let elapsed = 0;
-  let attempt = 0;
-  while (result.status !== 0 && elapsed < EAGAIN_TOTAL_BUDGET_MS) {
-    const combined = `${result.stdout}\n${result.stderr}`;
-    if (!EAGAIN_PATTERN.test(combined)) return result;
-    const wait = EAGAIN_BACKOFF_MS[attempt] ?? 3000;
-    sleepSync(wait);
-    elapsed += wait;
-    attempt++;
-    result = spawnABOnce(args);
-  }
-  return result;
-}
-
 function logStep(action: string, args: readonly unknown[]): void {
-  const pretty = args.map((a) => (typeof a === "string" ? a : JSON.stringify(a))).join("  ");
+  const pretty = args
+    .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+    .join("  ");
   process.stdout.write(`  ▶ ${action.padEnd(14)} ${pretty}\n`);
 }
 
@@ -196,3 +127,4 @@ export function abAssertUnchecked(selector: string): void {
   const value = result.stdout.trim();
   if (value !== "false") fail(`Assertion failed: ${JSON.stringify(selector)} is not unchecked (got: ${value})`, result);
 }
+

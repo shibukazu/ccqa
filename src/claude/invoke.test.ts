@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, isBlockedAbSubcommand, hasRefSelector, shellTokenize } from "./invoke.ts";
+import { extractAbActionFromBashCommand, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize } from "./invoke.ts";
 
 describe("extractAbActionFromBashCommand", () => {
   test("returns null for non-agent-browser commands", () => {
@@ -163,5 +163,33 @@ describe("extractAbActionFromBashCommand with compound selectors", () => {
     expect(
       extractAbActionFromBashCommand(`agent-browser --session s1 fill ".modal-footer button" "OK"`),
     ).toBe("AB_ACTION|fill|.modal-footer button|OK|");
+  });
+});
+
+describe("isBashToolResponseError", () => {
+  test("treats is_error: true as a failure", () => {
+    expect(isBashToolResponseError({ is_error: true })).toBe(true);
+  });
+
+  test("treats non-zero exitCode as a failure (Bash shape)", () => {
+    expect(isBashToolResponseError({ output: "selector not found", exitCode: 1 })).toBe(true);
+  });
+
+  test("treats killed: true as a failure (Bash timeout)", () => {
+    expect(isBashToolResponseError({ output: "", exitCode: 0, killed: true })).toBe(true);
+  });
+
+  test("treats exitCode 0 without is_error as success", () => {
+    expect(isBashToolResponseError({ output: "ok", exitCode: 0 })).toBe(false);
+  });
+
+  test("treats missing fields as success (never spuriously roll back)", () => {
+    expect(isBashToolResponseError({})).toBe(false);
+  });
+
+  test("treats non-object responses as success", () => {
+    expect(isBashToolResponseError(null)).toBe(false);
+    expect(isBashToolResponseError(undefined)).toBe(false);
+    expect(isBashToolResponseError("ok")).toBe(false);
   });
 });

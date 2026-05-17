@@ -59,6 +59,24 @@ describe("applyOverAssertion", () => {
   test("bails on empty list", () => {
     expect(applyOverAssertion(SCRIPT, []).applied).toBe(false);
   });
+
+  test("treats abWait as a removable assertion (it is an implicit existence assert)", () => {
+    const scriptWithWait = [
+      `import { test } from "vitest";`,
+      `import { ab, abWait } from "ccqa/test-helpers";`,
+      ``,
+      `test("demo", () => {`,
+      `  ab("open", "/");`,
+      `  abWait("[aria-label='Execute']");`,
+      `  ab("click", "text=Execute");`,
+      `});`,
+    ].join("\n");
+    const out = applyOverAssertion(scriptWithWait, [6]);
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).not.toContain("abWait(");
+    expect(out.script).toContain("ab(\"click\"");
+  });
 });
 
 describe("applySelectorDrift", () => {

@@ -8,7 +8,6 @@ import * as log from "../cli/logger.ts";
 export interface SpecSummary {
   featureName: string;
   specName: string;
-  title?: string;
   relatedPaths: string[];
 }
 
@@ -131,11 +130,10 @@ export function buildRouterPrompt(
 
   const specBlocks = specs
     .map((s) => {
-      const title = s.title ? ` — ${s.title}` : "";
       const paths = s.relatedPaths.length === 0
         ? "  (no relatedPaths declared)"
         : s.relatedPaths.map((p) => `  - ${p}`).join("\n");
-      return `- ${s.featureName}/${s.specName}${title}\n${paths}`;
+      return `- ${s.featureName}/${s.specName}\n${paths}`;
     })
     .join("\n");
 

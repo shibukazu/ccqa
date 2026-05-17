@@ -2,7 +2,7 @@ import type { TraceAction } from "../types.ts";
 
 export interface DiagnosePromptInput {
   script: string;
-  specMarkdown: string;
+  specYaml: string;
   actions: TraceAction[];
   failureLog: string;
   /** Optional: accessibility-tree dump from agent-browser captured right after the failure. */
@@ -17,7 +17,7 @@ export interface DiagnosePromptInput {
 }
 
 export function buildDiagnosePrompt(input: DiagnosePromptInput): string {
-  const { script, specMarkdown, actions, failureLog, pageSnapshot, outputLanguage = "en" } = input;
+  const { script, specYaml, actions, failureLog, pageSnapshot, outputLanguage = "en" } = input;
 
   const numbered = script
     .split("\n")
@@ -124,11 +124,11 @@ Pick exactly ONE category. The output JSON must follow the shape for that catego
 - Your **final** assistant message must start with \`{\` and end with \`}\` — a single JSON object, nothing before or after. No prose preamble like "Confirmed: ...", no markdown fences, no commentary, no tool calls in the same turn. If you have an analysis sentence, put it in the \`reasoning\` field.
 - Line numbers refer to the numbered test script below (1-based).
 - For SELECTOR_DRIFT, \`oldSelector\` must match a substring of the script at that line; \`newSelector\` must be backed by a concrete file:line you read with Grep/Read (do not invent). Cite the evidence in \`reasoning\`.
-- For OVER_ASSERTION, only include lines that contain assert calls (\`abAssert*\`).
-- Cross-check assertions against the spec markdown. If the spec doesn't require the assertion, OVER_ASSERTION is the better diagnosis than SELECTOR_DRIFT.
+- For OVER_ASSERTION, only include lines that contain assert calls (\`abAssert*\`) or existence-checking waits (\`abWait\`); a recorded \`abWait("[selector]")\` is an implicit existence assertion and a valid removal candidate when the spec never required that element to be present.
+- Cross-check assertions against the spec YAML. If the spec doesn't require the assertion, OVER_ASSERTION is the better diagnosis than SELECTOR_DRIFT.
 
-## Test Spec (test-spec.md)
-${specMarkdown}
+## Test Spec (spec.yaml)
+${specYaml}
 
 ## Recorded Actions (actions.json summary)
 ${actionsSummary}

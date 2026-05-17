@@ -17,14 +17,13 @@ describe("buildRouterPrompt", () => {
         {
           featureName: "tasks",
           specName: "create",
-          title: "Create a task",
           relatedPaths: ["src/features/tasks/**"],
         },
       ],
     );
     expect(p).toContain("### src/new.ts");
     expect(p).toContain("export const x = 1;");
-    expect(p).toContain("tasks/create — Create a task");
+    expect(p).toContain("tasks/create");
     expect(p).toContain("src/features/tasks/**");
   });
 

@@ -59,8 +59,16 @@ export async function invokeClaudeStreaming(
 
   const resolvedModel = resolveModel(model);
 
-  // Track the last agent-browser tool_use_id so PostToolUseFailure can roll back
+  // Track the last agent-browser tool_use_id so the post-tool hooks can roll
+  // it back at most once. `claimAbToolUse` atomically tests-and-clears the id
+  // so PostToolUse and PostToolUseFailure can't both fire `onAbActionFailed`
+  // for the same tool call (SDK order between the two channels is unspecified).
   let lastAbToolUseId: string | null = null;
+  const claimAbToolUse = (toolUseId: string): boolean => {
+    if (toolUseId !== lastAbToolUseId) return false;
+    lastAbToolUseId = null;
+    return true;
+  };
 
   const sdkOptions: Options = {
     systemPrompt,
@@ -112,16 +120,40 @@ export async function invokeClaudeStreaming(
                 ],
               },
             ],
+            // SDK splits hook events into two channels for tool results:
+            //   - PostToolUse:        tool produced a response (success OR Bash exit-code-non-zero)
+            //   - PostToolUseFailure: tool itself never produced a response (throw, permission denied, ...)
+            //
+            // For agent-browser invocations the failure mode is almost always
+            // `agent-browser exit 1` after a selector miss or timeout — that
+            // case surfaces on PostToolUse with `tool_response.is_error: true`
+            // (and/or non-zero `exitCode`), NOT on PostToolUseFailure. So the
+            // rollback logic has to live on both channels: PostToolUse handles
+            // the common exit-code path, PostToolUseFailure stays as a fallback
+            // for SDK-level breakage (process killed, etc.).
+            PostToolUse: [
+              {
+                hooks: [
+                  async (input: HookInput) => {
+                    if (input.hook_event_name !== "PostToolUse") return {};
+                    if (input.tool_name !== "Bash") return {};
+                    if (!isBashToolResponseError(input.tool_response)) return {};
+                    if (claimAbToolUse(input.tool_use_id) && onAbActionFailed) {
+                      onAbActionFailed();
+                    }
+                    return {};
+                  },
+                ],
+              },
+            ],
             PostToolUseFailure: [
               {
                 hooks: [
                   async (input: HookInput) => {
                     if (input.hook_event_name !== "PostToolUseFailure") return {};
                     if (input.tool_name !== "Bash") return {};
-                    // If the failed Bash command was the one that emitted an AB_ACTION, roll it back
-                    if (input.tool_use_id === lastAbToolUseId && onAbActionFailed) {
+                    if (claimAbToolUse(input.tool_use_id) && onAbActionFailed) {
                       onAbActionFailed();
-                      lastAbToolUseId = null;
                     }
                     return {};
                   },
@@ -200,6 +232,27 @@ export function extractAbSubcommand(cmd: string): string | null {
 export function isBlockedAbSubcommand(cmd: string): boolean {
   const sub = extractAbSubcommand(cmd);
   return sub !== null && BLOCKED_AB_SUBCOMMANDS.has(sub);
+}
+
+/**
+ * Detects "the Bash tool returned an error" from a SDK PostToolUse hook's
+ * `tool_response`. The SDK can shape this two ways depending on how Claude
+ * Code reports Bash failures:
+ *
+ *   - `{ is_error: true, ... }`              — the canonical Bash failure shape
+ *   - `{ output, exitCode, killed?, ... }`   — the BashOutput shape; treat
+ *                                              non-zero exit / kill as error
+ *
+ * We accept either. Anything else (including missing fields) is treated as a
+ * successful response so we never roll back over an unrelated tool call.
+ */
+export function isBashToolResponseError(tool_response: unknown): boolean {
+  if (tool_response === null || typeof tool_response !== "object") return false;
+  const r = tool_response as Record<string, unknown>;
+  if (r["is_error"] === true) return true;
+  if (typeof r["exitCode"] === "number" && r["exitCode"] !== 0) return true;
+  if (r["killed"] === true) return true;
+  return false;
 }
 
 /** Returns true if any argument to an agent-browser command uses a @ref selector (e.g. @e14). */

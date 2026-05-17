@@ -14,11 +14,13 @@ import { parseTestSpec } from "../spec/parser.ts";
 import {
   ensureCcqaDir,
   listFeatureTree,
+  loadAvailableBlocks,
   parseSpecPath,
   saveSpecFile,
   tryReadSpecFile,
 } from "../store/index.ts";
 import {
+  DRAFT_CATEGORY_LABEL,
   DraftNamingSchema,
   DraftReportSchema,
   type DraftIssue,
@@ -27,16 +29,11 @@ import {
 } from "../types.ts";
 import * as log from "./logger.ts";
 
-const CATEGORY_LABEL: Record<DraftIssue["category"], string> = {
-  assertable: "Assertability",
-  setups: "Setup references",
-  granularity: "Step granularity",
-  unimplemented: "Unimplemented checks",
-};
+const CATEGORY_LABEL = DRAFT_CATEGORY_LABEL;
 
 export const draftCommand = new Command("draft")
   .argument("[feature/spec]", "Optional spec path (e.g. tasks/create-and-complete). If omitted, Claude proposes one from your intent.")
-  .description("Interactively draft and refine a test-spec.md with Claude Code")
+  .description("Interactively draft and refine a spec.yaml with Claude Code")
   .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
   .option("--apply", "Auto-apply each generated patch without [y/N] confirmation", false)
   .action(async (specPath: string | undefined, opts: { instruction?: string; apply?: boolean }) => {
@@ -143,7 +140,8 @@ async function runOneTurn(input: TurnInput): Promise<TurnResult> {
   const { featureName, specName, existing, userInput, autoApply } = input;
   const isFirstRun = existing === null;
 
-  const systemPrompt = buildDraftSystemPrompt();
+  const blocks = await loadAvailableBlocks();
+  const systemPrompt = buildDraftSystemPrompt(blocks);
   const userPrompt = buildDraftPrompt({
     mode: isFirstRun ? "create" : "refine",
     existing: existing ?? "",
@@ -333,7 +331,7 @@ async function proposeNaming(
   const tree = await listFeatureTree();
   const treeForPrompt: ExistingFeatureTree[] = tree.map((f) => ({
     featureName: f.featureName,
-    specs: f.specs.map((s) => ({ specName: s.specName, ...(s.title ? { title: s.title } : {}) })),
+    specs: f.specs.map((s) => ({ specName: s.specName })),
   }));
 
   log.info("Proposing a feature/spec name based on your intent...");

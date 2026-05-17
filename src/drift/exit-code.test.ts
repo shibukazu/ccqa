@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { determineExitCode } from "./drift.ts";
+import { determineExitCode } from "./exit-code.ts";
 import type { DraftIssue } from "../types.ts";
 
 function issue(severity: DraftIssue["severity"]): DraftIssue {

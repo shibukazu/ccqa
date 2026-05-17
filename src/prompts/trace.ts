@@ -1,39 +1,43 @@
-import type { TestSpec, SetupSpec } from "../types.ts";
-
 export function generateSessionName(): string {
   return `ccqa-trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 }
 
-export interface TraceSystemPromptOptions {
+export interface TracePromptStep {
+  id: string;
+  source: string;
+  instruction: string;
+  expected: string;
+}
+
+export interface TraceSystemPromptInput {
+  title: string;
+  steps: TracePromptStep[];
   sessionName?: string;
-  skipCookiesClear?: boolean;
 }
 
-export function buildTraceSystemPrompt(spec: TestSpec, options?: TraceSystemPromptOptions): string {
-  return buildTraceSystemPromptInner(spec, options, true);
-}
-
-function buildTraceSystemPromptInner(
-  spec: TestSpec,
-  options: TraceSystemPromptOptions | undefined,
-  emitRelatedPaths: boolean,
-): string {
-  const sessionName = options?.sessionName ?? generateSessionName();
-  const skipCookiesClear = options?.skipCookiesClear ?? false;
-
-  const stepsText = spec.steps
+/**
+ * Build the trace system prompt. `input.steps` is a flat list with includes
+ * already expanded (each step carries id / source / instruction / expected).
+ * The spec opens URLs via explicit step instructions (e.g.
+ * `instruction: "${APP_URL}/articles を開く"`).
+ *
+ * In v0.4 every spec is traced from scratch — block contents are inlined
+ * into the spec's own step list at expand time, so the prompt has no
+ * special "this is a block" mode. The `source` tag on each step still
+ * distinguishes spec-native steps from inlined block steps for the
+ * `// step:` comments in the eventual codegen output.
+ */
+export function buildTraceSystemPrompt(input: TraceSystemPromptInput): string {
+  const sessionName = input.sessionName ?? generateSessionName();
+  const stepsText = input.steps
     .map(
-      (step) => `### ${step.id}: ${step.title}
+      (step) => `### ${step.id} [${step.source}]
 - **Instruction**: ${step.instruction}
 - **Expected**: ${step.expected}`,
     )
     .join("\n\n");
 
-  const prereqText = spec.prerequisites
-    ? `## Prerequisites\n${spec.prerequisites}\n\n`
-    : "";
-
-  const relatedPathsBlock = emitRelatedPaths ? buildRelatedPathsInstruction() : "";
+  const relatedPathsBlock = buildRelatedPathsInstruction();
 
   return `You are an expert QA engineer executing a browser E2E test. Execute each step precisely and record every browser action as a structured log line.
 
@@ -55,7 +59,8 @@ agent-browser --session SESSION uncheck "<selector>"
 agent-browser --session SESSION press <Key>
 agent-browser --session SESSION select "<selector>" "<value>"
 agent-browser --session SESSION hover "<selector>"
-agent-browser --session SESSION wait --text "<text>"
+agent-browser --session SESSION wait --text "<text>" [--timeout <ms>]
+agent-browser --session SESSION wait "<selector>" [--timeout <ms>] [--state visible|hidden]
 agent-browser --session SESSION cookies clear
 \`\`\`
 
@@ -90,17 +95,18 @@ agent-browser --session SESSION cookies clear
 
 ## Test Specification
 
-Title: ${spec.title}
-Base URL: ${spec.baseUrl}
+Title: ${input.title}
 
-${prereqText}## Steps
+Each step's instruction names the URL to open directly (or via \`\${ENV_VAR}\`). Open exactly the URL the step says to open.
+
+## Steps
 
 ${stepsText}
 
 ## Execution Workflow
 
 For each step:
-1. Emit \`STEP_START|<step-id>|<step-title>\`
+1. Emit \`STEP_START|<step-id>|<short description of what this step does>\`
 2. Run \`snapshot\` and identify selectors from the ARIA tree
 3. Execute the action using an ALLOWED selector
 4. Emit \`AB_ACTION|...\` for every browser action (see below)
@@ -187,6 +193,15 @@ AB_ACTION|assert|<assertType>|<selector or "">|<value or "">|<observation>
 
 The selector in AB_ACTION must be one of the ALLOWED formats above.
 
+**CRITICAL — record only successful actions.** The AB_ACTION stream is the
+canonical replay sequence: every line in it must be reproducible on a fresh
+browser session. Therefore:
+
+- If you tried a selector and \`agent-browser\` returned a non-zero exit (selector not found, element not interactable, timeout): **do NOT emit \`AB_ACTION|...\`** for that attempt. Take a fresh snapshot, switch selector, and only emit the AB_ACTION for the call that finally succeeded.
+- If you explored multiple selectors for the same logical action (e.g. tried \`[aria-label='Email']\`, it failed, then \`[placeholder='Email']\` worked): emit AB_ACTION for the **working selector only**. The failed attempt must not appear in the trace.
+- The same rule applies to \`AB_ACTION|assert|...\` lines: only emit them for assertions you actually verified on the current page in the current snapshot. Never declare an assertion against a selector you have not just confirmed visible — even if you intended to use it earlier.
+- If a step ultimately fails after retries: emit \`ASSERTION_FAILED\` and STOP. Do NOT leave half-recorded actions for the failed step in the AB_ACTION stream.
+
 ## Assertion Protocol
 
 After verifying each step, emit \`AB_ACTION|assert\` lines for each signal you confirmed.
@@ -218,8 +233,35 @@ After verifying each step, emit \`AB_ACTION|assert\` lines for each signal you c
 **Selector rules for assert actions — CRITICAL:**
 - Use the **same ALLOWED formats** as browser actions — never invent aria-label values
 - Only use \`[aria-label='...']\` if that **exact** aria-label string appears in the current ARIA snapshot output
-- When unsure, prefer \`text_visible\`/\`text_not_visible\` (no selector needed) over guessing a selector
+- When unsure, prefer \`text_visible\`/\`text_not_visible\` (no selector needed) over guessing a selector — but still pre-verify with \`wait --text\` per the MUST-VERIFY rule below; \`alt\`-attribute "text" will not match.
 - For \`element_disabled\`/\`element_enabled\`: use a CSS class selector if no aria-label is confirmed in the snapshot
+
+**MUST-VERIFY rule — STRICT (applies to every assert except \`url_contains\`):**
+
+The \`snapshot\` output is the **accessibility tree**: a semantic view. \`agent-browser\` queries the **real DOM**. They DO NOT always match. Two known traps:
+
+1. *Selector trap*: a snapshot row like \`textbox "Email address"\` is reachable via \`[placeholder='...']\` but **NOT** via \`[aria-label='...']\` if no \`aria-label\` attribute is actually set — the browser inferred the label from \`<label for=>\` / surrounding text / \`placeholder\`.
+2. *Text trap*: a snapshot row like \`link "Dashboard"\` may come from \`<a><img alt="Dashboard"></a>\` — the visible "text" is an \`alt\` attribute, not a text node. \`text_visible\` (which scans visible text nodes via \`wait --text\`) will NOT find it.
+
+Before emitting an \`AB_ACTION|assert|...\` line, **verify the assertion form actually resolves on the live page**:
+
+\`\`\`bash
+# element_visible / element_enabled / element_disabled / element_checked / element_unchecked
+agent-browser --session SESSION wait "<selector>" --timeout 3000
+
+# element_not_visible
+agent-browser --session SESSION wait "<selector>" --state hidden --timeout 3000
+
+# text_visible
+agent-browser --session SESSION wait --text "<text>" --timeout 3000
+
+# text_not_visible
+agent-browser --session SESSION wait --text "<text>" --state hidden --timeout 3000
+\`\`\`
+
+Apply the "record only successful actions" rule from the AB_ACTION section above. **Additionally**, when *no* form verifies — e.g. you tried \`[aria-label='X']\`, \`[placeholder='X']\`, and \`text=X\` and they all timed out, or the "text" turned out to be an \`alt\` / aria-label — **DROP the assertion entirely**. Fewer, real assertions beat invented ones that fail at replay. Prefer swapping a failed \`text_visible\` for an \`element_visible\` against the link/button selector when the visible label came from \`alt\` / aria-label.
+
+\`url_contains\` is exempt — it checks the current URL string, not the DOM/accessibility tree.
 
 **Examples:**
 \`\`\`
@@ -236,7 +278,7 @@ AB_ACTION|assert|text_visible|||Success|Confirmation message appeared
 Emit exactly one status line per step (outside any code block):
 
 \`\`\`
-STEP_START|<step-id>|<step-title>
+STEP_START|<step-id>|<short description of what this step does>
 STEP_DONE|<step-id>|<what was verified>
 ASSERTION_FAILED|<step-id>|<category: app-bug|env-issue|auth-blocked|missing-test-data|selector-drift|agent-misread>: <reason>
 STEP_SKIPPED|<step-id>|<reason>
@@ -249,38 +291,31 @@ RUN_COMPLETED|failed|<summary>
 After each step (outside any code block):
 
 \`\`\`
-ROUTE_STEP|<step-id>|<step-title>|ACTION:<what you did>|OBSERVATION:<what you verified>|STATUS:<PASSED|FAILED|SKIPPED>
+ROUTE_STEP|<step-id>|<short description>|ACTION:<what you did>|OBSERVATION:<what you verified>|STATUS:<PASSED|FAILED|SKIPPED>
 \`\`\`
 
 ${relatedPathsBlock}## Start
 
-${skipCookiesClear ? `A setup procedure has already been executed in this session. Do NOT clear cookies — keep the existing session state.
+Begin by clearing cookies, then proceed straight to the first step's instruction.
 
 \`\`\`bash
-agent-browser --session ${sessionName} open ${spec.baseUrl}
-\`\`\`
-
-Emit:
-\`\`\`
-AB_ACTION|open|${spec.baseUrl}
-\`\`\`` : `\`\`\`bash
 agent-browser --session ${sessionName} cookies clear
-agent-browser --session ${sessionName} open ${spec.baseUrl}
 \`\`\`
 
 Emit:
 \`\`\`
 AB_ACTION|cookies_clear
-AB_ACTION|open|${spec.baseUrl}
-\`\`\``}
+\`\`\`
 
-Then emit \`STEP_START|step-01|...\` and begin.`;
+Then emit \`STEP_START|step-01|...\` and execute the first step. The first step is responsible for opening the initial URL.
+`;
 }
+
 
 function buildRelatedPathsInstruction(): string {
   return `## Post-run: emit \`relatedPaths\` block
 
-After all steps are complete (regardless of pass/fail) and **before** \`RUN_COMPLETED\`, you MUST emit a single \`RELATED_PATHS\` block. The host (not you) writes these paths into the spec's frontmatter — your only job is to emit the block.
+After all steps are complete (regardless of pass/fail) and **before** \`RUN_COMPLETED\`, you MUST emit a single \`RELATED_PATHS\` block. The host (not you) writes these paths into the spec — your only job is to emit the block.
 
 \`relatedPaths\` is a list of glob patterns identifying the source files this spec depends on. CI uses them to decide whether a code change should trigger a drift check for this spec.
 
@@ -312,18 +347,6 @@ Emit the block outside any other code block, on its own lines. If the test could
 `;
 }
 
-export function buildTracePrompt(spec: TestSpec): string {
-  return `Execute the test for "${spec.title}" at ${spec.baseUrl}.`;
-}
-
-export function buildSetupTraceSystemPrompt(spec: SetupSpec): string {
-  return buildTraceSystemPromptInner(
-    { title: spec.title, baseUrl: "about:blank", steps: spec.steps },
-    undefined,
-    false,
-  );
-}
-
-export function buildSetupTracePrompt(spec: SetupSpec): string {
-  return `Execute the setup procedure "${spec.title}". Follow each step precisely.`;
+export function buildTracePrompt(title: string): string {
+  return `Execute the test for "${title}". Each step's instruction includes the URL or selector context it needs.`;
 }

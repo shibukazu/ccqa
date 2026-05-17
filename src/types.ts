@@ -1,40 +1,21 @@
 import { z } from "zod";
 
-export const TestStepSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  instruction: z.string(),
-  expected: z.string(),
-});
-export type TestStep = z.infer<typeof TestStepSchema>;
-
-export const SetupRefSchema = z.object({
-  name: z.string(),
-  params: z.record(z.string(), z.string()).optional(),
-});
-export type SetupRef = z.infer<typeof SetupRefSchema>;
-
-export const TestSpecSchema = z.object({
-  title: z.string(),
-  baseUrl: z.string(),
-  prerequisites: z.string().optional(),
-  setups: z.array(SetupRefSchema).optional(),
-  relatedPaths: z.array(z.string()).optional(),
-  steps: z.array(TestStepSchema),
-});
-export type TestSpec = z.infer<typeof TestSpecSchema>;
-
-export const PlaceholderDefSchema = z.object({
-  dummy: z.string(),
-  description: z.string().optional(),
-});
-
-export const SetupSpecSchema = z.object({
-  title: z.string(),
-  placeholders: z.record(z.string(), PlaceholderDefSchema).optional(),
-  steps: z.array(TestStepSchema),
-});
-export type SetupSpec = z.infer<typeof SetupSpecSchema>;
+export {
+  ActionStepSchema,
+  BlockParamSchema,
+  BlockSpecSchema,
+  IncludeStepSchema,
+  StepSchema,
+  TestSpecSchema,
+  isIncludeStep,
+  isParamRequired,
+  type ActionStep,
+  type BlockParam,
+  type BlockSpec,
+  type IncludeStep,
+  type Step,
+  type TestSpec,
+} from "./spec/yaml-schema.ts";
 
 export const RouteStepSchema = z.object({
   title: z.string(),
@@ -81,11 +62,12 @@ export interface TraceAction {
   observation?: string;
   /** Only for command: "assert" */
   assertType?: AssertType;
+  stepId?: string;
 }
 
 export const DraftIssueSchema = z.object({
   severity: z.enum(["OK", "WARN", "ERROR"]),
-  category: z.enum(["assertable", "setups", "granularity", "unimplemented"]),
+  category: z.enum(["assertable", "blocks", "granularity", "unimplemented"]),
   stepId: z.string().nullable(),
   message: z.string(),
   detail: z.string().optional(),
@@ -97,6 +79,13 @@ export const DraftReportSchema = z.object({
   patch: z.string(),
 });
 export type DraftReport = z.infer<typeof DraftReportSchema>;
+
+export const DRAFT_CATEGORY_LABEL: Record<DraftIssue["category"], string> = {
+  assertable: "Assertability",
+  blocks: "Block references",
+  granularity: "Step granularity",
+  unimplemented: "Unimplemented checks",
+};
 
 export const DraftNamingSchema = z.object({
   featureName: z.string().min(1),
