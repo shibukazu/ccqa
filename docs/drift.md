@@ -1,6 +1,11 @@
-# Drift detection in CI
+# Drift detection
 
-`ccqa drift` checks every `test-spec.md` against the current codebase and reports anywhere they have fallen out of sync — renamed aria-labels, removed routes, missing setups, assertions about UI that no longer exists. No browser, no LLM-driven actions, no patches applied: a read-only review designed for CI.
+Drift analysis asks Claude whether each `spec.yaml` is still in sync with the current codebase, surfacing renamed aria-labels, removed routes, missing blocks, and assertions about UI that no longer exists. It is read-only: no browser, no patches.
+
+There are two ways to invoke drift:
+
+1. **`ccqa run --drift`** — the common case. When `ccqa run` finishes and a spec failed, drift is launched on just the failing specs so the test failure log is followed by a Claude-generated explanation. See [Auto-fix](./auto-fix.md) for how this complements the `generate` auto-fix loop.
+2. **`ccqa drift`** — standalone. Use this for a full audit (scheduled job, pre-merge sweep), or to inspect a single spec without running its test. The flags below describe this mode.
 
 ```bash
 ccqa drift                              # check every spec under .ccqa/features/
@@ -19,16 +24,16 @@ ccqa drift --changed --base origin/dev  # diff against an explicit base ref
 Running drift on every spec for every PR is expensive. To scope a CI run to the
 specs that the PR actually touches, pass `--changed`.
 
-Each `test-spec.md` may declare a `relatedPaths` list in its YAML frontmatter:
+Each `spec.yaml` may declare a top-level `relatedPaths` list:
 
 ```yaml
----
-title: "Create and complete a task"
-baseUrl: "http://localhost:3000"
+title: Create and complete a task
 relatedPaths:
   - src/features/tasks/**
   - src/app/tasks/page.tsx
----
+steps:
+  - instruction: ...
+    expected: ...
 ```
 
 These are glob patterns identifying the source files the spec depends on. Both
@@ -47,8 +52,7 @@ When `--changed` is set, `ccqa drift`:
    that maps each new file to the specs it plausibly affects. This catches
    drift in code that no existing `relatedPaths` glob could know about yet.
 4. Specs with no `relatedPaths` declared (e.g. fresh specs that have never been
-   traced) are always considered in-scope — `--changed` is safe to enable
-   incrementally during a migration.
+   traced) are always considered in-scope.
 
 Supported glob syntax: `**` (any depth), `*` (run of non-slash chars), `?`
 (single non-slash char). Globs are intentionally minimal — keep `relatedPaths`
@@ -70,11 +74,13 @@ package's specs in.
 
 ## GitHub Actions example
 
+Primary path — `ccqa run --drift`. The deterministic vitest run gates the build; drift runs only on failure to explain the cause:
+
 ```yaml
-name: ccqa drift
+name: ccqa
 on: [pull_request]
 jobs:
-  drift:
+  run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,14 +88,31 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa drift --changed --format github
+      - run: pnpm exec ccqa run --drift --format github
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
-The PR-scoped form above uses `$GITHUB_BASE_REF` as the diff base automatically.
-For a periodic full sweep that does not skip any spec, run `ccqa drift` (without
-`--changed`) from a scheduled workflow.
+Standalone full sweep — `ccqa drift` — for scheduled audits that run regardless of test status:
+
+```yaml
+name: ccqa drift audit
+on:
+  schedule:
+    - cron: "0 9 * * 1"   # weekly Monday 09:00 UTC
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec ccqa drift --format github
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
 
 For a monorepo where each package has its own `.ccqa/`, point `--cwd` at the package root:
 

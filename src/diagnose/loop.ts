@@ -9,7 +9,7 @@ import type { TraceAction } from "../types.ts";
 
 export type FixMode = "auto" | "non-interactive" | "interactive";
 
-const DEFAULT_CONFIDENCE_THRESHOLD = 0.8;
+export const DEFAULT_CONFIDENCE_THRESHOLD = 0.8;
 
 export interface RunVitestResult {
   exitCode: number;
@@ -20,8 +20,8 @@ export interface RunVitestResult {
 export interface AutoFixLoopInput {
   scriptPath: string;
   initialRun: RunVitestResult;
-  /** Spec markdown shown to the diagnose LLM for context. */
-  specMarkdown: string;
+  /** Spec YAML shown to the diagnose LLM for context. */
+  specYaml: string;
   /** Recorded actions used as additional context. */
   actions: TraceAction[];
   maxRetries: number;
@@ -49,7 +49,7 @@ export async function runAutoFixLoop(input: AutoFixLoopInput): Promise<boolean> 
   const {
     scriptPath,
     initialRun,
-    specMarkdown,
+    specYaml,
     actions,
     maxRetries,
     mode,
@@ -79,7 +79,7 @@ export async function runAutoFixLoop(input: AutoFixLoopInput): Promise<boolean> 
 
     const fixed = await diagnoseAndFix({
       script: currentScript,
-      specMarkdown,
+      specYaml,
       actions,
       failureLog: output,
       pageSnapshot: pageSnapshot ?? undefined,
@@ -111,7 +111,7 @@ export async function runAutoFixLoop(input: AutoFixLoopInput): Promise<boolean> 
 
 interface DiagnoseAndFixInput {
   script: string;
-  specMarkdown: string;
+  specYaml: string;
   actions: TraceAction[];
   failureLog: string;
   pageSnapshot?: string;
@@ -121,11 +121,11 @@ interface DiagnoseAndFixInput {
 }
 
 async function diagnoseAndFix(input: DiagnoseAndFixInput): Promise<string | null> {
-  const { script, specMarkdown, actions, failureLog, pageSnapshot, mode, outputLanguage, model } = input;
+  const { script, specYaml, actions, failureLog, pageSnapshot, mode, outputLanguage, model } = input;
 
   const outcome: DiagnoseOutcome = await log.timedPhase(
     "diagnose",
-    () => diagnose({ script, specMarkdown, actions, failureLog, pageSnapshot, outputLanguage }, { model }),
+    () => diagnose({ script, specYaml, actions, failureLog, pageSnapshot, outputLanguage }, { model }),
     "fix",
   );
 
@@ -165,7 +165,7 @@ async function diagnoseAndFix(input: DiagnoseAndFixInput): Promise<string | null
   }
   if (decision === "skip-low-confidence") {
     log.fix(
-      `confidence ${result.confidence.toFixed(2)} below threshold ${DEFAULT_CONFIDENCE_THRESHOLD}; skipping (--no-interactive)`,
+      `confidence ${result.confidence.toFixed(2)} below threshold ${DEFAULT_CONFIDENCE_THRESHOLD}; skipping (mode: ${mode})`,
     );
     handoffToUser(result, outcome.raw, outputLanguage);
     return null;
@@ -194,12 +194,17 @@ async function diagnoseAndFix(input: DiagnoseAndFixInput): Promise<string | null
   }
 }
 
-type Decision = "apply-auto" | "skip-low-confidence" | "interactive";
+export type Decision = "apply-auto" | "skip-low-confidence" | "interactive";
 
-function decide(result: DiagnosisResult, mode: FixMode): Decision {
-  if (mode === "auto") return "apply-auto";
+/**
+ * Map a diagnosis to one of three actions. `auto` previously bypassed the
+ * confidence threshold; it no longer does — a low-confidence guess can
+ * corrupt working code, and CI wants "apply obvious fixes, fail loudly on
+ * the rest" rather than "apply every guess".
+ */
+export function decide(result: DiagnosisResult, mode: FixMode): Decision {
   const highConfidence = result.confidence >= DEFAULT_CONFIDENCE_THRESHOLD;
-  if (mode === "non-interactive") {
+  if (mode === "auto" || mode === "non-interactive") {
     return highConfidence ? "apply-auto" : "skip-low-confidence";
   }
   return highConfidence ? "apply-auto" : "interactive";
@@ -250,7 +255,7 @@ function handoffEn(diagnosis: Diagnosis): string[] {
     case "DATA_MISSING":
       return [
         `application-side issue: required data is missing. ${diagnosis.reason}`,
-        "next step: seed the data (or update test-spec.md prerequisites), then re-run trace + generate.",
+        "next step: seed the data (or update spec.yaml prerequisites), then re-run trace + generate.",
       ];
     case "UNKNOWN":
       return [
@@ -266,7 +271,7 @@ function handoffEn(diagnosis: Diagnosis): string[] {
     case "OVER_ASSERTION":
       return [
         `assertion may not be required by the spec. lines: ${diagnosis.lines.join(", ")} (${diagnosis.reason}).`,
-        "next step: cross-check test-spec.md. either delete the assertion from the test, or tighten the spec to require it.",
+        "next step: cross-check spec.yaml. either delete the assertion from the test, or tighten the spec to require it.",
       ];
     case "TIMING_ISSUE":
       return [
@@ -281,7 +286,7 @@ function handoffJa(diagnosis: Diagnosis): string[] {
     case "DATA_MISSING":
       return [
         `アプリ側の問題: 必要なデータが不足しています。${diagnosis.reason}`,
-        "次のステップ: データを seed する（または test-spec.md の prerequisites を更新）してから ccqa trace + generate をやり直してください。",
+        "次のステップ: データを seed する（または spec.yaml の prerequisites を更新）してから ccqa trace + generate をやり直してください。",
       ];
     case "UNKNOWN":
       return [
@@ -297,7 +302,7 @@ function handoffJa(diagnosis: Diagnosis): string[] {
     case "OVER_ASSERTION":
       return [
         `spec が要求していない assertion の可能性があります。対象行: ${diagnosis.lines.join(", ")} (${diagnosis.reason})`,
-        "次のステップ: test-spec.md と照合して、テスト側の assertion を削るか、spec 側を更新してください。",
+        "次のステップ: spec.yaml と照合して、テスト側の assertion を削るか、spec 側を更新してください。",
       ];
     case "TIMING_ISSUE":
       return [

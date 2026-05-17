@@ -4,8 +4,6 @@ import { fileURLToPath } from "node:url";
 import { traceCommand } from "./trace.ts";
 import { generateCommand } from "./generate.ts";
 import { runCommand } from "./run.ts";
-import { traceSetupCommand } from "./trace-setup.ts";
-import { generateSetupCommand } from "./generate-setup.ts";
 import { draftCommand } from "./draft.ts";
 import { driftCommand } from "./drift.ts";
 
@@ -40,7 +38,5 @@ program.addCommand(driftCommand);
 program.addCommand(traceCommand);
 program.addCommand(generateCommand);
 program.addCommand(runCommand);
-program.addCommand(traceSetupCommand);
-program.addCommand(generateSetupCommand);
 
 program.parse();

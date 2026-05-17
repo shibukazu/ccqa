@@ -1,194 +1,77 @@
-import { describe, test, expect } from "vitest";
-import { parseTestSpec } from "./parser.ts";
-
-const BASIC_SPEC = `---
-title: My Test
-baseUrl: http://localhost:3000
----
-
-### Step 1: Login
-**Instruction**: Navigate to the login page
-**Expected**: Login form is visible
-`;
+import { describe, expect, it } from "vitest";
+import { parseBlockSpec, parseTestSpec } from "./parser.ts";
 
 describe("parseTestSpec", () => {
-  test("parses title and baseUrl from frontmatter", () => {
-    const result = parseTestSpec(BASIC_SPEC);
-    expect(result.title).toBe("My Test");
-    expect(result.baseUrl).toBe("http://localhost:3000");
+  it("parses a minimal YAML spec", () => {
+    const spec = parseTestSpec(`title: demo
+steps:
+  - instruction: open /
+    expected: home shown
+`);
+    expect(spec.title).toBe("demo");
+    expect(spec.steps).toHaveLength(1);
   });
 
-  test("defaults title to Untitled when missing", () => {
-    const result = parseTestSpec("---\nbaseUrl: http://localhost:3000\n---\n");
-    expect(result.title).toBe("Untitled");
-  });
-
-  test("defaults baseUrl to http://localhost:3000 when missing", () => {
-    const result = parseTestSpec("---\ntitle: My Test\n---\n");
-    expect(result.baseUrl).toBe("http://localhost:3000");
-  });
-
-  test("parses a single step correctly", () => {
-    const result = parseTestSpec(BASIC_SPEC);
-    expect(result.steps).toHaveLength(1);
-    expect(result.steps[0]).toEqual({
-      id: "step-01",
-      title: "Login",
-      instruction: "Navigate to the login page",
-      expected: "Login form is visible",
-    });
-  });
-
-  test("parses multiple steps with correct id generation", () => {
-    const spec = `---
-title: Multi
-baseUrl: http://localhost
----
-
-### Step 1: First
-**Instruction**: Do first
-**Expected**: First done
-
-### Step 2: Second
-**Instruction**: Do second
-**Expected**: Second done
-`;
-    const result = parseTestSpec(spec);
-    expect(result.steps).toHaveLength(2);
-    expect(result.steps[0]?.id).toBe("step-01");
-    expect(result.steps[1]?.id).toBe("step-02");
-  });
-
-  test("returns empty steps array when no steps defined", () => {
-    const result = parseTestSpec("---\ntitle: No Steps\nbaseUrl: http://localhost\n---\n");
-    expect(result.steps).toHaveLength(0);
-  });
-
-  test("skips steps missing Instruction or Expected", () => {
-    const spec = `---
-title: Missing Fields
-baseUrl: http://localhost
----
-
-### Step 1: Complete
-**Instruction**: Do something
-**Expected**: See something
-
-### Step 2: Missing Expected
-**Instruction**: Do something
-
-### Step 3: Missing Instruction
-**Expected**: See something
-`;
-    const result = parseTestSpec(spec);
-    expect(result.steps).toHaveLength(1);
-    expect(result.steps[0]?.id).toBe("step-01");
-  });
-
-  test("parses prerequisites when present", () => {
-    const spec = `---
-title: With Prereqs
-baseUrl: http://localhost
----
-
-## Prerequisites
-User must be logged in as admin.
-
-### Step 1: Check
-**Instruction**: Do check
-**Expected**: Check done
-`;
-    const result = parseTestSpec(spec);
-    expect(result.prerequisites).toBe("User must be logged in as admin.");
-  });
-
-  test("returns undefined for prerequisites when section is absent", () => {
-    const result = parseTestSpec(BASIC_SPEC);
-    expect(result.prerequisites).toBeUndefined();
-  });
-
-  test("parses setups from frontmatter", () => {
-    const spec = `---
-title: Setup Test
-baseUrl: http://localhost:3000
-setups:
-  - name: login
+  it("parses include steps with params", () => {
+    const spec = parseTestSpec(`title: demo
+steps:
+  - include: login
     params:
-      email: user@example.com
+      email: a@b
       password: secret
----
-
-### Step 1: Check
-**Instruction**: Do check
-**Expected**: Check done
-`;
-    const result = parseTestSpec(spec);
-    expect(result.setups).toHaveLength(1);
-    expect(result.setups![0]!.name).toBe("login");
-    expect(result.setups![0]!.params).toEqual({ email: "user@example.com", password: "secret" });
+  - instruction: click home
+    expected: redirected
+`);
+    expect(spec.steps).toHaveLength(2);
+    const include = spec.steps[0]!;
+    expect("include" in include && include.include).toBe("login");
   });
 
-  test("returns undefined for setups when not specified", () => {
-    const result = parseTestSpec(BASIC_SPEC);
-    expect(result.setups).toBeUndefined();
+  it("rejects unknown top-level keys", () => {
+    expect(() =>
+      parseTestSpec(`title: demo
+unexpected: value
+steps:
+  - instruction: i
+    expected: e
+`),
+    ).toThrow(/unexpected/);
   });
 
-  test("parses relatedPaths as a string array", () => {
-    const spec = `---
-title: With related paths
-baseUrl: http://localhost:3000
-relatedPaths:
-  - src/features/tasks/**
-  - src/app/tasks/page.tsx
----
+  it("yields a multi-line error listing every issue", () => {
+    let err: Error | null = null;
+    try {
+      parseTestSpec(`title: x
+steps: []
+`);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err).not.toBeNull();
+    expect(err!.message).toMatch(/Invalid spec\.yaml/);
+  });
+});
 
-### Step 1: Check
-**Instruction**: Do check
-**Expected**: Check done
-`;
-    const result = parseTestSpec(spec);
-    expect(result.relatedPaths).toEqual([
-      "src/features/tasks/**",
-      "src/app/tasks/page.tsx",
-    ]);
+describe("parseBlockSpec", () => {
+  it("parses a block with params", () => {
+    const block = parseBlockSpec(`title: Login
+params:
+  - name: email
+  - name: password
+    secret: true
+steps:
+  - instruction: open login
+    expected: form
+`);
+    expect(block.params).toHaveLength(2);
   });
 
-  test("returns undefined for relatedPaths when not specified", () => {
-    const result = parseTestSpec(BASIC_SPEC);
-    expect(result.relatedPaths).toBeUndefined();
-  });
-
-  test("returns undefined when relatedPaths is empty array", () => {
-    const spec = `---
-title: Empty related paths
-baseUrl: http://localhost
-relatedPaths: []
----
-
-### Step 1: Check
-**Instruction**: Do check
-**Expected**: Check done
-`;
-    const result = parseTestSpec(spec);
-    expect(result.relatedPaths).toBeUndefined();
-  });
-
-  test("ignores non-string entries in relatedPaths", () => {
-    const spec = `---
-title: Mixed
-baseUrl: http://localhost
-relatedPaths:
-  - src/a.ts
-  - 42
-  - ""
-  - src/b.ts
----
-
-### Step 1: Check
-**Instruction**: Do check
-**Expected**: Check done
-`;
-    const result = parseTestSpec(spec);
-    expect(result.relatedPaths).toEqual(["src/a.ts", "src/b.ts"]);
+  it("rejects nested includes with a targeted message", () => {
+    expect(() =>
+      parseBlockSpec(`title: outer
+steps:
+  - include: inner
+`),
+    ).toThrow(/Nested blocks/);
   });
 });

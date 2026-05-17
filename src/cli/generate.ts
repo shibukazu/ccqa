@@ -1,24 +1,22 @@
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
-import { join } from "node:path";
 import {
   ensureCcqaDir,
-  parseSpecPath,
-  getTraceActions,
-  getSetupDir,
   getTestScript,
+  getTraceActions,
+  loadAllBlocks,
+  parseSpecPath,
   readSpecFile,
   saveTestScript,
 } from "../store/index.ts";
+import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
 import { actionsToScript } from "../codegen/actions-to-script.ts";
-import type { SetupScript } from "../codegen/actions-to-script.ts";
-import { buildCleanupPrompt } from "../prompts/codegen.ts";
-import { invokeClaudeStreaming } from "../claude/invoke.ts";
+import { cleanupActions as runActionCleanup } from "../codegen/cleanup.ts";
 import { parseTestSpec } from "../spec/parser.ts";
+import { expandSpec, type ExpandedActionStep } from "../spec/expand.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestTeed } from "../runtime/spawn-vitest.ts";
-import { envRefsToJsExpression, hasEnvRef } from "../runtime/env-vars.ts";
 import { runAutoFixLoop, resolveMode, type FixMode, type RunVitestResult } from "../diagnose/loop.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import type { TraceAction } from "../types.ts";
@@ -118,12 +116,12 @@ async function runGenerate(
 
   const specContent = await readSpecFile(featureName, specName);
   const spec = parseTestSpec(specContent);
-  const setupScripts = await loadSetupScripts(
-    spec.setups as Array<{ name: string; params?: Record<string, string> }> | undefined,
-  );
-  if (setupScripts.length > 0) {
-    log.meta("setups", setupScripts.map((s) => s.name).join(", "));
-  }
+  const blocks = await loadAllBlocks();
+  const expanded = expandSpec(spec, { blocks });
+
+  await warnStaleBlockArtifacts();
+
+  log.meta("steps", expanded.length);
   log.meta("fix-mode", mode);
   log.meta("language", outputLanguage);
   log.blank();
@@ -133,7 +131,12 @@ async function runGenerate(
     log.meta("cleaned", cleanedActions.length);
   }
 
-  const script = actionsToScript(cleanedActions, spec.title, setupScripts.length > 0 ? setupScripts : undefined);
+  const markers = buildStepMarkers(expanded, cleanedActions);
+  const script = actionsToScript({
+    actions: cleanedActions,
+    testName: spec.title,
+    stepMarkers: markers,
+  });
   const scriptPath = await saveTestScript(featureName, specName, script);
   log.meta("saved", scriptPath);
   log.blank();
@@ -174,7 +177,7 @@ async function runGenerate(
     const passed = await runAutoFixLoop({
       scriptPath,
       initialRun,
-      specMarkdown: specContent,
+      specYaml: specContent,
       actions: cleanedActions,
       maxRetries,
       mode,
@@ -200,6 +203,30 @@ async function runGenerate(
   }
 }
 
+/**
+ * Build the per-step markers consumed by `actionsToScript`. Each action's
+ * `stepId` (assigned at trace time from the last `STEP_START|...` line)
+ * groups contiguous actions; we emit one marker at the first action of
+ * each contiguous run. Unknown step ids are skipped rather than mis-labelled.
+ */
+function buildStepMarkers(
+  steps: ExpandedActionStep[],
+  actions: TraceAction[],
+): Array<{ actionIndex: number; stepId: string; source: string }> {
+  const stepById = new Map(steps.map((s) => [s.id, s]));
+  const markers: Array<{ actionIndex: number; stepId: string; source: string }> = [];
+  let lastEmittedStepId: string | null = null;
+  for (let i = 0; i < actions.length; i++) {
+    const id = actions[i]!.stepId;
+    if (!id || id === lastEmittedStepId) continue;
+    const step = stepById.get(id);
+    if (!step) continue;
+    markers.push({ actionIndex: i, stepId: step.id, source: step.source });
+    lastEmittedStepId = id;
+  }
+  return markers;
+}
+
 async function confirmOverwrite(path: string): Promise<boolean> {
   // Without a TTY (CI, piped stdin) we can't prompt. Refuse to overwrite —
   // CI/scripted callers should pass --force explicitly to opt in.
@@ -220,76 +247,6 @@ async function confirmOverwrite(path: string): Promise<boolean> {
   }
 }
 
-async function loadSetupScripts(
-  setups?: Array<{ name: string; params?: Record<string, string> }>,
-): Promise<SetupScript[]> {
-  if (!setups?.length) return [];
-
-  const result: SetupScript[] = [];
-  for (const ref of setups) {
-    const scriptPath = join(getSetupDir(ref.name), "test.spec.ts");
-    const script = await readFile(scriptPath, "utf-8").catch(() => {
-      throw new Error(`Setup test script not found: ${scriptPath}. Run \`ccqa generate-setup ${ref.name}\` first.`);
-    });
-    const body = extractTestBody(script);
-    const resolved = replacePlaceholders(body, ref.params ?? {});
-    result.push({ name: ref.name, body: resolved });
-  }
-  return result;
-}
-
-/**
- * Extract the test body (statements inside the test callback) from a setup
- * test script.
- *
- * Locates the first arrow callback (`=> {`) after a top-level `test(` call
- * and returns the text between the matching `{` and `}`. Handles both
- * single-line and multi-line `test(...)` formatting (the latter is what
- * prettier produces).
- *
- * Brace tracking is naive (string/regex/comment literals are not parsed
- * specially), but setup test scripts are themselves generated by ccqa and
- * follow a fixed shape, so this is sufficient in practice.
- */
-function extractTestBody(script: string): string {
-  const testCallMatch = /\btest\s*\(/.exec(script);
-  if (!testCallMatch) return "";
-  const arrowIdx = script.indexOf("=> {", testCallMatch.index);
-  if (arrowIdx === -1) return "";
-  const bodyStart = arrowIdx + "=> {".length;
-  let depth = 1;
-  let i = bodyStart;
-  for (; i < script.length; i++) {
-    const ch = script[i]!;
-    if (ch === "{") depth++;
-    else if (ch === "}") {
-      depth--;
-      if (depth === 0) break;
-    }
-  }
-  if (depth !== 0) return "";
-  return script.slice(bodyStart, i).replace(/^\n/, "").replace(/\n\s*$/, "");
-}
-
-function replacePlaceholders(body: string, params: Record<string, string>): string {
-  let result = body;
-  for (const [key, value] of Object.entries(params)) {
-    if (hasEnvRef(value)) {
-      const expr = envRefsToJsExpression(value);
-      const re = new RegExp(`(["'])\\{\\{${escapeRegExp(key)}\\}\\}\\1`, "g");
-      result = result.replace(re, expr);
-      result = result.replaceAll(`{{${key}}}`, value);
-    } else {
-      result = result.replaceAll(`{{${key}}}`, value);
-    }
-  }
-  return result;
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 async function runVitest(scriptPath: string, agentBrowserSession?: string): Promise<RunVitestResult> {
   const { exitCode, stdout, stderr } = await spawnVitestTeed(
     ["run", "--config", bundledVitestConfigPath(), scriptPath],
@@ -302,18 +259,54 @@ async function runVitest(scriptPath: string, agentBrowserSession?: string): Prom
 }
 
 async function cleanupActions(actions: TraceAction[], model?: string): Promise<TraceAction[]> {
-  try {
-    const prompt = buildCleanupPrompt(actions);
-    const { result, isError } = await invokeClaudeStreaming(
-      { prompt, disableBuiltinTools: true, maxTurns: 1, model },
-      () => {},
-    );
-    if (isError || !result) return actions;
-    const json = result.trim().replace(/^```(?:json)?\n?([\s\S]*?)\n?```$/, "$1").trim();
-    const parsed = JSON.parse(json) as TraceAction[];
-    if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-  } catch {
-    // Fall through
+  const cleaned = await runActionCleanup(actions, model);
+  return cleaned === actions ? actions : reattachStepIds(cleaned, actions);
+}
+
+/**
+ * The Claude cleanup pass returns a pruned array without the `stepId` field
+ * (the prompt deliberately doesn't expose it — that would make the prompt
+ * easier to misformat). Re-attach stepIds here by replaying the cleaned
+ * stream against the original and matching the next compatible action.
+ *
+ * Algorithm: walk both arrays in lockstep. For each cleaned action, scan
+ * forward in `original` (from the last-matched cursor) for the next entry
+ * with the same `command` + `selector` + `value` + `assertType` shape, and
+ * borrow its `stepId`. Cleaned actions Claude invented from thin air (rare,
+ * and explicitly forbidden by the prompt) end up with no stepId — codegen
+ * just won't emit a step marker for that index, which is the same outcome
+ * as a wholly stepId-less actions.json.
+ *
+ * The matching is forward-only so that if cleanup keeps two identical fills
+ * (e.g. typing the same value twice intentionally), they're paired to the
+ * first and second occurrence in the original — not both to the first.
+ */
+export function reattachStepIds(cleaned: TraceAction[], original: TraceAction[]): TraceAction[] {
+  let cursor = 0;
+  const out: TraceAction[] = [];
+  for (const c of cleaned) {
+    let matched: TraceAction | null = null;
+    for (let i = cursor; i < original.length; i++) {
+      if (sameShape(c, original[i]!)) {
+        matched = original[i]!;
+        cursor = i + 1;
+        break;
+      }
+    }
+    if (matched?.stepId) {
+      out.push({ ...c, stepId: matched.stepId });
+    } else {
+      out.push(c);
+    }
   }
-  return actions;
+  return out;
+}
+
+function sameShape(a: TraceAction, b: TraceAction): boolean {
+  return (
+    a.command === b.command &&
+    (a.selector ?? "") === (b.selector ?? "") &&
+    (a.value ?? "") === (b.value ?? "") &&
+    (a.assertType ?? "") === (b.assertType ?? "")
+  );
 }

@@ -1,0 +1,4 @@
+title: Demo spec
+steps:
+  - instruction: open http://example.com
+    expected: page loads

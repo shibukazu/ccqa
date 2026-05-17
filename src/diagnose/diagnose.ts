@@ -191,20 +191,14 @@ function normaliseSleepFixes(raw: unknown): SleepFix[] {
     if (line === null) continue;
     const reason = typeof item["reason"] === "string" ? item["reason"] : "";
 
-    // Accept both the new {kind: "insert"|"increase"} schema and the legacy
-    // shape {seconds | increase_to} for forward/backward compat with prompt drift.
-    const kind = item["kind"];
-    if (kind === "insert" || (typeof item["seconds"] === "number" && item["increase_to"] === undefined)) {
+    if (item["kind"] === "insert") {
       const seconds = typeof item["seconds"] === "number" ? item["seconds"] : null;
       if (seconds === null) continue;
       out.push({ kind: "insert", line, seconds, reason });
-      continue;
-    }
-    if (kind === "increase" || typeof item["increase_to"] === "number") {
+    } else if (item["kind"] === "increase") {
       const increaseTo = typeof item["increase_to"] === "number" ? item["increase_to"] : null;
       if (increaseTo === null) continue;
       out.push({ kind: "increase", line, increase_to: increaseTo, reason });
-      continue;
     }
   }
   return out;

@@ -31,10 +31,10 @@ export function resolveBaseRef(explicit: string | undefined): string {
  * post-rename layout.
  *
  * Paths are re-rooted to be relative to `cwd`, not the git repo root. In a
- * monorepo where `cwd` is a sub-package (e.g. `js/apps/knowledge-webapp`),
- * git emits paths relative to the repo root, but specs declare relatedPaths
- * relative to their own package. Changes outside `cwd` are dropped so an
- * unrelated PR can never accidentally scope a sub-package's specs in.
+ * monorepo where `cwd` is a sub-package (e.g. `apps/foo`), git emits paths
+ * relative to the repo root, but specs declare relatedPaths relative to
+ * their own package. Changes outside `cwd` are dropped so an unrelated PR
+ * can never accidentally scope a sub-package's specs in.
  */
 export async function getChangedFiles(base: string, cwd: string): Promise<ChangedFile[]> {
   const [{ stdout: rootOut }, { stdout: diffOut }] = await Promise.all([

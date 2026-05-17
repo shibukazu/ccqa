@@ -51,7 +51,7 @@ describe("DraftReportSchema", () => {
           detail: "searched for 'Done' under src/",
         },
       ],
-      patch: "---\ntitle: x\nbaseUrl: y\n---\n## Steps\n",
+      patch: "title: demo\nsteps:\n  - instruction: i\n    expected: e\n",
     });
     expect(parsed.issues).toHaveLength(1);
     expect(parsed.issues[0]?.severity).toBe("ERROR");

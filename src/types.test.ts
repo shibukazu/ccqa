@@ -1,11 +1,9 @@
 import { describe, test, expect } from "vitest";
-import { TestStepSchema, TestSpecSchema, RouteStepSchema, RouteSchema } from "./types.ts";
+import { TestSpecSchema, RouteStepSchema, RouteSchema, ActionStepSchema } from "./types.ts";
 
-describe("TestStepSchema", () => {
-  test("accepts valid step data", () => {
-    const result = TestStepSchema.safeParse({
-      id: "step-01",
-      title: "Login",
+describe("ActionStepSchema", () => {
+  test("accepts a valid action step", () => {
+    const result = ActionStepSchema.safeParse({
       instruction: "Go to login page",
       expected: "Login form is visible",
     });
@@ -13,34 +11,36 @@ describe("TestStepSchema", () => {
   });
 
   test("rejects missing required fields", () => {
-    expect(TestStepSchema.safeParse({ id: "step-01" }).success).toBe(false);
+    expect(ActionStepSchema.safeParse({ instruction: "i" }).success).toBe(false);
   });
 });
 
 describe("TestSpecSchema", () => {
-  test("accepts valid spec with optional prerequisites absent", () => {
+  test("accepts a minimal YAML-shaped spec", () => {
     const result = TestSpecSchema.safeParse({
       title: "My Test",
-      baseUrl: "http://localhost:3000",
-      steps: [],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  test("accepts valid spec with prerequisites", () => {
-    const result = TestSpecSchema.safeParse({
-      title: "My Test",
-      baseUrl: "http://localhost:3000",
-      prerequisites: "Must be logged in",
-      steps: [],
+      steps: [{ instruction: "open /", expected: "home" }],
     });
     expect(result.success).toBe(true);
   });
 
   test("rejects missing title", () => {
     expect(
-      TestSpecSchema.safeParse({ baseUrl: "http://localhost", steps: [] }).success,
+      TestSpecSchema.safeParse({ steps: [{ instruction: "i", expected: "e" }] }).success,
     ).toBe(false);
+  });
+
+  test("rejects missing steps", () => {
+    expect(TestSpecSchema.safeParse({ title: "x" }).success).toBe(false);
+  });
+
+  test("rejects unknown top-level keys", () => {
+    const result = TestSpecSchema.safeParse({
+      title: "x",
+      extra: "value",
+      steps: [{ instruction: "i", expected: "e" }],
+    });
+    expect(result.success).toBe(false);
   });
 });
 

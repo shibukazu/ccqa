@@ -1,108 +1,70 @@
-import matter from "gray-matter";
-import type { TestSpec, TestStep, SetupSpec, SetupRef } from "../types.ts";
+import { parse as parseYaml } from "yaml";
+import { ZodError } from "zod";
+import {
+  BlockSpecSchema,
+  TestSpecSchema,
+  type BlockSpec,
+  type TestSpec,
+} from "./yaml-schema.ts";
 
-export function parseTestSpec(content: string): TestSpec {
-  const { data, content: body } = matter(content);
-
-  const steps = parseSteps(body);
-
-  const prerequisites = parsePrerequisites(body);
-
-  return {
-    title: String(data["title"] ?? "Untitled"),
-    baseUrl: String(data["baseUrl"] ?? "http://localhost:3000"),
-    prerequisites: prerequisites || undefined,
-    setups: parseSetupRefs(data["setups"]),
-    relatedPaths: parseRelatedPaths(data["relatedPaths"]),
-    steps,
-  };
+/** Parse a spec.yaml. Schema rejections are rewritten with actionable messages. */
+export function parseTestSpec(content: string, source = "spec.yaml"): TestSpec {
+  const raw = parseYamlOrThrow(content, source);
+  try {
+    return TestSpecSchema.parse(raw);
+  } catch (e) {
+    throw enrichZodError(e, source, /* isBlock */ false);
+  }
 }
 
-function parseRelatedPaths(raw: unknown): string[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const paths: string[] = [];
-  for (const item of raw) {
-    if (typeof item === "string" && item.trim().length > 0) {
-      paths.push(item.trim());
+/**
+ * Parse a block's spec.yaml. Block-specific errors include the targeted
+ * nested-block message (the underlying zod failure on an `include` key
+ * inside a block step is hard to read).
+ */
+export function parseBlockSpec(content: string, source = "block spec.yaml"): BlockSpec {
+  const raw = parseYamlOrThrow(content, source);
+  try {
+    return BlockSpecSchema.parse(raw);
+  } catch (e) {
+    throw enrichZodError(e, source, /* isBlock */ true);
+  }
+}
+
+function parseYamlOrThrow(content: string, source: string): unknown {
+  try {
+    return parseYaml(content);
+  } catch (e) {
+    throw new Error(`Failed to parse YAML (${source}): ${(e as Error).message}`);
+  }
+}
+
+interface ZodLikeIssue {
+  code?: string;
+  keys?: unknown;
+  path: (string | number)[];
+  message: string;
+}
+
+function enrichZodError(error: unknown, source: string, isBlock: boolean): Error {
+  if (!(error instanceof ZodError)) return error as Error;
+
+  const lines: string[] = [`Invalid ${source}:`];
+  for (const issue of error.issues as unknown as ZodLikeIssue[]) {
+    const path = issue.path.join(".") || "(root)";
+    const message = humanizeIssue(issue, isBlock);
+    lines.push(`  - ${path}: ${message}`);
+  }
+  return new Error(lines.join("\n"));
+}
+
+function humanizeIssue(issue: ZodLikeIssue, isBlock: boolean): string {
+  if (issue.code === "unrecognized_keys") {
+    const keys = Array.isArray(issue.keys) ? (issue.keys as string[]) : [];
+    if (isBlock && keys.includes("include")) {
+      return `Nested blocks are not supported — flatten by inlining the included block's steps into this block.`;
     }
+    return `Unknown keys: ${keys.join(", ")}`;
   }
-  return paths.length > 0 ? paths : undefined;
-}
-
-export function parseSetupSpec(content: string): SetupSpec {
-  const { data, content: body } = matter(content);
-
-  const steps = parseSteps(body);
-  const placeholders = parsePlaceholders(data["placeholders"]);
-
-  return {
-    title: String(data["title"] ?? "Untitled"),
-    placeholders: Object.keys(placeholders).length > 0 ? placeholders : undefined,
-    steps,
-  };
-}
-
-function parsePlaceholders(raw: unknown): Record<string, { dummy: string; description?: string }> {
-  if (!raw || typeof raw !== "object") return {};
-  const result: Record<string, { dummy: string; description?: string }> = {};
-  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
-    if (val && typeof val === "object" && "dummy" in val) {
-      const v = val as Record<string, unknown>;
-      result[key] = {
-        dummy: String(v["dummy"]),
-        description: v["description"] ? String(v["description"]) : undefined,
-      };
-    }
-  }
-  return result;
-}
-
-function parseSetupRefs(raw: unknown): SetupRef[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const refs: SetupRef[] = [];
-  for (const item of raw) {
-    if (typeof item === "object" && item !== null && "name" in item) {
-      const i = item as Record<string, unknown>;
-      refs.push({
-        name: String(i["name"]),
-        params: i["params"] && typeof i["params"] === "object"
-          ? Object.fromEntries(
-              Object.entries(i["params"] as Record<string, unknown>).map(([k, v]) => [k, String(v)])
-            )
-          : undefined,
-      });
-    }
-  }
-  return refs.length > 0 ? refs : undefined;
-}
-
-function parsePrerequisites(body: string): string | null {
-  const match = body.match(/##\s+Prerequisites\s+([\s\S]*?)(?=##|$)/);
-  if (!match || !match[1]) return null;
-  return match[1].trim();
-}
-
-function parseSteps(body: string): TestStep[] {
-  const stepBlocks = body.split(/###\s+Step\s+\d+:/);
-  const steps: TestStep[] = [];
-
-  for (let i = 1; i < stepBlocks.length; i++) {
-    const block = stepBlocks[i];
-    if (!block) continue;
-
-    const titleMatch = block.match(/^(.+)/);
-    const instructionMatch = block.match(/\*\*Instruction\*\*:\s*(.+)/);
-    const expectedMatch = block.match(/\*\*Expected\*\*:\s*(.+)/);
-
-    if (!titleMatch || !instructionMatch || !expectedMatch) continue;
-
-    steps.push({
-      id: `step-${String(i).padStart(2, "0")}`,
-      title: titleMatch[1]?.trim() ?? "",
-      instruction: instructionMatch[1]?.trim() ?? "",
-      expected: expectedMatch[1]?.trim() ?? "",
-    });
-  }
-
-  return steps;
+  return issue.message;
 }

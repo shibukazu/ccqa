@@ -1,21 +1,27 @@
-import { readFile, writeFile, unlink } from "node:fs/promises";
-import { join } from "node:path";
 import { Command } from "commander";
 import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from "../prompts/trace.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { ensureCcqaDir, parseSpecPath, readSpecFile, saveRoute, saveTraceActions, getSetupDir, updateSpecRelatedPaths } from "../store/index.ts";
+import {
+  ensureCcqaDir,
+  loadAllBlocks,
+  parseSpecPath,
+  readSpecFile,
+  saveRoute,
+  saveTraceActions,
+  updateSpecRelatedPaths,
+} from "../store/index.ts";
+import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
 import { parseRelatedPathsBlock } from "../drift/parse-related-paths.ts";
 import { parseTestSpec } from "../spec/parser.ts";
-import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
-import { spawnVitestCaptured } from "../runtime/spawn-vitest.ts";
+import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
 import {
   assertAgentBrowserAvailable,
   AgentBrowserUnavailableError,
   formatAgentBrowserUnavailableMessage,
   pathWithAgentBrowserShim,
 } from "../runtime/agent-browser-bin.ts";
-import { resolveEnvRefs } from "../runtime/env-vars.ts";
+import { validateActions } from "../runtime/replay-validate.ts";
 import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -53,35 +59,27 @@ async function runTrace(featureName: string, specName: string, model?: string): 
   }
 
   await ensureCcqaDir();
+  await warnStaleBlockArtifacts();
 
   const specContent = await readSpecFile(featureName, specName);
   const spec = parseTestSpec(specContent);
-  const hasSetups = (spec.setups?.length ?? 0) > 0;
+  const blocks = await loadAllBlocks();
+  const expanded = expandSpec(spec, { blocks });
 
   log.meta("spec", spec.title);
-  log.meta("url", spec.baseUrl);
-  if (hasSetups) log.meta("setups", spec.setups!.map((s) => s.name).join(", "));
-  log.meta("steps", spec.steps.length);
+  log.meta("steps", expanded.length);
+  const includes = collectIncludedBlockNames(spec);
+  if (includes.length > 0) log.meta("blocks", includes.join(", "));
   log.blank();
 
-  // Generate a session name to share between setup execution and trace
   const sessionName = generateSessionName();
 
-  // Run setups before tracing (same session)
-  if (hasSetups) {
-    log.info("Running setup procedures...");
-    await runSetups(
-      spec.setups as Array<{ name: string; params?: Record<string, string> }>,
-      sessionName,
-    );
-    log.blank();
-  }
-
-  const systemPrompt = buildTraceSystemPrompt(spec, {
+  const systemPrompt = buildTraceSystemPrompt({
+    title: spec.title,
+    steps: expanded,
     sessionName,
-    skipCookiesClear: hasSetups,
   });
-  const prompt = buildTracePrompt(spec);
+  const prompt = buildTracePrompt(spec.title);
 
   log.info("Running agent-browser session...");
   log.blank();
@@ -89,9 +87,18 @@ async function runTrace(featureName: string, specName: string, model?: string): 
   const routeSteps: RouteStep[] = [];
   let overallStatus: "passed" | "failed" = "passed";
   const traceActions: TraceAction[] = [];
+  // Tagged onto each recorded action so codegen can group by step even when
+  // a step opens no URL (e.g. a "fill the form" step sandwiched between an
+  // `open` step and a navigation).
+  let currentStepId: string | undefined;
   // Only captures text from RELATED_PATHS_BEGIN onward so a long trace doesn't
   // accumulate every assistant message in memory just to extract one block.
   let relatedPathsBuffer: string | null = null;
+
+  const withStepId = (action: TraceAction | null): TraceAction | null => {
+    if (!action) return null;
+    return currentStepId ? { ...action, stepId: currentStepId } : action;
+  };
 
   const { isError } = await invokeClaudeStreaming(
     {
@@ -108,7 +115,7 @@ async function runTrace(featureName: string, specName: string, model?: string): 
       },
       model,
       onAbAction: (abAction: string) => {
-        const action = parseAbAction(abAction);
+        const action = withStepId(parseAbAction(abAction));
         if (action) traceActions.push(action);
       },
       onAbActionFailed: () => {
@@ -128,11 +135,18 @@ async function runTrace(featureName: string, specName: string, model?: string): 
           if (idx !== -1) relatedPathsBuffer = text.slice(idx) + "\n";
         }
 
-        const statusLine = parseStatusLine(text);
-        if (statusLine) log.step(statusLine.type, statusLine.stepId, statusLine.detail);
-
+        // Walk lines in order so STEP_START updates currentStepId before any
+        // subsequent AB_ACTION/ROUTE_STEP on the same block are processed.
         for (const line of text.split("\n")) {
           const trimmed = line.trim();
+          const status = parseStatusLine(line);
+          if (status) {
+            if (status.type === "STEP_START" && status.stepId) {
+              currentStepId = status.stepId;
+            }
+            log.step(status.type, status.stepId, status.detail);
+            continue;
+          }
           if (trimmed.startsWith("ROUTE_STEP|")) {
             const routeStep = parseRouteStep(trimmed);
             if (routeStep) {
@@ -140,7 +154,7 @@ async function runTrace(featureName: string, specName: string, model?: string): 
               if (routeStep.status === "FAILED") overallStatus = "failed";
             }
           } else if (trimmed.startsWith("AB_ACTION|snapshot|") || trimmed.startsWith("AB_ACTION|assert|")) {
-            const action = parseAbAction(trimmed);
+            const action = withStepId(parseAbAction(trimmed));
             if (action) traceActions.push(action);
           }
         }
@@ -150,18 +164,20 @@ async function runTrace(featureName: string, specName: string, model?: string): 
 
   if (isError) overallStatus = "failed";
 
+  const validatedActions = validateAndReport(traceActions);
+
   const timestamp = new Date().toISOString();
   const route: Route = { specName, timestamp, status: overallStatus, steps: routeSteps };
 
   const [routePath, actionsPath] = await Promise.all([
     saveRoute(featureName, specName, route),
-    saveTraceActions(featureName, specName, traceActions),
+    saveTraceActions(featureName, specName, validatedActions),
   ]);
 
   log.blank();
   log.meta("route", routePath);
   log.meta("saved", actionsPath);
-  log.meta("actions", traceActions.length);
+  log.meta("actions", validatedActions.length);
   log.meta("status", overallStatus.toUpperCase());
 
   const relatedPaths = relatedPathsBuffer !== null
@@ -179,60 +195,26 @@ async function runTrace(featureName: string, specName: string, model?: string): 
   log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
 }
 
-
 /**
- * Execute setup procedures by running their test.spec.ts via vitest with a fixed session name.
- * Creates a temporary runner script that sets the session and imports each setup's test body.
+ * Run the post-trace replay validation and emit user-visible drop reports.
+ * Splitting this out keeps `runTrace` readable; the function is pure aside
+ * from `log.*` and the agent-browser invocations inside `validateActions`.
  */
-async function runSetups(
-  setups: Array<{ name: string; params?: Record<string, string> }>,
-  sessionName: string,
-): Promise<void> {
-  for (const ref of setups) {
-    log.info(`  setup: ${ref.name}`);
-
-    const scriptPath = join(getSetupDir(ref.name), "test.spec.ts");
-    let script = await readFile(scriptPath, "utf-8").catch(() => {
-      throw new Error(`Setup test script not found: ${scriptPath}. Run \`ccqa generate-setup ${ref.name}\` first.`);
-    });
-
-    // Replace placeholders with params. Env-var references like ${AUTH_PASSWORD}
-    // are resolved at this point so the spawned setup test sees real values
-    // — the original ${VAR} string never leaves params and never makes it
-    // into recorded artifacts (actions.json, route.md).
-    for (const [key, value] of Object.entries(ref.params ?? {})) {
-      script = script.replaceAll(`{{${key}}}`, resolveEnvRefs(value));
-    }
-
-    // Fix the session name to share with the trace phase. The generated
-    // script may use either `=` (legacy) or `||=` (new shape that lets
-    // ccqa pre-set the session from outside) — match both.
-    script = script.replace(
-      /process\.env\.AGENT_BROWSER_SESSION\s*\|?\|?=\s*`.+`;/,
-      `process.env.AGENT_BROWSER_SESSION = ${JSON.stringify(sessionName)};`,
-    );
-
-    // Write temp file, run vitest, clean up
-    const tmpPath = join(getSetupDir(ref.name), `_run.spec.ts`);
-    await writeFile(tmpPath, script, "utf-8");
-
-    try {
-      const { exitCode, stdout, stderr } = await spawnVitestCaptured([
-        "run",
-        "--config",
-        bundledVitestConfigPath(),
-        tmpPath,
-      ]);
-      process.stdout.write(stdout);
-      if (stderr) process.stderr.write(stderr);
-
-      if (exitCode !== 0) {
-        throw new Error(`Setup '${ref.name}' failed (exit ${exitCode})`);
-      }
-    } finally {
-      await unlink(tmpPath).catch(() => {});
-    }
+function validateAndReport(actions: TraceAction[]): TraceAction[] {
+  if (actions.length === 0) return actions;
+  const sessionName = `${generateSessionName()}-validate`;
+  log.blank();
+  log.info("post-trace validation (replaying recorded actions)...");
+  const { kept, dropped } = validateActions(actions, { sessionName });
+  if (dropped.length === 0) {
+    log.meta("validated", `${kept.length}/${actions.length} kept`);
+    return kept;
   }
+  for (const d of dropped) {
+    log.warn(`dropped action #${d.index + 1} (${d.action.command}${d.action.selector ? " " + d.action.selector : ""}): ${d.reason}`);
+  }
+  log.meta("validated", `${kept.length}/${actions.length} kept (${dropped.length} dropped)`);
+  return kept;
 }
 
 export function parseStatusLine(text: string): ParsedStatusLine | null {

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, routeToMarkdown } from "./index.ts";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, routeToMarkdown } from "./index.ts";
 import type { Route } from "../types.ts";
 
 describe("parseSpecPath", () => {
@@ -78,6 +78,28 @@ describe("path helpers", () => {
   });
 
 
+});
+
+describe("parseBlockPath", () => {
+  test("recognises spec.yaml under a block dir", () => {
+    expect(parseBlockPath(".ccqa/blocks/login/spec.yaml")).toBe("login");
+    expect(parseBlockPath("apps/web/.ccqa/blocks/login/spec.yaml")).toBe("login");
+  });
+
+  test("does not match block actions.json or route.md (v0.4 inlines blocks per spec)", () => {
+    expect(parseBlockPath(".ccqa/blocks/login/actions.json")).toBeNull();
+    expect(parseBlockPath(".ccqa/blocks/login/route.md")).toBeNull();
+  });
+
+  test("does not match block test.spec.ts (no longer authoritative)", () => {
+    expect(parseBlockPath(".ccqa/blocks/login/test.spec.ts")).toBeNull();
+  });
+
+  test("returns null for non-block paths", () => {
+    expect(parseBlockPath(".ccqa/features/x/test-cases/y/spec.yaml")).toBeNull();
+    expect(parseBlockPath("src/cli/run.ts")).toBeNull();
+    expect(parseBlockPath(".ccqa/blocks/login/extra.txt")).toBeNull();
+  });
 });
 
 describe("routeToMarkdown", () => {
