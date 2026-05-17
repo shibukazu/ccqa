@@ -58,7 +58,7 @@ type VitestJsonReport = {
   testResults: VitestTestResult[];
 };
 
-type SpecRunSummary = {
+export type SpecRunSummary = {
   featureName: string;
   specName: string;
   scriptFile: string;
@@ -167,20 +167,36 @@ function parseDriftFormat(raw: string | undefined): Format {
 }
 
 /**
- * Opt-in post-vitest drift hook. Only fires when --drift (or --drift-strict)
- * was passed AND at least one spec failed. Skips silently when auth is
- * unavailable so the run's exit code is determined by vitest alone.
+ * Choose which specs to drift-check. `--drift` is a fail-supplement: only the
+ * specs that failed get a drift analysis (the goal is to *explain* a vitest
+ * failure). `--drift-strict` is an audit: even passing specs are checked,
+ * because the CI need is "fail loud if the spec lags behind the source",
+ * which can absolutely happen while vitest is still green against a stale
+ * staging environment.
+ */
+export function selectDriftTargets(
+  summaries: SpecRunSummary[],
+  opts: { drift?: boolean; driftStrict?: boolean },
+): SpecRunSummary[] {
+  if (opts.driftStrict) return summaries;
+  if (opts.drift) return summaries.filter(failedSpec);
+  return [];
+}
+
+/**
+ * Opt-in post-vitest drift hook. With `--drift`, fires only when at least
+ * one spec failed (supplemental signal). With `--drift-strict`, fires
+ * unconditionally so a spec/source divergence is caught even when vitest
+ * passed. Skips silently when auth is unavailable so the run's exit code
+ * is determined by vitest alone.
  */
 async function maybeRunDrift(
   summaries: SpecRunSummary[],
   opts: RunOptions,
   currentExitCode: number,
 ): Promise<number> {
-  const driftEnabled = opts.drift === true || opts.driftStrict === true;
-  if (!driftEnabled) return currentExitCode;
-
-  const failing = summaries.filter(failedSpec);
-  if (failing.length === 0) return currentExitCode;
+  const candidates = selectDriftTargets(summaries, opts);
+  if (candidates.length === 0) return currentExitCode;
 
   const auth = driftAuthAvailable();
   if (!auth.ok) {
@@ -191,7 +207,7 @@ async function maybeRunDrift(
   const format = parseDriftFormat(opts.format);
   const cwd = process.cwd();
   const tree = await listFeatureTree(cwd);
-  const targets = failing
+  const targets = candidates
     .map((s): SpecTarget | null => {
       const feature = tree.find((f) => f.featureName === s.featureName);
       const spec = feature?.specs.find((sp) => sp.specName === s.specName);
