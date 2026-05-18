@@ -29,6 +29,21 @@ export function hasEnvRef(value: string): boolean {
 }
 
 /**
+ * Iterate every `${NAME}` / `$NAME` reference name (case-insensitive form)
+ * appearing in `value`. Used by callers that want to enumerate refs without
+ * also substituting, e.g. the env-scrub map builder. The reference name
+ * grammar is the canonical one shared with `substituteVars`.
+ */
+export function* iterEnvRefNames(value: string): IterableIterator<string> {
+  ANY_VAR_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = ANY_VAR_RE.exec(value)) !== null) {
+    const name = m[1] ?? m[2];
+    if (name) yield name;
+  }
+}
+
+/**
  * Resolve every `$VAR` / `${VAR}` reference against the current process env.
  *
  * Missing variables expand to the empty string, mirroring `sh` behaviour.

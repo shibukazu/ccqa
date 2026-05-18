@@ -22,6 +22,7 @@ import {
   pathWithAgentBrowserShim,
 } from "../runtime/agent-browser-bin.ts";
 import { validateActions } from "../runtime/replay-validate.ts";
+import { buildSpecEnvScrub, scrubEnvValues } from "../runtime/env-scrub.ts";
 import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -65,6 +66,22 @@ async function runTrace(featureName: string, specName: string, model?: string): 
   const spec = parseTestSpec(specContent);
   const blocks = await loadAllBlocks();
   const expanded = expandSpec(spec, { blocks });
+
+  // Build the env-value → `${VAR}` scrub map BEFORE the trace starts so
+  // every recorded action (whether routed through the PreToolUse Bash hook
+  // or via Claude's `AB_ACTION|...` text emissions) gets its concrete
+  // env-derived values replaced with the symbolic form. Without this,
+  // `abAssertTextVisible` and similar text-channel actions land in
+  // actions.json with the literal trace-time value (e.g. a per-run id),
+  // which then bakes into test.spec.ts and breaks `ccqa run` whenever the
+  // env value changes.
+  const envScrub = buildSpecEnvScrub(spec, expanded);
+  const envScrubMap = envScrub.map;
+  if (envScrub.unresolved.length > 0) {
+    log.warn(
+      `spec references env var(s) with empty/unset values: ${envScrub.unresolved.join(", ")} — their literal trace-time values will be baked into actions.json`,
+    );
+  }
 
   log.meta("spec", spec.title);
   log.meta("steps", expanded.length);
@@ -115,7 +132,7 @@ async function runTrace(featureName: string, specName: string, model?: string): 
       },
       model,
       onAbAction: (abAction: string) => {
-        const action = withStepId(parseAbAction(abAction));
+        const action = withStepId(parseAbAction(scrubEnvValues(abAction, envScrubMap)));
         if (action) traceActions.push(action);
       },
       onAbActionFailed: () => {
@@ -154,7 +171,7 @@ async function runTrace(featureName: string, specName: string, model?: string): 
               if (routeStep.status === "FAILED") overallStatus = "failed";
             }
           } else if (trimmed.startsWith("AB_ACTION|snapshot|") || trimmed.startsWith("AB_ACTION|assert|")) {
-            const action = withStepId(parseAbAction(trimmed));
+            const action = withStepId(parseAbAction(scrubEnvValues(trimmed, envScrubMap)));
             if (action) traceActions.push(action);
           }
         }
