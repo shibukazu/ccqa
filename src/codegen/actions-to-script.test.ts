@@ -77,6 +77,23 @@ describe("actionsToScript", () => {
       const script = actionsToScript({ actions, testName: "demo" });
       expect(script).toContain('ab("click", "[data-id=\'$weird\']")');
     });
+
+    it("expands env refs in `wait` selectors (regression: used to emit a plain string)", () => {
+      const actions: TraceAction[] = [
+        { command: "wait", selector: "text=run-${CCQA_TEST_RUN_ID}" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('abWait(`text=run-${process.env.CCQA_TEST_RUN_ID ?? ""}`);');
+      expect(script).not.toMatch(/abWait\("text=run-\${CCQA_TEST_RUN_ID}"\)/);
+    });
+
+    it("keeps a plain `wait` selector as a regular string literal", () => {
+      const actions: TraceAction[] = [
+        { command: "wait", selector: "text=Done" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('abWait("text=Done");');
+    });
   });
 
   describe("step markers", () => {

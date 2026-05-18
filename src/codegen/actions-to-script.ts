@@ -164,7 +164,10 @@ function actionToLine(action: TraceAction): string | null {
       const sel = action.selector!;
       // Numeric waits represent sleep durations (from auto-fix)
       if (/^\d+$/.test(sel)) return `spawnSync("sleep", [${j(sel)}], { stdio: "inherit" });`;
-      return `abWait(${j(sel)});`;
+      // `${ENV_VAR}` refs in a wait selector (e.g. `text=run-${CCQA_TEST_RUN_ID}`)
+      // must expand to a template literal so the live env value reaches the
+      // selector at run time. Same shape as `fill` / `assert` values.
+      return `abWait(${jExpr(sel)});`;
     }
 
     case "assert": {
