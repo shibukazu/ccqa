@@ -105,6 +105,76 @@ describe("actionToAbArgs", () => {
     expect(actionToAbArgs({ command: "wait", selector: "" }, SESSION)).toBeNull();
     expect(actionToAbArgs({ command: "wait" }, SESSION)).toBeNull();
   });
+
+  test("find_click text → `find text <v> click`", () => {
+    expect(
+      actionToAbArgs(
+        { command: "find_click", findLocator: "text", findValue: "Sign In" },
+        SESSION,
+      ),
+    ).toEqual(["--session", SESSION, "find", "text", "Sign In", "click"]);
+  });
+
+  test("find_click text + --exact appends the flag in order", () => {
+    expect(
+      actionToAbArgs(
+        { command: "find_click", findLocator: "text", findValue: "OK", findExact: true },
+        SESSION,
+      ),
+    ).toEqual(["--session", SESSION, "find", "text", "OK", "click", "--exact"]);
+  });
+
+  test("find_click role + --name", () => {
+    expect(
+      actionToAbArgs(
+        { command: "find_click", findLocator: "role", findValue: "button", findName: "Submit" },
+        SESSION,
+      ),
+    ).toEqual(["--session", SESSION, "find", "role", "button", "click", "--name", "Submit"]);
+  });
+
+  test("find_click last + inner CSS selector", () => {
+    expect(
+      actionToAbArgs(
+        { command: "find_click", findLocator: "last", findValue: "[aria-label='Reply']" },
+        SESSION,
+      ),
+    ).toEqual(["--session", SESSION, "find", "last", "[aria-label='Reply']", "click"]);
+  });
+
+  test("find_click nth puts index before the inner selector", () => {
+    expect(
+      actionToAbArgs(
+        { command: "find_click", findLocator: "nth", findValue: "button.reply", findIndex: 2 },
+        SESSION,
+      ),
+    ).toEqual(["--session", SESSION, "find", "nth", "2", "button.reply", "click"]);
+  });
+
+  test("find_fill carries the input value after the action", () => {
+    expect(
+      actionToAbArgs(
+        { command: "find_fill", findLocator: "label", findValue: "Email", value: "user@example.com" },
+        SESSION,
+      ),
+    ).toEqual(["--session", SESSION, "find", "label", "Email", "fill", "user@example.com"]);
+  });
+
+  test("never emits --name on non-role locators even if findName slipped through", () => {
+    // Defensive: agent-browser rejects --name on text/label/etc. Even if a
+    // stray findName slips into actions.json, the replay path must drop it.
+    expect(
+      actionToAbArgs(
+        { command: "find_click", findLocator: "text", findValue: "Sign In", findName: "ignored" },
+        SESSION,
+      ),
+    ).toEqual(["--session", SESSION, "find", "text", "Sign In", "click"]);
+  });
+
+  test("treats a malformed find_click (no locator/value) as unverifiable", () => {
+    expect(actionToAbArgs({ command: "find_click" }, SESSION)).toBeNull();
+    expect(actionToAbArgs({ command: "find_click", findLocator: "text" }, SESSION)).toBeNull();
+  });
 });
 
 describe("validateActions", () => {
@@ -167,5 +237,133 @@ describe("validateActions", () => {
     expect(kept.map((a) => a.command)).toEqual(["open"]);
     expect(dropped).toHaveLength(1);
     expect(dropped[0]!.action.command).toBe("click");
+  });
+
+  test("step boundary lifts the cascade — next step's wait/assert are retried", () => {
+    // step-01 click fails. step-02's wait is independent and should be tried.
+    const stepped: TraceAction[] = [
+      { command: "open", value: "/", stepId: "step-01" },
+      { command: "click", selector: "[aria-label='X']", stepId: "step-01" },
+      { command: "wait", selector: "text=Loading", stepId: "step-01" }, // collateral
+      { command: "wait", selector: "text=Welcome", stepId: "step-02" }, // independent
+      { command: "assert", assertType: "text_visible", value: "Welcome", stepId: "step-02" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(OK)   // open
+      .mockReturnValueOnce(FAIL) // click (step-01) → cascade armed
+      // (step-01 wait is skipped without spawnAB call)
+      .mockReturnValueOnce(OK)   // step-02 wait
+      .mockReturnValueOnce(OK);  // step-02 assert
+    const { kept, dropped } = validateActions(stepped, { sessionName: "s" });
+    expect(kept.map((a) => a.command)).toEqual(["open", "wait", "assert"]);
+    expect(kept[1]!.stepId).toBe("step-02");
+    expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait"]);
+    expect(dropped[1]!.action.stepId).toBe("step-01");
+  });
+
+  test("a passive failure (assert/wait/snapshot) does NOT cascade — the next passive is still tried", () => {
+    // Two independent asserts in the same step: the first fails, the second
+    // should still get tried because asserts don't mutate page state.
+    const sameStep: TraceAction[] = [
+      { command: "assert", assertType: "text_visible", value: "Foo", stepId: "step-01" },
+      { command: "assert", assertType: "text_visible", value: "Bar", stepId: "step-01" },
+      { command: "snapshot", observation: "after", stepId: "step-01" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(FAIL) // assert Foo
+      .mockReturnValueOnce(OK);  // assert Bar (snapshot has no args to spawn)
+    const { kept, dropped } = validateActions(sameStep, { sessionName: "s" });
+    expect(kept.map((a) => a.command)).toEqual(["assert", "snapshot"]);
+    expect(kept[0]!.value).toBe("Bar");
+    expect(dropped.map((d) => d.action.value)).toEqual(["Foo"]);
+  });
+
+  test("hard timeout triggers exactly one retry; pass on retry is treated as success", () => {
+    const timeout = { status: null, stdout: "", stderr: "\n[ccqa] agent-browser killed after hard timeout" };
+    mockedSpawnAB
+      .mockReturnValueOnce(OK)       // open
+      .mockReturnValueOnce(timeout)  // click fails with SIGTERM
+      .mockReturnValueOnce(OK)       // retry → OK
+      .mockReturnValueOnce(OK)       // wait
+      .mockReturnValueOnce(OK)       // assert
+      .mockReturnValueOnce(OK)       // click [Next]
+      ;                              // snapshot (no spawn)
+    const { kept, dropped } = validateActions(actions, { sessionName: "s" });
+    expect(kept).toHaveLength(actions.length);
+    expect(dropped).toHaveLength(0);
+  });
+
+  test("hard timeout still fails after one retry — drop and arm cascade", () => {
+    const timeout = { status: null, stdout: "", stderr: "\n[ccqa] agent-browser killed after hard timeout" };
+    const tail: TraceAction[] = [
+      { command: "open", value: "/", stepId: "step-01" },
+      { command: "click", selector: "[aria-label='X']", stepId: "step-01" },
+      { command: "wait", selector: "text=Done", stepId: "step-01" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(OK)
+      .mockReturnValueOnce(timeout) // 1st
+      .mockReturnValueOnce(timeout) // retry
+      ;
+    const { kept, dropped } = validateActions(tail, { sessionName: "s" });
+    expect(kept.map((a) => a.command)).toEqual(["open"]);
+    expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait"]);
+    expect(dropped[0]!.reason).toMatch(/killed after hard timeout/);
+  });
+
+  test("rescue: a step that lost everything has its surviving-on-retry actions promoted back", () => {
+    // step-08 click fails (cascade armed) → wait dropped as collateral →
+    // step-08 has zero kept actions → rescue replays both, second one passes.
+    const recoverable: TraceAction[] = [
+      { command: "open", value: "/", stepId: "step-07" },
+      { command: "click", selector: "[aria-label='X']", stepId: "step-08" },
+      { command: "wait", selector: "text=Saved", stepId: "step-08" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(OK)   // open
+      .mockReturnValueOnce(FAIL) // click → cascade
+      // wait collateral — not spawned
+      .mockReturnValueOnce(FAIL) // rescue: click again, still fails
+      .mockReturnValueOnce(OK);  // rescue: wait passes
+    const { kept, dropped, rescuedSteps } = validateActions(recoverable, { sessionName: "s" });
+    expect(kept.map((a) => a.command)).toEqual(["open", "wait"]);
+    expect(kept[1]!.stepId).toBe("step-08");
+    expect(dropped.map((d) => d.action.command)).toEqual(["click"]);
+    expect(rescuedSteps).toEqual(["step-08"]);
+  });
+
+  test("rescue: a step where every retry also fails stays lost", () => {
+    const unrecoverable: TraceAction[] = [
+      { command: "open", value: "/", stepId: "step-07" },
+      { command: "click", selector: "[aria-label='X']", stepId: "step-08" },
+      { command: "wait", selector: "text=Saved", stepId: "step-08" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(OK)   // open
+      .mockReturnValueOnce(FAIL) // click
+      .mockReturnValueOnce(FAIL) // rescue: click
+      .mockReturnValueOnce(FAIL); // rescue: wait
+    const { kept, dropped, rescuedSteps } = validateActions(unrecoverable, { sessionName: "s" });
+    expect(kept.map((a) => a.command)).toEqual(["open"]);
+    expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait"]);
+    expect(rescuedSteps ?? []).toEqual([]);
+  });
+
+  test("rescue: does NOT touch steps that already kept at least one action", () => {
+    const partiallyKept: TraceAction[] = [
+      { command: "open", value: "/", stepId: "step-07" },
+      { command: "click", selector: "[aria-label='OK']", stepId: "step-07" },
+      { command: "wait", selector: "text=Foo", stepId: "step-07" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(OK)   // open
+      .mockReturnValueOnce(FAIL) // click
+      // wait collateral — not spawned, but step-07 already has `open` kept
+      ;
+    const { kept, dropped, rescuedSteps } = validateActions(partiallyKept, { sessionName: "s" });
+    // Partial loss — no rescue should fire; downstream wait stays dropped.
+    expect(kept.map((a) => a.command)).toEqual(["open"]);
+    expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait"]);
+    expect(rescuedSteps ?? []).toEqual([]);
   });
 });

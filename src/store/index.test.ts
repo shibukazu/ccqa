@@ -1,5 +1,8 @@
 import { describe, test, expect } from "vitest";
-import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, routeToMarkdown } from "./index.ts";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadTraceUserPrompt, routeToMarkdown } from "./index.ts";
 import type { Route } from "../types.ts";
 
 describe("parseSpecPath", () => {
@@ -151,5 +154,44 @@ describe("routeToMarkdown", () => {
     };
     const md = routeToMarkdown(route);
     expect(md).not.toContain("- **reason**");
+  });
+});
+
+describe("loadTraceUserPrompt", () => {
+  async function makeWorkspace(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "ccqa-trace-user-prompt-"));
+    await mkdir(join(dir, ".ccqa", "prompts"), { recursive: true });
+    return dir;
+  }
+
+  test("returns null when the file does not exist", async () => {
+    const dir = await makeWorkspace();
+    expect(await loadTraceUserPrompt(dir)).toBeNull();
+  });
+
+  test("returns null when the file is empty or whitespace-only", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(join(dir, ".ccqa/prompts/trace.user.md"), "   \n\n  ", "utf-8");
+    expect(await loadTraceUserPrompt(dir)).toBeNull();
+  });
+
+  test("returns the trimmed contents when the file is non-empty", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(
+      join(dir, ".ccqa/prompts/trace.user.md"),
+      "\n  Use only [data-testid='*'] selectors.\n",
+      "utf-8",
+    );
+    expect(await loadTraceUserPrompt(dir)).toBe("Use only [data-testid='*'] selectors.");
+  });
+
+  test("truncates contents that exceed the 32 KiB cap and appends a warning", async () => {
+    const dir = await makeWorkspace();
+    const huge = "x".repeat(40_000);
+    await writeFile(join(dir, ".ccqa/prompts/trace.user.md"), huge, "utf-8");
+    const out = await loadTraceUserPrompt(dir);
+    expect(out).not.toBeNull();
+    expect(out!.length).toBeLessThan(huge.length);
+    expect(out).toMatch(/truncated at 32768 bytes/);
   });
 });

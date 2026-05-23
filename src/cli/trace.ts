@@ -5,6 +5,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   ensureCcqaDir,
   loadAllBlocks,
+  loadTraceUserPrompt,
   parseSpecPath,
   readSpecFile,
   saveRoute,
@@ -23,7 +24,17 @@ import {
 } from "../runtime/agent-browser-bin.ts";
 import { validateActions } from "../runtime/replay-validate.ts";
 import { buildSpecEnvScrub, scrubEnvValues } from "../runtime/env-scrub.ts";
-import type { Route, RouteStep, TraceAction, TraceCommand, AssertType, ParsedStatusLine } from "../types.ts";
+import { formatUnstableDrop, scrubUnstableActions } from "../runtime/literal-scrub.ts";
+import { FIND_LOCATORS } from "../types.ts";
+import type {
+  Route,
+  RouteStep,
+  TraceAction,
+  TraceCommand,
+  AssertType,
+  FindLocator,
+  ParsedStatusLine,
+} from "../types.ts";
 import * as log from "./logger.ts";
 
 interface TraceOptions {
@@ -91,11 +102,16 @@ async function runTrace(featureName: string, specName: string, model?: string): 
 
   const sessionName = generateSessionName();
 
-  const systemPrompt = buildTraceSystemPrompt({
+  const baseSystemPrompt = buildTraceSystemPrompt({
     title: spec.title,
     steps: expanded,
     sessionName,
   });
+  const userPrompt = await loadTraceUserPrompt();
+  if (userPrompt !== null) log.meta("user-prompt", ".ccqa/prompts/trace.user.md");
+  const systemPrompt = userPrompt === null
+    ? baseSystemPrompt
+    : `${baseSystemPrompt}\n## Project-specific guidance\n\n${userPrompt}\n`;
   const prompt = buildTracePrompt(spec.title);
 
   log.info("Running agent-browser session...");
@@ -181,7 +197,10 @@ async function runTrace(featureName: string, specName: string, model?: string): 
 
   if (isError) overallStatus = "failed";
 
-  const validatedActions = validateAndReport(traceActions);
+  const scrubbedActions = scrubAndReport(traceActions);
+  const heuristicDeduped = stepAwareCommandDedupAndReport(scrubbedActions);
+  const dedupedActions = dedupAndReport(heuristicDeduped);
+  const validatedActions = validateAndReport(dedupedActions);
 
   const timestamp = new Date().toISOString();
   const route: Route = { specName, timestamp, status: overallStatus, steps: routeSteps };
@@ -213,6 +232,163 @@ async function runTrace(featureName: string, specName: string, model?: string): 
 }
 
 /**
+ * Strip actions whose recorded fields contain "unstable literal" values
+ * (clock readings, ISO datetimes, Unix-epoch IDs) that Claude baked into
+ * the trace despite not coming through `${ENV_VAR}`. These would otherwise
+ * pin the generated test to a single run. Reported the same way as
+ * `validateAndReport` so users see one uniform "dropped" surface.
+ */
+function scrubAndReport(actions: TraceAction[]): TraceAction[] {
+  if (actions.length === 0) return actions;
+  const { kept, dropped } = scrubUnstableActions(actions);
+  if (dropped.length === 0) return kept;
+  log.blank();
+  log.info("post-trace literal scrub (removing run-specific values)...");
+  for (const d of dropped) {
+    log.warn(`dropped action #${d.index + 1} (${formatUnstableDrop(d)})`);
+  }
+  log.meta("scrubbed", `${kept.length}/${actions.length} kept (${dropped.length} dropped)`);
+  return kept;
+}
+
+/**
+ * Drop *immediate* duplicate AB_ACTION emissions inside the same step.
+ * Claude occasionally records the same `find_click` (identical command,
+ * locator, value, fields) twice in a row when retrying a selector after a
+ * snapshot — only the last attempt is "the canonical one". Collapsing the
+ * dupes keeps actions.json from accumulating ghost-retries the LLM never
+ * meant to commit.
+ *
+ * The dedupe is intentionally conservative — adjacent + structurally
+ * IDENTICAL only. We do NOT try to compress retries with different
+ * selectors / locators (that would risk dropping a legitimate "click the
+ * neighbouring button" sequence). The trace prompt now asks Claude not to
+ * emit failed attempts in the first place, so this is the belt-and-braces
+ * pass.
+ */
+function dedupAndReport(actions: TraceAction[]): TraceAction[] {
+  if (actions.length === 0) return actions;
+  const kept: TraceAction[] = [];
+  let dropped = 0;
+  for (const action of actions) {
+    const prev = kept[kept.length - 1];
+    if (prev && isAdjacentDuplicate(prev, action)) {
+      dropped += 1;
+      continue;
+    }
+    kept.push(action);
+  }
+  if (dropped === 0) return kept;
+  log.meta("deduped", `${kept.length}/${actions.length} kept (${dropped} adjacent duplicate(s) dropped)`);
+  return kept;
+}
+
+/**
+ * Step-aware dedupe that drops *failed-attempt runs* the LLM leaks into
+ * the trace despite the "record only successful actions" prompt rule.
+ *
+ * When Claude retries the same logical action with different selectors
+ * (e.g. `find_click` with four different locators looking for one button),
+ * the trailing successful call is the canonical one — the earlier ones
+ * were exploratory misses that will fail at replay validation and
+ * silently delete the step from the generated test (FB problem 3).
+ *
+ * Rule:
+ *   For each maximal run of >=3 actions sharing the same stepId and the
+ *   same `command`, with no passive action (`snapshot`/`wait`/`assert`)
+ *   in between, keep ONLY the last action of the run. The threshold of
+ *   3 keeps legitimate "two consecutive clicks on different elements"
+ *   sequences untouched.
+ *
+ * The dedup runs BEFORE `dedupAndReport` (which compresses exact
+ * adjacent duplicates) so the run-length pass sees the raw stream.
+ */
+export function stepAwareCommandDedup(actions: TraceAction[]): {
+  kept: TraceAction[];
+  drops: Array<{ stepId: string; command: string; droppedCount: number }>;
+} {
+  if (actions.length === 0) return { kept: [], drops: [] };
+  const drops: Array<{ stepId: string; command: string; droppedCount: number }> = [];
+
+  // Group indices into runs of [stepId, command] separated by step-id
+  // change, command change, or a passive action.
+  const runs: Array<{ start: number; end: number }> = [];
+  let runStart = 0;
+  for (let i = 1; i <= actions.length; i++) {
+    const prev = actions[i - 1]!;
+    const curr = i < actions.length ? actions[i]! : null;
+    const sameRun =
+      curr !== null &&
+      !isPassiveCommandForDedup(prev.command) &&
+      !isPassiveCommandForDedup(curr.command) &&
+      curr.command === prev.command &&
+      (curr.stepId ?? "") === (prev.stepId ?? "");
+    if (!sameRun) {
+      runs.push({ start: runStart, end: i - 1 });
+      runStart = i;
+    }
+  }
+
+  const dropIndices = new Set<number>();
+  for (const run of runs) {
+    const length = run.end - run.start + 1;
+    if (length < 3) continue;
+    // Drop every action in the run except the last one.
+    for (let j = run.start; j < run.end; j++) dropIndices.add(j);
+    drops.push({
+      stepId: actions[run.start]!.stepId ?? "<no step>",
+      command: actions[run.start]!.command,
+      droppedCount: length - 1,
+    });
+  }
+
+  const kept = actions.filter((_, i) => !dropIndices.has(i));
+  return { kept, drops };
+}
+
+function isPassiveCommandForDedup(cmd: string): boolean {
+  return cmd === "snapshot" || cmd === "wait" || cmd === "assert";
+}
+
+function stepAwareCommandDedupAndReport(actions: TraceAction[]): TraceAction[] {
+  if (actions.length === 0) return actions;
+  const { kept, drops } = stepAwareCommandDedup(actions);
+  if (drops.length === 0) return kept;
+  log.blank();
+  log.info("post-trace heuristic dedup (collapsing retry runs)...");
+  let totalDropped = 0;
+  for (const d of drops) {
+    totalDropped += d.droppedCount;
+    log.meta(`  ${d.stepId}`, `${d.droppedCount} consecutive ${d.command} attempt(s) collapsed; kept the last only`);
+  }
+  log.meta("heuristic-deduped", `${kept.length}/${actions.length} kept (${totalDropped} attempt(s) dropped)`);
+  return kept;
+}
+
+/**
+ * Two actions are an "adjacent duplicate" when they would generate the
+ * exact same agent-browser invocation. We compare by command + every
+ * field that drives codegen output, sharing the same stepId (so we don't
+ * silently merge two distinct steps that happen to start identically).
+ */
+function isAdjacentDuplicate(a: TraceAction, b: TraceAction): boolean {
+  if (a.command !== b.command) return false;
+  if ((a.stepId ?? "") !== (b.stepId ?? "")) return false;
+  return (
+    (a.selector ?? "") === (b.selector ?? "") &&
+    (a.value ?? "") === (b.value ?? "") &&
+    (a.target ?? "") === (b.target ?? "") &&
+    (a.label ?? "") === (b.label ?? "") &&
+    (a.assertType ?? "") === (b.assertType ?? "") &&
+    (a.findLocator ?? "") === (b.findLocator ?? "") &&
+    (a.findValue ?? "") === (b.findValue ?? "") &&
+    (a.findName ?? "") === (b.findName ?? "") &&
+    (a.findIndex ?? -1) === (b.findIndex ?? -1) &&
+    (a.findExact ?? false) === (b.findExact ?? false)
+  );
+}
+
+/**
  * Run the post-trace replay validation and emit user-visible drop reports.
  * Splitting this out keeps `runTrace` readable; the function is pure aside
  * from `log.*` and the agent-browser invocations inside `validateActions`.
@@ -222,16 +398,92 @@ function validateAndReport(actions: TraceAction[]): TraceAction[] {
   const sessionName = `${generateSessionName()}-validate`;
   log.blank();
   log.info("post-trace validation (replaying recorded actions)...");
-  const { kept, dropped } = validateActions(actions, { sessionName });
+  const { kept, dropped, rescuedSteps = [] } = validateActions(actions, { sessionName });
+  if (rescuedSteps.length > 0) {
+    log.info(`rescued ${rescuedSteps.length} step(s) that had lost every action: ${rescuedSteps.join(", ")}`);
+  }
   if (dropped.length === 0) {
     log.meta("validated", `${kept.length}/${actions.length} kept`);
     return kept;
   }
+  // Group adjacent cascade drops (same stepId, all "skipped after ...") so a
+  // single noisy failure produces one summary line instead of N copies of
+  // the same boilerplate.
+  let cascadeStart: number | null = null;
+  let cascadeCount = 0;
+  let cascadeStepId: string | undefined;
+  const flushCascade = (): void => {
+    if (cascadeStart === null || cascadeCount === 0) return;
+    const stepTag = cascadeStepId ? ` in ${cascadeStepId}` : "";
+    log.warn(`cascade dropped ${cascadeCount} action(s)${stepTag} after action #${cascadeStart}`);
+    cascadeStart = null;
+    cascadeCount = 0;
+    cascadeStepId = undefined;
+  };
   for (const d of dropped) {
+    const isCascade = d.reason.startsWith("skipped after");
+    if (isCascade && cascadeStart !== null && cascadeStepId === d.action.stepId) {
+      cascadeCount += 1;
+      continue;
+    }
+    flushCascade();
+    if (isCascade) {
+      cascadeStart = d.index;
+      cascadeCount = 1;
+      cascadeStepId = d.action.stepId;
+      continue;
+    }
     log.warn(`dropped action #${d.index + 1} (${d.action.command}${d.action.selector ? " " + d.action.selector : ""}): ${d.reason}`);
   }
+  flushCascade();
   log.meta("validated", `${kept.length}/${actions.length} kept (${dropped.length} dropped)`);
+  reportPerStepBreakdown(actions, kept);
   return kept;
+}
+
+/**
+ * Print a per-step `kept/total` line so a step that lost ALL its actions
+ * during validation surfaces clearly. Without this, a spec author can't
+ * tell that "verify created content" or "delete the thing" silently fell
+ * off the generated test — the trace appears to pass while half the spec
+ * is missing. Lost steps are also surfaced as a dedicated warning line so
+ * they don't blend into the per-step breakdown noise.
+ */
+function reportPerStepBreakdown(beforeValidation: TraceAction[], afterValidation: TraceAction[]): void {
+  const before = groupCountByStep(beforeValidation);
+  const after = groupCountByStep(afterValidation);
+  // Walk in the order step ids first appeared in the trace so output
+  // matches the spec narrative.
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  for (const a of beforeValidation) {
+    const id = a.stepId ?? "<no step>";
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ordered.push(id);
+  }
+  const lostSteps: string[] = [];
+  for (const id of ordered) {
+    const total = before.get(id) ?? 0;
+    const kept = after.get(id) ?? 0;
+    const dropped = total - kept;
+    const isLost = kept === 0 && total > 0 && id !== "<no step>";
+    if (isLost) lostSteps.push(id);
+    const tag = isLost ? " ⚠ entire step removed" : "";
+    log.meta(`  ${id}`, `${kept}/${total} kept${dropped > 0 ? `, ${dropped} dropped` : ""}${tag}`);
+  }
+  if (lostSteps.length > 0) {
+    log.warn(`${lostSteps.length} spec step(s) lost every recorded action: ${lostSteps.join(", ")} — the generated test will NOT exercise these steps.`);
+  }
+}
+
+function groupCountByStep(actions: TraceAction[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const a of actions) {
+    const id = a.stepId ?? "<no step>";
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return counts;
 }
 
 export function parseStatusLine(text: string): ParsedStatusLine | null {
@@ -302,7 +554,52 @@ export function parseAbAction(line: string): TraceAction | null {
       return { command, selector: parts[2], value: parts[3], label: parts[4] };
     case "drag":
       return { command, selector: parts[2], target: parts[3], label: parts[4] };
+    case "find_click":
+    case "find_dblclick":
+    case "find_hover":
+    case "find_focus":
+    case "find_check":
+    case "find_uncheck":
+      // AB_ACTION|find_<action>|<locator>|<value>|<extra>|<exact>|<label>
+      return parseFindAction(command, parts, false);
+    case "find_fill":
+    case "find_type":
+      // AB_ACTION|find_<action>|<locator>|<value>|<extra>|<exact>|<fillValue>|<label>
+      return parseFindAction(command, parts, true);
     default:
       return null;
   }
+}
+
+/**
+ * Common parser for the `find_*` family. `<extra>` carries `--name` for
+ * `role`, the integer index for `nth`, and is empty otherwise. We accept a
+ * literally empty `<extra>` (the LLM emits a placeholder `|` so the
+ * positional layout stays stable across locators).
+ */
+function parseFindAction(
+  command: TraceCommand,
+  parts: string[],
+  hasFillValue: boolean,
+): TraceAction | null {
+  const locator = parts[2] as FindLocator | undefined;
+  const findValue = parts[3];
+  const extra = parts[4] ?? "";
+  const exactToken = parts[5] ?? "";
+  if (!locator || !FIND_LOCATORS.includes(locator) || !findValue) return null;
+
+  const findExact = exactToken === "exact" ? true : undefined;
+  const findName = locator === "role" && extra ? extra : undefined;
+  const findIndex = locator === "nth" && extra ? Number.parseInt(extra, 10) : undefined;
+  if (locator === "nth" && (findIndex === undefined || Number.isNaN(findIndex))) return null;
+
+  return {
+    command,
+    findLocator: locator,
+    findValue,
+    ...(findExact !== undefined && { findExact }),
+    ...(findName !== undefined && { findName }),
+    ...(findIndex !== undefined && { findIndex }),
+    ...(hasFillValue ? { value: parts[6], label: parts[7] } : { label: parts[6] }),
+  };
 }

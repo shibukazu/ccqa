@@ -96,6 +96,150 @@ describe("actionsToScript", () => {
     });
   });
 
+  describe("find_* commands", () => {
+    it("emits ab(\"find\", \"text\", value, \"click\") for find_click + text locator", () => {
+      const actions: TraceAction[] = [
+        { command: "find_click", findLocator: "text", findValue: "Sign In" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("find", "text", "Sign In", "click")');
+    });
+
+    it("expands `${ENV}` in findValue (text locator)", () => {
+      const actions: TraceAction[] = [
+        { command: "find_click", findLocator: "text", findValue: "run-${CCQA_RUN_ID}" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('`run-${process.env.CCQA_RUN_ID ?? ""}`');
+    });
+
+    it("emits --exact AFTER the action token (agent-browser argv order)", () => {
+      // Regression: previously emitted `find text "OK" --exact click`, which
+      // agent-browser rejects with "Unknown subaction: --exact". The correct
+      // shape is `find text "OK" click --exact`.
+      const actions: TraceAction[] = [
+        { command: "find_click", findLocator: "text", findValue: "OK", findExact: true },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("find", "text", "OK", "click", "--exact")');
+    });
+
+    it("emits --name AFTER the action token for role locator", () => {
+      // Regression: see above — `Unknown subaction: --name` came from putting
+      // the flag before `click`.
+      const actions: TraceAction[] = [
+        { command: "find_click", findLocator: "role", findValue: "button", findName: "Submit" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("find", "role", "button", "click", "--name", "Submit")');
+    });
+
+    it("emits inner selector literally for `last` (no env-expansion)", () => {
+      const actions: TraceAction[] = [
+        { command: "find_click", findLocator: "last", findValue: "[aria-label='Reply']" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("find", "last", "[aria-label=\'Reply\']", "click")');
+    });
+
+    it("emits the index for `nth`", () => {
+      const actions: TraceAction[] = [
+        { command: "find_click", findLocator: "nth", findValue: "button.reply", findIndex: 2 },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("find", "nth", "2", "button.reply", "click")');
+    });
+
+    it("emits the fill input after the action for find_fill", () => {
+      const actions: TraceAction[] = [
+        { command: "find_fill", findLocator: "label", findValue: "Email", value: "user@example.com" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("find", "label", "Email", "fill", "user@example.com")');
+    });
+
+    it("never emits --name when locator is not role (defensive)", () => {
+      const actions: TraceAction[] = [
+        { command: "find_click", findLocator: "text", findValue: "Sign In", findName: "ignored" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain('"--name"');
+      expect(script).not.toContain('"ignored"');
+    });
+
+    it("emits a // [warn] marker (not a broken ab() line) when find_click lacks findLocator", () => {
+      // Regression: previously emitted `ab("find", , , "click")` which is a
+      // TS syntax error and crashes the generated test at parse time. Now we
+      // surface a visible breadcrumb so CI logs flag the upstream corruption.
+      const actions: TraceAction[] = [
+        { command: "find_click" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain("ab(\"find\"");
+      expect(script).not.toMatch(/ab\([^)]*,\s*,/);
+      expect(script).toContain("[warn] find_* dropped: find_click");
+    });
+
+    it("emits a // [warn] marker when find_click lacks findValue", () => {
+      const actions: TraceAction[] = [
+        { command: "find_click", findLocator: "text", stepId: "step-03" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain("ab(\"find\"");
+      expect(script).not.toMatch(/ab\([^)]*,\s*,/);
+      expect(script).toContain("[warn] find_* dropped: find_click");
+      expect(script).toContain("stepId=step-03");
+    });
+  });
+
+  describe("emptySteps notices", () => {
+    it("injects a warning block for a spec step that lost all its actions", () => {
+      const actions: TraceAction[] = [
+        { command: "open", value: "/", stepId: "step-01" },
+      ];
+      const script = actionsToScript({
+        actions,
+        testName: "demo",
+        emptySteps: [{ stepId: "step-02", source: "spec", insertAfterIndex: 0 }],
+      });
+      expect(script).toContain("// step: step-02 [spec]");
+      expect(script).toContain("[warn] all actions for this step were dropped during post-trace validation");
+      expect(script).toMatch(/step step-02/);
+    });
+
+    it("places a notice before the first action when insertAfterIndex is -1", () => {
+      const actions: TraceAction[] = [
+        { command: "click", selector: "[aria-label='X']", stepId: "step-02" },
+      ];
+      const script = actionsToScript({
+        actions,
+        testName: "demo",
+        emptySteps: [{ stepId: "step-01", source: "spec", insertAfterIndex: -1 }],
+      });
+      const stepCommentIdx = script.indexOf("// step: step-01");
+      const clickIdx = script.indexOf('ab("click"');
+      expect(stepCommentIdx).toBeGreaterThan(-1);
+      expect(clickIdx).toBeGreaterThan(stepCommentIdx);
+    });
+
+    it("emits one notice per lost step in order", () => {
+      const actions: TraceAction[] = [
+        { command: "open", value: "/", stepId: "step-01" },
+      ];
+      const script = actionsToScript({
+        actions,
+        testName: "demo",
+        emptySteps: [
+          { stepId: "step-02", source: "spec", insertAfterIndex: 0 },
+          { stepId: "step-03", source: "spec", insertAfterIndex: 0 },
+        ],
+      });
+      expect(script).toContain("// step: step-02 [spec]");
+      expect(script).toContain("// step: step-03 [spec]");
+      expect(script.indexOf("step-02")).toBeLessThan(script.indexOf("step-03"));
+    });
+  });
+
   describe("step markers", () => {
     it("places exactly one marker at the first action of each contiguous stepId run", () => {
       const actions: TraceAction[] = [

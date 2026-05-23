@@ -32,6 +32,13 @@ export interface ValidationDrop {
 export interface ValidationResult {
   kept: TraceAction[];
   dropped: ValidationDrop[];
+  /**
+   * stepIds whose first-pass actions were all dropped but were restored
+   * by the rescue pass (`rescueLostSteps`). Empty when no step needed
+   * rescuing. Callers can surface this to the user to explain why the
+   * action count "magically" grew on a second look.
+   */
+  rescuedSteps?: string[];
 }
 
 const SHORT_TIMEOUT_MS = 5_000;
@@ -95,7 +102,49 @@ export function actionToAbArgs(action: TraceAction, sessionName: string): string
       return null;
     case "assert":
       return assertToAbArgs(action, sub, sessionName);
+    case "find_click":
+    case "find_dblclick":
+    case "find_hover":
+    case "find_focus":
+    case "find_check":
+    case "find_uncheck":
+      return buildFindArgs(action, undefined, sub, base);
+    case "find_fill":
+    case "find_type":
+      return buildFindArgs(action, sub(action.value), sub, base);
   }
+}
+
+/**
+ * Build the agent-browser argv for a recorded `find_*` action. Mirrors the
+ * codegen shape in `actions-to-script.ts:buildFindArgs` but emits a plain
+ * string array. Env refs in `findValue` / `findName` resolve through `sub`
+ * so the validator hits the same DOM the generated test will.
+ */
+function buildFindArgs(
+  action: TraceAction,
+  fillValue: string | undefined,
+  sub: (s: string | undefined) => string,
+  base: string[],
+): string[] | null {
+  const locator = action.findLocator;
+  if (!locator || !action.findValue) return null;
+  const innerAction = action.command.slice("find_".length).replace("type", "fill");
+  const out = [...base, "find", locator];
+  if (locator === "nth") out.push(String(action.findIndex ?? 0));
+  out.push(sub(action.findValue));
+  // agent-browser expects `<value> <action> [--name <n>] [--exact]` — flags
+  // MUST follow the action token. Putting --name before it produced
+  // "Unknown subaction: --name" on every find_role call we recorded.
+  out.push(innerAction);
+  if (fillValue !== undefined) out.push(fillValue);
+  // `--name` is role-only — drop it on every other locator even if a stray
+  // findName slipped into actions.json (agent-browser rejects it otherwise).
+  if (locator === "role" && action.findName) {
+    out.push("--name", sub(action.findName));
+  }
+  if (action.findExact) out.push("--exact");
+  return out;
 }
 
 function assertToAbArgs(
@@ -145,34 +194,63 @@ export interface ValidateOptions {
   sessionName: string;
 }
 
+// Sentinel for actions that carry no stepId (older traces, or commands
+// emitted before STEP_START). Step-scoped skip falls back to "rest of the
+// trace" for these — i.e. the v0.4 behaviour. We don't conflate the
+// sentinel with any real stepId because real ids look like "step-NN".
+const NO_STEP_ID = "__no_step__";
+
 export function validateActions(
   actions: TraceAction[],
   opts: ValidateOptions,
 ): ValidationResult {
   const kept: TraceAction[] = [];
   const dropped: ValidationDrop[] = [];
-  // We keep going past a failure so a single bad action doesn't abort
-  // validation of everything that follows — but skip subsequent actions
-  // that *depend* on the failed one's side effect (mostly `wait` /
-  // `assert` after a failed `click`). The simple rule: drop the failing
-  // action and any contiguous run of selectorless waits / asserts that
-  // immediately follow it, up to the next side-effecting command.
-  let skipUntilSideEffect = false;
+
+  // Cascade design:
+  //   - A failed *state-mutating* action (click/fill/open/find_click/…)
+  //     poisons the rest of the page state, so any passive action (wait /
+  //     assert / snapshot) that follows can't be replayed meaningfully —
+  //     drop them as collateral, but ONLY until the next step boundary.
+  //     v0.4 used "until the next side-effecting command", which let one
+  //     bad action poison the entire trace.
+  //   - A failed *passive* action (assert/wait/snapshot) does NOT mutate
+  //     state. Drop the offender itself, but let the next passive try —
+  //     it might be observing something orthogonal.
+  //   - SIGTERM from agent-browser is treated as a transient daemon
+  //     hiccup: retry once before counting it as a failure.
+  let skipFromStepId: string | null = null;
   for (let i = 0; i < actions.length; i++) {
     const action = actions[i]!;
-    if (skipUntilSideEffect && isPassiveCommand(action.command)) {
+    const stepId = action.stepId ?? NO_STEP_ID;
+    // Crossing a step boundary clears the skip — each step's expected
+    // page state is described independently in the spec.
+    if (skipFromStepId !== null && skipFromStepId !== stepId) {
+      skipFromStepId = null;
+    }
+    if (skipFromStepId !== null && isPassiveCommand(action.command)) {
       dropped.push({ index: i, action, reason: "skipped after a preceding action failed" });
       continue;
     }
-    skipUntilSideEffect = false;
     const args = actionToAbArgs(action, opts.sessionName);
     if (args === null) {
       kept.push(action);
       continue;
     }
-    const result = spawnAB(args);
+    let result = spawnAB(args);
+    if (result.status !== 0 && looksLikeHardTimeout(result)) {
+      // Hard-timeout retry, capped at 1: agent-browser's daemon
+      // occasionally drops a request under load. Burning a single extra
+      // ~30s budget here is cheaper than re-tracing the whole spec.
+      result = spawnAB(args);
+    }
     if (result.status === 0) {
       kept.push(action);
+      // A successful state-mutating action means the page is now in a
+      // known-good state — let subsequent passives observe it.
+      if (skipFromStepId !== null && !isPassiveCommand(action.command)) {
+        skipFromStepId = null;
+      }
       continue;
     }
     dropped.push({
@@ -181,9 +259,93 @@ export function validateActions(
       reason:
         (result.stderr.trim() || result.stdout.trim() || `agent-browser exit ${result.status ?? "?"}`).slice(0, 200),
     });
-    skipUntilSideEffect = true;
+    if (!isPassiveCommand(action.command)) {
+      // Only state-mutating failures poison subsequent actions.
+      skipFromStepId = stepId;
+    }
   }
-  return { kept, dropped };
+  return rescueLostSteps(actions, kept, dropped, opts);
+}
+
+/**
+ * Last-line-of-defence pass that preserves whole spec steps from disappearing.
+ *
+ * After the main validation loop, walk the dropped list and identify steps
+ * whose every action was dropped. For each lost step, replay its dropped
+ * actions one more time in isolation — no cascade, no shared bookkeeping.
+ * Any action that finally returns exit 0 gets promoted back into `kept`.
+ *
+ * Why bother: when cascade collapses a step, the post-trace report flags it,
+ * but the generated test still loses the step's intent. A second pass that
+ * costs N extra agent-browser invocations (where N is small, since lost
+ * steps are rare) is cheap insurance against silently shipping a half-tested
+ * spec.
+ *
+ * The rescue is deliberately narrow:
+ *   - Only steps that lost EVERY action are eligible — partial losses are
+ *     left as-is, since the surviving action represents the step's intent.
+ *   - Each rescued action is replayed exactly once. We do NOT recurse, do
+ *     NOT re-cascade, do NOT retry on hard timeout — keep behaviour
+ *     predictable.
+ *   - Steps without a stepId (`NO_STEP_ID`) are skipped — they share the
+ *     v0.4 "rest of trace" semantics and rescuing them would over-fire.
+ */
+function rescueLostSteps(
+  actions: TraceAction[],
+  kept: TraceAction[],
+  dropped: ValidationDrop[],
+  opts: ValidateOptions,
+): ValidationResult {
+  // Build a quick "which steps kept anything" set.
+  const stepsWithSurvivors = new Set<string>();
+  for (const a of kept) {
+    if (a.stepId) stepsWithSurvivors.add(a.stepId);
+  }
+  // Group drops by stepId and find the ones we can rescue.
+  const lostStepDrops = new Map<string, ValidationDrop[]>();
+  for (const d of dropped) {
+    const id = d.action.stepId;
+    if (!id || stepsWithSurvivors.has(id)) continue;
+    const list = lostStepDrops.get(id) ?? [];
+    list.push(d);
+    lostStepDrops.set(id, list);
+  }
+  if (lostStepDrops.size === 0) return { kept, dropped };
+
+  const rescuedIndices = new Set<number>();
+  const rescuedSteps: string[] = [];
+  for (const [stepId, drops] of lostStepDrops.entries()) {
+    let anyForThisStep = false;
+    for (const d of drops) {
+      const args = actionToAbArgs(d.action, opts.sessionName);
+      if (args === null) continue;
+      const result = spawnAB(args);
+      if (result.status === 0) {
+        rescuedIndices.add(d.index);
+        anyForThisStep = true;
+      }
+    }
+    if (anyForThisStep) rescuedSteps.push(stepId);
+  }
+  if (rescuedIndices.size === 0) return { kept, dropped };
+
+  // Re-thread kept in original action order so rescued actions land at
+  // their correct index and downstream consumers see a stable sequence.
+  // `kept.includes(...)` uses object identity, which is fine because the
+  // validator pushes original references — no shallow copies.
+  const keptSet = new Set(kept);
+  const newKept: TraceAction[] = [];
+  for (let i = 0; i < actions.length; i++) {
+    const action = actions[i]!;
+    if (rescuedIndices.has(i) || keptSet.has(action)) newKept.push(action);
+  }
+  const newDropped = dropped.filter((d) => !rescuedIndices.has(d.index));
+  return { kept: newKept, dropped: newDropped, rescuedSteps };
+}
+
+/** Did this agent-browser invocation get SIGTERM'd by the ccqa hard-timeout watchdog? */
+function looksLikeHardTimeout(result: { stderr: string }): boolean {
+  return result.stderr.includes("agent-browser killed after hard timeout");
 }
 
 /**

@@ -27,6 +27,20 @@ export interface StepMarker {
   source: string;
 }
 
+export interface EmptyStepNotice {
+  /** Step id from spec.yaml that ended up with zero kept actions. */
+  stepId: string;
+  /** "spec" or block name — same shape as StepMarker.source. */
+  source: string;
+  /**
+   * Where to splice the notice into the action list. -1 means "before
+   * the first action" (e.g. step-01 lost everything); otherwise we put
+   * it right after the action at this index, so it appears between two
+   * neighbour steps in spec order.
+   */
+  insertAfterIndex: number;
+}
+
 export interface ActionsToScriptInput {
   actions: TraceAction[];
   /** Name shown in vitest output — typically the spec.yaml title. */
@@ -38,10 +52,17 @@ export interface ActionsToScriptInput {
    * we're inside. The source for inlined block steps is the block name.
    */
   stepMarkers?: StepMarker[];
+  /**
+   * Steps from spec.yaml that lost every action during post-trace
+   * validation. The generator emits a visible warning comment block for
+   * each so the spec author notices that the recorded test no longer
+   * exercises that step.
+   */
+  emptySteps?: EmptyStepNotice[];
 }
 
 export function actionsToScript(input: ActionsToScriptInput): string {
-  const { actions, testName, stepMarkers = [] } = input;
+  const { actions, testName, stepMarkers = [], emptySteps = [] } = input;
 
   const helperImports = [
     "ab", "abWait", "abAssertTextVisible", "abAssertVisible", "abAssertNotVisible",
@@ -62,7 +83,7 @@ export function actionsToScript(input: ActionsToScriptInput): string {
 
   const parts: string[] = [...imports];
 
-  const testLines = actionsToLines(actions, stepMarkers);
+  const testLines = actionsToLines(actions, stepMarkers, emptySteps);
   const body = testLines.map((l) => `  ${l}`).join("\n");
   parts.push(
     `test(${JSON.stringify(testName)}, () => {`,
@@ -75,13 +96,32 @@ export function actionsToScript(input: ActionsToScriptInput): string {
 }
 
 /** Commands that interact with page elements and need the page to be loaded */
-const ELEMENT_COMMANDS = new Set<string>(["click", "dblclick", "fill", "type", "check", "uncheck", "select", "hover", "drag"]);
+const ELEMENT_COMMANDS = new Set<string>([
+  "click", "dblclick", "fill", "type", "check", "uncheck", "select", "hover", "drag",
+  "find_click", "find_dblclick", "find_fill", "find_type", "find_hover", "find_focus",
+  "find_check", "find_uncheck",
+]);
 
-function actionsToLines(actions: TraceAction[], stepMarkers: StepMarker[]): string[] {
+function actionsToLines(
+  actions: TraceAction[],
+  stepMarkers: StepMarker[],
+  emptySteps: EmptyStepNotice[],
+): string[] {
   const lines: string[] = [];
   let prevLine: string | null = null;
   let prevCommand: string | null = null;
   const markerByIndex = new Map(stepMarkers.map((m) => [m.actionIndex, m]));
+  // Group empty-step notices by their splice-after index so multiple lost
+  // steps in a row get one warning block each.
+  const emptyByInsertAfter = new Map<number, EmptyStepNotice[]>();
+  for (const e of emptySteps) {
+    const list = emptyByInsertAfter.get(e.insertAfterIndex) ?? [];
+    list.push(e);
+    emptyByInsertAfter.set(e.insertAfterIndex, list);
+  }
+  // Notices that belong before the very first action (insertAfterIndex === -1).
+  const leadingNotices = emptyByInsertAfter.get(-1) ?? [];
+  for (const n of leadingNotices) appendEmptyStepNotice(lines, n);
 
   for (let i = 0; i < actions.length; i++) {
     const marker = markerByIndex.get(i);
@@ -99,8 +139,20 @@ function actionsToLines(actions: TraceAction[], stepMarkers: StepMarker[]): stri
     lines.push(line);
     prevLine = line;
     prevCommand = action.command;
+    const followups = emptyByInsertAfter.get(i);
+    if (followups) {
+      for (const n of followups) appendEmptyStepNotice(lines, n);
+    }
   }
   return lines;
+}
+
+function appendEmptyStepNotice(lines: string[], notice: EmptyStepNotice): void {
+  if (lines.length > 0) lines.push("");
+  lines.push(`// step: ${notice.stepId} [${notice.source}]`);
+  lines.push(`// [warn] all actions for this step were dropped during post-trace validation.`);
+  lines.push(`// [warn] the generated test does NOT exercise step ${notice.stepId}. Re-run`);
+  lines.push(`// [warn] \`ccqa trace\` or add manual assertions if this step is load-bearing.`);
 }
 
 /** Returns true if a selector is a session-specific @ref that cannot be replayed. */
@@ -170,6 +222,24 @@ function actionToLine(action: TraceAction): string | null {
       return `abWait(${jExpr(sel)});`;
     }
 
+    case "find_click":
+    case "find_dblclick":
+    case "find_hover":
+    case "find_focus":
+    case "find_check":
+    case "find_uncheck": {
+      const args = buildFindArgs(action, undefined);
+      return args === null ? droppedFindMarker(action) : `ab(${args.join(", ")});`;
+    }
+
+    case "find_fill":
+    case "find_type": {
+      // agent-browser's `find` only knows `fill` — `type` is a ccqa-side
+      // alias that maps to `fill` at codegen time.
+      const args = buildFindArgs(action, action.value ?? "");
+      return args === null ? droppedFindMarker(action) : `ab(${args.join(", ")});`;
+    }
+
     case "assert": {
       // LLM may omit selector/value fields and put the text in observation instead
       // Fall back to observation when the specific field is missing
@@ -215,6 +285,62 @@ function actionToLine(action: TraceAction): string | null {
     default:
       return null;
   }
+}
+
+/**
+ * Build the argument list for `ab("find", ...)` codegen. Layout matches the
+ * `agent-browser find <locator> <value> [--name <n>] [--exact] <action>
+ * [fillValue]` invocation shape. `findValue` and `findName` go through
+ * `jExpr` so `${ENV}` references survive into the generated test; the
+ * positional CSS selector inside `first/last/nth` stays as a plain string
+ * literal.
+ */
+function buildFindArgs(action: TraceAction, fillValue: string | undefined): string[] | null {
+  // Defensive: if a stray find_* action sneaked into actions.json without the
+  // required locator/value fields, refuse to codegen it. Otherwise we'd emit
+  // `ab("find", , , "click")` (a syntax error) into test.spec.ts.
+  const { findLocator, findValue } = action;
+  if (!findLocator || !findValue) return null;
+  const innerAction = action.command.slice("find_".length).replace("type", "fill");
+  const args = [JSON.stringify("find"), JSON.stringify(findLocator)];
+  if (findLocator === "nth") {
+    // `ab(...args: string[])` only accepts strings — emit the index as a
+    // quoted literal even though it's semantically numeric.
+    args.push(JSON.stringify(String(action.findIndex ?? 0)));
+    args.push(j(findValue));
+  } else if (findLocator === "first" || findLocator === "last") {
+    args.push(j(findValue));
+  } else {
+    args.push(jExpr(findValue));
+  }
+  // agent-browser expects `<value> <action> [--name <n>] [--exact]` —
+  // flags MUST follow the action token. Putting them before it produced
+  // "Unknown subaction: --name" on every find_role call in the trace.
+  args.push(JSON.stringify(innerAction));
+  if (fillValue !== undefined) {
+    args.push(jExpr(fillValue));
+  }
+  // `--name` is role-only. Defend against a stray findName slipping into
+  // actions.json from another locator — agent-browser rejects it.
+  if (findLocator === "role" && action.findName) {
+    args.push(JSON.stringify("--name"), jExpr(action.findName));
+  }
+  if (action.findExact) {
+    args.push(JSON.stringify("--exact"));
+  }
+  return args;
+}
+
+/**
+ * Emit a visible breadcrumb when a `find_*` action lacks the locator/value
+ * fields that codegen needs. We can't generate a runnable `ab(...)` line, but
+ * a silent skip would make the test pass while quietly dropping a step the
+ * spec author cared about. The marker is a TS comment so the file still
+ * parses, but `grep -n "find_\\* dropped"` surfaces the issue in CI logs.
+ */
+function droppedFindMarker(action: TraceAction): string {
+  const ctx = action.stepId ? ` (stepId=${action.stepId})` : "";
+  return `// [warn] find_* dropped: ${action.command}${ctx} — actions.json is missing findLocator/findValue. Re-run \`ccqa trace\` to regenerate.`;
 }
 
 /** JSON.stringify — produces a quoted string literal safe for embedding in TS source. */
