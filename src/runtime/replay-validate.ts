@@ -192,6 +192,14 @@ function assertToAbArgs(
 
 export interface ValidateOptions {
   sessionName: string;
+  /**
+   * Optional progress callback fired once per action just before its
+   * agent-browser invocation. `index` is 0-based; `total` is the full
+   * count including actions that may end up skipped. Callers use this to
+   * render a live progress line so a slow validation pass doesn't look
+   * like a hang.
+   */
+  onProgress?: (index: number, total: number, action: TraceAction) => void;
 }
 
 // Sentinel for actions that carry no stepId (older traces, or commands
@@ -222,6 +230,7 @@ export function validateActions(
   let skipFromStepId: string | null = null;
   for (let i = 0; i < actions.length; i++) {
     const action = actions[i]!;
+    opts.onProgress?.(i, actions.length, action);
     const stepId = action.stepId ?? NO_STEP_ID;
     // Crossing a step boundary clears the skip — each step's expected
     // page state is described independently in the spec.

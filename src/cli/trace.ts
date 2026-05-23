@@ -397,8 +397,14 @@ function validateAndReport(actions: TraceAction[]): TraceAction[] {
   if (actions.length === 0) return actions;
   const sessionName = `${generateSessionName()}-validate`;
   log.blank();
-  log.info("post-trace validation (replaying recorded actions)...");
-  const { kept, dropped, rescuedSteps = [] } = validateActions(actions, { sessionName });
+  log.info(`post-trace validation (replaying ${actions.length} recorded action(s))...`);
+  const { kept, dropped, rescuedSteps = [] } = validateActions(actions, {
+    sessionName,
+    onProgress: (i, total, action) => {
+      log.progress(i, total, validationProgressLabel(action));
+    },
+  });
+  log.progressEnd();
   if (rescuedSteps.length > 0) {
     log.info(`rescued ${rescuedSteps.length} step(s) that had lost every action: ${rescuedSteps.join(", ")}`);
   }
@@ -439,6 +445,24 @@ function validateAndReport(actions: TraceAction[]): TraceAction[] {
   log.meta("validated", `${kept.length}/${actions.length} kept (${dropped.length} dropped)`);
   reportPerStepBreakdown(actions, kept);
   return kept;
+}
+
+/**
+ * Compact one-liner used as the progress label while validation replays
+ * each action. Keep it under ~80 chars so it fits on a single terminal
+ * row when paired with the `[info] N/M ` prefix.
+ */
+function validationProgressLabel(action: TraceAction): string {
+  const step = action.stepId ? `${action.stepId} ` : "";
+  const detail = action.findLocator
+    ? `find ${action.findLocator} ${action.findValue ?? ""}`.trim()
+    : action.selector
+      ? `${action.command} ${action.selector}`
+      : action.value
+        ? `${action.command} ${action.value}`
+        : action.command;
+  const trimmed = detail.length > 80 ? detail.slice(0, 77) + "..." : detail;
+  return `${step}${trimmed}`;
 }
 
 /**
