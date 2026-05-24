@@ -363,6 +363,14 @@ function mergeFromOriginal(cleaned: TraceAction, original: TraceAction): TraceAc
     if (merged.findIndex === undefined && original.findIndex !== undefined) merged.findIndex = original.findIndex;
     if (!merged.findExact && original.findExact) merged.findExact = original.findExact;
   }
+  // The cleanup-pass LLM doesn't echo the lenient-mode `replayUnstable` /
+  // `replayReason` fields the validator stamped onto the action. Without
+  // restoring them here, codegen never sees the warning and the `// [warn]
+  // replay-unstable: ...` comment block ends up missing from test.spec.ts.
+  if (original.replayUnstable && !merged.replayUnstable) {
+    merged.replayUnstable = original.replayUnstable;
+    if (original.replayReason) merged.replayReason = original.replayReason;
+  }
   return merged;
 }
 

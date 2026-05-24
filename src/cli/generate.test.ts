@@ -132,6 +132,25 @@ describe("reattachStepIds", () => {
     expect(a?.findExact).toBe(true);
     expect(b?.findIndex).toBe(2);
   });
+
+  it("restores replayUnstable / replayReason that the cleanup pass dropped", () => {
+    const original: TraceAction[] = [
+      {
+        command: "click",
+        selector: "[aria-label='X']",
+        stepId: "step-04",
+        replayUnstable: true,
+        replayReason: "✗ Element not found",
+      },
+    ];
+    const cleaned: TraceAction[] = [
+      { command: "click", selector: "[aria-label='X']" },
+    ];
+    const [result] = reattachStepIds(cleaned, original);
+    expect(result?.replayUnstable).toBe(true);
+    expect(result?.replayReason).toBe("✗ Element not found");
+    expect(result?.stepId).toBe("step-04");
+  });
 });
 
 describe("findEmptySteps", () => {
