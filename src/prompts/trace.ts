@@ -133,7 +133,7 @@ find nth <index> "<ALLOWED-css>" <action>
 
 ### Special input types
 
-**contenteditable / RichText editors**: \`fill\` only works on \`<input>\` / \`<textarea>\`. For \`[contenteditable]\` (chat composers, WYSIWYG bodies), \`click\` the field to focus, then use \`keyboard inserttext "<text>"\` so key events don't interfere.
+**contenteditable / RichText editors**: \`fill "[contenteditable='true']" "<text>"\` works on contenteditable elements (chat composers, WYSIWYG bodies) — agent-browser sets the text directly. Use a single \`fill\`; do NOT just \`click\` the field and rely on \`keyboard inserttext\` (that keystroke command is not recorded as a structured action, so the text never makes it into the generated test and the field ends up empty on replay).
 
 **combobox / select with a required marker (\`*\`)**: required form fields often include the marker in their accessible name. If \`find role combobox click --name "<label>"\` misses, prefer \`find label "<label>" click\` or \`click "[aria-label='<label> *']"\`.
 
