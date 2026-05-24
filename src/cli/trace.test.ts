@@ -1,6 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { parseAbAction, parseStatusLine, parseRouteStep, stepAwareCommandDedup } from "./trace.ts";
-import type { TraceAction } from "../types.ts";
+import { parseAbAction, parseStatusLine, parseRouteStep } from "./trace.ts";
 
 describe("parseAbAction", () => {
   test("returns null for non-AB_ACTION lines", () => {
@@ -295,80 +294,6 @@ describe("parseRouteStep", () => {
     const result = parseRouteStep(line);
     expect(result?.action).toBe("my action");
     expect(result?.observation).toBe("my observation");
-  });
-});
-
-describe("stepAwareCommandDedup", () => {
-  test("collapses a run of 5 consecutive find_click in the same step to just the last one", () => {
-    const actions: TraceAction[] = [
-      { command: "find_click", findLocator: "text",  findValue: "A", stepId: "step-09" },
-      { command: "find_click", findLocator: "label", findValue: "B", stepId: "step-09" },
-      { command: "find_click", findLocator: "role",  findValue: "button", findName: "C", stepId: "step-09" },
-      { command: "find_click", findLocator: "last",  findValue: "[aria-label='D']", stepId: "step-09" },
-      { command: "find_click", findLocator: "last",  findValue: "[data-testid='delete']", stepId: "step-09" },
-    ];
-    const { kept, drops } = stepAwareCommandDedup(actions);
-    expect(kept).toHaveLength(1);
-    expect(kept[0]!.findValue).toBe("[data-testid='delete']");
-    expect(drops).toEqual([
-      { stepId: "step-09", command: "find_click", droppedCount: 4 },
-    ]);
-  });
-
-  test("keeps runs of 1 or 2 untouched (threshold is >=3)", () => {
-    const actions: TraceAction[] = [
-      { command: "click", selector: "[aria-label='A']", stepId: "step-01" },
-      { command: "click", selector: "[aria-label='B']", stepId: "step-01" },
-      { command: "fill",  selector: "[name='x']", value: "v", stepId: "step-01" },
-    ];
-    const { kept, drops } = stepAwareCommandDedup(actions);
-    expect(kept).toEqual(actions);
-    expect(drops).toEqual([]);
-  });
-
-  test("a passive action (wait/assert/snapshot) breaks the run", () => {
-    const actions: TraceAction[] = [
-      { command: "find_click", findLocator: "text", findValue: "A", stepId: "step-02" },
-      { command: "find_click", findLocator: "text", findValue: "B", stepId: "step-02" },
-      { command: "wait", selector: "text=Loaded", stepId: "step-02" },
-      { command: "find_click", findLocator: "text", findValue: "C", stepId: "step-02" },
-      { command: "find_click", findLocator: "text", findValue: "D", stepId: "step-02" },
-    ];
-    const { kept, drops } = stepAwareCommandDedup(actions);
-    expect(kept).toEqual(actions);
-    expect(drops).toEqual([]);
-  });
-
-  test("step boundary breaks the run — runs in different steps are independent", () => {
-    const actions: TraceAction[] = [
-      { command: "find_click", findLocator: "text", findValue: "A", stepId: "step-01" },
-      { command: "find_click", findLocator: "text", findValue: "B", stepId: "step-01" },
-      { command: "find_click", findLocator: "text", findValue: "C", stepId: "step-02" },
-      { command: "find_click", findLocator: "text", findValue: "D", stepId: "step-02" },
-      { command: "find_click", findLocator: "text", findValue: "E", stepId: "step-02" },
-    ];
-    const { kept, drops } = stepAwareCommandDedup(actions);
-    // step-01 has only 2 consecutive → kept as is. step-02 has 3 → 2 dropped.
-    expect(kept.map((a) => a.findValue)).toEqual(["A", "B", "E"]);
-    expect(drops).toEqual([
-      { stepId: "step-02", command: "find_click", droppedCount: 2 },
-    ]);
-  });
-
-  test("different commands don't form a single run (find_click vs click)", () => {
-    const actions: TraceAction[] = [
-      { command: "find_click", findLocator: "text", findValue: "A", stepId: "step-01" },
-      { command: "click", selector: "[aria-label='B']", stepId: "step-01" },
-      { command: "find_click", findLocator: "text", findValue: "C", stepId: "step-01" },
-      { command: "find_click", findLocator: "text", findValue: "D", stepId: "step-01" },
-    ];
-    const { kept, drops } = stepAwareCommandDedup(actions);
-    expect(kept).toEqual(actions);
-    expect(drops).toEqual([]);
-  });
-
-  test("returns empty result for empty input", () => {
-    expect(stepAwareCommandDedup([])).toEqual({ kept: [], drops: [] });
   });
 });
 

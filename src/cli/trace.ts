@@ -215,8 +215,7 @@ async function runTrace(
   if (isError) overallStatus = "failed";
 
   const scrubbedActions = scrubAndReport(traceActions);
-  const heuristicDeduped = stepAwareCommandDedupAndReport(scrubbedActions);
-  const dedupedActions = dedupAndReport(heuristicDeduped);
+  const dedupedActions = dedupAndReport(scrubbedActions);
   const validatedActions = validateAndReport(dedupedActions, validationMode);
 
   const timestamp = new Date().toISOString();
@@ -297,88 +296,6 @@ function dedupAndReport(actions: TraceAction[]): TraceAction[] {
   }
   if (dropped === 0) return kept;
   log.meta("deduped", `${kept.length}/${actions.length} kept (${dropped} adjacent duplicate(s) dropped)`);
-  return kept;
-}
-
-/**
- * Step-aware dedupe that drops *failed-attempt runs* the LLM leaks into
- * the trace despite the "record only successful actions" prompt rule.
- *
- * When Claude retries the same logical action with different selectors
- * (e.g. `find_click` with four different locators looking for one button),
- * the trailing successful call is the canonical one — the earlier ones
- * were exploratory misses that will fail at replay validation and
- * silently delete the step from the generated test (FB problem 3).
- *
- * Rule:
- *   For each maximal run of >=3 actions sharing the same stepId and the
- *   same `command`, with no passive action (`snapshot`/`wait`/`assert`)
- *   in between, keep ONLY the last action of the run. The threshold of
- *   3 keeps legitimate "two consecutive clicks on different elements"
- *   sequences untouched.
- *
- * The dedup runs BEFORE `dedupAndReport` (which compresses exact
- * adjacent duplicates) so the run-length pass sees the raw stream.
- */
-export function stepAwareCommandDedup(actions: TraceAction[]): {
-  kept: TraceAction[];
-  drops: Array<{ stepId: string; command: string; droppedCount: number }>;
-} {
-  if (actions.length === 0) return { kept: [], drops: [] };
-  const drops: Array<{ stepId: string; command: string; droppedCount: number }> = [];
-
-  // Group indices into runs of [stepId, command] separated by step-id
-  // change, command change, or a passive action.
-  const runs: Array<{ start: number; end: number }> = [];
-  let runStart = 0;
-  for (let i = 1; i <= actions.length; i++) {
-    const prev = actions[i - 1]!;
-    const curr = i < actions.length ? actions[i]! : null;
-    const sameRun =
-      curr !== null &&
-      !isPassiveCommandForDedup(prev.command) &&
-      !isPassiveCommandForDedup(curr.command) &&
-      curr.command === prev.command &&
-      (curr.stepId ?? "") === (prev.stepId ?? "");
-    if (!sameRun) {
-      runs.push({ start: runStart, end: i - 1 });
-      runStart = i;
-    }
-  }
-
-  const dropIndices = new Set<number>();
-  for (const run of runs) {
-    const length = run.end - run.start + 1;
-    if (length < 3) continue;
-    // Drop every action in the run except the last one.
-    for (let j = run.start; j < run.end; j++) dropIndices.add(j);
-    drops.push({
-      stepId: actions[run.start]!.stepId ?? "<no step>",
-      command: actions[run.start]!.command,
-      droppedCount: length - 1,
-    });
-  }
-
-  const kept = actions.filter((_, i) => !dropIndices.has(i));
-  return { kept, drops };
-}
-
-function isPassiveCommandForDedup(cmd: string): boolean {
-  return cmd === "snapshot" || cmd === "wait" || cmd === "assert";
-}
-
-function stepAwareCommandDedupAndReport(actions: TraceAction[]): TraceAction[] {
-  if (actions.length === 0) return actions;
-  const { kept, drops } = stepAwareCommandDedup(actions);
-  if (drops.length === 0) return kept;
-  log.blank();
-  log.info("post-trace heuristic dedup (collapsing retry runs)...");
-  let totalDropped = 0;
-  for (const d of drops) {
-    totalDropped += d.droppedCount;
-    log.meta(`  ${d.stepId}`, `${d.droppedCount} consecutive ${d.command} attempt(s) collapsed; kept the last only`);
-  }
-  log.meta("heuristic-deduped", `${kept.length}/${actions.length} kept (${totalDropped} attempt(s) dropped)`);
   return kept;
 }
 
