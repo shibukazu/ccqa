@@ -80,6 +80,7 @@ ccqa run tasks/create-and-complete --drift --format github
 | アサーションヘルパー関数 | [Assertions](./assertions.md) |
 | 失敗したテストを自動修正 | [Auto-fix](./auto-fix.md) |
 | CI で仕様とコードのズレを検出 | [Drift](./drift.md) |
+| 設計判断の記録 (なぜこの設計か) | [ADR](./adr/README.md) |
 
 ## コマンド
 
