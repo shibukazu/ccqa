@@ -18,13 +18,13 @@ describe("actionsToScript", () => {
   describe("input-value-trap assertions", () => {
     it("drops a text_visible assert whose value was just typed into a field this step", () => {
       const actions: TraceAction[] = [
-        { command: "fill", selector: "[aria-label='Title']", value: "ccqa-test-123", stepId: "step-06" },
-        { command: "assert", assertType: "text_visible", value: "ccqa-test-123", stepId: "step-06" },
+        { command: "fill", selector: "[aria-label='Title']", value: "created-item-42", stepId: "step-06" },
+        { command: "assert", assertType: "text_visible", value: "created-item-42", stepId: "step-06" },
       ];
       const script = actionsToScript({ actions, testName: "demo" });
       // The fill stays; the reflection assert on the typed value is dropped.
-      expect(script).toContain('ab("fill", "[aria-label=\'Title\']", "ccqa-test-123")');
-      expect(script).not.toMatch(/abAssertTextVisible\("ccqa-test-123"\)/);
+      expect(script).toContain('ab("fill", "[aria-label=\'Title\']", "created-item-42")');
+      expect(script).not.toMatch(/abAssertTextVisible\("created-item-42"\)/);
       expect(script).toContain("dropped input-value assert");
     });
 
@@ -39,12 +39,12 @@ describe("actionsToScript", () => {
 
     it("KEEPS a text_visible assert for a value NOT typed this step (real result-page check)", () => {
       const actions: TraceAction[] = [
-        { command: "fill", selector: "[aria-label='Title']", value: "ccqa-test-123", stepId: "step-06" },
+        { command: "fill", selector: "[aria-label='Title']", value: "created-item-42", stepId: "step-06" },
         // Different step: asserting the row shows up on the list — a genuine check.
-        { command: "assert", assertType: "text_visible", value: "ccqa-test-123", stepId: "step-07" },
+        { command: "assert", assertType: "text_visible", value: "created-item-42", stepId: "step-07" },
       ];
       const script = actionsToScript({ actions, testName: "demo" });
-      expect(script).toMatch(/abAssertTextVisible\("ccqa-test-123"\)/);
+      expect(script).toMatch(/abAssertTextVisible\("created-item-42"\)/);
     });
   });
 
