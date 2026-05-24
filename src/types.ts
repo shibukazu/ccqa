@@ -107,6 +107,15 @@ export interface TraceAction {
   /** `--exact` flag for text-like locators. */
   findExact?: boolean;
   stepId?: string;
+  /**
+   * Set by the lenient post-trace validator when this action failed to
+   * replay on a fresh session but is still kept in actions.json (and
+   * therefore in the generated test). Codegen emits a `// [warn]
+   * replay-unstable: <reason>` comment on the preceding line so the auto-fix
+   * loop and human reviewers can spot the at-risk action.
+   */
+  replayUnstable?: boolean;
+  replayReason?: string;
 }
 
 export const DraftIssueSchema = z.object({

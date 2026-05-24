@@ -136,6 +136,12 @@ function actionsToLines(
     if (prevCommand === "open" && ELEMENT_COMMANDS.has(action.command)) {
       lines.push(`spawnSync("sleep", ["3"], { stdio: "inherit" });`);
     }
+    if (action.replayUnstable) {
+      // Surface lenient-mode validation warnings inline so the auto-fix
+      // loop can attribute a failing assertion to the underlying replay
+      // instability rather than chasing a phantom selector drift.
+      lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
+    }
     lines.push(line);
     prevLine = line;
     prevCommand = action.command;

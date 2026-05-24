@@ -240,6 +240,43 @@ describe("actionsToScript", () => {
     });
   });
 
+  describe("replayUnstable comments", () => {
+    it("emits a `// [warn] replay-unstable:` line before an action carrying the flag", () => {
+      const actions: TraceAction[] = [
+        { command: "open", value: "/", stepId: "step-01" },
+        {
+          command: "click",
+          selector: "[aria-label='Delete']",
+          stepId: "step-01",
+          replayUnstable: true,
+          replayReason: "selector not found on fresh session",
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      const warnIdx = script.indexOf("[warn] replay-unstable");
+      const lineIdx = script.indexOf(`ab("click", "[aria-label='Delete']")`);
+      expect(warnIdx).toBeGreaterThan(-1);
+      expect(lineIdx).toBeGreaterThan(warnIdx);
+      expect(script).toContain("selector not found on fresh session");
+    });
+
+    it("does NOT add the comment when replayUnstable is absent (default behaviour)", () => {
+      const actions: TraceAction[] = [
+        { command: "click", selector: "[aria-label='OK']" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain("[warn] replay-unstable");
+    });
+
+    it("falls back to a placeholder when replayReason is missing", () => {
+      const actions: TraceAction[] = [
+        { command: "click", selector: "[aria-label='X']", replayUnstable: true },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain("[warn] replay-unstable: (no reason recorded)");
+    });
+  });
+
   describe("step markers", () => {
     it("places exactly one marker at the first action of each contiguous stepId run", () => {
       const actions: TraceAction[] = [

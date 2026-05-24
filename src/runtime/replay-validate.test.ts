@@ -189,7 +189,7 @@ describe("validateActions", () => {
 
   test("keeps every action when each agent-browser call succeeds", () => {
     mockedSpawnAB.mockReturnValue(OK);
-    const { kept, dropped } = validateActions(actions, { sessionName: "s" });
+    const { kept, dropped } = validateActions(actions, { sessionName: "s", mode: "strict" });
     expect(kept).toHaveLength(actions.length);
     expect(dropped).toHaveLength(0);
   });
@@ -200,7 +200,7 @@ describe("validateActions", () => {
       .mockReturnValueOnce(OK)   // open
       .mockReturnValueOnce(FAIL) // click [Submit]
       .mockReturnValueOnce(OK);  // click [Next]
-    const { kept, dropped } = validateActions(actions, { sessionName: "s" });
+    const { kept, dropped } = validateActions(actions, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.command)).toEqual(["open", "click", "snapshot"]);
     expect(kept[1]!.selector).toBe("[aria-label='Next']");
     expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait", "assert"]);
@@ -221,7 +221,7 @@ describe("validateActions", () => {
     mockedSpawnAB
       .mockReturnValueOnce(FAIL) // click X
       .mockReturnValueOnce(OK);  // click Y
-    const { kept, dropped } = validateActions(inOrder, { sessionName: "s" });
+    const { kept, dropped } = validateActions(inOrder, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.command)).toEqual(["snapshot", "click", "snapshot"]);
     expect(kept[1]!.selector).toBe("[aria-label='Y']");
     expect(dropped.map((d) => d.action.command)).toEqual(["click", "snapshot"]);
@@ -233,7 +233,7 @@ describe("validateActions", () => {
       { command: "click", selector: "[aria-label='X']" },
     ];
     mockedSpawnAB.mockReturnValueOnce(OK).mockReturnValueOnce(FAIL);
-    const { kept, dropped } = validateActions(tail, { sessionName: "s" });
+    const { kept, dropped } = validateActions(tail, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.command)).toEqual(["open"]);
     expect(dropped).toHaveLength(1);
     expect(dropped[0]!.action.command).toBe("click");
@@ -254,7 +254,7 @@ describe("validateActions", () => {
       // (step-01 wait is skipped without spawnAB call)
       .mockReturnValueOnce(OK)   // step-02 wait
       .mockReturnValueOnce(OK);  // step-02 assert
-    const { kept, dropped } = validateActions(stepped, { sessionName: "s" });
+    const { kept, dropped } = validateActions(stepped, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.command)).toEqual(["open", "wait", "assert"]);
     expect(kept[1]!.stepId).toBe("step-02");
     expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait"]);
@@ -272,7 +272,7 @@ describe("validateActions", () => {
     mockedSpawnAB
       .mockReturnValueOnce(FAIL) // assert Foo
       .mockReturnValueOnce(OK);  // assert Bar (snapshot has no args to spawn)
-    const { kept, dropped } = validateActions(sameStep, { sessionName: "s" });
+    const { kept, dropped } = validateActions(sameStep, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.command)).toEqual(["assert", "snapshot"]);
     expect(kept[0]!.value).toBe("Bar");
     expect(dropped.map((d) => d.action.value)).toEqual(["Foo"]);
@@ -288,7 +288,7 @@ describe("validateActions", () => {
       .mockReturnValueOnce(OK)       // assert
       .mockReturnValueOnce(OK)       // click [Next]
       ;                              // snapshot (no spawn)
-    const { kept, dropped } = validateActions(actions, { sessionName: "s" });
+    const { kept, dropped } = validateActions(actions, { sessionName: "s", mode: "strict" });
     expect(kept).toHaveLength(actions.length);
     expect(dropped).toHaveLength(0);
   });
@@ -305,7 +305,7 @@ describe("validateActions", () => {
       .mockReturnValueOnce(timeout) // 1st
       .mockReturnValueOnce(timeout) // retry
       ;
-    const { kept, dropped } = validateActions(tail, { sessionName: "s" });
+    const { kept, dropped } = validateActions(tail, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.command)).toEqual(["open"]);
     expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait"]);
     expect(dropped[0]!.reason).toMatch(/killed after hard timeout/);
@@ -325,7 +325,7 @@ describe("validateActions", () => {
       // wait collateral — not spawned
       .mockReturnValueOnce(FAIL) // rescue: click again, still fails
       .mockReturnValueOnce(OK);  // rescue: wait passes
-    const { kept, dropped, rescuedSteps } = validateActions(recoverable, { sessionName: "s" });
+    const { kept, dropped, rescuedSteps } = validateActions(recoverable, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.command)).toEqual(["open", "wait"]);
     expect(kept[1]!.stepId).toBe("step-08");
     expect(dropped.map((d) => d.action.command)).toEqual(["click"]);
@@ -343,7 +343,7 @@ describe("validateActions", () => {
       .mockReturnValueOnce(FAIL) // click
       .mockReturnValueOnce(FAIL) // rescue: click
       .mockReturnValueOnce(FAIL); // rescue: wait
-    const { kept, dropped, rescuedSteps } = validateActions(unrecoverable, { sessionName: "s" });
+    const { kept, dropped, rescuedSteps } = validateActions(unrecoverable, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.command)).toEqual(["open"]);
     expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait"]);
     expect(rescuedSteps ?? []).toEqual([]);
@@ -360,10 +360,72 @@ describe("validateActions", () => {
       .mockReturnValueOnce(FAIL) // click
       // wait collateral — not spawned, but step-07 already has `open` kept
       ;
-    const { kept, dropped, rescuedSteps } = validateActions(partiallyKept, { sessionName: "s" });
+    const { kept, dropped, rescuedSteps } = validateActions(partiallyKept, { sessionName: "s", mode: "strict" });
     // Partial loss — no rescue should fire; downstream wait stays dropped.
     expect(kept.map((a) => a.command)).toEqual(["open"]);
     expect(dropped.map((d) => d.action.command)).toEqual(["click", "wait"]);
     expect(rescuedSteps ?? []).toEqual([]);
+  });
+});
+
+describe("validateActions (lenient mode)", () => {
+  test("default mode is lenient — failures move to `unstable`, dropped stays empty", () => {
+    const actions: TraceAction[] = [
+      { command: "open", value: "/", stepId: "step-01" },
+      { command: "click", selector: "[aria-label='Submit']", stepId: "step-01" },
+      { command: "wait", selector: "text=Done", stepId: "step-01" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(OK)   // open
+      .mockReturnValueOnce(FAIL) // click → fails
+      .mockReturnValueOnce(FAIL) // rescue: click
+      .mockReturnValueOnce(FAIL) // rescue: wait
+      ;
+    // Omit `mode` to verify the default.
+    const { kept, unstable, dropped } = validateActions(actions, { sessionName: "s" });
+    expect(kept.map((a) => a.command)).toEqual(["open"]);
+    expect(unstable.map((a) => a.command)).toEqual(["click", "wait"]);
+    expect(dropped).toEqual([]);
+  });
+
+  test("lenient tags failing actions with replayUnstable + replayReason", () => {
+    const actions: TraceAction[] = [
+      { command: "click", selector: "[aria-label='X']", stepId: "step-01" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(FAIL)
+      .mockReturnValueOnce(FAIL); // rescue
+    const { kept, unstable } = validateActions(actions, { sessionName: "s", mode: "lenient" });
+    expect(kept).toEqual([]);
+    expect(unstable).toHaveLength(1);
+    expect(unstable[0]!.replayUnstable).toBe(true);
+    expect(unstable[0]!.replayReason).toMatch(/selector not found/);
+  });
+
+  test("lenient also honours step rescue — a rescued action lands in kept (not unstable)", () => {
+    const actions: TraceAction[] = [
+      { command: "click", selector: "[aria-label='X']", stepId: "step-01" },
+      { command: "wait", selector: "text=Saved", stepId: "step-01" },
+    ];
+    mockedSpawnAB
+      .mockReturnValueOnce(FAIL) // 1st-pass click → cascade armed
+      .mockReturnValueOnce(FAIL) // rescue: click fails again
+      .mockReturnValueOnce(OK);  // rescue: wait passes
+    const { kept, unstable, rescuedSteps } = validateActions(actions, { sessionName: "s", mode: "lenient" });
+    expect(kept.map((a) => a.command)).toEqual(["wait"]);
+    expect(unstable.map((a) => a.command)).toEqual(["click"]);
+    expect(rescuedSteps).toEqual(["step-01"]);
+  });
+
+  test("lenient: a fully-passing run yields empty unstable + empty dropped", () => {
+    const actions: TraceAction[] = [
+      { command: "open", value: "/", stepId: "step-01" },
+      { command: "click", selector: "[aria-label='OK']", stepId: "step-01" },
+    ];
+    mockedSpawnAB.mockReturnValue(OK);
+    const { kept, unstable, dropped } = validateActions(actions, { sessionName: "s", mode: "lenient" });
+    expect(kept).toHaveLength(2);
+    expect(unstable).toEqual([]);
+    expect(dropped).toEqual([]);
   });
 });

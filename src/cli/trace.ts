@@ -22,7 +22,7 @@ import {
   formatAgentBrowserUnavailableMessage,
   pathWithAgentBrowserShim,
 } from "../runtime/agent-browser-bin.ts";
-import { validateActions } from "../runtime/replay-validate.ts";
+import { validateActions, type ValidationMode } from "../runtime/replay-validate.ts";
 import { buildSpecEnvScrub, scrubEnvValues } from "../runtime/env-scrub.ts";
 import { formatUnstableDrop, scrubUnstableActions } from "../runtime/literal-scrub.ts";
 import { FIND_LOCATORS } from "../types.ts";
@@ -39,7 +39,10 @@ import * as log from "./logger.ts";
 
 interface TraceOptions {
   model?: string;
+  validationMode?: ValidationMode;
 }
+
+const VALIDATION_MODES = ["lenient", "strict"] as const;
 
 export const traceCommand = new Command("trace")
   .argument(
@@ -51,12 +54,26 @@ export const traceCommand = new Command("trace")
     "-m, --model <name>",
     "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
   )
+  .option(
+    "--validation-mode <mode>",
+    "Post-trace validation behaviour: 'lenient' (default) tags failing actions with a warning but keeps them; 'strict' drops them from actions.json.",
+    (raw): ValidationMode => {
+      if ((VALIDATION_MODES as readonly string[]).includes(raw)) return raw as ValidationMode;
+      throw new Error(`--validation-mode must be one of ${VALIDATION_MODES.join(" | ")}`);
+    },
+    "lenient" as ValidationMode,
+  )
   .action(async (specPath: string, opts: TraceOptions) => {
     const { featureName, specName } = parseSpecPath(specPath);
-    await runTrace(featureName, specName, opts.model);
+    await runTrace(featureName, specName, opts.model, opts.validationMode ?? "lenient");
   });
 
-async function runTrace(featureName: string, specName: string, model?: string): Promise<void> {
+async function runTrace(
+  featureName: string,
+  specName: string,
+  model?: string,
+  validationMode: ValidationMode = "lenient",
+): Promise<void> {
   log.header("trace", `${featureName}/${specName}`);
 
   try {
@@ -200,7 +217,7 @@ async function runTrace(featureName: string, specName: string, model?: string): 
   const scrubbedActions = scrubAndReport(traceActions);
   const heuristicDeduped = stepAwareCommandDedupAndReport(scrubbedActions);
   const dedupedActions = dedupAndReport(heuristicDeduped);
-  const validatedActions = validateAndReport(dedupedActions);
+  const validatedActions = validateAndReport(dedupedActions, validationMode);
 
   const timestamp = new Date().toISOString();
   const route: Route = { specName, timestamp, status: overallStatus, steps: routeSteps };
@@ -392,14 +409,20 @@ function isAdjacentDuplicate(a: TraceAction, b: TraceAction): boolean {
  * Run the post-trace replay validation and emit user-visible drop reports.
  * Splitting this out keeps `runTrace` readable; the function is pure aside
  * from `log.*` and the agent-browser invocations inside `validateActions`.
+ *
+ * In lenient mode (the default) failing actions are NOT removed — they're
+ * tagged with `replayUnstable: true` and merged back into the output stream
+ * in their original order so codegen can still emit them (with a `// [warn]`
+ * comment) and let the auto-fix loop decide what to do.
  */
-function validateAndReport(actions: TraceAction[]): TraceAction[] {
+function validateAndReport(actions: TraceAction[], mode: ValidationMode): TraceAction[] {
   if (actions.length === 0) return actions;
   const sessionName = `${generateSessionName()}-validate`;
   log.blank();
-  log.info(`post-trace validation (replaying ${actions.length} recorded action(s))...`);
-  const { kept, dropped, rescuedSteps = [] } = validateActions(actions, {
+  log.info(`post-trace validation in ${mode} mode (replaying ${actions.length} recorded action(s))...`);
+  const { kept, unstable, dropped, rescuedSteps = [] } = validateActions(actions, {
     sessionName,
+    mode,
     onProgress: (i, total, action) => {
       log.progress(i, total, validationProgressLabel(action));
     },
@@ -408,13 +431,31 @@ function validateAndReport(actions: TraceAction[]): TraceAction[] {
   if (rescuedSteps.length > 0) {
     log.info(`rescued ${rescuedSteps.length} step(s) that had lost every action: ${rescuedSteps.join(", ")}`);
   }
+  if (mode === "lenient") {
+    if (unstable.length === 0) {
+      log.meta("validated", `${kept.length}/${actions.length} kept`);
+    } else {
+      for (const u of unstable) {
+        const head = `${u.command}${u.selector ? " " + u.selector : ""}${u.findValue ? " " + u.findValue : ""}`;
+        log.warn(`replay-unstable: ${head} — ${u.replayReason ?? "(no reason)"} (kept in actions.json with warning)`);
+      }
+      log.meta(
+        "validated",
+        `${kept.length}/${actions.length} kept, ${unstable.length} flagged replay-unstable (kept with warning)`,
+      );
+    }
+    // Lenient mode: thread the kept + unstable back into the original
+    // sequence so codegen sees the spec's narrative intact.
+    const merged = mergeKeptAndUnstableInOriginalOrder(actions, kept, unstable);
+    reportPerStepBreakdown(actions, merged);
+    return merged;
+  }
+  // Strict mode: legacy behaviour — drop failing actions, log cascades.
   if (dropped.length === 0) {
     log.meta("validated", `${kept.length}/${actions.length} kept`);
+    reportPerStepBreakdown(actions, kept);
     return kept;
   }
-  // Group adjacent cascade drops (same stepId, all "skipped after ...") so a
-  // single noisy failure produces one summary line instead of N copies of
-  // the same boilerplate.
   let cascadeStart: number | null = null;
   let cascadeCount = 0;
   let cascadeStepId: string | undefined;
@@ -445,6 +486,24 @@ function validateAndReport(actions: TraceAction[]): TraceAction[] {
   log.meta("validated", `${kept.length}/${actions.length} kept (${dropped.length} dropped)`);
   reportPerStepBreakdown(actions, kept);
   return kept;
+}
+
+/**
+ * Lenient-mode helper: re-thread the `kept` and `unstable` lists back into
+ * the original recording order. Object identity is fine because the
+ * validator pushes original references — no shallow copies.
+ */
+function mergeKeptAndUnstableInOriginalOrder(
+  originalActions: TraceAction[],
+  kept: TraceAction[],
+  unstable: TraceAction[],
+): TraceAction[] {
+  const allowed = new Set<TraceAction>([...kept, ...unstable]);
+  const merged: TraceAction[] = [];
+  for (const a of originalActions) {
+    if (allowed.has(a)) merged.push(a);
+  }
+  return merged;
 }
 
 /**

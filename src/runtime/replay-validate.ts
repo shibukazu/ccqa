@@ -29,8 +29,34 @@ export interface ValidationDrop {
   reason: string;
 }
 
+export type ValidationMode =
+  /**
+   * Default: failures are reported as `unstable` and kept in actions.json
+   * with a `replayUnstable: true` flag. Codegen emits a warning comment
+   * but still writes the line, so the auto-fix loop (vitest run #1)
+   * decides what to do at runtime.
+   */
+  | "lenient"
+  /**
+   * Legacy: failures are physically dropped from actions.json and the
+   * generated test never sees them. Useful when the caller wants the
+   * stricter "Claude said it passes, so the replay must too" semantics.
+   */
+  | "strict";
+
 export interface ValidationResult {
+  /** Actions that passed first-pass replay (or were rescued in pass 2). */
   kept: TraceAction[];
+  /**
+   * Lenient mode: actions that failed replay but are still threaded through
+   * to actions.json with `replayUnstable: true` set. Strict mode: always empty.
+   */
+  unstable: TraceAction[];
+  /**
+   * Strict mode: actions removed from the output. Lenient mode: always empty.
+   * Callers that previously relied on `dropped` for logging now also need to
+   * inspect `unstable` (which carries the same `reason` via `replayReason`).
+   */
   dropped: ValidationDrop[];
   /**
    * stepIds whose first-pass actions were all dropped but were restored
@@ -193,6 +219,12 @@ function assertToAbArgs(
 export interface ValidateOptions {
   sessionName: string;
   /**
+   * `"lenient"` (default): failing actions land in `unstable` and are tagged
+   * with `replayUnstable: true` so they still reach codegen. `"strict"`:
+   * failing actions are dropped from the output entirely (pre-v0.5 behaviour).
+   */
+  mode?: ValidationMode;
+  /**
    * Optional progress callback fired once per action just before its
    * agent-browser invocation. `index` is 0-based; `total` is the full
    * count including actions that may end up skipped. Callers use this to
@@ -273,7 +305,46 @@ export function validateActions(
       skipFromStepId = stepId;
     }
   }
-  return rescueLostSteps(actions, kept, dropped, opts);
+  const afterRescue = rescueLostSteps(actions, kept, dropped, opts);
+  return splitByMode(actions, afterRescue, opts.mode ?? "lenient");
+}
+
+/**
+ * Translate the internal `{ kept, dropped }` result of the rescue pass
+ * into the public-facing shape. In strict mode the caller sees the same
+ * shape as before (kept/dropped); in lenient mode the still-failed
+ * actions move to `unstable` with `replayUnstable: true` tagged on, so
+ * codegen can warn about them while still emitting the line.
+ */
+function splitByMode(
+  originalActions: TraceAction[],
+  result: { kept: TraceAction[]; dropped: ValidationDrop[]; rescuedSteps?: string[] },
+  mode: ValidationMode,
+): ValidationResult {
+  if (mode === "strict") {
+    return { kept: result.kept, unstable: [], dropped: result.dropped, rescuedSteps: result.rescuedSteps };
+  }
+  const droppedByIndex = new Map(result.dropped.map((d) => [d.index, d]));
+  const keptSet = new Set(result.kept);
+  const finalKept: TraceAction[] = [];
+  const unstable: TraceAction[] = [];
+  for (let i = 0; i < originalActions.length; i++) {
+    const action = originalActions[i]!;
+    if (keptSet.has(action)) {
+      finalKept.push(action);
+      continue;
+    }
+    const drop = droppedByIndex.get(i);
+    if (drop) {
+      // Mark in place so the action retains the flag once it lands in
+      // actions.json. We don't deep-clone — every consumer downstream
+      // reads through the same reference and benefits from the tag.
+      action.replayUnstable = true;
+      action.replayReason = drop.reason;
+      unstable.push(action);
+    }
+  }
+  return { kept: finalKept, unstable, dropped: [], rescuedSteps: result.rescuedSteps };
 }
 
 /**
@@ -299,12 +370,18 @@ export function validateActions(
  *   - Steps without a stepId (`NO_STEP_ID`) are skipped — they share the
  *     v0.4 "rest of trace" semantics and rescuing them would over-fire.
  */
+interface RescuePassResult {
+  kept: TraceAction[];
+  dropped: ValidationDrop[];
+  rescuedSteps?: string[];
+}
+
 function rescueLostSteps(
   actions: TraceAction[],
   kept: TraceAction[],
   dropped: ValidationDrop[],
   opts: ValidateOptions,
-): ValidationResult {
+): RescuePassResult {
   // Build a quick "which steps kept anything" set.
   const stepsWithSurvivors = new Set<string>();
   for (const a of kept) {
