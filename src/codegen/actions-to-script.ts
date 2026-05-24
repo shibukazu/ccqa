@@ -179,6 +179,23 @@ function actionToLine(action: TraceAction): string | null {
   // Skip actions that use @ref selectors — they are session-specific and not replayable
   if ("selector" in action && isRefSelector(action.selector)) return null;
 
+  // Drop over-assertions: an element_* assert whose selector the validator
+  // could not even find (`get count` returned 0) is targeting an accessible
+  // name with no matching DOM attribute — it will fail on every run. These
+  // carry a `selector not present` replayReason. Leave a breadcrumb comment
+  // (not a runnable line) so the dropped check is visible. We keep `Wait timed
+  // out` / cascade-skipped asserts (those may pass in a real run where prior
+  // state built up correctly), and we never touch non-assert actions here.
+  if (
+    action.command === "assert" &&
+    action.replayUnstable &&
+    typeof action.replayReason === "string" &&
+    action.replayReason.includes("selector not present")
+  ) {
+    const sel = action.selector ?? action.observation ?? "(unknown)";
+    return `// [warn] replay-unstable: dropped over-assertion (${action.assertType ?? "assert"} ${sel}) — selector not present on replay`;
+  }
+
   switch (action.command) {
     case "cookies_clear":
       return `ab("cookies", "clear");`;
@@ -231,14 +248,13 @@ function actionToLine(action: TraceAction): string | null {
       const sel = action.selector!;
       // Numeric waits represent sleep durations (from auto-fix)
       if (/^\d+$/.test(sel)) return `spawnSync("sleep", [${j(sel)}], { stdio: "inherit" });`;
-      // Flag-form waits (`--load networkidle`, `--fn "..."`, `--url "..."`)
-      // are passed straight to agent-browser. The flag lands in `selector`
-      // and its argument in `label` (see parseAbAction). abWait only knows
-      // selector/text waits, so emit a raw `ab("wait", ...)` instead.
-      if (sel.startsWith("--")) {
-        const arg = action.label ? `, ${j(action.label)}` : "";
-        return `ab("wait", ${j(sel)}${arg});`;
-      }
+      // Flag-form waits (`--load networkidle`, `--fn "..."`, `--url "..."`) are
+      // readiness/observation conditions, not part of the user flow. The
+      // AB_ACTION wire format can't faithfully round-trip their argument (the
+      // JS expression / glob lands in the label slot or is lost), so emitting
+      // them produces broken calls like `ab("wait", "--fn")`. Skip them — the
+      // following assertion (abAssertTextVisible etc.) provides the real wait.
+      if (sel.startsWith("--")) return null;
       // `${ENV_VAR}` refs in a wait selector (e.g. `text=run-${CCQA_TEST_RUN_ID}`)
       // must expand to a template literal so the live env value reaches the
       // selector at run time. Same shape as `fill` / `assert` values.

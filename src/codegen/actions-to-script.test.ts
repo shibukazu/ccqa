@@ -123,14 +123,17 @@ describe("actionsToScript", () => {
       expect(script).toContain('abWait("text=Done");');
     });
 
-    it("emits a raw ab(\"wait\", ...) for flag-form waits (--load networkidle), not abWait", () => {
+    it("skips flag-form waits (--load / --fn / --url) entirely — their argument can't round-trip", () => {
       const actions: TraceAction[] = [
+        { command: "open", value: "/" },
         { command: "wait", selector: "--load", label: "networkidle" },
+        { command: "wait", selector: "--fn", label: "window.ready" },
       ];
       const script = actionsToScript({ actions, testName: "demo" });
-      expect(script).toContain('ab("wait", "--load", "networkidle");');
-      // Must NOT become abWait("--load") — that would poll get count "--load".
-      expect(script).not.toContain('abWait("--load")');
+      // No broken `ab("wait", "--load")` / `ab("wait", "--fn")` and no abWait("--*").
+      expect(script).not.toContain('"--load"');
+      expect(script).not.toContain('"--fn"');
+      expect(script).not.toMatch(/abWait\("--/);
     });
   });
 
@@ -312,6 +315,37 @@ describe("actionsToScript", () => {
       ];
       const script = actionsToScript({ actions, testName: "demo" });
       expect(script).toContain("[warn] replay-unstable: (no reason recorded)");
+    });
+
+    it("drops an element assert whose selector the validator could not find (over-assertion)", () => {
+      const actions: TraceAction[] = [
+        {
+          command: "assert",
+          assertType: "element_visible",
+          selector: "[aria-label='メールアドレス']",
+          replayUnstable: true,
+          replayReason: "selector not present within 10000ms (get count returned 0)",
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      // No abAssertVisible CALL — the over-assertion is dropped, only the warning comment remains.
+      expect(script).not.toMatch(/abAssertVisible\(/);
+      expect(script).toContain("[warn] replay-unstable");
+    });
+
+    it("KEEPS a replay-unstable assert that merely timed out (may pass in a real run)", () => {
+      const actions: TraceAction[] = [
+        {
+          command: "assert",
+          assertType: "text_visible",
+          value: "Created",
+          replayUnstable: true,
+          replayReason: "✗ Wait timed out after 10000ms",
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      // Timed-out (not "selector not present") asserts are retained.
+      expect(script).toMatch(/abAssertTextVisible\(/);
     });
   });
 
