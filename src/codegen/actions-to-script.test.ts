@@ -15,6 +15,39 @@ describe("actionsToScript", () => {
     expect(script).toContain(`abAssertTextVisible("Welcome")`);
   });
 
+  describe("input-value-trap assertions", () => {
+    it("drops a text_visible assert whose value was just typed into a field this step", () => {
+      const actions: TraceAction[] = [
+        { command: "fill", selector: "[aria-label='タイトル']", value: "ccqa-test-123", stepId: "step-06" },
+        { command: "assert", assertType: "text_visible", value: "ccqa-test-123", stepId: "step-06" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      // The fill stays; the reflection assert on the typed value is dropped.
+      expect(script).toContain('ab("fill", "[aria-label=\'タイトル\']", "ccqa-test-123")');
+      expect(script).not.toMatch(/abAssertTextVisible\("ccqa-test-123"\)/);
+      expect(script).toContain("dropped input-value assert");
+    });
+
+    it("drops the same trap for find_fill values", () => {
+      const actions: TraceAction[] = [
+        { command: "find_fill", findLocator: "label", findValue: "タイトル", value: "my-title", stepId: "step-06" },
+        { command: "assert", assertType: "text_visible", value: "my-title", stepId: "step-06" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toMatch(/abAssertTextVisible\("my-title"\)/);
+    });
+
+    it("KEEPS a text_visible assert for a value NOT typed this step (real result-page check)", () => {
+      const actions: TraceAction[] = [
+        { command: "fill", selector: "[aria-label='タイトル']", value: "ccqa-test-123", stepId: "step-06" },
+        // Different step: asserting the row shows up on the list — a genuine check.
+        { command: "assert", assertType: "text_visible", value: "ccqa-test-123", stepId: "step-07" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toMatch(/abAssertTextVisible\("ccqa-test-123"\)/);
+    });
+  });
+
   describe("post-open settle sleep", () => {
     it("inserts a settle sleep before the first element interaction after open", () => {
       const actions: TraceAction[] = [

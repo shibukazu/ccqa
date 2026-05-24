@@ -287,6 +287,7 @@ The \`snapshot\` output is the **accessibility tree**, but \`agent-browser\` que
 
 1. *Selector trap*: a snapshot row like \`textbox "Email address"\` may be reachable via \`[placeholder='...']\` but **not** via \`[aria-label='...']\` if no aria-label attribute is actually set (the browser inferred the label from \`<label for=>\` / placeholder).
 2. *Text trap*: a snapshot row like \`link "Dashboard"\` may come from \`<a><img alt="Dashboard"></a>\` — the visible "text" is an \`alt\` attribute, not a text node. \`text_visible\` (which scans visible text nodes) will NOT find it.
+3. *Input-value trap*: after you \`fill\` an \`<input>\` / \`<textarea>\` / \`[contenteditable]\`, the text you typed lives in the element's **value**, not as a visible text node. **Do NOT assert the typed value with \`text_visible\`** — it will never match. The spec's "the field reflects X" expectation is implicitly confirmed when the form submits successfully and the value shows up on the *result* page (a list row, a detail page). Assert there, not on the input itself.
 
 Before emitting \`AB_ACTION|assert|...\`, **verify the assertion form actually resolves on the live page**:
 

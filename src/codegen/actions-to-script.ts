@@ -128,6 +128,14 @@ function actionsToLines(
   const leadingNotices = emptyByInsertAfter.get(-1) ?? [];
   for (const n of leadingNotices) appendEmptyStepNotice(lines, n);
 
+  // Track values typed into input/contenteditable within the current step so
+  // we can drop the "assert the typed value is visible text" over-assertion.
+  // Input values live in the element's `value`, never as a visible text node,
+  // so `abAssertTextVisible(<that value>)` can never pass (the input-value
+  // trap). The spec's reflection intent is verified later on the result page.
+  let currentStepId: string | undefined;
+  let filledValuesThisStep = new Set<string>();
+
   for (let i = 0; i < actions.length; i++) {
     const marker = markerByIndex.get(i);
     if (marker) {
@@ -135,6 +143,24 @@ function actionsToLines(
       lines.push(`// step: ${marker.stepId} [${marker.source}]`);
     }
     const action = actions[i]!;
+    if (action.stepId !== currentStepId) {
+      currentStepId = action.stepId;
+      filledValuesThisStep = new Set();
+    }
+    const filled = fillValueOf(action);
+    if (filled) filledValuesThisStep.add(filled);
+    // Drop an input-value-trap assertion: text_visible on a value we just typed
+    // into a field this step. Leave a breadcrumb; the result-page assertions
+    // (list row / detail) carry the real verification.
+    if (
+      action.command === "assert" &&
+      action.assertType === "text_visible" &&
+      typeof action.value === "string" &&
+      filledValuesThisStep.has(action.value)
+    ) {
+      lines.push(`// [warn] replay-unstable: dropped input-value assert (text_visible ${action.value}) — typed values aren't visible text nodes`);
+      continue;
+    }
     const line = actionToLine(action);
     if (line === null) continue;
     if (line === prevLine) continue;
@@ -157,6 +183,20 @@ function actionsToLines(
     }
   }
   return lines;
+}
+
+/**
+ * The text value a fill-type action types into a field, or null for
+ * non-fill actions. Both the plain `fill`/`type` (value in `value`) and the
+ * `find_fill`/`find_type` (also `value`) shapes carry it in `action.value`.
+ */
+function fillValueOf(action: TraceAction): string | null {
+  const isFill =
+    action.command === "fill" || action.command === "type" ||
+    action.command === "find_fill" || action.command === "find_type";
+  return isFill && typeof action.value === "string" && action.value.length > 0
+    ? action.value
+    : null;
 }
 
 function appendEmptyStepNotice(lines: string[], notice: EmptyStepNotice): void {
