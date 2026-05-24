@@ -109,7 +109,12 @@ function actionsToLines(
 ): string[] {
   const lines: string[] = [];
   let prevLine: string | null = null;
-  let prevCommand: string | null = null;
+  // True after an `open` until the next element interaction emits. We insert a
+  // settle `sleep` before that first interaction so the freshly-navigated page
+  // has time to render. Tracking it as a latch (rather than "prevCommand ===
+  // 'open'") means intervening snapshot comments / replay-unstable breadcrumbs
+  // don't swallow the sleep.
+  let pendingOpenSettle = false;
   const markerByIndex = new Map(stepMarkers.map((m) => [m.actionIndex, m]));
   // Group empty-step notices by their splice-after index so multiple lost
   // steps in a row get one warning block each.
@@ -133,8 +138,10 @@ function actionsToLines(
     const line = actionToLine(action);
     if (line === null) continue;
     if (line === prevLine) continue;
-    if (prevCommand === "open" && ELEMENT_COMMANDS.has(action.command)) {
+    if (action.command === "open") pendingOpenSettle = true;
+    if (pendingOpenSettle && ELEMENT_COMMANDS.has(action.command)) {
       lines.push(`spawnSync("sleep", ["3"], { stdio: "inherit" });`);
+      pendingOpenSettle = false;
     }
     if (action.replayUnstable) {
       // Surface lenient-mode validation warnings inline so the auto-fix
@@ -144,7 +151,6 @@ function actionsToLines(
     }
     lines.push(line);
     prevLine = line;
-    prevCommand = action.command;
     const followups = emptyByInsertAfter.get(i);
     if (followups) {
       for (const n of followups) appendEmptyStepNotice(lines, n);

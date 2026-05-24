@@ -15,6 +15,48 @@ describe("actionsToScript", () => {
     expect(script).toContain(`abAssertTextVisible("Welcome")`);
   });
 
+  describe("post-open settle sleep", () => {
+    it("inserts a settle sleep before the first element interaction after open", () => {
+      const actions: TraceAction[] = [
+        { command: "open", value: "/login" },
+        { command: "fill", selector: "[type='email']", value: "a@b" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toMatch(/ab\("open", "\/login"\);\s*\n\s*spawnSync\("sleep", \["3"\]/);
+    });
+
+    it("still inserts the settle sleep when a snapshot/assert sits between open and the first interaction", () => {
+      // Regression: the latch must survive intervening non-interaction lines
+      // (a snapshot comment, a dropped over-assertion breadcrumb) so the
+      // freshly-navigated page still gets time to render. Previously the sleep
+      // was keyed on `prevCommand === "open"` and got swallowed.
+      const actions: TraceAction[] = [
+        { command: "open", value: "/login" },
+        { command: "snapshot", observation: "login form" },
+        { command: "assert", assertType: "element_visible", selector: "[aria-label='Email']",
+          replayUnstable: true, replayReason: "selector not present within 10000ms (get count returned 0)" },
+        { command: "fill", selector: "[type='email']", value: "a@b" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      // The sleep must appear before the fill, even though snapshot + dropped
+      // over-assertion lines came between open and fill.
+      const sleepIdx = script.indexOf('spawnSync("sleep", ["3"]');
+      const fillIdx = script.indexOf('ab("fill", "[type=\'email\']"');
+      expect(sleepIdx).toBeGreaterThan(-1);
+      expect(fillIdx).toBeGreaterThan(sleepIdx);
+    });
+
+    it("inserts only one settle sleep per open even with multiple interactions", () => {
+      const actions: TraceAction[] = [
+        { command: "open", value: "/login" },
+        { command: "fill", selector: "[type='email']", value: "a@b" },
+        { command: "fill", selector: "[type='password']", value: "pw" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script.match(/spawnSync\("sleep", \["3"\]/g)).toHaveLength(1);
+    });
+  });
+
   describe("ref-selector skipping", () => {
     it("skips an action whose selector is a bare @ref", () => {
       const actions: TraceAction[] = [
