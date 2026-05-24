@@ -304,14 +304,20 @@ agent-browser --session SESSION wait --fn "!document.body.innerText.includes('<t
 
 When *no* form verifies — e.g. \`[aria-label='X']\`, \`[placeholder='X']\`, and \`text=X\` all timed out, or the visible text turned out to be an \`alt\` — **drop the assertion entirely**. Fewer real assertions beat invented ones that fail at replay. \`url_contains\` is exempt (it checks the URL string, not the DOM).
 
-**Examples:**
+**Field positions — get these RIGHT.** The line is
+\`AB_ACTION|assert|<assertType>|<selector>|<value>|<observation>\`. The value
+(the asserted text for \`text_visible\`/\`text_not_visible\`/\`url_contains\`) goes
+in the **value** slot, NOT the observation slot. A common mistake is writing
+\`text_visible|||Done|...\` (three pipes → empty selector AND empty value, "Done"
+lands in observation): that records an assert with no value and it fails at
+replay. Use exactly two pipes after the assertType for text asserts.
 
 \`\`\`
-AB_ACTION|assert|url_contains|||/dashboard|Navigated to dashboard
+AB_ACTION|assert|url_contains||/dashboard|Navigated to dashboard
 AB_ACTION|assert|element_disabled|.btn-submit||Submit disabled before form is valid
 AB_ACTION|assert|element_enabled|.btn-submit||Submit enabled after form is filled
-AB_ACTION|assert|text_visible|||Loading|Operation started
-AB_ACTION|assert|text_visible|||Done|Operation completed
+AB_ACTION|assert|text_visible||Loading|Operation started
+AB_ACTION|assert|text_visible||Done|Operation completed
 \`\`\`
 
 ## Status Protocol

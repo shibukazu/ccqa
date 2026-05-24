@@ -15,6 +15,34 @@ describe("actionsToScript", () => {
     expect(script).toContain(`abAssertTextVisible("Welcome")`);
   });
 
+  describe("ref-selector skipping", () => {
+    it("skips an action whose selector is a bare @ref", () => {
+      const actions: TraceAction[] = [
+        { command: "click", selector: "@e14" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain("@e14");
+    });
+
+    it("skips an assert whose selector embeds a ref attribute (button[ref='e4'])", () => {
+      const actions: TraceAction[] = [
+        { command: "assert", assertType: "element_enabled", selector: "button[ref='e4']" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain("ref='e4'");
+      // abAssertEnabled appears in the import line; assert there's no CALL.
+      expect(script).not.toMatch(/abAssertEnabled\(/);
+    });
+
+    it("does NOT skip a legitimate selector that merely contains the letters 'ref'", () => {
+      const actions: TraceAction[] = [
+        { command: "click", selector: "[aria-label='Preferences']" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain("[aria-label='Preferences']");
+    });
+  });
+
   describe("env var expansion", () => {
     it("expands $VAR in a fill value to process.env.VAR", () => {
       const actions: TraceAction[] = [

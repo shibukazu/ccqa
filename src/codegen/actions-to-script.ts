@@ -161,9 +161,18 @@ function appendEmptyStepNotice(lines: string[], notice: EmptyStepNotice): void {
   lines.push(`// [warn] \`ccqa trace\` or add manual assertions if this step is load-bearing.`);
 }
 
-/** Returns true if a selector is a session-specific @ref that cannot be replayed. */
+/**
+ * Returns true if a selector is a session-specific agent-browser ref that
+ * cannot be replayed. Two forms occur:
+ *   - `@e14` — the snapshot ref syntax (interactions)
+ *   - `button[ref='e4']` / `[ref=e4]` — the ref attribute leaking into a CSS
+ *     selector (most often via an assert the agent built from a snapshot row)
+ * Refs are re-numbered on every snapshot, so neither survives a fresh run.
+ */
 function isRefSelector(selector: string | undefined): boolean {
-  return typeof selector === "string" && /^@/.test(selector.trim());
+  if (typeof selector !== "string") return false;
+  const s = selector.trim();
+  return /^@/.test(s) || /\[ref\s*=\s*['"]?e\d+['"]?\]/.test(s);
 }
 
 function actionToLine(action: TraceAction): string | null {
