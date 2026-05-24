@@ -63,6 +63,16 @@ describe("actionToAbArgs", () => {
     });
   });
 
+  test("flag-form waits (--load / --fn / --url) are unverifiable and return null", () => {
+    // These land in `selector` with the flag text (parseAbAction puts the
+    // flag in selector and its arg in label). They are readiness/observation
+    // conditions, not element-existence checks, so validation must skip them
+    // rather than poll `get count "--load"` (which always returns 0).
+    expect(actionToAbArgs({ command: "wait", selector: "--load" }, SESSION)).toBeNull();
+    expect(actionToAbArgs({ command: "wait", selector: "--fn" }, SESSION)).toBeNull();
+    expect(actionToAbArgs({ command: "wait", selector: "--url" }, SESSION)).toBeNull();
+  });
+
   test("numeric wait (sleep duration) is unverifiable and returns null", () => {
     expect(actionToAbArgs({ command: "wait", selector: "3" }, SESSION)).toBeNull();
   });

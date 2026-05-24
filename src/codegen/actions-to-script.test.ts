@@ -94,6 +94,16 @@ describe("actionsToScript", () => {
       const script = actionsToScript({ actions, testName: "demo" });
       expect(script).toContain('abWait("text=Done");');
     });
+
+    it("emits a raw ab(\"wait\", ...) for flag-form waits (--load networkidle), not abWait", () => {
+      const actions: TraceAction[] = [
+        { command: "wait", selector: "--load", label: "networkidle" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("wait", "--load", "networkidle");');
+      // Must NOT become abWait("--load") — that would poll get count "--load".
+      expect(script).not.toContain('abWait("--load")');
+    });
   });
 
   describe("find_* commands", () => {

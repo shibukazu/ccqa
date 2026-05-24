@@ -154,6 +154,11 @@ export function actionToAbArgs(action: TraceAction, sessionName: string): string
       const raw = sub(action.selector);
       if (!raw) return null; // selector omitted entirely — treat as unverifiable rather than failing the drop cascade.
       if (/^\d+$/.test(raw)) return null; // numeric sleep — no-op in validation
+      // Flag-form waits (`--load networkidle`, `--fn "..."`, `--url "..."`)
+      // are readiness/observation conditions, not element-existence checks.
+      // They're timing-dependent and not meaningful to re-verify on a fresh
+      // session, so treat them as unverifiable (skip).
+      if (raw.startsWith("--")) return null;
       if (raw.startsWith("text=")) {
         return [...base, "wait", "--text", raw.slice(5), "--timeout", String(SHORT_TIMEOUT_MS)];
       }

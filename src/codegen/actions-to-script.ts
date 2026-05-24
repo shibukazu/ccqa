@@ -222,6 +222,14 @@ function actionToLine(action: TraceAction): string | null {
       const sel = action.selector!;
       // Numeric waits represent sleep durations (from auto-fix)
       if (/^\d+$/.test(sel)) return `spawnSync("sleep", [${j(sel)}], { stdio: "inherit" });`;
+      // Flag-form waits (`--load networkidle`, `--fn "..."`, `--url "..."`)
+      // are passed straight to agent-browser. The flag lands in `selector`
+      // and its argument in `label` (see parseAbAction). abWait only knows
+      // selector/text waits, so emit a raw `ab("wait", ...)` instead.
+      if (sel.startsWith("--")) {
+        const arg = action.label ? `, ${j(action.label)}` : "";
+        return `ab("wait", ${j(sel)}${arg});`;
+      }
       // `${ENV_VAR}` refs in a wait selector (e.g. `text=run-${CCQA_TEST_RUN_ID}`)
       // must expand to a template literal so the live env value reaches the
       // selector at run time. Same shape as `fill` / `assert` values.
