@@ -1,6 +1,41 @@
-import { spawnAB } from "./spawn-ab.ts";
+import { spawnAB, sleepSync } from "./spawn-ab.ts";
 import { resolveEnvRefs } from "./env-vars.ts";
 import type { TraceAction, TraceCommand } from "../types.ts";
+
+/**
+ * Some actions can't be validated by a single `agent-browser` argv because
+ * `wait <css-selector>` ignores `--timeout` and blocks the daemon for ~150s
+ * when the selector never matches (it then dies with EAGAIN, cascading into
+ * everything after it). For element-existence checks we instead poll
+ * `get count <selector>`, which returns in ~180ms whether the element exists
+ * or not. `actionToAbArgs` returns this marker for those cases and the
+ * replay loop runs the poll itself.
+ */
+export interface PollCheck {
+  kind: "poll-present";
+  selector: string;
+  timeoutMs: number;
+}
+
+function isPollCheck(x: string[] | PollCheck | null): x is PollCheck {
+  return x !== null && !Array.isArray(x) && (x as PollCheck).kind === "poll-present";
+}
+
+const SELECTOR_POLL_INTERVAL_MS = 500;
+
+/** Poll `get count <selector>` until it matches (>=1) or the timeout elapses. */
+function runPollCheck(check: PollCheck, sessionName: string): { ok: boolean; reason: string } {
+  const deadline = Date.now() + check.timeoutMs;
+  for (;;) {
+    const r = spawnAB(["--session", sessionName, "get", "count", check.selector]);
+    const count = r.status === 0 ? Number.parseInt(r.stdout.trim(), 10) : NaN;
+    if (!Number.isNaN(count) && count > 0) return { ok: true, reason: "" };
+    if (Date.now() >= deadline) {
+      return { ok: false, reason: `selector not present within ${check.timeoutMs}ms (get count returned ${Number.isNaN(count) ? "error" : count})` };
+    }
+    sleepSync(SELECTOR_POLL_INTERVAL_MS);
+  }
+}
 
 /**
  * Post-trace replay validation.
@@ -77,7 +112,7 @@ const ASSERT_TIMEOUT_MS = 10_000;
  * directly verifiable here fall through to the caller's `unverifiable`
  * fallback).
  */
-export function actionToAbArgs(action: TraceAction, sessionName: string): string[] | null {
+export function actionToAbArgs(action: TraceAction, sessionName: string): string[] | PollCheck | null {
   const base = ["--session", sessionName];
 
   // Resolve env refs in any value/selector positions so the validation
@@ -122,7 +157,8 @@ export function actionToAbArgs(action: TraceAction, sessionName: string): string
       if (raw.startsWith("text=")) {
         return [...base, "wait", "--text", raw.slice(5), "--timeout", String(SHORT_TIMEOUT_MS)];
       }
-      return [...base, "wait", raw, "--timeout", String(SHORT_TIMEOUT_MS)];
+      // `wait <css-selector>` ignores --timeout and blocks the daemon; poll instead.
+      return { kind: "poll-present", selector: raw, timeoutMs: SHORT_TIMEOUT_MS };
     }
     case "snapshot":
       return null;
@@ -177,7 +213,7 @@ function assertToAbArgs(
   action: TraceAction,
   sub: (s: string | undefined) => string,
   sessionName: string,
-): string[] | null {
+): string[] | PollCheck | null {
   const base = ["--session", sessionName];
   const val = sub(action.value ?? action.observation);
   const sel = sub(action.selector ?? action.observation);
@@ -193,7 +229,8 @@ function assertToAbArgs(
       return null;
     case "element_visible":
       if (!sel) return null;
-      return [...base, "wait", sel, "--timeout", String(ASSERT_TIMEOUT_MS)];
+      // `wait <css-selector>` ignores --timeout and blocks; poll instead.
+      return { kind: "poll-present", selector: sel, timeoutMs: ASSERT_TIMEOUT_MS };
     case "element_not_visible":
       // Same vacuous-truth concern as text_not_visible.
       return null;
@@ -208,9 +245,9 @@ function assertToAbArgs(
       // session before the prior actions have built up the right page state
       // is meaningless. The replay loop runs the *whole* action list in
       // order, so by the time we hit one of these, the page is in the
-      // right state. Validate the selector exists at all via a wait first.
+      // right state. Validate the selector exists at all via a presence poll.
       if (!sel || sel.startsWith("text=") || sel.startsWith("[aria-label=")) return null;
-      return [...base, "wait", sel, "--timeout", String(ASSERT_TIMEOUT_MS)];
+      return { kind: "poll-present", selector: sel, timeoutMs: ASSERT_TIMEOUT_MS };
     default:
       return null;
   }
@@ -239,6 +276,42 @@ export interface ValidateOptions {
 // trace" for these — i.e. the v0.4 behaviour. We don't conflate the
 // sentinel with any real stepId because real ids look like "step-NN".
 const NO_STEP_ID = "__no_step__";
+
+interface ActionOutcome {
+  /** True when the action is unverifiable (no side effect to replay). */
+  skipped: boolean;
+  /** True when the action replayed successfully. */
+  ok: boolean;
+  /** Failure reason (only meaningful when ok === false && skipped === false). */
+  reason: string;
+}
+
+/**
+ * Replay one recorded action against the validation session. Element-presence
+ * checks go through `runPollCheck` (which uses `get count`, never the blocking
+ * `wait <selector>`); everything else spawns the agent-browser argv. A single
+ * hard-timeout (SIGTERM) retry covers the daemon's occasional under-load drop.
+ */
+function runValidationAction(action: TraceAction, sessionName: string): ActionOutcome {
+  const built = actionToAbArgs(action, sessionName);
+  if (built === null) return { skipped: true, ok: false, reason: "" };
+  if (isPollCheck(built)) {
+    const { ok, reason } = runPollCheck(built, sessionName);
+    return { skipped: false, ok, reason };
+  }
+  let result = spawnAB(built);
+  if (result.status !== 0 && looksLikeHardTimeout(result)) {
+    // Hard-timeout retry, capped at 1: agent-browser's daemon occasionally
+    // drops a request under load. One extra attempt is cheaper than re-tracing.
+    result = spawnAB(built);
+  }
+  if (result.status === 0) return { skipped: false, ok: true, reason: "" };
+  return {
+    skipped: false,
+    ok: false,
+    reason: (result.stderr.trim() || result.stdout.trim() || `agent-browser exit ${result.status ?? "?"}`).slice(0, 200),
+  };
+}
 
 export function validateActions(
   actions: TraceAction[],
@@ -273,19 +346,12 @@ export function validateActions(
       dropped.push({ index: i, action, reason: "skipped after a preceding action failed" });
       continue;
     }
-    const args = actionToAbArgs(action, opts.sessionName);
-    if (args === null) {
+    const outcome = runValidationAction(action, opts.sessionName);
+    if (outcome.skipped) {
       kept.push(action);
       continue;
     }
-    let result = spawnAB(args);
-    if (result.status !== 0 && looksLikeHardTimeout(result)) {
-      // Hard-timeout retry, capped at 1: agent-browser's daemon
-      // occasionally drops a request under load. Burning a single extra
-      // ~30s budget here is cheaper than re-tracing the whole spec.
-      result = spawnAB(args);
-    }
-    if (result.status === 0) {
+    if (outcome.ok) {
       kept.push(action);
       // A successful state-mutating action means the page is now in a
       // known-good state — let subsequent passives observe it.
@@ -294,12 +360,7 @@ export function validateActions(
       }
       continue;
     }
-    dropped.push({
-      index: i,
-      action,
-      reason:
-        (result.stderr.trim() || result.stdout.trim() || `agent-browser exit ${result.status ?? "?"}`).slice(0, 200),
-    });
+    dropped.push({ index: i, action, reason: outcome.reason });
     if (!isPassiveCommand(action.command)) {
       // Only state-mutating failures poison subsequent actions.
       skipFromStepId = stepId;
@@ -403,10 +464,9 @@ function rescueLostSteps(
   for (const [stepId, drops] of lostStepDrops.entries()) {
     let anyForThisStep = false;
     for (const d of drops) {
-      const args = actionToAbArgs(d.action, opts.sessionName);
-      if (args === null) continue;
-      const result = spawnAB(args);
-      if (result.status === 0) {
+      const outcome = runValidationAction(d.action, opts.sessionName);
+      if (outcome.skipped) continue;
+      if (outcome.ok) {
         rescuedIndices.add(d.index);
         anyForThisStep = true;
       }

@@ -25,6 +25,9 @@ afterEach(() => {
 
 const OK = { status: 0, stdout: "", stderr: "" };
 const FAIL = { status: 1, stdout: "", stderr: "selector not found" };
+// `get count` poll responses for poll-present checks (wait <css>, element_visible).
+const COUNT_PRESENT = { status: 0, stdout: "1", stderr: "" };
+const COUNT_ABSENT = { status: 0, stdout: "0", stderr: "" };
 
 describe("actionToAbArgs", () => {
   test("cookies_clear → cookies clear", () => {
@@ -49,13 +52,15 @@ describe("actionToAbArgs", () => {
     ]);
   });
 
-  test("wait routes text= prefix through --text and otherwise uses positional selector", () => {
+  test("wait routes text= prefix through --text but uses a get-count poll for CSS selectors", () => {
     expect(actionToAbArgs({ command: "wait", selector: "text=Loading" }, SESSION)).toEqual([
       "--session", SESSION, "wait", "--text", "Loading", "--timeout", "5000",
     ]);
-    expect(actionToAbArgs({ command: "wait", selector: "[aria-label='X']" }, SESSION)).toEqual([
-      "--session", SESSION, "wait", "[aria-label='X']", "--timeout", "5000",
-    ]);
+    // CSS selector waits become a poll-present check because agent-browser's
+    // `wait <selector>` ignores --timeout and blocks the daemon.
+    expect(actionToAbArgs({ command: "wait", selector: "[aria-label='X']" }, SESSION)).toEqual({
+      kind: "poll-present", selector: "[aria-label='X']", timeoutMs: 5000,
+    });
   });
 
   test("numeric wait (sleep duration) is unverifiable and returns null", () => {
@@ -73,11 +78,11 @@ describe("actionToAbArgs", () => {
     ]);
   });
 
-  test("assert element_visible verifies via positional `wait` on the selector", () => {
+  test("assert element_visible verifies via a get-count poll on the selector", () => {
     const action: TraceAction = { command: "assert", assertType: "element_visible", selector: "[aria-label='OK']" };
-    expect(actionToAbArgs(action, SESSION)).toEqual([
-      "--session", SESSION, "wait", "[aria-label='OK']", "--timeout", "10000",
-    ]);
+    expect(actionToAbArgs(action, SESSION)).toEqual({
+      kind: "poll-present", selector: "[aria-label='OK']", timeoutMs: 10000,
+    });
   });
 
   test("text_not_visible and element_not_visible asserts are skipped (vacuously true on a fresh session)", () => {
@@ -88,10 +93,10 @@ describe("actionToAbArgs", () => {
   test("element_enabled/checked variants skip text= / [aria-label=] selectors that `is enabled` doesn't support reliably", () => {
     expect(actionToAbArgs({ command: "assert", assertType: "element_enabled", selector: "text=Submit" }, SESSION)).toBeNull();
     expect(actionToAbArgs({ command: "assert", assertType: "element_enabled", selector: "[aria-label='Submit']" }, SESSION)).toBeNull();
-    // CSS selectors get a positional wait (existence check, not state check).
-    expect(actionToAbArgs({ command: "assert", assertType: "element_enabled", selector: ".btn-submit" }, SESSION)).toEqual([
-      "--session", SESSION, "wait", ".btn-submit", "--timeout", "10000",
-    ]);
+    // CSS selectors get a get-count existence poll (not a state check).
+    expect(actionToAbArgs({ command: "assert", assertType: "element_enabled", selector: ".btn-submit" }, SESSION)).toEqual({
+      kind: "poll-present", selector: ".btn-submit", timeoutMs: 10000,
+    });
   });
 
   test("url_contains is skipped (URL probe, not a DOM check)", () => {
@@ -237,6 +242,37 @@ describe("validateActions", () => {
     expect(kept.map((a) => a.command)).toEqual(["open"]);
     expect(dropped).toHaveLength(1);
     expect(dropped[0]!.action.command).toBe("click");
+  });
+
+  test("a CSS-selector wait is validated by polling `get count` (never the blocking `wait <selector>`)", () => {
+    const seq: TraceAction[] = [
+      { command: "open", value: "/" },
+      { command: "wait", selector: "[aria-label='Saved']" },
+    ];
+    // open → OK; the wait becomes a poll-present → `get count` returns "1".
+    mockedSpawnAB
+      .mockReturnValueOnce(OK)            // open
+      .mockReturnValueOnce(COUNT_PRESENT); // get count → 1
+    const { kept, dropped } = validateActions(seq, { sessionName: "s", mode: "strict" });
+    expect(kept.map((a) => a.command)).toEqual(["open", "wait"]);
+    expect(dropped).toHaveLength(0);
+    // Crucially, the spawn args were a `get count`, not a `wait <selector>`.
+    const calls = mockedSpawnAB.mock.calls.map((c) => c[0]);
+    expect(calls.some((a) => a.includes("get") && a.includes("count"))).toBe(true);
+    expect(calls.some((a) => a[a.indexOf("--session") + 2] === "wait" && a.includes("[aria-label='Saved']"))).toBe(false);
+  });
+
+  test("a CSS-selector wait that never appears is dropped after the poll times out", () => {
+    const seq: TraceAction[] = [
+      { command: "open", value: "/" },
+      { command: "wait", selector: "[aria-label='NeverShows']" },
+    ];
+    // open OK; poll always returns "0" → eventually times out and drops.
+    mockedSpawnAB.mockReturnValueOnce(OK).mockReturnValue(COUNT_ABSENT);
+    const { kept, dropped } = validateActions(seq, { sessionName: "s", mode: "strict" });
+    expect(kept.map((a) => a.command)).toEqual(["open"]);
+    expect(dropped.map((d) => d.action.command)).toEqual(["wait"]);
+    expect(dropped[0]!.reason).toMatch(/not present/);
   });
 
   test("step boundary lifts the cascade — next step's wait/assert are retried", () => {

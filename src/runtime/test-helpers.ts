@@ -38,15 +38,49 @@ export function ab(...args: string[]): void {
   if (command === "open") sleepSync(POST_OPEN_SETTLE_MS);
 }
 
+// agent-browser's `wait <css-selector>` does NOT honour `--timeout`: when the
+// selector never matches it blocks the daemon for ~150s and then dies with
+// `os error 35` (EAGAIN), which cascades into every following command. Only
+// `wait --text` and `wait --fn` respect the timeout. So for element-existence
+// waits we poll `get count <selector>` (which returns in ~180ms whether the
+// element exists or not) and enforce the timeout ourselves.
+const SELECTOR_POLL_INTERVAL_MS = 500;
+
+function selectorCount(selector: string): number {
+  const r = spawnAB(["get", "count", selector]);
+  if (r.status !== 0) return 0;
+  const n = Number.parseInt(r.stdout.trim(), 10);
+  return Number.isNaN(n) ? 0 : n;
+}
+
+/**
+ * Poll until `get count <selector>` reaches the desired presence state or the
+ * timeout elapses. `want: "present"` waits for >=1 match; `"absent"` waits for
+ * 0 matches. Returns true on success, false on timeout.
+ */
+function pollSelector(selector: string, want: "present" | "absent", timeoutMs: number): boolean {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const count = selectorCount(selector);
+    const ok = want === "present" ? count > 0 : count === 0;
+    if (ok) return true;
+    if (Date.now() >= deadline) return false;
+    sleepSync(SELECTOR_POLL_INTERVAL_MS);
+  }
+}
+
 /** Wait for element/text with an explicit timeout so long-running async ops don't hang. */
-export function abWait(selector: string, timeoutMs = 180_000): void {
+export function abWait(selector: string, timeoutMs = 30_000): void {
   logStep("wait", [selector]);
-  const args = selector.startsWith("text=")
-    ? ["wait", "--text", selector.slice(5), "--timeout", String(timeoutMs)]
-    : ["wait", selector, "--timeout", String(timeoutMs)];
-  const result = spawnAB(args);
-  if (result.status !== 0) {
-    fail(`wait failed: ${selector}`, result);
+  if (selector.startsWith("text=")) {
+    // `wait --text` honours --timeout correctly.
+    const result = spawnAB(["wait", "--text", selector.slice(5), "--timeout", String(timeoutMs)]);
+    if (result.status !== 0) fail(`wait failed: ${selector}`, result);
+    return;
+  }
+  // CSS selector: poll `get count` instead of `wait <selector>` (which ignores --timeout).
+  if (!pollSelector(selector, "present", timeoutMs)) {
+    fail(`wait failed: ${selector} not present within ${timeoutMs}ms`, { status: 1, stdout: "", stderr: "" });
   }
 }
 
@@ -59,26 +93,31 @@ export function abAssertTextVisible(text: string, timeoutMs = 30_000): void {
   }
 }
 
-/** Assert element is visible (via wait). */
+/** Assert element is visible (polls `get count`; never uses the blocking `wait <selector>`). */
 export function abAssertVisible(selector: string, timeoutMs = 30_000): void {
   logStep("assert.visible", [selector]);
-  const result = spawnAB(["wait", selector, "--timeout", String(timeoutMs)]);
-  if (result.status !== 0) {
-    fail(`Assertion failed: ${JSON.stringify(selector)} not visible within ${timeoutMs}ms`, result);
+  if (selector.startsWith("text=")) {
+    const result = spawnAB(["wait", "--text", selector.slice(5), "--timeout", String(timeoutMs)]);
+    if (result.status !== 0) fail(`Assertion failed: ${JSON.stringify(selector)} not visible within ${timeoutMs}ms`, result);
+    return;
+  }
+  if (!pollSelector(selector, "present", timeoutMs)) {
+    fail(`Assertion failed: ${JSON.stringify(selector)} not visible within ${timeoutMs}ms`, { status: 1, stdout: "", stderr: "" });
   }
 }
 
-/** Assert element is NOT visible (via wait --state hidden or --fn for text). */
+/** Assert element is NOT visible (polls `get count` for absence; --fn for text). */
 export function abAssertNotVisible(selector: string, timeoutMs = 30_000): void {
   logStep("assert.hidden", [selector]);
-  // agent-browser does not support `--text` and `--state` together.
-  // For text selectors, use --fn with a negated innerText check instead.
-  const args = selector.startsWith("text=")
-    ? ["wait", "--fn", `!document.body.innerText.includes(${JSON.stringify(selector.slice(5))})`, "--timeout", String(timeoutMs)]
-    : ["wait", selector, "--state", "hidden", "--timeout", String(timeoutMs)];
-  const result = spawnAB(args);
-  if (result.status !== 0) {
-    fail(`Assertion failed: ${JSON.stringify(selector)} still visible after ${timeoutMs}ms`, result);
+  if (selector.startsWith("text=")) {
+    // agent-browser does not support `--text` and `--state` together.
+    // For text selectors, use --fn with a negated innerText check instead.
+    const result = spawnAB(["wait", "--fn", `!document.body.innerText.includes(${JSON.stringify(selector.slice(5))})`, "--timeout", String(timeoutMs)]);
+    if (result.status !== 0) fail(`Assertion failed: ${JSON.stringify(selector)} still visible after ${timeoutMs}ms`, result);
+    return;
+  }
+  if (!pollSelector(selector, "absent", timeoutMs)) {
+    fail(`Assertion failed: ${JSON.stringify(selector)} still visible after ${timeoutMs}ms`, { status: 1, stdout: "", stderr: "" });
   }
 }
 

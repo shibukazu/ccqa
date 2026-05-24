@@ -60,10 +60,15 @@ agent-browser --session SESSION press <Key>
 agent-browser --session SESSION select "<selector>" "<value>"
 agent-browser --session SESSION hover "<selector>"
 agent-browser --session SESSION wait --text "<text>" [--timeout <ms>]
-agent-browser --session SESSION wait "<selector>" [--timeout <ms>] [--state visible|hidden]
+agent-browser --session SESSION wait --load networkidle
+agent-browser --session SESSION get count "<selector>"   # element-existence check (returns a number, fast)
 agent-browser --session SESSION cookies clear
 agent-browser --session SESSION find <locator> <value> <action> [<input>] [--name "<n>"] [--exact]
 # See "Selector Rules" for the full \`find\` subset.
+# IMPORTANT: do NOT use \`wait "<css-selector>"\`. agent-browser ignores --timeout on a
+# CSS-selector wait and blocks for ~150s when the selector never matches, killing the run.
+# Wait for readiness with \`wait --text\`, \`wait --load networkidle\`, or just use \`find\`
+# (which waits internally). To check an element exists, use \`get count "<selector>"\`.
 \`\`\`
 
 ## Selector Rules
@@ -132,7 +137,7 @@ find nth <index> "<ALLOWED-css>" <action>
 
 **combobox / select with a required marker (\`*\`)**: required form fields often include the marker in their accessible name. If \`find role combobox click --name "<label>"\` misses, prefer \`find label "<label>" click\` or \`click "[aria-label='<label> *']"\`.
 
-**Verifying cleanup / deletion**: assert the *absence* of the deleted thing, not the surrounding listing screen's text. Use \`wait "<selector>" --state hidden\` or \`wait --fn "!document.body.innerText.includes('<unique-label>')"\` — never \`wait --text "<navbar label>"\`.
+**Verifying cleanup / deletion**: assert the *absence* of the deleted thing, not the surrounding listing screen's text. Use \`wait --fn "!document.body.innerText.includes('<unique-label>')"\` (text disappearance) — never \`wait "<css-selector>" --state hidden\` (blocks the daemon) and never \`wait --text "<navbar label>"\` (passes regardless of the deletion).
 
 ## Test Specification
 
@@ -287,13 +292,14 @@ Before emitting \`AB_ACTION|assert|...\`, **verify the assertion form actually r
 
 \`\`\`bash
 # element_visible / element_enabled / element_disabled / element_checked / element_unchecked
-agent-browser --session SESSION wait "<selector>" --timeout 3000
+# Use get count (fast, returns a number). Do NOT use \`wait "<selector>"\` — it blocks the daemon.
+agent-browser --session SESSION get count "<selector>"   # >=1 means present
 # element_not_visible
-agent-browser --session SESSION wait "<selector>" --state hidden --timeout 3000
+agent-browser --session SESSION get count "<selector>"   # 0 means absent
 # text_visible
 agent-browser --session SESSION wait --text "<text>" --timeout 3000
 # text_not_visible
-agent-browser --session SESSION wait --text "<text>" --state hidden --timeout 3000
+agent-browser --session SESSION wait --fn "!document.body.innerText.includes('<text>')" --timeout 3000
 \`\`\`
 
 When *no* form verifies — e.g. \`[aria-label='X']\`, \`[placeholder='X']\`, and \`text=X\` all timed out, or the visible text turned out to be an \`alt\` — **drop the assertion entirely**. Fewer real assertions beat invented ones that fail at replay. \`url_contains\` is exempt (it checks the URL string, not the DOM).
