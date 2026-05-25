@@ -281,8 +281,8 @@ The selector must identify *which* element by something **other than the state y
 
 - ✗ \`element_disabled | button[disabled] |\` — picks an already-disabled button, then "confirms" it is disabled. Passes even if the button the spec cares about is missing or enabled.
 - ✗ \`element_enabled | button:enabled |\`, \`[aria-disabled='true']\`, \`input:disabled\` — same trap.
-- ✓ Name the element by a stable, state-independent selector and assert the state on it: e.g. the "送信" button is \`find role button --name "送信"\`; to assert it is disabled, give \`element_disabled\` a selector that targets *that* button (a stable \`id\` / \`data-testid\` / unique class), **not** \`[disabled]\`.
-- If you cannot target the specific element without a state pseudo-class/attribute, **do not emit the enabled/disabled assert** — assert a user-visible consequence instead (e.g. the action it gates does not happen, a "権限がありません" message is shown), or rely on \`text_visible\` for the label plus \`text_not_visible\` for what an enabled control would have produced.
+- ✓ Name the element by a stable, state-independent selector and assert the state on it: e.g. the "Submit" button is \`find role button --name "Submit"\`; to assert it is disabled, give \`element_disabled\` a selector that targets *that* button (a stable \`id\` / \`data-testid\` / unique class), **not** \`[disabled]\`.
+- If you cannot target the specific element without a state pseudo-class/attribute, **do not emit the enabled/disabled assert** — assert a user-visible consequence instead (e.g. the action it gates does not happen, a "you don't have permission" message is shown), or rely on \`text_visible\` for the label plus \`text_not_visible\` for what an enabled control would have produced.
 
 **Page-context and selector rules:**
 
