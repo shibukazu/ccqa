@@ -11,8 +11,8 @@ replay **dropped** the action from `actions.json`, so it never reached the
 generated test. In practice this deleted whole spec steps: trace-time Claude has
 snapshots, adaptive waits, and retries, but the headless linear replay does not,
 so it fails on actions that are actually fine in a real run. A real spec
-(`content-management/create-content-directly`) lost its "verify created content"
-and "delete" steps entirely while the trace itself reported all steps passing.
+lost its "verify created content" and "delete" steps entirely while the trace
+itself reported all steps passing.
 
 The replay is *also* redundant with `ccqa generate`'s auto-fix loop, which runs
 the generated test under vitest and diagnoses failures. Two independent
