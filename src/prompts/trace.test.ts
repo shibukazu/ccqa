@@ -21,15 +21,20 @@ describe("buildTraceSystemPrompt", () => {
   it("tells Claude to only emit AB_ACTION for the call that finally succeeded", () => {
     const out = buildTraceSystemPrompt({ title: "demo", steps: baseSteps });
     expect(out).toContain("record only successful actions");
-    expect(out).toContain("working selector only");
+    // Phrasing check is structural: any wording that conveys
+    // "use only the call that ultimately worked" is acceptable.
+    expect(out).toMatch(/last working|working selector only|working one only/);
   });
 
-  it("forces selector-based assertions to be verified via `agent-browser wait` before recording", () => {
+  it("forces selector-based assertions to be verified before recording, via get count (not the blocking wait)", () => {
     const out = buildTraceSystemPrompt({ title: "demo", steps: baseSteps });
     expect(out).toMatch(/MUST-VERIFY rule/);
     expect(out).toContain("accessibility tree");
-    expect(out).toContain("DROP the assertion");
-    expect(out).toContain('wait "<selector>" --timeout 3000');
+    expect(out).toMatch(/drop the assertion|DROP the assertion/);
+    // Element existence is verified with `get count`, never the blocking
+    // `wait "<selector>"` (which ignores --timeout and wedges the daemon).
+    expect(out).toContain('get count "<selector>"');
+    expect(out).not.toMatch(/wait "<selector>" --timeout/);
   });
 
   it("also requires text_visible to be verified via `wait --text` and warns about the alt/aria-label trap", () => {

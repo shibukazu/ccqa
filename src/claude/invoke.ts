@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, Options, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import * as log from "../cli/logger.ts";
+import { FIND_ACTIONS, FIND_LOCATORS } from "../types.ts";
 
 export interface ClaudeInvokeOptions {
   prompt: string;
@@ -96,7 +97,7 @@ export async function invokeClaudeStreaming(
                     if (isBlockedAbSubcommand(cmd)) {
                       return {
                         decision: "block",
-                        reason: "This agent-browser subcommand is not allowed because it cannot be recorded as a structured test action. Use only the standard commands: click, check, fill, select, hover, press, wait. Take a fresh snapshot to find the correct selector.",
+                        reason: "This agent-browser subcommand is not allowed because it cannot be recorded as a structured test action. Use only the standard commands: click, check, fill, select, hover, press, wait, find (with role/text/label/placeholder/alt/title/testid/first/last/nth). Take a fresh snapshot to find the correct selector.",
                       };
                     }
 
@@ -105,6 +106,36 @@ export async function invokeClaudeStreaming(
                       return {
                         decision: "block",
                         reason: "@ref selectors (like @e14) are session-specific and change every run. They cannot be used in generated tests. Use one of the allowed selector formats instead: [aria-label='...'], text=..., [placeholder='...'], or [type='password']. Take a fresh snapshot and find the element's aria-label or visible text.",
+                      };
+                    }
+
+                    const bareTag = findPositionalBareTag(cmd);
+                    if (bareTag !== null) {
+                      return {
+                        decision: "block",
+                        reason: `\`find ${bareTag.locator}\` with a bare tag selector (\`${bareTag.selector}\`) is rejected: it matches every <${bareTag.selector}> on the page and is non-deterministic on replay. Pass a specific attribute selector instead, e.g. \`find ${bareTag.locator} "[aria-label='...']" ${bareTag.action}\` or \`find ${bareTag.locator} "[data-qa='...']" ${bareTag.action}\`. Take a fresh snapshot to find the right attribute.`,
+                      };
+                    }
+
+                    // Block compound `agent-browser` invocations — a single Bash
+                    // call may only run one agent-browser command. Without this
+                    // the PreToolUse hook records a single AB_ACTION while the
+                    // shell runs several, and a failed attempt slipped inside
+                    // the chain can't be rolled back via PostToolUse.
+                    if (hasMultipleAbInvocations(cmd)) {
+                      return {
+                        decision: "block",
+                        reason: "Run each `agent-browser` call as its own Bash command. Chaining multiple invocations with &&, ;, |, or || prevents ccqa from recording them as discrete steps and lets failed attempts leak into the trace. Issue one Bash tool call per agent-browser command.",
+                      };
+                    }
+
+                    // Block error-suppression decorators on agent-browser
+                    // commands — they hide non-zero exits from PostToolUse and
+                    // let failed attempts get baked into actions.json.
+                    if (hasErrorSuppression(cmd)) {
+                      return {
+                        decision: "block",
+                        reason: "Do not suppress errors on `agent-browser` commands. Remove `|| true`, `|| :`, `2>/dev/null`, `; true`, and similar redirects so ccqa can detect failures and roll back unsuccessful attempts. Run the command standalone and let it surface its exit code.",
                       };
                     }
 
@@ -190,7 +221,7 @@ export async function invokeClaudeStreaming(
   return { result, isError };
 }
 
-const BLOCKED_AB_SUBCOMMANDS = new Set(["eval", "js", "find", "label", "textbox"]);
+const BLOCKED_AB_SUBCOMMANDS = new Set(["eval", "js", "label", "textbox"]);
 
 /**
  * Shell-aware tokenizer: splits a command string into tokens respecting single/double quotes.
@@ -255,6 +286,36 @@ export function isBashToolResponseError(tool_response: unknown): boolean {
   return false;
 }
 
+/**
+ * Detect `agent-browser ... find first|last|nth <bare-tag> <action>`. A bare
+ * tag inside a *positional* finder matches every element of that tag on the
+ * page, so "the last button" picks a different element whenever the page
+ * shape shifts — recorded tests built on top are flaky by construction. The
+ * check is narrow on purpose: `find role button --name X` is fine because
+ * role + accessible name stays stable.
+ */
+export function findPositionalBareTag(
+  cmd: string,
+): { locator: "first" | "last" | "nth"; selector: string; action: string } | null {
+  if (extractAbSubcommand(cmd) !== "find") return null;
+  const abIdx = cmd.indexOf("agent-browser");
+  const rest = cmd.slice(abIdx + "agent-browser".length).trim();
+  const parts = shellTokenize(rest);
+  let i = 0;
+  while (i < parts.length && parts[i]!.startsWith("-")) { i += 2; }
+  // parts[i] === "find"; locator follows.
+  const locator = parts[i + 1];
+  if (locator !== "first" && locator !== "last" && locator !== "nth") return null;
+  const innerIdx = locator === "nth" ? i + 3 : i + 2;
+  const inner = parts[innerIdx];
+  const action = parts[innerIdx + 1] ?? "";
+  if (!inner) return null;
+  // A "bare tag" looks like one HTML identifier: letters only, no `[`, `.`,
+  // `#`, space, or attribute. Allow common HTML tags conservatively.
+  if (!/^[a-zA-Z][a-zA-Z0-9]*$/.test(inner)) return null;
+  return { locator, selector: inner, action };
+}
+
 /** Returns true if any argument to an agent-browser command uses a @ref selector (e.g. @e14). */
 export function hasRefSelector(cmd: string): boolean {
   const abIdx = cmd.indexOf("agent-browser");
@@ -268,6 +329,84 @@ export function hasRefSelector(cmd: string): boolean {
   for (; i < parts.length; i++) {
     if (/^@/.test(parts[i]!)) return true;
   }
+  return false;
+}
+
+/**
+ * Returns true when `cmd` contains more than one `agent-browser` invocation
+ * chained together via shell operators (`&&`, `||`, `;`, `|`). The
+ * PreToolUse hook only records ONE AB_ACTION per Bash call, so chained
+ * invocations would silently drop every intermediate failure — turning
+ * "I tried four selectors before one worked" into a clean-looking trace
+ * with five orphaned actions that later fail at replay.
+ *
+ * The check tokenizes the command and counts `agent-browser` occurrences
+ * that appear at the start of a shell command (i.e. immediately after a
+ * statement separator or at index 0). String literals are honoured so
+ * `agent-browser fill 'agent-browser'` doesn't false-fire.
+ */
+export function hasMultipleAbInvocations(cmd: string): boolean {
+  // Walk the command and find statement boundaries that aren't inside
+  // string quotes. A statement starts at position 0 or right after one of
+  // these unquoted tokens.
+  const boundaries: number[] = [0];
+  let quote: '"' | "'" | "`" | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]!;
+    if (quote) {
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ";" || ch === "|" || ch === "&") {
+      // Step past consecutive separator chars (`&&`, `||`, `;;` etc).
+      while (i + 1 < cmd.length && (cmd[i + 1] === "|" || cmd[i + 1] === "&" || cmd[i + 1] === ";")) i++;
+      boundaries.push(i + 1);
+    }
+  }
+  let count = 0;
+  for (const start of boundaries) {
+    // Skip leading whitespace at each boundary, then check if the next
+    // word is `agent-browser`. Word match avoids picking up substrings.
+    let j = start;
+    while (j < cmd.length && (cmd[j] === " " || cmd[j] === "\t" || cmd[j] === "\n")) j++;
+    if (cmd.slice(j, j + "agent-browser".length) !== "agent-browser") continue;
+    const after = cmd[j + "agent-browser".length];
+    // Followed by whitespace, end of string, or flag — anything that
+    // shows this is the command head, not e.g. `agent-browser-cli`.
+    if (after !== undefined && /[A-Za-z0-9_\-]/.test(after)) continue;
+    count++;
+    if (count > 1) return true;
+  }
+  return false;
+}
+
+/**
+ * Returns true when an `agent-browser` command in `cmd` has its exit
+ * status hidden by a shell decorator that would prevent ccqa from rolling
+ * back a failed attempt:
+ *
+ *   - trailing `|| true` / `|| :` / `; true` (force exit 0)
+ *   - `2>/dev/null` and friends (drop stderr, sometimes paired with `|| true`)
+ *
+ * The agent-browser command itself returns exit 1 on selector miss, so
+ * once one of these is present the PostToolUse hook sees `is_error=false`
+ * and the bad attempt sneaks into actions.json.
+ */
+export function hasErrorSuppression(cmd: string): boolean {
+  if (cmd.indexOf("agent-browser") === -1) return false;
+  // `|| true` / `|| :` — common forms used to swallow non-zero exit.
+  if (/\|\|\s*(true|:|\s*$|#)/.test(cmd)) return true;
+  // `; true` / `; :` at end of pipeline.
+  if (/;\s*(true|:)\b/.test(cmd)) return true;
+  // stderr drop. We allow `2>&1` only when the intent is to capture for
+  // logging (e.g. `2>&1 | head`) — that doesn't change exit status. The
+  // ones we ban actually discard:
+  if (/2\s*>\s*\/dev\/null/.test(cmd)) return true;
+  if (/&\s*>\s*\/dev\/null/.test(cmd)) return true;
   return false;
 }
 
@@ -314,9 +453,77 @@ export function extractAbActionFromBashCommand(cmd: string): string | null {
     case "snapshot":
       // snapshot AB_ACTION is emitted by LLM with its own observation
       return null;
+    case "find":
+      return extractFindAbAction(args);
     default:
       return null;
   }
+}
+
+const FIND_ACTION_SET: ReadonlySet<string> = new Set(FIND_ACTIONS);
+const FIND_LOCATOR_SET: ReadonlySet<string> = new Set(FIND_LOCATORS);
+
+/**
+ * Parse the positional tokens of `agent-browser find <locator> <value> [...]
+ * <action> [fillValue]` and produce a canonical
+ *   `AB_ACTION|find_<action>|<locator>|<value>|<extra>|<exact>|...|<label>`
+ * line. The wire format keeps a fixed positional layout across locators so
+ * downstream `parseAbAction` in `cli/trace.ts` can split on `|` alone:
+ *
+ *   <extra> is `--name` value for role, integer index for nth, "" otherwise.
+ *   <exact> is the literal "exact" if --exact was passed, "" otherwise.
+ *
+ * Returns null for malformed invocations — the caller treats null as "not a
+ * structured action" and the Bash command still runs unobserved.
+ */
+export function extractFindAbAction(args: string[]): string | null {
+  const locator = args[0];
+  if (!locator || !FIND_LOCATOR_SET.has(locator)) return null;
+
+  let i = 1;
+  let value = args[i] ?? "";
+  i++;
+
+  let extra = "";
+  if (locator === "nth") {
+    // `find nth <index> <selector>` — index lives in <extra>, selector in <value>.
+    extra = value;
+    value = args[i] ?? "";
+    i++;
+  }
+
+  let action = "";
+  let name = "";
+  let exact = "";
+  let fillValue = "";
+
+  for (; i < args.length; i++) {
+    const tok = args[i]!;
+    if (tok === "--name") {
+      // `--name` is only meaningful for `find role`. Capture it unconditionally
+      // here so we always consume its value (otherwise the next-token loop iter
+      // would treat the value as the action token), but only carry it forward
+      // when the locator actually accepts it.
+      name = args[i + 1] ?? "";
+      i++;
+    } else if (tok === "--exact") {
+      exact = "exact";
+    } else if (FIND_ACTION_SET.has(tok)) {
+      action = tok;
+    } else if (action) {
+      // After the action token, the remaining positional is fill text.
+      fillValue = tok;
+    }
+  }
+
+  if (!action) return null;
+  if (locator === "role") extra = name;
+
+  const command = `find_${action}`;
+  if (action === "fill" || action === "type") {
+    return `AB_ACTION|${command}|${locator}|${value}|${extra}|${exact}|${fillValue}|`;
+  }
+  return `AB_ACTION|${command}|${locator}|${value}|${extra}|${exact}|`;
 }
 
 // Chooses between the real Claude Agent SDK and a JSONL replay. The mock

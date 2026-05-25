@@ -234,6 +234,38 @@ export async function readBlockSpec(name: string, cwd?: string): Promise<BlockSp
   return parseBlockSpec(content, path);
 }
 
+const TRACE_USER_PROMPT_PATH = ".ccqa/prompts/trace.user.md";
+const TRACE_USER_PROMPT_MAX_BYTES = 32_768;
+
+/**
+ * Load project-specific guidance to append to the trace system prompt.
+ *
+ * Returns the file's contents (trimmed) when `.ccqa/prompts/trace.user.md`
+ * exists and is non-empty. Missing file, empty file, or read error all
+ * resolve to `null` so callers can treat the override as strictly optional.
+ *
+ * The file is meant for organisation-specific rules that don't belong in
+ * the OSS-default prompt — naming conventions, staging URL hints, repeated
+ * UI quirks that recur across specs. Anything that genuinely belongs in
+ * one spec should go in that spec's instruction, not here.
+ *
+ * Size-capped at 32 KiB to keep accidental commits of huge files from
+ * blowing up the system prompt; the cap is observable to callers as a
+ * truncated warning suffix.
+ */
+export async function loadTraceUserPrompt(cwd?: string): Promise<string | null> {
+  const path = join(cwd ?? process.cwd(), TRACE_USER_PROMPT_PATH);
+  const content = await readFile(path, "utf-8").catch(() => null);
+  if (content === null) return null;
+  const trimmed = content.trim();
+  if (trimmed.length === 0) return null;
+  if (trimmed.length > TRACE_USER_PROMPT_MAX_BYTES) {
+    return trimmed.slice(0, TRACE_USER_PROMPT_MAX_BYTES) +
+      `\n\n[ccqa] (trace.user.md truncated at ${TRACE_USER_PROMPT_MAX_BYTES} bytes)`;
+  }
+  return trimmed;
+}
+
 /**
  * Probe for orphaned files left over from earlier ccqa versions inside
  * `.ccqa/blocks/<name>/`. Both pre-v0.4 `test.spec.ts` (function-export

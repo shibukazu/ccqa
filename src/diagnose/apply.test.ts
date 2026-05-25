@@ -92,6 +92,59 @@ describe("applySelectorDrift", () => {
     const out = applySelectorDrift(SCRIPT, 9, "[aria-label='WRONG']", "[aria-label='New']");
     expect(out.applied).toBe(false);
   });
+
+  test("promotes a \"...\" literal to a backtick template when the replacement contains an env-ref", () => {
+    // Regression: previously this produced
+    //   abWait("text=run-${process.env.X ?? \"\"}");
+    // which esbuild rejected because the `${...}` lived inside a double-quoted string.
+    const script = [
+      `import { test } from "vitest";`,
+      `import { abWait } from "ccqa/test-helpers";`,
+      ``,
+      `test("demo", () => {`,
+      `  abWait("text=run-\${CCQA_TEST_RUN_ID}");`,
+      `});`,
+    ].join("\n");
+    const out = applySelectorDrift(
+      script,
+      5,
+      "text=run-${CCQA_TEST_RUN_ID}",
+      'text=run-${process.env.CCQA_TEST_RUN_ID ?? ""}',
+    );
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).toContain('abWait(`text=run-${process.env.CCQA_TEST_RUN_ID ?? ""}`);');
+    expect(out.script).not.toMatch(/abWait\("text=run-\${process\.env/);
+  });
+
+  test("leaves an existing backtick template intact when splicing in a replacement", () => {
+    const script = [
+      `import { test } from "vitest";`,
+      `import { abWait } from "ccqa/test-helpers";`,
+      ``,
+      `test("demo", () => {`,
+      "  abWait(`text=run-${process.env.OLD ?? \"\"}`);",
+      `});`,
+    ].join("\n");
+    const out = applySelectorDrift(
+      script,
+      5,
+      'run-${process.env.OLD ?? ""}',
+      'run-${process.env.NEW ?? ""}',
+    );
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).toContain('abWait(`text=run-${process.env.NEW ?? ""}`);');
+    expect(out.script).not.toContain("OLD");
+  });
+
+  test("plain-text replacement still uses a regular string literal", () => {
+    const out = applySelectorDrift(SCRIPT, 9, "[aria-label='Old']", "[aria-label='New']");
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).toContain(`abAssertVisible("[aria-label='New']");`);
+    expect(out.script).not.toMatch(/abAssertVisible\(`/);
+  });
 });
 
 describe("applyDiagnosis dispatch", () => {

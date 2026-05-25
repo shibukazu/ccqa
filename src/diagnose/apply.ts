@@ -100,12 +100,63 @@ export function applySelectorDrift(
   if (!content.includes(oldSelector)) {
     return { applied: false, reason: `oldSelector not found on line ${line}` };
   }
-  lines[idx] = content.replaceAll(oldSelector, newSelector);
+  lines[idx] = replaceSelectorLiteral(content, oldSelector, newSelector);
   return {
     applied: true,
     script: lines.join("\n"),
     summary: `line ${line}: "${oldSelector}" → "${newSelector}"`,
   };
+}
+
+/**
+ * Rewrite a selector inside whatever string literal encloses it on the line.
+ * The tricky case is when `newSelector` contains a `${...}` env reference
+ * and the host literal is a plain `"..."` / `'...'` — a naive `replaceAll`
+ * leaves the unescaped `${...}` inside the double-quoted literal and produces
+ * invalid TS (the auto-fix loop used to ship this and blow up esbuild). When
+ * a template-literal substitution is needed, promote the enclosing literal
+ * from "..."/'...' to `...` in one step.
+ */
+function replaceSelectorLiteral(content: string, oldSelector: string, newSelector: string): string {
+  const needsTemplate = /\$\{[A-Za-z_]/.test(newSelector);
+  if (!needsTemplate) {
+    return content.replaceAll(oldSelector, newSelector);
+  }
+
+  const tplRe = new RegExp("`([^`]*)" + escapeForRegex(oldSelector) + "([^`]*)`", "g");
+  if (tplRe.test(content)) {
+    return content.replace(tplRe, (_m, before: string, after: string) => `\`${before}${newSelector}${after}\``);
+  }
+
+  for (const quote of ['"', "'"] as const) {
+    const re = new RegExp(`${quote}([^${quote}\\\\]*(?:\\\\.[^${quote}\\\\]*)*)${quote}`, "g");
+    let match: RegExpExecArray | null;
+    const replacements: Array<{ start: number; end: number; rewritten: string }> = [];
+    while ((match = re.exec(content)) !== null) {
+      const inner = match[1] ?? "";
+      if (!inner.includes(oldSelector)) continue;
+      const rewrittenInner = inner.replaceAll(oldSelector, newSelector);
+      const backtickSafe = rewrittenInner.replace(/`/g, "\\`");
+      replacements.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        rewritten: `\`${backtickSafe}\``,
+      });
+    }
+    if (replacements.length > 0) {
+      let out = content;
+      for (const r of replacements.reverse()) {
+        out = out.slice(0, r.start) + r.rewritten + out.slice(r.end);
+      }
+      return out;
+    }
+  }
+
+  return content.replaceAll(oldSelector, newSelector);
+}
+
+function escapeForRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**

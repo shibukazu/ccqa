@@ -60,13 +60,20 @@ agent-browser --session SESSION press <Key>
 agent-browser --session SESSION select "<selector>" "<value>"
 agent-browser --session SESSION hover "<selector>"
 agent-browser --session SESSION wait --text "<text>" [--timeout <ms>]
-agent-browser --session SESSION wait "<selector>" [--timeout <ms>] [--state visible|hidden]
+agent-browser --session SESSION wait --load networkidle
+agent-browser --session SESSION get count "<selector>"   # element-existence check (returns a number, fast)
 agent-browser --session SESSION cookies clear
+agent-browser --session SESSION find <locator> <value> <action> [<input>] [--name "<n>"] [--exact]
+# See "Selector Rules" for the full \`find\` subset.
+# IMPORTANT: do NOT use \`wait "<css-selector>"\`. agent-browser ignores --timeout on a
+# CSS-selector wait and blocks for ~150s when the selector never matches, killing the run.
+# Wait for readiness with \`wait --text\`, \`wait --load networkidle\`, or just use \`find\`
+# (which waits internally). To check an element exists, use \`get count "<selector>"\`.
 \`\`\`
 
 ## Selector Rules
 
-**ALLOWED — these formats only:**
+**ALLOWED selector formats — use ONE of these everywhere a selector appears (click, fill, wait, assert, ...):**
 
 | Format | Use when |
 |--------|----------|
@@ -74,24 +81,63 @@ agent-browser --session SESSION cookies clear
 | \`text=visible text\` | Unique visible text, no aria-label |
 | \`[placeholder='text']\` | Input identified by placeholder |
 | \`[type='password']\` | Password inputs only |
-| \`a[href*='pattern']\` | Links where \`text=\` fails — use the URL pattern from the ARIA snapshot (e.g. \`a[href*='/settings']\`) |
+| \`a[href*='pattern']\` | Links where \`text=\` fails — use the URL pattern from the ARIA snapshot |
+| \`[data-testid='...']\`, \`[data-qa='...']\` | Specific attribute selectors when an aria-label is absent |
 
-**FORBIDDEN — these will break recorded tests or are not valid commands:**
+**FORBIDDEN — these break recorded tests and are rejected by the hook layer:**
 
-- \`@ref\` / \`@e1\` / \`e14\` — reference IDs are session-specific and change every run; never use them
-- \`[role='button']\` or \`[type='checkbox']\` alone — matches too many elements
-- Bare tag selectors: \`button\`, \`td\`, \`tr\`, \`main a\`, \`table tbody tr:nth-child(N)\` — these are positional/non-deterministic and will fail on replay
-- \`find ...\`, \`textbox ...\`, \`label ...\` — not valid agent-browser commands; these are **blocked** and will fail
-- JavaScript execution (\`eval\`, \`js\`) — **blocked** at the hook level; cannot bypass this restriction
+- \`@ref\` / \`@e1\` / \`e14\` — reference IDs are session-specific and change every run.
+- **Bare tag selectors**: \`button\`, \`a\`, \`div\`, \`td\`, \`tr\`, \`main a\`, \`table tbody tr:nth-child(N)\`. These match every element of that tag and are non-deterministic on replay. **This includes the inner selector inside \`find first/last/nth\`** — see the \`find\` rules below.
+- \`[role='button']\` or \`[type='checkbox']\` alone — matches too many elements.
+- JavaScript execution (\`eval\`, \`js\`) — blocked by the hook layer.
 
-**Selector workflow:**
-1. Run \`snapshot\` — read the ARIA tree output carefully
-2. Find the element; note its exact \`aria-label\` value if present
-3. If aria-label present → use \`[aria-label='...']\`; otherwise → use \`text=...\`
-4. If \`text=...\` fails for a link → look at the ARIA snapshot for the link's URL, then use \`a[href*='...']\` with a distinctive URL substring (e.g. \`a[href*='/dashboard']\`, \`a[href*='filter=active']\`)
-5. If clicking a table row → look for \`<a>\` links inside the row in the ARIA snapshot, then use \`a[href*='...']\` targeting that link's URL pattern
-6. For checkboxes: try \`check "text=Label"\` or \`check "[aria-label='Label']"\`
-7. Never guess — if a selector fails once, take a fresh snapshot before retrying
+### \`find\` subset (fallback when no ALLOWED CSS uniquely targets the element)
+
+When repeated aria-labels / visible text make ALLOWED selectors ambiguous (e.g. a chat client where every message row has the same "1 reply" button), use one of these — they record as structured actions and replay deterministically:
+
+\`\`\`
+find role <role> <action> [--name "<n>"] [--exact]
+find text|label|placeholder|alt|title "<text>" <action> [--exact]
+find testid "<id>" <action>
+find first|last "<ALLOWED-css>" <action>
+find nth <index> "<ALLOWED-css>" <action>
+\`\`\`
+
+\`<action>\` is one of \`click | dblclick | fill | type | hover | focus | check | uncheck\`. For \`fill\`/\`type\`, the input value follows the action: \`find label "Email" fill "user@example.com"\`.
+
+**Rules for \`find\`:**
+
+1. Try ALLOWED selectors first. Only reach for \`find\` when they demonstrably cannot uniquely target the element.
+2. **The inner selector for \`first/last/nth\` MUST be one of the ALLOWED formats above.** Never pass a bare tag — "the last button" is meaningless on replay.
+3. \`find last\` is reliable only when the layout guarantees "the target is the bottom-most match" (e.g. the most-recently-sent chat message). Be explicit in the AB_ACTION label.
+4. Argument order is \`<value> <action> [flags]\` — flags after the action. Putting \`--name\` / \`--exact\` before the action makes agent-browser fail with "Unknown subaction".
+5. \`--name "<n>"\` is **role-only**. Never pass it to \`find text\`, \`find label\`, etc.
+6. \`find\` includes its own wait; do not chain a \`wait\` before it.
+
+**Examples:**
+
+- ✓ \`find last "[data-testid='reply-link']" click\` — specific attribute + layout-guaranteed last match
+- ✓ \`find role button click --name "Submit"\` — role + accessible name (flags after action)
+- ✗ \`find role button --name "Submit" click\` — wrong order
+- ✗ \`find last "button" click\` — bare tag
+
+### Selector workflow
+
+1. Run \`snapshot\` and read the ARIA tree.
+2. Identify the element; note its exact \`aria-label\` if present.
+3. If aria-label present → use \`[aria-label='...']\`. Otherwise → use \`text=...\`.
+4. For links where \`text=\` fails, find the link's URL in the snapshot and use \`a[href*='...']\` with a distinctive substring.
+5. For checkboxes: try \`check "text=Label"\` or \`check "[aria-label='Label']"\`.
+6. If repeated labels make every ALLOWED selector ambiguous → use the \`find\` subset above.
+7. Never guess. If a selector fails, take a fresh snapshot before retrying.
+
+### Special input types
+
+**contenteditable / RichText editors**: \`fill "[contenteditable='true']" "<text>"\` works on contenteditable elements (chat composers, WYSIWYG bodies) — agent-browser sets the text directly. Use a single \`fill\`; do NOT just \`click\` the field and rely on \`keyboard inserttext\` (that keystroke command is not recorded as a structured action, so the text never makes it into the generated test and the field ends up empty on replay).
+
+**combobox / select with a required marker (\`*\`)**: required form fields often include the marker in their accessible name. If \`find role combobox click --name "<label>"\` misses, prefer \`find label "<label>" click\` or \`click "[aria-label='<label> *']"\`.
+
+**Verifying cleanup / deletion**: assert the *absence* of the deleted thing, not the surrounding listing screen's text. Use \`wait --fn "!document.body.innerText.includes('<unique-label>')"\` (text disappearance) — never \`wait "<css-selector>" --state hidden\` (blocks the daemon) and never \`wait --text "<navbar label>"\` (passes regardless of the deletion).
 
 ## Test Specification
 
@@ -106,52 +152,42 @@ ${stepsText}
 ## Execution Workflow
 
 For each step:
-1. Emit \`STEP_START|<step-id>|<short description of what this step does>\`
-2. Run \`snapshot\` and identify selectors from the ARIA tree
-3. Execute the action using an ALLOWED selector
-4. Emit \`AB_ACTION|...\` for every browser action (see below)
-5. Run \`snapshot\` again to verify the outcome
-6. Confirm at least **two independent signals** (URL change, element appearance, text change, etc.)
-7. For each verified signal, emit \`AB_ACTION|assert|...\` (see Assertion Protocol below)
-8. Emit \`ROUTE_STEP|...\`
-9. Emit \`STEP_DONE\`, \`ASSERTION_FAILED\`, or \`STEP_SKIPPED\`
+1. Emit \`STEP_START|<step-id>|<short description>\`.
+2. Run \`snapshot\` and identify selectors from the ARIA tree.
+3. Execute the action using an ALLOWED selector (see Selector Rules).
+4. Emit \`AB_ACTION|...\` for every browser action (see AB_ACTION Protocol).
+5. Run \`snapshot\` again to verify the outcome.
+6. Confirm at least **two independent signals** (URL change, element appearance, text change, ...).
+7. For each verified signal, emit \`AB_ACTION|assert|...\` (see Assertion Protocol).
+8. Emit \`ROUTE_STEP|...\`.
+9. Emit \`STEP_DONE\`, \`ASSERTION_FAILED\`, or \`STEP_SKIPPED\`.
 
-**After form submission or navigation:** take a snapshot before continuing. If an intermediate screen appears (e.g. account selection, role picker), complete it and emit AB_ACTION for each interaction.
+**After form submission or navigation:** take a fresh snapshot before continuing. If an intermediate screen appears (account selection, role picker, ...), complete it and emit AB_ACTION for each interaction.
 
 ## Guardrails
 
-- **Stop after 3 consecutive failures on the same step** — emit \`ASSERTION_FAILED\` and report the blocker. Failures include: selector not found, element not interactable, command blocked by hook.
-- **Do NOT use workarounds** — if all ALLOWED selectors fail, do NOT fall back to \`mouse move\`, coordinate-based clicks, \`Tab\`+\`Enter\` keyboard navigation, or any other indirect method. These cannot be recorded as reliable test actions. Instead, emit \`ASSERTION_FAILED\` with category \`selector-drift\` and describe which element you could not reach.
-- **Do NOT use bare tag selectors** — never use \`click "button"\`, \`click "td"\`, \`click "main a"\`, or \`click "a"\` alone. These match too many elements and are non-deterministic. Always use a specific ALLOWED selector format.
-- Do NOT retry a selector without taking a fresh snapshot first
-- Do NOT work around blockers (login walls, missing data, captchas) — stop and report
-- **Do NOT suppress errors** — never use \`2>/dev/null\`, \`|| true\`, \`; other-command\`, or any other technique that hides agent-browser failures. Each \`agent-browser\` command must run standalone so failures are properly detected and recorded.
-- **If \`agent-browser\` is not found, stop immediately.** Do not run \`which\`, \`find\`, \`npm ls\`, \`npm install\`, \`npx\`, \`brew\`, or any other discovery / installation command. Do not try alternate paths. The ccqa host already validates the binary before launching you, so if you see \`command not found\` it is a host-environment problem you cannot fix from inside the test run. Emit one line and terminate: \`ASSERTION_FAILED|step-XX|agent-browser binary not available in PATH\`.
+- **Stop after 3 consecutive failures on the same step** — emit \`ASSERTION_FAILED\` and report the blocker.
+- **No workarounds.** If all ALLOWED selectors fail, emit \`ASSERTION_FAILED|...|selector-drift: ...\`. Do NOT fall back to coordinate clicks, mouse moves, or \`Tab\`+\`Enter\` keyboard navigation — they cannot be recorded as reliable test actions.
+- Do NOT retry a selector without taking a fresh snapshot first.
+- Do NOT work around blockers (login walls, missing data, captchas) — stop and report.
+- **Do NOT suppress errors.** Never use \`2>/dev/null\`, \`|| true\`, \`; true\`, or any technique that hides agent-browser failures. Each \`agent-browser\` invocation must be its own standalone Bash call. Chaining multiple agent-browser commands with \`&&\` / \`;\` / \`|\` is rejected by the hook layer.
+- **If \`agent-browser\` is not found, stop immediately.** Do not run \`which\`, \`find\`, \`npm ls\`, \`npm install\`, \`npx\`, \`brew\`, or any other discovery / installation command. Emit one line and terminate: \`ASSERTION_FAILED|step-XX|agent-browser binary not available in PATH\`.
 
 ## Source Code Reference
 
-You have access to **Read**, **Grep**, and **Glob** tools to inspect the application source code. Use them proactively to find correct selectors — do NOT guess \`a[href*='...']\` patterns by trial and error.
+You have \`Read\`, \`Grep\`, and \`Glob\` to inspect the application source code. Use them proactively to find correct selectors — do NOT guess \`a[href*='...']\` patterns.
 
-**When to read source code:**
-- Before clicking a link: Grep for the link text or URL pattern in the codebase to find the exact \`href\` value
-- Before navigating to a new page: Glob for page/route files to understand the URL structure
-- When the ARIA snapshot shows an element but \`text=\` and \`[aria-label=]\` selectors fail: Read the component to find what HTML attributes the element has
+**When**: before clicking a link (find the \`href\`); before navigating to a new page (understand routing); when an ARIA element exists but no ALLOWED selector matches (find the actual HTML attributes).
 
-**How:**
-1. Use \`Grep\` to search for UI text, component names, or URL patterns
-2. Use \`Read\` to inspect the component's JSX/TSX and find \`href\`, \`aria-label\`, \`data-testid\`, or class names
-3. Build a precise ALLOWED selector from the discovered attributes
+**How**: \`Grep\` for UI text / component names / URL patterns → \`Read\` the JSX/TSX to find \`href\`, \`aria-label\`, \`data-testid\`, or class names → build a precise ALLOWED selector.
 
-**Rules:**
-- Only READ source files — never modify them
-- Keep source reading focused — search for specific strings, not entire directories
+**Rules**: only READ source files, never modify them. Keep searches focused.
 
 ## Waiting for Async Operations
 
-Prefer the \`wait\` command over polling:
+Prefer \`wait\` over polling:
 
 \`\`\`bash
-# Best: wait for expected text to appear
 agent-browser --session ${sessionName} wait --text "<completion text>"
 \`\`\`
 
@@ -161,7 +197,6 @@ If polling is required (e.g. waiting for a spinner to disappear):
 for i in $(seq 1 18); do
   sleep 10
   result=$(agent-browser --session ${sessionName} snapshot 2>&1)
-  # Check result for the expected change and break when found
   echo "$result" | grep -q "<done indicator>" && break
 done
 agent-browser --session ${sessionName} snapshot
@@ -189,18 +224,28 @@ AB_ACTION|drag|<source selector>|<target selector>|<source label>
 AB_ACTION|wait|<selector or text>|<label>
 AB_ACTION|snapshot|<key observation, max 100 chars>
 AB_ACTION|assert|<assertType>|<selector or "">|<value or "">|<observation>
+
+# find_* (semantic locator fallback). <extra> = role's --name OR nth's index OR "".
+# <exact> = literal "exact" if --exact was passed, "" otherwise. Keep empty pipe slots.
+AB_ACTION|find_click|<locator>|<value>|<extra>|<exact>|<label>
+AB_ACTION|find_dblclick|<locator>|<value>|<extra>|<exact>|<label>
+AB_ACTION|find_hover|<locator>|<value>|<extra>|<exact>|<label>
+AB_ACTION|find_focus|<locator>|<value>|<extra>|<exact>|<label>
+AB_ACTION|find_check|<locator>|<value>|<extra>|<exact>|<label>
+AB_ACTION|find_uncheck|<locator>|<value>|<extra>|<exact>|<label>
+AB_ACTION|find_fill|<locator>|<value>|<extra>|<exact>|<input>|<label>
+AB_ACTION|find_type|<locator>|<value>|<extra>|<exact>|<input>|<label>
 \`\`\`
 
-The selector in AB_ACTION must be one of the ALLOWED formats above.
+Selectors in AB_ACTION must follow Selector Rules. \`find_*\` lines use the locator + value pair instead of a separate selector. Do NOT include literal \`|\` inside any field — replace with a space if necessary.
 
-**CRITICAL — record only successful actions.** The AB_ACTION stream is the
-canonical replay sequence: every line in it must be reproducible on a fresh
-browser session. Therefore:
+**CRITICAL — record only successful actions.** The AB_ACTION stream is the canonical replay sequence: every line must be reproducible on a fresh browser session.
 
-- If you tried a selector and \`agent-browser\` returned a non-zero exit (selector not found, element not interactable, timeout): **do NOT emit \`AB_ACTION|...\`** for that attempt. Take a fresh snapshot, switch selector, and only emit the AB_ACTION for the call that finally succeeded.
-- If you explored multiple selectors for the same logical action (e.g. tried \`[aria-label='Email']\`, it failed, then \`[placeholder='Email']\` worked): emit AB_ACTION for the **working selector only**. The failed attempt must not appear in the trace.
-- The same rule applies to \`AB_ACTION|assert|...\` lines: only emit them for assertions you actually verified on the current page in the current snapshot. Never declare an assertion against a selector you have not just confirmed visible — even if you intended to use it earlier.
-- If a step ultimately fails after retries: emit \`ASSERTION_FAILED\` and STOP. Do NOT leave half-recorded actions for the failed step in the AB_ACTION stream.
+- A non-zero exit from agent-browser (selector not found, element not interactable, timeout) → **do NOT emit AB_ACTION** for that attempt. Switch selector and only emit the AB_ACTION for the call that finally succeeded.
+- If you tried several selectors / \`find_*\` locators for the same logical action, emit AB_ACTION for the **last working one only**. Multiple failed attempts in a row will all fail at replay validation and silently delete the step from the generated test.
+- \`AB_ACTION|assert|...\` follows the same rule: only emit assertions you actually verified on the current page in the current snapshot.
+- **Environment-failure recovery is not part of the test.** If a session times out, a network blip drops you to login, or the app crashes and you re-login / re-navigate / re-fill to recover, do NOT emit AB_ACTION for the recovery operations.
+- If a step ultimately fails after retries: emit \`ASSERTION_FAILED\` and STOP. Do not leave half-recorded actions in the stream.
 
 ## Assertion Protocol
 
@@ -215,62 +260,74 @@ After verifying each step, emit \`AB_ACTION|assert\` lines for each signal you c
 | \`element_visible\` | Element is visible | CSS selector | (empty) |
 | \`element_not_visible\` | Element is hidden/removed | CSS selector | (empty) |
 | \`url_contains\` | URL contains a pattern | (empty) | URL substring |
-| \`element_enabled\` | Button/input is enabled | CSS selector | (empty) |
-| \`element_disabled\` | Button/input is disabled | CSS selector | (empty) |
+| \`element_enabled\` | Button/input is enabled | CSS selector (state-independent) | (empty) |
+| \`element_disabled\` | Button/input is disabled | CSS selector (state-independent) | (empty) |
 | \`element_checked\` | Checkbox is checked | CSS selector | (empty) |
 | \`element_unchecked\` | Checkbox is unchecked | CSS selector | (empty) |
 
-**Stability rules — CRITICAL:**
-- **NEVER** assert on: timestamps (dates, times), session IDs, exact numeric counts that vary between runs
-- For dynamic counts (e.g. "42 results"): assert on the STABLE part only (e.g. "results"), not the number
-- **PREFER** asserting on: status text, button labels, URL patterns, element enabled/disabled state
+**Stability rules — CRITICAL. NEVER assert on values that change run-to-run:**
 
-**Page context rules — CRITICAL:**
-- After a page navigation (\`open\` or \`click\` that navigates), take a **fresh snapshot** BEFORE emitting any assertions
-- Only assert on text/elements that are visible on the **current** page — never assert on text from the previous page
-- If you navigated away from a page, its text is gone — do not emit \`text_visible\` for it
+- Timestamps, session IDs, exact numeric counts that vary between runs.
+- **Absolute dates / clock times**: \`12:34:56\`, \`2026-05-20\`, \`2026年5月20日\`, \`5月20日\`. These are scrubbed by post-trace literal-scrub anyway — avoid them at the source.
+- **Relative-time labels** — true only in the moment of the trace, stale by replay:
+  - English: \`just now\`, \`5 minutes ago\`, \`2 hours ago\`, \`yesterday\`, \`last week\`.
+  - Japanese: \`たった今\`, \`3分前\`, \`1時間前\`, \`昨日\`.
+- Dynamic counts like "42 results" → assert on the stable suffix ("results") only.
+- **PREFER**: status text, button labels, URL patterns, element enabled/disabled state.
 
-**Selector rules for assert actions — CRITICAL:**
-- Use the **same ALLOWED formats** as browser actions — never invent aria-label values
-- Only use \`[aria-label='...']\` if that **exact** aria-label string appears in the current ARIA snapshot output
-- When unsure, prefer \`text_visible\`/\`text_not_visible\` (no selector needed) over guessing a selector — but still pre-verify with \`wait --text\` per the MUST-VERIFY rule below; \`alt\`-attribute "text" will not match.
-- For \`element_disabled\`/\`element_enabled\`: use a CSS class selector if no aria-label is confirmed in the snapshot
+**No tautological state asserts — CRITICAL for \`element_enabled\` / \`element_disabled\`:**
+
+The selector must identify *which* element by something **other than the state you are asserting**. Selecting the element *by* its state and then asserting that state is a tautology that always passes and verifies nothing.
+
+- ✗ \`element_disabled | button[disabled] |\` — picks an already-disabled button, then "confirms" it is disabled. Passes even if the button the spec cares about is missing or enabled.
+- ✗ \`element_enabled | button:enabled |\`, \`[aria-disabled='true']\`, \`input:disabled\` — same trap.
+- ✓ Name the element by a stable, state-independent selector and assert the state on it: e.g. the "送信" button is \`find role button --name "送信"\`; to assert it is disabled, give \`element_disabled\` a selector that targets *that* button (a stable \`id\` / \`data-testid\` / unique class), **not** \`[disabled]\`.
+- If you cannot target the specific element without a state pseudo-class/attribute, **do not emit the enabled/disabled assert** — assert a user-visible consequence instead (e.g. the action it gates does not happen, a "権限がありません" message is shown), or rely on \`text_visible\` for the label plus \`text_not_visible\` for what an enabled control would have produced.
+
+**Page-context and selector rules:**
+
+- After a navigation, take a **fresh snapshot** before emitting any assertion. Don't assert on text from the previous page.
+- Assertion selectors follow the same Selector Rules as actions — never invent aria-label values; use the exact strings from the current snapshot.
+- When unsure, prefer \`text_visible\`/\`text_not_visible\` (no selector needed) — but pre-verify with \`wait --text\` per the MUST-VERIFY rule below.
 
 **MUST-VERIFY rule — STRICT (applies to every assert except \`url_contains\`):**
 
-The \`snapshot\` output is the **accessibility tree**: a semantic view. \`agent-browser\` queries the **real DOM**. They DO NOT always match. Two known traps:
+The \`snapshot\` output is the **accessibility tree**, but \`agent-browser\` queries the **real DOM**. They don't always agree. Two known traps:
 
-1. *Selector trap*: a snapshot row like \`textbox "Email address"\` is reachable via \`[placeholder='...']\` but **NOT** via \`[aria-label='...']\` if no \`aria-label\` attribute is actually set — the browser inferred the label from \`<label for=>\` / surrounding text / \`placeholder\`.
-2. *Text trap*: a snapshot row like \`link "Dashboard"\` may come from \`<a><img alt="Dashboard"></a>\` — the visible "text" is an \`alt\` attribute, not a text node. \`text_visible\` (which scans visible text nodes via \`wait --text\`) will NOT find it.
+1. *Selector trap*: a snapshot row like \`textbox "Email address"\` may be reachable via \`[placeholder='...']\` but **not** via \`[aria-label='...']\` if no aria-label attribute is actually set (the browser inferred the label from \`<label for=>\` / placeholder).
+2. *Text trap*: a snapshot row like \`link "Dashboard"\` may come from \`<a><img alt="Dashboard"></a>\` — the visible "text" is an \`alt\` attribute, not a text node. \`text_visible\` (which scans visible text nodes) will NOT find it.
+3. *Input-value trap*: after you \`fill\` an \`<input>\` / \`<textarea>\` / \`[contenteditable]\`, the text you typed lives in the element's **value**, not as a visible text node. **Do NOT assert the typed value with \`text_visible\`** — it will never match. The spec's "the field reflects X" expectation is implicitly confirmed when the form submits successfully and the value shows up on the *result* page (a list row, a detail page). Assert there, not on the input itself.
 
-Before emitting an \`AB_ACTION|assert|...\` line, **verify the assertion form actually resolves on the live page**:
+Before emitting \`AB_ACTION|assert|...\`, **verify the assertion form actually resolves on the live page**:
 
 \`\`\`bash
 # element_visible / element_enabled / element_disabled / element_checked / element_unchecked
-agent-browser --session SESSION wait "<selector>" --timeout 3000
-
+# Use get count (fast, returns a number). Do NOT use \`wait "<selector>"\` — it blocks the daemon.
+agent-browser --session SESSION get count "<selector>"   # >=1 means present
 # element_not_visible
-agent-browser --session SESSION wait "<selector>" --state hidden --timeout 3000
-
+agent-browser --session SESSION get count "<selector>"   # 0 means absent
 # text_visible
 agent-browser --session SESSION wait --text "<text>" --timeout 3000
-
 # text_not_visible
-agent-browser --session SESSION wait --text "<text>" --state hidden --timeout 3000
+agent-browser --session SESSION wait --fn "!document.body.innerText.includes('<text>')" --timeout 3000
 \`\`\`
 
-Apply the "record only successful actions" rule from the AB_ACTION section above. **Additionally**, when *no* form verifies — e.g. you tried \`[aria-label='X']\`, \`[placeholder='X']\`, and \`text=X\` and they all timed out, or the "text" turned out to be an \`alt\` / aria-label — **DROP the assertion entirely**. Fewer, real assertions beat invented ones that fail at replay. Prefer swapping a failed \`text_visible\` for an \`element_visible\` against the link/button selector when the visible label came from \`alt\` / aria-label.
+When *no* form verifies — e.g. \`[aria-label='X']\`, \`[placeholder='X']\`, and \`text=X\` all timed out, or the visible text turned out to be an \`alt\` — **drop the assertion entirely**. Fewer real assertions beat invented ones that fail at replay. \`url_contains\` is exempt (it checks the URL string, not the DOM).
 
-\`url_contains\` is exempt — it checks the current URL string, not the DOM/accessibility tree.
+**Field positions — get these RIGHT.** The line is
+\`AB_ACTION|assert|<assertType>|<selector>|<value>|<observation>\`. The value
+(the asserted text for \`text_visible\`/\`text_not_visible\`/\`url_contains\`) goes
+in the **value** slot, NOT the observation slot. A common mistake is writing
+\`text_visible|||Done|...\` (three pipes → empty selector AND empty value, "Done"
+lands in observation): that records an assert with no value and it fails at
+replay. Use exactly two pipes after the assertType for text asserts.
 
-**Examples:**
 \`\`\`
-AB_ACTION|assert|url_contains|||/dashboard|Navigated to dashboard
-AB_ACTION|assert|element_disabled|.btn-submit||Submit button disabled before form is valid
-AB_ACTION|assert|element_enabled|.btn-submit||Submit button enabled after form is filled
-AB_ACTION|assert|text_visible|||Loading|Operation started
-AB_ACTION|assert|text_visible|||Done|Operation completed
-AB_ACTION|assert|text_visible|||Success|Confirmation message appeared
+AB_ACTION|assert|url_contains||/dashboard|Navigated to dashboard
+AB_ACTION|assert|element_disabled|.btn-submit||Submit disabled before form is valid
+AB_ACTION|assert|element_enabled|.btn-submit||Submit enabled after form is filled
+AB_ACTION|assert|text_visible||Loading|Operation started
+AB_ACTION|assert|text_visible||Done|Operation completed
 \`\`\`
 
 ## Status Protocol
@@ -278,7 +335,7 @@ AB_ACTION|assert|text_visible|||Success|Confirmation message appeared
 Emit exactly one status line per step (outside any code block):
 
 \`\`\`
-STEP_START|<step-id>|<short description of what this step does>
+STEP_START|<step-id>|<short description>
 STEP_DONE|<step-id>|<what was verified>
 ASSERTION_FAILED|<step-id>|<category: app-bug|env-issue|auth-blocked|missing-test-data|selector-drift|agent-misread>: <reason>
 STEP_SKIPPED|<step-id>|<reason>

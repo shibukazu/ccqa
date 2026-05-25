@@ -133,6 +133,72 @@ describe("parseAbAction", () => {
       label: "Source",
     });
   });
+
+  test("parses find_click with text locator", () => {
+    expect(parseAbAction("AB_ACTION|find_click|text|Sign In|||")).toEqual({
+      command: "find_click",
+      findLocator: "text",
+      findValue: "Sign In",
+      label: "",
+    });
+  });
+
+  test("parses find_click with text + --exact", () => {
+    expect(parseAbAction("AB_ACTION|find_click|text|OK||exact|")).toEqual({
+      command: "find_click",
+      findLocator: "text",
+      findValue: "OK",
+      findExact: true,
+      label: "",
+    });
+  });
+
+  test("parses find_click with role + --name", () => {
+    expect(parseAbAction("AB_ACTION|find_click|role|button|Submit||OK")).toEqual({
+      command: "find_click",
+      findLocator: "role",
+      findValue: "button",
+      findName: "Submit",
+      label: "OK",
+    });
+  });
+
+  test("parses find_click with last + inner selector", () => {
+    expect(parseAbAction("AB_ACTION|find_click|last|[aria-label='Reply']|||latest reply")).toEqual({
+      command: "find_click",
+      findLocator: "last",
+      findValue: "[aria-label='Reply']",
+      label: "latest reply",
+    });
+  });
+
+  test("parses find_click with nth + index in <extra>", () => {
+    expect(parseAbAction("AB_ACTION|find_click|nth|[aria-label='Reply']|2||3rd reply")).toEqual({
+      command: "find_click",
+      findLocator: "nth",
+      findValue: "[aria-label='Reply']",
+      findIndex: 2,
+      label: "3rd reply",
+    });
+  });
+
+  test("parses find_fill with input value after action", () => {
+    expect(parseAbAction("AB_ACTION|find_fill|label|Email|||user@example.com|Email field")).toEqual({
+      command: "find_fill",
+      findLocator: "label",
+      findValue: "Email",
+      value: "user@example.com",
+      label: "Email field",
+    });
+  });
+
+  test("rejects malformed find_click (unknown locator)", () => {
+    expect(parseAbAction("AB_ACTION|find_click|bogus|x|||")).toBeNull();
+  });
+
+  test("rejects find_click with nth but no valid index", () => {
+    expect(parseAbAction("AB_ACTION|find_click|nth|[aria-label='Reply']|||")).toBeNull();
+  });
 });
 
 describe("parseStatusLine", () => {

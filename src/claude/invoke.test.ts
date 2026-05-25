@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize } from "./invoke.ts";
+import { extractAbActionFromBashCommand, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression } from "./invoke.ts";
 
 describe("extractAbActionFromBashCommand", () => {
   test("returns null for non-agent-browser commands", () => {
@@ -75,8 +75,8 @@ describe("isBlockedAbSubcommand", () => {
     expect(isBlockedAbSubcommand(`agent-browser --session s1 fill "[placeholder='Email']" "test@example.com"`)).toBe(false);
   });
 
-  test("blocks find command", () => {
-    expect(isBlockedAbSubcommand(`agent-browser --session s1 find text "Select category" click`)).toBe(true);
+  test("no longer blocks find command (semantic locator fallback)", () => {
+    expect(isBlockedAbSubcommand(`agent-browser --session s1 find text "Select category" click`)).toBe(false);
   });
 
   test("blocks label command", () => {
@@ -163,6 +163,190 @@ describe("extractAbActionFromBashCommand with compound selectors", () => {
     expect(
       extractAbActionFromBashCommand(`agent-browser --session s1 fill ".modal-footer button" "OK"`),
     ).toBe("AB_ACTION|fill|.modal-footer button|OK|");
+  });
+});
+
+describe("extractAbActionFromBashCommand with `find` semantic locator", () => {
+  test("find text click → AB_ACTION|find_click|text|<value>|||<label?>", () => {
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find text "Sign In" click`),
+    ).toBe("AB_ACTION|find_click|text|Sign In|||");
+  });
+
+  test("find text click --exact records the exact flag", () => {
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find text "OK" --exact click`),
+    ).toBe("AB_ACTION|find_click|text|OK||exact|");
+  });
+
+  test("find role click --name puts the name in <extra>", () => {
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find role button --name "Submit" click`),
+    ).toBe("AB_ACTION|find_click|role|button|Submit||");
+  });
+
+  test("find last <css> click keeps the inner selector in <value>", () => {
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find last "[aria-label='Reply']" click`),
+    ).toBe("AB_ACTION|find_click|last|[aria-label='Reply']|||");
+  });
+
+  test("find nth <i> <css> click puts the index in <extra>", () => {
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find nth 2 "[aria-label='Reply']" click`),
+    ).toBe("AB_ACTION|find_click|nth|[aria-label='Reply']|2||");
+  });
+
+  test("find label fill carries the input value after the action", () => {
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find label "Email" fill "user@example.com"`),
+    ).toBe("AB_ACTION|find_fill|label|Email|||user@example.com|");
+  });
+
+  test("rejects unknown locator", () => {
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find unknown "x" click`),
+    ).toBeNull();
+  });
+
+  test("ignores --name when locator is not role (--name is role-only)", () => {
+    // Even if the LLM mistakenly passes --name to a text locator, the wire
+    // format must not carry it into findName — replay would then send
+    // `find text "..." --name "..." click` and agent-browser rejects "--name".
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find text "Sign In" --name "Submit" click`),
+    ).toBe("AB_ACTION|find_click|text|Sign In|||");
+  });
+
+  test("rejects missing action", () => {
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 find text "Sign In"`),
+    ).toBeNull();
+  });
+});
+
+describe("findPositionalBareTag", () => {
+  test("flags `find last button click` (bare tag)", () => {
+    expect(
+      findPositionalBareTag(`agent-browser --session s1 find last button click`),
+    ).toEqual({ locator: "last", selector: "button", action: "click" });
+  });
+
+  test("flags `find first a click` (bare tag <a>)", () => {
+    expect(
+      findPositionalBareTag(`agent-browser --session s1 find first a click`),
+    ).toEqual({ locator: "first", selector: "a", action: "click" });
+  });
+
+  test("flags `find nth 5 div hover` (bare tag <div>)", () => {
+    expect(
+      findPositionalBareTag(`agent-browser --session s1 find nth 5 div hover`),
+    ).toEqual({ locator: "nth", selector: "div", action: "hover" });
+  });
+
+  test("allows `find last [aria-label='Reply'] click` (specific attribute)", () => {
+    expect(
+      findPositionalBareTag(`agent-browser --session s1 find last "[aria-label='Reply']" click`),
+    ).toBeNull();
+  });
+
+  test("allows `find last [data-testid='reply-link'] click` (data-testid)", () => {
+    expect(
+      findPositionalBareTag(`agent-browser --session s1 find last "[data-testid='reply-link']" click`),
+    ).toBeNull();
+  });
+
+  test("ignores non-positional finders (role/text/etc.)", () => {
+    expect(
+      findPositionalBareTag(`agent-browser --session s1 find role button --name "Submit" click`),
+    ).toBeNull();
+    expect(
+      findPositionalBareTag(`agent-browser --session s1 find text "Sign In" click`),
+    ).toBeNull();
+  });
+
+  test("ignores non-find commands", () => {
+    expect(findPositionalBareTag(`agent-browser --session s1 click "button"`)).toBeNull();
+  });
+});
+
+describe("hasMultipleAbInvocations", () => {
+  test("returns false for a single agent-browser call", () => {
+    expect(hasMultipleAbInvocations(`agent-browser --session s1 click "x"`)).toBe(false);
+  });
+
+  test("flags && chains of agent-browser calls", () => {
+    expect(
+      hasMultipleAbInvocations(`agent-browser --session s1 snapshot && agent-browser --session s1 click "x"`),
+    ).toBe(true);
+  });
+
+  test("flags ; chains", () => {
+    expect(
+      hasMultipleAbInvocations(`agent-browser --session s1 wait 100; agent-browser --session s1 click "x"`),
+    ).toBe(true);
+  });
+
+  test("flags pipe chains", () => {
+    expect(
+      hasMultipleAbInvocations(`agent-browser --session s1 snapshot | agent-browser --session s1 click "x"`),
+    ).toBe(true);
+  });
+
+  test("ignores `agent-browser` inside string literals", () => {
+    expect(
+      hasMultipleAbInvocations(`agent-browser --session s1 fill "[name='x']" "agent-browser was here"`),
+    ).toBe(false);
+  });
+
+  test("allows a single agent-browser piped into a non-ab tool (grep, head, etc)", () => {
+    expect(
+      hasMultipleAbInvocations(`agent-browser --session s1 snapshot | grep treeitem`),
+    ).toBe(false);
+  });
+
+  test("ignores non-ab statement chains (e.g. echo + ls)", () => {
+    expect(hasMultipleAbInvocations(`echo foo && ls -la`)).toBe(false);
+  });
+});
+
+describe("hasErrorSuppression", () => {
+  test("flags `|| true` after an agent-browser command", () => {
+    expect(
+      hasErrorSuppression(`agent-browser --session s1 click "x" || true`),
+    ).toBe(true);
+  });
+
+  test("flags `|| :` (colon noop) after an agent-browser command", () => {
+    expect(
+      hasErrorSuppression(`agent-browser --session s1 click "x" || :`),
+    ).toBe(true);
+  });
+
+  test("flags `2>/dev/null`", () => {
+    expect(
+      hasErrorSuppression(`agent-browser --session s1 click "x" 2>/dev/null`),
+    ).toBe(true);
+  });
+
+  test("flags `; true` swallowing", () => {
+    expect(
+      hasErrorSuppression(`agent-browser --session s1 click "x"; true`),
+    ).toBe(true);
+  });
+
+  test("allows plain `2>&1` (does not change exit status)", () => {
+    expect(
+      hasErrorSuppression(`agent-browser --session s1 snapshot 2>&1 | head -20`),
+    ).toBe(false);
+  });
+
+  test("returns false when there is no agent-browser in the command", () => {
+    expect(hasErrorSuppression(`echo hello || true`)).toBe(false);
+  });
+
+  test("returns false for a clean agent-browser command", () => {
+    expect(hasErrorSuppression(`agent-browser --session s1 click "x"`)).toBe(false);
   });
 });
 

@@ -40,7 +40,37 @@ export type TraceCommand =
   | "open" | "click" | "dblclick" | "fill" | "type"
   | "check" | "uncheck" | "press" | "select"
   | "hover" | "scroll" | "drag" | "wait" | "snapshot"
-  | "assert";
+  | "assert"
+  | "find_click" | "find_dblclick" | "find_fill" | "find_type"
+  | "find_hover" | "find_focus" | "find_check" | "find_uncheck";
+
+/**
+ * Semantic locator strategies exposed by `agent-browser find`. Used by the
+ * `find_*` commands when a target cannot be uniquely picked out by the
+ * ALLOWED CSS forms (e.g. repeated `aria-label='1 reply'` rows where only
+ * "the last one" is meaningful).
+ *
+ * `first` / `last` / `nth` are positional helpers and their `findValue`
+ * carries an inner CSS selector; `nth` additionally needs `findIndex`. The
+ * remaining locators read `findValue` as the human-visible text/id.
+ * `role` may pair with `findName` to filter by accessible name.
+ */
+export const FIND_LOCATORS = [
+  "role", "text", "label", "placeholder", "alt", "title", "testid",
+  "first", "last", "nth",
+] as const;
+export type FindLocator = (typeof FIND_LOCATORS)[number];
+
+/**
+ * Actions reachable via `agent-browser find <locator> ... <action>`. Kept
+ * here next to the locator list so all `find_*` knowledge lives in one
+ * place — `cli/trace.ts`, `claude/invoke.ts`, and `runtime/replay-validate.ts`
+ * import these instead of redefining their own sets.
+ */
+export const FIND_ACTIONS = [
+  "click", "dblclick", "fill", "type", "hover", "focus", "check", "uncheck",
+] as const;
+export type FindAction = (typeof FIND_ACTIONS)[number];
 
 export type AssertType =
   | "text_visible" | "text_not_visible"
@@ -62,7 +92,30 @@ export interface TraceAction {
   observation?: string;
   /** Only for command: "assert" */
   assertType?: AssertType;
+  /**
+   * Only for command: "find_*". `findValue` holds the locator argument —
+   * for `text`/`label`/`placeholder`/`alt`/`title`/`testid` it is the
+   * human-visible string; for `first`/`last`/`nth` it is the inner CSS
+   * selector.
+   */
+  findLocator?: FindLocator;
+  findValue?: string;
+  /** `find role` --name filter. */
+  findName?: string;
+  /** `find nth` index (0-based). */
+  findIndex?: number;
+  /** `--exact` flag for text-like locators. */
+  findExact?: boolean;
   stepId?: string;
+  /**
+   * Set by the lenient post-trace validator when this action failed to
+   * replay on a fresh session but is still kept in actions.json (and
+   * therefore in the generated test). Codegen emits a `// [warn]
+   * replay-unstable: <reason>` comment on the preceding line so the auto-fix
+   * loop and human reviewers can spot the at-risk action.
+   */
+  replayUnstable?: boolean;
+  replayReason?: string;
 }
 
 export const DraftIssueSchema = z.object({

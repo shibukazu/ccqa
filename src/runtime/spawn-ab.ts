@@ -32,12 +32,16 @@ const EAGAIN_BACKOFF_MS = [
   1500, 2000, 2500, 3000, 3000, 3000, 3000, 3000, 3000,
 ] as const;
 
-// Hard ceiling on a single agent-browser invocation. agent-browser is
-// supposed to honor its own --timeout, but if the daemon is wedged (stale
-// session, dead Chrome) spawnSync would otherwise wait forever because
-// stdio never closes. 90s is well past wait --timeout 30000ms + the
-// 30s EAGAIN budget, so legitimate work always completes first.
-const PROCESS_HARD_TIMEOUT_MS = 90_000;
+// Hard ceiling on a single agent-browser invocation. If the daemon is wedged
+// (stale session, dead Chrome) spawnSync would otherwise wait forever because
+// stdio never closes. Element-existence waits no longer go through the
+// blocking `wait <css-selector>` (they poll `get count` instead — see
+// test-helpers / replay-validate), and `wait --text` honours its own
+// --timeout (≤30s in our callers), so any single invocation that exceeds this
+// ceiling is genuinely wedged rather than legitimately slow. 35s leaves room
+// for a `wait --text --timeout 30000` plus settle time without letting a
+// hung daemon stall the whole run for a minute and a half.
+const PROCESS_HARD_TIMEOUT_MS = 35_000;
 
 export function sleepSync(ms: number): void {
   const buf = new SharedArrayBuffer(4);
