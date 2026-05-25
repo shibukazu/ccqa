@@ -228,7 +228,7 @@ function isRefSelector(selector: string | undefined): boolean {
  * `abAssertDisabled("button[disabled]")` resolves to `is enabled
  * "button[disabled]"`: it first selects an already-disabled element, then
  * confirms it is disabled — always true, and true even when the *target* the
- * spec cares about (e.g. the "コンテンツの追加" button) is missing or enabled.
+ * spec cares about (e.g. the "Submit" button) is missing or enabled.
  * The agent emits these when it reaches for "the disabled button" instead of
  * naming the element by a state-independent selector. The assertion verifies
  * nothing, so codegen drops it (breadcrumb only) rather than baking a green
