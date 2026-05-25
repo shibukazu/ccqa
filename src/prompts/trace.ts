@@ -260,8 +260,8 @@ After verifying each step, emit \`AB_ACTION|assert\` lines for each signal you c
 | \`element_visible\` | Element is visible | CSS selector | (empty) |
 | \`element_not_visible\` | Element is hidden/removed | CSS selector | (empty) |
 | \`url_contains\` | URL contains a pattern | (empty) | URL substring |
-| \`element_enabled\` | Button/input is enabled | CSS selector | (empty) |
-| \`element_disabled\` | Button/input is disabled | CSS selector | (empty) |
+| \`element_enabled\` | Button/input is enabled | CSS selector (state-independent) | (empty) |
+| \`element_disabled\` | Button/input is disabled | CSS selector (state-independent) | (empty) |
 | \`element_checked\` | Checkbox is checked | CSS selector | (empty) |
 | \`element_unchecked\` | Checkbox is unchecked | CSS selector | (empty) |
 
@@ -274,6 +274,15 @@ After verifying each step, emit \`AB_ACTION|assert\` lines for each signal you c
   - Japanese: \`たった今\`, \`3分前\`, \`1時間前\`, \`昨日\`.
 - Dynamic counts like "42 results" → assert on the stable suffix ("results") only.
 - **PREFER**: status text, button labels, URL patterns, element enabled/disabled state.
+
+**No tautological state asserts — CRITICAL for \`element_enabled\` / \`element_disabled\`:**
+
+The selector must identify *which* element by something **other than the state you are asserting**. Selecting the element *by* its state and then asserting that state is a tautology that always passes and verifies nothing.
+
+- ✗ \`element_disabled | button[disabled] |\` — picks an already-disabled button, then "confirms" it is disabled. Passes even if the button the spec cares about is missing or enabled.
+- ✗ \`element_enabled | button:enabled |\`, \`[aria-disabled='true']\`, \`input:disabled\` — same trap.
+- ✓ Name the element by a stable, state-independent selector and assert the state on it: e.g. the "送信" button is \`find role button --name "送信"\`; to assert it is disabled, give \`element_disabled\` a selector that targets *that* button (a stable \`id\` / \`data-testid\` / unique class), **not** \`[disabled]\`.
+- If you cannot target the specific element without a state pseudo-class/attribute, **do not emit the enabled/disabled assert** — assert a user-visible consequence instead (e.g. the action it gates does not happen, a "権限がありません" message is shown), or rely on \`text_visible\` for the label plus \`text_not_visible\` for what an enabled control would have produced.
 
 **Page-context and selector rules:**
 

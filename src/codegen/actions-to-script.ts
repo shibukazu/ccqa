@@ -221,6 +221,27 @@ function isRefSelector(selector: string | undefined): boolean {
   return /^@/.test(s) || /\[ref\s*=\s*['"]?e\d+['"]?\]/.test(s);
 }
 
+/**
+ * Returns true if a selector picks elements *by the very state being asserted*,
+ * which makes an `element_disabled` / `element_enabled` check a tautology.
+ *
+ * `abAssertDisabled("button[disabled]")` resolves to `is enabled
+ * "button[disabled]"`: it first selects an already-disabled element, then
+ * confirms it is disabled — always true, and true even when the *target* the
+ * spec cares about (e.g. the "コンテンツの追加" button) is missing or enabled.
+ * The agent emits these when it reaches for "the disabled button" instead of
+ * naming the element by a state-independent selector. The assertion verifies
+ * nothing, so codegen drops it (breadcrumb only) rather than baking a green
+ * check that can never fail.
+ *
+ * Matches the `:disabled` / `:enabled` pseudo-classes and the `[disabled]` /
+ * `[aria-disabled=…]` attribute selectors anywhere in the selector.
+ */
+function isStateSelector(selector: string | undefined): boolean {
+  if (typeof selector !== "string") return false;
+  return /:disabled\b|:enabled\b|\[\s*disabled[\s\]=]|\[\s*aria-disabled[\s\]=]/i.test(selector);
+}
+
 function actionToLine(action: TraceAction): string | null {
   // Skip actions that use @ref selectors — they are session-specific and not replayable
   if ("selector" in action && isRefSelector(action.selector)) return null;
@@ -349,10 +370,14 @@ function actionToLine(action: TraceAction): string | null {
           if (val) assertLine = `abAssertUrl(${jExpr(val)});`;
           break;
         case "element_enabled":
+          // Tautology guard: a selector that picks elements by their state
+          // (`:enabled`, `[disabled]`, …) verifies nothing — drop with a breadcrumb.
+          if (isStateSelector(sel)) return tautologicalStateAssertMarker(action, sel);
           // is enabled is unreliable with text= and [aria-label=] selectors that may not exist in DOM
           if (sel && !sel.startsWith("text=") && !sel.startsWith("[aria-label=")) assertLine = `abAssertEnabled(${j(sel)});`;
           break;
         case "element_disabled":
+          if (isStateSelector(sel)) return tautologicalStateAssertMarker(action, sel);
           // is enabled is unreliable with text= and [aria-label=] selectors that may not exist in DOM
           if (sel && !sel.startsWith("text=") && !sel.startsWith("[aria-label=")) assertLine = `abAssertDisabled(${j(sel)});`;
           break;
@@ -426,6 +451,17 @@ function buildFindArgs(action: TraceAction, fillValue: string | undefined): stri
 function droppedFindMarker(action: TraceAction): string {
   const ctx = action.stepId ? ` (stepId=${action.stepId})` : "";
   return `// [warn] find_* dropped: ${action.command}${ctx} — actions.json is missing findLocator/findValue. Re-run \`ccqa trace\` to regenerate.`;
+}
+
+/**
+ * Breadcrumb for an `element_enabled` / `element_disabled` assert whose selector
+ * picks the element by the asserted state (a tautology — see `isStateSelector`).
+ * Dropped from the runnable script; surfaces in the test so a reviewer sees the
+ * intended check was discarded and can re-assert against a state-independent
+ * selector if the state really matters.
+ */
+function tautologicalStateAssertMarker(action: TraceAction, sel: string | undefined): string {
+  return `// [warn] dropped tautological assert (${action.assertType ?? "assert"} ${sel ?? "(unknown)"}) — selector matches by the asserted state; target the element by a state-independent selector instead`;
 }
 
 /** JSON.stringify — produces a quoted string literal safe for embedding in TS source. */

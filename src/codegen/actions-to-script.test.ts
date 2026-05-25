@@ -118,6 +118,53 @@ describe("actionsToScript", () => {
     });
   });
 
+  describe("tautological state-assert dropping", () => {
+    it("drops element_disabled whose selector is button[disabled] (tautology)", () => {
+      const actions: TraceAction[] = [
+        { command: "assert", assertType: "element_disabled", selector: "button[disabled]" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toMatch(/abAssertDisabled\(/);
+      expect(script).toContain("dropped tautological assert");
+    });
+
+    it("drops element_enabled whose selector uses the :enabled pseudo-class", () => {
+      const actions: TraceAction[] = [
+        { command: "assert", assertType: "element_enabled", selector: "button:enabled" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toMatch(/abAssertEnabled\(/);
+      expect(script).toContain("dropped tautological assert");
+    });
+
+    it("drops element_disabled selecting by [aria-disabled='true']", () => {
+      const actions: TraceAction[] = [
+        { command: "assert", assertType: "element_disabled", selector: "[aria-disabled='true']" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toMatch(/abAssertDisabled\(/);
+      expect(script).toContain("dropped tautological assert");
+    });
+
+    it("KEEPS element_disabled with a state-independent selector (real check)", () => {
+      const actions: TraceAction[] = [
+        { command: "assert", assertType: "element_disabled", selector: "#submit-btn" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('abAssertDisabled("#submit-btn");');
+      expect(script).not.toContain("dropped tautological assert");
+    });
+
+    it("KEEPS element_enabled with a data-testid selector", () => {
+      const actions: TraceAction[] = [
+        { command: "assert", assertType: "element_enabled", selector: "[data-testid='save']" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain(`abAssertEnabled("[data-testid='save']");`);
+      expect(script).not.toContain("dropped tautological assert");
+    });
+  });
+
   describe("env var expansion", () => {
     it("expands $VAR in a fill value to process.env.VAR", () => {
       const actions: TraceAction[] = [
