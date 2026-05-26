@@ -80,6 +80,7 @@ ccqa run tasks/create-and-complete --drift --format github
 | アサーションヘルパー関数 | [Assertions](./assertions.md) |
 | 失敗したテストを自動修正 | [Auto-fix](./auto-fix.md) |
 | CI で仕様とコードのズレを検出 | [Drift](./drift.md) |
+| 既存のテストカバレッジを棚卸し | [Perspectives](./perspectives.md) |
 | 設計判断の記録 (なぜこの設計か) | [ADR](./adr/README.md) |
 
 ## コマンド
@@ -90,9 +91,10 @@ ccqa trace <feature/spec>          spec のブラウザ操作を記録 (include 
 ccqa generate <feature/spec>       記録された操作から spec のテストスクリプトを生成
 ccqa run [feature/spec]            生成されたテストスクリプトを実行 (--drift で失敗時にドリフト分析)
 ccqa drift [feature/spec]          単独の仕様 ↔ コードベース監査 (定期ジョブ用)
+ccqa perspectives                  既存のテストカバレッジを .ccqa/perspectives.yaml に棚卸し
 ```
 
-すべての Claude 駆動コマンドは `-m, --model <name>` を受け付けます (`sonnet` | `opus` | `haiku` のエイリアス、またはフルモデル ID)。このフラグは `CCQA_MODEL` 環境変数を上書きします。両方とも未設定の場合は Claude Code CLI のデフォルトが使われます。対話型コマンドはローカルの Claude Code ログインで認証します。CI で Claude を使うコマンド (`ccqa run --drift`、`ccqa drift`) は `ANTHROPIC_API_KEY` も受け付けます。
+すべての Claude 駆動コマンドは `-m, --model <name>` を受け付けます (`sonnet` | `opus` | `haiku` のエイリアス、またはフルモデル ID)。このフラグは `CCQA_MODEL` 環境変数を上書きします。両方とも未設定の場合は Claude Code CLI のデフォルトが使われます。また `--language <bcp47>` (例: `ja`、`en`) で人間向け出力の言語を指定できます。デフォルトの `auto` は spec / コードベースの言語に追従します。対話型コマンドはローカルの Claude Code ログインで認証します。CI で Claude を使うコマンド (`ccqa run --drift`、`ccqa drift`) は `ANTHROPIC_API_KEY` も受け付けます。
 
 `<feature/spec>` は `.ccqa/features/<feature>/test-cases/<spec>/` への 2 セグメントのエイリアスです。
 
@@ -100,11 +102,14 @@ ccqa drift [feature/spec]          単独の仕様 ↔ コードベース監査 
 
 ```
 .ccqa/
+  perspectives.yaml              # 既存カバレッジの棚卸し (機械可読・正)
+  perspectives.md                # カテゴリ一覧インデックス (YAML から再生成)
   blocks/
     login/
       spec.yaml                  # 再利用可能なブロック (params + steps)
   features/
     tasks/
+      perspectives.md            # カテゴリ単位の詳細テーブル (ケースごと)
       test-cases/
         create-and-complete/
           spec.yaml              # テスト定義
