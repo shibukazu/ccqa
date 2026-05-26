@@ -21,3 +21,13 @@ export function languageDirective(language: string | undefined): string {
   if (lang === "" || lang === DEFAULT_LANGUAGE) return "";
   return `\n\nIMPORTANT: Write every human-readable field, message, and explanation in **${lang}** (BCP-47 language tag), regardless of the language of the spec or codebase.`;
 }
+
+/**
+ * Whether the CLI's own interactive prompts (the strings ccqa prints itself,
+ * not the model's output) should be Japanese. Only an explicit Japanese tag
+ * (`ja`, `ja-JP`, …) opts in; `auto` (the default) and every other tag keep
+ * the English prompts, so an English user running with no flag is unaffected.
+ */
+export function useJapanesePrompts(language: string | undefined): boolean {
+  return /^ja\b/i.test((language ?? "").trim());
+}

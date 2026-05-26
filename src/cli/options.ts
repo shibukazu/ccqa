@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import { DEFAULT_LANGUAGE } from "../prompts/language.ts";
 
-export { DEFAULT_LANGUAGE, languageDirective } from "../prompts/language.ts";
+export { DEFAULT_LANGUAGE, languageDirective, useJapanesePrompts } from "../prompts/language.ts";
 
 /**
  * Shared `--language` flag. Every Claude-driven command writes some

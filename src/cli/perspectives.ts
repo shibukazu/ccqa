@@ -29,7 +29,7 @@ import {
   type PerspectiveSpec,
 } from "../types.ts";
 import { formatToolSummary, printUnifiedDiff, prompt } from "./draft.ts";
-import { addLanguageOption, languageDirective } from "./options.ts";
+import { addLanguageOption, languageDirective, useJapanesePrompts } from "./options.ts";
 import * as log from "./logger.ts";
 
 interface PerspectivesOptions {
@@ -107,7 +107,15 @@ async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
   printUnifiedDiff(existingRaw, next);
   log.blank();
 
-  const apply = opts.apply === true || /^y/i.test(await prompt("Write perspectives.yaml + .md? [y/N] "));
+  const apply =
+    opts.apply === true ||
+    /^y/i.test(
+      await prompt(
+        useJapanesePrompts(opts.language)
+          ? "perspectives.yaml + .md を書き込みますか? [y/N] "
+          : "Write perspectives.yaml + .md? [y/N] ",
+      ),
+    );
   if (!apply) {
     log.info("aborted — no changes written.");
     return;
