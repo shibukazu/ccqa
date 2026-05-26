@@ -11,6 +11,8 @@ import {
   type ExistingFeatureTree,
 } from "../prompts/draft.ts";
 import { parseTestSpec } from "../spec/parser.ts";
+import { languageDirective, useJapanesePrompts } from "../prompts/language.ts";
+import { addLanguageOption } from "./options.ts";
 import {
   ensureCcqaDir,
   listFeatureTree,
@@ -31,33 +33,35 @@ import * as log from "./logger.ts";
 
 const CATEGORY_LABEL = DRAFT_CATEGORY_LABEL;
 
-export const draftCommand = new Command("draft")
-  .argument("[feature/spec]", "Optional spec path (e.g. tasks/create-and-complete). If omitted, Claude proposes one from your intent.")
-  .description("Interactively draft and refine a spec.yaml with Claude Code")
-  .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
-  .option("--apply", "Auto-apply each generated patch without [y/N] confirmation", false)
-  .action(async (specPath: string | undefined, opts: { instruction?: string; apply?: boolean }) => {
-    await ensureCcqaDir();
+export const draftCommand = addLanguageOption(
+  new Command("draft")
+    .argument("[feature/spec]", "Optional spec path (e.g. tasks/create-and-complete). If omitted, Claude proposes one from your intent.")
+    .description("Interactively draft and refine a spec.yaml with Claude Code")
+    .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
+    .option("--apply", "Auto-apply each generated patch without [y/N] confirmation", false),
+).action(async (specPath: string | undefined, opts: DraftOptions) => {
+  await ensureCcqaDir();
 
-    let featureName: string;
-    let specName: string;
-    let prefilledIntent: string | null = null;
+  let featureName: string;
+  let specName: string;
+  let prefilledIntent: string | null = null;
 
-    if (specPath) {
-      ({ featureName, specName } = parseSpecPath(specPath));
-    } else {
-      const { naming, intent } = await proposeNaming(opts);
-      featureName = naming.featureName;
-      specName = naming.specName;
-      prefilledIntent = intent;
-    }
+  if (specPath) {
+    ({ featureName, specName } = parseSpecPath(specPath));
+  } else {
+    const { naming, intent } = await proposeNaming(opts);
+    featureName = naming.featureName;
+    specName = naming.specName;
+    prefilledIntent = intent;
+  }
 
-    await runDraft(featureName, specName, opts, prefilledIntent);
-  });
+  await runDraft(featureName, specName, opts, prefilledIntent);
+});
 
 interface DraftOptions {
   instruction?: string;
   apply?: boolean;
+  language?: string;
 }
 
 async function runDraft(
@@ -72,6 +76,7 @@ async function runDraft(
 ): Promise<void> {
   log.header("draft", `${featureName}/${specName}`);
 
+  const ja = useJapanesePrompts(opts.language);
   const oneShot = opts.instruction !== undefined;
   let useIntentOnce = prefilledIntent !== null && !oneShot;
 
@@ -90,8 +95,12 @@ async function runDraft(
     } else {
       userInput = await prompt(
         isFirstRun
-          ? "What do you want to test? > "
-          : "How would you like to refine? (empty = re-validate) > ",
+          ? ja
+            ? "何をテストしたいですか? > "
+            : "What do you want to test? > "
+          : ja
+            ? "どのように修正しますか? (空欄で再検証) > "
+            : "How would you like to refine? (empty = re-validate) > ",
       );
     }
 
@@ -106,6 +115,7 @@ async function runDraft(
       existing,
       userInput: userInput.trim(),
       autoApply: opts.apply === true,
+      language: opts.language,
     });
 
     if (oneShot) {
@@ -114,7 +124,9 @@ async function runDraft(
 
     // After every turn, ask whether the user is done. yes ⇒ exit; no ⇒ another turn.
     log.blank();
-    const done = /^y/i.test(await prompt("Are you done with this draft? [y/N] "));
+    const done = /^y/i.test(
+      await prompt(ja ? "このドラフトは完了ですか? [y/N] " : "Are you done with this draft? [y/N] "),
+    );
     if (done) {
       log.info("draft session complete.");
       log.hint(`run 'ccqa trace ${featureName}/${specName}' to record actions`);
@@ -129,6 +141,7 @@ interface TurnInput {
   existing: string | null;
   userInput: string;
   autoApply: boolean;
+  language?: string;
 }
 
 interface TurnResult {
@@ -137,11 +150,11 @@ interface TurnResult {
 }
 
 async function runOneTurn(input: TurnInput): Promise<TurnResult> {
-  const { featureName, specName, existing, userInput, autoApply } = input;
+  const { featureName, specName, existing, userInput, autoApply, language } = input;
   const isFirstRun = existing === null;
 
   const blocks = await loadAvailableBlocks();
-  const systemPrompt = buildDraftSystemPrompt(blocks);
+  const systemPrompt = buildDraftSystemPrompt(blocks) + languageDirective(language);
   const userPrompt = buildDraftPrompt({
     mode: isFirstRun ? "create" : "refine",
     existing: existing ?? "",
@@ -210,7 +223,9 @@ async function runOneTurn(input: TurnInput): Promise<TurnResult> {
 
   const apply = autoApply
     ? true
-    : /^y/i.test(await prompt("Apply this patch? [y/N] "));
+    : /^y/i.test(
+        await prompt(useJapanesePrompts(language) ? "このパッチを適用しますか? [y/N] " : "Apply this patch? [y/N] "),
+      );
 
   if (!apply) {
     log.info("aborted — no changes applied.");
@@ -229,7 +244,7 @@ async function runOneTurn(input: TurnInput): Promise<TurnResult> {
   return { hasError, applied: true };
 }
 
-async function prompt(question: string): Promise<string> {
+export async function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   rl.on("SIGINT", () => {
     rl.close();
@@ -317,11 +332,12 @@ function writeFinding(issue: DraftIssue): void {
 async function proposeNaming(
   opts: DraftOptions,
 ): Promise<{ naming: { featureName: string; specName: string }; intent: string }> {
+  const ja = useJapanesePrompts(opts.language);
   const oneShot = opts.instruction !== undefined;
 
   const intent = oneShot
     ? (opts.instruction ?? "")
-    : await prompt("What do you want to test? > ");
+    : await prompt(ja ? "何をテストしたいですか? > " : "What do you want to test? > ");
 
   if (!intent.trim()) {
     log.error("intent required to propose a feature/spec name");
@@ -383,12 +399,16 @@ async function proposeNaming(
     return { naming: final, intent: intent.trim() };
   }
 
-  const answer = await prompt(`Use this name? [y/N/edit] > `);
+  const answer = await prompt(ja ? "この名前を使いますか? [y/N/edit] > " : "Use this name? [y/N/edit] > ");
   if (/^y/i.test(answer)) {
     return { naming: final, intent: intent.trim() };
   }
   if (/^e/i.test(answer)) {
-    const manual = await prompt("Enter feature/spec (e.g. tasks/create-and-complete) > ");
+    const manual = await prompt(
+      ja
+        ? "feature/spec を入力 (例 tasks/create-and-complete) > "
+        : "Enter feature/spec (e.g. tasks/create-and-complete) > ",
+    );
     const parts = manual.split("/");
     if (parts.length !== 2 || !parts[0] || !parts[1]) {
       log.error(`invalid spec path: "${manual}". Expected "<feature>/<spec>"`);

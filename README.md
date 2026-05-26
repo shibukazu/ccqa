@@ -78,6 +78,7 @@ ccqa run tasks/create-and-complete --drift --format github
 | Assertion helper functions | [Assertions](./docs/assertions.md) |
 | Auto-fix failing tests | [Auto-fix](./docs/auto-fix.md) |
 | Detect spec/code drift in CI | [Drift](./docs/drift.md) |
+| Inventory existing test coverage | [Perspectives](./docs/perspectives.md) |
 
 ## Commands
 
@@ -87,9 +88,10 @@ ccqa trace <feature/spec>          Record browser actions for a spec (inlines an
 ccqa generate <feature/spec>       Generate test script from recorded actions
 ccqa run [feature/spec]            Execute generated test scripts (add --drift to analyze failures)
 ccqa drift [feature/spec]          Standalone spec ↔ codebase drift audit (for scheduled jobs)
+ccqa perspectives                  Inventory existing test coverage into .ccqa/perspectives.yaml
 ```
 
-All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` | `haiku`, or a full model ID). The flag overrides `CCQA_MODEL`; when both are unset, the Claude Code CLI default is used. Interactive commands authenticate via your local Claude Code login; commands that talk to Claude in CI (`ccqa run --drift`, `ccqa drift`) additionally honor `ANTHROPIC_API_KEY`.
+All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` | `haiku`, or a full model ID). The flag overrides `CCQA_MODEL`; when both are unset, the Claude Code CLI default is used. They also accept `--language <bcp47>` (e.g. `ja`, `en`) to set the language of human-readable output; the default `auto` follows the language of the spec/codebase. Interactive commands authenticate via your local Claude Code login; commands that talk to Claude in CI (`ccqa run --drift`, `ccqa drift`) additionally honor `ANTHROPIC_API_KEY`.
 
 `<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`.
 
@@ -97,11 +99,14 @@ All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` 
 
 ```
 .ccqa/
+  perspectives.yaml              # Inventory of existing coverage (machine-readable, canonical)
+  perspectives.md                # Category index, regenerated from the YAML
   blocks/
     login/
       spec.yaml                  # Reusable block (params + steps)
   features/
     tasks/
+      perspectives.md            # Per-category detail tables (one per case)
       test-cases/
         create-and-complete/
           spec.yaml              # Test definition

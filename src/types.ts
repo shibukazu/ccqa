@@ -17,6 +17,17 @@ export {
   type TestSpec,
 } from "./spec/yaml-schema.ts";
 
+export {
+  PerspectiveFeatureSchema,
+  PerspectiveSpecSchema,
+  PerspectiveStatusSchema,
+  PerspectivesSchema,
+  type PerspectiveFeature,
+  type PerspectiveSpec,
+  type PerspectiveStatus,
+  type Perspectives,
+} from "./spec/perspectives-schema.ts";
+
 export const RouteStepSchema = z.object({
   title: z.string(),
   action: z.string(),
@@ -123,7 +134,10 @@ export const DraftIssueSchema = z.object({
   category: z.enum(["assertable", "blocks", "granularity", "unimplemented"]),
   stepId: z.string().nullable(),
   message: z.string(),
-  detail: z.string().optional(),
+  // Claude sometimes emits an explicit `null` here instead of omitting the
+  // key; accept both (nullish) so a well-formed report isn't rejected over a
+  // missing optional detail. Every consumer guards with `if (issue.detail)`.
+  detail: z.string().nullish(),
 });
 export type DraftIssue = z.infer<typeof DraftIssueSchema>;
 
