@@ -15,14 +15,14 @@ import { PerspectivesSchema, type PerspectiveFeature, type PerspectiveSpec } fro
 
 const skeleton: PerspectiveFeature[] = [
   {
-    featureName: "content-management",
+    featureName: "tasks",
     specs: [
       {
-        specName: "search-content",
-        title: "コンテンツを検索できる",
+        specName: "search-tasks",
+        title: "タスクを検索できる",
         summary: "",
         status: { traced: true, generated: true },
-        relatedPaths: ["src/features/content/**"],
+        relatedPaths: ["src/features/tasks/**"],
       },
     ],
   },
@@ -132,9 +132,9 @@ describe("parseSummaries", () => {
             featureName: "f",
             specName: "s",
             summary: "verifies search",
-            startScreen: "コンテンツ一覧 (/policies)",
-            testCondition: "カテゴリ管理者でログイン済み",
-            preconditions: ["カテゴリ管理者でログイン", ""],
+            startScreen: "タスク一覧 (/tasks)",
+            testCondition: "管理者でログイン済み",
+            preconditions: ["管理者でログイン", ""],
           },
         ],
       }),
@@ -144,9 +144,9 @@ describe("parseSummaries", () => {
         featureName: "f",
         specName: "s",
         summary: "verifies search",
-        startScreen: "コンテンツ一覧 (/policies)",
-        testCondition: "カテゴリ管理者でログイン済み",
-        preconditions: ["カテゴリ管理者でログイン"], // empty string filtered out
+        startScreen: "タスク一覧 (/tasks)",
+        testCondition: "管理者でログイン済み",
+        preconditions: ["管理者でログイン"], // empty string filtered out
       },
     ]);
   });
@@ -166,7 +166,7 @@ describe("parseSummaries", () => {
 describe("mergePerspectives", () => {
   test("fills summaries matched by feature/spec and timestamps the result", () => {
     const summaries: SummaryEntry[] = [
-      { featureName: "content-management", specName: "search-content", summary: "検索ができることを確認" },
+      { featureName: "tasks", specName: "search-tasks", summary: "検索ができることを確認" },
     ];
     const merged = mergePerspectives(skeleton, summaries, new Map());
     expect(merged.features[0]?.specs[0]?.summary).toBe("検索ができることを確認");
@@ -179,7 +179,7 @@ describe("mergePerspectives", () => {
   });
 
   test("preserves a human note for the matching spec", () => {
-    const noteMap = new Map([["content-management/search-content", "manual-only, see QA表"]]);
+    const noteMap = new Map([["tasks/search-tasks", "manual-only, see QA表"]]);
     const merged = mergePerspectives(skeleton, [], noteMap);
     expect(merged.features[0]?.specs[0]?.note).toBe("manual-only, see QA表");
   });
@@ -192,24 +192,24 @@ describe("mergePerspectives", () => {
   test("merges the QA-table fields from the summary entry", () => {
     const summaries: SummaryEntry[] = [
       {
-        featureName: "content-management",
-        specName: "search-content",
+        featureName: "tasks",
+        specName: "search-tasks",
         summary: "検索ができることを確認",
-        startScreen: "コンテンツ一覧 (/policies)",
-        testCondition: "カテゴリ管理者でログイン済み",
-        preconditions: ["カテゴリ管理者でログイン"],
+        startScreen: "タスク一覧 (/tasks)",
+        testCondition: "管理者でログイン済み",
+        preconditions: ["管理者でログイン"],
       },
     ];
     const merged = mergePerspectives(skeleton, summaries, new Map());
     const spec = merged.features[0]?.specs[0];
-    expect(spec?.startScreen).toBe("コンテンツ一覧 (/policies)");
-    expect(spec?.testCondition).toBe("カテゴリ管理者でログイン済み");
-    expect(spec?.preconditions).toEqual(["カテゴリ管理者でログイン"]);
+    expect(spec?.startScreen).toBe("タスク一覧 (/tasks)");
+    expect(spec?.testCondition).toBe("管理者でログイン済み");
+    expect(spec?.preconditions).toEqual(["管理者でログイン"]);
   });
 
   test("leaves QA-table fields undefined when the summary omits them", () => {
     const summaries: SummaryEntry[] = [
-      { featureName: "content-management", specName: "search-content", summary: "s" },
+      { featureName: "tasks", specName: "search-tasks", summary: "s" },
     ];
     const merged = mergePerspectives(skeleton, summaries, new Map());
     const spec = merged.features[0]?.specs[0];
@@ -271,11 +271,11 @@ describe("extractNotes (round-trip note preservation)", () => {
       generatedAt: "2026-05-25T00:00:00.000Z",
       features: [
         {
-          featureName: "content-management",
+          featureName: "tasks",
           specs: [
             {
-              specName: "search-content",
-              title: "コンテンツを検索できる",
+              specName: "search-tasks",
+              title: "タスクを検索できる",
               summary: "old summary that will be regenerated",
               status: { traced: true, generated: true },
               note: "deliberately kept by a human",
@@ -285,17 +285,17 @@ describe("extractNotes (round-trip note preservation)", () => {
       ],
     });
     const notes = extractNotes(prior);
-    expect(notes.get("content-management/search-content")).toBe("deliberately kept by a human");
+    expect(notes.get("tasks/search-tasks")).toBe("deliberately kept by a human");
   });
 
   test("regression: a fresh skeleton + extracted notes keeps the human note", () => {
     const prior = stringifyYaml({
       features: [
         {
-          featureName: "content-management",
+          featureName: "tasks",
           specs: [
             {
-              specName: "search-content",
+              specName: "search-tasks",
               title: "old title",
               summary: "old",
               status: { traced: false, generated: false },
@@ -309,7 +309,7 @@ describe("extractNotes (round-trip note preservation)", () => {
     // New skeleton has a fresh summary/status; the note must still survive.
     const merged = mergePerspectives(
       skeleton,
-      [{ featureName: "content-management", specName: "search-content", summary: "new summary" }],
+      [{ featureName: "tasks", specName: "search-tasks", summary: "new summary" }],
       notes,
     );
     const spec = merged.features[0]?.specs[0];
@@ -325,20 +325,20 @@ describe("extractNotes (round-trip note preservation)", () => {
 
 describe("renderSpecMarkdown", () => {
   const fullSpec: PerspectiveSpec = {
-    specName: "create-content-directly",
-    title: "AIヘルプデスク上から直接コンテンツを作成できる",
-    summary: "コンテンツ一覧から新規作成し、一覧・詳細に反映され、最後に削除されることを確認する。",
-    startScreen: "コンテンツ一覧 (/policies)",
-    testCondition: "カテゴリ管理者でログイン済み",
-    preconditions: ["カテゴリ管理者でログイン"],
-    relatedPaths: ["src/features/policies/**"],
+    specName: "create-and-complete",
+    title: "タスクを作成して完了にできる",
+    summary: "タスクを新規作成し、一覧・詳細に反映され、最後に削除されることを確認する。",
+    startScreen: "タスク一覧 (/tasks)",
+    testCondition: "管理者でログイン済み",
+    preconditions: ["管理者でログイン"],
+    relatedPaths: ["src/features/tasks/**"],
     status: { traced: true, generated: true },
     note: "QAチームで重要度=高に合意",
   };
 
   test("leads with 検証内容 then 前提条件, drops テスト条件/実装状況, links spec relative to the category file", () => {
     const md = renderSpecMarkdown(fullSpec).join("\n");
-    expect(md).toContain("## AIヘルプデスク上から直接コンテンツを作成できる");
+    expect(md).toContain("## タスクを作成して完了にできる");
     // 検証内容 comes before 前提条件, which comes before 開始画面.
     const idxSummary = md.indexOf("| 検証内容 |");
     const idxPre = md.indexOf("| 前提条件 |");
@@ -347,17 +347,17 @@ describe("renderSpecMarkdown", () => {
     expect(idxSummary).toBeLessThan(idxPre);
     expect(idxPre).toBeLessThan(idxStart);
     expect(md).toContain(
-      "| 検証内容 | コンテンツ一覧から新規作成し、一覧・詳細に反映され、最後に削除されることを確認する。 |",
+      "| 検証内容 | タスクを新規作成し、一覧・詳細に反映され、最後に削除されることを確認する。 |",
     );
-    expect(md).toContain("| 前提条件 | カテゴリ管理者でログイン |");
-    expect(md).toContain("| 開始画面 | コンテンツ一覧 (/policies) |");
+    expect(md).toContain("| 前提条件 | 管理者でログイン |");
+    expect(md).toContain("| 開始画面 | タスク一覧 (/tasks) |");
     // テスト条件 (redundant with 前提条件) and 実装状況 are no longer shown.
     expect(md).not.toContain("テスト条件");
     expect(md).not.toContain("実装状況");
     // spec link is relative to the category file (test-cases/<spec>/...), so
     // it resolves on GitHub and locally.
     expect(md).toContain(
-      "| spec | [test-cases/create-content-directly/spec.yaml](test-cases/create-content-directly/spec.yaml) |",
+      "| spec | [test-cases/create-and-complete/spec.yaml](test-cases/create-and-complete/spec.yaml) |",
     );
     expect(md).toContain("| 📝 note | QAチームで重要度=高に合意 |");
   });
@@ -367,11 +367,11 @@ describe("renderSpecMarkdown", () => {
       specName: "s",
       title: "t",
       summary: "",
-      relatedPaths: ["src/features/policies/**", "src/components/Sidebar.tsx"],
+      relatedPaths: ["src/features/tasks/**", "src/components/Sidebar.tsx"],
       status: { traced: true, generated: true },
     };
     const md = renderSpecMarkdown(spec).join("\n");
-    expect(md).toContain("| 関連コード | `src/features/policies/**`<br>`src/components/Sidebar.tsx` |");
+    expect(md).toContain("| 関連コード | `src/features/tasks/**`<br>`src/components/Sidebar.tsx` |");
     // Not linked.
     expect(md).not.toContain("](../../../");
   });
@@ -423,10 +423,10 @@ describe("renderIndexMarkdown", () => {
       generatedAt: "2026-05-25T00:00:00.000Z",
       features: [
         {
-          featureName: "content-management",
+          featureName: "tasks",
           specs: [
             {
-              specName: "search-content",
+              specName: "search-tasks",
               title: "検索できる",
               summary: "検索の確認",
               status: { traced: true, generated: true },
@@ -445,13 +445,13 @@ describe("renderIndexMarkdown", () => {
     // Category heading links to its own detail file, which is written under
     // .ccqa/features/<feature>/perspectives.md — so the link must include the
     // `features/` segment to resolve from the root .ccqa/perspectives.md.
-    expect(md).toContain("## [content-management](features/content-management/perspectives.md)");
+    expect(md).toContain("## [tasks](features/tasks/perspectives.md)");
     // One row per case: title + spec link only (status dropped, no detail leaks in).
     expect(md).toContain(
-      "| 検索できる | [spec](features/content-management/test-cases/search-content/spec.yaml) |",
+      "| 検索できる | [spec](features/tasks/test-cases/search-tasks/spec.yaml) |",
     );
     expect(md).toContain(
-      "| 作成できる | [spec](features/content-management/test-cases/create-content/spec.yaml) |",
+      "| 作成できる | [spec](features/tasks/test-cases/create-content/spec.yaml) |",
     );
     // Status is no longer shown in the index.
     expect(md).not.toContain("traced");
@@ -465,10 +465,10 @@ describe("renderIndexMarkdown", () => {
 describe("renderFeatureMarkdown", () => {
   test("renders the category heading and one table per case (no boilerplate note)", () => {
     const md = renderFeatureMarkdown({
-      featureName: "content-management",
+      featureName: "tasks",
       specs: [
         {
-          specName: "search-content",
+          specName: "search-tasks",
           title: "検索できる",
           summary: "検索の確認",
           status: { traced: true, generated: true },
@@ -481,7 +481,7 @@ describe("renderFeatureMarkdown", () => {
         },
       ],
     });
-    expect(md).toContain("# content-management");
+    expect(md).toContain("# tasks");
     expect(md).toContain("spec.yaml"); // present as the spec link, not a steps restatement
     expect(md).toContain("## 検索できる");
     expect(md).toContain("## 作成できる");
@@ -504,22 +504,22 @@ describe("labelsFor + English labels", () => {
 
   test("renderSpecMarkdown emits English labels when given the English set", () => {
     const spec: PerspectiveSpec = {
-      specName: "access-category-admin",
-      title: "AIメンテナンス - CATEGORY_ADMINのアクセス許可",
-      summary: "Verifies the page renders for a CATEGORY_ADMIN user.",
-      preconditions: ["Logged in as CATEGORY_ADMIN"],
-      startScreen: "AI maintenance page (/beta/ai-maintenance)",
-      relatedPaths: ["src/features/aiMaintenance/**"],
+      specName: "access-admin-page",
+      title: "管理者ページにアクセスできる",
+      summary: "Verifies the page renders for an admin user.",
+      preconditions: ["Logged in as an admin"],
+      startScreen: "Admin page (/admin)",
+      relatedPaths: ["src/features/admin/**"],
       status: { traced: true, generated: true },
     };
     const md = renderSpecMarkdown(spec, labelsFor("en")).join("\n");
     expect(md).toContain("| Item | Value |");
-    expect(md).toContain("| Verifies | Verifies the page renders for a CATEGORY_ADMIN user. |");
-    expect(md).toContain("| Preconditions | Logged in as CATEGORY_ADMIN |");
-    expect(md).toContain("| Start screen | AI maintenance page (/beta/ai-maintenance) |");
-    expect(md).toContain("| Related code | `src/features/aiMaintenance/**` |");
+    expect(md).toContain("| Verifies | Verifies the page renders for an admin user. |");
+    expect(md).toContain("| Preconditions | Logged in as an admin |");
+    expect(md).toContain("| Start screen | Admin page (/admin) |");
+    expect(md).toContain("| Related code | `src/features/admin/**` |");
     // The case title stays verbatim from spec.yaml even under English labels.
-    expect(md).toContain("## AIメンテナンス - CATEGORY_ADMINのアクセス許可");
+    expect(md).toContain("## 管理者ページにアクセスできる");
     // Japanese labels must not leak in.
     expect(md).not.toContain("検証内容");
     expect(md).not.toContain("前提条件");
@@ -530,7 +530,7 @@ describe("labelsFor + English labels", () => {
       {
         features: [
           {
-            featureName: "ai-maintenance",
+            featureName: "admin",
             specs: [
               { specName: "s", title: "t", summary: "x", status: { traced: true, generated: true } },
             ],

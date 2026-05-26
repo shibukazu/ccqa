@@ -43,8 +43,8 @@ Think of it as a QA coverage stock-take: for each existing test case, fill in a 
 ## Fields to write (per spec)
 
 - \`summary\`: 1–2 sentences, factual and neutral. What the test exercises and what it ultimately asserts, derived from the spec's \`steps\` (\`instruction\` / \`expected\`).
-- \`startScreen\`: the screen/URL the test first lands on after setup (e.g. "コンテンツ一覧 (/policies)"). Derive from the first non-login \`instruction\`. Omit if genuinely unclear.
-- \`testCondition\`: the state/precondition the scenario assumes, phrased as a condition (e.g. "カテゴリ管理者でログイン済み", "権限のないユーザー"). Omit if none.
+- \`startScreen\`: the screen/URL the test first lands on after setup (e.g. "Dashboard (/dashboard)"). Derive from the first non-login \`instruction\`. Omit if genuinely unclear.
+- \`testCondition\`: the state/precondition the scenario assumes, phrased as a condition (e.g. "Logged in as an admin", "Unauthenticated user"). Omit if none.
 - \`preconditions\`: array of short setup prerequisites (e.g. which role logs in, required prior state). Derive from \`include: login\` params and the opening steps. Empty/omit if none.
 
 ## How to write
