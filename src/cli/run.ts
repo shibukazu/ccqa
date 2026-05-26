@@ -18,6 +18,7 @@ import { renderDrift } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
 import type { Format, SpecTarget } from "../drift/types.ts";
+import { addLanguageOption } from "./options.ts";
 import * as log from "./logger.ts";
 
 // Passing --config to vitest prevents it from discovering the host's
@@ -71,28 +72,30 @@ interface RunOptions {
   driftStrict?: boolean;
   format?: string;
   model?: string;
+  language?: string;
 }
 
-export const runCommand = new Command("run")
-  .argument("[target]", "Spec to run: '<feature>/<spec>', '<feature>', or omit for all")
-  .description(
-    "Run generated agent-browser test scripts. " +
-      "Pass --drift to invoke a Claude-driven drift analysis on each failing spec " +
-      "(skipped silently when no test fails). Requires ANTHROPIC_API_KEY or a local Claude login.",
-  )
-  .option("--drift", "On vitest failure, run drift analysis on the failing specs")
-  .option(
-    "--drift-strict",
-    "Treat drift ERROR findings as a run failure (exit 1 even if vitest passed). Implies --drift.",
-  )
-  .option("--format <fmt>", "Output format for the drift block: text | json | github", "text")
-  .option(
-    "-m, --model <name>",
-    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Used by --drift only. Overrides CCQA_MODEL.",
-  )
-  .action(async (target: string | undefined, opts: RunOptions) => {
-    await runTests(target, opts);
-  });
+export const runCommand = addLanguageOption(
+  new Command("run")
+    .argument("[target]", "Spec to run: '<feature>/<spec>', '<feature>', or omit for all")
+    .description(
+      "Run generated agent-browser test scripts. " +
+        "Pass --drift to invoke a Claude-driven drift analysis on each failing spec " +
+        "(skipped silently when no test fails). Requires ANTHROPIC_API_KEY or a local Claude login.",
+    )
+    .option("--drift", "On vitest failure, run drift analysis on the failing specs")
+    .option(
+      "--drift-strict",
+      "Treat drift ERROR findings as a run failure (exit 1 even if vitest passed). Implies --drift.",
+    )
+    .option("--format <fmt>", "Output format for the drift block: text | json | github", "text")
+    .option(
+      "-m, --model <name>",
+      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Used by --drift only. Overrides CCQA_MODEL.",
+    ),
+).action(async (target: string | undefined, opts: RunOptions) => {
+  await runTests(target, opts);
+});
 
 async function runTests(target: string | undefined, opts: RunOptions): Promise<void> {
   log.header("run", target);
@@ -231,6 +234,7 @@ async function maybeRunDrift(
     blocks,
     concurrency: Math.min(3, targets.length),
     ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.language ? { language: opts.language } : {}),
     onSpecStart: (t) => {
       if (format === "text") log.info(`drift: checking ${t.featureName}/${t.specName}`);
     },

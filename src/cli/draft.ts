@@ -11,6 +11,8 @@ import {
   type ExistingFeatureTree,
 } from "../prompts/draft.ts";
 import { parseTestSpec } from "../spec/parser.ts";
+import { languageDirective } from "../prompts/language.ts";
+import { addLanguageOption } from "./options.ts";
 import {
   ensureCcqaDir,
   listFeatureTree,
@@ -31,33 +33,35 @@ import * as log from "./logger.ts";
 
 const CATEGORY_LABEL = DRAFT_CATEGORY_LABEL;
 
-export const draftCommand = new Command("draft")
-  .argument("[feature/spec]", "Optional spec path (e.g. tasks/create-and-complete). If omitted, Claude proposes one from your intent.")
-  .description("Interactively draft and refine a spec.yaml with Claude Code")
-  .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
-  .option("--apply", "Auto-apply each generated patch without [y/N] confirmation", false)
-  .action(async (specPath: string | undefined, opts: { instruction?: string; apply?: boolean }) => {
-    await ensureCcqaDir();
+export const draftCommand = addLanguageOption(
+  new Command("draft")
+    .argument("[feature/spec]", "Optional spec path (e.g. tasks/create-and-complete). If omitted, Claude proposes one from your intent.")
+    .description("Interactively draft and refine a spec.yaml with Claude Code")
+    .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
+    .option("--apply", "Auto-apply each generated patch without [y/N] confirmation", false),
+).action(async (specPath: string | undefined, opts: DraftOptions) => {
+  await ensureCcqaDir();
 
-    let featureName: string;
-    let specName: string;
-    let prefilledIntent: string | null = null;
+  let featureName: string;
+  let specName: string;
+  let prefilledIntent: string | null = null;
 
-    if (specPath) {
-      ({ featureName, specName } = parseSpecPath(specPath));
-    } else {
-      const { naming, intent } = await proposeNaming(opts);
-      featureName = naming.featureName;
-      specName = naming.specName;
-      prefilledIntent = intent;
-    }
+  if (specPath) {
+    ({ featureName, specName } = parseSpecPath(specPath));
+  } else {
+    const { naming, intent } = await proposeNaming(opts);
+    featureName = naming.featureName;
+    specName = naming.specName;
+    prefilledIntent = intent;
+  }
 
-    await runDraft(featureName, specName, opts, prefilledIntent);
-  });
+  await runDraft(featureName, specName, opts, prefilledIntent);
+});
 
 interface DraftOptions {
   instruction?: string;
   apply?: boolean;
+  language?: string;
 }
 
 async function runDraft(
@@ -106,6 +110,7 @@ async function runDraft(
       existing,
       userInput: userInput.trim(),
       autoApply: opts.apply === true,
+      language: opts.language,
     });
 
     if (oneShot) {
@@ -129,6 +134,7 @@ interface TurnInput {
   existing: string | null;
   userInput: string;
   autoApply: boolean;
+  language?: string;
 }
 
 interface TurnResult {
@@ -137,11 +143,11 @@ interface TurnResult {
 }
 
 async function runOneTurn(input: TurnInput): Promise<TurnResult> {
-  const { featureName, specName, existing, userInput, autoApply } = input;
+  const { featureName, specName, existing, userInput, autoApply, language } = input;
   const isFirstRun = existing === null;
 
   const blocks = await loadAvailableBlocks();
-  const systemPrompt = buildDraftSystemPrompt(blocks);
+  const systemPrompt = buildDraftSystemPrompt(blocks) + languageDirective(language);
   const userPrompt = buildDraftPrompt({
     mode: isFirstRun ? "create" : "refine",
     existing: existing ?? "",
@@ -229,7 +235,7 @@ async function runOneTurn(input: TurnInput): Promise<TurnResult> {
   return { hasError, applied: true };
 }
 
-async function prompt(question: string): Promise<string> {
+export async function prompt(question: string): Promise<string> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   rl.on("SIGINT", () => {
     rl.close();

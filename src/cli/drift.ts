@@ -19,6 +19,7 @@ import {
   type ChangedFile,
 } from "../drift/affected.ts";
 import { routeNewFilesToSpecs } from "../drift/route-new-files.ts";
+import { addLanguageOption } from "./options.ts";
 import * as log from "./logger.ts";
 
 interface DriftOptions {
@@ -29,42 +30,44 @@ interface DriftOptions {
   cwd?: string;
   changed?: boolean;
   base?: string;
+  language?: string;
 }
 
 const DEFAULT_CONCURRENCY = 3;
 
-export const driftCommand = new Command("drift")
-  .argument(
-    "[feature/spec]",
-    "Optional spec id. If omitted, every spec under .ccqa/features/ is checked.",
-  )
-  .description(
-    "Check whether each spec.yaml is still in sync with the current codebase (CI-friendly, no patches applied).",
-  )
-  .option("--format <fmt>", "Output format: text | json | github", "text")
-  .option(
-    "--severity <level>",
-    "Exit non-zero on this severity or higher: warn | error",
-    "error",
-  )
-  .option("--concurrency <n>", `Parallel spec checks (default: ${DEFAULT_CONCURRENCY})`)
-  .option(
-    "-m, --model <name>",
-    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
-  )
-  .option(
-    "--cwd <path>",
-    "Working directory used as both the .ccqa root and the codebase Claude reads. Useful for monorepos. Defaults to process.cwd().",
-  )
-  .option(
-    "--changed",
-    "Restrict drift checks to specs whose relatedPaths intersect the git diff against --base (or, in CI, $GITHUB_BASE_REF, else origin/main). New files are routed to specs via a single lightweight Claude call.",
-  )
-  .option(
-    "--base <ref>",
-    "Base ref to diff against when --changed is set. Defaults to $GITHUB_BASE_REF (CI) or origin/main.",
-  )
-  .action(async (specPath: string | undefined, opts: DriftOptions) => {
+export const driftCommand = addLanguageOption(
+  new Command("drift")
+    .argument(
+      "[feature/spec]",
+      "Optional spec id. If omitted, every spec under .ccqa/features/ is checked.",
+    )
+    .description(
+      "Check whether each spec.yaml is still in sync with the current codebase (CI-friendly, no patches applied).",
+    )
+    .option("--format <fmt>", "Output format: text | json | github", "text")
+    .option(
+      "--severity <level>",
+      "Exit non-zero on this severity or higher: warn | error",
+      "error",
+    )
+    .option("--concurrency <n>", `Parallel spec checks (default: ${DEFAULT_CONCURRENCY})`)
+    .option(
+      "-m, --model <name>",
+      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+    )
+    .option(
+      "--cwd <path>",
+      "Working directory used as both the .ccqa root and the codebase Claude reads. Useful for monorepos. Defaults to process.cwd().",
+    )
+    .option(
+      "--changed",
+      "Restrict drift checks to specs whose relatedPaths intersect the git diff against --base (or, in CI, $GITHUB_BASE_REF, else origin/main). New files are routed to specs via a single lightweight Claude call.",
+    )
+    .option(
+      "--base <ref>",
+      "Base ref to diff against when --changed is set. Defaults to $GITHUB_BASE_REF (CI) or origin/main.",
+    ),
+).action(async (specPath: string | undefined, opts: DriftOptions) => {
     const format = parseFormat(opts.format);
     const threshold = parseSeverity(opts.severity);
     const concurrency = parseConcurrency(opts.concurrency);
@@ -105,6 +108,7 @@ export const driftCommand = new Command("drift")
       blocks,
       concurrency,
       ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.language ? { language: opts.language } : {}),
       onSpecStart: (t) => {
         if (format === "text") log.info(`checking ${t.featureName}/${t.specName}`);
       },

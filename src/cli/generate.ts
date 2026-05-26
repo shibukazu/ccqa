@@ -20,6 +20,7 @@ import { spawnVitestTeed } from "../runtime/spawn-vitest.ts";
 import { runAutoFixLoop, resolveMode, type FixMode, type RunVitestResult } from "../diagnose/loop.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import type { TraceAction } from "../types.ts";
+import { addLanguageOption, DEFAULT_LANGUAGE } from "./options.ts";
 import * as log from "./logger.ts";
 
 interface GenerateOptions {
@@ -37,47 +38,43 @@ interface GenerateOptions {
 // `<feature>/<spec>` is a 2-segment alias of the on-disk path
 // `.ccqa/features/<feature>/test-cases/<spec>/`. Document it on the
 // argument and in the description so `generate --help` is self-explanatory.
-export const generateCommand = new Command("generate")
-  .argument(
-    "<feature/spec>",
-    "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
-  )
-  .description(
-    "Generate agent-browser test script from recorded trace actions. " +
-      "test.spec.ts is regenerated from actions.json on every run; pass --force to overwrite manual edits.",
-  )
-  .option("--max-retries <n>", "Maximum number of auto-fix retries", "3")
-  .option("--auto", "Apply auto-fixes without confirmation regardless of confidence (CI use)")
-  .option("--no-interactive", "Never prompt; only auto-apply when confidence is high, otherwise give up")
-  .option("--force", "Overwrite an existing test.spec.ts without warning")
-  .option(
-    "--no-snapshot",
-    "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
-  )
-  .option(
-    "--language <bcp47>",
-    "Language for diagnose reasoning / hint text (e.g. 'en', 'ja')",
-    "en",
-  )
-  .option(
-    "-m, --model <name>",
-    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
-  )
-  .action(async (specPath: string, opts: GenerateOptions) => {
-    const { featureName, specName } = parseSpecPath(specPath);
-    const mode = resolveMode(opts);
-    const useSnapshot = opts.snapshot !== false;
-    await runGenerate(
-      featureName,
-      specName,
-      parseInt(opts.maxRetries, 10),
-      mode,
-      opts.force ?? false,
-      useSnapshot,
-      opts.language ?? "en",
-      opts.model,
-    );
-  });
+export const generateCommand = addLanguageOption(
+  new Command("generate")
+    .argument(
+      "<feature/spec>",
+      "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
+    )
+    .description(
+      "Generate agent-browser test script from recorded trace actions. " +
+        "test.spec.ts is regenerated from actions.json on every run; pass --force to overwrite manual edits.",
+    )
+    .option("--max-retries <n>", "Maximum number of auto-fix retries", "3")
+    .option("--auto", "Apply auto-fixes without confirmation regardless of confidence (CI use)")
+    .option("--no-interactive", "Never prompt; only auto-apply when confidence is high, otherwise give up")
+    .option("--force", "Overwrite an existing test.spec.ts without warning")
+    .option(
+      "--no-snapshot",
+      "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
+    )
+    .option(
+      "-m, --model <name>",
+      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+    ),
+).action(async (specPath: string, opts: GenerateOptions) => {
+  const { featureName, specName } = parseSpecPath(specPath);
+  const mode = resolveMode(opts);
+  const useSnapshot = opts.snapshot !== false;
+  await runGenerate(
+    featureName,
+    specName,
+    parseInt(opts.maxRetries, 10),
+    mode,
+    opts.force ?? false,
+    useSnapshot,
+    opts.language ?? DEFAULT_LANGUAGE,
+    opts.model,
+  );
+});
 
 async function runGenerate(
   featureName: string,

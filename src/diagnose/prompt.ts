@@ -9,7 +9,9 @@ export interface DiagnosePromptInput {
   pageSnapshot?: string;
   /**
    * BCP-47-ish hint for the language to use in human-readable fields
-   * (`reasoning`, `reason`). Common values: "en", "ja". Defaults to "en".
+   * (`reasoning`, `reason`). Common values: "en", "ja". Defaults to "auto",
+   * which injects no language directive and lets Claude follow the language
+   * of the spec/source under analysis.
    * Note: keys, types, selectors, and code identifiers stay in their
    * original form regardless.
    */
@@ -17,7 +19,7 @@ export interface DiagnosePromptInput {
 }
 
 export function buildDiagnosePrompt(input: DiagnosePromptInput): string {
-  const { script, specYaml, actions, failureLog, pageSnapshot, outputLanguage = "en" } = input;
+  const { script, specYaml, actions, failureLog, pageSnapshot, outputLanguage = "auto" } = input;
 
   const numbered = script
     .split("\n")
@@ -35,14 +37,19 @@ export function buildDiagnosePrompt(input: DiagnosePromptInput): string {
     })
     .join("\n");
 
-  return `You are diagnosing a failing E2E test. The test was generated from a recorded trace of the original interaction. Compare the failing run against the original spec and recorded actions to determine WHY the test failed and what the right fix is.
-
-## Output language
+  const languageBlock =
+    outputLanguage === "auto"
+      ? ""
+      : `## Output language
 
 Write all human-readable fields (\`reasoning\`, \`reason\`) in **${outputLanguage}** (BCP-47 tag).
 Selectors, file paths, identifiers, code, type names (TIMING_ISSUE, etc.), JSON keys, and quoted strings stay verbatim regardless of language.
 
-## You have read-only filesystem tools
+`;
+
+  return `You are diagnosing a failing E2E test. The test was generated from a recorded trace of the original interaction. Compare the failing run against the original spec and recorded actions to determine WHY the test failed and what the right fix is.
+
+${languageBlock}## You have read-only filesystem tools
 
 You can call \`Grep\`, \`Glob\`, and \`Read\` against the current repository before producing the JSON.
 

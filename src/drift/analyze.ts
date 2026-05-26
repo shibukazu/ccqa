@@ -2,6 +2,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { extractJsonBlock } from "../claude/extract-json.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { buildDriftSystemPrompt, buildDriftUserPrompt } from "../prompts/drift.ts";
+import { languageDirective } from "../prompts/language.ts";
 import { tryReadSpecFile, type AvailableBlock } from "../store/index.ts";
 import { DraftReportSchema, type DraftReport } from "../types.ts";
 import type { SpecResult, SpecTarget } from "./types.ts";
@@ -12,6 +13,8 @@ export interface AnalyzeDriftInput {
   blocks: AvailableBlock[];
   concurrency?: number;
   model?: string;
+  /** BCP-47 tag or "auto"; controls the language of issue messages. */
+  language?: string;
   /** Called once per spec when its check starts. Used by `cli/drift` for progress logging. */
   onSpecStart?: (target: SpecTarget) => void;
 }
@@ -25,7 +28,7 @@ const DEFAULT_CONCURRENCY = 3;
  * `cli/run` calls this with just the failing specs after vitest.
  */
 export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult[]> {
-  const { targets, cwd, blocks, concurrency = DEFAULT_CONCURRENCY, model, onSpecStart } = input;
+  const { targets, cwd, blocks, concurrency = DEFAULT_CONCURRENCY, model, language, onSpecStart } = input;
 
   const results: SpecResult[] = new Array(targets.length);
   let cursor = 0;
@@ -36,7 +39,7 @@ export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult
       if (idx >= targets.length) return;
       const target = targets[idx]!;
       onSpecStart?.(target);
-      results[idx] = await checkSpec(target, { cwd, blocks, model });
+      results[idx] = await checkSpec(target, { cwd, blocks, model, language });
     }
   };
 
@@ -49,6 +52,7 @@ interface CheckSpecOptions {
   cwd: string;
   blocks: AvailableBlock[];
   model?: string;
+  language?: string;
 }
 
 async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<SpecResult> {
@@ -66,7 +70,7 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
   const { result, isError } = await invokeClaudeStreaming(
     {
       prompt: buildDriftUserPrompt(existing),
-      systemPrompt: buildDriftSystemPrompt(opts.blocks),
+      systemPrompt: buildDriftSystemPrompt(opts.blocks) + languageDirective(opts.language),
       allowedTools: ["Read", "Grep", "Glob"],
       silenceBashLog: true,
       cwd: opts.cwd,
