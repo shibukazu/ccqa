@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
@@ -10,14 +10,24 @@ import {
   listFeatureTree,
   listSpecsForFeature,
   loadAvailableBlocks,
+  tryReadSpecFile,
 } from "../store/index.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
-import { renderDrift } from "../drift/format.ts";
-import { determineExitCode } from "../drift/exit-code.ts";
+import { resolveBaseRef } from "../drift/affected.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
-import type { Format, SpecTarget } from "../drift/types.ts";
+import type { SpecResult, SpecTarget } from "../drift/types.ts";
+import { analyzeFailure } from "../report/analyze.ts";
+import {
+  capturePrDiff,
+  scopePatchForSpec,
+  splitPatchByFile,
+  type PrDiffResult,
+} from "../report/diff.ts";
+import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
+import { renderRunReport } from "../report/render.ts";
+import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
 import { addLanguageOption } from "./options.ts";
 import * as log from "./logger.ts";
 
@@ -25,6 +35,8 @@ import * as log from "./logger.ts";
 // vitest.config.ts and inheriting setupFiles/environment/aliases that were
 // never meant to apply to ccqa's browser-driving specs.
 const USER_VITEST_CONFIG = resolve(".ccqa/vitest.config.ts");
+
+const DEFAULT_REPORT_DIR = "ccqa-report";
 
 async function resolveVitestConfig(): Promise<string> {
   try {
@@ -65,12 +77,13 @@ export type SpecRunSummary = {
   scriptFile: string;
   report: VitestJsonReport | null;
   exitCode: number;
+  /** Tail of the spec's combined vitest output; feeds the drift-report failure analysis. */
+  outputTail: string | null;
 };
 
 interface RunOptions {
-  drift?: boolean;
-  driftStrict?: boolean;
-  format?: string;
+  driftReport?: string | boolean;
+  driftBase?: string;
   model?: string;
   language?: string;
 }
@@ -80,18 +93,22 @@ export const runCommand = addLanguageOption(
     .argument("[target]", "Spec to run: '<feature>/<spec>', '<feature>', or omit for all")
     .description(
       "Run generated agent-browser test scripts. " +
-        "Pass --drift to invoke a Claude-driven drift analysis on each failing spec " +
-        "(skipped silently when no test fails). Requires ANTHROPIC_API_KEY or a local Claude login.",
+        "Pass --drift-report to also write a self-contained HTML run report: each failing spec " +
+        "gets a drift audit plus a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG), and " +
+        "the report lets a human grade the calls to measure their accuracy. " +
+        "Requires ANTHROPIC_API_KEY or a local Claude login for the analysis part.",
     )
-    .option("--drift", "On vitest failure, run drift analysis on the failing specs")
     .option(
-      "--drift-strict",
-      "Treat drift ERROR findings as a run failure (exit 1 even if vitest passed). Implies --drift.",
+      "--drift-report [dir]",
+      `Write an HTML run report with drift analysis of failures (default dir: ${DEFAULT_REPORT_DIR}/)`,
     )
-    .option("--format <fmt>", "Output format for the drift block: text | json | github", "text")
+    .option(
+      "--drift-base <ref>",
+      "Base ref the source diff is taken against for failure analysis (default: GITHUB_BASE_REF, then origin/main)",
+    )
     .option(
       "-m, --model <name>",
-      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Used by --drift only. Overrides CCQA_MODEL.",
+      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Used by --drift-report only. Overrides CCQA_MODEL.",
     ),
 ).action(async (target: string | undefined, opts: RunOptions) => {
   await runTests(target, opts);
@@ -112,6 +129,7 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
   const summaries: SpecRunSummary[] = [];
   let overallExitCode = 0;
   const vitestConfig = await resolveVitestConfig();
+  const captureOutput = Boolean(opts.driftReport);
 
   try {
     for (let i = 0; i < specs.length; i++) {
@@ -136,20 +154,28 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
         `--outputFile.json=${reportFile}`,
       ]);
 
+      const tail = captureOutput ? new TailBuffer(OUTPUT_TAIL_CAP) : null;
       await Promise.all([
-        streamFiltered(proc.stdout, process.stdout),
-        streamFiltered(proc.stderr, process.stderr),
+        streamFiltered(proc.stdout, process.stdout, tail),
+        streamFiltered(proc.stderr, process.stderr, tail),
       ]);
       const exitCode = await proc.exited;
       if (exitCode !== 0) overallExitCode = exitCode;
 
       const report = await readReport(reportFile);
-      summaries.push({ featureName, specName, scriptFile, report, exitCode });
+      summaries.push({
+        featureName,
+        specName,
+        scriptFile,
+        report,
+        exitCode,
+        outputTail: tail ? tail.toString() : null,
+      });
       log.blank();
     }
 
     printSummary(summaries);
-    overallExitCode = await maybeRunDrift(summaries, opts, overallExitCode);
+    await maybeWriteDriftReport(summaries, opts);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
@@ -157,98 +183,271 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
   process.exit(overallExitCode);
 }
 
-function failedSpec(s: SpecRunSummary): boolean {
+export function failedSpec(s: SpecRunSummary): boolean {
   if (s.exitCode !== 0) return true;
   return (s.report?.numFailedTests ?? 0) > 0;
 }
 
-function parseDriftFormat(raw: string | undefined): Format {
-  const v = raw ?? "text";
-  if (v === "text" || v === "json" || v === "github") return v;
-  log.error(`invalid --format: ${v} (expected text|json|github)`);
-  process.exit(2);
-}
-
 /**
- * Choose which specs to drift-check. `--drift` is a fail-supplement: only the
- * specs that failed get a drift analysis (the goal is to *explain* a vitest
- * failure). `--drift-strict` is an audit: even passing specs are checked,
- * because the CI need is "fail loud if the spec lags behind the source",
- * which can absolutely happen while vitest is still green against a stale
- * staging environment.
+ * Opt-in post-vitest report hook. With `--drift-report`, a self-contained
+ * HTML report is ALWAYS written (a green run is still a useful run summary);
+ * failing specs additionally get a spec↔code drift audit and a three-way
+ * root-cause call with the PR diff as context. The hook never changes the
+ * exit code — the run's outcome is determined by vitest alone — and when
+ * Claude auth is unavailable only the analysis is skipped, not the report.
  */
-export function selectDriftTargets(
-  summaries: SpecRunSummary[],
-  opts: { drift?: boolean; driftStrict?: boolean },
-): SpecRunSummary[] {
-  if (opts.driftStrict) return summaries;
-  if (opts.drift) return summaries.filter(failedSpec);
-  return [];
-}
-
-/**
- * Opt-in post-vitest drift hook. With `--drift`, fires only when at least
- * one spec failed (supplemental signal). With `--drift-strict`, fires
- * unconditionally so a spec/source divergence is caught even when vitest
- * passed. Skips silently when auth is unavailable so the run's exit code
- * is determined by vitest alone.
- */
-async function maybeRunDrift(
+async function maybeWriteDriftReport(
   summaries: SpecRunSummary[],
   opts: RunOptions,
-  currentExitCode: number,
-): Promise<number> {
-  const candidates = selectDriftTargets(summaries, opts);
-  if (candidates.length === 0) return currentExitCode;
+): Promise<void> {
+  if (!opts.driftReport) return;
+  const outDir = typeof opts.driftReport === "string" ? opts.driftReport : DEFAULT_REPORT_DIR;
+  const cwd = process.cwd();
 
   const auth = driftAuthAvailable();
-  if (!auth.ok) {
-    log.info(`drift analysis skipped (${auth.reason})`);
-    return currentExitCode;
+  const failed = summaries.filter(failedSpec);
+  if (!auth.ok && failed.length > 0) {
+    log.info(`failure analysis skipped (${auth.reason})`);
   }
 
-  const format = parseDriftFormat(opts.format);
-  const cwd = process.cwd();
-  const tree = await listFeatureTree(cwd);
-  const targets = candidates
-    .map((s): SpecTarget | null => {
-      const feature = tree.find((f) => f.featureName === s.featureName);
-      const spec = feature?.specs.find((sp) => sp.specName === s.specName);
-      if (!spec) return null;
-      const t: SpecTarget = { featureName: s.featureName, specName: s.specName };
-      if (spec.relatedPaths) t.relatedPaths = spec.relatedPaths;
-      if (spec.includedBlocks) t.includedBlocks = spec.includedBlocks;
-      return t;
-    })
-    .filter((t): t is SpecTarget => t !== null);
-
-  if (targets.length === 0) {
-    log.info("drift analysis skipped (no spec.yaml found for failing specs)");
-    return currentExitCode;
+  const baseRef = resolveBaseRef(opts.driftBase);
+  let diff: PrDiffResult = { ok: false, error: "diff not captured (no failures)" };
+  if (failed.length > 0) {
+    diff = await capturePrDiff(baseRef, cwd);
+    if (!diff.ok) {
+      log.info(`drift-report: source diff unavailable (${diff.error}) — analyzing without diff context`);
+    }
   }
 
-  const blocks = await loadAvailableBlocks(cwd);
-  const results = await analyzeDrift({
-    targets,
-    cwd,
-    blocks,
-    concurrency: Math.min(3, targets.length),
-    ...(opts.model ? { model: opts.model } : {}),
-    ...(opts.language ? { language: opts.language } : {}),
-    onSpecStart: (t) => {
-      if (format === "text") log.info(`drift: checking ${t.featureName}/${t.specName}`);
+  // The feature tree only feeds relatedPaths/includedBlocks lookups for
+  // failed specs — skip the directory walk entirely on a green run.
+  const tree = failed.length > 0 ? await listFeatureTree(cwd) : [];
+  const specInfoByKey = new Map(
+    tree.flatMap((f) => f.specs.map((sp) => [`${f.featureName}/${sp.specName}`, sp] as const)),
+  );
+  const findSpecInfo = (s: SpecRunSummary) =>
+    specInfoByKey.get(`${s.featureName}/${s.specName}`) ?? null;
+
+  // Drift audit first (existing analyzeDrift), so its findings can feed the
+  // failure analysis prompt as supporting context.
+  let driftResults: SpecResult[] = [];
+  if (auth.ok && failed.length > 0) {
+    const targets = failed
+      .map((s): SpecTarget | null => {
+        const spec = findSpecInfo(s);
+        if (!spec) return null;
+        const t: SpecTarget = { featureName: s.featureName, specName: s.specName };
+        if (spec.relatedPaths) t.relatedPaths = spec.relatedPaths;
+        if (spec.includedBlocks) t.includedBlocks = spec.includedBlocks;
+        return t;
+      })
+      .filter((t): t is SpecTarget => t !== null);
+
+    if (targets.length > 0) {
+      const blocks = await loadAvailableBlocks(cwd);
+      driftResults = await analyzeDrift({
+        targets,
+        cwd,
+        blocks,
+        concurrency: Math.min(3, targets.length),
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(opts.language ? { language: opts.language } : {}),
+        onSpecStart: (t) => log.info(`drift audit: ${t.featureName}/${t.specName}`),
+      });
+    }
+  }
+
+  const patchSections =
+    diff.ok && diff.diff.patch.length > 0 ? splitPatchByFile(diff.diff.patch) : null;
+
+  let printedHeader = false;
+  const results: ReportSpecResult[] = [];
+  for (const s of summaries) {
+    const assertions = collectAssertions(s);
+    const base = {
+      feature: s.featureName,
+      spec: s.specName,
+      testCounts: s.report
+        ? {
+            total: s.report.numTotalTests,
+            passed: s.report.numPassedTests,
+            failed: s.report.numFailedTests,
+          }
+        : null,
+      durationMs: assertions
+        ? assertions.reduce((sum, a) => sum + (a.durationMs ?? 0), 0)
+        : null,
+      assertions,
+    };
+
+    if (!failedSpec(s)) {
+      results.push({
+        ...base,
+        status: "passed",
+        analysis: null,
+        analysisSkipped: null,
+        driftIssues: null,
+        failureLogExcerpt: null,
+        diffExcerpt: null,
+        specYaml: null,
+      });
+      continue;
+    }
+
+    const specYaml = await tryReadSpecFile(s.featureName, s.specName, cwd);
+    const relatedPaths = findSpecInfo(s)?.relatedPaths ?? null;
+    const diffExcerpt = patchSections ? scopePatchForSpec(patchSections, relatedPaths) : null;
+    const driftResult = driftResults.find(
+      (r) => r.target.featureName === s.featureName && r.target.specName === s.specName,
+    );
+    const driftIssues = driftResult?.ok ? driftResult.issues : null;
+    const failureLog = buildFailureLog(s);
+
+    let analysis: ReportSpecResult["analysis"] = null;
+    let analysisSkipped: string | null = null;
+    if (!auth.ok) {
+      analysisSkipped = auth.reason;
+    } else if (specYaml === null) {
+      analysisSkipped = "no spec.yaml found for this spec";
+    } else {
+      const script = await readScriptSafe(s.scriptFile);
+      log.info(`failure analysis: ${s.featureName}/${s.specName}`);
+      const outcome = await analyzeFailure(
+        {
+          script,
+          specYaml,
+          failureLog,
+          diffPatch: diffExcerpt,
+          changedFiles: diff.ok ? diff.diff.nameStatus : null,
+          baseRef: diff.ok ? baseRef : null,
+          driftIssues,
+          ...(opts.language ? { outputLanguage: opts.language } : {}),
+        },
+        { ...(opts.model ? { model: opts.model } : {}), cwd },
+      );
+      analysis = outcome.analysis;
+
+      if (!printedHeader) {
+        process.stdout.write(
+          `\n${C.cyan}${C.bold}──────── failure analysis ────────${C.reset}\n`,
+        );
+        printedHeader = true;
+      }
+      const pct = Math.round(outcome.analysis.confidence * 100);
+      const firstLine = outcome.analysis.reasoning.split("\n")[0] ?? "";
+      process.stdout.write(
+        `${C.red}✖${C.reset} ${C.bold}${s.featureName}/${s.specName}${C.reset} → ` +
+          `${C.bold}${outcome.analysis.label}${C.reset} (${pct}%)` +
+          `${firstLine ? ` ${C.dim}${firstLine}${C.reset}` : ""}\n`,
+      );
+    }
+
+    results.push({
+      ...base,
+      status: "failed",
+      analysis,
+      analysisSkipped,
+      driftIssues,
+      failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
+      diffExcerpt,
+      specYaml,
+    });
+  }
+
+  const data: RunReportData = {
+    schemaVersion: 1,
+    createdAt: new Date().toISOString(),
+    runId: process.env["GITHUB_RUN_ID"] ?? null,
+    git: {
+      head: diff.ok ? diff.diff.head : null,
+      base: diff.ok ? baseRef : null,
     },
-  });
+    model: opts.model ?? null,
+    promptVersion: ANALYSIS_PROMPT_VERSION,
+    results,
+  };
 
-  if (format === "text") {
-    process.stdout.write(`\n${C.cyan}${C.bold}──────── drift analysis ────────${C.reset}\n`);
-  }
-  process.stdout.write(renderDrift(results, format, cwd));
+  const reportPath = join(outDir, "index.html");
+  await mkdir(outDir, { recursive: true });
+  await writeFile(reportPath, renderRunReport(data), "utf8");
+  log.info(`run report written to ${reportPath}`);
+}
 
-  if (opts.driftStrict && determineExitCode(results, "error") !== 0) {
-    return currentExitCode || 1;
+function collectAssertions(s: SpecRunSummary): ReportSpecResult["assertions"] {
+  if (!s.report) return null;
+  const out: NonNullable<ReportSpecResult["assertions"]> = [];
+  for (const file of s.report.testResults) {
+    for (const a of file.assertionResults) {
+      out.push({
+        name: a.fullName,
+        status: a.status === "passed" || a.status === "failed" ? a.status : "skipped",
+        durationMs: a.duration ?? null,
+      });
+    }
   }
-  return currentExitCode;
+  return out;
+}
+
+/**
+ * Compose the failure log fed to the analysis prompt and embedded in the
+ * report. With `--reporter=json` vitest writes (almost) nothing to
+ * stdout/stderr — the assertion failures live in the JSON report — so the
+ * structured failureMessages come first and the raw output tail (console
+ * logs, agent-browser noise) is appended as secondary context.
+ */
+export function buildFailureLog(s: SpecRunSummary): string {
+  const parts: string[] = [];
+  if (s.report) {
+    for (const file of s.report.testResults) {
+      for (const a of file.assertionResults) {
+        if (a.status !== "failed") continue;
+        parts.push(`✖ ${a.fullName}`);
+        for (const m of a.failureMessages ?? []) parts.push(m);
+      }
+    }
+  }
+  const tail = s.outputTail?.trim();
+  if (tail) {
+    parts.push("--- vitest output (tail) ---");
+    parts.push(tail);
+  }
+  return parts.join("\n");
+}
+
+async function readScriptSafe(path: string): Promise<string> {
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/** Cap on the per-spec output tail kept for the report / analysis prompt. */
+const OUTPUT_TAIL_CAP = 64 * 1024;
+
+/**
+ * Keeps the LAST `cap` characters appended. Vitest puts the failure summary
+ * at the end of its output, so the tail is the part worth keeping when a
+ * noisy spec overflows the cap.
+ */
+export class TailBuffer {
+  private buf = "";
+  private readonly cap: number;
+
+  constructor(cap: number) {
+    this.cap = cap;
+  }
+
+  append(s: string): void {
+    this.buf += s;
+    // Trim lazily at 2x so each append isn't a slice.
+    if (this.buf.length > this.cap * 2) this.buf = this.buf.slice(-this.cap);
+  }
+
+  toString(): string {
+    if (this.buf.length <= this.cap) return this.buf;
+    return `[...output truncated...]\n${this.buf.slice(-this.cap)}`;
+  }
 }
 
 async function readReport(path: string): Promise<VitestJsonReport | null> {
@@ -355,6 +554,7 @@ const NOISE_LINE_PATTERNS = [/^JSON report written to /];
 async function streamFiltered(
   source: Readable,
   sink: NodeJS.WritableStream,
+  capture?: TailBuffer | null,
 ): Promise<void> {
   source.setEncoding("utf8");
   let buffer = "";
@@ -366,12 +566,14 @@ async function streamFiltered(
       buffer = buffer.slice(nl + 1);
       if (!NOISE_LINE_PATTERNS.some((p) => p.test(line))) {
         sink.write(line + "\n");
+        capture?.append(line + "\n");
       }
       nl = buffer.indexOf("\n");
     }
   }
   if (buffer.length > 0 && !NOISE_LINE_PATTERNS.some((p) => p.test(buffer))) {
     sink.write(buffer);
+    capture?.append(buffer);
   }
 }
 

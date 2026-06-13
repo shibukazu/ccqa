@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { relative } from "node:path";
 import { promisify } from "node:util";
 
-const execFileP = promisify(execFile);
+export const execFileP = promisify(execFile);
 
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed";
 
