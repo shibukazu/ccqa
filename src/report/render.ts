@@ -1,4 +1,6 @@
 import { DRAFT_CATEGORY_LABEL } from "../types.ts";
+import { MAX_EVIDENCE_ITEMS } from "./analyze.ts";
+import { reportStrings, type ReportStrings } from "./i18n.ts";
 import { FAILURE_LABELS, type ReportSpecResult, type RunReportData } from "./schema.ts";
 
 /**
@@ -20,74 +22,96 @@ export function renderRunReport(data: RunReportData): string {
   const analyzed = failed.filter((r) => r.analysis !== null);
   const passedCount = data.results.length - failed.length;
   const totalDuration = data.results.reduce((sum, r) => sum + (r.durationMs ?? 0), 0);
+  const s = reportStrings(data.language);
+  const htmlLang = resolveHtmlLang(data.language);
 
   // <-escape every "<" so "</script>" inside logs/reasoning can never
   // terminate the data island. The result is still valid JSON.
   const dataJson = JSON.stringify(data).replace(/</g, "\\u003c");
+  const stringsJson = JSON.stringify({
+    kpiLabeled: s.kpiLabeled,
+    kpiAccuracy: s.kpiAccuracy,
+    kpiRemaining: s.kpiRemaining,
+    failureLabelDisplay: s.failureLabelDisplay,
+  }).replace(/</g, "\\u003c");
 
   return `<!DOCTYPE html>
-<html lang="en">
+<html lang="${esc(htmlLang)}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ccqa run report</title>
+<title>${esc(s.title)}</title>
 <style>${CSS}</style>
 </head>
 <body>
 <header>
   <div class="header-inner">
     <div class="header-top">
-      <h1>ccqa run report</h1>
+      <h1>${esc(s.title)}</h1>
       <div class="meta">
         <span title="generated at">${esc(formatDate(data.createdAt))}</span>
         ${totalDuration > 0 ? `<span>${formatDuration(totalDuration)}</span>` : ""}
         ${data.runId ? `<span>CI run ${esc(data.runId)}</span>` : ""}
         ${data.git.head ? `<span><code>${esc(data.git.head)}</code>${data.git.base ? ` vs <code>${esc(data.git.base)}</code>` : ""}</span>` : ""}
-        <span class="dim">prompt v${esc(data.promptVersion)}</span>
       </div>
     </div>
     <div class="toolbar">
       <div class="chips" id="filter-chips">
-        <button type="button" class="chip active" data-filter="all">All <span class="count">${data.results.length}</span></button>
-        <button type="button" class="chip chip-pass" data-filter="passed">${passedCount} passed</button>
-        <button type="button" class="chip chip-fail" data-filter="failed">${failed.length} failed</button>
+        <button type="button" class="chip active" data-filter="all">${esc(s.filterAll)} <span class="count">${data.results.length}</span></button>
+        <button type="button" class="chip chip-pass" data-filter="passed">${passedCount} ${esc(s.filterPassed)}</button>
+        <button type="button" class="chip chip-fail" data-filter="failed">${failed.length} ${esc(s.filterFailed)}</button>
       </div>
-      <input type="search" id="search" placeholder="Filter by name…" autocomplete="off">
+      <input type="search" id="search" placeholder="${esc(s.filterPlaceholder)}" autocomplete="off">
     </div>
   </div>
 </header>
 
 <div class="page">
-${analyzed.length > 0 ? metricsPanel() : ""}
+${analyzed.length > 0 ? metricsPanel(s) : ""}
 
 <main id="spec-list">
-${data.results.map((r, i) => renderResult(r, i)).join("\n")}
+${data.results.map((r, i) => renderResult(r, i, s)).join("\n")}
 </main>
-<p class="empty-note" id="no-match" hidden>No specs match the current filter.</p>
+<p class="empty-note" id="no-match" hidden>${esc(s.emptyNote)}</p>
 </div>
 
 <script type="application/json" id="ccqa-report-data">${dataJson}</script>
+<script type="application/json" id="ccqa-report-strings">${stringsJson}</script>
 <script>${CLIENT_JS}</script>
 </body>
 </html>
 `;
 }
 
-function metricsPanel(): string {
+function resolveHtmlLang(lang: string | null): string {
+  if (!lang) return "en";
+  const base = lang.toLowerCase().split(/[-_]/)[0] ?? "";
+  return base === "ja" ? "ja" : "en";
+}
+
+function metricsPanel(s: ReportStrings): string {
   return `<section class="panel" id="measure-panel">
   <div class="panel-head">
-    <h2>Prediction accuracy</h2>
+    <h2>${esc(s.predictionAccuracy)}</h2>
     <div class="measure-actions">
-      <button type="button" id="export-labels">Export labels (JSON)</button>
-      <label class="import-label">Import labels<input type="file" id="import-labels" accept="application/json"></label>
+      <button type="button" id="export-labels">${esc(s.exportLabels)}</button>
+      <label class="import-label">${esc(s.importLabels)}<input type="file" id="import-labels" accept="application/json"></label>
     </div>
   </div>
-  <p class="hint">Grade each failed case below with its true cause; the matrix updates live. Labels are saved in this browser (localStorage) — export them to keep or merge.</p>
-  <div id="metrics"></div>
+  <div class="metrics-summary" id="metrics-summary"></div>
+  <p class="hint">${esc(s.predictionHint)}</p>
+  <details class="metrics-detail">
+    <summary>${esc(s.confusionMatrix)} <span class="metrics-detail-sub">${esc(s.confusionMatrixSub)}</span></summary>
+    <div id="metrics-matrix"></div>
+  </details>
+  <details class="metrics-detail">
+    <summary>${esc(s.perClassMetrics)} <span class="metrics-detail-sub">${esc(s.perClassMetricsSub)}</span></summary>
+    <div id="metrics-perclass"></div>
+  </details>
 </section>`;
 }
 
-function renderResult(r: ReportSpecResult, index: number): string {
+function renderResult(r: ReportSpecResult, index: number, s: ReportStrings): string {
   const id = `${r.feature}/${r.spec}`;
   const duration =
     r.durationMs != null && r.durationMs > 0
@@ -98,7 +122,13 @@ function renderResult(r: ReportSpecResult, index: number): string {
     : "";
   const predictionChip =
     r.status === "failed" && r.analysis
-      ? `<span class="badge ${r.analysis.label}">${r.analysis.label}</span>`
+      ? `<span class="badge ${r.analysis.label}">${esc(displayLabel(r.analysis.label, s))}</span>`
+      : "";
+  // Failed specs that have an analysis but no human grade yet get a chip the
+  // reviewer can scan for. The client JS hides it once the radio is selected.
+  const needsGradingChip =
+    r.status === "failed" && r.analysis
+      ? `<span class="needs-grading-chip" data-case-id="${esc(id)}">${esc(s.needsGrading)}</span>`
       : "";
 
   return `<details class="spec ${r.status}" data-status="${r.status}" data-case-id="${esc(id)}"${r.status === "failed" ? " open" : ""}>
@@ -106,19 +136,87 @@ function renderResult(r: ReportSpecResult, index: number): string {
     ${statusIcon(r.status)}
     <span class="spec-name">${esc(id)}</span>
     ${predictionChip}
+    ${needsGradingChip}
     <span class="spacer"></span>
     ${counts}
     ${duration}
   </summary>
   <div class="spec-body">
     ${renderAssertions(r)}
-    ${r.status === "failed" ? (r.analysis ? renderAnalysis(r, index) : renderSkipped(r)) : ""}
-    ${renderDriftIssues(r)}
-    ${collapsible("Failure log", r.failureLogExcerpt)}
-    ${collapsible("Source diff (scoped)", r.diffExcerpt, "diff")}
-    ${collapsible("spec.yaml", r.specYaml)}
+    ${renderEvidence(r, s)}
+    ${r.status === "failed" ? (r.analysis ? renderAnalysis(r, index, s) : renderSkipped(r, s)) : ""}
+    ${renderDriftIssues(r, s)}
+    ${collapsible(s.collFailureLog, s.collFailureLogHelp, r.failureLogExcerpt)}
+    ${collapsible(s.collSourceDiff, s.collSourceDiffHelp, r.diffExcerpt, "diff")}
+    ${collapsible(s.collSpecYaml, s.collSpecYamlHelp, r.specYaml)}
   </div>
 </details>`;
+}
+
+function renderEvidence(r: ReportSpecResult, s: ReportStrings): string {
+  if (!r.evidence || r.evidence.length === 0) return "";
+  const thumbs = r.evidence.map((e) => renderEvidenceThumb(e, s)).join("");
+  return `<details class="evidence-block" open>
+  <summary>${esc(s.stepEvidence(r.evidence.length))}</summary>
+  <div class="evidence-grid">${thumbs}</div>
+</details>`;
+}
+
+function renderEvidenceThumb(e: NonNullable<ReportSpecResult["evidence"]>[number], s: ReportStrings): string {
+  const caption = esc(e.stepId);
+  const isFailed = e.status === "failed";
+  const statusBadge = `<span class="evidence-status evidence-status-${isFailed ? "failed" : "passed"}">${esc(isFailed ? s.statusFailed : s.statusPassed)}</span>`;
+  const description = e.description
+    ? `<p class="evidence-description">${esc(e.description)}</p>`
+    : "";
+  const failureBlock = isFailed && e.failureSummary
+    ? `<div class="evidence-failure">
+    <span class="evidence-failure-icon" aria-hidden="true">✖</span>
+    <span class="evidence-failure-text">${esc(e.failureSummary)}</span>
+  </div>`
+    : "";
+  const footerRows: string[] = [];
+  if (e.url) {
+    const shortUrl = shortenUrl(e.url);
+    footerRows.push(
+      `<div class="evidence-meta-row"><span class="evidence-meta-label">${esc(s.metaUrl)}</span><span class="evidence-meta-value" title="${esc(e.url)}">${esc(shortUrl)}</span></div>`,
+    );
+  }
+  if (e.title) {
+    footerRows.push(
+      `<div class="evidence-meta-row"><span class="evidence-meta-label">${esc(s.metaPage)}</span><span class="evidence-meta-value">${esc(e.title)}</span></div>`,
+    );
+  }
+  const footer =
+    footerRows.length > 0 ? `<div class="evidence-meta">${footerRows.join("")}</div>` : "";
+  return `<figure class="evidence-thumb evidence-thumb-${isFailed ? "failed" : "passed"}">
+  ${statusBadge}
+  <a href="${esc(e.pngPath)}" target="_blank" rel="noopener"><img src="${esc(e.pngPath)}" alt="${caption}" loading="lazy"></a>
+  <figcaption>
+    <strong class="evidence-stepid">${caption}</strong>
+    ${description}
+    ${failureBlock}
+    ${footer}
+  </figcaption>
+</figure>`;
+}
+
+/**
+ * Compact a URL for the caption footer: drop the scheme, drop query/hash, drop
+ * a trailing slash on `/`. The full URL is preserved verbatim in the link's
+ * `title` attribute so reviewers can still recover it on hover. We keep the
+ * shortening conservative — no host truncation, no path eliding — so the
+ * displayed text is always a strict prefix of the real URL.
+ */
+function shortenUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    const host = u.host;
+    const path = u.pathname === "/" ? "" : u.pathname;
+    return `${host}${path}`;
+  } catch {
+    return raw;
+  }
 }
 
 function statusIcon(status: "passed" | "failed" | "skipped"): string {
@@ -139,42 +237,70 @@ function renderAssertions(r: ReportSpecResult): string {
   return `<ul class="steps">${rows}</ul>`;
 }
 
-function renderAnalysis(r: ReportSpecResult, index: number): string {
+function renderAnalysis(r: ReportSpecResult, index: number, s: ReportStrings): string {
   const a = r.analysis!;
   const pct = Math.round(a.confidence * 100);
+  // headline / recommendation / reasoning are schema-defaulted to "" so
+  // `.trim()` (not `?.trim()`) is enough — they are always strings.
+  const headlineText = a.headline.trim();
+  const recommendationText = a.recommendation.trim();
+  const reasoningText = a.reasoning.trim();
+  const headline = headlineText
+    ? `<p class="analysis-headline">${esc(headlineText)}</p>`
+    : "";
   const evidence =
     a.evidence.length > 0
       ? `<ul class="evidence">${a.evidence
+          .slice(0, MAX_EVIDENCE_ITEMS)
           .map((e) => `<li>${e.file ? `<code>${esc(e.file)}</code> — ` : ""}${esc(e.detail)}</li>`)
           .join("")}</ul>`
       : "";
+  const recommendation = recommendationText
+    ? `<p class="analysis-recommendation"><span class="analysis-recommendation-label">${esc(s.recommendation)}</span> ${esc(recommendationText)}</p>`
+    : "";
+  const reasoning = reasoningText
+    ? `<details class="analysis-reasoning"><summary>${esc(s.moreContext)}</summary><p>${esc(reasoningText)}</p></details>`
+    : "";
+
+  const subDiag = a.subDiagnosis && a.subDiagnosis !== "NONE" ? a.subDiagnosis : "";
+  const subDiagBlock = subDiag
+    ? `<div class="sub-cause">
+        <span class="sub-cause-arrow" aria-hidden="true">↳</span>
+        <span class="sub-cause-label">${esc(s.subCause)}</span>
+        <span class="sub-cause-value">${esc(subDiag)}</span>
+        ${s.subDiagnosisHelp[subDiag] ? labelWithHelp("", s.subDiagnosisHelp[subDiag] ?? "") : ""}
+      </div>`
+    : "";
 
   return `<div class="analysis">
   <div class="prediction">
-    <span class="badge ${a.label}">${a.label}</span>
+    <span class="badge ${a.label}">${esc(displayLabel(a.label, s))}</span>
+    ${labelHelpBubble(a.label, s)}
     <span class="confidence" title="confidence"><span class="confidence-bar"><span style="width:${pct}%"></span></span>${pct}%</span>
-    ${a.subDiagnosis && a.subDiagnosis !== "NONE" ? `<span class="sub">${esc(a.subDiagnosis)}</span>` : ""}
   </div>
-  <p class="reasoning">${esc(a.reasoning)}</p>
+  ${subDiagBlock}
+  ${headline}
   ${evidence}
+  ${recommendation}
+  ${reasoning}
   <div class="truth">
-    <span class="truth-title">True cause</span>
+    <span class="truth-title">${esc(s.trueCause)}</span>
     ${FAILURE_LABELS
       .map(
         (label) =>
-          `<label class="truth-option ${label}"><input type="radio" name="label--${index}" value="${label}"><span>${label}</span></label>`,
+          `<label class="truth-option ${label}"><input type="radio" name="label--${index}" value="${label}"><span>${esc(displayLabel(label, s))}</span>${labelHelpBubble(label, s)}</label>`,
       )
       .join("\n    ")}
-    <input type="text" class="note" placeholder="note (optional)" data-case-index="${index}">
+    <input type="text" class="note" placeholder="${esc(s.noteOptional)}" data-case-index="${index}">
   </div>
 </div>`;
 }
 
-function renderSkipped(r: ReportSpecResult): string {
-  return `<div class="analysis skipped">analysis skipped${r.analysisSkipped ? `: ${esc(r.analysisSkipped)}` : ""}</div>`;
+function renderSkipped(r: ReportSpecResult, s: ReportStrings): string {
+  return `<div class="analysis skipped">${esc(s.analysisSkipped)}${r.analysisSkipped ? `: ${esc(r.analysisSkipped)}` : ""}</div>`;
 }
 
-function renderDriftIssues(r: ReportSpecResult): string {
+function renderDriftIssues(r: ReportSpecResult, s: ReportStrings): string {
   if (!r.driftIssues || r.driftIssues.length === 0) return "";
   const items = r.driftIssues
     .map(
@@ -182,12 +308,36 @@ function renderDriftIssues(r: ReportSpecResult): string {
         `<li><span class="severity ${i.severity}">${i.severity}</span> (${esc(DRAFT_CATEGORY_LABEL[i.category])}${i.stepId ? `, step ${esc(i.stepId)}` : ""}) ${esc(i.message)}${i.detail ? ` — ${esc(i.detail)}` : ""}</li>`,
     )
     .join("");
-  return `<details class="drift"><summary>Spec↔code drift audit (${r.driftIssues.length})</summary><ul>${items}</ul></details>`;
+  return `<details class="drift"><summary>${labelWithHelp(esc(s.collDriftAudit(r.driftIssues.length)), s.collDriftAuditHelp)}</summary><ul>${items}</ul></details>`;
 }
 
-function collapsible(title: string, content: string | null, kind = ""): string {
+function collapsible(title: string, help: string | null, content: string | null, kind = ""): string {
   if (!content) return "";
-  return `<details class="raw ${kind}"><summary>${esc(title)}</summary><pre>${esc(content)}</pre></details>`;
+  return `<details class="raw ${kind}"><summary>${labelWithHelp(esc(title), help)}</summary><pre>${esc(content)}</pre></details>`;
+}
+
+/** Human-facing name for a failure label. Falls back to the enum string. */
+function displayLabel(label: string, s: ReportStrings): string {
+  return s.failureLabelDisplay[label] ?? label;
+}
+
+/** Standalone help bubble for a failure label. Empty string when no help exists. */
+function labelHelpBubble(label: string, s: ReportStrings): string {
+  const help = s.failureLabelHelp[label];
+  if (!help) return "";
+  return labelWithHelp("", help);
+}
+
+/**
+ * Append a `?` help bubble with a CSS-driven tooltip that opens on hover AND
+ * keyboard focus (the native `title` attribute only fires on hover and has a
+ * built-in ~700ms delay). The tooltip itself is `aria-hidden` because the
+ * accessible name on the button already exposes the same text to screen
+ * readers.
+ */
+function labelWithHelp(label: string, help: string | null): string {
+  if (!help) return label;
+  return `${label} <span class="help-wrap"><span class="help" tabindex="0" role="button" aria-label="${esc(help)}">?</span><span class="help-tip" role="tooltip" aria-hidden="true">${esc(help)}</span></span>`;
 }
 
 const ESC_MAP: Record<string, string> = {
@@ -342,9 +492,37 @@ h2 { font-size: 14px; margin: 0; font-weight: 650; }
 }
 .confidence-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 .sub { font-size: 11px; background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); padding: 1px 8px; border-radius: 999px; }
-.reasoning { font-size: 13px; margin: 9px 0; white-space: pre-wrap; line-height: 1.55; }
+.sub-cause {
+  display: flex; align-items: center; gap: 6px;
+  margin: 4px 0 0 6px; padding-left: 6px;
+  font-size: 12px; color: var(--text-dim);
+}
+.sub-cause-arrow { color: var(--text-dim); font-size: 13px; }
+.sub-cause-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim);
+}
+.sub-cause-value {
+  font-size: 11.5px; font-weight: 700; color: var(--text);
+  background: var(--surface); border: 1px solid var(--border);
+  padding: 1px 8px; border-radius: 4px;
+}
+.needs-grading-chip {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 2px 8px; border-radius: 999px;
+  background: rgba(212, 167, 44, 0.18); color: var(--skip);
+  border: 1px solid var(--skip);
+}
+.analysis-headline { font-size: 13.5px; margin: 9px 0 6px; font-weight: 600; line-height: 1.5; }
 .evidence { font-size: 12.5px; color: var(--text-dim); margin: 6px 0; padding-left: 18px; line-height: 1.5; }
 .evidence code { background: var(--surface); border: 1px solid var(--border); padding: 0 5px; border-radius: 4px; font-size: 11px; }
+.analysis-recommendation { font-size: 13px; margin: 9px 0 4px; line-height: 1.5; }
+.analysis-recommendation-label {
+  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--accent); margin-right: 6px;
+}
+.analysis-reasoning { margin: 6px 0; font-size: 12.5px; color: var(--text-dim); }
+.analysis-reasoning > summary { cursor: pointer; }
+.analysis-reasoning p { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.55; }
 .truth {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   background: var(--surface); border: 1px dashed var(--border); border-radius: 6px;
@@ -369,14 +547,47 @@ details.raw pre {
 .severity.WARN { background: rgba(212, 167, 44, 0.18); color: var(--skip); }
 .severity.OK { background: var(--pass-bg); color: var(--pass); }
 .drift ul { padding-left: 18px; font-size: 12.5px; line-height: 1.55; }
+.help-wrap { position: relative; display: inline-block; }
+.help {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 14px; height: 14px; margin-left: 6px;
+  border: 1px solid var(--border); border-radius: 50%;
+  font-size: 9.5px; font-weight: 700; color: var(--text-dim);
+  background: var(--surface-2); cursor: help; vertical-align: middle;
+}
+.help:hover, .help:focus { color: var(--text); border-color: var(--text-dim); outline: none; }
+.help-tip {
+  position: absolute; left: 0; top: calc(100% + 8px); z-index: 5;
+  display: none; width: max-content; max-width: 320px;
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface); color: var(--text); box-shadow: var(--shadow);
+  font-size: 12px; font-weight: 400; line-height: 1.5; text-transform: none;
+  letter-spacing: 0; white-space: normal; word-break: break-word;
+}
+.help-wrap:hover .help-tip, .help-wrap:focus-within .help-tip { display: block; }
 table.matrix { border-collapse: collapse; font-size: 12.5px; margin: 10px 16px 10px 0; display: inline-table; vertical-align: top; }
 table.matrix th, table.matrix td { border: 1px solid var(--border); padding: 4px 12px; text-align: center; }
 table.matrix th { background: var(--surface-2); font-weight: 600; }
 table.matrix td { font-variant-numeric: tabular-nums; }
 table.matrix td.hit { background: var(--pass-bg); font-weight: 700; }
 table.matrix td.miss-nonzero { background: var(--fail-bg); }
-.stats { font-size: 13px; }
-.stats .big { font-size: 17px; font-weight: 700; }
+.metrics-summary {
+  display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr));
+  gap: 12px; margin: 12px 0 8px;
+}
+.metric-tile {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 10px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2);
+}
+.metric-tile-value { font-size: 20px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.metric-tile-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
+.metric-tile-attention { border-color: var(--accent); }
+.metric-tile-attention .metric-tile-value { color: var(--accent); }
+.metrics-detail { margin: 6px 0; font-size: 13px; }
+.metrics-detail > summary { cursor: pointer; padding: 4px 0; color: var(--text); font-weight: 600; }
+.metrics-detail-sub { font-weight: 400; color: var(--text-dim); font-size: 12px; margin-left: 6px; }
+.metrics-detail[open] > summary { margin-bottom: 8px; }
 .measure-actions { display: flex; gap: 14px; align-items: center; font-size: 12.5px; }
 .measure-actions button {
   font: inherit; font-size: 12.5px; padding: 4px 13px; cursor: pointer;
@@ -386,6 +597,46 @@ table.matrix td.miss-nonzero { background: var(--fail-bg); }
 .import-label { cursor: pointer; color: var(--text-dim); }
 .import-label input { display: none; }
 .empty-note { color: var(--text-dim); text-align: center; font-size: 13px; }
+.evidence-block { margin: 10px 0; font-size: 13px; }
+.evidence-block > summary { cursor: pointer; color: var(--text-dim); }
+.evidence-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px; margin-top: 10px;
+}
+.evidence-thumb {
+  margin: 0; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface-2); overflow: hidden; position: relative;
+}
+.evidence-thumb-failed { border-color: var(--fail); box-shadow: inset 0 0 0 1px var(--fail); }
+.evidence-thumb img { display: block; width: 100%; height: 140px; object-fit: cover; object-position: top left; background: #fff; }
+.evidence-thumb figcaption { padding: 8px 10px 10px; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+.evidence-stepid { font-weight: 650; font-size: 12px; color: var(--text-dim); letter-spacing: 0.02em; }
+.evidence-description { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text); white-space: pre-line; overflow-wrap: anywhere; }
+.evidence-status {
+  position: absolute; top: 8px; left: 8px;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  padding: 2px 8px; border-radius: 4px; color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.evidence-status-passed { background: var(--pass); }
+.evidence-status-failed { background: var(--fail); }
+.evidence-failure {
+  display: flex; align-items: flex-start; gap: 6px;
+  margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--fail);
+  font-size: 12px; color: var(--fail); line-height: 1.45; overflow-wrap: anywhere;
+}
+.evidence-failure-icon { font-weight: 700; flex: 0 0 auto; }
+.evidence-failure-text { flex: 1; }
+.evidence-meta {
+  display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 2px;
+  font-size: 11px; padding-top: 6px; border-top: 1px solid var(--border);
+}
+.evidence-meta-row { display: contents; }
+.evidence-meta-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+  color: var(--text-dim); text-transform: uppercase; padding-top: 1px;
+}
+.evidence-meta-value { color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 `;
 
 // Vanilla JS, no client-side template literals, no closing-script-tag string
@@ -396,6 +647,13 @@ const CLIENT_JS = `
   var dataEl = document.getElementById('ccqa-report-data');
   if (!dataEl) return;
   var data = JSON.parse(dataEl.textContent);
+  var stringsEl = document.getElementById('ccqa-report-strings');
+  var STRINGS = stringsEl ? JSON.parse(stringsEl.textContent) : {};
+  var L_LABELED = STRINGS.kpiLabeled || 'Labeled';
+  var L_ACCURACY = STRINGS.kpiAccuracy || 'Accuracy';
+  var L_REMAINING = STRINGS.kpiRemaining || 'Remaining';
+  var LABEL_DISPLAY = STRINGS.failureLabelDisplay || {};
+  function displayLabel(name) { return LABEL_DISPLAY[name] || name; }
   var LABELS = ${JSON.stringify(FAILURE_LABELS)};
   var PRED_LABELS = LABELS.concat(['UNKNOWN']);
   var storageKey = 'ccqa-report:' + (data.runId || data.createdAt);
@@ -470,9 +728,34 @@ const CLIENT_JS = `
     });
   }
 
+  // All metric DOM is built with createElement + textContent so the entries
+  // here cannot inject markup. Labels themselves come from the server-baked
+  // FAILURE_LABELS constant; numbers come from local counters. Keeping the
+  // pipeline strict so future additions (e.g. user-provided notes) cannot
+  // sneak in via innerHTML.
+  function el(tag, attrs, text) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    }
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+
+  function makeTile(value, label, attention) {
+    var tile = el('div', { 'class': 'metric-tile' + (attention ? ' metric-tile-attention' : '') });
+    tile.appendChild(el('span', { 'class': 'metric-tile-value' }, value));
+    tile.appendChild(el('span', { 'class': 'metric-tile-label' }, label));
+    return tile;
+  }
+
+  function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+
   function renderMetrics() {
-    var target = document.getElementById('metrics');
-    if (!target) return;
+    var summary = document.getElementById('metrics-summary');
+    var matrixTarget = document.getElementById('metrics-matrix');
+    var perClassTarget = document.getElementById('metrics-perclass');
+    if (!summary || !matrixTarget || !perClassTarget) return;
 
     var m = {};
     PRED_LABELS.forEach(function (p) {
@@ -490,28 +773,47 @@ const CLIENT_JS = `
       if (c.predicted === entry.label) correct++;
     });
 
-    var html = '';
-    html += '<div class="stats"><span class="big">' +
-      (labeled === 0 ? '–' : Math.round((correct / labeled) * 100) + '%') +
-      '</span> accuracy · ' + labeled + ' labeled / ' + cases.length + ' analyzed failures' +
-      (cases.length - labeled > 0 ? ' · <strong>' + (cases.length - labeled) + ' unlabeled</strong>' : '') +
-      '</div>';
+    var total = cases.length;
+    var remaining = total - labeled;
+    var accuracyText = labeled === 0 ? '–' : Math.round((correct / labeled) * 100) + '%';
 
-    html += '<table class="matrix"><thead><tr><th>predicted \\\\ actual</th>';
-    LABELS.forEach(function (a) { html += '<th>' + a + '</th>'; });
-    html += '</tr></thead><tbody>';
+    clear(summary);
+    summary.appendChild(makeTile(labeled + ' / ' + total, L_LABELED, false));
+    summary.appendChild(makeTile(accuracyText, L_ACCURACY, false));
+    summary.appendChild(makeTile(remaining, L_REMAINING, remaining > 0));
+
+    clear(matrixTarget);
+    var matrix = el('table', { 'class': 'matrix' });
+    var matrixHead = el('thead');
+    var matrixHeadRow = el('tr');
+    matrixHeadRow.appendChild(el('th', null, 'predicted \\ actual'));
+    LABELS.forEach(function (a) { matrixHeadRow.appendChild(el('th', null, displayLabel(a))); });
+    matrixHead.appendChild(matrixHeadRow);
+    matrix.appendChild(matrixHead);
+    var matrixBody = el('tbody');
     PRED_LABELS.forEach(function (p) {
-      html += '<tr><th>' + p + '</th>';
+      var row = el('tr');
+      row.appendChild(el('th', null, displayLabel(p)));
       LABELS.forEach(function (a) {
         var v = m[p][a];
         var cls = p === a ? 'hit' : (v > 0 ? 'miss-nonzero' : '');
-        html += '<td class="' + cls + '">' + v + '</td>';
+        row.appendChild(el('td', cls ? { 'class': cls } : null, v));
       });
-      html += '</tr>';
+      matrixBody.appendChild(row);
     });
-    html += '</tbody></table>';
+    matrix.appendChild(matrixBody);
+    matrixTarget.appendChild(matrix);
 
-    html += '<table class="matrix"><thead><tr><th>class</th><th>precision</th><th>recall</th><th>F1</th><th>support</th></tr></thead><tbody>';
+    clear(perClassTarget);
+    var perClass = el('table', { 'class': 'matrix' });
+    var perClassHead = el('thead');
+    var perClassHeadRow = el('tr');
+    ['class', 'precision', 'recall', 'F1', 'support'].forEach(function (h) {
+      perClassHeadRow.appendChild(el('th', null, h));
+    });
+    perClassHead.appendChild(perClassHeadRow);
+    perClass.appendChild(perClassHead);
+    var perClassBody = el('tbody');
     LABELS.forEach(function (cls) {
       var tp = m[cls][cls];
       var predictedAs = 0;
@@ -522,12 +824,16 @@ const CLIENT_JS = `
       var recall = actualAs > 0 ? tp / actualAs : null;
       var f1 = precision !== null && recall !== null && precision + recall > 0
         ? (2 * precision * recall) / (precision + recall) : null;
-      html += '<tr><th>' + cls + '</th><td>' + fmt(precision) + '</td><td>' + fmt(recall) +
-        '</td><td>' + fmt(f1) + '</td><td>' + actualAs + '</td></tr>';
+      var row = el('tr');
+      row.appendChild(el('th', null, displayLabel(cls)));
+      row.appendChild(el('td', null, fmt(precision)));
+      row.appendChild(el('td', null, fmt(recall)));
+      row.appendChild(el('td', null, fmt(f1)));
+      row.appendChild(el('td', null, actualAs));
+      perClassBody.appendChild(row);
     });
-    html += '</tbody></table>';
-
-    target.innerHTML = html;
+    perClass.appendChild(perClassBody);
+    perClassTarget.appendChild(perClass);
   }
 
   function fmt(v) { return v === null ? '–' : (Math.round(v * 100) / 100).toFixed(2); }
@@ -537,6 +843,16 @@ const CLIENT_JS = `
       if (cases[i].index === index) return cases[i];
     }
     return null;
+  }
+
+  function updateNeedsGradingChips() {
+    var chips = document.querySelectorAll('.needs-grading-chip');
+    chips.forEach(function (chip) {
+      var id = chip.getAttribute('data-case-id') || '';
+      var entry = state[id];
+      var graded = entry && entry.label && LABELS.indexOf(entry.label) >= 0;
+      chip.style.display = graded ? 'none' : '';
+    });
   }
 
   document.addEventListener('change', function (e) {
@@ -550,6 +866,7 @@ const CLIENT_JS = `
       state[key].label = t.value;
       save();
       renderMetrics();
+      updateNeedsGradingChips();
     }
   });
 
@@ -611,6 +928,7 @@ const CLIENT_JS = `
           save();
           applyStateToInputs();
           renderMetrics();
+          updateNeedsGradingChips();
         } catch (e) {
           alert('Could not parse labels JSON: ' + e.message);
         }
@@ -621,5 +939,6 @@ const CLIENT_JS = `
 
   applyStateToInputs();
   renderMetrics();
+  updateNeedsGradingChips();
 })();
 `;

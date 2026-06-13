@@ -11,6 +11,13 @@ ccqa run --drift-report --drift-base origin/main # base ref for the source diff
 ## What the report contains
 
 - A run summary: every spec with its pass/fail status and test counts.
+- For each spec, a **step-evidence gallery**: one PNG screenshot per `spec.yaml`
+  step (plus a JSON sidecar with URL/title/timestamp) so a reviewer can confirm
+  the test actually drove the app through the intended states. Captured by
+  default; pass `--no-evidence` to skip. Files land in
+  `<report-dir>/evidence/<feature>/<spec>/<stepId>.{png,json}` and are linked
+  from the report; they survive on disk even when `--drift-report` is not
+  passed, so they work as a standalone CI artifact.
 - For each **failing** spec:
   - a **root-cause call** made by Claude with the PR diff as context:
     - `TEST_DRIFT` — what the spec verifies is unchanged; only the test code drifted from the source (selector rename, timing, over-assertion)

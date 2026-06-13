@@ -67,6 +67,8 @@ export function actionsToScript(input: ActionsToScriptInput): string {
   const helperImports = [
     "ab", "abWait", "abAssertTextVisible", "abAssertVisible", "abAssertNotVisible",
     "abAssertUrl", "abAssertEnabled", "abAssertDisabled", "abAssertChecked", "abAssertUnchecked",
+    "abStepEvidence",
+    "__setCurrentStep",
   ];
 
   const imports = [
@@ -135,12 +137,20 @@ function actionsToLines(
   // trap). The spec's reflection intent is verified later on the result page.
   let currentStepId: string | undefined;
   let filledValuesThisStep = new Set<string>();
+  // Tracks the most recently opened step marker so we can flush
+  // `abStepEvidence(...)` right before the next marker (and once at the end).
+  let openMarker: StepMarker | null = null;
 
   for (let i = 0; i < actions.length; i++) {
     const marker = markerByIndex.get(i);
     if (marker) {
+      if (openMarker) lines.push(`abStepEvidence(${j(openMarker.stepId)}, ${j(openMarker.source)});`);
       if (lines.length > 0) lines.push("");
       lines.push(`// step: ${marker.stepId} [${marker.source}]`);
+      // Tell the runtime which step we're inside so fail() can attribute
+      // failures back to it. abStepEvidence at the end of the step clears it.
+      lines.push(`__setCurrentStep(${j(marker.stepId)}, ${j(marker.source)});`);
+      openMarker = marker;
     }
     const action = actions[i]!;
     if (action.stepId !== currentStepId) {
@@ -182,6 +192,7 @@ function actionsToLines(
       for (const n of followups) appendEmptyStepNotice(lines, n);
     }
   }
+  if (openMarker) lines.push(`abStepEvidence(${j(openMarker.stepId)}, ${j(openMarker.source)});`);
   return lines;
 }
 

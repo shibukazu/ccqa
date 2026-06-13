@@ -26,11 +26,20 @@ export async function diagnose(
   // SELECTOR_DRIFT case). No Bash, no Write, no WebFetch — diagnose must
   // never mutate state. maxTurns is bumped so the model can run a few
   // grep/read turns before producing the final JSON.
+  //
+  // 20 (was 10): in practice 10 was tight enough that any non-trivial
+  // failure — e.g. asserting a common Japanese word that also appears in
+  // unrelated sidebar copy — burned the budget on `Grep` candidates before
+  // the model could commit to a label, and the SDK then surfaced "Reached
+  // maximum number of turns" as a thrown error. 20 gives roughly twice the
+  // exploration headroom while staying well under the per-spec vitest
+  // timeout (5 min); the auto-fix loop already catches throws from the
+  // SDK, so this is purely a precision improvement, not a safety change.
   const { result: raw, isError } = await invokeClaudeStreaming(
     {
       prompt,
       allowedTools: ["Read", "Grep", "Glob"],
-      maxTurns: 10,
+      maxTurns: 20,
       model: options.model,
     },
     () => {},

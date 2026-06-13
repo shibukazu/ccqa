@@ -63,6 +63,11 @@ ccqa generate tasks/create-and-complete
 ccqa run tasks/create-and-complete
 ```
 
+By default each run writes step-boundary screenshots and metadata to
+`ccqa-report/evidence/<feature>/<spec>/` so a reviewer can confirm a passing
+spec actually reached the states its `expected` clauses describe. Disable with
+`--no-evidence`.
+
 In CI you can opt in to an HTML run report by passing `--drift-report` — every failing spec gets a drift audit plus a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) using the PR diff as context, and the report lets a human grade those calls to measure their accuracy. Requires `ANTHROPIC_API_KEY` or a local Claude login for the analysis part. See [Run report](./docs/report.md).
 
 ```bash
