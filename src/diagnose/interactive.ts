@@ -58,11 +58,49 @@ function printContext({ result, diff, failureExcerpt }: InteractivePromptInput):
 
   if (diff) {
     process.stdout.write("\n[fix] proposed fix:\n");
-    process.stdout.write(prefixLines(diff, "[fix]   "));
+    process.stdout.write(formatDiff(diff, "[fix]   "));
     process.stdout.write("\n");
   }
   process.stdout.write("\n");
 }
+
+/**
+ * Per-line ANSI coloring for the unified diff returned by previewDiff(). The
+ * prefix is kept dim so the eye focuses on the change column; -/+ rows get
+ * GitHub-ish red/green, hunk headers cyan. Falls back to plain text when
+ * stdout is not a TTY or NO_COLOR is set (per the no-color.org convention),
+ * and accepts CLICOLOR_FORCE=1 as the standard opt-in override.
+ */
+function formatDiff(diff: string, prefix: string): string {
+  const color = wantsColor();
+  return diff
+    .split("\n")
+    .map((line) => `${color ? `${C.dim}${prefix}${C.reset}` : prefix}${colorizeDiffLine(line, color)}`)
+    .join("\n");
+}
+
+function colorizeDiffLine(line: string, color: boolean): string {
+  if (!color) return line;
+  if (line.startsWith("@@")) return `${C.cyan}${C.bold}${line}${C.reset}`;
+  if (line.startsWith("+")) return `${C.green}${line}${C.reset}`;
+  if (line.startsWith("-")) return `${C.red}${line}${C.reset}`;
+  return line;
+}
+
+function wantsColor(): boolean {
+  if (process.env["CLICOLOR_FORCE"] === "1") return true;
+  if (process.env["NO_COLOR"] != null) return false;
+  return Boolean(process.stdout.isTTY);
+}
+
+const C = {
+  reset: "\x1b[0m",
+  bold: "\x1b[1m",
+  dim: "\x1b[2m",
+  red: "\x1b[31m",
+  green: "\x1b[32m",
+  cyan: "\x1b[36m",
+};
 
 function formatDiagnosisDetail(diagnosis: Diagnosis): string[] {
   switch (diagnosis.type) {

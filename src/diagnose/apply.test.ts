@@ -159,9 +159,33 @@ describe("applyDiagnosis dispatch", () => {
 });
 
 describe("previewDiff", () => {
-  test("emits -/+ pairs for changed lines", () => {
+  test("emits a unified-diff hunk for a single-line change", () => {
     const before = "a\nb\nc";
     const after = "a\nB\nc";
-    expect(previewDiff(before, after)).toBe("- b\n+ B");
+    expect(previewDiff(before, after)).toBe(["@@ -1,3 +1,3 @@", " a", "-b", "+B", " c"].join("\n"));
+  });
+
+  test("renders an insertion as a single + without the cascading -/+ pairs the naive impl produced", () => {
+    const before = "a\nb\nc\nd";
+    const after = "a\nb\nNEW\nc\nd";
+    const out = previewDiff(before, after);
+    expect(out).toContain("+NEW");
+    // The lines after the insertion must NOT show up as -/+ pairs.
+    expect(out).not.toMatch(/^-c$/m);
+    expect(out).not.toMatch(/^-d$/m);
+  });
+
+  test("groups distant changes into separate hunks with their own headers", () => {
+    const before = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15";
+    const after = "l1\nl2\nX\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nY\nl15";
+    const out = previewDiff(before, after);
+    const headers = out.split("\n").filter((l) => l.startsWith("@@"));
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toBe("@@ -1,6 +1,6 @@");
+    expect(headers[1]).toBe("@@ -11,5 +11,5 @@");
+  });
+
+  test("identical inputs yield an empty diff", () => {
+    expect(previewDiff("a\nb", "a\nb")).toBe("");
   });
 });
