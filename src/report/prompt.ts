@@ -7,7 +7,7 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * label JSON so accuracy numbers from different prompt iterations are never
  * silently mixed.
  */
-export const ANALYSIS_PROMPT_VERSION = "2";
+export const ANALYSIS_PROMPT_VERSION = "3";
 
 export interface FailureAnalysisPromptInput {
   script: string;
@@ -119,11 +119,20 @@ Your **final** assistant message must start with \`{\` and end with \`}\` — a 
   "label": "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG" | "UNKNOWN",
   "confidence": <0.0-1.0>,
   "subDiagnosis": "SELECTOR_DRIFT" | "TIMING_ISSUE" | "OVER_ASSERTION" | "DATA_MISSING" | "NONE",
+  "headline": "<ONE short sentence stating what broke and where, max ~80 chars>",
   "evidence": [
-    { "file": "<file:line or diff hunk reference, omit if log-only>", "detail": "<what this shows>" }
+    { "file": "<file:line or diff hunk reference, omit if log-only>", "detail": "<what THIS specific file/hunk directly proves about the failure, max ~120 chars>" }
   ],
-  "reasoning": "<why this label, citing the evidence>"
+  "recommendation": "<ONE imperative sentence: the concrete next action a reviewer should take>",
+  "reasoning": "<optional longer paragraph — only used when a reviewer drills down>"
 }
+
+## Writing rules — make the report scannable
+
+- **headline**: one declarative sentence in the report's language. Name the failing thing (assertion / step / selector) and the proximate cause. No hedging clauses like "may be" / "could be" — if you have to hedge, lower the confidence instead.
+- **evidence**: at most THREE items. Each must DIRECTLY explain the failure. Drop "everything is fine over here" reassurance items (e.g. "the role guard fires correctly", "this unrelated file did not change"). If a finding does not change the call, it does not belong in evidence.
+- **recommendation**: one imperative sentence. Use a verb (Replace, Add, Wait for, Tighten, Drop, ...). Avoid "consider investigating further" — that is a non-action.
+- **reasoning**: optional. Use it only when there is something a single headline cannot carry (e.g. why two competing labels are close). Do NOT restate the headline or list the evidence again. If you have nothing extra to add, leave it as an empty string.
 
 ## Confidence guidance
 

@@ -7,14 +7,18 @@ describe("normaliseFailureAnalysis", () => {
       label: "SPEC_CHANGE",
       confidence: 0.8,
       subDiagnosis: "NONE",
+      headline: "Confirm dialog the spec asserts was removed",
       evidence: [{ file: "src/page.tsx (hunk @@ -10,4)", detail: "step's button removed" }],
+      recommendation: "Re-draft the spec to match the new flow",
       reasoning: "the diff deletes the confirm dialog the spec asserts",
     });
     expect(out).toEqual({
       label: "SPEC_CHANGE",
       confidence: 0.8,
       subDiagnosis: "NONE",
+      headline: "Confirm dialog the spec asserts was removed",
       evidence: [{ file: "src/page.tsx (hunk @@ -10,4)", detail: "step's button removed" }],
+      recommendation: "Re-draft the spec to match the new flow",
       reasoning: "the diff deletes the confirm dialog the spec asserts",
     });
   });
@@ -35,6 +39,8 @@ describe("normaliseFailureAnalysis", () => {
       label: "PRODUCT_BUG",
       confidence: 0,
       subDiagnosis: "NONE",
+      headline: "",
+      recommendation: "",
       evidence: [],
       reasoning: "",
     });

@@ -39,6 +39,10 @@ export type FailureEvidence = z.infer<typeof FailureEvidenceSchema>;
  * LLM output shape. Deliberately NOT .strict(): the model occasionally adds
  * keys, and rejecting the whole analysis over an extra field would collapse
  * a usable prediction into UNKNOWN. Zod's default strips unknown keys.
+ *
+ * The report renders `headline` + `evidence` + `recommendation` as the primary
+ * three-line summary; `reasoning` is kept for backward compatibility / deep
+ * dive and hidden behind a collapsed details panel.
  */
 export const FailureAnalysisSchema = z.object({
   label: PredictedLabelSchema,
@@ -49,6 +53,10 @@ export const FailureAnalysisSchema = z.object({
    * when TEST_DRIFT precision is proven high enough to auto-fix.
    */
   subDiagnosis: z.enum(SUB_DIAGNOSES).optional(),
+  /** Single-sentence conclusion. What broke, in one line a reviewer can scan. */
+  headline: z.string().default(""),
+  /** Concrete next action the human should take. One imperative sentence. */
+  recommendation: z.string().default(""),
   evidence: z.array(FailureEvidenceSchema),
   reasoning: z.string(),
 });
@@ -60,6 +68,30 @@ export const ReportAssertionSchema = z.object({
   durationMs: z.number().nullable(),
 });
 export type ReportAssertion = z.infer<typeof ReportAssertionSchema>;
+
+/**
+ * Step-boundary evidence captured at runtime by abStepEvidence(). The path
+ * fields are relative to the report's index.html so the HTML can link to PNGs
+ * sitting on disk without duplicating their (potentially large) bytes inline.
+ */
+export const ReportEvidenceSchema = z.object({
+  stepId: z.string(),
+  source: z.string(),
+  pngPath: z.string(),
+  url: z.string().nullable(),
+  title: z.string().nullable(),
+  capturedAt: z.string().nullable(),
+  /**
+   * spec.yaml の `expected` を caption の補足として出すための短文。block include の場合は
+   * 展開後の expected が入る。spec を解決できなかった spec（spec.yaml 欠損など）は null。
+   */
+  description: z.string().nullable(),
+  /** "passed" when the step ran to completion; "failed" when fail() captured it mid-step. */
+  status: z.enum(["passed", "failed"]).default("passed"),
+  /** Assertion summary from fail(). Present only for failed steps. */
+  failureSummary: z.string().nullable().default(null),
+});
+export type ReportEvidence = z.infer<typeof ReportEvidenceSchema>;
 
 export const ReportSpecResultSchema = z.object({
   feature: z.string(),
@@ -82,6 +114,8 @@ export const ReportSpecResultSchema = z.object({
   failureLogExcerpt: z.string().nullable(),
   diffExcerpt: z.string().nullable(),
   specYaml: z.string().nullable(),
+  /** Step-boundary screenshots for this spec, in capture order. */
+  evidence: z.array(ReportEvidenceSchema).nullable(),
 });
 export type ReportSpecResult = z.infer<typeof ReportSpecResultSchema>;
 
@@ -96,6 +130,13 @@ export const RunReportDataSchema = z.object({
     base: z.string().nullable(),
   }),
   model: z.string().nullable(),
+  /**
+   * BCP-47 tag the report's UI chrome should be rendered in. The model-driven
+   * fields (headline/recommendation/reasoning) are already localised via the
+   * prompt's outputLanguage; this controls labels, button text, help bubbles.
+   * null falls back to English.
+   */
+  language: z.string().nullable().default(null),
   /**
    * ANALYSIS_PROMPT_VERSION at generation time. Lets exported labels be
    * compared apples-to-apples across prompt iterations.

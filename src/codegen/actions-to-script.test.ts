@@ -504,6 +504,60 @@ describe("actionsToScript", () => {
       expect(fillIdx).toBeLessThan(step03Idx);
     });
 
+    it("emits abStepEvidence at every step boundary and once at the end", () => {
+      const actions: TraceAction[] = [
+        { command: "open", value: "https://idp/", stepId: "step-01" },
+        { command: "fill", selector: "[type='email']", value: "a@b", stepId: "step-02" },
+        { command: "open", value: "https://app/", stepId: "step-03" },
+      ];
+      const markers: StepMarker[] = [
+        { actionIndex: 0, stepId: "step-01", source: "login" },
+        { actionIndex: 1, stepId: "step-02", source: "login" },
+        { actionIndex: 2, stepId: "step-03", source: "spec" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo", stepMarkers: markers });
+
+      expect(script).toContain("abStepEvidence");
+      expect(script).toContain(`import { ab, abWait, abAssertTextVisible`);
+      expect(script).toContain("__setCurrentStep");
+      const evidenceLines = script
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("abStepEvidence("));
+      expect(evidenceLines).toEqual([
+        `abStepEvidence("step-01", "login");`,
+        `abStepEvidence("step-02", "login");`,
+        `abStepEvidence("step-03", "spec");`,
+      ]);
+      const setStepLines = script
+        .split("\n")
+        .map((l) => l.trim())
+        .filter((l) => l.startsWith("__setCurrentStep("));
+      expect(setStepLines).toEqual([
+        `__setCurrentStep("step-01", "login");`,
+        `__setCurrentStep("step-02", "login");`,
+        `__setCurrentStep("step-03", "spec");`,
+      ]);
+
+      // The closing abStepEvidence for a step must appear AFTER its own
+      // action lines and BEFORE the next step's marker.
+      const fillIdx = script.indexOf(`"[type='email']"`);
+      const step01Evidence = script.indexOf(`abStepEvidence("step-01"`);
+      const step02Marker = script.indexOf("// step: step-02");
+      expect(step01Evidence).toBeGreaterThan(-1);
+      expect(step01Evidence).toBeLessThan(step02Marker);
+      expect(fillIdx).toBeGreaterThan(step02Marker);
+    });
+
+    it("does not emit abStepEvidence when no step markers are provided", () => {
+      const actions: TraceAction[] = [
+        { command: "open", value: "https://idp/" },
+        { command: "assert", assertType: "text_visible", value: "Hello" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain("abStepEvidence(");
+    });
+
     it("inserts a blank line before each step marker except the first", () => {
       const actions: TraceAction[] = [
         { command: "open", value: "a", stepId: "step-01" },
