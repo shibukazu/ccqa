@@ -160,18 +160,126 @@ function escapeForRegex(s: string): string {
 }
 
 /**
- * Build a unified-style diff snippet for showing the user what would change.
- * Just the changed lines with -/+ prefixes; not a real patch.
+ * Build a unified-diff snippet for showing the user what would change. Uses
+ * the LCS so an insertion doesn't get mis-aligned as a "delete every line and
+ * re-insert it shifted by one" cascade (the naive zip-by-index version did).
+ * Output is GNU-style hunks (`@@ -a,b +c,d @@`) with 3 lines of context.
+ * Colors are added by the caller — this function returns plain text.
  */
-export function previewDiff(before: string, after: string): string {
+export function previewDiff(before: string, after: string, contextLines = 3): string {
   const a = before.split("\n");
   const b = after.split("\n");
+  const ops = lcsDiff(a, b);
+  return formatUnifiedHunks(a, b, ops, contextLines);
+}
+
+type DiffOp =
+  | { kind: "eq"; aIndex: number; bIndex: number }
+  | { kind: "del"; aIndex: number }
+  | { kind: "ins"; bIndex: number };
+
+/**
+ * Standard LCS table → diff op sequence. O(N·M) memory which is fine here:
+ * proposed fixes touch a single test file (a few hundred lines at most).
+ */
+function lcsDiff(a: string[], b: string[]): DiffOp[] {
+  const n = a.length;
+  const m = b.length;
+  const table: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0) as number[]);
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      table[i]![j] = a[i] === b[j] ? table[i + 1]![j + 1]! + 1 : Math.max(table[i + 1]![j]!, table[i]![j + 1]!);
+    }
+  }
+  const ops: DiffOp[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      ops.push({ kind: "eq", aIndex: i, bIndex: j });
+      i++;
+      j++;
+    } else if (table[i + 1]![j]! >= table[i]![j + 1]!) {
+      ops.push({ kind: "del", aIndex: i });
+      i++;
+    } else {
+      ops.push({ kind: "ins", bIndex: j });
+      j++;
+    }
+  }
+  while (i < n) ops.push({ kind: "del", aIndex: i++ });
+  while (j < m) ops.push({ kind: "ins", bIndex: j++ });
+  return ops;
+}
+
+/**
+ * Group changed ops into hunks (with `context` lines of surrounding equality
+ * on each side), and emit GNU unified format. 1-based line numbers in the
+ * hunk header match `diff -u` so users can map straight to the file.
+ */
+function formatUnifiedHunks(a: string[], b: string[], ops: DiffOp[], context: number): string {
   const out: string[] = [];
-  const max = Math.max(a.length, b.length);
-  for (let i = 0; i < max; i++) {
-    if (a[i] === b[i]) continue;
-    if (a[i] !== undefined) out.push(`- ${a[i]}`);
-    if (b[i] !== undefined) out.push(`+ ${b[i]}`);
+  let idx = 0;
+  while (idx < ops.length) {
+    while (idx < ops.length && ops[idx]!.kind === "eq") idx++;
+    if (idx >= ops.length) break;
+    let hunkStart = Math.max(0, idx - context);
+    let hunkEnd = idx;
+    while (hunkEnd < ops.length) {
+      if (ops[hunkEnd]!.kind !== "eq") {
+        hunkEnd++;
+        continue;
+      }
+      let run = 0;
+      while (hunkEnd + run < ops.length && ops[hunkEnd + run]!.kind === "eq") run++;
+      if (run > context * 2 || hunkEnd + run === ops.length) {
+        hunkEnd += Math.min(run, context);
+        break;
+      }
+      hunkEnd += run;
+    }
+    const slice = ops.slice(hunkStart, hunkEnd);
+    const aStart = firstAIndex(slice, a, hunkStart, ops);
+    const bStart = firstBIndex(slice, b, hunkStart, ops);
+    let aCount = 0;
+    let bCount = 0;
+    for (const op of slice) {
+      if (op.kind === "eq" || op.kind === "del") aCount++;
+      if (op.kind === "eq" || op.kind === "ins") bCount++;
+    }
+    out.push(`@@ -${aStart + 1},${aCount} +${bStart + 1},${bCount} @@`);
+    for (const op of slice) {
+      if (op.kind === "eq") out.push(` ${a[op.aIndex]}`);
+      else if (op.kind === "del") out.push(`-${a[op.aIndex]}`);
+      else out.push(`+${b[op.bIndex]}`);
+    }
+    idx = hunkEnd;
   }
   return out.join("\n");
+}
+
+function firstAIndex(slice: DiffOp[], a: string[], hunkStart: number, ops: DiffOp[]): number {
+  for (const op of slice) {
+    if (op.kind === "eq") return op.aIndex;
+    if (op.kind === "del") return op.aIndex;
+  }
+  for (let k = hunkStart - 1; k >= 0; k--) {
+    const op = ops[k]!;
+    if (op.kind === "eq") return op.aIndex + 1;
+    if (op.kind === "del") return op.aIndex + 1;
+  }
+  return a.length;
+}
+
+function firstBIndex(slice: DiffOp[], b: string[], hunkStart: number, ops: DiffOp[]): number {
+  for (const op of slice) {
+    if (op.kind === "eq") return op.bIndex;
+    if (op.kind === "ins") return op.bIndex;
+  }
+  for (let k = hunkStart - 1; k >= 0; k--) {
+    const op = ops[k]!;
+    if (op.kind === "eq") return op.bIndex + 1;
+    if (op.kind === "ins") return op.bIndex + 1;
+  }
+  return b.length;
 }
