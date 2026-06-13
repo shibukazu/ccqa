@@ -50,6 +50,19 @@ export type Diagnosis =
   | DataMissing
   | UnknownDiagnosis;
 
+/**
+ * The concrete (fixable) diagnosis tags as a value, for consumers that need
+ * to enumerate them (e.g. the run report's subDiagnosis vocabulary). The
+ * `satisfies` clause makes renaming a union member without updating this
+ * list a compile error.
+ */
+export const FIXABLE_DIAGNOSIS_TYPES = [
+  "SELECTOR_DRIFT",
+  "TIMING_ISSUE",
+  "OVER_ASSERTION",
+  "DATA_MISSING",
+] as const satisfies readonly Diagnosis["type"][];
+
 export interface DiagnosisResult {
   diagnosis: Diagnosis;
   confidence: number;

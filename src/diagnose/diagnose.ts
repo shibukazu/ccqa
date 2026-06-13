@@ -122,7 +122,7 @@ export function extractJsonCandidates(raw: string): string[] {
   return out;
 }
 
-function truncate(s: string, max: number): string {
+export function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max)}... [truncated, ${s.length - max} more chars]`;
 }
 
@@ -204,11 +204,11 @@ function normaliseSleepFixes(raw: unknown): SleepFix[] {
   return out;
 }
 
-function isObject(v: unknown): v is Record<string, unknown> {
+export function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-function clamp(n: number, lo: number, hi: number): number {
+export function clamp(n: number, lo: number, hi: number): number {
   if (n < lo) return lo;
   if (n > hi) return hi;
   return n;

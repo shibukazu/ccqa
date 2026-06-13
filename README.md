@@ -63,10 +63,10 @@ ccqa generate tasks/create-and-complete
 ccqa run tasks/create-and-complete
 ```
 
-In CI you can opt in to drift analysis on test failures by passing `--drift` — Claude will explain the failure by comparing the spec against the current codebase. Requires `ANTHROPIC_API_KEY` or a local Claude login.
+In CI you can opt in to an HTML run report by passing `--drift-report` — every failing spec gets a drift audit plus a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) using the PR diff as context, and the report lets a human grade those calls to measure their accuracy. Requires `ANTHROPIC_API_KEY` or a local Claude login for the analysis part. See [Run report](./docs/report.md).
 
 ```bash
-ccqa run tasks/create-and-complete --drift --format github
+ccqa run tasks/create-and-complete --drift-report --drift-base origin/main
 ```
 
 ## Features
@@ -78,7 +78,9 @@ ccqa run tasks/create-and-complete --drift --format github
 | Assertion helper functions | [Assertions](./docs/assertions.md) |
 | Auto-fix failing tests | [Auto-fix](./docs/auto-fix.md) |
 | Detect spec/code drift in CI | [Drift](./docs/drift.md) |
+| HTML run report with failure root-cause calls | [Run report](./docs/report.md) |
 | Inventory existing test coverage | [Perspectives](./docs/perspectives.md) |
+| Architecture decision records (why it is built this way) | [ADR](./docs/adr/README.md) |
 
 ## Commands
 
@@ -86,12 +88,12 @@ ccqa run tasks/create-and-complete --drift --format github
 ccqa draft [feature/spec]          Co-author a test spec with Claude
 ccqa trace <feature/spec>          Record browser actions for a spec (inlines any included blocks)
 ccqa generate <feature/spec>       Generate test script from recorded actions
-ccqa run [feature/spec]            Execute generated test scripts (add --drift to analyze failures)
+ccqa run [feature/spec]            Execute generated test scripts (add --drift-report for an HTML report with failure analysis)
 ccqa drift [feature/spec]          Standalone spec ↔ codebase drift audit (for scheduled jobs)
 ccqa perspectives                  Inventory existing test coverage into .ccqa/perspectives.yaml
 ```
 
-All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` | `haiku`, or a full model ID). The flag overrides `CCQA_MODEL`; when both are unset, the Claude Code CLI default is used. They also accept `--language <bcp47>` (e.g. `ja`, `en`) to set the language of human-readable output; the default `auto` follows the language of the spec/codebase. Interactive commands authenticate via your local Claude Code login; commands that talk to Claude in CI (`ccqa run --drift`, `ccqa drift`) additionally honor `ANTHROPIC_API_KEY`.
+All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` | `haiku`, or a full model ID). The flag overrides `CCQA_MODEL`; when both are unset, the Claude Code CLI default is used. They also accept `--language <bcp47>` (e.g. `ja`, `en`) to set the language of human-readable output; the default `auto` follows the language of the spec/codebase. Interactive commands authenticate via your local Claude Code login; commands that talk to Claude in CI (`ccqa run --drift-report`, `ccqa drift`) additionally honor `ANTHROPIC_API_KEY`.
 
 `<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`.
 
