@@ -304,7 +304,8 @@ export async function readBlockSpec(name: string, cwd?: string): Promise<BlockSp
 }
 
 const TRACE_USER_PROMPT_PATH = ".ccqa/prompts/trace.user.md";
-const TRACE_USER_PROMPT_MAX_BYTES = 32_768;
+const RUN_ND_USER_PROMPT_PATH = ".ccqa/prompts/run-nd.user.md";
+const USER_PROMPT_MAX_BYTES = 32_768;
 
 /**
  * Load project-specific guidance to append to the trace system prompt.
@@ -323,14 +324,38 @@ const TRACE_USER_PROMPT_MAX_BYTES = 32_768;
  * truncated warning suffix.
  */
 export async function loadTraceUserPrompt(cwd?: string): Promise<string | null> {
-  const path = join(cwd ?? process.cwd(), TRACE_USER_PROMPT_PATH);
+  return loadUserPromptFile(TRACE_USER_PROMPT_PATH, cwd, "trace.user.md");
+}
+
+/**
+ * Load project-specific guidance to append to the `ccqa run-nd` system prompt.
+ *
+ * Same shape as `loadTraceUserPrompt`, but reads from
+ * `.ccqa/prompts/run-nd.user.md`. The non-deterministic test mode delegates
+ * every step to Claude live, so anything that helps Claude do that job for a
+ * particular product — domain glossary, staging URL conventions, known
+ * "this is fine" warnings, login flow quirks — belongs here. Keeping it in the
+ * consuming repo (not the ccqa OSS prompt) is the explicit non-contamination
+ * boundary: ccqa stays product-agnostic, projects can layer in whatever
+ * context they need.
+ */
+export async function loadRunNdUserPrompt(cwd?: string): Promise<string | null> {
+  return loadUserPromptFile(RUN_ND_USER_PROMPT_PATH, cwd, "run-nd.user.md");
+}
+
+async function loadUserPromptFile(
+  relPath: string,
+  cwd: string | undefined,
+  labelForTruncation: string,
+): Promise<string | null> {
+  const path = join(cwd ?? process.cwd(), relPath);
   const content = await readFile(path, "utf-8").catch(() => null);
   if (content === null) return null;
   const trimmed = content.trim();
   if (trimmed.length === 0) return null;
-  if (trimmed.length > TRACE_USER_PROMPT_MAX_BYTES) {
-    return trimmed.slice(0, TRACE_USER_PROMPT_MAX_BYTES) +
-      `\n\n[ccqa] (trace.user.md truncated at ${TRACE_USER_PROMPT_MAX_BYTES} bytes)`;
+  if (trimmed.length > USER_PROMPT_MAX_BYTES) {
+    return trimmed.slice(0, USER_PROMPT_MAX_BYTES) +
+      `\n\n[ccqa] (${labelForTruncation} truncated at ${USER_PROMPT_MAX_BYTES} bytes)`;
   }
   return trimmed;
 }
@@ -390,6 +415,23 @@ export async function getTestScript(featureName: string, specName: string, cwd?:
 }
 
 export async function listAllSpecs(cwd?: string): Promise<Array<{ featureName: string; specName: string }>> {
+  return listAllSpecsFilteredBy("test.spec.ts", cwd);
+}
+
+/**
+ * Variant of `listAllSpecs` for callers that care about the spec definition
+ * itself (spec.yaml) rather than its compiled vitest script. `ccqa run-nd`
+ * uses this because it skips codegen entirely — a freshly drafted spec with
+ * no `test.spec.ts` is still a valid target.
+ */
+export async function listAllSpecsWithSpecFile(cwd?: string): Promise<Array<{ featureName: string; specName: string }>> {
+  return listAllSpecsFilteredBy(SPEC_FILE, cwd);
+}
+
+async function listAllSpecsFilteredBy(
+  requiredFilename: string,
+  cwd: string | undefined,
+): Promise<Array<{ featureName: string; specName: string }>> {
   const featuresDir = join(getCcqaDir(cwd), "features");
   const featureDirs = await readdir(featuresDir).catch(() => []);
 
@@ -399,8 +441,8 @@ export async function listAllSpecs(cwd?: string): Promise<Array<{ featureName: s
       const specDirs = await readdir(testCasesDir).catch(() => []);
       const entries = await Promise.all(
         specDirs.map(async (specName) => {
-          const scriptFile = join(testCasesDir, specName, "test.spec.ts");
-          const exists = await stat(scriptFile).then(() => true).catch(() => false);
+          const required = join(testCasesDir, specName, requiredFilename);
+          const exists = await stat(required).then(() => true).catch(() => false);
           return exists ? { featureName, specName } : null;
         }),
       );
@@ -409,6 +451,25 @@ export async function listAllSpecs(cwd?: string): Promise<Array<{ featureName: s
   );
 
   return perFeature.flat();
+}
+
+/**
+ * Resolve a CLI `<target>` argument into a list of spec refs. Shared between
+ * `ccqa run` and `ccqa run-nd`. Callers pass the right enumerator for "no
+ * target" (run wants `test.spec.ts`-having specs; run-nd wants `spec.yaml`-
+ * having specs).
+ */
+export async function resolveSpecTargets(
+  target: string | undefined,
+  enumerateAll: () => Promise<Array<{ featureName: string; specName: string }>>,
+): Promise<Array<{ featureName: string; specName: string }>> {
+  if (!target) return enumerateAll();
+  if (target.includes("/")) {
+    const { featureName, specName } = parseSpecPath(target);
+    return [{ featureName, specName }];
+  }
+  const names = await listSpecsForFeature(target);
+  return names.map((specName) => ({ featureName: target, specName }));
 }
 
 export async function listSpecsForFeature(featureName: string, cwd?: string): Promise<string[]> {

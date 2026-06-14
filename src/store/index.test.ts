@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadTraceUserPrompt, routeToMarkdown } from "./index.ts";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadRunNdUserPrompt, loadTraceUserPrompt, routeToMarkdown } from "./index.ts";
 import type { Route } from "../types.ts";
 
 describe("parseSpecPath", () => {
@@ -193,5 +193,56 @@ describe("loadTraceUserPrompt", () => {
     expect(out).not.toBeNull();
     expect(out!.length).toBeLessThan(huge.length);
     expect(out).toMatch(/truncated at 32768 bytes/);
+  });
+});
+
+describe("loadRunNdUserPrompt", () => {
+  async function makeWorkspace(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "ccqa-run-nd-user-prompt-"));
+    await mkdir(join(dir, ".ccqa", "prompts"), { recursive: true });
+    return dir;
+  }
+
+  test("returns null when the file does not exist", async () => {
+    const dir = await makeWorkspace();
+    expect(await loadRunNdUserPrompt(dir)).toBeNull();
+  });
+
+  test("returns null when the file is empty or whitespace-only", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(join(dir, ".ccqa/prompts/run-nd.user.md"), "  \n\n  ", "utf-8");
+    expect(await loadRunNdUserPrompt(dir)).toBeNull();
+  });
+
+  test("returns the trimmed contents when the file is non-empty", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(
+      join(dir, ".ccqa/prompts/run-nd.user.md"),
+      "\n  Sample project-specific guidance line.\n",
+      "utf-8",
+    );
+    expect(await loadRunNdUserPrompt(dir)).toBe(
+      "Sample project-specific guidance line.",
+    );
+  });
+
+  test("does NOT fall back to trace.user.md (the two prompts are separate)", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(
+      join(dir, ".ccqa/prompts/trace.user.md"),
+      "this should not leak into run-nd",
+      "utf-8",
+    );
+    expect(await loadRunNdUserPrompt(dir)).toBeNull();
+  });
+
+  test("truncates contents that exceed the 32 KiB cap and appends a warning", async () => {
+    const dir = await makeWorkspace();
+    const huge = "y".repeat(40_000);
+    await writeFile(join(dir, ".ccqa/prompts/run-nd.user.md"), huge, "utf-8");
+    const out = await loadRunNdUserPrompt(dir);
+    expect(out).not.toBeNull();
+    expect(out!.length).toBeLessThan(huge.length);
+    expect(out).toMatch(/run-nd\.user\.md truncated at 32768 bytes/);
   });
 });

@@ -20,6 +20,7 @@ function passedResult(spec: string): ReportSpecResult {
     diffExcerpt: null,
     specYaml: null,
     evidence: null,
+    ndRun: null,
   };
 }
 
@@ -57,6 +58,7 @@ function failedResult(spec: string, overrides: Partial<ReportSpecResult> = {}): 
     diffExcerpt: "diff --git a/src/app.tsx b/src/app.tsx",
     specYaml: "title: complete a task",
     evidence: null,
+    ndRun: null,
     ...overrides,
   };
 }

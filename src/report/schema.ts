@@ -70,9 +70,10 @@ export const ReportAssertionSchema = z.object({
 export type ReportAssertion = z.infer<typeof ReportAssertionSchema>;
 
 /**
- * Step-boundary evidence captured at runtime by abStepEvidence(). The path
- * fields are relative to the report's index.html so the HTML can link to PNGs
- * sitting on disk without duplicating their (potentially large) bytes inline.
+ * Step-boundary evidence captured at runtime by abStepEvidence() for the
+ * deterministic test path (`ccqa run --drift-report`). The path fields are
+ * relative to the report's index.html so the HTML can link to PNGs sitting
+ * on disk without duplicating their (potentially large) bytes inline.
  */
 export const ReportEvidenceSchema = z.object({
   stepId: z.string(),
@@ -82,8 +83,9 @@ export const ReportEvidenceSchema = z.object({
   title: z.string().nullable(),
   capturedAt: z.string().nullable(),
   /**
-   * spec.yaml の `expected` を caption の補足として出すための短文。block include の場合は
-   * 展開後の expected が入る。spec を解決できなかった spec（spec.yaml 欠損など）は null。
+   * Short text used as a caption supplement, sourced from the spec.yaml's
+   * `expected`. For block include sites the expanded `expected` is stored.
+   * `null` when the spec could not be resolved (spec.yaml missing, etc).
    */
   description: z.string().nullable(),
   /** "passed" when the step ran to completion; "failed" when fail() captured it mid-step. */
@@ -92,6 +94,40 @@ export const ReportEvidenceSchema = z.object({
   failureSummary: z.string().nullable().default(null),
 });
 export type ReportEvidence = z.infer<typeof ReportEvidenceSchema>;
+
+/**
+ * Per-step row for a non-deterministic run (`ccqa run-nd`). Mirrors the
+ * structure produced by `src/runtime/nd-executor.ts:NdStepResult` but
+ * encoded against the report schema so the HTML renderer can carry both
+ * deterministic (`evidence`) and non-deterministic (`ndRun`) sources of
+ * step-boundary screenshots.
+ *
+ * `beforePng` / `afterPng` are RELATIVE to the HTML report directory — the
+ * caller computes the relative path with `node:path`'s `relative()` so the
+ * generated report opens correctly when the CI artifact bundle (the report
+ * dir + the .ccqa runs dir) is downloaded together.
+ */
+export const NdReportStepSchema = z.object({
+  stepId: z.string(),
+  source: z.string(),
+  instruction: z.string(),
+  expected: z.string(),
+  status: z.enum(["passed", "failed", "skipped"]),
+  reasoning: z.string(),
+  beforePng: z.string().nullable(),
+  afterPng: z.string().nullable(),
+  durationMs: z.number(),
+});
+export type NdReportStep = z.infer<typeof NdReportStepSchema>;
+
+export const NdReportRunSchema = z.object({
+  runId: z.string(),
+  sessionName: z.string(),
+  startedAt: z.string(),
+  durationMs: z.number(),
+  steps: z.array(NdReportStepSchema),
+});
+export type NdReportRun = z.infer<typeof NdReportRunSchema>;
 
 export const ReportSpecResultSchema = z.object({
   feature: z.string(),
@@ -114,8 +150,14 @@ export const ReportSpecResultSchema = z.object({
   failureLogExcerpt: z.string().nullable(),
   diffExcerpt: z.string().nullable(),
   specYaml: z.string().nullable(),
-  /** Step-boundary screenshots for this spec, in capture order. */
+  /** Step-boundary screenshots for the deterministic (`ccqa run`) path, in capture order. */
   evidence: z.array(ReportEvidenceSchema).nullable(),
+  /**
+   * Set for specs produced by `ccqa run-nd`. The renderer shows the per-step
+   * verdicts + before/after screenshots instead of (or in addition to) the
+   * vitest assertion list. `assertions` is null for ND-only specs.
+   */
+  ndRun: NdReportRunSchema.nullable(),
 });
 export type ReportSpecResult = z.infer<typeof ReportSpecResultSchema>;
 

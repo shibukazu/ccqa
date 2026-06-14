@@ -1,5 +1,7 @@
+import { buildRunId } from "../runtime/nd-artifacts.ts";
+
 export function generateSessionName(): string {
-  return `ccqa-trace-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  return `ccqa-trace-${buildRunId()}`;
 }
 
 export interface TracePromptStep {
