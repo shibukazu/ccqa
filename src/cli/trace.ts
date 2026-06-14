@@ -143,7 +143,7 @@ async function runTrace(
     {
       prompt,
       systemPrompt,
-      ...agentBrowserInvokeBase(sessionName),
+      ...agentBrowserInvokeBase({ sessionName, runId: sessionName }),
       model,
       onAbAction: (abAction: string) => {
         const action = withStepId(parseAbAction(scrubEnvValues(abAction, envScrubMap)));

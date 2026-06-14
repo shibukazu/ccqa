@@ -88,7 +88,7 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
     ? `\n## Project-specific guidance\n\n${input.systemPromptSuffix}\n`
     : "";
   const langDirective = languageDirective(input.language);
-  const invokeBase = agentBrowserInvokeBase(input.sessionName);
+  const invokeBase = agentBrowserInvokeBase({ sessionName: input.sessionName, runId: input.runId });
 
   const retries = Math.max(0, input.retries ?? 0);
 
