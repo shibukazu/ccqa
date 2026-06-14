@@ -218,11 +218,11 @@ describe("loadRunNdUserPrompt", () => {
     const dir = await makeWorkspace();
     await writeFile(
       join(dir, ".ccqa/prompts/run-nd.user.md"),
-      "\n  Login redirects through the IDP at id-stg.example.com.\n",
+      "\n  Sample project-specific guidance line.\n",
       "utf-8",
     );
     expect(await loadRunNdUserPrompt(dir)).toBe(
-      "Login redirects through the IDP at id-stg.example.com.",
+      "Sample project-specific guidance line.",
     );
   });
 

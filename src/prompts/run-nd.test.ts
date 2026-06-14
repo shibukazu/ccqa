@@ -7,20 +7,23 @@ import {
 } from "./run-nd.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
 
+// Fully synthetic fixture — no product-specific vocabulary. We use opaque
+// placeholders so the test stays decoupled from any consuming codebase.
+const SAMPLE_TITLE = "Spec Title Placeholder";
 const STEPS: ExpandedActionStep[] = [
-  { id: "step-01", source: "login", instruction: "ログインページにアクセスする", expected: "ログインフォームが表示される" },
-  { id: "step-02", source: "login", instruction: "認証情報を入力する", expected: "ログインが成功する" },
-  { id: "step-03", source: "spec", instruction: "一覧ページに遷移する", expected: "一覧が表示される" },
+  { id: "step-01", source: "block-a", instruction: "INSTRUCTION_A", expected: "EXPECTED_A" },
+  { id: "step-02", source: "block-a", instruction: "INSTRUCTION_B", expected: "EXPECTED_B" },
+  { id: "step-03", source: "spec", instruction: "INSTRUCTION_C", expected: "EXPECTED_C" },
 ];
 
 describe("buildRunNdSystemPromptPrefix", () => {
   test("includes the spec title, session name, and STEP_RESULT contract template", () => {
     const p = buildRunNdSystemPromptPrefix({
-      title: "コンテンツ検索",
+      title: SAMPLE_TITLE,
       allSteps: STEPS,
       sessionName: "ccqa-run-nd-test",
     });
-    expect(p).toContain("コンテンツ検索");
+    expect(p).toContain(SAMPLE_TITLE);
     expect(p).toContain("ccqa-run-nd-test");
     expect(p).toContain("STEP_RESULT|<stepId>|pass");
     expect(p).toContain("STEP_RESULT|<stepId>|fail");
@@ -28,18 +31,18 @@ describe("buildRunNdSystemPromptPrefix", () => {
 
   test("renders every step with its source tag", () => {
     const p = buildRunNdSystemPromptPrefix({
-      title: "t",
+      title: SAMPLE_TITLE,
       allSteps: STEPS,
       sessionName: "s",
     });
-    expect(p).toContain("### step-01 [login]");
-    expect(p).toContain("### step-02 [login]");
+    expect(p).toContain("### step-01 [block-a]");
+    expect(p).toContain("### step-02 [block-a]");
     expect(p).toContain("### step-03 [spec]");
   });
 
   test("explicitly states agent-browser constraints are relaxed", () => {
     const p = buildRunNdSystemPromptPrefix({
-      title: "t",
+      title: SAMPLE_TITLE,
       allSteps: STEPS,
       sessionName: "s",
     });
@@ -80,8 +83,8 @@ describe("buildRunNdSystemPromptStepSection", () => {
   test("renders the current step's id, instruction, and expected", () => {
     const s = buildRunNdSystemPromptStepSection(STEPS[1]!);
     expect(s).toContain("step-02");
-    expect(s).toContain("認証情報を入力する");
-    expect(s).toContain("ログインが成功する");
+    expect(s).toContain("INSTRUCTION_B");
+    expect(s).toContain("EXPECTED_B");
   });
 });
 
