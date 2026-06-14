@@ -13,6 +13,7 @@ function sampleData(): RunReportData {
     runId: "1234567",
     git: { head: "abc1234", base: "origin/main" },
     model: null,
+    language: null,
     promptVersion: "1",
     results: [
       {
@@ -28,6 +29,7 @@ function sampleData(): RunReportData {
         failureLogExcerpt: null,
         diffExcerpt: null,
         specYaml: null,
+        evidence: null,
         ndRun: null,
       },
       {
@@ -41,7 +43,9 @@ function sampleData(): RunReportData {
           label: "TEST_DRIFT",
           confidence: 0.85,
           subDiagnosis: "SELECTOR_DRIFT",
+          headline: "Submit button aria-label was renamed in the diff",
           evidence: [{ file: "src/app.tsx:42", detail: "aria-label renamed" }],
+          recommendation: "Update the selector in the test to the new aria-label",
           reasoning: "selector renamed in the diff",
         },
         analysisSkipped: null,
@@ -57,6 +61,19 @@ function sampleData(): RunReportData {
         failureLogExcerpt: "FAIL test > step",
         diffExcerpt: "diff --git a/x b/x",
         specYaml: "title: t",
+        evidence: [
+          {
+            stepId: "step-01",
+            source: "spec",
+            pngPath: "evidence/tasks/complete/step-01.png",
+            url: "http://app/dashboard",
+            title: "Dashboard",
+            capturedAt: "2026-06-10T00:00:01.000Z",
+            description: "Redirected to /dashboard, user avatar visible in the header",
+            status: "passed",
+            failureSummary: null,
+          },
+        ],
         ndRun: null,
       },
     ],

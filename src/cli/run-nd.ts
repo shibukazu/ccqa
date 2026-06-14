@@ -286,6 +286,7 @@ async function writeReport(
     runId: process.env["GITHUB_RUN_ID"] ?? null,
     git: { head: null, base: null },
     model: null,
+    language: null,
     promptVersion: RUN_ND_PROMPT_VERSION,
     results,
   };

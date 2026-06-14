@@ -123,11 +123,25 @@ interface DiagnoseAndFixInput {
 async function diagnoseAndFix(input: DiagnoseAndFixInput): Promise<string | null> {
   const { script, specYaml, actions, failureLog, pageSnapshot, mode, outputLanguage, model } = input;
 
-  const outcome: DiagnoseOutcome = await log.timedPhase(
-    "diagnose",
-    () => diagnose({ script, specYaml, actions, failureLog, pageSnapshot, outputLanguage }, { model }),
-    "fix",
-  );
+  // claude-agent-sdk surfaces some failures (maxTurns reached, transport
+  // errors, aborted process) by throwing inside the async-iteration loop
+  // instead of yielding a result with `is_error: true`. Catch here so the
+  // auto-fix loop can bail out gracefully instead of crashing the whole
+  // `ccqa generate` invocation — the user still gets a [hint] explaining
+  // what happened and where to look next.
+  let outcome: DiagnoseOutcome;
+  try {
+    outcome = await log.timedPhase(
+      "diagnose",
+      () => diagnose({ script, specYaml, actions, failureLog, pageSnapshot, outputLanguage }, { model }),
+      "fix",
+    );
+  } catch (e) {
+    const message = (e as Error).message ?? String(e);
+    log.fix(`diagnose: threw while talking to Claude (${truncateForLog(message)})`);
+    log.hint("re-run later, or check your Claude Code login / network connectivity / model availability");
+    return null;
+  }
 
   if (outcome.sdkError) {
     log.fix("diagnose: SDK error talking to Claude");

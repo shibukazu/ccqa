@@ -72,8 +72,24 @@ export async function analyzeFailure(
 }
 
 function unknownAnalysis(reasoning: string): FailureAnalysis {
-  return { label: "UNKNOWN", confidence: 0, subDiagnosis: "NONE", evidence: [], reasoning };
+  return {
+    label: "UNKNOWN",
+    confidence: 0,
+    subDiagnosis: "NONE",
+    headline: "",
+    recommendation: "",
+    evidence: [],
+    reasoning,
+  };
 }
+
+/**
+ * Cap on the number of evidence items retained from the LLM's answer. Three
+ * is enough to make a case; anything beyond starts to feel like the model
+ * rambling. Exported so the renderer can assert the same cap when it ever
+ * receives a value that bypassed this normaliser (e.g. legacy reports).
+ */
+export const MAX_EVIDENCE_ITEMS = 3;
 
 const LABELS: ReadonlySet<string> = new Set(PREDICTED_LABELS);
 const SUB_SET: ReadonlySet<string> = new Set(SUB_DIAGNOSES);
@@ -91,6 +107,9 @@ export function normaliseFailureAnalysis(parsed: unknown): FailureAnalysis | nul
   const confidence =
     typeof parsed["confidence"] === "number" ? clamp(parsed["confidence"], 0, 1) : 0;
   const reasoning = typeof parsed["reasoning"] === "string" ? parsed["reasoning"] : "";
+  const headline = typeof parsed["headline"] === "string" ? parsed["headline"] : "";
+  const recommendation =
+    typeof parsed["recommendation"] === "string" ? parsed["recommendation"] : "";
   const rawSub = parsed["subDiagnosis"];
   const subDiagnosis =
     typeof rawSub === "string" && SUB_SET.has(rawSub)
@@ -105,6 +124,7 @@ export function normaliseFailureAnalysis(parsed: unknown): FailureAnalysis | nul
       if (detail === null) continue;
       const file = typeof item["file"] === "string" ? item["file"] : undefined;
       evidence.push(file !== undefined ? { file, detail } : { detail });
+      if (evidence.length >= MAX_EVIDENCE_ITEMS) break;
     }
   }
 
@@ -112,6 +132,8 @@ export function normaliseFailureAnalysis(parsed: unknown): FailureAnalysis | nul
     label: label as PredictedLabel,
     confidence,
     subDiagnosis,
+    headline,
+    recommendation,
     evidence,
     reasoning,
   };

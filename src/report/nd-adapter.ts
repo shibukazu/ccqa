@@ -57,6 +57,7 @@ export function ndRunToReportResult(args: {
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml,
+    evidence: null,
     ndRun,
   };
 }

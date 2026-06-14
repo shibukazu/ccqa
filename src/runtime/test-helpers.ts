@@ -1,3 +1,6 @@
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { FAILURE_SOURCE, FAILURE_STEP_ID } from "./evidence-constants.ts";
 import { sleepSync, spawnAB, type Result } from "./spawn-ab.ts";
 
 // `ab open` returns as soon as the navigation is dispatched, but the
@@ -22,7 +25,45 @@ function fail(summary: string, result: Result): never {
       process.stdout.write(`      ${line}\n`);
     }
   }
+  // Capture the page state at the moment of failure so the run report can
+  // show what was actually on screen when the assertion gave up. Best-effort:
+  // a wedged daemon / dead browser must not turn into a different failure mode.
+  captureFailureEvidence(summary);
   throw new Error(summary);
+}
+
+/**
+ * Tracks the step the test is currently inside. The codegen emits one of these
+ * calls right after every `// step: ...` marker so when fail() fires we know
+ * which step to attribute the failure to. Older generated scripts that don't
+ * emit this still work — captureFailureEvidence() falls back to a generic
+ * `failure.png` when currentStep is null.
+ */
+let currentStep: { stepId: string; source: string } | null = null;
+
+export function __setCurrentStep(stepId: string, source: string): void {
+  currentStep = { stepId, source };
+}
+
+function captureFailureEvidence(summary: string): void {
+  if (currentStep) {
+    const safe = currentStep.stepId.replace(/[^A-Za-z0-9_.-]/g, "_");
+    captureEvidence({
+      stepId: currentStep.stepId,
+      source: currentStep.source,
+      pngFile: `${safe}.png`,
+      failureSummary: summary,
+      silent: true,
+    });
+    return;
+  }
+  captureEvidence({
+    stepId: FAILURE_STEP_ID,
+    source: FAILURE_SOURCE,
+    pngFile: "failure.png",
+    failureSummary: summary,
+    silent: true,
+  });
 }
 
 export function ab(...args: string[]): void {
@@ -165,5 +206,94 @@ export function abAssertUnchecked(selector: string): void {
   if (result.status !== 0) fail(`Assertion failed: element ${JSON.stringify(selector)} not found`, result);
   const value = result.stdout.trim();
   if (value !== "false") fail(`Assertion failed: ${JSON.stringify(selector)} is not unchecked (got: ${value})`, result);
+}
+
+/**
+ * Capture a step-boundary evidence pair (PNG + JSON metadata) so a reviewer
+ * can confirm at a glance that a passing spec actually drove the app to the
+ * state its `expected` describes. Opt-in at runtime via `CCQA_EVIDENCE_DIR` so
+ * generated scripts hand-run outside `ccqa run` don't write stray files. All
+ * errors are swallowed with a stderr warning — evidence capture must never
+ * flip a passing spec to red.
+ */
+export function abStepEvidence(stepId: string, source: string): void {
+  const safe = stepId.replace(/[^A-Za-z0-9_.-]/g, "_");
+  captureEvidence({ stepId, source, pngFile: `${safe}.png` });
+  // The step closed without throwing, so the next fail() (if any) belongs to
+  // the NEXT step's `__setCurrentStep` — not to this one.
+  if (currentStep && currentStep.stepId === stepId) currentStep = null;
+}
+
+interface CaptureOpts {
+  stepId: string;
+  source: string;
+  pngFile: string;
+  failureSummary?: string;
+  /** Suppress logStep + stderr warnings. Used by the failure-path capture, which is already noisy. */
+  silent?: boolean;
+}
+
+/**
+ * Shared screenshot+meta pipeline behind both abStepEvidence (step boundary)
+ * and captureFailureEvidence (called from fail()). The url/title eval is one
+ * round-trip; agent-browser wraps eval output in JSON.stringify, so the JS
+ * expression must itself stringify the payload — hence the double JSON.parse.
+ */
+function captureEvidence(opts: CaptureOpts): void {
+  const dir = process.env["CCQA_EVIDENCE_DIR"];
+  if (!dir) return;
+  const { stepId, source, pngFile, failureSummary, silent } = opts;
+  const pngPath = join(dir, pngFile);
+  const metaPath = join(dir, pngFile.replace(/\.png$/, ".json"));
+  try {
+    mkdirSync(dirname(pngPath), { recursive: true });
+  } catch (e) {
+    if (!silent) warnEvidence(`mkdir failed (${(e as Error).message})`);
+    return;
+  }
+  if (!silent) logStep("evidence", [stepId]);
+  const shot = spawnAB(["screenshot", pngPath]);
+  if (shot.status !== 0) {
+    if (!silent) warnEvidence(`screenshot failed for ${stepId} (${shot.stderr.trim() || shot.stdout.trim()})`);
+    return;
+  }
+  const { url, title } = readPageContext();
+  const meta: Record<string, unknown> = {
+    stepId,
+    source,
+    url,
+    title,
+    capturedAt: new Date().toISOString(),
+    pngFile,
+  };
+  if (failureSummary !== undefined) meta["failureSummary"] = failureSummary;
+  try {
+    writeFileSync(metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8");
+  } catch (e) {
+    if (!silent) warnEvidence(`meta write failed (${(e as Error).message})`);
+  }
+}
+
+function readPageContext(): { url: string | null; title: string | null } {
+  const ctx = spawnAB(["eval", "JSON.stringify({url: location.href, title: document.title})"]);
+  if (ctx.status !== 0) return { url: null, title: null };
+  try {
+    const outer = JSON.parse(ctx.stdout.trim()) as unknown;
+    const inner = typeof outer === "string" ? (JSON.parse(outer) as unknown) : outer;
+    if (inner && typeof inner === "object") {
+      const obj = inner as { url?: unknown; title?: unknown };
+      return {
+        url: typeof obj.url === "string" ? obj.url : null,
+        title: typeof obj.title === "string" ? obj.title : null,
+      };
+    }
+  } catch {
+    // eval payload not JSON — leave both null, PNG alone is still useful.
+  }
+  return { url: null, title: null };
+}
+
+function warnEvidence(msg: string): void {
+  process.stderr.write(`[ccqa] evidence: ${msg}\n`);
 }
 

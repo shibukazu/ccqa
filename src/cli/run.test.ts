@@ -15,6 +15,7 @@ function summary(name: string, opts: { passed: boolean }): SpecRunSummary {
     } as SpecRunSummary["report"],
     exitCode: opts.passed ? 0 : 1,
     outputTail: null,
+    evidenceDir: null,
   };
 }
 

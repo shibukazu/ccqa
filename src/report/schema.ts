@@ -39,6 +39,10 @@ export type FailureEvidence = z.infer<typeof FailureEvidenceSchema>;
  * LLM output shape. Deliberately NOT .strict(): the model occasionally adds
  * keys, and rejecting the whole analysis over an extra field would collapse
  * a usable prediction into UNKNOWN. Zod's default strips unknown keys.
+ *
+ * The report renders `headline` + `evidence` + `recommendation` as the primary
+ * three-line summary; `reasoning` is kept for backward compatibility / deep
+ * dive and hidden behind a collapsed details panel.
  */
 export const FailureAnalysisSchema = z.object({
   label: PredictedLabelSchema,
@@ -49,6 +53,10 @@ export const FailureAnalysisSchema = z.object({
    * when TEST_DRIFT precision is proven high enough to auto-fix.
    */
   subDiagnosis: z.enum(SUB_DIAGNOSES).optional(),
+  /** Single-sentence conclusion. What broke, in one line a reviewer can scan. */
+  headline: z.string().default(""),
+  /** Concrete next action the human should take. One imperative sentence. */
+  recommendation: z.string().default(""),
   evidence: z.array(FailureEvidenceSchema),
   reasoning: z.string(),
 });
@@ -62,9 +70,37 @@ export const ReportAssertionSchema = z.object({
 export type ReportAssertion = z.infer<typeof ReportAssertionSchema>;
 
 /**
- * Per-step row for a non-deterministic run. Mirrors the structure produced by
- * `src/runtime/nd-executor.ts:NdStepResult` but encoded against the report
- * schema so the HTML renderer can carry both modes.
+ * Step-boundary evidence captured at runtime by abStepEvidence() for the
+ * deterministic test path (`ccqa run --drift-report`). The path fields are
+ * relative to the report's index.html so the HTML can link to PNGs sitting
+ * on disk without duplicating their (potentially large) bytes inline.
+ */
+export const ReportEvidenceSchema = z.object({
+  stepId: z.string(),
+  source: z.string(),
+  pngPath: z.string(),
+  url: z.string().nullable(),
+  title: z.string().nullable(),
+  capturedAt: z.string().nullable(),
+  /**
+   * Short text used as a caption supplement, sourced from the spec.yaml's
+   * `expected`. For block include sites the expanded `expected` is stored.
+   * `null` when the spec could not be resolved (spec.yaml missing, etc).
+   */
+  description: z.string().nullable(),
+  /** "passed" when the step ran to completion; "failed" when fail() captured it mid-step. */
+  status: z.enum(["passed", "failed"]).default("passed"),
+  /** Assertion summary from fail(). Present only for failed steps. */
+  failureSummary: z.string().nullable().default(null),
+});
+export type ReportEvidence = z.infer<typeof ReportEvidenceSchema>;
+
+/**
+ * Per-step row for a non-deterministic run (`ccqa run-nd`). Mirrors the
+ * structure produced by `src/runtime/nd-executor.ts:NdStepResult` but
+ * encoded against the report schema so the HTML renderer can carry both
+ * deterministic (`evidence`) and non-deterministic (`ndRun`) sources of
+ * step-boundary screenshots.
  *
  * `beforePng` / `afterPng` are RELATIVE to the HTML report directory — the
  * caller computes the relative path with `node:path`'s `relative()` so the
@@ -114,6 +150,8 @@ export const ReportSpecResultSchema = z.object({
   failureLogExcerpt: z.string().nullable(),
   diffExcerpt: z.string().nullable(),
   specYaml: z.string().nullable(),
+  /** Step-boundary screenshots for the deterministic (`ccqa run`) path, in capture order. */
+  evidence: z.array(ReportEvidenceSchema).nullable(),
   /**
    * Set for specs produced by `ccqa run-nd`. The renderer shows the per-step
    * verdicts + before/after screenshots instead of (or in addition to) the
@@ -134,6 +172,13 @@ export const RunReportDataSchema = z.object({
     base: z.string().nullable(),
   }),
   model: z.string().nullable(),
+  /**
+   * BCP-47 tag the report's UI chrome should be rendered in. The model-driven
+   * fields (headline/recommendation/reasoning) are already localised via the
+   * prompt's outputLanguage; this controls labels, button text, help bubbles.
+   * null falls back to English.
+   */
+  language: z.string().nullable().default(null),
   /**
    * ANALYSIS_PROMPT_VERSION at generation time. Lets exported labels be
    * compared apples-to-apples across prompt iterations.

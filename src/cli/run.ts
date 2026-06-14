@@ -1,16 +1,23 @@
 import { Command } from "commander";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { posix as posixPath } from "node:path";
 import type { Readable } from "node:stream";
 import {
   getTestScript,
   listAllSpecs,
   listFeatureTree,
+  listSpecsForFeature,
+  loadAllBlocks,
   loadAvailableBlocks,
   resolveSpecTargets,
   tryReadSpecFile,
 } from "../store/index.ts";
+import { parseTestSpec } from "../spec/parser.ts";
+import { expandSpec } from "../spec/expand.ts";
+import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
+import type { BlockSpec } from "../types.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
@@ -26,7 +33,7 @@ import {
 } from "../report/diff.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { renderRunReport } from "../report/render.ts";
-import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
+import { ReportEvidenceSchema, type ReportEvidence, type ReportSpecResult, type RunReportData } from "../report/schema.ts";
 import { addLanguageOption } from "./options.ts";
 import * as log from "./logger.ts";
 
@@ -36,6 +43,7 @@ import * as log from "./logger.ts";
 const USER_VITEST_CONFIG = resolve(".ccqa/vitest.config.ts");
 
 const DEFAULT_REPORT_DIR = "ccqa-report";
+const EVIDENCE_SUBDIR = "evidence";
 
 async function resolveVitestConfig(): Promise<string> {
   try {
@@ -78,6 +86,8 @@ export type SpecRunSummary = {
   exitCode: number;
   /** Tail of the spec's combined vitest output; feeds the drift-report failure analysis. */
   outputTail: string | null;
+  /** Directory the spec's step-boundary evidence (PNG + JSON) was written to. */
+  evidenceDir: string | null;
 };
 
 interface RunOptions {
@@ -85,6 +95,7 @@ interface RunOptions {
   driftBase?: string;
   model?: string;
   language?: string;
+  evidence?: boolean;
 }
 
 export const runCommand = addLanguageOption(
@@ -108,6 +119,10 @@ export const runCommand = addLanguageOption(
     .option(
       "-m, --model <name>",
       "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Used by --drift-report only. Overrides CCQA_MODEL.",
+    )
+    .option(
+      "--no-evidence",
+      `Skip step-boundary evidence capture (PNG + meta JSON written to ${DEFAULT_REPORT_DIR}/${EVIDENCE_SUBDIR}/ by default)`,
     ),
 ).action(async (target: string | undefined, opts: RunOptions) => {
   await runTests(target, opts);
@@ -129,6 +144,14 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
   let overallExitCode = 0;
   const vitestConfig = await resolveVitestConfig();
   const captureOutput = Boolean(opts.driftReport);
+  // Evidence lives under the report dir even without --drift-report, so the
+  // PNGs/JSON work as a standalone CI artifact.
+  const evidenceEnabled = opts.evidence !== false;
+  const reportDir =
+    typeof opts.driftReport === "string" ? opts.driftReport : DEFAULT_REPORT_DIR;
+  const evidenceRoot = evidenceEnabled
+    ? resolve(process.cwd(), reportDir, EVIDENCE_SUBDIR)
+    : null;
 
   try {
     for (let i = 0; i < specs.length; i++) {
@@ -144,14 +167,24 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
       log.blank();
 
       const reportFile = join(tmpDir, `report-${i}.json`);
-      const proc = spawnVitestStreaming([
-        "run",
-        "--config",
-        vitestConfig,
-        scriptFile,
-        "--reporter=json",
-        `--outputFile.json=${reportFile}`,
-      ]);
+      const evidenceDir = evidenceRoot ? join(evidenceRoot, featureName, specName) : null;
+      if (evidenceDir) {
+        await rm(evidenceDir, { recursive: true, force: true });
+        await mkdir(evidenceDir, { recursive: true });
+      }
+      const proc = spawnVitestStreaming(
+        [
+          "run",
+          "--config",
+          vitestConfig,
+          scriptFile,
+          "--reporter=json",
+          `--outputFile.json=${reportFile}`,
+        ],
+        evidenceDir
+          ? { env: { ...process.env, CCQA_EVIDENCE_DIR: evidenceDir } }
+          : {},
+      );
 
       const tail = captureOutput ? new TailBuffer(OUTPUT_TAIL_CAP) : null;
       await Promise.all([
@@ -169,6 +202,7 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
         report,
         exitCode,
         outputTail: tail ? tail.toString() : null,
+        evidenceDir,
       });
       log.blank();
     }
@@ -259,10 +293,19 @@ async function maybeWriteDriftReport(
   const patchSections =
     diff.ok && diff.diff.patch.length > 0 ? splitPatchByFile(diff.diff.patch) : null;
 
+  // Load blocks once (shared across all specs) so evidence captions can show
+  // the step's `expected` text from spec.yaml, including block-inlined steps.
+  const allBlocks = await loadAllBlocks(cwd);
+
   let printedHeader = false;
   const results: ReportSpecResult[] = [];
   for (const s of summaries) {
     const assertions = collectAssertions(s);
+    // spec.yaml is read once here and shared with both the evidence captions
+    // (via loadStepDescriptions) and the failure-analysis prompt (via specYaml).
+    const specYaml = await tryReadSpecFile(s.featureName, s.specName, cwd);
+    const stepDescriptions = parseStepDescriptions(specYaml, allBlocks);
+    const evidence = await loadEvidenceForSpec(s, outDir, stepDescriptions);
     const base = {
       feature: s.featureName,
       spec: s.specName,
@@ -277,6 +320,7 @@ async function maybeWriteDriftReport(
         ? assertions.reduce((sum, a) => sum + (a.durationMs ?? 0), 0)
         : null,
       assertions,
+      evidence,
     };
 
     if (!failedSpec(s)) {
@@ -294,7 +338,6 @@ async function maybeWriteDriftReport(
       continue;
     }
 
-    const specYaml = await tryReadSpecFile(s.featureName, s.specName, cwd);
     const relatedPaths = findSpecInfo(s)?.relatedPaths ?? null;
     const diffExcerpt = patchSections ? scopePatchForSpec(patchSections, relatedPaths) : null;
     const driftResult = driftResults.find(
@@ -334,12 +377,18 @@ async function maybeWriteDriftReport(
         printedHeader = true;
       }
       const pct = Math.round(outcome.analysis.confidence * 100);
-      const firstLine = outcome.analysis.reasoning.split("\n")[0] ?? "";
+      const oneLine =
+        outcome.analysis.headline.trim() ||
+        (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();
       process.stdout.write(
         `${C.red}✖${C.reset} ${C.bold}${s.featureName}/${s.specName}${C.reset} → ` +
           `${C.bold}${outcome.analysis.label}${C.reset} (${pct}%)` +
-          `${firstLine ? ` ${C.dim}${firstLine}${C.reset}` : ""}\n`,
+          `${oneLine ? ` ${C.dim}${oneLine}${C.reset}` : ""}\n`,
       );
+      const recommendation = outcome.analysis.recommendation.trim();
+      if (recommendation) {
+        process.stdout.write(`  ${C.dim}→ ${recommendation}${C.reset}\n`);
+      }
     }
 
     results.push({
@@ -364,6 +413,7 @@ async function maybeWriteDriftReport(
       base: diff.ok ? baseRef : null,
     },
     model: opts.model ?? null,
+    language: opts.language ?? null,
     promptVersion: ANALYSIS_PROMPT_VERSION,
     results,
   };
@@ -372,6 +422,118 @@ async function maybeWriteDriftReport(
   await mkdir(outDir, { recursive: true });
   await writeFile(reportPath, renderRunReport(data), "utf8");
   log.info(`run report written to ${reportPath}`);
+}
+
+/**
+ * Read the JSON meta files written by abStepEvidence() and rewrite the PNG
+ * paths so the report can link to them with a plain `<img src="evidence/...">`.
+ * Posix path semantics on purpose: the report is rendered as HTML and URLs
+ * always use `/`, regardless of the host OS.
+ *
+ * Missing/unreadable/malformed files are silently dropped — an evidence-capture
+ * failure must not surface as a different failure mode in the report.
+ */
+async function loadEvidenceForSpec(
+  s: SpecRunSummary,
+  reportDir: string,
+  descriptionByStepId: Map<string, string>,
+): Promise<ReportEvidence[] | null> {
+  const evidenceDir = s.evidenceDir;
+  if (!evidenceDir) return null;
+  let entries: string[];
+  try {
+    entries = await readdir(evidenceDir);
+  } catch {
+    return null;
+  }
+  const reportRoot = resolve(process.cwd(), reportDir);
+  const jsonFiles = entries.filter((n) => n.endsWith(".json"));
+  const metas = (
+    await Promise.all(
+      jsonFiles.map((name) =>
+        readEvidenceMeta(join(evidenceDir, name), evidenceDir, reportRoot, descriptionByStepId),
+      ),
+    )
+  ).filter((m): m is ReportEvidence => m !== null);
+  metas.sort((a, b) => {
+    // Failure capture sinks to the end so per-step screenshots stay chronological.
+    if (a.stepId === FAILURE_STEP_ID) return 1;
+    if (b.stepId === FAILURE_STEP_ID) return -1;
+    return a.stepId.localeCompare(b.stepId);
+  });
+  return metas.length > 0 ? metas : null;
+}
+
+async function readEvidenceMeta(
+  metaPath: string,
+  evidenceDir: string,
+  reportRoot: string,
+  descriptionByStepId: Map<string, string>,
+): Promise<ReportEvidence | null> {
+  let raw: string;
+  try {
+    raw = await readFile(metaPath, "utf8");
+  } catch {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== "object" || parsed === null) return null;
+  const pngFile = (parsed as { pngFile?: unknown }).pngFile;
+  if (typeof pngFile !== "string") return null;
+  const absPng = join(evidenceDir, pngFile);
+  const pngPath = posixPath.relative(toPosix(reportRoot), toPosix(absPng));
+  const stepId = (parsed as { stepId?: unknown }).stepId;
+  const failureSummary = (parsed as { failureSummary?: unknown }).failureSummary;
+  const hasFailure = typeof failureSummary === "string" && failureSummary.length > 0;
+  // The step description always comes from spec.yaml's `expected` — that text
+  // identifies what the step was *supposed* to do. Failure detail lives in
+  // `failureSummary` as its own field so the renderer can stack them.
+  let description: string | null = null;
+  if (typeof stepId === "string") {
+    description = descriptionByStepId.get(stepId) ?? null;
+  }
+  // Standalone fallback failure capture (legacy scripts without
+  // __setCurrentStep) lands as `failure` with no spec entry — surface the
+  // summary as description so it isn't blank.
+  if (!description && hasFailure) description = failureSummary as string;
+  const candidate = {
+    ...(parsed as Record<string, unknown>),
+    pngPath,
+    description,
+    status: hasFailure ? "failed" : "passed",
+    failureSummary: hasFailure ? failureSummary : null,
+  };
+  const result = ReportEvidenceSchema.safeParse(candidate);
+  return result.success ? result.data : null;
+}
+
+/**
+ * Parse the spec.yaml for a given spec, expand any included blocks, and
+ * return `step id → expected` so the report can show what each evidence
+ * screenshot is supposed to verify. Returns an empty map when the spec
+ * can't be loaded — evidence still surfaces, just without descriptions.
+ */
+function parseStepDescriptions(
+  yaml: string | null,
+  blocks: Map<string, BlockSpec>,
+): Map<string, string> {
+  if (!yaml) return new Map();
+  try {
+    const spec = parseTestSpec(yaml);
+    const expanded = expandSpec(spec, { blocks });
+    return new Map(expanded.map((s) => [s.id, s.expected.trim()]));
+  } catch {
+    return new Map();
+  }
+}
+
+function toPosix(p: string): string {
+  return p.split(/[\\/]/).join("/");
 }
 
 function collectAssertions(s: SpecRunSummary): ReportSpecResult["assertions"] {
