@@ -61,6 +61,38 @@ export const ReportAssertionSchema = z.object({
 });
 export type ReportAssertion = z.infer<typeof ReportAssertionSchema>;
 
+/**
+ * Per-step row for a non-deterministic run. Mirrors the structure produced by
+ * `src/runtime/nd-executor.ts:NdStepResult` but encoded against the report
+ * schema so the HTML renderer can carry both modes.
+ *
+ * `beforePng` / `afterPng` are RELATIVE to the HTML report directory — the
+ * caller computes the relative path with `node:path`'s `relative()` so the
+ * generated report opens correctly when the CI artifact bundle (the report
+ * dir + the .ccqa runs dir) is downloaded together.
+ */
+export const NdReportStepSchema = z.object({
+  stepId: z.string(),
+  source: z.string(),
+  instruction: z.string(),
+  expected: z.string(),
+  status: z.enum(["passed", "failed", "skipped"]),
+  reasoning: z.string(),
+  beforePng: z.string().nullable(),
+  afterPng: z.string().nullable(),
+  durationMs: z.number(),
+});
+export type NdReportStep = z.infer<typeof NdReportStepSchema>;
+
+export const NdReportRunSchema = z.object({
+  runId: z.string(),
+  sessionName: z.string(),
+  startedAt: z.string(),
+  durationMs: z.number(),
+  steps: z.array(NdReportStepSchema),
+});
+export type NdReportRun = z.infer<typeof NdReportRunSchema>;
+
 export const ReportSpecResultSchema = z.object({
   feature: z.string(),
   spec: z.string(),
@@ -82,6 +114,12 @@ export const ReportSpecResultSchema = z.object({
   failureLogExcerpt: z.string().nullable(),
   diffExcerpt: z.string().nullable(),
   specYaml: z.string().nullable(),
+  /**
+   * Set for specs produced by `ccqa run-nd`. The renderer shows the per-step
+   * verdicts + before/after screenshots instead of (or in addition to) the
+   * vitest assertion list. `assertions` is null for ND-only specs.
+   */
+  ndRun: NdReportRunSchema.nullable(),
 });
 export type ReportSpecResult = z.infer<typeof ReportSpecResultSchema>;
 

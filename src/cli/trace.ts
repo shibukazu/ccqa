@@ -3,7 +3,6 @@ import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from ".
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
-  ensureCcqaDir,
   loadAllBlocks,
   loadTraceUserPrompt,
   parseSpecPath,
@@ -12,16 +11,11 @@ import {
   saveTraceActions,
   updateSpecRelatedPaths,
 } from "../store/index.ts";
-import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
 import { parseRelatedPathsBlock } from "../drift/parse-related-paths.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
-import {
-  assertAgentBrowserAvailable,
-  AgentBrowserUnavailableError,
-  formatAgentBrowserUnavailableMessage,
-  pathWithAgentBrowserShim,
-} from "../runtime/agent-browser-bin.ts";
+import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
+import { preflightAgentBrowserCommand } from "./preflight.ts";
 import { validateActions, type ValidationMode } from "../runtime/replay-validate.ts";
 import { buildSpecEnvScrub, scrubEnvValues } from "../runtime/env-scrub.ts";
 import { formatUnstableDrop, scrubUnstableActions } from "../runtime/literal-scrub.ts";
@@ -81,19 +75,7 @@ async function runTrace(
 ): Promise<void> {
   log.header("trace", `${featureName}/${specName}`);
 
-  try {
-    const binDir = assertAgentBrowserAvailable();
-    log.meta("agent-browser", binDir);
-  } catch (e) {
-    if (e instanceof AgentBrowserUnavailableError) {
-      log.error(formatAgentBrowserUnavailableMessage());
-      process.exit(1);
-    }
-    throw e;
-  }
-
-  await ensureCcqaDir();
-  await warnStaleBlockArtifacts();
+  await preflightAgentBrowserCommand();
 
   const specContent = await readSpecFile(featureName, specName);
   const spec = parseTestSpec(specContent);
@@ -161,15 +143,7 @@ async function runTrace(
     {
       prompt,
       systemPrompt,
-      allowedTools: ["Bash(*)", "Read", "Grep", "Glob"],
-      // Prepend the peer-installed agent-browser shim dir to PATH so the
-      // Claude subprocess can invoke `agent-browser ...` without requiring a
-      // global install. Without this, peer-only setups (e.g. running ccqa
-      // inside a Claude Code terminal) hit "command not found".
-      env: {
-        AGENT_BROWSER_SESSION: sessionName,
-        PATH: pathWithAgentBrowserShim(process.env["PATH"]),
-      },
+      ...agentBrowserInvokeBase(sessionName),
       model,
       onAbAction: (abAction: string) => {
         const action = withStepId(parseAbAction(scrubEnvValues(abAction, envScrubMap)));

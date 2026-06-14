@@ -106,12 +106,14 @@ function renderResult(r: ReportSpecResult, index: number): string {
     ${statusIcon(r.status)}
     <span class="spec-name">${esc(id)}</span>
     ${predictionChip}
+    ${r.ndRun ? `<span class="badge nd" title="non-deterministic">ND</span>` : ""}
     <span class="spacer"></span>
     ${counts}
     ${duration}
   </summary>
   <div class="spec-body">
     ${renderAssertions(r)}
+    ${r.ndRun ? renderNdRun(r.ndRun) : ""}
     ${r.status === "failed" ? (r.analysis ? renderAnalysis(r, index) : renderSkipped(r)) : ""}
     ${renderDriftIssues(r)}
     ${collapsible("Failure log", r.failureLogExcerpt)}
@@ -119,6 +121,47 @@ function renderResult(r: ReportSpecResult, index: number): string {
     ${collapsible("spec.yaml", r.specYaml)}
   </div>
 </details>`;
+}
+
+function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>): string {
+  const stepItems = nd.steps
+    .map((s) => {
+      const before = s.beforePng
+        ? `<a class="shot" href="${esc(s.beforePng)}" target="_blank" rel="noopener"><img src="${esc(s.beforePng)}" alt="before ${esc(s.stepId)}" loading="lazy"><span>before</span></a>`
+        : "";
+      const after = s.afterPng
+        ? `<a class="shot" href="${esc(s.afterPng)}" target="_blank" rel="noopener"><img src="${esc(s.afterPng)}" alt="after ${esc(s.stepId)}" loading="lazy"><span>after</span></a>`
+        : "";
+      const dur = s.durationMs > 0 ? `<span class="duration">${formatDuration(s.durationMs)}</span>` : "";
+      const sourceBadge = s.source && s.source !== "spec" ? `<span class="nd-source">[${esc(s.source)}]</span>` : "";
+      return `<li class="nd-step ${s.status}">
+        <div class="nd-step-head">
+          ${statusIcon(s.status)}
+          <span class="step-name">${esc(s.stepId)}</span>
+          ${sourceBadge}
+          <span class="spacer"></span>
+          ${dur}
+        </div>
+        <div class="nd-step-body">
+          <p class="nd-instr"><strong>do:</strong> ${esc(s.instruction)}</p>
+          <p class="nd-instr"><strong>expect:</strong> ${esc(s.expected)}</p>
+          ${s.reasoning ? `<p class="nd-reasoning">${esc(s.reasoning)}</p>` : ""}
+          ${before || after ? `<div class="nd-shots">${before}${after}</div>` : ""}
+        </div>
+      </li>`;
+    })
+    .join("\n");
+  return `<section class="nd-run">
+    <div class="nd-run-head">
+      <span class="dim">run-nd</span>
+      <code>${esc(nd.runId)}</code>
+      <span class="dim">session</span>
+      <code>${esc(nd.sessionName)}</code>
+      <span class="spacer"></span>
+      <span class="duration">${formatDuration(nd.durationMs)}</span>
+    </div>
+    <ol class="nd-steps">${stepItems}</ol>
+  </section>`;
 }
 
 function statusIcon(status: "passed" | "failed" | "skipped"): string {
@@ -386,6 +429,26 @@ table.matrix td.miss-nonzero { background: var(--fail-bg); }
 .import-label { cursor: pointer; color: var(--text-dim); }
 .import-label input { display: none; }
 .empty-note { color: var(--text-dim); text-align: center; font-size: 13px; }
+
+.badge.nd { background: rgba(31, 111, 235, 0.12); color: var(--accent); }
+.nd-run { padding: 0 16px 12px; }
+.nd-run-head { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--text-dim); margin-bottom: 8px; padding-top: 8px; }
+.nd-run-head code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; color: var(--text); }
+.nd-run-head .dim { color: var(--text-dim); }
+.nd-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
+.nd-step { border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); overflow: hidden; }
+.nd-step.failed { border-color: var(--fail); }
+.nd-step.passed { border-color: rgba(26, 127, 55, 0.4); }
+.nd-step.skipped { opacity: 0.6; }
+.nd-step-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 13px; }
+.nd-step-body { padding: 10px 14px; font-size: 12.5px; line-height: 1.55; }
+.nd-step-body p { margin: 4px 0; }
+.nd-instr strong { color: var(--text-dim); font-weight: 600; margin-right: 4px; }
+.nd-reasoning { color: var(--text); font-style: italic; background: var(--surface); padding: 6px 10px; border-radius: 6px; }
+.nd-source { font-size: 11px; color: var(--text-dim); }
+.nd-shots { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+.nd-shots .shot { display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--text-dim); font-size: 11px; }
+.nd-shots .shot img { max-width: 280px; max-height: 180px; border: 1px solid var(--border); border-radius: 4px; object-fit: contain; background: #fff; }
 `;
 
 // Vanilla JS, no client-side template literals, no closing-script-tag string

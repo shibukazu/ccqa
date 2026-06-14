@@ -28,6 +28,7 @@ function sampleData(): RunReportData {
         failureLogExcerpt: null,
         diffExcerpt: null,
         specYaml: null,
+        ndRun: null,
       },
       {
         feature: "tasks",
@@ -56,6 +57,7 @@ function sampleData(): RunReportData {
         failureLogExcerpt: "FAIL test > step",
         diffExcerpt: "diff --git a/x b/x",
         specYaml: "title: t",
+        ndRun: null,
       },
     ],
   };

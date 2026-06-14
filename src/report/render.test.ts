@@ -19,6 +19,7 @@ function passedResult(spec: string): ReportSpecResult {
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,
+    ndRun: null,
   };
 }
 
@@ -53,6 +54,7 @@ function failedResult(spec: string, overrides: Partial<ReportSpecResult> = {}): 
     failureLogExcerpt: "FAIL  step 2\nexpected visible",
     diffExcerpt: "diff --git a/src/app.tsx b/src/app.tsx",
     specYaml: "title: complete a task",
+    ndRun: null,
     ...overrides,
   };
 }

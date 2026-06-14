@@ -4,12 +4,11 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import {
-  parseSpecPath,
   getTestScript,
   listAllSpecs,
   listFeatureTree,
-  listSpecsForFeature,
   loadAvailableBlocks,
+  resolveSpecTargets,
   tryReadSpecFile,
 } from "../store/index.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
@@ -117,7 +116,7 @@ export const runCommand = addLanguageOption(
 async function runTests(target: string | undefined, opts: RunOptions): Promise<void> {
   log.header("run", target);
 
-  const specs = await resolveSpecs(target);
+  const specs = await resolveSpecTargets(target, listAllSpecs);
 
   if (specs.length === 0) {
     log.error("no test scripts found");
@@ -290,6 +289,7 @@ async function maybeWriteDriftReport(
         failureLogExcerpt: null,
         diffExcerpt: null,
         specYaml: null,
+        ndRun: null,
       });
       continue;
     }
@@ -351,6 +351,7 @@ async function maybeWriteDriftReport(
       failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
       diffExcerpt,
       specYaml,
+      ndRun: null,
     });
   }
 
@@ -577,16 +578,3 @@ async function streamFiltered(
   }
 }
 
-async function resolveSpecs(target?: string): Promise<Array<{ featureName: string; specName: string }>> {
-  if (!target) {
-    return listAllSpecs();
-  }
-
-  if (target.includes("/")) {
-    const { featureName, specName } = parseSpecPath(target);
-    return [{ featureName, specName }];
-  }
-
-  const specNames = await listSpecsForFeature(target);
-  return specNames.map((specName) => ({ featureName: target, specName }));
-}
