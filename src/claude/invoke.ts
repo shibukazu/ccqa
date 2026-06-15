@@ -54,10 +54,44 @@ export function resolveModel(explicit?: string): string | undefined {
   return envModel && envModel.length > 0 ? envModel : undefined;
 }
 
+/**
+ * Per-invocation cost + usage record extracted from the SDK's `result` message.
+ * All fields are `null` when the SDK didn't surface a `result` message (e.g.
+ * the mock replay shim used in unit tests).
+ *
+ * `totalCostUsd` is the SDK's own billing estimate; downstream code uses it
+ * to surface "this run cost $X" in reports and exports.
+ */
+export interface ClaudeInvocationCost {
+  totalCostUsd: number | null;
+  /** SDK-reported wall time spent in the run, ms. */
+  durationMs: number | null;
+  /** Time spent talking to the model API (excludes tool execution), ms. */
+  durationApiMs: number | null;
+  numTurns: number | null;
+  inputTokens: number | null;
+  cacheCreationInputTokens: number | null;
+  cacheReadInputTokens: number | null;
+  outputTokens: number | null;
+  /**
+   * Model id(s) the SDK actually used for this invocation. The SDK's
+   * `modelUsage` is a map keyed by model id; we surface the keys so reports
+   * can show "this run used claude-opus-4-7" vs "this run used
+   * claude-sonnet-4-6". Empty array when the SDK didn't surface the field.
+   */
+  models: string[];
+}
+
+export interface InvokeClaudeStreamingResult {
+  result: string;
+  isError: boolean;
+  cost: ClaudeInvocationCost;
+}
+
 export async function invokeClaudeStreaming(
   options: ClaudeInvokeOptions,
   onEvent: (msg: SDKMessage) => void,
-): Promise<{ result: string; isError: boolean }> {
+): Promise<InvokeClaudeStreamingResult> {
   const {
     prompt,
     systemPrompt,
@@ -214,6 +248,17 @@ export async function invokeClaudeStreaming(
 
   let result = "";
   let isError = false;
+  let cost: ClaudeInvocationCost = {
+    totalCostUsd: null,
+    durationMs: null,
+    durationApiMs: null,
+    numTurns: null,
+    inputTokens: null,
+    cacheCreationInputTokens: null,
+    cacheReadInputTokens: null,
+    outputTokens: null,
+    models: [],
+  };
 
   const q = await buildMessageStream(prompt, sdkOptions);
 
@@ -232,10 +277,36 @@ export async function invokeClaudeStreaming(
     if (msg.type === "result") {
       result = msg.subtype === "success" ? msg.result : "";
       isError = msg.is_error ?? false;
+      cost = extractInvocationCost(msg);
     }
   }
 
-  return { result, isError };
+  return { result, isError, cost };
+}
+
+/**
+ * Pull the cost / usage / turn / duration fields off the SDK `result` message.
+ * The SDK's success and error result shapes share these fields, so we read
+ * them defensively as `unknown` and coerce — newer SDK versions may rename a
+ * field without breaking our extraction.
+ */
+export function extractInvocationCost(msg: SDKMessage): ClaudeInvocationCost {
+  const m = msg as unknown as Record<string, unknown>;
+  const usage = m["usage"] as Record<string, unknown> | undefined;
+  const modelUsage = m["modelUsage"] as Record<string, unknown> | undefined;
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  return {
+    totalCostUsd: num(m["total_cost_usd"]),
+    durationMs: num(m["duration_ms"]),
+    durationApiMs: num(m["duration_api_ms"]),
+    numTurns: num(m["num_turns"]),
+    inputTokens: num(usage?.["input_tokens"]),
+    cacheCreationInputTokens: num(usage?.["cache_creation_input_tokens"]),
+    cacheReadInputTokens: num(usage?.["cache_read_input_tokens"]),
+    outputTokens: num(usage?.["output_tokens"]),
+    models: modelUsage && typeof modelUsage === "object" ? Object.keys(modelUsage) : [],
+  };
 }
 
 const BLOCKED_AB_SUBCOMMANDS = new Set(["eval", "js", "label", "textbox"]);

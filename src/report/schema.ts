@@ -107,6 +107,26 @@ export type ReportEvidence = z.infer<typeof ReportEvidenceSchema>;
  * generated report opens correctly when the CI artifact bundle (the report
  * dir + the .ccqa runs dir) is downloaded together.
  */
+/**
+ * Per-step / per-run cost+usage record, pulled from the SDK's `result` message.
+ * Every numeric field is nullable so the report can carry partial telemetry
+ * (e.g. when the SDK omits a field, or when a step was skipped).
+ *
+ * `models` is the union of model ids the SDK reported using; usually a
+ * single element, but the SDK can fan out across models in some modes.
+ */
+export const NdReportCostSchema = z.object({
+  totalCostUsd: z.number().nullable(),
+  durationApiMs: z.number().nullable(),
+  numTurns: z.number().nullable(),
+  inputTokens: z.number().nullable(),
+  cacheCreationInputTokens: z.number().nullable(),
+  cacheReadInputTokens: z.number().nullable(),
+  outputTokens: z.number().nullable(),
+  models: z.array(z.string()),
+});
+export type NdReportCost = z.infer<typeof NdReportCostSchema>;
+
 export const NdReportStepSchema = z.object({
   stepId: z.string(),
   source: z.string(),
@@ -117,6 +137,7 @@ export const NdReportStepSchema = z.object({
   beforePng: z.string().nullable(),
   afterPng: z.string().nullable(),
   durationMs: z.number(),
+  cost: NdReportCostSchema,
 });
 export type NdReportStep = z.infer<typeof NdReportStepSchema>;
 
@@ -126,6 +147,7 @@ export const NdReportRunSchema = z.object({
   startedAt: z.string(),
   durationMs: z.number(),
   steps: z.array(NdReportStepSchema),
+  cost: NdReportCostSchema,
 });
 export type NdReportRun = z.infer<typeof NdReportRunSchema>;
 

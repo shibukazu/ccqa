@@ -36,6 +36,7 @@ export function ndRunToReportResult(args: {
     beforePng: relativeIfPresent(s.beforePng, reportDir),
     afterPng: relativeIfPresent(s.afterPng, reportDir),
     durationMs: s.durationMs,
+    cost: { ...s.cost },
   }));
   const ndRun: NdReportRun = {
     runId: result.runId,
@@ -43,6 +44,7 @@ export function ndRunToReportResult(args: {
     startedAt: result.startedAt,
     durationMs: result.durationMs,
     steps,
+    cost: { ...result.cost },
   };
   return {
     feature: featureName,

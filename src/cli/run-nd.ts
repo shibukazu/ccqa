@@ -122,6 +122,7 @@ async function runNdEntry(target: string | undefined, opts: RunNdOptions): Promi
     "summary",
     `${runs.length - failedCount} passed / ${failedCount} failed`,
   );
+  logBatchCost(runs);
 
   const driftBySpec = opts.driftAudit
     ? await runDriftAudit(runs, opts)
@@ -251,6 +252,8 @@ async function runOneSpec(args: {
     "step-summary",
     `${count(result.steps, "passed")} passed / ${count(result.steps, "failed")} failed / ${count(result.steps, "skipped")} skipped`,
   );
+  const costLine = formatRunCost(result.cost);
+  if (costLine) log.meta("cost", costLine);
 
   return {
     kind: "run",
@@ -260,6 +263,48 @@ async function runOneSpec(args: {
     specYaml: specContent,
     result,
   };
+}
+
+function formatRunCost(cost: NdRunResult["cost"]): string | null {
+  if (cost.totalCostUsd === null) return null;
+  const parts: string[] = [`$${cost.totalCostUsd.toFixed(4)}`];
+  if (cost.numTurns !== null) parts.push(`${cost.numTurns} turns`);
+  if (cost.inputTokens !== null || cost.outputTokens !== null) {
+    const i = cost.inputTokens ?? 0;
+    const o = cost.outputTokens ?? 0;
+    parts.push(`${i}+${o} tokens`);
+  }
+  if (
+    cost.cacheReadInputTokens !== null &&
+    cost.cacheReadInputTokens > 0
+  ) {
+    parts.push(`${cost.cacheReadInputTokens} cache-read`);
+  }
+  if (cost.models.length > 0) parts.push(`model=${cost.models.join(",")}`);
+  return parts.join(" / ");
+}
+
+function logBatchCost(runs: SpecRunOutcome[]): void {
+  let totalUsd = 0;
+  let seen = false;
+  let totalIn = 0;
+  let totalOut = 0;
+  let totalCacheRead = 0;
+  for (const r of runs) {
+    if (r.kind !== "run") continue;
+    const c = r.result.cost;
+    if (c.totalCostUsd !== null) {
+      totalUsd += c.totalCostUsd;
+      seen = true;
+    }
+    totalIn += c.inputTokens ?? 0;
+    totalOut += c.outputTokens ?? 0;
+    totalCacheRead += c.cacheReadInputTokens ?? 0;
+  }
+  if (!seen) return;
+  const parts = [`$${totalUsd.toFixed(4)}`, `${totalIn}+${totalOut} tokens`];
+  if (totalCacheRead > 0) parts.push(`${totalCacheRead} cache-read`);
+  log.meta("total-cost", parts.join(" / "));
 }
 
 async function writeReport(
