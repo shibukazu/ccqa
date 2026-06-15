@@ -1,5 +1,6 @@
 import { describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression } from "./invoke.ts";
+import { extractAbActionFromBashCommand, extractInvocationCost, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression } from "./invoke.ts";
+import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 describe("extractAbActionFromBashCommand", () => {
   test("returns null for non-agent-browser commands", () => {
@@ -375,5 +376,61 @@ describe("isBashToolResponseError", () => {
     expect(isBashToolResponseError(null)).toBe(false);
     expect(isBashToolResponseError(undefined)).toBe(false);
     expect(isBashToolResponseError("ok")).toBe(false);
+  });
+});
+
+describe("extractInvocationCost", () => {
+  test("reads cost / duration / turns / usage off a success result message", () => {
+    const msg = {
+      type: "result",
+      subtype: "success",
+      duration_ms: 12345,
+      duration_api_ms: 6789,
+      is_error: false,
+      num_turns: 7,
+      result: "STEP_RESULT|step-01|pass|ok",
+      stop_reason: "end_turn",
+      total_cost_usd: 0.123,
+      usage: {
+        input_tokens: 200,
+        cache_creation_input_tokens: 1500,
+        cache_read_input_tokens: 12000,
+        output_tokens: 800,
+      },
+      modelUsage: {
+        "claude-opus-4-7": { input_tokens: 200 },
+      },
+    } as unknown as SDKMessage;
+    expect(extractInvocationCost(msg)).toEqual({
+      totalCostUsd: 0.123,
+      durationMs: 12345,
+      durationApiMs: 6789,
+      numTurns: 7,
+      inputTokens: 200,
+      cacheCreationInputTokens: 1500,
+      cacheReadInputTokens: 12000,
+      outputTokens: 800,
+      models: ["claude-opus-4-7"],
+    });
+  });
+
+  test("returns all nulls when the SDK omits cost fields (e.g. mock replay)", () => {
+    const msg = {
+      type: "result",
+      subtype: "success",
+      result: "",
+      is_error: false,
+    } as unknown as SDKMessage;
+    expect(extractInvocationCost(msg)).toEqual({
+      totalCostUsd: null,
+      durationMs: null,
+      durationApiMs: null,
+      numTurns: null,
+      inputTokens: null,
+      cacheCreationInputTokens: null,
+      cacheReadInputTokens: null,
+      outputTokens: null,
+      models: [],
+    });
   });
 });

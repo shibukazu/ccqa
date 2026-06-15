@@ -16,6 +16,26 @@ import { stepArtifactPaths } from "./nd-artifacts.ts";
 import { findLastStepResult } from "./nd-result-parse.ts";
 import { takeScreenshot } from "./screenshot.ts";
 
+/**
+ * Per-step cost / usage / turn snapshot, derived from the SDK's `result`
+ * message. Recorded so reports can surface "step N cost $X / used Y tokens"
+ * and a per-run total can be aggregated.
+ *
+ * All fields are `null` when the SDK didn't emit a `result` message for the
+ * step (e.g. the run was interrupted or the mock replay shim was used).
+ */
+export interface NdStepCost {
+  totalCostUsd: number | null;
+  durationApiMs: number | null;
+  numTurns: number | null;
+  inputTokens: number | null;
+  cacheCreationInputTokens: number | null;
+  cacheReadInputTokens: number | null;
+  outputTokens: number | null;
+  /** Model id(s) the SDK reported using for this step. */
+  models: string[];
+}
+
 export interface NdStepResult {
   stepId: string;
   source: string;
@@ -27,6 +47,24 @@ export interface NdStepResult {
   afterPng: string | null;
   logTxt: string | null;
   durationMs: number;
+  cost: NdStepCost;
+}
+
+/**
+ * Run-level aggregate of every step's cost. Sums of the per-step fields;
+ * `null` when no step produced an SDK `result` message at all (typically a
+ * test fixture).
+ */
+export interface NdRunCost {
+  totalCostUsd: number | null;
+  durationApiMs: number | null;
+  numTurns: number | null;
+  inputTokens: number | null;
+  cacheCreationInputTokens: number | null;
+  cacheReadInputTokens: number | null;
+  outputTokens: number | null;
+  /** Union of model ids the SDK reported using across all steps. */
+  models: string[];
 }
 
 export interface NdRunResult {
@@ -36,6 +74,7 @@ export interface NdRunResult {
   startedAt: string;
   durationMs: number;
   steps: NdStepResult[];
+  cost: NdRunCost;
 }
 
 export interface RunNdExecutorInput {
@@ -133,6 +172,7 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
       afterPng: outcome.afterPng,
       logTxt: paths.logTxt,
       durationMs: Date.now() - stepStartedAt,
+      cost: outcome.cost,
     });
 
     if (outcome.status === "passed") {
@@ -154,6 +194,7 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
 
     const transcriptParts: string[] = [];
     let isError = false;
+    let cost: NdStepCost = emptyStepCost();
     try {
       const result = await invokeClaudeStreaming(
         {
@@ -171,6 +212,16 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
         },
       );
       isError = result.isError;
+      cost = {
+        totalCostUsd: result.cost.totalCostUsd,
+        durationApiMs: result.cost.durationApiMs,
+        numTurns: result.cost.numTurns,
+        inputTokens: result.cost.inputTokens,
+        cacheCreationInputTokens: result.cost.cacheCreationInputTokens,
+        cacheReadInputTokens: result.cost.cacheReadInputTokens,
+        outputTokens: result.cost.outputTokens,
+        models: result.cost.models,
+      };
     } catch (err) {
       isError = true;
       transcriptParts.push(
@@ -195,6 +246,7 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
       reasoning,
       beforePng: before.ok ? paths.beforePng : null,
       afterPng: after.ok ? paths.afterPng : null,
+      cost,
     };
   }
 
@@ -206,6 +258,7 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
     startedAt: startedAt.toISOString(),
     durationMs,
     steps: stepResults,
+    cost: sumStepCosts(stepResults),
   };
 }
 
@@ -214,6 +267,53 @@ interface StepAttemptOutcome {
   reasoning: string;
   beforePng: string | null;
   afterPng: string | null;
+  cost: NdStepCost;
+}
+
+function emptyStepCost(): NdStepCost {
+  return {
+    totalCostUsd: null,
+    durationApiMs: null,
+    numTurns: null,
+    inputTokens: null,
+    cacheCreationInputTokens: null,
+    cacheReadInputTokens: null,
+    outputTokens: null,
+    models: [],
+  };
+}
+
+/**
+ * Sum a list of per-step costs into a single run-level cost. Any field that
+ * had at least one numeric value across the steps becomes a sum; a field that
+ * was null on every step stays null (instead of collapsing to 0, which would
+ * hide "we never got SDK telemetry" from the report).
+ */
+function sumStepCosts(steps: NdStepResult[]): NdRunCost {
+  const sum = (pick: (c: NdStepCost) => number | null): number | null => {
+    let total = 0;
+    let seen = false;
+    for (const s of steps) {
+      const v = pick(s.cost);
+      if (v !== null) {
+        total += v;
+        seen = true;
+      }
+    }
+    return seen ? total : null;
+  };
+  const modelSet = new Set<string>();
+  for (const s of steps) for (const m of s.cost.models) modelSet.add(m);
+  return {
+    totalCostUsd: sum((c) => c.totalCostUsd),
+    durationApiMs: sum((c) => c.durationApiMs),
+    numTurns: sum((c) => c.numTurns),
+    inputTokens: sum((c) => c.inputTokens),
+    cacheCreationInputTokens: sum((c) => c.cacheCreationInputTokens),
+    cacheReadInputTokens: sum((c) => c.cacheReadInputTokens),
+    outputTokens: sum((c) => c.outputTokens),
+    models: [...modelSet],
+  };
 }
 
 interface JudgeInput {
@@ -264,6 +364,7 @@ function buildSkippedStep(step: ExpandedActionStep, reason: string): NdStepResul
     afterPng: null,
     logTxt: null,
     durationMs: 0,
+    cost: emptyStepCost(),
   };
 }
 

@@ -165,6 +165,8 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>): string {
         ? `<a class="shot" href="${esc(s.afterPng)}" target="_blank" rel="noopener"><img src="${esc(s.afterPng)}" alt="after ${esc(s.stepId)}" loading="lazy"><span>after</span></a>`
         : "";
       const dur = s.durationMs > 0 ? `<span class="duration">${formatDuration(s.durationMs)}</span>` : "";
+      const stepCost = formatNdCostChip(s.cost);
+      const stepModel = formatModelChip(s.cost.models);
       const sourceBadge = s.source && s.source !== "spec" ? `<span class="nd-source">[${esc(s.source)}]</span>` : "";
       return `<li class="nd-step ${s.status}">
         <div class="nd-step-head">
@@ -172,6 +174,8 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>): string {
           <span class="step-name">${esc(s.stepId)}</span>
           ${sourceBadge}
           <span class="spacer"></span>
+          ${stepModel}
+          ${stepCost}
           ${dur}
         </div>
         <div class="nd-step-body">
@@ -183,6 +187,8 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>): string {
       </li>`;
     })
     .join("\n");
+  const runCost = formatNdCostChip(nd.cost);
+  const runModel = formatModelChip(nd.cost.models);
   return `<section class="nd-run">
     <div class="nd-run-head">
       <span class="dim">run-nd</span>
@@ -190,10 +196,56 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>): string {
       <span class="dim">session</span>
       <code>${esc(nd.sessionName)}</code>
       <span class="spacer"></span>
+      ${runModel}
+      ${runCost}
       <span class="duration">${formatDuration(nd.durationMs)}</span>
     </div>
     <ol class="nd-steps">${stepItems}</ol>
   </section>`;
+}
+
+/**
+ * Compact cost summary chip. Format:
+ *   "$0.1234 · 37 turns · 42 in / 6,511 out · 2.0M cached"
+ * Where:
+ *   - "$X" is `total_cost_usd` from the SDK (the billing-authoritative number)
+ *   - "N turns" is `num_turns`
+ *   - "I in / O out" are fresh input vs output tokens (cached input excluded)
+ *   - "C cached" is `cache_read_input_tokens` — the bulk of input most of the
+ *     time, shown separately so the user understands what dominates billing.
+ * Returns empty string when no cost data is available (e.g. mock runs).
+ */
+function formatNdCostChip(cost: NonNullable<ReportSpecResult["ndRun"]>["cost"]): string {
+  if (cost.totalCostUsd === null) return "";
+  const parts: string[] = [`$${cost.totalCostUsd.toFixed(4)}`];
+  if (cost.numTurns !== null) parts.push(`${cost.numTurns} turns`);
+  if (cost.inputTokens !== null || cost.outputTokens !== null) {
+    const i = cost.inputTokens ?? 0;
+    const o = cost.outputTokens ?? 0;
+    parts.push(`${formatNumber(i)} in / ${formatNumber(o)} out`);
+  }
+  if (cost.cacheReadInputTokens !== null && cost.cacheReadInputTokens > 0) {
+    parts.push(`${formatTokenK(cost.cacheReadInputTokens)} cached`);
+  }
+  return `<span class="nd-cost" title="cost · turns · fresh-input/output tokens · cache-read input">${esc(parts.join(" · "))}</span>`;
+}
+
+function formatModelChip(models: string[]): string {
+  if (!models || models.length === 0) return "";
+  return `<span class="nd-model" title="Claude model id(s) reported by the SDK">${esc(models.join(", "))}</span>`;
+}
+
+/** Thousand-separated count for token figures. */
+function formatNumber(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/** Compact token count: "9,043,456" -> "9.0M", "12000" -> "12K", small -> plain. */
+function formatTokenK(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${Math.round(n / 1000)}K`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return n.toLocaleString("en-US");
 }
 
 function renderEvidence(r: ReportSpecResult, s: ReportStrings): string {
@@ -701,6 +753,8 @@ table.matrix td.miss-nonzero { background: var(--fail-bg); }
 .nd-shots { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
 .nd-shots .shot { display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--text-dim); font-size: 11px; }
 .nd-shots .shot img { max-width: 280px; max-height: 180px; border: 1px solid var(--border); border-radius: 4px; object-fit: contain; background: #fff; }
+.nd-cost { font-size: 11px; padding: 1px 8px; border-radius: 4px; background: rgba(31, 111, 235, 0.08); color: var(--accent); font-variant-numeric: tabular-nums; }
+.nd-model { font-size: 11px; padding: 1px 8px; border-radius: 4px; background: rgba(212, 167, 44, 0.18); color: var(--skip); font-variant-numeric: tabular-nums; }
 `;
 
 // Vanilla JS, no client-side template literals, no closing-script-tag string
