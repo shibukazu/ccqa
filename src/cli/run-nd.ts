@@ -1,107 +1,70 @@
-import { Command } from "commander";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import * as log from "./logger.ts";
-import { addLanguageOption } from "./options.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
 
 import { analyzeDrift } from "../drift/analyze.ts";
+import { driftAuthAvailable } from "../drift/auth.ts";
+import { resolveBaseRef } from "../drift/affected.ts";
+import { capturePrDiff, type PrDiffResult } from "../report/diff.ts";
+import { analyzeFailure } from "../report/analyze.ts";
+import { buildNdTranscriptExcerpt } from "../report/nd-transcript-excerpt.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import {
   getSpecDir,
-  listAllSpecsWithSpecFile,
   loadAllBlocks,
   loadAvailableBlocks,
   loadRunNdUserPrompt,
   readSpecFile,
-  resolveSpecTargets,
 } from "../store/index.ts";
 import { buildRunId } from "../runtime/nd-artifacts.ts";
+import { formatNdBatchCost, formatNdCost } from "../runtime/nd-cost-format.ts";
 import { runNdExecutor, type NdRunResult, type NdStepResult } from "../runtime/nd-executor.ts";
 import { generateRunNdSessionName } from "../prompts/run-nd.ts";
 import { ndRunToReportResult } from "../report/nd-adapter.ts";
-import { renderRunReport } from "../report/render.ts";
-import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
+import type { ReportSpecResult } from "../report/schema.ts";
 
-interface RunNdOptions {
+export interface RunNdOptions {
   model?: string;
   language?: string;
-  session?: string;
   out?: string;
   reportDir?: string;
   retry?: number;
   driftAudit?: boolean;
+  failureAnalysis?: boolean;
+  base?: string;
+  cwd?: string;
 }
 
-const RUN_ND_PROMPT_VERSION = "1";
+export type LiveSpecRun = {
+  /** ReportSpecResult rows the dispatcher can merge into the unified HTML. */
+  reportResults: ReportSpecResult[];
+  /** Failed (or unloadable) specs; the dispatcher uses this to set the exit code. */
+  failedCount: number;
+};
 
-export const runNdCommand = addLanguageOption(
-  new Command("run-nd")
-    .argument(
-      "[target]",
-      "Spec id '<feature>/<spec>', a feature name to run all its specs, or omitted to run every spec under .ccqa/features/.",
-    )
-    .description(
-      "Run specs non-deterministically: Claude executes each step live with relaxed agent-browser constraints and judges pass/fail per step. PNG screenshots and a STEP_RESULT verdict are saved per step.",
-    )
-    .option(
-      "-m, --model <name>",
-      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
-    )
-    .option(
-      "--session <name>",
-      "Reuse an existing agent-browser session name. When running multiple specs each spec gets a fresh session derived from this value (or generated when unset).",
-    )
-    .option(
-      "--out <dir>",
-      "Override the per-spec artifact directory. Default: <specDir>/runs/<runId>. Ignored when running multiple specs.",
-    )
-    .option(
-      "--report-dir <dir>",
-      "Also write a self-contained HTML report (index.html + report.json) to this directory, combining every spec in this invocation.",
-    )
-    .option(
-      "--retry <n>",
-      "Retry each failed step up to N more times before recording failure. Default 0.",
-      (raw) => {
-        const n = Number(raw);
-        if (!Number.isFinite(n) || n < 0 || Math.floor(n) !== n) {
-          throw new Error(`--retry must be a non-negative integer, got "${raw}"`);
-        }
-        return n;
-      },
-      0,
-    )
-    .option(
-      "--drift-audit",
-      "After all specs run, audit each spec for spec↔code drift via the existing `analyzeDrift` pipeline and include the findings in the HTML report (when --report-dir is also set).",
-    ),
-).action(async (target: string | undefined, opts: RunNdOptions) => {
-  await runNdEntry(target, opts);
-});
+/**
+ * Run pre-filtered `mode: live` specs through `runNdExecutor` (Claude +
+ * agent-browser) and, when `reportDir` is set, run drift audit + failure
+ * analysis to produce report rows. Sibling of `runDeterministicSpecs`.
+ */
+export async function runLiveSpecs(
+  specs: readonly { featureName: string; specName: string }[],
+  opts: RunNdOptions,
+): Promise<LiveSpecRun> {
+  if (specs.length === 0) return { reportResults: [], failedCount: 0 };
 
-async function runNdEntry(target: string | undefined, opts: RunNdOptions): Promise<void> {
-  log.header("run-nd", target ?? "(all specs)");
-
+  const cwd = opts.cwd ?? process.cwd();
   await preflightAgentBrowserCommand();
 
-  const specs = await resolveSpecTargets(target, listAllSpecsWithSpecFile);
-  if (specs.length === 0) {
-    log.warn("no specs to run");
-    return;
-  }
-  log.meta("specs", specs.length);
+  log.meta("live-specs", specs.length);
 
-  const userPromptSuffix = await loadRunNdUserPrompt();
+  const userPromptSuffix = await loadRunNdUserPrompt(cwd);
   if (userPromptSuffix !== null) log.meta("user-prompt", ".ccqa/prompts/run-nd.user.md");
 
-  // The user can pin a session name only when running a single spec; otherwise
-  // every spec gets its own fresh session so the previous spec's Chrome state
-  // doesn't bleed into the next one.
-  const sessionOverride = specs.length === 1 ? opts.session : undefined;
-
+  // Fresh agent-browser session per spec so Chrome state doesn't bleed across.
   const runs: SpecRunOutcome[] = [];
   for (let i = 0; i < specs.length; i++) {
     const { featureName, specName } = specs[i]!;
@@ -110,7 +73,7 @@ async function runNdEntry(target: string | undefined, opts: RunNdOptions): Promi
       log.blank();
       log.info(`[${i + 1}/${specs.length}] ${label}`);
     }
-    runs.push(await runOneSpec({ featureName, specName, opts, userPromptSuffix, sessionOverride }));
+    runs.push(await runOneSpec({ featureName, specName, opts, userPromptSuffix, cwd }));
   }
 
   const failedCount = runs.filter(
@@ -119,35 +82,68 @@ async function runNdEntry(target: string | undefined, opts: RunNdOptions): Promi
 
   log.blank();
   log.meta(
-    "summary",
+    "live-summary",
     `${runs.length - failedCount} passed / ${failedCount} failed`,
   );
   logBatchCost(runs);
 
-  const driftBySpec = opts.driftAudit
-    ? await runDriftAudit(runs, opts)
+  const driftBySpec = opts.reportDir && opts.driftAudit
+    ? await runDriftAudit(runs, opts, cwd)
     : new Map<string, ReportSpecResult["driftIssues"]>();
 
-  if (opts.reportDir) {
-    await writeReport(opts.reportDir, runs, driftBySpec);
-  }
+  const failureAnalysisEnabled = opts.reportDir != null && opts.failureAnalysis !== false;
+  const analysisBySpec = failureAnalysisEnabled
+    ? await runFailureAnalysisForLiveRuns(runs, driftBySpec, opts, cwd)
+    : new Map<string, LiveFailureAnalysis>();
 
-  if (failedCount > 0) {
-    process.exitCode = 1;
-  }
+  const reportDir = opts.reportDir ?? ".";
+  return {
+    failedCount,
+    reportResults: buildLiveReportResults(runs, driftBySpec, analysisBySpec, reportDir),
+  };
+}
+
+function buildLiveReportResults(
+  runs: SpecRunOutcome[],
+  driftBySpec: Map<string, ReportSpecResult["driftIssues"]>,
+  analysisBySpec: Map<string, LiveFailureAnalysis>,
+  reportDir: string,
+): ReportSpecResult[] {
+  return runs.flatMap((r) => {
+    if (r.kind !== "run") return [];
+    const key = `${r.featureName}/${r.specName}`;
+    const base = ndRunToReportResult({
+      featureName: r.featureName,
+      specName: r.specName,
+      specYaml: r.specYaml,
+      result: r.result,
+      reportDir,
+    });
+    const a = analysisBySpec.get(key);
+    return [{
+      ...base,
+      driftIssues: driftBySpec.get(key) ?? null,
+      ...(a
+        ? {
+            analysis: a.analysis,
+            analysisSkipped: a.analysisSkipped,
+            failureLogExcerpt: a.failureLogExcerpt,
+            diffExcerpt: a.diffExcerpt,
+          }
+        : {}),
+    }];
+  });
 }
 
 /**
- * Run the `analyzeDrift` pipeline against every successfully-run spec and
- * return a `featureName/specName → driftIssues` map. Drift findings are
- * always shown in the HTML report (when `--report-dir` is set) but do NOT
- * change the run-nd exit code — they are advisory, not pass/fail. Specs that
- * couldn't even be loaded (`kind: "error"`) are skipped because the audit
- * needs a parseable spec.yaml.
+ * Run `analyzeDrift` against every successfully-loaded spec and return a
+ * `featureName/specName → driftIssues` map. Drift findings are advisory —
+ * they show in the HTML report but do not change the run-nd exit code.
  */
 async function runDriftAudit(
   runs: SpecRunOutcome[],
   opts: RunNdOptions,
+  cwd: string,
 ): Promise<Map<string, ReportSpecResult["driftIssues"]>> {
   const targets = runs
     .filter((r): r is Extract<SpecRunOutcome, { kind: "run" }> => r.kind === "run")
@@ -157,10 +153,10 @@ async function runDriftAudit(
 
   log.blank();
   log.info(`drift audit: ${targets.length} spec${targets.length > 1 ? "s" : ""}`);
-  const blocks = await loadAvailableBlocks();
+  const blocks = await loadAvailableBlocks(cwd);
   const results = await analyzeDrift({
     targets,
-    cwd: process.cwd(),
+    cwd,
     blocks,
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
@@ -199,21 +195,21 @@ async function runOneSpec(args: {
   specName: string;
   opts: RunNdOptions;
   userPromptSuffix: string | null;
-  sessionOverride: string | undefined;
+  cwd: string;
 }): Promise<SpecRunOutcome> {
-  const { featureName, specName, opts, userPromptSuffix, sessionOverride } = args;
-  const specDir = getSpecDir(featureName, specName);
+  const { featureName, specName, opts, userPromptSuffix, cwd } = args;
+  const specDir = getSpecDir(featureName, specName, cwd);
 
   let specContent: string;
   try {
-    specContent = await readSpecFile(featureName, specName);
+    specContent = await readSpecFile(featureName, specName, cwd);
   } catch (err) {
     log.error(`failed to read spec: ${err instanceof Error ? err.message : String(err)}`);
     return { kind: "error", featureName, specName, error: String(err) };
   }
 
   const spec = parseTestSpec(specContent);
-  const blocks = await loadAllBlocks();
+  const blocks = await loadAllBlocks(cwd);
   const expanded = expandSpec(spec, { blocks });
 
   log.meta("spec", spec.title);
@@ -221,7 +217,7 @@ async function runOneSpec(args: {
   const includes = collectIncludedBlockNames(spec);
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
 
-  const sessionName = sessionOverride ?? generateRunNdSessionName();
+  const sessionName = generateRunNdSessionName();
   log.meta("session", sessionName);
 
   const runId = buildRunId();
@@ -252,7 +248,7 @@ async function runOneSpec(args: {
     "step-summary",
     `${count(result.steps, "passed")} passed / ${count(result.steps, "failed")} failed / ${count(result.steps, "skipped")} skipped`,
   );
-  const costLine = formatRunCost(result.cost);
+  const costLine = formatNdCost(result.cost, { compact: false });
   if (costLine) log.meta("cost", costLine);
 
   return {
@@ -265,82 +261,94 @@ async function runOneSpec(args: {
   };
 }
 
-function formatRunCost(cost: NdRunResult["cost"]): string | null {
-  if (cost.totalCostUsd === null) return null;
-  const parts: string[] = [`$${cost.totalCostUsd.toFixed(4)}`];
-  if (cost.numTurns !== null) parts.push(`${cost.numTurns} turns`);
-  if (cost.inputTokens !== null || cost.outputTokens !== null) {
-    const i = cost.inputTokens ?? 0;
-    const o = cost.outputTokens ?? 0;
-    parts.push(`${i}+${o} tokens`);
-  }
-  if (
-    cost.cacheReadInputTokens !== null &&
-    cost.cacheReadInputTokens > 0
-  ) {
-    parts.push(`${cost.cacheReadInputTokens} cache-read`);
-  }
-  if (cost.models.length > 0) parts.push(`model=${cost.models.join(",")}`);
-  return parts.join(" / ");
-}
-
 function logBatchCost(runs: SpecRunOutcome[]): void {
-  let totalUsd = 0;
-  let seen = false;
-  let totalIn = 0;
-  let totalOut = 0;
-  let totalCacheRead = 0;
-  for (const r of runs) {
-    if (r.kind !== "run") continue;
-    const c = r.result.cost;
-    if (c.totalCostUsd !== null) {
-      totalUsd += c.totalCostUsd;
-      seen = true;
-    }
-    totalIn += c.inputTokens ?? 0;
-    totalOut += c.outputTokens ?? 0;
-    totalCacheRead += c.cacheReadInputTokens ?? 0;
-  }
-  if (!seen) return;
-  const parts = [`$${totalUsd.toFixed(4)}`, `${totalIn}+${totalOut} tokens`];
-  if (totalCacheRead > 0) parts.push(`${totalCacheRead} cache-read`);
-  log.meta("total-cost", parts.join(" / "));
+  const costs = runs.flatMap((r) => (r.kind === "run" ? [r.result.cost] : []));
+  const line = formatNdBatchCost(costs);
+  if (line) log.meta("total-cost", line);
 }
 
-async function writeReport(
-  reportDir: string,
+type LiveFailureAnalysis = {
+  analysis: ReportSpecResult["analysis"];
+  analysisSkipped: string | null;
+  failureLogExcerpt: string | null;
+  diffExcerpt: string | null;
+};
+
+/**
+ * Classify each failed live run via `analyzeFailure` — same prompt as the
+ * deterministic path (Issue #47), fed the live transcript instead of the
+ * vitest log. Auth / diff failures degrade to `analysisSkipped`.
+ */
+async function runFailureAnalysisForLiveRuns(
   runs: SpecRunOutcome[],
   driftBySpec: Map<string, ReportSpecResult["driftIssues"]>,
-): Promise<void> {
-  await mkdir(reportDir, { recursive: true });
-  const results: ReportSpecResult[] = runs.flatMap((r) => {
-    if (r.kind !== "run") return [];
-    const key = `${r.featureName}/${r.specName}`;
-    const base = ndRunToReportResult({
-      featureName: r.featureName,
-      specName: r.specName,
-      specYaml: r.specYaml,
-      result: r.result,
-      reportDir,
-    });
-    return [{ ...base, driftIssues: driftBySpec.get(key) ?? null }];
-  });
-  const data: RunReportData = {
-    schemaVersion: 1,
-    createdAt: new Date().toISOString(),
-    runId: process.env["GITHUB_RUN_ID"] ?? null,
-    git: { head: null, base: null },
-    model: null,
-    language: null,
-    promptVersion: RUN_ND_PROMPT_VERSION,
-    results,
-  };
-  const reportPath = join(reportDir, "index.html");
-  const jsonPath = join(reportDir, "report.json");
-  await writeFile(reportPath, renderRunReport(data), "utf-8");
-  await writeFile(jsonPath, JSON.stringify(data, null, 2) + "\n", "utf-8");
+  opts: RunNdOptions,
+  cwd: string,
+): Promise<Map<string, LiveFailureAnalysis>> {
+  const out = new Map<string, LiveFailureAnalysis>();
+  const failed = runs.filter(
+    (r): r is Extract<SpecRunOutcome, { kind: "run" }> =>
+      r.kind === "run" && r.result.status === "failed",
+  );
+  if (failed.length === 0) return out;
+
+  const auth = driftAuthAvailable();
+  if (!auth.ok) {
+    log.info(`failure analysis skipped (${auth.reason})`);
+    for (const r of failed) {
+      out.set(`${r.featureName}/${r.specName}`, {
+        analysis: null,
+        analysisSkipped: auth.reason,
+        failureLogExcerpt: null,
+        diffExcerpt: null,
+      });
+    }
+    return out;
+  }
+
+  const baseRef = resolveBaseRef(opts.base);
+  const diff: PrDiffResult = await capturePrDiff(baseRef, cwd);
+  if (!diff.ok) {
+    log.info(`failure analysis: source diff unavailable (${diff.error}) — analyzing without diff context`);
+  }
+
   log.blank();
-  log.meta("report", reportPath);
+  for (const r of failed) {
+    const key = `${r.featureName}/${r.specName}`;
+    log.info(`failure analysis: ${key}`);
+    const excerpt = await buildNdTranscriptExcerpt(r.result);
+    if (excerpt === null) {
+      out.set(key, {
+        analysis: null,
+        analysisSkipped: "no failed step found in run result",
+        failureLogExcerpt: null,
+        diffExcerpt: null,
+      });
+      continue;
+    }
+    const outcome = await analyzeFailure(
+      {
+        ndTranscriptExcerpt: excerpt,
+        specYaml: r.specYaml,
+        diffPatch: diff.ok ? diff.diff.patch : null,
+        changedFiles: diff.ok ? diff.diff.nameStatus : null,
+        baseRef: diff.ok ? baseRef : null,
+        driftIssues: driftBySpec.get(key) ?? null,
+        ...(opts.language ? { outputLanguage: opts.language } : {}),
+      },
+      { ...(opts.model ? { model: opts.model } : {}), cwd },
+    );
+    const pct = Math.round(outcome.analysis.confidence * 100);
+    const headline = outcome.analysis.headline.trim() || (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();
+    log.info(`  → ${outcome.analysis.label} (${pct}%) ${headline}`);
+    out.set(key, {
+      analysis: outcome.analysis,
+      analysisSkipped: null,
+      failureLogExcerpt: excerpt,
+      diffExcerpt: diff.ok ? diff.diff.patch : null,
+    });
+  }
+  return out;
 }
 
 function count(steps: NdStepResult[], target: NdStepResult["status"]): number {

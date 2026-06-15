@@ -262,22 +262,34 @@ export async function invokeClaudeStreaming(
 
   const q = await buildMessageStream(prompt, sdkOptions);
 
-  for await (const msg of q) {
-    onEvent(msg);
+  // The SDK throws (rather than emitting a `result` message) when the Claude
+  // Code subprocess exits with a non-success terminal state (max-turn budget
+  // exhausted, internal SDK error, etc). Treat that as an analyzable failure
+  // so callers (failure analysis, drift audit, run-nd executor) can degrade
+  // gracefully instead of crashing the whole run.
+  try {
+    for await (const msg of q) {
+      onEvent(msg);
 
-    if (msg.type === "assistant" && !silenceBashLog) {
-      for (const block of msg.message.content ?? []) {
-        if (block.type === "tool_use" && block.name === "Bash") {
-          const cmd = (block.input as Record<string, unknown>)?.["command"];
-          if (typeof cmd === "string") log.bash(cmd);
+      if (msg.type === "assistant" && !silenceBashLog) {
+        for (const block of msg.message.content ?? []) {
+          if (block.type === "tool_use" && block.name === "Bash") {
+            const cmd = (block.input as Record<string, unknown>)?.["command"];
+            if (typeof cmd === "string") log.bash(cmd);
+          }
         }
       }
-    }
 
-    if (msg.type === "result") {
-      result = msg.subtype === "success" ? msg.result : "";
-      isError = msg.is_error ?? false;
-      cost = extractInvocationCost(msg);
+      if (msg.type === "result") {
+        result = msg.subtype === "success" ? msg.result : "";
+        isError = msg.is_error ?? false;
+        cost = extractInvocationCost(msg);
+      }
+    }
+  } catch (err) {
+    isError = true;
+    if (!result) {
+      result = err instanceof Error ? err.message : String(err);
     }
   }
 

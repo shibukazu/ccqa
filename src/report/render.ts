@@ -1,4 +1,5 @@
 import { DRAFT_CATEGORY_LABEL } from "../types.ts";
+import { formatNdCost } from "../runtime/nd-cost-format.ts";
 import { MAX_EVIDENCE_ITEMS } from "./analyze.ts";
 import { reportStrings, type ReportStrings } from "./i18n.ts";
 import { FAILURE_LABELS, type ReportSpecResult, type RunReportData } from "./schema.ts";
@@ -120,32 +121,36 @@ function renderResult(r: ReportSpecResult, index: number, s: ReportStrings): str
   const counts = r.testCounts
     ? `<span class="counts">${r.testCounts.passed}/${r.testCounts.total}</span>`
     : "";
-  const predictionChip =
+  // B-design summary line: status icon · name · (label-text · pct) · ungraded
+  // dot · spacer · mode-tag · counts · duration. No filled chips in the head.
+  const predictionLine =
     r.status === "failed" && r.analysis
-      ? `<span class="badge ${r.analysis.label}">${esc(displayLabel(r.analysis.label, s))}</span>`
+      ? `<span class="label-text label-${r.analysis.label}">${esc(displayLabel(r.analysis.label, s))} · ${Math.round(r.analysis.confidence * 100)}%</span>`
       : "";
-  // Failed specs that have an analysis but no human grade yet get a chip the
-  // reviewer can scan for. The client JS hides it once the radio is selected.
-  const needsGradingChip =
+  // Tiny dot the reviewer can scan for. Client JS hides it once graded.
+  const needsGradingDot =
     r.status === "failed" && r.analysis
-      ? `<span class="needs-grading-chip" data-case-id="${esc(id)}">${esc(s.needsGrading)}</span>`
+      ? `<span class="needs-grading-dot" data-case-id="${esc(id)}" title="${esc(s.needsGrading)}"></span>`
       : "";
+  const modeTag = r.ndRun
+    ? `<span class="mode-tag" title="executed in live mode (Claude drove the browser per step)">LIVE</span>`
+    : `<span class="mode-tag" title="executed in deterministic mode (vitest replayed test.spec.ts)">DETERMINISTIC</span>`;
 
   return `<details class="spec ${r.status}" data-status="${r.status}" data-case-id="${esc(id)}"${r.status === "failed" ? " open" : ""}>
   <summary>
     ${statusIcon(r.status)}
     <span class="spec-name">${esc(id)}</span>
-    ${predictionChip}
-    ${needsGradingChip}
-    ${r.ndRun ? `<span class="badge nd" title="non-deterministic">ND</span>` : ""}
+    ${predictionLine}
+    ${needsGradingDot}
     <span class="spacer"></span>
+    ${modeTag}
     ${counts}
     ${duration}
   </summary>
   <div class="spec-body">
     ${renderAssertions(r)}
     ${renderEvidence(r, s)}
-    ${r.ndRun ? renderNdRun(r.ndRun) : ""}
+    ${r.ndRun ? renderNdRun(r.ndRun, s) : ""}
     ${r.status === "failed" ? (r.analysis ? renderAnalysis(r, index, s) : renderSkipped(r, s)) : ""}
     ${renderDriftIssues(r, s)}
     ${collapsible(s.collFailureLog, s.collFailureLogHelp, r.failureLogExcerpt)}
@@ -155,7 +160,7 @@ function renderResult(r: ReportSpecResult, index: number, s: ReportStrings): str
 </details>`;
 }
 
-function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>): string {
+function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>, strings: ReportStrings): string {
   const stepItems = nd.steps
     .map((s) => {
       const before = s.beforePng
@@ -179,8 +184,8 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>): string {
           ${dur}
         </div>
         <div class="nd-step-body">
-          <p class="nd-instr"><strong>do:</strong> ${esc(s.instruction)}</p>
-          <p class="nd-instr"><strong>expect:</strong> ${esc(s.expected)}</p>
+          <p class="nd-instr"><strong>${esc(strings.stepDoLabel)}:</strong> ${esc(s.instruction)}</p>
+          <p class="nd-instr"><strong>${esc(strings.stepExpectLabel)}:</strong> ${esc(s.expected)}</p>
           ${s.reasoning ? `<p class="nd-reasoning">${esc(s.reasoning)}</p>` : ""}
           ${before || after ? `<div class="nd-shots">${before}${after}</div>` : ""}
         </div>
@@ -204,30 +209,11 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>): string {
   </section>`;
 }
 
-/**
- * Compact cost summary chip. Format:
- *   "$0.1234 · 37 turns · 42 in / 6,511 out · 2.0M cached"
- * Where:
- *   - "$X" is `total_cost_usd` from the SDK (the billing-authoritative number)
- *   - "N turns" is `num_turns`
- *   - "I in / O out" are fresh input vs output tokens (cached input excluded)
- *   - "C cached" is `cache_read_input_tokens` — the bulk of input most of the
- *     time, shown separately so the user understands what dominates billing.
- * Returns empty string when no cost data is available (e.g. mock runs).
- */
+/** Compact dot-separated cost chip, e.g. "$0.1234 · 4 turns · 42 in / 6,511 out · 2.0M cached". */
 function formatNdCostChip(cost: NonNullable<ReportSpecResult["ndRun"]>["cost"]): string {
-  if (cost.totalCostUsd === null) return "";
-  const parts: string[] = [`$${cost.totalCostUsd.toFixed(4)}`];
-  if (cost.numTurns !== null) parts.push(`${cost.numTurns} turns`);
-  if (cost.inputTokens !== null || cost.outputTokens !== null) {
-    const i = cost.inputTokens ?? 0;
-    const o = cost.outputTokens ?? 0;
-    parts.push(`${formatNumber(i)} in / ${formatNumber(o)} out`);
-  }
-  if (cost.cacheReadInputTokens !== null && cost.cacheReadInputTokens > 0) {
-    parts.push(`${formatTokenK(cost.cacheReadInputTokens)} cached`);
-  }
-  return `<span class="nd-cost" title="cost · turns · fresh-input/output tokens · cache-read input">${esc(parts.join(" · "))}</span>`;
+  const line = formatNdCost(cost, { compact: true });
+  if (line === null) return "";
+  return `<span class="nd-cost" title="cost · turns · fresh-input/output tokens · cache-read input">${esc(line)}</span>`;
 }
 
 function formatModelChip(models: string[]): string {
@@ -235,65 +221,57 @@ function formatModelChip(models: string[]): string {
   return `<span class="nd-model" title="Claude model id(s) reported by the SDK">${esc(models.join(", "))}</span>`;
 }
 
-/** Thousand-separated count for token figures. */
-function formatNumber(n: number): string {
-  return n.toLocaleString("en-US");
-}
-
-/** Compact token count: "9,043,456" -> "9.0M", "12000" -> "12K", small -> plain. */
-function formatTokenK(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 10_000) return `${Math.round(n / 1000)}K`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
-  return n.toLocaleString("en-US");
-}
-
+/**
+ * Per-step UI for deterministic runs. Adopts the same `nd-step` card layout
+ * used by live runs so reviewers don't have to context-switch between two
+ * visual idioms. We map the evidence entries (which are already keyed by
+ * stepId) onto the same shape, leaving live-only fields (before png, cost,
+ * model, reasoning) empty.
+ */
 function renderEvidence(r: ReportSpecResult, s: ReportStrings): string {
   if (!r.evidence || r.evidence.length === 0) return "";
-  const thumbs = r.evidence.map((e) => renderEvidenceThumb(e, s)).join("");
-  return `<details class="evidence-block" open>
-  <summary>${esc(s.stepEvidence(r.evidence.length))}</summary>
-  <div class="evidence-grid">${thumbs}</div>
-</details>`;
+  const stepItems = r.evidence.map((e) => renderDetStepCard(e, s)).join("\n");
+  return `<section class="nd-run">
+    <ol class="nd-steps">${stepItems}</ol>
+  </section>`;
 }
 
-function renderEvidenceThumb(e: NonNullable<ReportSpecResult["evidence"]>[number], s: ReportStrings): string {
-  const caption = esc(e.stepId);
-  const isFailed = e.status === "failed";
-  const statusBadge = `<span class="evidence-status evidence-status-${isFailed ? "failed" : "passed"}">${esc(isFailed ? s.statusFailed : s.statusPassed)}</span>`;
+function renderDetStepCard(e: NonNullable<ReportSpecResult["evidence"]>[number], s: ReportStrings): string {
+  const status = e.status === "failed" ? "failed" : "passed";
   const description = e.description
-    ? `<p class="evidence-description">${esc(e.description)}</p>`
+    ? `<p class="nd-instr"><strong>${esc(s.stepExpectLabel)}:</strong> ${esc(e.description)}</p>`
     : "";
-  const failureBlock = isFailed && e.failureSummary
-    ? `<div class="evidence-failure">
-    <span class="evidence-failure-icon" aria-hidden="true">✖</span>
-    <span class="evidence-failure-text">${esc(e.failureSummary)}</span>
-  </div>`
+  const failureBlock = e.status === "failed" && e.failureSummary
+    ? `<p class="nd-reasoning">${esc(e.failureSummary)}</p>`
     : "";
-  const footerRows: string[] = [];
+  const metaRows: string[] = [];
   if (e.url) {
     const shortUrl = shortenUrl(e.url);
-    footerRows.push(
+    metaRows.push(
       `<div class="evidence-meta-row"><span class="evidence-meta-label">${esc(s.metaUrl)}</span><span class="evidence-meta-value" title="${esc(e.url)}">${esc(shortUrl)}</span></div>`,
     );
   }
   if (e.title) {
-    footerRows.push(
+    metaRows.push(
       `<div class="evidence-meta-row"><span class="evidence-meta-label">${esc(s.metaPage)}</span><span class="evidence-meta-value">${esc(e.title)}</span></div>`,
     );
   }
-  const footer =
-    footerRows.length > 0 ? `<div class="evidence-meta">${footerRows.join("")}</div>` : "";
-  return `<figure class="evidence-thumb evidence-thumb-${isFailed ? "failed" : "passed"}">
-  ${statusBadge}
-  <a href="${esc(e.pngPath)}" target="_blank" rel="noopener"><img src="${esc(e.pngPath)}" alt="${caption}" loading="lazy"></a>
-  <figcaption>
-    <strong class="evidence-stepid">${caption}</strong>
-    ${description}
-    ${failureBlock}
-    ${footer}
-  </figcaption>
-</figure>`;
+  const meta = metaRows.length > 0 ? `<div class="evidence-meta">${metaRows.join("")}</div>` : "";
+  const after = `<a class="shot" href="${esc(e.pngPath)}" target="_blank" rel="noopener"><img src="${esc(e.pngPath)}" alt="${esc(e.stepId)}" loading="lazy"><span>after</span></a>`;
+
+  return `<li class="nd-step ${status}">
+    <div class="nd-step-head">
+      ${statusIcon(status)}
+      <span class="step-name">${esc(e.stepId)}</span>
+      <span class="spacer"></span>
+    </div>
+    <div class="nd-step-body">
+      ${description}
+      ${failureBlock}
+      <div class="nd-shots">${after}</div>
+      ${meta}
+    </div>
+  </li>`;
 }
 
 /**
@@ -358,22 +336,27 @@ function renderAnalysis(r: ReportSpecResult, index: number, s: ReportStrings): s
     : "";
 
   const subDiag = a.subDiagnosis && a.subDiagnosis !== "NONE" ? a.subDiagnosis : "";
+  // Show the human display name (e.g. "Over-broad assertion") and keep the
+  // raw enum value as a tooltip for users searching by the canonical name.
+  const subDiagDisplay = subDiag ? s.subDiagnosisDisplay[subDiag] || subDiag : "";
   const subDiagBlock = subDiag
     ? `<div class="sub-cause">
         <span class="sub-cause-arrow" aria-hidden="true">↳</span>
         <span class="sub-cause-label">${esc(s.subCause)}</span>
-        <span class="sub-cause-value">${esc(subDiag)}</span>
+        <span class="sub-cause-value" title="${esc(subDiag)}">${esc(subDiagDisplay)}</span>
         ${s.subDiagnosisHelp[subDiag] ? labelWithHelp("", s.subDiagnosisHelp[subDiag] ?? "") : ""}
       </div>`
     : "";
 
-  return `<div class="analysis">
+  return `<div class="analysis label-${a.label}">
+  <div class="analysis-tag">${esc(s.analysisHeader)}</div>
   <div class="prediction">
-    <span class="badge ${a.label}">${esc(displayLabel(a.label, s))}</span>
-    ${labelHelpBubble(a.label, s)}
-    <span class="confidence" title="confidence"><span class="confidence-bar"><span style="width:${pct}%"></span></span>${pct}%</span>
+    <span class="pct-big">${pct}<span class="pct-unit">%</span></span>
+    <div class="prediction-meta">
+      <div class="label-display">${esc(displayLabel(a.label, s))} ${labelHelpBubble(a.label, s)}</div>
+      ${subDiagBlock}
+    </div>
   </div>
-  ${subDiagBlock}
   ${headline}
   ${evidence}
   ${recommendation}
@@ -464,8 +447,10 @@ const CSS = `
   --surface: #ffffff;
   --surface-2: #f8f9fa;
   --border: #e1e4e8;
+  --border-soft: #ebeef1;
   --text: #1f2328;
   --text-dim: #656d76;
+  --text-mute: #8c959f;
   --accent: #1f6feb;
   --pass: #1a7f37;
   --pass-bg: #dafbe1;
@@ -482,8 +467,10 @@ const CSS = `
     --surface: #161b22;
     --surface-2: #1c2129;
     --border: #30363d;
+    --border-soft: #21262d;
     --text: #e6edf3;
     --text-dim: #8b949e;
+    --text-mute: #6e7681;
     --accent: #58a6ff;
     --pass: #3fb950;
     --pass-bg: rgba(63, 185, 80, 0.15);
@@ -535,10 +522,20 @@ h2 { font-size: 14px; margin: 0; font-weight: 650; }
 }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .hint { font-size: 12px; color: var(--text-dim); margin: 6px 0 10px; }
+/* Spec card: ONE outer card. A 4px status rail on the LEFT colors the card
+   by diagnosis. Head sits on --surface, body sinks to --surface-2 so the
+   reader sees one visual seam — not nested chrome. */
 .spec {
-  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
-  margin-bottom: 8px; box-shadow: var(--shadow);
+  background: var(--surface); border: 1px solid var(--border-soft); border-radius: 8px;
+  border-left: 4px solid var(--border);
+  margin-bottom: 10px; box-shadow: var(--shadow); overflow: hidden;
 }
+.spec.passed { border-left-color: var(--pass); }
+.spec.failed { border-left-color: var(--fail); }
+.spec.failed:has(.badge.TEST_DRIFT) { border-left-color: #d29922; }
+.spec.failed:has(.badge.SPEC_CHANGE) { border-left-color: #58a6ff; }
+.spec.failed:has(.badge.PRODUCT_BUG) { border-left-color: #f85149; }
+.spec.failed:has(.badge.UNKNOWN) { border-left-color: #8b949e; }
 .spec > summary {
   display: flex; align-items: center; gap: 10px; padding: 10px 16px;
   cursor: pointer; list-style: none; user-select: none;
@@ -557,56 +554,70 @@ h2 { font-size: 14px; margin: 0; font-weight: 650; }
 .status-icon.pass { color: var(--pass); }
 .status-icon.fail { color: var(--fail); }
 .status-icon.skip { color: var(--skip); }
-.spec-body { padding: 2px 16px 12px 36px; border-top: 1px solid var(--border); }
-.steps { list-style: none; margin: 10px 0; padding: 0; }
+.spec-body {
+  padding: 12px 16px 14px 20px;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border-soft);
+}
+/* The vitest test title (rendered by renderAssertions) sits one rung above
+   per-step detail in the hierarchy: spec -> test -> step. Keep it at body
+   padding, then indent the nested per-step cards (.nd-run) below. */
+.steps { list-style: none; margin: 6px 0 10px; padding: 0; }
 .steps li {
-  display: flex; align-items: center; gap: 8px; padding: 3px 8px;
-  font-size: 13px; border-radius: 5px;
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 0;
+  font-size: 13.5px; font-weight: 600; border-radius: 5px;
 }
-.steps li:hover { background: var(--surface-2); }
 .step-name { overflow-wrap: anywhere; }
+/* Analysis: NOT a nested card. A left rail in the diagnosis color +
+   "FAILURE ANALYSIS" tag + a big confidence number, B-design style. */
 .analysis {
-  border: 1px solid var(--border); border-left: 3px solid var(--accent);
-  border-radius: 6px; background: var(--surface-2);
-  padding: 10px 14px; margin: 10px 0;
+  border-top: 1px solid var(--border-soft);
+  border-left: 2px solid var(--text-mute);
+  padding: 12px 0 6px 14px;
+  margin: 16px 0 6px;
 }
-.analysis.skipped { color: var(--text-dim); font-size: 13px; font-style: italic; border-left-color: var(--border); }
-.prediction { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.analysis.label-TEST_DRIFT { border-left-color: #d29922; }
+.analysis.label-SPEC_CHANGE { border-left-color: #58a6ff; }
+.analysis.label-PRODUCT_BUG { border-left-color: #f85149; }
+.analysis.label-UNKNOWN { border-left-color: #8b949e; }
+.analysis.skipped { color: var(--text-dim); font-size: 13px; font-style: italic; border-left-color: var(--border-soft); }
+.analysis-tag {
+  font-size: 10px; color: var(--text-mute); letter-spacing: 0.1em;
+  margin-bottom: 6px; text-transform: uppercase;
+}
+.prediction { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.pct-big {
+  font-size: 26px; font-weight: 700; line-height: 1;
+  color: var(--text-mute); font-variant-numeric: tabular-nums;
+}
+.analysis.label-TEST_DRIFT .pct-big { color: #d29922; }
+.analysis.label-SPEC_CHANGE .pct-big { color: #58a6ff; }
+.analysis.label-PRODUCT_BUG .pct-big { color: #f85149; }
+.pct-unit { font-size: 14px; font-weight: 600; margin-left: 2px; opacity: 0.7; }
+.prediction-meta { display: flex; flex-direction: column; gap: 2px; }
+.label-display { font-size: 13.5px; font-weight: 600; color: var(--text); }
+/* Outlined badges kept for the truth-grade picker only. */
 .badge {
-  font-size: 11.5px; font-weight: 700; letter-spacing: 0.02em;
-  padding: 2px 10px; border-radius: 4px; color: #fff; flex: 0 0 auto;
-}
-.badge.TEST_DRIFT { background: #b45309; }
-.badge.SPEC_CHANGE { background: #1d4ed8; }
-.badge.PRODUCT_BUG { background: #b91c1c; }
-.badge.UNKNOWN { background: #6b7280; }
-.confidence { display: inline-flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--text-dim); }
-.confidence-bar {
-  display: inline-block; width: 64px; height: 6px; border-radius: 999px;
-  background: var(--border); overflow: hidden;
-}
-.confidence-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
-.sub { font-size: 11px; background: var(--surface); border: 1px solid var(--border); color: var(--text-dim); padding: 1px 8px; border-radius: 999px; }
-.sub-cause {
-  display: flex; align-items: center; gap: 6px;
-  margin: 4px 0 0 6px; padding-left: 6px;
-  font-size: 12px; color: var(--text-dim);
-}
-.sub-cause-arrow { color: var(--text-dim); font-size: 13px; }
-.sub-cause-label {
-  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim);
-}
-.sub-cause-value {
-  font-size: 11.5px; font-weight: 700; color: var(--text);
-  background: var(--surface); border: 1px solid var(--border);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
   padding: 1px 8px; border-radius: 4px;
+  border: 1px solid currentColor; background: transparent;
+  flex: 0 0 auto;
 }
-.needs-grading-chip {
-  font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
-  padding: 2px 8px; border-radius: 999px;
-  background: rgba(212, 167, 44, 0.18); color: var(--skip);
-  border: 1px solid var(--skip);
+.badge.TEST_DRIFT { color: #d29922; }
+.badge.SPEC_CHANGE { color: #58a6ff; }
+.badge.PRODUCT_BUG { color: #f85149; }
+.badge.UNKNOWN { color: #8b949e; }
+/* Sub-cause: inline text, no chip frame. */
+.sub-cause {
+  display: flex; align-items: baseline; gap: 6px;
+  margin: 0;
+  font-size: 11.5px; color: var(--text-mute);
 }
+.sub-cause-arrow { display: none; }
+.sub-cause-label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-mute);
+}
+.sub-cause-value { font-size: 11.5px; font-weight: 500; color: var(--text-dim); }
 .analysis-headline { font-size: 13.5px; margin: 9px 0 6px; font-weight: 600; line-height: 1.5; }
 .evidence { font-size: 12.5px; color: var(--text-dim); margin: 6px 0; padding-left: 18px; line-height: 1.5; }
 .evidence code { background: var(--surface); border: 1px solid var(--border); padding: 0 5px; border-radius: 4px; font-size: 11px; }
@@ -618,18 +629,20 @@ h2 { font-size: 14px; margin: 0; font-weight: 650; }
 .analysis-reasoning { margin: 6px 0; font-size: 12.5px; color: var(--text-dim); }
 .analysis-reasoning > summary { cursor: pointer; }
 .analysis-reasoning p { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.55; }
+/* Truth-grading: inline row, no card frame. */
 .truth {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  background: var(--surface); border: 1px dashed var(--border); border-radius: 6px;
-  padding: 8px 12px; margin-top: 10px; font-size: 12.5px;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 0 0; margin-top: 12px;
+  border-top: 1px dashed var(--border-soft);
+  font-size: 12.5px;
 }
-.truth-title { font-weight: 650; color: var(--text-dim); }
+.truth-title { font-weight: 600; color: var(--text-mute); font-size: 11.5px; }
 .truth-option {
   display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
-  border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px;
+  color: var(--text-dim);
 }
-.truth-option:has(input:checked) { border-color: var(--accent); background: var(--surface-2); font-weight: 650; }
-.note { flex: 1; min-width: 150px; font: inherit; font-size: 12px; padding: 4px 9px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-2); color: var(--text); }
+.truth-option:has(input:checked) { color: var(--text); font-weight: 600; }
+.note { flex: 1; min-width: 150px; font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border-soft); border-radius: 4px; background: transparent; color: var(--text); }
 details.raw, details.drift { margin: 7px 0; font-size: 13px; }
 details.raw summary, details.drift summary { cursor: pointer; color: var(--text-dim); }
 details.raw pre {
@@ -693,36 +706,6 @@ table.matrix td.miss-nonzero { background: var(--fail-bg); }
 .import-label input { display: none; }
 .empty-note { color: var(--text-dim); text-align: center; font-size: 13px; }
 
-.evidence-block { margin: 10px 0; font-size: 13px; }
-.evidence-block > summary { cursor: pointer; color: var(--text-dim); }
-.evidence-grid {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 12px; margin-top: 10px;
-}
-.evidence-thumb {
-  margin: 0; border: 1px solid var(--border); border-radius: 6px;
-  background: var(--surface-2); overflow: hidden; position: relative;
-}
-.evidence-thumb-failed { border-color: var(--fail); box-shadow: inset 0 0 0 1px var(--fail); }
-.evidence-thumb img { display: block; width: 100%; height: 140px; object-fit: cover; object-position: top left; background: #fff; }
-.evidence-thumb figcaption { padding: 8px 10px 10px; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
-.evidence-stepid { font-weight: 650; font-size: 12px; color: var(--text-dim); letter-spacing: 0.02em; }
-.evidence-description { margin: 0; font-size: 13px; line-height: 1.45; color: var(--text); white-space: pre-line; overflow-wrap: anywhere; }
-.evidence-status {
-  position: absolute; top: 8px; left: 8px;
-  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
-  padding: 2px 8px; border-radius: 4px; color: #fff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-}
-.evidence-status-passed { background: var(--pass); }
-.evidence-status-failed { background: var(--fail); }
-.evidence-failure {
-  display: flex; align-items: flex-start; gap: 6px;
-  margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--fail);
-  font-size: 12px; color: var(--fail); line-height: 1.45; overflow-wrap: anywhere;
-}
-.evidence-failure-icon { font-weight: 700; flex: 0 0 auto; }
-.evidence-failure-text { flex: 1; }
 .evidence-meta {
   display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 2px;
   font-size: 11px; padding-top: 6px; border-top: 1px solid var(--border);
@@ -734,27 +717,64 @@ table.matrix td.miss-nonzero { background: var(--fail-bg); }
 }
 .evidence-meta-value { color: var(--text); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 
-.badge.nd { background: rgba(31, 111, 235, 0.12); color: var(--accent); }
-.nd-run { padding: 0 16px 12px; }
-.nd-run-head { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--text-dim); margin-bottom: 8px; padding-top: 8px; }
-.nd-run-head code { background: var(--surface-2); padding: 1px 6px; border-radius: 4px; font-size: 11.5px; color: var(--text); }
-.nd-run-head .dim { color: var(--text-dim); }
-.nd-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
-.nd-step { border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); overflow: hidden; }
-.nd-step.failed { border-color: var(--fail); }
-.nd-step.passed { border-color: rgba(26, 127, 55, 0.4); }
-.nd-step.skipped { opacity: 0.6; }
-.nd-step-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: 13px; }
-.nd-step-body { padding: 10px 14px; font-size: 12.5px; line-height: 1.55; }
+/* Diagnosis line in the spec head (B-design): muted text in the label color,
+   no chip frame. Reads like "テスト側のずれ · 95%". */
+.label-text { font-size: 12px; color: var(--text-dim); }
+.label-text.TEST_DRIFT { color: #d29922; }
+.label-text.SPEC_CHANGE { color: #58a6ff; }
+.label-text.PRODUCT_BUG { color: #f85149; }
+.label-text.UNKNOWN { color: var(--text-mute); }
+/* Ungraded marker: a single 6px yellow dot. */
+.needs-grading-dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--skip);
+}
+.spec.graded .needs-grading-dot { display: none; }
+/* Mode tag: outlined, monochrome. No filled chip. */
+.mode-tag {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
+  padding: 1px 6px; border-radius: 3px;
+  background: transparent; color: var(--text-mute);
+  border: 1px solid var(--border);
+}
+
+/* Per-step block: indented + a thin rail under the test title so the
+   hierarchy spec → test → step is visible. */
+.nd-run {
+  padding: 0 0 0 14px;
+  margin-left: 6px;
+  border-left: 1px solid var(--border-soft);
+}
+.nd-run-head { display: flex; gap: 12px; align-items: baseline; font-size: 11.5px; color: var(--text-mute); margin: 6px 0 12px; flex-wrap: wrap; }
+.nd-run-head code { background: transparent; padding: 0; font-size: 11.5px; color: var(--text-dim); }
+.nd-run-head .dim { color: var(--text-mute); }
+
+/* Steps: flat list. Hairline separators, no nested cards. */
+.nd-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0; }
+.nd-step { border-top: 1px solid var(--border-soft); padding: 12px 0; background: transparent; }
+.nd-step:first-child { border-top: 0; padding-top: 0; }
+.nd-step.skipped { opacity: 0.55; }
+.nd-step-head { display: flex; align-items: baseline; gap: 8px; padding: 0; background: transparent; border-bottom: 0; font-size: 13px; margin-bottom: 6px; }
+.nd-step-body { padding: 0; font-size: 12.5px; line-height: 1.55; }
 .nd-step-body p { margin: 4px 0; }
-.nd-instr strong { color: var(--text-dim); font-weight: 600; margin-right: 4px; }
-.nd-reasoning { color: var(--text); font-style: italic; background: var(--surface); padding: 6px 10px; border-radius: 6px; }
-.nd-source { font-size: 11px; color: var(--text-dim); }
+.nd-instr strong { color: var(--text-mute); font-weight: 600; margin-right: 4px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+
+/* Reasoning: left rail, no fill. */
+.nd-reasoning { color: var(--text-dim); font-style: italic; background: transparent; padding: 4px 0 4px 12px; border-left: 2px solid var(--fail); border-radius: 0; margin: 6px 0; }
+.nd-step.passed .nd-reasoning { border-left-color: var(--border); color: var(--text-mute); font-style: normal; }
+
+.nd-source { font-size: 11px; color: var(--text-mute); }
 .nd-shots { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
-.nd-shots .shot { display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--text-dim); font-size: 11px; }
-.nd-shots .shot img { max-width: 280px; max-height: 180px; border: 1px solid var(--border); border-radius: 4px; object-fit: contain; background: #fff; }
-.nd-cost { font-size: 11px; padding: 1px 8px; border-radius: 4px; background: rgba(31, 111, 235, 0.08); color: var(--accent); font-variant-numeric: tabular-nums; }
-.nd-model { font-size: 11px; padding: 1px 8px; border-radius: 4px; background: rgba(212, 167, 44, 0.18); color: var(--skip); font-variant-numeric: tabular-nums; }
+.nd-shots .shot { display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--text-mute); font-size: 10px; letter-spacing: 0.08em; }
+.nd-shots .shot img { max-width: 280px; max-height: 180px; border: 1px solid var(--border-soft); border-radius: 3px; object-fit: contain; background: #000; }
+
+/* Cost / model chips: muted text, no fill. */
+.nd-cost, .nd-model {
+  font-size: 11px; padding: 0;
+  background: transparent;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
 `;
 
 // Vanilla JS, no client-side template literals, no closing-script-tag string
@@ -964,12 +984,14 @@ const CLIENT_JS = `
   }
 
   function updateNeedsGradingChips() {
-    var chips = document.querySelectorAll('.needs-grading-chip');
-    chips.forEach(function (chip) {
-      var id = chip.getAttribute('data-case-id') || '';
+    var dots = document.querySelectorAll('.needs-grading-dot');
+    dots.forEach(function (dot) {
+      var id = dot.getAttribute('data-case-id') || '';
       var entry = state[id];
       var graded = entry && entry.label && LABELS.indexOf(entry.label) >= 0;
-      chip.style.display = graded ? 'none' : '';
+      // Toggle a class on the enclosing .spec so the CSS rule hides the dot.
+      var spec = dot.closest('.spec');
+      if (spec) spec.classList.toggle('graded', !!graded);
     });
   }
 

@@ -6,13 +6,34 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * Bump on EVERY prompt change. Embedded in the report data and in exported
  * label JSON so accuracy numbers from different prompt iterations are never
  * silently mixed.
+ *
+ * v4: `script`/`failureLog` became optional and an alternate
+ * `ndTranscriptExcerpt` source was added so the same classifier could
+ * analyze non-deterministic (`run --mode=live`) failures.
  */
-export const ANALYSIS_PROMPT_VERSION = "3";
+export const ANALYSIS_PROMPT_VERSION = "4";
 
 export interface FailureAnalysisPromptInput {
-  script: string;
+  /**
+   * Generated vitest script for the deterministic execution path. Optional:
+   * non-deterministic runs do not produce a script, and pass
+   * `ndTranscriptExcerpt` instead.
+   */
+  script?: string;
+  /**
+   * vitest stdout/stderr excerpt for the deterministic path. Optional for
+   * the same reason as `script`.
+   */
+  failureLog?: string;
+  /**
+   * Summary of the Claude transcript from a `run --mode=live` execution:
+   * the final failed step's reasoning + truncated assistant log, plus a
+   * one-line summary of every preceding step. See
+   * `src/report/nd-transcript-excerpt.ts:buildNdTranscriptExcerpt`.
+   * Optional: deterministic runs leave this null.
+   */
+  ndTranscriptExcerpt?: string;
   specYaml: string;
-  failureLog: string;
   /** Unified diff base...HEAD, already scoped to the spec's relatedPaths and truncated. */
   diffPatch: string | null;
   /** `git diff --name-status` output for the same range. */
@@ -30,6 +51,7 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     script,
     specYaml,
     failureLog,
+    ndTranscriptExcerpt,
     diffPatch,
     changedFiles,
     baseRef,
@@ -37,12 +59,17 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     outputLanguage = "auto",
   } = input;
 
-  const numbered = numberLines(script);
   const languageBlock = outputLanguageBlock(
     outputLanguage,
     "`reasoning`, `detail`",
     "label names (TEST_DRIFT, etc.)",
   );
+
+  // Either deterministic artefacts (script + failureLog) or live artefacts
+  // (ndTranscriptExcerpt) populate this block. When neither is available
+  // we still emit a header so the model isn't surprised by the missing
+  // section; downgrades the call to UNKNOWN with low confidence.
+  const executionBlock = buildExecutionEvidenceBlock(script, failureLog, ndTranscriptExcerpt);
 
   const diffBlock = diffPatch
     ? `## Source changes since ${baseRef ?? "base"} (git diff, may be truncated)
@@ -146,10 +173,53 @@ Evidence rules: TEST_DRIFT and SPEC_CHANGE require at least one concrete \`file\
 ## Test Spec (spec.yaml)
 ${specYaml}
 
-## Test Script (with line numbers)
-${numbered}
+${executionBlock}
 
 ${diffBlock}
-${driftBlock}## Failure Log
-${failureLog.slice(0, 8000)}`;
+${driftBlock}`;
+}
+
+/**
+ * Render the execution-evidence section the model needs to classify the
+ * failure.
+ *
+ * Two execution modes plug in here:
+ *   - **Deterministic** (`ccqa run --mode=deterministic`): a generated
+ *     vitest script plus its stdout/stderr.
+ *   - **Live** (`ccqa run --mode=live`): a transcript excerpt from Claude
+ *     driving agent-browser step-by-step.
+ *
+ * The block headers are the same in both modes so the classifier prompt
+ * never has to branch on mode — it just sees "here's what was executed
+ * and here's how it failed".
+ */
+function buildExecutionEvidenceBlock(
+  script: string | undefined,
+  failureLog: string | undefined,
+  ndTranscriptExcerpt: string | undefined,
+): string {
+  const sections: string[] = [];
+
+  if (script && script.length > 0) {
+    sections.push(`## Test Script (with line numbers)
+${numberLines(script)}`);
+  }
+
+  if (failureLog && failureLog.length > 0) {
+    sections.push(`## Failure Log
+${failureLog.slice(0, 8000)}`);
+  }
+
+  if (ndTranscriptExcerpt && ndTranscriptExcerpt.length > 0) {
+    sections.push(`## Live Run Transcript (summary of Claude's per-step execution)
+${ndTranscriptExcerpt}`);
+  }
+
+  if (sections.length === 0) {
+    return `## Execution evidence
+
+(No script, failure log, or live transcript was captured for this run. Classify from spec.yaml + diff only, and be correspondingly more conservative — prefer UNKNOWN over a confident call.)`;
+  }
+
+  return sections.join("\n\n");
 }

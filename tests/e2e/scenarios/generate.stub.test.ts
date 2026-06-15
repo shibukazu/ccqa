@@ -18,7 +18,7 @@ const MOCK_NOOP_RESULT = JSON.stringify({
   is_error: false,
 });
 
-describe("ccqa generate — mocked Claude", () => {
+describe("ccqa record --skip-trace — mocked Claude (codegen-only flow)", () => {
   let project: FakeProject | null = null;
 
   afterEach(async () => {
@@ -35,7 +35,7 @@ describe("ccqa generate — mocked Claude", () => {
     const mockPath = join(project.cwd, "claude-mock.jsonl");
     await writeFile(mockPath, MOCK_NOOP_RESULT + "\n", "utf8");
 
-    const result = await runCcqa(["generate", "demo/x"], {
+    const result = await runCcqa(["record", "demo/x", "--skip-trace"], {
       cwd: project.cwd,
       env: { ...noColorEnv(), CCQA_CLAUDE_MOCK_FILE: mockPath },
       timeoutMs: 90_000,

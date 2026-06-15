@@ -20,6 +20,8 @@ export interface ReportStrings {
   filterPlaceholder: string;
   emptyNote: string;
   predictionAccuracy: string;
+  /** Header label for the per-spec failure analysis panel ("FAILURE ANALYSIS"). */
+  analysisHeader: string;
   predictionHint: string;
   exportLabels: string;
   importLabels: string;
@@ -37,12 +39,18 @@ export interface ReportStrings {
   analysisSkipped: string;
   needsGrading: string;
   subCause: string;
+  /** Human display name for each SUB_DIAGNOSIS enum value. */
+  subDiagnosisDisplay: Record<string, string>;
   subDiagnosisHelp: Record<string, string>;
   /** Human display name for each FAILURE_LABEL / PREDICTED_LABEL enum value. */
   failureLabelDisplay: Record<string, string>;
   /** One-line "what does this category mean" help. */
   failureLabelHelp: Record<string, string>;
   stepEvidence: (n: number) => string;
+  /** Per-step "instruction:" label shown above what the step is supposed to do. */
+  stepDoLabel: string;
+  /** Per-step "expected:" label shown above the post-step assertion. */
+  stepExpectLabel: string;
   metaUrl: string;
   metaPage: string;
   statusPassed: string;
@@ -65,6 +73,7 @@ const EN: ReportStrings = {
   filterPlaceholder: "Filter by name…",
   emptyNote: "No specs match the current filter.",
   predictionAccuracy: "Prediction accuracy",
+  analysisHeader: "FAILURE ANALYSIS",
   predictionHint:
     "Grade each failed case below with its true cause. Labels are saved in this browser (localStorage) — export them to keep or merge across runs.",
   exportLabels: "Export labels (JSON)",
@@ -83,6 +92,13 @@ const EN: ReportStrings = {
   analysisSkipped: "analysis skipped",
   needsGrading: "Needs grading",
   subCause: "Sub-cause",
+  subDiagnosisDisplay: {
+    SELECTOR_DRIFT: "Selector renamed",
+    TIMING_ISSUE: "Timing too tight",
+    OVER_ASSERTION: "Over-broad assertion",
+    DATA_MISSING: "Test data missing",
+    NONE: "",
+  },
   subDiagnosisHelp: {
     SELECTOR_DRIFT: "A selector (aria-label, placeholder, role+name, …) was renamed or removed in the source. The test still references the old one.",
     TIMING_ISSUE: "The element/state the assertion waits for does eventually appear, but the test's wait was too short. Bumping the timeout or adding a wait usually fixes it.",
@@ -103,6 +119,8 @@ const EN: ReportStrings = {
     UNKNOWN: "The evidence is too weak to choose between the three categories. Triage the failure by hand — usually the failure log or the screenshot will reveal which side broke.",
   },
   stepEvidence: (n) => `Step evidence (${n})`,
+  stepDoLabel: "do",
+  stepExpectLabel: "expect",
   metaUrl: "URL",
   metaPage: "Page",
   statusPassed: "PASSED",
@@ -129,6 +147,7 @@ const JA: ReportStrings = {
   filterPlaceholder: "名前でフィルタ…",
   emptyNote: "条件に一致する spec はありません。",
   predictionAccuracy: "予測精度",
+  analysisHeader: "失敗分析",
   predictionHint:
     "失敗ケースに「実際の原因」をつけて採点してください。ラベルはブラウザ (localStorage) に保存されます。実行をまたぐ場合はエクスポートしてください。",
   exportLabels: "ラベルをエクスポート (JSON)",
@@ -147,6 +166,13 @@ const JA: ReportStrings = {
   analysisSkipped: "解析スキップ",
   needsGrading: "未採点",
   subCause: "サブ原因",
+  subDiagnosisDisplay: {
+    SELECTOR_DRIFT: "セレクタのリネーム",
+    TIMING_ISSUE: "待ち時間不足",
+    OVER_ASSERTION: "過剰アサーション",
+    DATA_MISSING: "テストデータ不足",
+    NONE: "",
+  },
   subDiagnosisHelp: {
     SELECTOR_DRIFT: "セレクタ (aria-label / placeholder / role+name 等) がコード側でリネーム・削除され、テストが古い値を参照している状態。",
     TIMING_ISSUE: "assert が待っている要素や状態は最終的に出現するが、テストの待ち時間が短すぎる。タイムアウトを伸ばすか wait を足すと直る。",
@@ -167,6 +193,8 @@ const JA: ReportStrings = {
     UNKNOWN: "3カテゴリーに分けるための根拠が弱い。失敗ログやスクショから人手で判断する必要がある (大抵どちら側が壊れたかは画面を見ればわかる)。",
   },
   stepEvidence: (n) => `ステップ証跡 (${n})`,
+  stepDoLabel: "操作",
+  stepExpectLabel: "期待",
   metaUrl: "URL",
   metaPage: "ページ",
   statusPassed: "成功",

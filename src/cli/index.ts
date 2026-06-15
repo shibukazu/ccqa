@@ -1,22 +1,14 @@
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { traceCommand } from "./trace.ts";
-import { generateCommand } from "./generate.ts";
 import { runCommand } from "./run.ts";
-import { runNdCommand } from "./run-nd.ts";
+import { recordCommand } from "./record.ts";
 import { draftCommand } from "./draft.ts";
 import { driftCommand } from "./drift.ts";
 import { perspectivesCommand } from "./perspectives.ts";
 
-// package.json location differs between source (dev) and dist builds:
-//   src/cli/index.ts  → ../../package.json  (repo root)
-//   dist/cli/index.js → ../package.json     (dist copy, written by tsdown)
-// Probe the dist location first; fall back to the source-tree location
-// so `pnpm dev` still works from a fresh clone.
-const packageJsonPath = resolvePackageJson();
-const { version } = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { version: string };
-
+// dist build copies package.json next to the bundle (../package.json);
+// source-tree dev still needs the repo-root copy (../../package.json).
 function resolvePackageJson(): string {
   const distCandidate = fileURLToPath(new URL("../package.json", import.meta.url));
   const srcCandidate = fileURLToPath(new URL("../../package.json", import.meta.url));
@@ -28,6 +20,8 @@ function resolvePackageJson(): string {
   }
 }
 
+const { version } = JSON.parse(readFileSync(resolvePackageJson(), "utf8")) as { version: string };
+
 const program = new Command();
 
 program
@@ -35,12 +29,11 @@ program
   .description("E2E test CLI using Claude Code + agent-browser")
   .version(version);
 
+// Lifecycle order: draft → perspectives → record → run → drift
 program.addCommand(draftCommand);
-program.addCommand(driftCommand);
 program.addCommand(perspectivesCommand);
-program.addCommand(traceCommand);
-program.addCommand(generateCommand);
+program.addCommand(recordCommand);
 program.addCommand(runCommand);
-program.addCommand(runNdCommand);
+program.addCommand(driftCommand);
 
 program.parse();

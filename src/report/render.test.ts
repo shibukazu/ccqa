@@ -199,10 +199,12 @@ describe("renderRunReport", () => {
         },
       ]),
     );
-    expect(html).toContain("Step evidence (1)");
+    // PNG link + expected text from spec.yaml as the main caption.
     expect(html).toContain('src="evidence/tasks/complete/step-01.png"');
-    // Expected text from spec.yaml is the main caption line.
     expect(html).toContain("Redirected to /dashboard, user avatar visible in the header");
+    // Det step adopts the same per-step card UI as live runs.
+    expect(html).toContain("nd-step");
+    expect(html).toContain("nd-shots");
     // Footer shows labelled rows so reviewers don't have to guess what they're looking at.
     expect(html).toContain(">URL<");
     expect(html).toContain(">Page<");
@@ -248,14 +250,11 @@ describe("renderRunReport", () => {
         },
       ]),
     );
-    expect(html).toContain("evidence-thumb-passed");
-    expect(html).toContain("evidence-thumb-failed");
-    expect(html).toContain("evidence-status-passed");
-    expect(html).toContain("evidence-status-failed");
-    expect(html).toContain(">PASSED<");
-    expect(html).toContain(">FAILED<");
-    // Failure summary surfaces in the red bottom block.
-    expect(html).toContain("evidence-failure");
+    // Each step is its own nd-step card (live UI), with passed/failed wiring.
+    expect(html).toContain('nd-step passed');
+    expect(html).toContain('nd-step failed');
+    // Failure summary surfaces in the per-step reasoning slot.
+    expect(html).toContain("nd-reasoning");
     expect(html).toContain("expected &#39;Saved&#39; to be visible");
     // Failed step keeps its spec.yaml expected as the main caption line.
     expect(html).toContain("Detail page shows the row I clicked");
@@ -315,11 +314,11 @@ describe("renderRunReport", () => {
     expect(html).not.toContain("予測精度");
   });
 
-  test("failed-with-analysis specs get a Needs grading chip and a hierarchical sub-cause line", () => {
+  test("failed-with-analysis specs get a Needs grading dot and a hierarchical sub-cause line", () => {
     const html = renderRunReport(report([failedResult("complete")]));
-    // Needs-grading chip — client JS hides it once a radio is picked.
-    expect(html).toContain('class="needs-grading-chip"');
-    expect(html).toContain(">Needs grading<");
+    // Needs-grading dot — client JS toggles a .graded class on the spec to hide it.
+    expect(html).toContain('class="needs-grading-dot"');
+    expect(html).toContain('title="Needs grading"');
     // Sub-cause is rendered as a parent → child line under the main label.
     expect(html).toContain('class="sub-cause"');
     expect(html).toContain("Sub-cause");

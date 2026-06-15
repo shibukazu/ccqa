@@ -47,6 +47,10 @@ test-results/
 # ccqa temp files
 /tmp/ccqa-*
 
+# ccqa report output dirs (HTML + per-run PNG screenshots from `--report`).
+# Often include staging URLs / product UI screenshots — never commit.
+/ccqa-report*/
+
 # ccqa test
 .ccqa/
 # but keep E2E fixture .ccqa dirs

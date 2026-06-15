@@ -22,7 +22,7 @@ async function stubSecurityBinary(dir: string): Promise<string> {
   return binDir;
 }
 
-describe("ccqa run --drift-report", () => {
+describe("ccqa run --mode=deterministic --report", () => {
   let project: FakeProject | null = null;
 
   afterEach(async () => {
@@ -34,7 +34,7 @@ describe("ccqa run --drift-report", () => {
 
   test("failing spec: report is written with the failure and a skipped-analysis note; exit code stays vitest's", async () => {
     project = await makeFakeProject("failing-spec", { linkCcqa: true });
-    const result = await runCcqa(["run", "demo/boom", "--drift-report"], {
+    const result = await runCcqa(["run", "demo/boom", "--report"], {
       cwd: project.cwd,
       env: noAuthEnv(project.cwd),
       pathPrepend: [await stubSecurityBinary(project.cwd)],
@@ -42,7 +42,7 @@ describe("ccqa run --drift-report", () => {
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).not.toBe(0);
     expect(combined).toMatch(/failure analysis skipped/);
-    expect(combined).toMatch(/run report written to ccqa-report/);
+    expect(combined).toMatch(/run report written to .*ccqa-report\/index\.html/);
 
     const html = await readFile(join(project.cwd, "ccqa-report", "index.html"), "utf8");
     expect(html).toContain("demo/boom");
@@ -52,7 +52,7 @@ describe("ccqa run --drift-report", () => {
 
   test("passing spec: report is still written as a run summary, without the measurement panel", async () => {
     project = await makeFakeProject("passing-spec", { linkCcqa: true });
-    const result = await runCcqa(["run", "demo/smoke", "--drift-report", "my-report"], {
+    const result = await runCcqa(["run", "demo/smoke", "--report", "my-report"], {
       cwd: project.cwd,
       env: noAuthEnv(project.cwd),
       pathPrepend: [await stubSecurityBinary(project.cwd)],
@@ -66,7 +66,7 @@ describe("ccqa run --drift-report", () => {
     expect(html).not.toContain('id="measure-panel"');
   });
 
-  test("without --drift-report no report directory is created", async () => {
+  test("without --report no report directory is created", async () => {
     project = await makeFakeProject("passing-spec", { linkCcqa: true });
     const result = await runCcqa(["run", "demo/smoke"], {
       cwd: project.cwd,

@@ -1,11 +1,9 @@
-import { Command } from "commander";
 import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from "../prompts/trace.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   loadAllBlocks,
   loadTraceUserPrompt,
-  parseSpecPath,
   readSpecFile,
   saveRoute,
   saveTraceActions,
@@ -20,7 +18,6 @@ import { validateActions, type ValidationMode } from "../runtime/replay-validate
 import { buildSpecEnvScrub, scrubEnvValues } from "../runtime/env-scrub.ts";
 import { formatUnstableDrop, scrubUnstableActions } from "../runtime/literal-scrub.ts";
 import { languageDirective } from "../prompts/language.ts";
-import { addLanguageOption } from "./options.ts";
 import { FIND_LOCATORS } from "../types.ts";
 import type {
   Route,
@@ -33,40 +30,7 @@ import type {
 } from "../types.ts";
 import * as log from "./logger.ts";
 
-interface TraceOptions {
-  model?: string;
-  validationMode?: ValidationMode;
-  language?: string;
-}
-
-const VALIDATION_MODES = ["lenient", "strict"] as const;
-
-export const traceCommand = addLanguageOption(
-  new Command("trace")
-    .argument(
-      "<feature/spec>",
-      "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
-    )
-    .description("Run agent-browser, verify assertions, and record structured actions")
-    .option(
-      "-m, --model <name>",
-      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
-    )
-    .option(
-      "--validation-mode <mode>",
-      "Post-trace validation behaviour: 'lenient' (default) tags failing actions with a warning but keeps them; 'strict' drops them from actions.json.",
-      (raw): ValidationMode => {
-        if ((VALIDATION_MODES as readonly string[]).includes(raw)) return raw as ValidationMode;
-        throw new Error(`--validation-mode must be one of ${VALIDATION_MODES.join(" | ")}`);
-      },
-      "lenient" as ValidationMode,
-    ),
-).action(async (specPath: string, opts: TraceOptions) => {
-  const { featureName, specName } = parseSpecPath(specPath);
-  await runTrace(featureName, specName, opts.model, opts.validationMode ?? "lenient", opts.language);
-});
-
-async function runTrace(
+export async function runTrace(
   featureName: string,
   specName: string,
   model?: string,

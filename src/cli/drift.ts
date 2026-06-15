@@ -1,4 +1,3 @@
-import { resolve } from "node:path";
 import { Command } from "commander";
 import {
   ensureCcqaDir,
@@ -20,6 +19,7 @@ import {
 } from "../drift/affected.ts";
 import { routeNewFilesToSpecs } from "../drift/route-new-files.ts";
 import { addLanguageOption } from "./options.ts";
+import { resolveCwd } from "./resolve-cwd.ts";
 import * as log from "./logger.ts";
 
 interface DriftOptions {
@@ -42,7 +42,8 @@ export const driftCommand = addLanguageOption(
       "Optional spec id. If omitted, every spec under .ccqa/features/ is checked.",
     )
     .description(
-      "Check whether each spec.yaml is still in sync with the current codebase (CI-friendly, no patches applied).",
+      "Standalone spec ↔ codebase static audit. Use for PR checks where the browser isn't run. " +
+        "For run-time audit with an HTML report, see `ccqa run --report`.",
     )
     .option("--format <fmt>", "Output format: text | json | github", "text")
     .option(
@@ -71,7 +72,7 @@ export const driftCommand = addLanguageOption(
     const format = parseFormat(opts.format);
     const threshold = parseSeverity(opts.severity);
     const concurrency = parseConcurrency(opts.concurrency);
-    const cwd = opts.cwd ? resolve(opts.cwd) : process.cwd();
+    const cwd = resolveCwd(opts.cwd);
 
     await ensureCcqaDir(cwd);
 
