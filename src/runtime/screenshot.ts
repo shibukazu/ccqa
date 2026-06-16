@@ -6,6 +6,15 @@ export interface ScreenshotResult {
   error?: string;
 }
 
+export interface ScreenshotOptions {
+  /**
+   * Capture the full scrollable page instead of just the viewport. Use for
+   * "after" shots so the assertion target (e.g. a row added below the fold) is
+   * guaranteed to be in the artifact regardless of scroll position.
+   */
+  fullPage?: boolean;
+}
+
 /**
  * Take a PNG screenshot of the current page in the given agent-browser session
  * and write it to `outPath`. Used by `ccqa run-nd` to capture per-step
@@ -17,8 +26,14 @@ export interface ScreenshotResult {
  * and continues. We never throw, because a missing screenshot is a degraded
  * artifact, not a reason to abort the test step.
  */
-export function takeScreenshot(sessionName: string, outPath: string): ScreenshotResult {
-  const args = ["--session", sessionName, "screenshot", outPath];
+export function takeScreenshot(
+  sessionName: string,
+  outPath: string,
+  options?: ScreenshotOptions,
+): ScreenshotResult {
+  const args = ["--session", sessionName, "screenshot"];
+  if (options?.fullPage) args.push("--full");
+  args.push(outPath);
   const res = spawnAB(args);
   if (res.status === 0) {
     return { ok: true, path: outPath };

@@ -74,7 +74,8 @@ ${stepsText}
 1. Take a fresh \`snapshot\` to see the current page.
 2. Carry out the instruction. Use whichever agent-browser subcommand and selector style works. If the first attempt fails, take another snapshot and try a different approach — you are not being recorded.
 3. After the instruction is performed, take another \`snapshot\` (and optionally a \`get count\` / \`wait --text\` probe) to verify the expected outcome.
-4. Decide: did the **Expected** condition hold? Be honest. If the page is in an unexpected state, that is a fail, not something to work around.
+4. **Before emitting STEP_RESULT, make the judgement target visible in the page** so the auto-captured "after" screenshot proves your verdict. Use \`agent-browser eval "<elementRef>.scrollIntoView({block:'center'})"\` or similar to bring the asserted row / banner / URL bar / bot reply into view. A correct verdict with no on-screen evidence is still a weak artifact.
+5. Decide: did the **Expected** condition hold? Be honest. If the page is in an unexpected state, that is a fail, not something to work around.
 
 ### Judgement rules
 
@@ -83,6 +84,7 @@ ${stepsText}
 - If the expected outcome is partially satisfied (e.g. the page loaded but the asserted element is missing) — fail, and say which part is missing.
 - Pass only when you have *positive* evidence (a successful snapshot, a verified URL, a wait that resolved). "No error shown" is not enough on its own.
 - Do not invent success when blocked: fail honestly with a short reason.
+- **Evidence discipline**: when the assertion target is a specific row / message / banner / URL, scroll it into view (or focus the relevant pane) before letting the step end. The "after" screenshot is captured for you automatically — your job is to make sure that screenshot shows the thing your STEP_RESULT line is talking about.
 
 ### Output contract (STRICT)
 
