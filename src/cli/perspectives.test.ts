@@ -8,6 +8,7 @@ import {
   renderFeatureMarkdown,
   renderIndexMarkdown,
   renderSpecMarkdown,
+  statusLabel,
   withoutGeneratedAt,
   type SummaryEntry,
 } from "./perspectives.ts";
@@ -21,7 +22,7 @@ const skeleton: PerspectiveFeature[] = [
         specName: "search-tasks",
         title: "タスクを検索できる",
         summary: "",
-        status: { traced: true, generated: true },
+        status: { mode: "deterministic", traced: true, generated: true },
         relatedPaths: ["src/features/tasks/**"],
       },
     ],
@@ -35,7 +36,7 @@ describe("PerspectivesSchema", () => {
         {
           featureName: "f",
           specs: [
-            { specName: "s", title: "t", summary: "", status: { traced: false, generated: false } },
+            { specName: "s", title: "t", summary: "", status: { mode: "deterministic", traced: false, generated: false } },
           ],
         },
       ],
@@ -53,7 +54,7 @@ describe("PerspectivesSchema", () => {
               specName: "s",
               title: "t",
               summary: "checks login",
-              status: { traced: true, generated: true },
+              status: { mode: "deterministic", traced: true, generated: true },
               note: "owned by QA team",
             },
           ],
@@ -74,7 +75,7 @@ describe("PerspectivesSchema", () => {
                 specName: "s",
                 title: "t",
                 summary: "",
-                status: { traced: false, generated: false },
+                status: { mode: "deterministic", traced: false, generated: false },
                 severity: "high",
               },
             ],
@@ -225,7 +226,7 @@ describe("withoutGeneratedAt (no-op detection ignores the timestamp)", () => {
       features: [
         {
           featureName: "f",
-          specs: [{ specName: "s", title: "t", summary: "x", status: { traced: true, generated: true } }],
+          specs: [{ specName: "s", title: "t", summary: "x", status: { mode: "deterministic", traced: true, generated: true } }],
         },
       ],
     });
@@ -234,7 +235,7 @@ describe("withoutGeneratedAt (no-op detection ignores the timestamp)", () => {
       features: [
         {
           featureName: "f",
-          specs: [{ specName: "s", title: "t", summary: "x", status: { traced: true, generated: true } }],
+          specs: [{ specName: "s", title: "t", summary: "x", status: { mode: "deterministic", traced: true, generated: true } }],
         },
       ],
     });
@@ -248,7 +249,7 @@ describe("withoutGeneratedAt (no-op detection ignores the timestamp)", () => {
       features: [
         {
           featureName: "f",
-          specs: [{ specName: "s", title: "t", summary: "old", status: { traced: true, generated: true } }],
+          specs: [{ specName: "s", title: "t", summary: "old", status: { mode: "deterministic", traced: true, generated: true } }],
         },
       ],
     });
@@ -257,7 +258,7 @@ describe("withoutGeneratedAt (no-op detection ignores the timestamp)", () => {
       features: [
         {
           featureName: "f",
-          specs: [{ specName: "s", title: "t", summary: "new", status: { traced: true, generated: true } }],
+          specs: [{ specName: "s", title: "t", summary: "new", status: { mode: "deterministic", traced: true, generated: true } }],
         },
       ],
     });
@@ -277,7 +278,7 @@ describe("extractNotes (round-trip note preservation)", () => {
               specName: "search-tasks",
               title: "タスクを検索できる",
               summary: "old summary that will be regenerated",
-              status: { traced: true, generated: true },
+              status: { mode: "deterministic", traced: true, generated: true },
               note: "deliberately kept by a human",
             },
           ],
@@ -298,7 +299,7 @@ describe("extractNotes (round-trip note preservation)", () => {
               specName: "search-tasks",
               title: "old title",
               summary: "old",
-              status: { traced: false, generated: false },
+              status: { mode: "deterministic", traced: false, generated: false },
               note: "QA-owned note",
             },
           ],
@@ -332,7 +333,7 @@ describe("renderSpecMarkdown", () => {
     testCondition: "管理者でログイン済み",
     preconditions: ["管理者でログイン"],
     relatedPaths: ["src/features/tasks/**"],
-    status: { traced: true, generated: true },
+    status: { mode: "deterministic", traced: true, generated: true },
     note: "QAチームで重要度=高に合意",
   };
 
@@ -368,7 +369,7 @@ describe("renderSpecMarkdown", () => {
       title: "t",
       summary: "",
       relatedPaths: ["src/features/tasks/**", "src/components/Sidebar.tsx"],
-      status: { traced: true, generated: true },
+      status: { mode: "deterministic", traced: true, generated: true },
     };
     const md = renderSpecMarkdown(spec).join("\n");
     expect(md).toContain("| 関連コード | `src/features/tasks/**`<br>`src/components/Sidebar.tsx` |");
@@ -394,7 +395,7 @@ describe("renderSpecMarkdown", () => {
       specName: "s",
       title: "t",
       summary: "",
-      status: { traced: false, generated: false },
+      status: { mode: "deterministic", traced: false, generated: false },
     };
     const md = renderSpecMarkdown(minimal).join("\n");
     expect(md).not.toContain("検証内容");
@@ -410,7 +411,7 @@ describe("renderSpecMarkdown", () => {
       specName: "s",
       title: "t",
       summary: "a | b",
-      status: { traced: true, generated: true },
+      status: { mode: "deterministic", traced: true, generated: true },
     };
     const md = renderSpecMarkdown(spec).join("\n");
     expect(md).toContain("a \\| b");
@@ -429,13 +430,13 @@ describe("renderIndexMarkdown", () => {
               specName: "search-tasks",
               title: "検索できる",
               summary: "検索の確認",
-              status: { traced: true, generated: true },
+              status: { mode: "deterministic", traced: true, generated: true },
             },
             {
               specName: "create-content",
               title: "作成できる",
               summary: "作成の確認",
-              status: { traced: true, generated: false },
+              status: { mode: "deterministic", traced: true, generated: false },
             },
           ],
         },
@@ -446,19 +447,64 @@ describe("renderIndexMarkdown", () => {
     // .ccqa/features/<feature>/perspectives.md — so the link must include the
     // `features/` segment to resolve from the root .ccqa/perspectives.md.
     expect(md).toContain("## [tasks](features/tasks/perspectives.md)");
-    // One row per case: title + spec link only (status dropped, no detail leaks in).
+    // One row per case: title + mode + status + spec link. The mode column
+    // declares deterministic vs live; the status column is the runnable
+    // verdict so reviewers can scan for what is or isn't ready to run.
     expect(md).toContain(
-      "| 検索できる | [spec](features/tasks/test-cases/search-tasks/spec.yaml) |",
+      "| 検索できる | deterministic | ✅ 実行可能 | [spec](features/tasks/test-cases/search-tasks/spec.yaml) |",
     );
     expect(md).toContain(
-      "| 作成できる | [spec](features/tasks/test-cases/create-content/spec.yaml) |",
+      "| 作成できる | deterministic | ⚠️ 未record | [spec](features/tasks/test-cases/create-content/spec.yaml) |",
     );
-    // Status is no longer shown in the index.
-    expect(md).not.toContain("traced");
-    expect(md).not.toContain("generated");
+    // Raw boolean field names should not leak into the user-facing index.
+    expect(md).not.toContain("traced:");
+    expect(md).not.toContain("generated:");
     // The index is meta only — no per-case summary text leaks in.
     expect(md).not.toContain("検索の確認");
     expect(md).not.toContain("作成の確認");
+  });
+
+  test("live specs are always shown as runnable regardless of trace/generate flags", () => {
+    const md = renderIndexMarkdown({
+      generatedAt: "2026-06-16T00:00:00.000Z",
+      features: [
+        {
+          featureName: "slack",
+          specs: [
+            {
+              specName: "report-bug",
+              title: "バグ報告できる",
+              summary: "",
+              status: { mode: "live", traced: false, generated: false },
+            },
+          ],
+        },
+      ],
+    });
+    // Live specs skip codegen entirely, so a missing test.spec.ts is not a
+    // problem — they are always runnable from the reviewer's perspective.
+    expect(md).toContain("| バグ報告できる | live | ✅ 実行可能 | [spec](features/slack/test-cases/report-bug/spec.yaml) |");
+    expect(md).not.toContain("未record");
+  });
+
+  test("deterministic specs without test.spec.ts are shown as not recorded", () => {
+    const md = renderIndexMarkdown({
+      generatedAt: "2026-06-16T00:00:00.000Z",
+      features: [
+        {
+          featureName: "tasks",
+          specs: [
+            {
+              specName: "skeleton-only",
+              title: "骨組みだけ",
+              summary: "",
+              status: { mode: "deterministic", traced: false, generated: false },
+            },
+          ],
+        },
+      ],
+    });
+    expect(md).toContain("⚠️ 未record");
   });
 });
 
@@ -471,13 +517,13 @@ describe("renderFeatureMarkdown", () => {
           specName: "search-tasks",
           title: "検索できる",
           summary: "検索の確認",
-          status: { traced: true, generated: true },
+          status: { mode: "deterministic", traced: true, generated: true },
         },
         {
           specName: "create-content",
           title: "作成できる",
           summary: "作成の確認",
-          status: { traced: true, generated: false },
+          status: { mode: "deterministic", traced: true, generated: false },
         },
       ],
     });
@@ -510,7 +556,7 @@ describe("labelsFor + English labels", () => {
       preconditions: ["Logged in as an admin"],
       startScreen: "Admin page (/admin)",
       relatedPaths: ["src/features/admin/**"],
-      status: { traced: true, generated: true },
+      status: { mode: "deterministic", traced: true, generated: true },
     };
     const md = renderSpecMarkdown(spec, labelsFor("en")).join("\n");
     expect(md).toContain("| Item | Value |");
@@ -532,7 +578,7 @@ describe("labelsFor + English labels", () => {
           {
             featureName: "admin",
             specs: [
-              { specName: "s", title: "t", summary: "x", status: { traced: true, generated: true } },
+              { specName: "s", title: "t", summary: "x", status: { mode: "deterministic", traced: true, generated: true } },
             ],
           },
         ],
@@ -540,8 +586,40 @@ describe("labelsFor + English labels", () => {
       labelsFor("en"),
     );
     expect(md).toContain("# Test Perspectives (perspectives)");
-    expect(md).toContain("| Case | spec |");
+    expect(md).toContain("| Case | Mode | Status | spec |");
     expect(md).not.toContain("テスト観点");
     expect(md).not.toContain("ケース");
+  });
+});
+
+describe("statusLabel", () => {
+  const ja = labelsFor("ja");
+  const en = labelsFor("en");
+
+  test("live specs are always shown as runnable — codegen does not apply", () => {
+    expect(statusLabel({ mode: "live", traced: false, generated: false }, ja)).toBe("✅ 実行可能");
+    expect(statusLabel({ mode: "live", traced: true, generated: true }, ja)).toBe("✅ 実行可能");
+    expect(statusLabel({ mode: "live", traced: false, generated: false }, en)).toBe("✅ runnable");
+  });
+
+  test("deterministic + generated is runnable", () => {
+    expect(statusLabel({ mode: "deterministic", traced: true, generated: true }, ja)).toBe(
+      "✅ 実行可能",
+    );
+    expect(statusLabel({ mode: "deterministic", traced: true, generated: true }, en)).toBe(
+      "✅ runnable",
+    );
+  });
+
+  test("deterministic without test.spec.ts is not runnable — both partial states collapse to the same warning", () => {
+    expect(statusLabel({ mode: "deterministic", traced: true, generated: false }, ja)).toBe(
+      "⚠️ 未record",
+    );
+    expect(statusLabel({ mode: "deterministic", traced: false, generated: false }, ja)).toBe(
+      "⚠️ 未record",
+    );
+    expect(statusLabel({ mode: "deterministic", traced: false, generated: false }, en)).toBe(
+      "⚠️ not recorded",
+    );
   });
 });
