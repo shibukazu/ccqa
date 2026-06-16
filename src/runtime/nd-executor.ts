@@ -230,7 +230,10 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
     }
     const transcript = transcriptParts.join("\n");
 
-    const after = takeScreenshot(input.sessionName, paths.afterPng);
+    // After: full page so the assertion target is in the artifact regardless of
+    // scroll position. Before stays viewport-only (lighter, and the before-state
+    // doesn't usually need to prove "this row appeared below the fold").
+    const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
     await writeFile(paths.logTxt, transcript || "(no assistant text captured)", "utf-8");
