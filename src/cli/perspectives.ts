@@ -611,6 +611,8 @@ export function renderSpecMarkdown(spec: PerspectiveSpec, labels: MarkdownLabels
   if (spec.startScreen) lines.push(`| ${labels.startScreen} | ${mdCell(spec.startScreen)} |`);
   const specPath = specRelPathFromCategory(spec.specName);
   lines.push(`| spec | [${specPath}](${specPath}) |`);
+  lines.push(`| ${labels.modeLabel} | ${mdCell(modeLabel(spec.status, labels))} |`);
+  lines.push(`| ${labels.statusCol} | ${mdCell(statusLabel(spec.status, labels))} |`);
   if (spec.relatedPaths && spec.relatedPaths.length > 0) {
     lines.push(`| ${labels.relatedCode} | ${spec.relatedPaths.map((p) => `\`${p}\``).join("<br>")} |`);
   }
