@@ -9,7 +9,7 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  *
  * v4: `script`/`failureLog` became optional and an alternate
  * `ndTranscriptExcerpt` source was added so the same classifier could
- * analyze non-deterministic (`run --mode=live`) failures.
+ * analyze live-spec (`mode: live`) failures alongside deterministic ones.
  */
 export const ANALYSIS_PROMPT_VERSION = "4";
 
@@ -26,7 +26,7 @@ export interface FailureAnalysisPromptInput {
    */
   failureLog?: string;
   /**
-   * Summary of the Claude transcript from a `run --mode=live` execution:
+   * Summary of the Claude transcript from a `mode: live` spec execution:
    * the final failed step's reasoning + truncated assistant log, plus a
    * one-line summary of every preceding step. See
    * `src/report/nd-transcript-excerpt.ts:buildNdTranscriptExcerpt`.
@@ -184,9 +184,9 @@ ${driftBlock}`;
  * failure.
  *
  * Two execution modes plug in here:
- *   - **Deterministic** (`ccqa run --mode=deterministic`): a generated
+ *   - **Deterministic** (spec.yaml `mode: deterministic`): a generated
  *     vitest script plus its stdout/stderr.
- *   - **Live** (`ccqa run --mode=live`): a transcript excerpt from Claude
+ *   - **Live** (spec.yaml `mode: live`): a transcript excerpt from Claude
  *     driving agent-browser step-by-step.
  *
  * The block headers are the same in both modes so the classifier prompt

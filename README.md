@@ -2,10 +2,12 @@
 
 **Your Claude subscription already includes a QA engineer.**
 
-ccqa turns Claude Code into a browser test recorder. Write a spec in YAML, then either:
+ccqa turns Claude Code into a browser test recorder. Write a spec in YAML, declare in the spec whether it should run **deterministic** or **live**, then `ccqa run` does the right thing per spec:
 
-- **Deterministic flow** (`record` → `run --mode=deterministic`): Claude drives the browser, ccqa compiles every action into a deterministic test script you can replay in CI without an LLM. Cheapest and most stable.
-- **Live flow** (`run`, default): Claude drives the browser live every time, judging each step against its `expected` clause. More flexible for fragile UIs.
+- **Deterministic** (`mode: deterministic`, default): record once with `ccqa record`. Claude drives the browser, ccqa compiles every action into a `test.spec.ts` you can replay in CI under vitest — no LLM at run time. Cheapest and most stable.
+- **Live** (`mode: live`): no codegen. `ccqa run` sends each step to Claude every time, Claude drives `agent-browser` directly, judges pass/fail against the step's `expected`, and saves a before/after screenshot. More flexible for fragile UIs.
+
+A single project mixes both: each spec.yaml picks its own mode, and `ccqa run` reads the field and dispatches. The HTML report covers both in one page.
 
 No extra API key. Just `claude`.
 
@@ -15,14 +17,15 @@ No extra API key. Just `claude`.
 
 ```mermaid
 flowchart LR
-    A["Write spec\n(spec.yaml)"] --> B["ccqa record\n(Claude drives browser,\ngenerates test.spec.ts)"]
-    B --> C["ccqa run --mode=deterministic\n(vitest replay)"]
-    A --> D["ccqa run\n(live: Claude drives every time)"]
+    A["Write spec\n(spec.yaml + mode:)"] --> B{mode}
+    B -- deterministic --> C["ccqa record\n(Claude → test.spec.ts)"]
+    C --> D["ccqa run\n(vitest replay, no LLM)"]
+    B -- live --> E["ccqa run\n(Claude drives every time,\nper-step pass/fail)"]
 ```
 
-`record` invokes Claude Code with your spec, Claude drives the browser step by step, every action is recorded, and a vitest-compatible script is generated. `run --mode=deterministic` then replays it — no LLM involved.
+For deterministic specs, `record` invokes Claude Code with your spec, Claude drives the browser step by step, every action is recorded, and a vitest-compatible script is generated. `run` then replays it without involving an LLM.
 
-For the live flow, `run` (default `--mode=live`) sends each step to Claude every time, judges pass/fail per step, and saves a before/after screenshot. Useful when codegen is fragile (timing-dependent UIs, rich-text editors, dynamic selectors).
+For live specs, `record` is not needed. `run` directly sends each step to Claude, which drives the browser through `agent-browser`, judges whether the step's `expected` clause holds, and writes a PNG before and after each step. Useful when codegen is fragile (timing-dependent UIs, rich-text editors, dynamic selectors).
 
 ## Install
 
@@ -34,11 +37,12 @@ Requires Node.js **20+**. [agent-browser](https://github.com/vercel-labs/agent-b
 
 ## Quick start
 
-**1. Write a spec** — by hand, or interactively with [`ccqa draft`](./docs/draft.md)
+**1. Write a spec** — by hand, or interactively with [`ccqa draft`](./docs/draft.md). Declare the mode in the spec itself.
 
 ```yaml
 # .ccqa/features/tasks/test-cases/create-and-complete/spec.yaml
 title: Create a task and mark it complete
+mode: deterministic   # or: live. Omit for deterministic (the default).
 
 steps:
   - instruction: |
@@ -52,29 +56,26 @@ steps:
 
 URLs live inside `instruction` strings — either verbatim or via `${ENV_VAR}` references for environment-specific values.
 
-**2a. Record + deterministic replay** — Claude drives the browser once, ccqa generates `test.spec.ts`, then vitest replays it
+**2a. For `mode: deterministic` — record once, then replay**
 
 ```bash
-ccqa record tasks/create-and-complete
-ccqa run --mode=deterministic tasks/create-and-complete
+ccqa record tasks/create-and-complete   # Claude drives the browser; generates test.spec.ts
+ccqa run tasks/create-and-complete      # vitest replays test.spec.ts; no LLM
 ```
 
-**2b. Live run** — Claude drives the browser every time, judging each step
+**2b. For `mode: live` — skip codegen, run directly**
 
 ```bash
-ccqa run tasks/create-and-complete
+ccqa run tasks/create-and-complete      # Claude drives the browser every time
 ```
 
-By default deterministic runs write step-boundary screenshots and metadata to
-`ccqa-report/evidence/<feature>/<spec>/` so a reviewer can confirm a passing
-spec actually reached the states its `expected` clauses describe. Disable with
-`--no-evidence`.
+By default deterministic runs write step-boundary screenshots and metadata to `ccqa-report/evidence/<feature>/<spec>/` so a reviewer can confirm a passing spec actually reached the states its `expected` clauses describe. Disable with `--no-evidence`.
 
-In CI you can opt in to an HTML run report by passing `--report` — every failing spec gets a drift audit plus a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) using the PR diff as context, and the report lets a human grade those calls to measure their accuracy. Requires `ANTHROPIC_API_KEY` or a local Claude login for the analysis part. Opt out of either sub-step with `--no-failure-analysis` / `--no-drift-audit`. See [Run report](./docs/report.md).
+In CI you can opt in to an HTML run report by passing `--report` — every failing spec gets a drift audit plus a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) using the branch's git diff as context, and the report lets a human grade those calls to measure their accuracy. Requires `ANTHROPIC_API_KEY` or a local Claude login for the analysis part. Opt out with `--no-failure-analysis` (which also implicitly skips the drift audit — the audit is rendered as evidence under the classification, so without the classification the cost has nowhere to land). Use `--no-drift-audit` to keep the classification but skip the audit. See [Run report](./docs/report.md).
 
 ```bash
-ccqa run --mode=deterministic tasks/create-and-complete --report --base origin/main
-ccqa run tasks/create-and-complete --report           # live mode + HTML report
+ccqa run tasks/create-and-complete --report --base origin/main
+ccqa run --changed --report                    # only specs whose relatedPaths touch the diff
 ```
 
 ## Features
@@ -95,12 +96,24 @@ ccqa run tasks/create-and-complete --report           # live mode + HTML report
 ```
 ccqa draft [feature/spec]          Co-author a test spec with Claude
 ccqa perspectives                  Inventory existing test coverage into .ccqa/perspectives.yaml
-ccqa record <feature/spec>         Trace browser actions for a spec and generate test.spec.ts
-ccqa run [feature/spec]            Execute a spec. --mode=live (default) drives the browser via Claude;
-                                   --mode=deterministic replays the recorded test.spec.ts under vitest.
-                                   Add --report for an HTML report (failure analysis + drift audit by default).
+ccqa record <feature/spec>         (deterministic specs only) Trace browser actions + generate test.spec.ts
+ccqa run [feature/spec]            Execute specs. Per spec, the spec.yaml `mode:` field selects deterministic
+                                   (vitest replay) or live (Claude drives every time). One run can mix both;
+                                   `--report` writes one unified HTML.
 ccqa drift [feature/spec]          Standalone spec ↔ codebase static audit (for PR checks)
 ```
+
+`ccqa run` flags:
+
+- `--report [dir]` — write a self-contained HTML run report (default dir: `ccqa-report/`)
+- `--changed` — restrict execution to specs whose `relatedPaths` intersect `git diff <base>...HEAD`. Mutually exclusive with an explicit spec id.
+- `--base <ref>` — base ref for the git diff (default: `$GITHUB_BASE_REF`, then `origin/main`)
+- `--no-failure-analysis` — skip the per-failure root-cause classification (also skips the drift audit, since the audit only shows under the classification)
+- `--no-drift-audit` — skip the spec ↔ code drift audit while keeping the classification
+- `--no-evidence` — (deterministic specs only) skip step-boundary PNG capture
+- `--retry <n>` — (live specs only) retry each failing step up to N more times
+- `--format <fmt>` — `text` (default), `json` (report.json), `github` (Actions annotations)
+- `--out <dir>` — (live specs only, single-spec invocations) override the per-run artifact directory
 
 All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` | `haiku`, or a full model ID). The flag overrides `CCQA_MODEL`; when both are unset, the Claude Code CLI default is used. They also accept `--language <bcp47>` (e.g. `ja`, `en`) to set the language of human-readable output; the default `auto` follows the language of the spec/codebase. `--cwd <path>` works on `record` / `run` / `drift` so you can target a subpackage inside a monorepo from the repo root. Interactive commands authenticate via your local Claude Code login; commands that talk to Claude in CI (`ccqa run --report`, `ccqa drift`) additionally honor `ANTHROPIC_API_KEY`.
 
@@ -114,7 +127,7 @@ All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` 
   perspectives.md                # Category index, regenerated from the YAML
   prompts/
     trace.user.md                # Project-specific guidance appended to `ccqa record` (trace phase)
-    run-nd.user.md               # Project-specific guidance appended to `ccqa run` (live mode)
+    run-nd.user.md               # Project-specific guidance appended to `ccqa run` (live specs)
   blocks/
     login/
       spec.yaml                  # Reusable block (params + steps)
@@ -123,11 +136,11 @@ All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` 
       perspectives.md            # Per-category detail tables (one per case)
       test-cases/
         create-and-complete/
-          spec.yaml              # Test definition
-          actions.json           # Recorded actions from trace
-          test.spec.ts           # Generated test script
+          spec.yaml              # Test definition, with `mode: deterministic | live`
+          actions.json           # (deterministic only) Recorded actions from `ccqa record`
+          test.spec.ts           # (deterministic only) Generated vitest script
           runs/
-            2026-06-14T10-00-00-000Z/  # One run-nd invocation
+            2026-06-14T10-00-00-000Z/  # (live only) one `ccqa run` invocation
               run.json                  # Machine-readable summary
               run.md                    # Human-readable per-step log
               steps/
@@ -136,31 +149,31 @@ All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` 
                 step-01.log.txt         # Claude's full transcript for the step
 ```
 
-Add `.ccqa/features/*/test-cases/*/runs/` to `.gitignore` — these are per-run artefacts that should not be committed.
+Add `.ccqa/features/*/test-cases/*/runs/` to `.gitignore` — these are per-run artefacts that should not be committed. Likewise `ccqa-report*/`.
 
-## Live mode (`ccqa run`, default)
+## Live specs (`mode: live`)
 
-The default `ccqa run` is the live counterpart to the `record → run --mode=deterministic` pipeline. It skips codegen entirely: Claude executes each spec step against `agent-browser` directly, judges whether the step's `expected` outcome holds, and saves a PNG screenshot before and after every step. Use it when:
+For specs declared `mode: live` in their spec.yaml, `ccqa run` skips codegen entirely: Claude executes each spec step against `agent-browser` directly, judges whether the step's `expected` outcome holds, and saves a PNG screenshot before and after every step. Use this mode when:
 
 - you want to validate a spec but don't yet need a replayable, recorded test
 - the codegen output for a spec is fragile (heavily timing-dependent UIs, rich-text editors, dynamic selectors)
 - you want a visual audit trail of what the page looked like at every step
 
-```
-# Run a single spec
+```bash
+# Run a single live spec
 ccqa run tasks/create-and-complete
 
-# Run every spec under a feature
+# Run every spec under a feature (mixes deterministic + live as declared)
 ccqa run tasks
 
 # Run every spec in the project, into a unified HTML report
-ccqa run --report ccqa-report
+ccqa run --report
 
-# Retry each failing step up to 2 more times
+# Retry each failing step up to 2 more times (live specs only)
 ccqa run --retry 2 tasks/create-and-complete
 ```
 
-Constraints on selectors / `agent-browser` subcommands that apply during `ccqa record` (no `eval`, no `@ref`, no bare-tag positional `find`, no chained agent-browser calls) are **relaxed** in live mode — Claude can use any subcommand and any selector style because there is no replay contract to honour.
+Constraints on selectors / `agent-browser` subcommands that apply during `ccqa record` (no `eval`, no `@ref`, no bare-tag positional `find`, no chained agent-browser calls) are **relaxed** for live specs — Claude can use any subcommand and any selector style because there is no replay contract to honour.
 
 ### Per-project guidance (`.ccqa/prompts/run-nd.user.md`)
 

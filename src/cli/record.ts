@@ -47,7 +47,8 @@ export const recordCommand = addLanguageOption(
     )
     .description(
       "Record a deterministic test from a spec: run agent-browser to collect actions (trace), " +
-        "then generate test.spec.ts with auto-fix retries (generate). Use `ccqa run --mode=deterministic` to execute it.",
+        "then generate test.spec.ts with auto-fix retries (generate). " +
+        "After recording, `ccqa run <feature/spec>` replays it under vitest (deterministic specs only — live specs do not need recording).",
     )
     .option(
       "-m, --model <name>",

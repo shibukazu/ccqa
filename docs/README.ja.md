@@ -2,7 +2,14 @@
 
 **あなたの Claude サブスクリプションには、すでに QA エンジニアが含まれています。**
 
-ccqa は Claude Code をブラウザテストレコーダーに変えます。YAML で仕様を書き、`ccqa trace` を実行すると、Claude が [agent-browser](https://github.com/vercel-labs/agent-browser) を介してアプリを操作します。すべての操作が記録され、CI で実行できる決定論的なテストスクリプトにコンパイルされます。追加の API キーは不要。`claude` だけで動きます。
+ccqa は Claude Code をブラウザテストレコーダーに変えます。YAML で仕様を書き、その仕様に **deterministic** か **live** かを宣言すると、`ccqa run` が spec ごとに適切な実行モードを選びます。
+
+- **Deterministic** (`mode: deterministic`、デフォルト): `ccqa record` で 1 回だけ Claude にブラウザを操作させ、その操作を vitest 互換の `test.spec.ts` にコンパイルします。CI では vitest で再生するだけ — 実行時に LLM は介在しません。最も安価で安定。
+- **Live** (`mode: live`): codegen は不要。`ccqa run` が毎回 Claude に step を投げ、Claude が直接 `agent-browser` でブラウザを操作し、step の `expected` を満たすか pass/fail で判定、各 step の前後に PNG を保存します。フラジャイルな UI に強い。
+
+1 つのプロジェクトで両モードを混在できます。spec.yaml ごとに mode を選び、`ccqa run` が field を読み取って dispatch します。HTML レポートも 1 ページに統合されます。
+
+追加の API キーは不要。`claude` だけで動きます。
 
 [English README](../README.md)
 
@@ -10,12 +17,15 @@ ccqa は Claude Code をブラウザテストレコーダーに変えます。YA
 
 ```mermaid
 flowchart LR
-    A["仕様を書く\n(spec.yaml)"] --> B["ccqa trace\n(Claudeがブラウザ操作)"]
-    B --> C["ccqa generate\n(LLM → テストスクリプト)"]
-    C --> D["ccqa run\n(決定論的な再生)"]
+    A["仕様を書く\n(spec.yaml + mode:)"] --> B{mode}
+    B -- deterministic --> C["ccqa record\n(Claude → test.spec.ts)"]
+    C --> D["ccqa run\n(vitest 再生、LLM なし)"]
+    B -- live --> E["ccqa run\n(毎回 Claude が操作、\nstep ごとに pass/fail 判定)"]
 ```
 
-`trace` は仕様を渡して Claude Code を起動します。Claude は一歩ずつブラウザを操作し、すべての操作を構造化データとして記録します。`generate` はそのデータを vitest 互換のスクリプトにコンパイルします。`run` はそれを決定論的に再生します — LLM は介在しません。
+deterministic spec は `ccqa record` で Claude が一歩ずつ操作した結果を `test.spec.ts` に固めます。以後 `ccqa run` は vitest で決定論的に再生するだけです。
+
+live spec は `record` 不要です。`ccqa run` が直接 Claude に step を投げ、Claude が `agent-browser` を介してブラウザを操作し、step の `expected` を満たすか判定、各 step の前後で PNG を残します。タイミング依存・リッチエディタ・動的セレクタなど codegen が脆い場面で有用です。
 
 ## インストール
 
@@ -27,11 +37,12 @@ Node.js **20+** が必要です。[agent-browser](https://github.com/vercel-labs
 
 ## クイックスタート
 
-**1. 仕様を書く** — 手書き、または対話的に [`ccqa draft`](./draft.md) で
+**1. 仕様を書く** — 手書き、または対話的に [`ccqa draft`](./draft.md) で。実行モードは spec 自体で宣言します。
 
 ```yaml
 # .ccqa/features/tasks/test-cases/create-and-complete/spec.yaml
 title: タスクを作成して完了にする
+mode: deterministic   # または live。省略時は deterministic。
 
 steps:
   - instruction: |
@@ -45,28 +56,26 @@ steps:
 
 URL は `instruction` 内に直接書きます。環境ごとに切り替えたい値は `${ENV_VAR}` で参照します。
 
-**2. Trace** — Claude がブラウザを操作し、すべての操作を記録
+**2a. `mode: deterministic` の場合 — 1 回 record、以後は再生**
 
 ```bash
-ccqa trace tasks/create-and-complete
+ccqa record tasks/create-and-complete   # Claude がブラウザを操作し、test.spec.ts を生成
+ccqa run tasks/create-and-complete      # vitest が test.spec.ts を再生 (LLM なし)
 ```
 
-**3. Generate** — 記録された操作を再生可能なテストに変換
+**2b. `mode: live` の場合 — codegen 不要、直接実行**
 
 ```bash
-ccqa generate tasks/create-and-complete
+ccqa run tasks/create-and-complete      # 毎回 Claude がブラウザを操作
 ```
 
-**4. Run** — LLM なしで決定論的に再生
+deterministic spec はデフォルトで step 境界のスクショとメタデータを `ccqa-report/evidence/<feature>/<spec>/` に書き出します。`expected` が記述する状態に実際に到達したか、レビュアーが確認できます。`--no-evidence` で抑止できます。
+
+CI で HTML 実行レポートを出力したい場合は `--report` を付けます。失敗 spec ごとに drift audit と、ブランチの git 差分をコンテキストとした原因分類 (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) が付き、レポート上で人が正解を入力すると分類精度 (混同行列) をその場で計測できます。分析には `ANTHROPIC_API_KEY` か Claude Code のログインが必要です。`--no-failure-analysis` で分類を止められます (drift audit も連動して止まります — drift は分類の根拠として表示されるため、分類を止めるなら drift も無駄になるからです)。分類は欲しいが audit だけ止めたい場合は `--no-drift-audit` を使ってください。詳細は [Run report](./report.md)。
 
 ```bash
-ccqa run tasks/create-and-complete
-```
-
-CI で HTML 実行レポートを出力したい場合は `--drift-report` を付けます。失敗した spec ごとにドリフト監査と、PR 差分をコンテキストにした原因分類 (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) が付き、レポート上で人が正解を入力すると分類精度 (混同行列) をその場で計測できます。分析には `ANTHROPIC_API_KEY` か Claude Code のログインが必要です。詳細は [Run report](./report.md)。
-
-```bash
-ccqa run tasks/create-and-complete --drift-report --drift-base origin/main
+ccqa run tasks/create-and-complete --report --base origin/main
+ccqa run --changed --report                  # relatedPaths が diff に当たる spec だけ
 ```
 
 ## 機能
@@ -88,14 +97,27 @@ ccqa run tasks/create-and-complete --drift-report --drift-base origin/main
 
 ```
 ccqa draft [feature/spec]          Claude と一緒にテスト仕様を作成
-ccqa trace <feature/spec>          spec のブラウザ操作を記録 (include した block はインライン展開して一緒に記録)
-ccqa generate <feature/spec>       記録された操作から spec のテストスクリプトを生成
-ccqa run [feature/spec]            生成されたテストスクリプトを実行 (--drift-report で失敗分析つき HTML レポート)
-ccqa drift [feature/spec]          単独の仕様 ↔ コードベース監査 (定期ジョブ用)
 ccqa perspectives                  既存のテストカバレッジを .ccqa/perspectives.yaml に棚卸し
+ccqa record <feature/spec>         (deterministic spec 専用) ブラウザ操作を記録し test.spec.ts を生成
+ccqa run [feature/spec]            spec を実行。spec ごとに spec.yaml の mode: フィールドが
+                                   deterministic (vitest 再生) か live (毎回 Claude が操作) かを決める。
+                                   1 回の run で両方の spec を混在できる。`--report` で 1 つの統一 HTML を出力。
+ccqa drift [feature/spec]          単独の仕様 ↔ コードベース監査 (定期ジョブ用)
 ```
 
-すべての Claude 駆動コマンドは `-m, --model <name>` を受け付けます (`sonnet` | `opus` | `haiku` のエイリアス、またはフルモデル ID)。このフラグは `CCQA_MODEL` 環境変数を上書きします。両方とも未設定の場合は Claude Code CLI のデフォルトが使われます。また `--language <bcp47>` (例: `ja`、`en`) で人間向け出力の言語を指定できます。デフォルトの `auto` は spec / コードベースの言語に追従します。対話型コマンドはローカルの Claude Code ログインで認証します。CI で Claude を使うコマンド (`ccqa run --drift-report`、`ccqa drift`) は `ANTHROPIC_API_KEY` も受け付けます。
+`ccqa run` の主なフラグ:
+
+- `--report [dir]` — 単一の HTML 実行レポートを出力 (デフォルトディレクトリ: `ccqa-report/`)
+- `--changed` — `relatedPaths` が `git diff <base>...HEAD` に当たる spec だけに絞って実行 (明示的な spec 指定とは併用不可)
+- `--base <ref>` — git 差分の base ref (デフォルト: `$GITHUB_BASE_REF` → `origin/main`)
+- `--no-failure-analysis` — 失敗の自動分類をスキップ (drift audit も連動でスキップ)
+- `--no-drift-audit` — 分類は残したまま drift audit だけスキップ
+- `--no-evidence` — (deterministic spec 限定) step 境界の PNG キャプチャをスキップ
+- `--retry <n>` — (live spec 限定) 失敗 step を N 回まで再試行
+- `--format <fmt>` — `text` (デフォルト) / `json` (`report.json`) / `github` (Actions annotation)
+- `--out <dir>` — (live spec 限定、単一 spec 実行時) per-run artifact ディレクトリを上書き
+
+すべての Claude 駆動コマンドは `-m, --model <name>` を受け付けます (`sonnet` | `opus` | `haiku` のエイリアス、またはフルモデル ID)。このフラグは `CCQA_MODEL` 環境変数を上書きします。両方とも未設定の場合は Claude Code CLI のデフォルトが使われます。また `--language <bcp47>` (例: `ja`、`en`) で人間向け出力の言語を指定できます。デフォルトの `auto` は spec / コードベースの言語に追従します。`--cwd <path>` は `record` / `run` / `drift` で使え、モノレポのルートからサブパッケージを指定できます。対話型コマンドはローカルの Claude Code ログインで認証します。CI で Claude を使うコマンド (`ccqa run --report`、`ccqa drift`) は `ANTHROPIC_API_KEY` も受け付けます。
 
 `<feature/spec>` は `.ccqa/features/<feature>/test-cases/<spec>/` への 2 セグメントのエイリアスです。
 
@@ -105,6 +127,9 @@ ccqa perspectives                  既存のテストカバレッジを .ccqa/pe
 .ccqa/
   perspectives.yaml              # 既存カバレッジの棚卸し (機械可読・正)
   perspectives.md                # カテゴリ一覧インデックス (YAML から再生成)
+  prompts/
+    trace.user.md                # `ccqa record` (trace 段) に追加されるプロジェクト固有ガイダンス
+    run-nd.user.md               # `ccqa run` (live spec 実行時) に追加されるプロジェクト固有ガイダンス
   blocks/
     login/
       spec.yaml                  # 再利用可能なブロック (params + steps)
@@ -113,10 +138,20 @@ ccqa perspectives                  既存のテストカバレッジを .ccqa/pe
       perspectives.md            # カテゴリ単位の詳細テーブル (ケースごと)
       test-cases/
         create-and-complete/
-          spec.yaml              # テスト定義
-          actions.json           # trace で記録された操作
-          test.spec.ts           # 生成されたテストスクリプト
+          spec.yaml              # テスト定義 (mode: deterministic | live を含む)
+          actions.json           # (deterministic のみ) `ccqa record` で記録された操作
+          test.spec.ts           # (deterministic のみ) 生成された vitest スクリプト
+          runs/
+            2026-06-14T10-00-00-000Z/  # (live のみ) `ccqa run` 1 回分の成果物
+              run.json
+              run.md
+              steps/
+                step-01.before.png
+                step-01.after.png
+                step-01.log.txt
 ```
+
+`.ccqa/features/*/test-cases/*/runs/` と `ccqa-report*/` は `.gitignore` に追加してください。前者は per-run の一時成果物、後者は HTML レポート出力先で、いずれもコミット対象ではありません。
 
 ## ライセンス
 
