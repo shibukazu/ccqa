@@ -118,16 +118,15 @@ function renderResult(r: ReportSpecResult, index: number, s: ReportStrings): str
     r.durationMs != null && r.durationMs > 0
       ? `<span class="duration">${formatDuration(r.durationMs)}</span>`
       : "";
-  const counts = r.testCounts
-    ? `<span class="counts">${r.testCounts.passed}/${r.testCounts.total}</span>`
-    : "";
-  // B-design summary line: status icon · name · (label-text · pct) · ungraded
-  // dot · spacer · mode-tag · counts · duration. No filled chips in the head.
+  const heading = r.title
+    ? `<span class="spec-title">${esc(r.title)}</span><span class="spec-slug">(${esc(id)})</span>`
+    : `<span class="spec-title">${esc(id)}</span>`;
   const predictionLine =
     r.status === "failed" && r.analysis
       ? `<span class="label-text label-${r.analysis.label}">${esc(displayLabel(r.analysis.label, s))} · ${Math.round(r.analysis.confidence * 100)}%</span>`
       : "";
-  // Tiny dot the reviewer can scan for. Client JS hides it once graded.
+  // Hidden by client JS once the reviewer assigns a true cause; lets the eye
+  // scan the spec list for what still needs grading.
   const needsGradingDot =
     r.status === "failed" && r.analysis
       ? `<span class="needs-grading-dot" data-case-id="${esc(id)}" title="${esc(s.needsGrading)}"></span>`
@@ -139,25 +138,26 @@ function renderResult(r: ReportSpecResult, index: number, s: ReportStrings): str
   return `<details class="spec ${r.status}" data-status="${r.status}" data-case-id="${esc(id)}"${r.status === "failed" ? " open" : ""}>
   <summary>
     ${statusIcon(r.status)}
-    <span class="spec-name">${esc(id)}</span>
+    ${heading}
     ${predictionLine}
     ${needsGradingDot}
     <span class="spacer"></span>
     ${modeTag}
-    ${counts}
     ${duration}
   </summary>
   <div class="spec-body">
-    ${renderAssertions(r)}
     ${renderEvidence(r, s)}
     ${r.ndRun ? renderNdRun(r.ndRun, s) : ""}
-    ${r.status === "failed" ? (r.analysis ? renderAnalysis(r, index, s) : renderSkipped(r, s)) : ""}
-    ${renderDriftIssues(r, s)}
-    ${collapsible(s.collFailureLog, s.collFailureLogHelp, r.failureLogExcerpt)}
-    ${collapsible(s.collSourceDiff, s.collSourceDiffHelp, r.diffExcerpt, "diff")}
+    ${renderSpecBody(r, index, s)}
     ${collapsible(s.collSpecYaml, s.collSpecYamlHelp, r.specYaml)}
   </div>
 </details>`;
+}
+
+function renderSpecBody(r: ReportSpecResult, index: number, s: ReportStrings): string {
+  if (r.status !== "failed") return renderDriftIssues(r, s);
+  if (r.analysis) return renderAnalysis(r, index, s);
+  return renderSkippedWithSupporting(r, s);
 }
 
 function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>, strings: ReportStrings): string {
@@ -194,17 +194,22 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>, strings: Report
     .join("\n");
   const runCost = formatNdCostChip(nd.cost);
   const runModel = formatModelChip(nd.cost.models);
+  // The LIVE badge in the spec header already identifies the mode; the runId/
+  // session/total-cost row is only useful when correlating the report with
+  // on-disk artifacts or billing, so it's folded into a details block.
   return `<section class="nd-run">
-    <div class="nd-run-head">
-      <span class="dim">run-nd</span>
-      <code>${esc(nd.runId)}</code>
-      <span class="dim">session</span>
-      <code>${esc(nd.sessionName)}</code>
-      <span class="spacer"></span>
-      ${runModel}
-      ${runCost}
-      <span class="duration">${formatDuration(nd.durationMs)}</span>
-    </div>
+    <details class="nd-run-meta">
+      <summary>${labelWithHelp(esc(strings.collLiveRunMeta), strings.collLiveRunMetaHelp)}</summary>
+      <div class="nd-run-meta-body">
+        <span class="dim">${esc(strings.liveRunIdLabel)}</span>
+        <code>${esc(nd.runId)}</code>
+        <span class="dim">${esc(strings.liveSessionLabel)}</span>
+        <code>${esc(nd.sessionName)}</code>
+        ${runModel}
+        ${runCost}
+        <span class="duration">${formatDuration(nd.durationMs)}</span>
+      </div>
+    </details>
     <ol class="nd-steps">${stepItems}</ol>
   </section>`;
 }
@@ -298,18 +303,6 @@ function statusIcon(status: "passed" | "failed" | "skipped"): string {
   return `<span class="status-icon skip" aria-label="skipped">◌</span>`;
 }
 
-function renderAssertions(r: ReportSpecResult): string {
-  if (!r.assertions || r.assertions.length === 0) return "";
-  const rows = r.assertions
-    .map((a) => {
-      const dur =
-        a.durationMs != null ? `<span class="duration">${formatDuration(a.durationMs)}</span>` : "";
-      return `<li>${statusIcon(a.status)}<span class="step-name">${esc(a.name)}</span><span class="spacer"></span>${dur}</li>`;
-    })
-    .join("");
-  return `<ul class="steps">${rows}</ul>`;
-}
-
 function renderAnalysis(r: ReportSpecResult, index: number, s: ReportStrings): string {
   const a = r.analysis!;
   const pct = Math.round(a.confidence * 100);
@@ -361,6 +354,7 @@ function renderAnalysis(r: ReportSpecResult, index: number, s: ReportStrings): s
   ${evidence}
   ${recommendation}
   ${reasoning}
+  ${renderSupportingEvidence(r, s)}
   <div class="truth">
     <span class="truth-title">${esc(s.trueCause)}</span>
     ${FAILURE_LABELS
@@ -376,6 +370,31 @@ function renderAnalysis(r: ReportSpecResult, index: number, s: ReportStrings): s
 
 function renderSkipped(r: ReportSpecResult, s: ReportStrings): string {
   return `<div class="analysis skipped">${esc(s.analysisSkipped)}${r.analysisSkipped ? `: ${esc(r.analysisSkipped)}` : ""}</div>`;
+}
+
+/**
+ * Failed-spec rendering when the root-cause classifier did not run
+ * (auth missing, --no-failure-analysis, ...). The skipped notice still leads,
+ * but we surface any raw drift / failure log / diff we *do* have so the
+ * reviewer can still triage without re-running the report.
+ */
+function renderSkippedWithSupporting(r: ReportSpecResult, s: ReportStrings): string {
+  return `${renderSkipped(r, s)}${renderSupportingEvidence(r, s)}`;
+}
+
+/**
+ * Supporting evidence (drift audit, source diff, raw failure log) shown as
+ * the basis for the classification above — or, in the skipped path, as the
+ * only triage material available.
+ */
+function renderSupportingEvidence(r: ReportSpecResult, s: ReportStrings): string {
+  const parts = [
+    renderDriftIssues(r, s),
+    collapsible(s.collFailureLog, s.collFailureLogHelp, r.failureLogExcerpt),
+    collapsible(s.collSourceDiff, s.collSourceDiffHelp, r.diffExcerpt, "diff"),
+  ].filter((x) => x.length > 0);
+  if (parts.length === 0) return "";
+  return `<div class="analysis-supporting">${parts.join("")}</div>`;
 }
 
 function renderDriftIssues(r: ReportSpecResult, s: ReportStrings): string {
@@ -546,9 +565,9 @@ h2 { font-size: 14px; margin: 0; font-weight: 650; }
   transition: transform 0.12s ease; flex: 0 0 auto;
 }
 .spec[open] > summary::before { transform: rotate(90deg); }
-.spec-name { font-weight: 600; font-size: 13.5px; }
+.spec-title { font-weight: 600; font-size: 13.5px; }
+.spec-slug { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .spacer { flex: 1; }
-.counts { font-size: 12px; color: var(--text-dim); }
 .duration { font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .status-icon { font-weight: 700; font-size: 13px; flex: 0 0 auto; }
 .status-icon.pass { color: var(--pass); }
@@ -558,14 +577,6 @@ h2 { font-size: 14px; margin: 0; font-weight: 650; }
   padding: 12px 16px 14px 20px;
   background: var(--surface-2);
   border-top: 1px solid var(--border-soft);
-}
-/* The vitest test title (rendered by renderAssertions) sits one rung above
-   per-step detail in the hierarchy: spec -> test -> step. Keep it at body
-   padding, then indent the nested per-step cards (.nd-run) below. */
-.steps { list-style: none; margin: 6px 0 10px; padding: 0; }
-.steps li {
-  display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 0;
-  font-size: 13.5px; font-weight: 600; border-radius: 5px;
 }
 .step-name { overflow-wrap: anywhere; }
 /* Analysis: NOT a nested card. A left rail in the diagnosis color +
@@ -629,6 +640,14 @@ h2 { font-size: 14px; margin: 0; font-weight: 650; }
 .analysis-reasoning { margin: 6px 0; font-size: 12.5px; color: var(--text-dim); }
 .analysis-reasoning > summary { cursor: pointer; }
 .analysis-reasoning p { margin: 6px 0 0; white-space: pre-wrap; line-height: 1.55; }
+/* Supporting evidence (drift audit, source diff, failure log) shown as the
+   basis of the classification above. Indented one rung so the eye groups it
+   with the analysis, not with the spec-body. */
+.analysis-supporting {
+  display: flex; flex-direction: column; gap: 4px;
+  margin: 12px 0 4px;
+}
+.analysis-supporting > details { margin: 0; }
 /* Truth-grading: inline row, no card frame. */
 .truth {
   display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
@@ -708,7 +727,7 @@ table.matrix td.miss-nonzero { background: var(--fail-bg); }
 
 .evidence-meta {
   display: grid; grid-template-columns: auto 1fr; column-gap: 8px; row-gap: 2px;
-  font-size: 11px; padding-top: 6px; border-top: 1px solid var(--border);
+  font-size: 11px; padding-top: 4px; margin-top: 6px;
 }
 .evidence-meta-row { display: contents; }
 .evidence-meta-label {
@@ -745,13 +764,31 @@ table.matrix td.miss-nonzero { background: var(--fail-bg); }
   margin-left: 6px;
   border-left: 1px solid var(--border-soft);
 }
-.nd-run-head { display: flex; gap: 12px; align-items: baseline; font-size: 11.5px; color: var(--text-mute); margin: 6px 0 12px; flex-wrap: wrap; }
-.nd-run-head code { background: transparent; padding: 0; font-size: 11.5px; color: var(--text-dim); }
-.nd-run-head .dim { color: var(--text-mute); }
+.nd-run-meta { margin: 0 0 8px; font-size: 11.5px; }
+.nd-run-meta > summary {
+  cursor: pointer; color: var(--text-mute); list-style: none;
+  padding: 4px 0;
+}
+.nd-run-meta > summary::-webkit-details-marker { display: none; }
+.nd-run-meta > summary::before {
+  content: "▸"; color: var(--text-dim); font-size: 10px;
+  margin-right: 6px; transition: transform 0.12s ease;
+  display: inline-block;
+}
+.nd-run-meta[open] > summary::before { transform: rotate(90deg); }
+.nd-run-meta-body {
+  display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
+  color: var(--text-mute); padding: 6px 0 8px 16px;
+}
+.nd-run-meta-body code { background: transparent; padding: 0; font-size: 11.5px; color: var(--text-dim); }
+.nd-run-meta-body .dim { color: var(--text-mute); }
 
-/* Steps: flat list. Hairline separators, no nested cards. */
+/* Steps: flat list. The separator between steps has to outweigh anything
+   *inside* a step (e.g. evidence-meta footer) so the eye finds the
+   step boundary at a glance — hence a solid var(--border), not the
+   softer hairline used inside the step body. */
 .nd-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0; }
-.nd-step { border-top: 1px solid var(--border-soft); padding: 12px 0; background: transparent; }
+.nd-step { border-top: 1px solid var(--border); padding: 16px 0; background: transparent; }
 .nd-step:first-child { border-top: 0; padding-top: 0; }
 .nd-step.skipped { opacity: 0.55; }
 .nd-step-head { display: flex; align-items: baseline; gap: 8px; padding: 0; background: transparent; border-bottom: 0; font-size: 13px; margin-bottom: 6px; }

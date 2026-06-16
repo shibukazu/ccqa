@@ -19,6 +19,7 @@ function sampleData(): RunReportData {
       {
         feature: "tasks",
         spec: "create",
+        title: null,
         status: "passed",
         testCounts: { total: 3, passed: 3, failed: 0 },
         durationMs: 1500,
@@ -35,6 +36,7 @@ function sampleData(): RunReportData {
       {
         feature: "tasks",
         spec: "complete",
+        title: "complete a task",
         status: "failed",
         testCounts: { total: 3, passed: 2, failed: 1 },
         durationMs: null,

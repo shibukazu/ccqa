@@ -18,6 +18,21 @@ export function parseTestSpec(content: string, source = "spec.yaml"): TestSpec {
 }
 
 /**
+ * Throw-suppressed sibling of `parseTestSpec`. Used by report-side helpers
+ * that derive cosmetic data (title, step descriptions) from spec.yaml and
+ * want a missing or malformed file to degrade silently rather than abort
+ * the report.
+ */
+export function tryParseTestSpec(yaml: string | null): TestSpec | null {
+  if (!yaml) return null;
+  try {
+    return parseTestSpec(yaml);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Parse a block's spec.yaml. Block-specific errors include the targeted
  * nested-block message (the underlying zod failure on an `include` key
  * inside a block step is hard to read).

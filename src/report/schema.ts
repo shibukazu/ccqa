@@ -154,6 +154,12 @@ export type NdReportRun = z.infer<typeof NdReportRunSchema>;
 export const ReportSpecResultSchema = z.object({
   feature: z.string(),
   spec: z.string(),
+  /**
+   * Human-readable spec title from spec.yaml. Shown as the primary identifier
+   * in the report so reviewers see "what was tested" instead of just the
+   * `<feature>/<spec>` slug. `null` when spec.yaml is unavailable.
+   */
+  title: z.string().nullable(),
   status: z.enum(["passed", "failed"]),
   /** "3/4 passed" style detail from the vitest JSON report, when available. */
   testCounts: z

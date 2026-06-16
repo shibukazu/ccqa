@@ -13,7 +13,8 @@ import {
   resolveSpecTargets,
   tryReadSpecFile,
 } from "../store/index.ts";
-import { parseTestSpec } from "../spec/parser.ts";
+import { tryParseTestSpec } from "../spec/parser.ts";
+import type { TestSpec } from "../spec/yaml-schema.ts";
 import { expandSpec } from "../spec/expand.ts";
 import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
 import type { BlockSpec } from "../types.ts";
@@ -386,10 +387,15 @@ async function analyzeDeterministicSummaries(
   cwd: string,
   reportDir: string,
 ): Promise<{ results: ReportSpecResult[]; diff: PrDiffResult; baseRef: string }> {
-  // `--report` defaults to running both failure analysis and drift audit.
-  // `--no-failure-analysis` / `--no-drift-audit` turn them off independently.
+  // Both pieces of automated analysis cost Claude turns. Disabling the
+  // root-cause classification (--no-failure-analysis) implicitly disables
+  // the drift audit too, since the audit is rendered as supporting
+  // evidence under the classification — keeping the audit on without the
+  // classification would burn cost without a place to display the result.
+  // --no-drift-audit remains an independent opt-out for when the user
+  // wants the classification but not the audit.
   const failureAnalysisEnabled = opts.failureAnalysis !== false;
-  const driftAuditEnabled = opts.driftAudit !== false;
+  const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
 
   const auth = failureAnalysisEnabled || driftAuditEnabled ? driftAuthAvailable() : { ok: false as const, reason: "skipped by flags" };
   const failed = summaries.filter(failedSpec);
@@ -457,11 +463,13 @@ async function analyzeDeterministicSummaries(
     // Read spec.yaml once and reuse for both evidence captions and the
     // failure-analysis prompt.
     const specYaml = await tryReadSpecFile(s.featureName, s.specName, cwd);
-    const stepDescriptions = parseStepDescriptions(specYaml, allBlocks);
+    const parsedSpec = tryParseTestSpec(specYaml);
+    const stepDescriptions = buildStepDescriptions(parsedSpec, allBlocks);
     const evidence = await loadEvidenceForSpec(s, reportDir, stepDescriptions);
     const base = {
       feature: s.featureName,
       spec: s.specName,
+      title: parsedSpec?.title ?? null,
       testCounts: s.report
         ? {
             total: s.report.numTotalTests,
@@ -693,15 +701,14 @@ async function readEvidenceMeta(
 
 /**
  * Build `step id → expected` so the report can caption each evidence
- * screenshot. Returns empty map on parse failure (evidence still surfaces).
+ * screenshot. Returns empty map on expansion failure (evidence still surfaces).
  */
-function parseStepDescriptions(
-  yaml: string | null,
+function buildStepDescriptions(
+  spec: TestSpec | null,
   blocks: Map<string, BlockSpec>,
 ): Map<string, string> {
-  if (!yaml) return new Map();
+  if (!spec) return new Map();
   try {
-    const spec = parseTestSpec(yaml);
     const expanded = expandSpec(spec, { blocks });
     return new Map(expanded.map((s) => [s.id, s.expected.trim()]));
   } catch {

@@ -87,11 +87,16 @@ export async function runLiveSpecs(
   );
   logBatchCost(runs);
 
-  const driftBySpec = opts.reportDir && opts.driftAudit
+  // Both pieces of automated analysis cost Claude turns. Disabling the
+  // failure analysis implicitly disables the drift audit too (the audit
+  // is rendered as supporting evidence under the classification).
+  // --no-drift-audit remains independent for "classify but skip the audit".
+  const failureAnalysisEnabled = opts.reportDir != null && opts.failureAnalysis !== false;
+  const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
+  const driftBySpec = driftAuditEnabled
     ? await runDriftAudit(runs, opts, cwd)
     : new Map<string, ReportSpecResult["driftIssues"]>();
 
-  const failureAnalysisEnabled = opts.reportDir != null && opts.failureAnalysis !== false;
   const analysisBySpec = failureAnalysisEnabled
     ? await runFailureAnalysisForLiveRuns(runs, driftBySpec, opts, cwd)
     : new Map<string, LiveFailureAnalysis>();
@@ -99,7 +104,7 @@ export async function runLiveSpecs(
   const reportDir = opts.reportDir ?? ".";
   return {
     failedCount,
-    reportResults: buildLiveReportResults(runs, driftBySpec, analysisBySpec, reportDir),
+    reportResults: buildLiveReportResults(runs, driftBySpec, analysisBySpec, reportDir, failureAnalysisEnabled),
   };
 }
 
@@ -108,6 +113,7 @@ function buildLiveReportResults(
   driftBySpec: Map<string, ReportSpecResult["driftIssues"]>,
   analysisBySpec: Map<string, LiveFailureAnalysis>,
   reportDir: string,
+  failureAnalysisEnabled: boolean,
 ): ReportSpecResult[] {
   return runs.flatMap((r) => {
     if (r.kind !== "run") return [];
@@ -119,20 +125,36 @@ function buildLiveReportResults(
       result: r.result,
       reportDir,
     });
-    const a = analysisBySpec.get(key);
     return [{
       ...base,
       driftIssues: driftBySpec.get(key) ?? null,
-      ...(a
-        ? {
-            analysis: a.analysis,
-            analysisSkipped: a.analysisSkipped,
-            failureLogExcerpt: a.failureLogExcerpt,
-            diffExcerpt: a.diffExcerpt,
-          }
-        : {}),
+      ...analysisFieldsFor(analysisBySpec.get(key), r.result.status, failureAnalysisEnabled),
     }];
   });
+}
+
+/**
+ * Merge analysis-related fields into the report row. The unattempted-failure
+ * branch exists so the report distinguishes "we tried and gave up" (auth /
+ * spec.yaml missing) from "we deliberately did not run the classifier".
+ */
+function analysisFieldsFor(
+  a: LiveFailureAnalysis | undefined,
+  status: "passed" | "failed",
+  failureAnalysisEnabled: boolean,
+): Partial<ReportSpecResult> {
+  if (a) {
+    return {
+      analysis: a.analysis,
+      analysisSkipped: a.analysisSkipped,
+      failureLogExcerpt: a.failureLogExcerpt,
+      diffExcerpt: a.diffExcerpt,
+    };
+  }
+  if (!failureAnalysisEnabled && status === "failed") {
+    return { analysisSkipped: "skipped by --no-failure-analysis" };
+  }
+  return {};
 }
 
 /**
@@ -357,7 +379,7 @@ function count(steps: NdStepResult[], target: NdStepResult["status"]): number {
 
 function renderRunMarkdown(featureName: string, specName: string, result: NdRunResult): string {
   const head = [
-    `# run-nd: ${featureName}/${specName}`,
+    `# live run: ${featureName}/${specName}`,
     "",
     `- runId: ${result.runId}`,
     `- session: ${result.sessionName}`,

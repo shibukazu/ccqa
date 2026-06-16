@@ -6,6 +6,7 @@ function passedResult(spec: string): ReportSpecResult {
   return {
     feature: "tasks",
     spec,
+    title: null,
     status: "passed",
     testCounts: { total: 2, passed: 2, failed: 0 },
     durationMs: 1234,
@@ -28,6 +29,7 @@ function failedResult(spec: string, overrides: Partial<ReportSpecResult> = {}): 
   return {
     feature: "tasks",
     spec,
+    title: null,
     status: "failed",
     testCounts: { total: 2, passed: 1, failed: 1 },
     durationMs: 4321,
@@ -171,7 +173,7 @@ describe("renderRunReport", () => {
         }),
       ]),
     );
-    expect(html).toContain("analysis skipped: no ANTHROPIC_API_KEY and no Claude login");
+    expect(html).toContain("automated analysis skipped: no ANTHROPIC_API_KEY and no Claude login");
     expect(html).not.toContain('<input type="radio"');
     // No analyzed failure → no measurement panel either.
     expect(html).not.toContain('id="measure-panel"');
@@ -264,7 +266,7 @@ describe("renderRunReport", () => {
     const html = renderRunReport(report([failedResult("complete")]));
     // Old labels replaced with descriptive ones.
     expect(html).toContain("Failure log");
-    expect(html).toContain("Source diff for this spec");
+    expect(html).toContain("Git diff (branch vs base, scoped to this spec)");
     expect(html).toContain("Test definition (spec.yaml)");
     expect(html).toContain("Spec vs code audit");
     // The ⓘ bubble is present on each of those sections.
@@ -290,7 +292,7 @@ describe("renderRunReport", () => {
     expect(html).toContain("未採点");
     // Collapsible labels translated.
     expect(html).toContain("失敗ログ");
-    expect(html).toContain("この spec に関連する差分");
+    expect(html).toContain("Git 差分 (ブランチ vs base、この spec 関連分)");
     expect(html).toContain("テスト定義 (spec.yaml)");
     expect(html).toContain("実際の原因");
     expect(html).toContain("推奨アクション");
