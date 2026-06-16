@@ -27,7 +27,9 @@ import {
   type PerspectiveFeature,
   type Perspectives,
   type PerspectiveSpec,
+  type PerspectiveStatus,
 } from "../types.ts";
+import { DEFAULT_SPEC_MODE, SpecModeSchema, type SpecMode } from "../spec/yaml-schema.ts";
 import { formatToolSummary, printUnifiedDiff, prompt } from "./draft.ts";
 import { addLanguageOption, languageDirective, useJapanesePrompts } from "./options.ts";
 import * as log from "./logger.ts";
@@ -155,7 +157,7 @@ export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<Perspecti
           .filter((s) => s.hasSpecFile)
           .map(async (s): Promise<PerspectiveSpec> => {
             const spec = await readSpecMeta(feature.featureName, s.specName);
-            const status = await deriveStatus(feature.featureName, s.specName);
+            const status = await deriveStatus(feature.featureName, s.specName, spec.mode);
             const entry: PerspectiveSpec = {
               specName: s.specName,
               title: spec.title,
@@ -273,28 +275,34 @@ function noteKey(featureName: string, specName: string): string {
 
 // --- I/O helpers (kept thin so the pure functions above stay testable) ---
 
-async function readSpecMeta(featureName: string, specName: string): Promise<{ title: string }> {
+async function readSpecMeta(
+  featureName: string,
+  specName: string,
+): Promise<{ title: string; mode: SpecMode }> {
   const raw = await tryReadSpecFile(featureName, specName);
-  if (raw === null) return { title: specName };
+  if (raw === null) return { title: specName, mode: DEFAULT_SPEC_MODE };
   try {
-    const parsed = parseYaml(raw) as { title?: unknown };
-    if (typeof parsed.title === "string" && parsed.title.length > 0) {
-      return { title: parsed.title };
-    }
+    const parsed = parseYaml(raw) as { title?: unknown; mode?: unknown };
+    const title = typeof parsed.title === "string" && parsed.title.length > 0
+      ? parsed.title
+      : specName;
+    const modeResult = SpecModeSchema.safeParse(parsed.mode);
+    const mode = modeResult.success ? modeResult.data : DEFAULT_SPEC_MODE;
+    return { title, mode };
   } catch {
-    // fall through to the spec name fallback
+    return { title: specName, mode: DEFAULT_SPEC_MODE };
   }
-  return { title: specName };
 }
 
 async function deriveStatus(
   featureName: string,
   specName: string,
-): Promise<{ traced: boolean; generated: boolean }> {
+  mode: SpecMode,
+): Promise<PerspectiveStatus> {
   const actionsPath = join(getSpecDir(featureName, specName), "actions.json");
   const traced = await stat(actionsPath).then(() => true).catch(() => false);
   const generated = (await getTestScript(featureName, specName)) !== null;
-  return { traced, generated };
+  return { mode, traced, generated };
 }
 
 async function loadSpecBodies(skeleton: PerspectiveFeature[]): Promise<PerspectiveSpecForPrompt[]> {
@@ -413,10 +421,18 @@ interface MarkdownLabels {
   caseCol: string;
   itemCol: string;
   valueCol: string;
+  statusCol: string;
   summary: string;
   preconditions: string;
   startScreen: string;
   relatedCode: string;
+  modeDeterministic: string;
+  modeLive: string;
+  /** Shown in the index column when a deterministic spec has no test.spec.ts yet. */
+  notRecorded: string;
+  /** Shown when a deterministic spec was traced but codegen has not produced test.spec.ts. */
+  codegenPending: string;
+  ready: string;
 }
 
 const LABELS_JA: MarkdownLabels = {
@@ -424,10 +440,16 @@ const LABELS_JA: MarkdownLabels = {
   caseCol: "ケース",
   itemCol: "項目",
   valueCol: "内容",
+  statusCol: "状態",
   summary: "検証内容",
   preconditions: "前提条件",
   startScreen: "開始画面",
   relatedCode: "関連コード",
+  modeDeterministic: "deterministic",
+  modeLive: "live",
+  notRecorded: "⚠️ 未録画 (record 未実行)",
+  codegenPending: "⚠️ コード生成待ち (trace 済・generate 未)",
+  ready: "実行可",
 };
 
 const LABELS_EN: MarkdownLabels = {
@@ -435,10 +457,16 @@ const LABELS_EN: MarkdownLabels = {
   caseCol: "Case",
   itemCol: "Item",
   valueCol: "Value",
+  statusCol: "Status",
   summary: "Verifies",
   preconditions: "Preconditions",
   startScreen: "Start screen",
   relatedCode: "Related code",
+  modeDeterministic: "deterministic",
+  modeLive: "live",
+  notRecorded: "⚠️ not recorded (run `ccqa record`)",
+  codegenPending: "⚠️ codegen pending (traced, no test.spec.ts)",
+  ready: "ready",
 };
 
 /**
@@ -449,6 +477,22 @@ const LABELS_EN: MarkdownLabels = {
  */
 export function labelsFor(language?: string): MarkdownLabels {
   return /^en\b/i.test(language?.trim() ?? "") ? LABELS_EN : LABELS_JA;
+}
+
+/**
+ * Build the short status string surfaced in both the index row and the
+ * per-feature table for one spec. Returns a `mode · readiness` pair so
+ * reviewers see at a glance which specs are live, which are deterministic,
+ * and which are deterministic-but-not-yet-recorded (the partial state).
+ *
+ * For live specs there is no "recorded" axis — codegen does not apply.
+ */
+export function statusLabel(status: PerspectiveStatus, labels: MarkdownLabels): string {
+  if (status.mode === "live") return labels.modeLive;
+  if (!status.generated) {
+    return `${labels.modeDeterministic} · ${status.traced ? labels.codegenPending : labels.notRecorded}`;
+  }
+  return `${labels.modeDeterministic} · ${labels.ready}`;
 }
 
 /**
@@ -498,11 +542,12 @@ export function renderIndexMarkdown(perspectives: Perspectives, labels: Markdown
     const detailLink = featureDetailRelPathFromRoot(feature.featureName);
     lines.push(`## [${feature.featureName}](${detailLink})`);
     lines.push("");
-    lines.push(`| ${labels.caseCol} | spec |`);
-    lines.push("| --- | --- |");
+    lines.push(`| ${labels.caseCol} | ${labels.statusCol} | spec |`);
+    lines.push("| --- | --- | --- |");
     for (const spec of feature.specs) {
       const specLink = specRelPathFromRoot(feature.featureName, spec.specName);
-      lines.push(`| ${mdCell(spec.title)} | [spec](${specLink}) |`);
+      const status = mdCell(statusLabel(spec.status, labels));
+      lines.push(`| ${mdCell(spec.title)} | ${status} | [spec](${specLink}) |`);
     }
     lines.push("");
   }
@@ -549,6 +594,7 @@ export function renderSpecMarkdown(spec: PerspectiveSpec, labels: MarkdownLabels
   lines.push("");
   lines.push(`| ${labels.itemCol} | ${labels.valueCol} |`);
   lines.push("| --- | --- |");
+  lines.push(`| ${labels.statusCol} | ${mdCell(statusLabel(spec.status, labels))} |`);
   if (spec.summary) lines.push(`| ${labels.summary} | ${mdCell(spec.summary)} |`);
   if (spec.preconditions && spec.preconditions.length > 0) {
     lines.push(`| ${labels.preconditions} | ${spec.preconditions.map(mdCell).join("<br>")} |`);

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SpecModeSchema } from "./yaml-schema.ts";
 
 /**
  * `perspectives.yaml` is an inventory of the test coverage that already
@@ -18,12 +19,24 @@ import { z } from "zod";
  */
 
 /**
- * Whether the spec has been traced / generated. Both are derived mechanically
- * by the CLI from on-disk artifacts (actions.json / test.spec.ts), never
- * written by Claude — these are facts and must not drift.
+ * Mechanically-derived facts about the spec's recording state, transcribed by
+ * the CLI from spec.yaml + on-disk artifacts (actions.json / test.spec.ts).
+ * Never written by Claude — these must not drift.
+ *
+ * `mode` mirrors spec.yaml's `mode:` field (defaulting to `deterministic`).
+ * Its meaning shapes how `traced` / `generated` should be interpreted:
+ *
+ *  - `mode: deterministic` — `traced` and `generated` are the spec's
+ *    completeness signal. `generated: false` means "spec.yaml exists but
+ *    `ccqa record` hasn't been run yet" — i.e. the case has not been
+ *    materialised into a runnable test.
+ *  - `mode: live` — the live runner skips codegen entirely, so `traced` and
+ *    `generated` carry no completeness meaning here. Reports should not flag
+ *    `generated: false` as incomplete for live specs.
  */
 export const PerspectiveStatusSchema = z
   .object({
+    mode: SpecModeSchema,
     traced: z.boolean(),
     generated: z.boolean(),
   })
