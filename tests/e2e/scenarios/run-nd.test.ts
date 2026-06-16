@@ -34,7 +34,7 @@ function mockStepMessages(stepId: string, verdict: "pass" | "fail", reason: stri
   ];
 }
 
-describe("ccqa run-nd — mocked Claude + fake agent-browser", () => {
+describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
   let project: FakeProject | null = null;
 
   afterEach(async () => {
@@ -44,7 +44,7 @@ describe("ccqa run-nd — mocked Claude + fake agent-browser", () => {
     }
   });
 
-  test("all steps pass: exits 0, writes per-step PNGs and run.json, --report-dir emits HTML", async () => {
+  test("all steps pass: exits 0, writes per-step PNGs and run.json, --report emits HTML", async () => {
     project = await makeFakeProject("run-nd-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 
@@ -59,7 +59,7 @@ describe("ccqa run-nd — mocked Claude + fake agent-browser", () => {
 
     const reportDir = join(project.cwd, "ccqa-report");
 
-    const result = await runCcqa(["run-nd", "demo/x", "--report-dir", reportDir], {
+    const result = await runCcqa(["run", "demo/x", "--report", reportDir], {
       cwd: project.cwd,
       env: { ...noColorEnv(), CCQA_CLAUDE_MOCK_FILE: mockPath },
       timeoutMs: 90_000,
@@ -85,7 +85,7 @@ describe("ccqa run-nd — mocked Claude + fake agent-browser", () => {
 
     // HTML report contains the ND badge and links to the per-step PNGs.
     const html = await readFile(join(reportDir, "index.html"), "utf8");
-    expect(html).toContain(">ND<");
+    expect(html).toContain(">LIVE<");
     expect(html).toMatch(/step-01\.before\.png/);
     expect(html).toMatch(/step-03\.after\.png/);
   }, 120_000);
@@ -102,7 +102,7 @@ describe("ccqa run-nd — mocked Claude + fake agent-browser", () => {
       ...mockStepMessages("step-01", "fail", "expected greeting absent"),
     ]);
 
-    const result = await runCcqa(["run-nd", "demo/x"], {
+    const result = await runCcqa(["run", "demo/x"], {
       cwd: project.cwd,
       env: { ...noColorEnv(), CCQA_CLAUDE_MOCK_FILE: mockPath },
       timeoutMs: 90_000,

@@ -34,15 +34,28 @@ export type IncludeStep = z.infer<typeof IncludeStepSchema>;
 export const StepSchema = z.union([ActionStepSchema, IncludeStepSchema]);
 export type Step = z.infer<typeof StepSchema>;
 
+/**
+ * Execution mode for `ccqa run`:
+ *   - `deterministic` (default): vitest replays the recorded `test.spec.ts`.
+ *   - `live`: Claude drives agent-browser per step (for fragile UIs where
+ *     codegen is impractical). Cost ~$0.5 per spec.
+ */
+export const SpecModeSchema = z.enum(["deterministic", "live"]);
+export type SpecMode = z.infer<typeof SpecModeSchema>;
+
 /** Top-level spec schema. `.strict()` rejects any unknown key. */
 export const TestSpecSchema = z
   .object({
     title: z.string().min(1),
     relatedPaths: z.array(z.string().min(1)).optional(),
+    mode: SpecModeSchema.optional(),
     steps: z.array(StepSchema).min(1),
   })
   .strict();
 export type TestSpec = z.infer<typeof TestSpecSchema>;
+
+/** Default mode when `mode:` is absent. */
+export const DEFAULT_SPEC_MODE: SpecMode = "deterministic";
 
 /**
  * A block param declaration. `required` defaults to true; only explicit

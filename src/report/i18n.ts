@@ -20,6 +20,8 @@ export interface ReportStrings {
   filterPlaceholder: string;
   emptyNote: string;
   predictionAccuracy: string;
+  /** Header label for the per-spec failure analysis panel ("FAILURE ANALYSIS"). */
+  analysisHeader: string;
   predictionHint: string;
   exportLabels: string;
   importLabels: string;
@@ -37,12 +39,18 @@ export interface ReportStrings {
   analysisSkipped: string;
   needsGrading: string;
   subCause: string;
+  /** Human display name for each SUB_DIAGNOSIS enum value. */
+  subDiagnosisDisplay: Record<string, string>;
   subDiagnosisHelp: Record<string, string>;
   /** Human display name for each FAILURE_LABEL / PREDICTED_LABEL enum value. */
   failureLabelDisplay: Record<string, string>;
   /** One-line "what does this category mean" help. */
   failureLabelHelp: Record<string, string>;
   stepEvidence: (n: number) => string;
+  /** Per-step "instruction:" label shown above what the step is supposed to do. */
+  stepDoLabel: string;
+  /** Per-step "expected:" label shown above the post-step assertion. */
+  stepExpectLabel: string;
   metaUrl: string;
   metaPage: string;
   statusPassed: string;
@@ -55,6 +63,11 @@ export interface ReportStrings {
   collSpecYamlHelp: string;
   collDriftAudit: (n: number) => string;
   collDriftAuditHelp: string;
+  /** Folded-up summary for live-run metadata (runId / session / total cost). */
+  collLiveRunMeta: string;
+  collLiveRunMetaHelp: string;
+  liveRunIdLabel: string;
+  liveSessionLabel: string;
 }
 
 const EN: ReportStrings = {
@@ -65,6 +78,7 @@ const EN: ReportStrings = {
   filterPlaceholder: "Filter by name…",
   emptyNote: "No specs match the current filter.",
   predictionAccuracy: "Prediction accuracy",
+  analysisHeader: "FAILURE ANALYSIS",
   predictionHint:
     "Grade each failed case below with its true cause. Labels are saved in this browser (localStorage) — export them to keep or merge across runs.",
   exportLabels: "Export labels (JSON)",
@@ -80,9 +94,16 @@ const EN: ReportStrings = {
   moreContext: "More context",
   trueCause: "True cause",
   noteOptional: "note (optional)",
-  analysisSkipped: "analysis skipped",
+  analysisSkipped: "automated analysis skipped",
   needsGrading: "Needs grading",
   subCause: "Sub-cause",
+  subDiagnosisDisplay: {
+    SELECTOR_DRIFT: "Selector renamed",
+    TIMING_ISSUE: "Timing too tight",
+    OVER_ASSERTION: "Over-broad assertion",
+    DATA_MISSING: "Test data missing",
+    NONE: "",
+  },
   subDiagnosisHelp: {
     SELECTOR_DRIFT: "A selector (aria-label, placeholder, role+name, …) was renamed or removed in the source. The test still references the old one.",
     TIMING_ISSUE: "The element/state the assertion waits for does eventually appear, but the test's wait was too short. Bumping the timeout or adding a wait usually fixes it.",
@@ -103,6 +124,8 @@ const EN: ReportStrings = {
     UNKNOWN: "The evidence is too weak to choose between the three categories. Triage the failure by hand — usually the failure log or the screenshot will reveal which side broke.",
   },
   stepEvidence: (n) => `Step evidence (${n})`,
+  stepDoLabel: "do",
+  stepExpectLabel: "expect",
   metaUrl: "URL",
   metaPage: "Page",
   statusPassed: "PASSED",
@@ -110,15 +133,20 @@ const EN: ReportStrings = {
   collFailureLog: "Failure log",
   collFailureLogHelp:
     "The raw stdout/stderr from the failing test run. Open this to see the exact assertion that threw, the timing, and any agent-browser noise that preceded it. Useful when the analysis above is uncertain or you want to grep for a specific error string.",
-  collSourceDiff: "Source diff for this spec",
+  collSourceDiff: "Git diff (branch vs base, scoped to this spec)",
   collSourceDiffHelp:
-    "The slice of the PR's diff that touches files this spec depends on (its relatedPaths globs). Open this to check whether the failure was caused by a code change in this PR — and which lines exactly. When the analysis labels the failure SPEC_CHANGE or PRODUCT_BUG, the citation should land in here.",
+    "The slice of `git diff <base>...HEAD` (base = --base, $GITHUB_BASE_REF, or origin/main) that touches files this spec depends on (its relatedPaths globs). Open this to check whether the failure was caused by a code change on this branch — and which lines exactly. When the analysis labels the failure SPEC_CHANGE or PRODUCT_BUG, the citation should land in here.",
   collSpecYaml: "Test definition (spec.yaml)",
   collSpecYamlHelp:
     "The original test definition: title, steps, and the expected outcome each step verifies. Open this to confirm what the spec was supposed to do — useful when the test code drifted from the intent, or when re-drafting the spec after a UI change.",
   collDriftAudit: (n) => `Spec vs code audit (${n})`,
   collDriftAuditHelp:
     "A read-only audit that compares the spec's expected assertions against the current source. ERROR rows usually mean the test still asserts something that no longer exists in the code (TEST_DRIFT or SPEC_CHANGE territory). Useful as a hint when triaging — not a verdict.",
+  collLiveRunMeta: "Run metadata",
+  collLiveRunMetaHelp:
+    "Identifiers for this live run (runId, agent-browser session, model, total cost). Open this when you need to correlate the report with on-disk artifacts (under .ccqa/.../runs/<runId>/) or with billing.",
+  liveRunIdLabel: "runId",
+  liveSessionLabel: "session",
 };
 
 const JA: ReportStrings = {
@@ -129,6 +157,7 @@ const JA: ReportStrings = {
   filterPlaceholder: "名前でフィルタ…",
   emptyNote: "条件に一致する spec はありません。",
   predictionAccuracy: "予測精度",
+  analysisHeader: "失敗分析",
   predictionHint:
     "失敗ケースに「実際の原因」をつけて採点してください。ラベルはブラウザ (localStorage) に保存されます。実行をまたぐ場合はエクスポートしてください。",
   exportLabels: "ラベルをエクスポート (JSON)",
@@ -144,9 +173,16 @@ const JA: ReportStrings = {
   moreContext: "詳細な根拠",
   trueCause: "実際の原因",
   noteOptional: "メモ（任意）",
-  analysisSkipped: "解析スキップ",
+  analysisSkipped: "自動分析スキップ",
   needsGrading: "未採点",
   subCause: "サブ原因",
+  subDiagnosisDisplay: {
+    SELECTOR_DRIFT: "セレクタのリネーム",
+    TIMING_ISSUE: "待ち時間不足",
+    OVER_ASSERTION: "過剰アサーション",
+    DATA_MISSING: "テストデータ不足",
+    NONE: "",
+  },
   subDiagnosisHelp: {
     SELECTOR_DRIFT: "セレクタ (aria-label / placeholder / role+name 等) がコード側でリネーム・削除され、テストが古い値を参照している状態。",
     TIMING_ISSUE: "assert が待っている要素や状態は最終的に出現するが、テストの待ち時間が短すぎる。タイムアウトを伸ばすか wait を足すと直る。",
@@ -167,6 +203,8 @@ const JA: ReportStrings = {
     UNKNOWN: "3カテゴリーに分けるための根拠が弱い。失敗ログやスクショから人手で判断する必要がある (大抵どちら側が壊れたかは画面を見ればわかる)。",
   },
   stepEvidence: (n) => `ステップ証跡 (${n})`,
+  stepDoLabel: "操作",
+  stepExpectLabel: "期待",
   metaUrl: "URL",
   metaPage: "ページ",
   statusPassed: "成功",
@@ -174,15 +212,20 @@ const JA: ReportStrings = {
   collFailureLog: "失敗ログ",
   collFailureLogHelp:
     "失敗したテスト実行の stdout/stderr 生ログです。落ちた assertion・タイミング・直前の agent-browser 出力などを確認したいときに開いてください。上の解析が曖昧なときや、特定のエラー文字列を探したいときに便利です。",
-  collSourceDiff: "この spec に関連する差分",
+  collSourceDiff: "Git 差分 (ブランチ vs base、この spec 関連分)",
   collSourceDiffHelp:
-    "この spec が依存するファイル (relatedPaths) に絞り込んだ PR 差分です。今回の PR のコード変更が失敗の原因か、具体的にどの行が変わったかを確認するために開いてください。解析結果が SPEC_CHANGE / PRODUCT_BUG のとき、根拠はここに含まれているはずです。",
+    "`git diff <base>...HEAD` (base は --base、$GITHUB_BASE_REF、もしくは origin/main) のうち、この spec が依存するファイル (relatedPaths) に該当する hunk だけを抜き出したものです。今回のブランチのコード変更が失敗の原因か、具体的にどの行が変わったかを確認するために開いてください。解析結果が SPEC_CHANGE / PRODUCT_BUG のとき、根拠はここに含まれているはずです。",
   collSpecYaml: "テスト定義 (spec.yaml)",
   collSpecYamlHelp:
     "オリジナルのテスト定義です。タイトル・各ステップ・期待結果が確認できます。テストコードが意図から乖離していないか、UI 変更後に spec を再起草する際の参照に便利です。",
   collDriftAudit: (n) => `spec と実装の差分監査 (${n})`,
   collDriftAuditHelp:
     "spec が期待している assertion と現在のソースコードを照合する読み取り専用の監査です。ERROR 行は「テストがコード上に存在しないものを assert している (TEST_DRIFT / SPEC_CHANGE)」のサインです。判定の補強材料として参照してください (確定的な結論ではありません)。",
+  collLiveRunMeta: "実行メタ情報",
+  collLiveRunMetaHelp:
+    "今回の live 実行の識別子 (runId・agent-browser セッション名・使用モデル・累計コスト) です。.ccqa/.../runs/<runId>/ 以下の成果物や課金との対応をとりたいときに開いてください。",
+  liveRunIdLabel: "runId",
+  liveSessionLabel: "セッション",
 };
 
 const STRINGS: Record<ReportLocale, ReportStrings> = { en: EN, ja: JA };

@@ -9,6 +9,13 @@ async function addSpec(cwd: string, feature: string, spec: string, body: string)
   const dir = join(cwd, ".ccqa", "features", feature, "test-cases", spec);
   await mkdir(dir, { recursive: true });
   await writeFile(join(dir, "test.spec.ts"), body, "utf8");
+  // spec.yaml is the source of truth for spec discovery (`mode:` resolution
+  // happens here). Write a minimal one so listAllSpecsWithSpecFile picks it up.
+  await writeFile(
+    join(dir, "spec.yaml"),
+    `title: ${feature}/${spec}\nsteps:\n  - instruction: noop\n    expected: noop\n`,
+    "utf8",
+  );
 }
 
 describe("ccqa run — summary format is stable", () => {

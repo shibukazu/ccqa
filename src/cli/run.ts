@@ -6,15 +6,15 @@ import { posix as posixPath } from "node:path";
 import type { Readable } from "node:stream";
 import {
   getTestScript,
-  listAllSpecs,
+  listAllSpecsWithSpecFile,
   listFeatureTree,
-  listSpecsForFeature,
   loadAllBlocks,
   loadAvailableBlocks,
   resolveSpecTargets,
   tryReadSpecFile,
 } from "../store/index.ts";
-import { parseTestSpec } from "../spec/parser.ts";
+import { tryParseTestSpec } from "../spec/parser.ts";
+import type { TestSpec } from "../spec/yaml-schema.ts";
 import { expandSpec } from "../spec/expand.ts";
 import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
 import type { BlockSpec } from "../types.ts";
@@ -35,20 +35,26 @@ import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { renderRunReport } from "../report/render.ts";
 import { ReportEvidenceSchema, type ReportEvidence, type ReportSpecResult, type RunReportData } from "../report/schema.ts";
 import { addLanguageOption } from "./options.ts";
+import { resolveCwd } from "./resolve-cwd.ts";
+import { resolveSpecsModes } from "./spec-mode.ts";
+import { runLiveSpecs, type RunNdOptions } from "./run-nd.ts";
+import { collectChangedSpecs } from "./changed-specs.ts";
 import * as log from "./logger.ts";
 
-// Passing --config to vitest prevents it from discovering the host's
-// vitest.config.ts and inheriting setupFiles/environment/aliases that were
-// never meant to apply to ccqa's browser-driving specs.
-const USER_VITEST_CONFIG = resolve(".ccqa/vitest.config.ts");
+const REPORT_FORMATS = ["text", "json", "github"] as const;
+type ReportFormat = (typeof REPORT_FORMATS)[number];
 
 const DEFAULT_REPORT_DIR = "ccqa-report";
 const EVIDENCE_SUBDIR = "evidence";
 
-async function resolveVitestConfig(): Promise<string> {
+// Passing --config to vitest prevents it from discovering the host's
+// vitest.config.ts and inheriting setupFiles/environment/aliases that were
+// never meant to apply to ccqa's browser-driving specs.
+async function resolveVitestConfig(cwd: string): Promise<string> {
+  const userConfig = resolve(cwd, ".ccqa/vitest.config.ts");
   try {
-    await access(USER_VITEST_CONFIG);
-    return USER_VITEST_CONFIG;
+    await access(userConfig);
+    return userConfig;
   } catch {
     return bundledVitestConfigPath();
   }
@@ -90,75 +96,222 @@ export type SpecRunSummary = {
   evidenceDir: string | null;
 };
 
-interface RunOptions {
-  driftReport?: string | boolean;
-  driftBase?: string;
+export interface RunOptions {
+  report?: string | boolean;
+  base?: string;
+  cwd?: string;
   model?: string;
   language?: string;
+  format?: ReportFormat;
+  failureAnalysis?: boolean;
+  driftAudit?: boolean;
   evidence?: boolean;
+  retry?: number;
+  out?: string;
+  changed?: boolean;
 }
 
 export const runCommand = addLanguageOption(
   new Command("run")
     .argument("[target]", "Spec to run: '<feature>/<spec>', '<feature>', or omit for all")
     .description(
-      "Run generated agent-browser test scripts. " +
-        "Pass --drift-report to also write a self-contained HTML run report: each failing spec " +
-        "gets a drift audit plus a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG), and " +
-        "the report lets a human grade the calls to measure their accuracy. " +
-        "Requires ANTHROPIC_API_KEY or a local Claude login for the analysis part.",
+      "Run specs. Each spec's execution mode comes from its spec.yaml `mode:` field " +
+        "(default deterministic; set `mode: live` to have Claude drive agent-browser live per step). " +
+        "Deterministic specs replay the recorded test.spec.ts under vitest. " +
+        "Pass --report to write one unified HTML report covering both modes.",
     )
     .option(
-      "--drift-report [dir]",
-      `Write an HTML run report with drift analysis of failures (default dir: ${DEFAULT_REPORT_DIR}/)`,
+      "--report [dir]",
+      `Write a self-contained HTML run report (failure analysis + drift audit by default). Default dir: ${DEFAULT_REPORT_DIR}/`,
     )
     .option(
-      "--drift-base <ref>",
-      "Base ref the source diff is taken against for failure analysis (default: GITHUB_BASE_REF, then origin/main)",
+      "--changed",
+      "Restrict execution to specs whose relatedPaths intersect the git diff against --base (or, in CI, $GITHUB_BASE_REF, else origin/main). Cannot be combined with an explicit spec id.",
+    )
+    .option(
+      "--no-failure-analysis",
+      "Skip the per-failure root-cause classification (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG). --report only.",
+    )
+    .option(
+      "--no-drift-audit",
+      "Skip the spec↔code drift audit shown in the report. --report only.",
+    )
+    .option(
+      "--base <ref>",
+      "Base ref the source diff is taken against for failure analysis (default: GITHUB_BASE_REF, then origin/main).",
+    )
+    .option(
+      "--cwd <path>",
+      "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
+    )
+    .option(
+      "--format <fmt>",
+      "Additional output format alongside HTML when --report is set: 'text' (default), 'json' (writes report.json), 'github' (GitHub Actions annotations on stdout).",
+      (raw): ReportFormat => {
+        if ((REPORT_FORMATS as readonly string[]).includes(raw)) return raw as ReportFormat;
+        throw new Error(`--format must be one of ${REPORT_FORMATS.join(" | ")}`);
+      },
+      "text" as ReportFormat,
     )
     .option(
       "-m, --model <name>",
-      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Used by --drift-report only. Overrides CCQA_MODEL.",
+      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
     )
     .option(
       "--no-evidence",
-      `Skip step-boundary evidence capture (PNG + meta JSON written to ${DEFAULT_REPORT_DIR}/${EVIDENCE_SUBDIR}/ by default)`,
+      `(deterministic only) Skip step-boundary evidence capture (PNG + meta JSON written to ${DEFAULT_REPORT_DIR}/${EVIDENCE_SUBDIR}/ by default).`,
+    )
+    .option(
+      "--retry <n>",
+      "(live only) Retry each failed step up to N more times before recording failure. Default 0.",
+      (raw) => {
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0 || Math.floor(n) !== n) {
+          throw new Error(`--retry must be a non-negative integer, got "${raw}"`);
+        }
+        return n;
+      },
+      0,
+    )
+    .option(
+      "--out <dir>",
+      "(live only) Override the per-spec artifact directory. Default: <specDir>/runs/<runId>. Ignored when running multiple specs.",
     ),
 ).action(async (target: string | undefined, opts: RunOptions) => {
-  await runTests(target, opts);
+  await runDispatcher(target, opts);
 });
 
-async function runTests(target: string | undefined, opts: RunOptions): Promise<void> {
-  log.header("run", target);
+function resolveReportDir(
+  report: string | boolean | undefined,
+  cwd: string,
+): string | undefined {
+  if (report === undefined || report === false) return undefined;
+  const raw = typeof report === "string" ? report : DEFAULT_REPORT_DIR;
+  return resolve(cwd, raw);
+}
 
-  const specs = await resolveSpecTargets(target, listAllSpecs);
+async function runDispatcher(target: string | undefined, opts: RunOptions): Promise<void> {
+  log.header("run", target ?? (opts.changed ? "(changed)" : "(all specs)"));
+
+  if (opts.changed && target) {
+    log.error("--changed and an explicit spec target cannot be combined");
+    process.exit(2);
+  }
+
+  const cwd = resolveCwd(opts.cwd);
+  let specs = await resolveSpecTargets(target, () => listAllSpecsWithSpecFile(cwd), cwd);
+
+  if (opts.changed) {
+    const before = specs.length;
+    specs = await collectChangedSpecs(specs, { cwd, base: opts.base });
+    log.meta(
+      "changed-scoped",
+      `${specs.length} of ${before} spec${before === 1 ? "" : "s"}`,
+    );
+  }
 
   if (specs.length === 0) {
-    log.error("no test scripts found");
-    log.hint("run 'ccqa generate <feature>/<spec>' first to generate tests");
-    process.exit(1);
+    log.warn("no specs to run");
+    return;
   }
+
+  // Det specs run first under vitest, then live ones via Claude; results
+  // merge into a single HTML report.
+  const withMode = await resolveSpecsModes(specs, cwd);
+  const detSpecs = withMode.filter((s) => s.mode === "deterministic");
+  const liveSpecs = withMode.filter((s) => s.mode === "live");
+  log.meta(
+    "modes",
+    `${detSpecs.length} deterministic / ${liveSpecs.length} live`,
+  );
+
+  // Warn when a mode-scoped flag is set but no spec of that mode will run,
+  // rather than silently ignoring it.
+  if (liveSpecs.length === 0) {
+    if (typeof opts.retry === "number" && opts.retry > 0) log.warn("--retry is ignored without any 'mode: live' spec");
+    if (opts.out) log.warn("--out is ignored without any 'mode: live' spec");
+  }
+  if (detSpecs.length === 0 && opts.evidence === false) {
+    log.warn("--no-evidence is ignored without any 'mode: deterministic' spec");
+  }
+  log.blank();
+
+  // Resolve report dir against `cwd` (not process.cwd()) so HTML, JSON, and
+  // evidence PNGs share a directory even when --cwd points at a subpackage.
+  const reportDir = resolveReportDir(opts.report, cwd);
+  const reportDirForEvidence = reportDir ?? resolve(cwd, DEFAULT_REPORT_DIR);
+
+  const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDirForEvidence);
+
+  const ndOpts: RunNdOptions = {
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.language ? { language: opts.language } : {}),
+    ...(opts.out ? { out: opts.out } : {}),
+    cwd,
+    ...(opts.base ? { base: opts.base } : {}),
+    ...(reportDir ? { reportDir } : {}),
+    ...(typeof opts.retry === "number" ? { retry: opts.retry } : {}),
+    ...(reportDir && opts.driftAudit !== false ? { driftAudit: true } : {}),
+    ...(reportDir && opts.failureAnalysis === false ? { failureAnalysis: false } : {}),
+  };
+  const live = await runLiveSpecs(liveSpecs, ndOpts);
+
+  let overallExitCode = det.exitCode;
+  if (live.failedCount > 0 && overallExitCode === 0) overallExitCode = 1;
+
+  if (reportDir) {
+    const detReport = await analyzeDeterministicSummaries(
+      det.summaries,
+      opts,
+      cwd,
+      reportDirForEvidence,
+    );
+    await writeUnifiedReport({
+      reportDir,
+      results: [...detReport.results, ...live.reportResults],
+      diff: detReport.diff,
+      baseRef: detReport.baseRef,
+      opts,
+    });
+  }
+
+  process.exit(overallExitCode);
+}
+
+type RunDeterministicResult = {
+  summaries: SpecRunSummary[];
+  exitCode: number;
+};
+
+/**
+ * Run pre-filtered deterministic specs under vitest. Empty input is a no-op.
+ * Captures step-boundary evidence under `<reportDir>/evidence/<feature>/<spec>/`
+ * when enabled.
+ */
+async function runDeterministicSpecs(
+  specs: readonly { featureName: string; specName: string }[],
+  opts: RunOptions,
+  cwd: string,
+  reportDirAbs: string,
+): Promise<RunDeterministicResult> {
+  if (specs.length === 0) return { summaries: [], exitCode: 0 };
 
   const tmpDir = await mkdtemp(join(tmpdir(), "ccqa-run-"));
   const summaries: SpecRunSummary[] = [];
-  let overallExitCode = 0;
-  const vitestConfig = await resolveVitestConfig();
-  const captureOutput = Boolean(opts.driftReport);
-  // Evidence lives under the report dir even without --drift-report, so the
-  // PNGs/JSON work as a standalone CI artifact.
-  const evidenceEnabled = opts.evidence !== false;
-  const reportDir =
-    typeof opts.driftReport === "string" ? opts.driftReport : DEFAULT_REPORT_DIR;
-  const evidenceRoot = evidenceEnabled
-    ? resolve(process.cwd(), reportDir, EVIDENCE_SUBDIR)
-    : null;
+  let exitCode = 0;
+  const vitestConfig = await resolveVitestConfig(cwd);
+  const captureOutput = Boolean(opts.report);
+  // Evidence lives under the report dir even when --report is absent so the
+  // PNGs work as a standalone CI artifact.
+  const evidenceRoot = opts.evidence !== false ? join(reportDirAbs, EVIDENCE_SUBDIR) : null;
 
   try {
     for (let i = 0; i < specs.length; i++) {
       const { featureName, specName } = specs[i]!;
-      const scriptFile = await getTestScript(featureName, specName);
+      const scriptFile = await getTestScript(featureName, specName, cwd);
       if (!scriptFile) {
         log.warn(`${featureName}/${specName}: no test.spec.ts found`);
+        log.hint("run 'ccqa record <feature>/<spec>' to record it, or set 'mode: live' in spec.yaml");
         continue;
       }
 
@@ -181,9 +334,12 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
           "--reporter=json",
           `--outputFile.json=${reportFile}`,
         ],
-        evidenceDir
-          ? { env: { ...process.env, CCQA_EVIDENCE_DIR: evidenceDir } }
-          : {},
+        {
+          cwd,
+          env: evidenceDir
+            ? { ...process.env, CCQA_EVIDENCE_DIR: evidenceDir }
+            : process.env,
+        },
       );
 
       const tail = captureOutput ? new TailBuffer(OUTPUT_TAIL_CAP) : null;
@@ -191,8 +347,8 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
         streamFiltered(proc.stdout, process.stdout, tail),
         streamFiltered(proc.stderr, process.stderr, tail),
       ]);
-      const exitCode = await proc.exited;
-      if (exitCode !== 0) overallExitCode = exitCode;
+      const specExitCode = await proc.exited;
+      if (specExitCode !== 0) exitCode = specExitCode;
 
       const report = await readReport(reportFile);
       summaries.push({
@@ -200,7 +356,7 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
         specName,
         scriptFile,
         report,
-        exitCode,
+        exitCode: specExitCode,
         outputTail: tail ? tail.toString() : null,
         evidenceDir,
       });
@@ -208,12 +364,11 @@ async function runTests(target: string | undefined, opts: RunOptions): Promise<v
     }
 
     printSummary(summaries);
-    await maybeWriteDriftReport(summaries, opts);
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
 
-  process.exit(overallExitCode);
+  return { summaries, exitCode };
 }
 
 export function failedSpec(s: SpecRunSummary): boolean {
@@ -222,28 +377,33 @@ export function failedSpec(s: SpecRunSummary): boolean {
 }
 
 /**
- * Opt-in post-vitest report hook. With `--drift-report`, a self-contained
- * HTML report is ALWAYS written (a green run is still a useful run summary);
- * failing specs additionally get a spec↔code drift audit and a three-way
- * root-cause call with the PR diff as context. The hook never changes the
- * exit code — the run's outcome is determined by vitest alone — and when
- * Claude auth is unavailable only the analysis is skipped, not the report.
+ * Build ReportSpecResult[] for a set of vitest summaries. Runs drift audit +
+ * failure analysis when `--report` is on; degrades (no throw) when Claude
+ * auth or git diff aren't available. Caller writes the HTML / JSON.
  */
-async function maybeWriteDriftReport(
-  summaries: SpecRunSummary[],
+async function analyzeDeterministicSummaries(
+  summaries: readonly SpecRunSummary[],
   opts: RunOptions,
-): Promise<void> {
-  if (!opts.driftReport) return;
-  const outDir = typeof opts.driftReport === "string" ? opts.driftReport : DEFAULT_REPORT_DIR;
-  const cwd = process.cwd();
+  cwd: string,
+  reportDir: string,
+): Promise<{ results: ReportSpecResult[]; diff: PrDiffResult; baseRef: string }> {
+  // Both pieces of automated analysis cost Claude turns. Disabling the
+  // root-cause classification (--no-failure-analysis) implicitly disables
+  // the drift audit too, since the audit is rendered as supporting
+  // evidence under the classification — keeping the audit on without the
+  // classification would burn cost without a place to display the result.
+  // --no-drift-audit remains an independent opt-out for when the user
+  // wants the classification but not the audit.
+  const failureAnalysisEnabled = opts.failureAnalysis !== false;
+  const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
 
-  const auth = driftAuthAvailable();
+  const auth = failureAnalysisEnabled || driftAuditEnabled ? driftAuthAvailable() : { ok: false as const, reason: "skipped by flags" };
   const failed = summaries.filter(failedSpec);
-  if (!auth.ok && failed.length > 0) {
+  if (failureAnalysisEnabled && !auth.ok && failed.length > 0) {
     log.info(`failure analysis skipped (${auth.reason})`);
   }
 
-  const baseRef = resolveBaseRef(opts.driftBase);
+  const baseRef = resolveBaseRef(opts.base);
   let diff: PrDiffResult = { ok: false, error: "diff not captured (no failures)" };
   if (failed.length > 0) {
     diff = await capturePrDiff(baseRef, cwd);
@@ -261,10 +421,9 @@ async function maybeWriteDriftReport(
   const findSpecInfo = (s: SpecRunSummary) =>
     specInfoByKey.get(`${s.featureName}/${s.specName}`) ?? null;
 
-  // Drift audit first (existing analyzeDrift), so its findings can feed the
-  // failure analysis prompt as supporting context.
+  // Drift audit runs first so its findings can feed the failure-analysis prompt.
   let driftResults: SpecResult[] = [];
-  if (auth.ok && failed.length > 0) {
+  if (driftAuditEnabled && auth.ok && failed.length > 0) {
     const targets = failed
       .map((s): SpecTarget | null => {
         const spec = findSpecInfo(s);
@@ -301,14 +460,16 @@ async function maybeWriteDriftReport(
   const results: ReportSpecResult[] = [];
   for (const s of summaries) {
     const assertions = collectAssertions(s);
-    // spec.yaml is read once here and shared with both the evidence captions
-    // (via loadStepDescriptions) and the failure-analysis prompt (via specYaml).
+    // Read spec.yaml once and reuse for both evidence captions and the
+    // failure-analysis prompt.
     const specYaml = await tryReadSpecFile(s.featureName, s.specName, cwd);
-    const stepDescriptions = parseStepDescriptions(specYaml, allBlocks);
-    const evidence = await loadEvidenceForSpec(s, outDir, stepDescriptions);
+    const parsedSpec = tryParseTestSpec(specYaml);
+    const stepDescriptions = buildStepDescriptions(parsedSpec, allBlocks);
+    const evidence = await loadEvidenceForSpec(s, reportDir, stepDescriptions);
     const base = {
       feature: s.featureName,
       spec: s.specName,
+      title: parsedSpec?.title ?? null,
       testCounts: s.report
         ? {
             total: s.report.numTotalTests,
@@ -348,7 +509,9 @@ async function maybeWriteDriftReport(
 
     let analysis: ReportSpecResult["analysis"] = null;
     let analysisSkipped: string | null = null;
-    if (!auth.ok) {
+    if (!failureAnalysisEnabled) {
+      analysisSkipped = "skipped by --no-failure-analysis";
+    } else if (!auth.ok) {
       analysisSkipped = auth.reason;
     } else if (specYaml === null) {
       analysisSkipped = "no spec.yaml found for this spec";
@@ -404,6 +567,18 @@ async function maybeWriteDriftReport(
     });
   }
 
+  return { results, diff, baseRef };
+}
+
+/** Write the unified HTML / JSON / GitHub-annotation report for one run. */
+async function writeUnifiedReport(args: {
+  reportDir: string;
+  results: ReportSpecResult[];
+  diff: PrDiffResult;
+  baseRef: string | null;
+  opts: RunOptions;
+}): Promise<void> {
+  const { reportDir, results, diff, baseRef, opts } = args;
   const data: RunReportData = {
     schemaVersion: 1,
     createdAt: new Date().toISOString(),
@@ -418,20 +593,34 @@ async function maybeWriteDriftReport(
     results,
   };
 
-  const reportPath = join(outDir, "index.html");
-  await mkdir(outDir, { recursive: true });
+  const reportPath = join(reportDir, "index.html");
+  await mkdir(reportDir, { recursive: true });
   await writeFile(reportPath, renderRunReport(data), "utf8");
   log.info(`run report written to ${reportPath}`);
+
+  // Commander supplies "text" as the default when --format is omitted, so the
+  // value is always set here.
+  const format = opts.format;
+  if (format === "json") {
+    const jsonPath = join(reportDir, "report.json");
+    await writeFile(jsonPath, JSON.stringify(data, null, 2) + "\n", "utf8");
+    log.info(`run report (json) written to ${jsonPath}`);
+  } else if (format === "github") {
+    for (const r of results) {
+      if (r.status !== "failed") continue;
+      const source = r.analysis?.headline || r.analysis?.reasoning || "test failed";
+      const headline = source.split("\n")[0]?.trim() || "test failed";
+      process.stdout.write(
+        `::error title=${r.feature}/${r.spec}::${headline.replace(/[\r\n]+/g, " ")}\n`,
+      );
+    }
+  }
 }
 
 /**
- * Read the JSON meta files written by abStepEvidence() and rewrite the PNG
- * paths so the report can link to them with a plain `<img src="evidence/...">`.
- * Posix path semantics on purpose: the report is rendered as HTML and URLs
- * always use `/`, regardless of the host OS.
- *
- * Missing/unreadable/malformed files are silently dropped — an evidence-capture
- * failure must not surface as a different failure mode in the report.
+ * Read abStepEvidence() meta files and rewrite PNG paths to posix relpaths
+ * the HTML report can link to. Missing/malformed files are silently dropped
+ * so an evidence-capture failure doesn't surface as a different failure mode.
  */
 async function loadEvidenceForSpec(
   s: SpecRunSummary,
@@ -446,7 +635,7 @@ async function loadEvidenceForSpec(
   } catch {
     return null;
   }
-  const reportRoot = resolve(process.cwd(), reportDir);
+  const reportRoot = resolve(reportDir);
   const jsonFiles = entries.filter((n) => n.endsWith(".json"));
   const metas = (
     await Promise.all(
@@ -490,16 +679,14 @@ async function readEvidenceMeta(
   const stepId = (parsed as { stepId?: unknown }).stepId;
   const failureSummary = (parsed as { failureSummary?: unknown }).failureSummary;
   const hasFailure = typeof failureSummary === "string" && failureSummary.length > 0;
-  // The step description always comes from spec.yaml's `expected` — that text
-  // identifies what the step was *supposed* to do. Failure detail lives in
+  // Description comes from spec.yaml's `expected`; failure detail lives in
   // `failureSummary` as its own field so the renderer can stack them.
   let description: string | null = null;
   if (typeof stepId === "string") {
     description = descriptionByStepId.get(stepId) ?? null;
   }
-  // Standalone fallback failure capture (legacy scripts without
-  // __setCurrentStep) lands as `failure` with no spec entry — surface the
-  // summary as description so it isn't blank.
+  // Fallback failure capture (legacy scripts without __setCurrentStep) has no
+  // spec entry — surface failureSummary as description so it isn't blank.
   if (!description && hasFailure) description = failureSummary as string;
   const candidate = {
     ...(parsed as Record<string, unknown>),
@@ -513,18 +700,15 @@ async function readEvidenceMeta(
 }
 
 /**
- * Parse the spec.yaml for a given spec, expand any included blocks, and
- * return `step id → expected` so the report can show what each evidence
- * screenshot is supposed to verify. Returns an empty map when the spec
- * can't be loaded — evidence still surfaces, just without descriptions.
+ * Build `step id → expected` so the report can caption each evidence
+ * screenshot. Returns empty map on expansion failure (evidence still surfaces).
  */
-function parseStepDescriptions(
-  yaml: string | null,
+function buildStepDescriptions(
+  spec: TestSpec | null,
   blocks: Map<string, BlockSpec>,
 ): Map<string, string> {
-  if (!yaml) return new Map();
+  if (!spec) return new Map();
   try {
-    const spec = parseTestSpec(yaml);
     const expanded = expandSpec(spec, { blocks });
     return new Map(expanded.map((s) => [s.id, s.expected.trim()]));
   } catch {
@@ -552,11 +736,9 @@ function collectAssertions(s: SpecRunSummary): ReportSpecResult["assertions"] {
 }
 
 /**
- * Compose the failure log fed to the analysis prompt and embedded in the
- * report. With `--reporter=json` vitest writes (almost) nothing to
- * stdout/stderr — the assertion failures live in the JSON report — so the
- * structured failureMessages come first and the raw output tail (console
- * logs, agent-browser noise) is appended as secondary context.
+ * Compose the failure log for the analysis prompt + report. JSON-reporter
+ * vitest writes almost nothing to stdout, so structured failureMessages
+ * come first and the raw output tail is appended as secondary context.
  */
 export function buildFailureLog(s: SpecRunSummary): string {
   const parts: string[] = [];
@@ -589,9 +771,8 @@ async function readScriptSafe(path: string): Promise<string> {
 const OUTPUT_TAIL_CAP = 64 * 1024;
 
 /**
- * Keeps the LAST `cap` characters appended. Vitest puts the failure summary
- * at the end of its output, so the tail is the part worth keeping when a
- * noisy spec overflows the cap.
+ * Keeps the LAST `cap` characters appended — vitest puts the failure summary
+ * at the end of its output, so the tail is what's worth keeping on overflow.
  */
 export class TailBuffer {
   private buf = "";

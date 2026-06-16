@@ -462,13 +462,14 @@ async function listAllSpecsFilteredBy(
 export async function resolveSpecTargets(
   target: string | undefined,
   enumerateAll: () => Promise<Array<{ featureName: string; specName: string }>>,
+  cwd?: string,
 ): Promise<Array<{ featureName: string; specName: string }>> {
   if (!target) return enumerateAll();
   if (target.includes("/")) {
     const { featureName, specName } = parseSpecPath(target);
     return [{ featureName, specName }];
   }
-  const names = await listSpecsForFeature(target);
+  const names = await listSpecsForFeature(target, cwd);
   return names.map((specName) => ({ featureName: target, specName }));
 }
 

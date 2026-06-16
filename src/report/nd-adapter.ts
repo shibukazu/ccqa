@@ -1,4 +1,5 @@
 import { relative } from "node:path";
+import { tryParseTestSpec } from "../spec/parser.ts";
 import type { NdRunResult } from "../runtime/nd-executor.ts";
 import type { NdReportRun, NdReportStep, ReportSpecResult } from "./schema.ts";
 
@@ -49,6 +50,7 @@ export function ndRunToReportResult(args: {
   return {
     feature: featureName,
     spec: specName,
+    title: tryParseTestSpec(specYaml)?.title ?? null,
     status: result.status,
     testCounts: null,
     durationMs: result.durationMs,
