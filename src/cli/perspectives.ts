@@ -421,18 +421,24 @@ interface MarkdownLabels {
   caseCol: string;
   itemCol: string;
   valueCol: string;
+  modeCol: string;
   statusCol: string;
+  modeLabel: string;
   summary: string;
   preconditions: string;
   startScreen: string;
   relatedCode: string;
   modeDeterministic: string;
   modeLive: string;
-  /** Shown in the index column when a deterministic spec has no test.spec.ts yet. */
-  notRecorded: string;
-  /** Shown when a deterministic spec was traced but codegen has not produced test.spec.ts. */
-  codegenPending: string;
-  ready: string;
+  /**
+   * Shown for any deterministic spec without a `test.spec.ts`, whether or
+   * not it was traced. The trace/codegen split is an internal step of
+   * `ccqa record`; from the reviewer's perspective the spec is simply
+   * "not recorded yet" until `test.spec.ts` exists. Live specs are always
+   * runnable, so this label only applies to deterministic specs.
+   */
+  notRunnable: string;
+  runnable: string;
 }
 
 const LABELS_JA: MarkdownLabels = {
@@ -440,16 +446,17 @@ const LABELS_JA: MarkdownLabels = {
   caseCol: "ケース",
   itemCol: "項目",
   valueCol: "内容",
+  modeCol: "モード",
   statusCol: "状態",
+  modeLabel: "モード",
   summary: "検証内容",
   preconditions: "前提条件",
   startScreen: "開始画面",
   relatedCode: "関連コード",
   modeDeterministic: "deterministic",
   modeLive: "live",
-  notRecorded: "⚠️ 未録画 (record 未実行)",
-  codegenPending: "⚠️ コード生成待ち (trace 済・generate 未)",
-  ready: "実行可",
+  notRunnable: "⚠️ 未record",
+  runnable: "✅ 実行可能",
 };
 
 const LABELS_EN: MarkdownLabels = {
@@ -457,16 +464,17 @@ const LABELS_EN: MarkdownLabels = {
   caseCol: "Case",
   itemCol: "Item",
   valueCol: "Value",
+  modeCol: "Mode",
   statusCol: "Status",
+  modeLabel: "Mode",
   summary: "Verifies",
   preconditions: "Preconditions",
   startScreen: "Start screen",
   relatedCode: "Related code",
   modeDeterministic: "deterministic",
   modeLive: "live",
-  notRecorded: "⚠️ not recorded (run `ccqa record`)",
-  codegenPending: "⚠️ codegen pending (traced, no test.spec.ts)",
-  ready: "ready",
+  notRunnable: "⚠️ not recorded",
+  runnable: "✅ runnable",
 };
 
 /**
@@ -480,19 +488,18 @@ export function labelsFor(language?: string): MarkdownLabels {
 }
 
 /**
- * Build the short status string surfaced in both the index row and the
- * per-feature table for one spec. Returns a `mode · readiness` pair so
- * reviewers see at a glance which specs are live, which are deterministic,
- * and which are deterministic-but-not-yet-recorded (the partial state).
- *
- * For live specs there is no "recorded" axis — codegen does not apply.
+ * Whether the spec is runnable from the reviewer's perspective. Live specs
+ * are always runnable (no codegen step); a deterministic spec is runnable
+ * only once `test.spec.ts` exists.
  */
 export function statusLabel(status: PerspectiveStatus, labels: MarkdownLabels): string {
-  if (status.mode === "live") return labels.modeLive;
-  if (!status.generated) {
-    return `${labels.modeDeterministic} · ${status.traced ? labels.codegenPending : labels.notRecorded}`;
-  }
-  return `${labels.modeDeterministic} · ${labels.ready}`;
+  if (status.mode === "live") return labels.runnable;
+  return status.generated ? labels.runnable : labels.notRunnable;
+}
+
+/** The spec's execution mode (deterministic or live), per spec.yaml. */
+export function modeLabel(status: PerspectiveStatus, labels: MarkdownLabels): string {
+  return status.mode === "live" ? labels.modeLive : labels.modeDeterministic;
 }
 
 /**
@@ -542,12 +549,13 @@ export function renderIndexMarkdown(perspectives: Perspectives, labels: Markdown
     const detailLink = featureDetailRelPathFromRoot(feature.featureName);
     lines.push(`## [${feature.featureName}](${detailLink})`);
     lines.push("");
-    lines.push(`| ${labels.caseCol} | ${labels.statusCol} | spec |`);
-    lines.push("| --- | --- | --- |");
+    lines.push(`| ${labels.caseCol} | ${labels.modeCol} | ${labels.statusCol} | spec |`);
+    lines.push("| --- | --- | --- | --- |");
     for (const spec of feature.specs) {
       const specLink = specRelPathFromRoot(feature.featureName, spec.specName);
+      const mode = mdCell(modeLabel(spec.status, labels));
       const status = mdCell(statusLabel(spec.status, labels));
-      lines.push(`| ${mdCell(spec.title)} | ${status} | [spec](${specLink}) |`);
+      lines.push(`| ${mdCell(spec.title)} | ${mode} | ${status} | [spec](${specLink}) |`);
     }
     lines.push("");
   }
@@ -594,6 +602,7 @@ export function renderSpecMarkdown(spec: PerspectiveSpec, labels: MarkdownLabels
   lines.push("");
   lines.push(`| ${labels.itemCol} | ${labels.valueCol} |`);
   lines.push("| --- | --- |");
+  lines.push(`| ${labels.modeLabel} | ${mdCell(modeLabel(spec.status, labels))} |`);
   lines.push(`| ${labels.statusCol} | ${mdCell(statusLabel(spec.status, labels))} |`);
   if (spec.summary) lines.push(`| ${labels.summary} | ${mdCell(spec.summary)} |`);
   if (spec.preconditions && spec.preconditions.length > 0) {

@@ -447,14 +447,14 @@ describe("renderIndexMarkdown", () => {
     // .ccqa/features/<feature>/perspectives.md — so the link must include the
     // `features/` segment to resolve from the root .ccqa/perspectives.md.
     expect(md).toContain("## [tasks](features/tasks/perspectives.md)");
-    // One row per case: title + status + spec link. The fully-recorded case
-    // shows "ready"; the codegen-pending one shows the warning so reviewers
-    // see at a glance which deterministic specs still need `ccqa record`.
+    // One row per case: title + mode + status + spec link. The mode column
+    // declares deterministic vs live; the status column is the runnable
+    // verdict so reviewers can scan for what is or isn't ready to run.
     expect(md).toContain(
-      "| 検索できる | deterministic · 実行可 | [spec](features/tasks/test-cases/search-tasks/spec.yaml) |",
+      "| 検索できる | deterministic | ✅ 実行可能 | [spec](features/tasks/test-cases/search-tasks/spec.yaml) |",
     );
     expect(md).toContain(
-      "| 作成できる | deterministic · ⚠️ コード生成待ち (trace 済・generate 未) | [spec](features/tasks/test-cases/create-content/spec.yaml) |",
+      "| 作成できる | deterministic | ⚠️ 未record | [spec](features/tasks/test-cases/create-content/spec.yaml) |",
     );
     // Raw boolean field names should not leak into the user-facing index.
     expect(md).not.toContain("traced:");
@@ -464,7 +464,7 @@ describe("renderIndexMarkdown", () => {
     expect(md).not.toContain("作成の確認");
   });
 
-  test("live specs render with just the mode label (no record-status axis)", () => {
+  test("live specs are always shown as runnable regardless of trace/generate flags", () => {
     const md = renderIndexMarkdown({
       generatedAt: "2026-06-16T00:00:00.000Z",
       features: [
@@ -481,12 +481,13 @@ describe("renderIndexMarkdown", () => {
         },
       ],
     });
-    // Live specs skip codegen entirely; "live" alone — no "未録画" warning.
-    expect(md).toContain("| バグ報告できる | live | [spec](features/slack/test-cases/report-bug/spec.yaml) |");
-    expect(md).not.toContain("未録画");
+    // Live specs skip codegen entirely, so a missing test.spec.ts is not a
+    // problem — they are always runnable from the reviewer's perspective.
+    expect(md).toContain("| バグ報告できる | live | ✅ 実行可能 | [spec](features/slack/test-cases/report-bug/spec.yaml) |");
+    expect(md).not.toContain("未record");
   });
 
-  test("deterministic specs missing both trace and codegen flag as not-recorded", () => {
+  test("deterministic specs without test.spec.ts are shown as not recorded", () => {
     const md = renderIndexMarkdown({
       generatedAt: "2026-06-16T00:00:00.000Z",
       features: [
@@ -503,7 +504,7 @@ describe("renderIndexMarkdown", () => {
         },
       ],
     });
-    expect(md).toContain("⚠️ 未録画 (record 未実行)");
+    expect(md).toContain("⚠️ 未record");
   });
 });
 
@@ -585,7 +586,7 @@ describe("labelsFor + English labels", () => {
       labelsFor("en"),
     );
     expect(md).toContain("# Test Perspectives (perspectives)");
-    expect(md).toContain("| Case | Status | spec |");
+    expect(md).toContain("| Case | Mode | Status | spec |");
     expect(md).not.toContain("テスト観点");
     expect(md).not.toContain("ケース");
   });
@@ -595,36 +596,30 @@ describe("statusLabel", () => {
   const ja = labelsFor("ja");
   const en = labelsFor("en");
 
-  test("live specs return just the mode label — codegen state does not apply", () => {
-    expect(statusLabel({ mode: "live", traced: false, generated: false }, ja)).toBe("live");
-    expect(statusLabel({ mode: "live", traced: true, generated: true }, ja)).toBe("live");
-    expect(statusLabel({ mode: "live", traced: false, generated: false }, en)).toBe("live");
+  test("live specs are always shown as runnable — codegen does not apply", () => {
+    expect(statusLabel({ mode: "live", traced: false, generated: false }, ja)).toBe("✅ 実行可能");
+    expect(statusLabel({ mode: "live", traced: true, generated: true }, ja)).toBe("✅ 実行可能");
+    expect(statusLabel({ mode: "live", traced: false, generated: false }, en)).toBe("✅ runnable");
   });
 
-  test("deterministic + generated returns 'ready'", () => {
+  test("deterministic + generated is runnable", () => {
     expect(statusLabel({ mode: "deterministic", traced: true, generated: true }, ja)).toBe(
-      "deterministic · 実行可",
+      "✅ 実行可能",
     );
     expect(statusLabel({ mode: "deterministic", traced: true, generated: true }, en)).toBe(
-      "deterministic · ready",
+      "✅ runnable",
     );
   });
 
-  test("deterministic + traced + !generated flags codegen-pending", () => {
-    expect(statusLabel({ mode: "deterministic", traced: true, generated: false }, ja)).toContain(
-      "コード生成待ち",
+  test("deterministic without test.spec.ts is not runnable — both partial states collapse to the same warning", () => {
+    expect(statusLabel({ mode: "deterministic", traced: true, generated: false }, ja)).toBe(
+      "⚠️ 未record",
     );
-    expect(statusLabel({ mode: "deterministic", traced: true, generated: false }, en)).toContain(
-      "codegen pending",
+    expect(statusLabel({ mode: "deterministic", traced: false, generated: false }, ja)).toBe(
+      "⚠️ 未record",
     );
-  });
-
-  test("deterministic + !traced + !generated flags not-recorded", () => {
-    expect(statusLabel({ mode: "deterministic", traced: false, generated: false }, ja)).toContain(
-      "未録画",
-    );
-    expect(statusLabel({ mode: "deterministic", traced: false, generated: false }, en)).toContain(
-      "not recorded",
+    expect(statusLabel({ mode: "deterministic", traced: false, generated: false }, en)).toBe(
+      "⚠️ not recorded",
     );
   });
 });
