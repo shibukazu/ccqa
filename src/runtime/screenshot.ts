@@ -13,6 +13,14 @@ export interface ScreenshotOptions {
    * guaranteed to be in the artifact regardless of scroll position.
    */
   fullPage?: boolean;
+  /**
+   * `"sticky"` makes the spawned `agent-browser` use `--session-name` (so the
+   * screenshot attaches to the same persistent session the model is driving);
+   * `"ephemeral"` (default) keeps the legacy `--session` form. Must match the
+   * mode the executor passed to `agentBrowserInvokeBase` — mixing the two
+   * starts a fresh, empty browser and the screenshot misses the live page.
+   */
+  sessionMode?: "ephemeral" | "sticky";
 }
 
 /**
@@ -31,7 +39,8 @@ export function takeScreenshot(
   outPath: string,
   options?: ScreenshotOptions,
 ): ScreenshotResult {
-  const args = ["--session", sessionName, "screenshot"];
+  const sessionFlag = options?.sessionMode === "sticky" ? "--session-name" : "--session";
+  const args = [sessionFlag, sessionName, "screenshot"];
   if (options?.fullPage) args.push("--full");
   args.push(outPath);
   const res = spawnAB(args);

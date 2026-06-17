@@ -248,9 +248,15 @@ async function runOneSpec(args: {
   // browser" email-verification screen, MFA prompts, …) can be cleared once
   // and then dodged on subsequent runs. Without it we mint a fresh
   // `ccqa-live-<timestamp>` name as before.
+  // sessionName on the spec → sticky mode: every agent-browser invocation
+  // gets `--session-name`, which makes cookies + localStorage auto-save under
+  // `~/.agent-browser/sessions/<name>` and auto-restore on the next run.
+  // Without it we mint a fresh `ccqa-live-<timestamp>` name and use the
+  // ephemeral `--session` form (isolated, state wiped after each run).
   const sessionName = spec.sessionName ?? generateLiveSessionName();
+  const sessionMode: "ephemeral" | "sticky" = spec.sessionName ? "sticky" : "ephemeral";
   log.meta("session", sessionName);
-  if (spec.sessionName) log.meta("session-source", "spec.yaml (sticky)");
+  if (sessionMode === "sticky") log.meta("session-source", "spec.yaml (sticky)");
 
   const runId = buildRunId();
   const runDir = opts.out ?? join(specDir, "runs", runId);
@@ -263,6 +269,7 @@ async function runOneSpec(args: {
     runId,
     runDir,
     sessionName,
+    sessionMode,
     systemPromptSuffix: userPromptSuffix,
     model: opts.model,
     language: opts.language,

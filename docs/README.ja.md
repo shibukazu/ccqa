@@ -69,7 +69,7 @@ ccqa run tasks/create-and-complete      # vitest が test.spec.ts を再生 (LLM
 ccqa run tasks/create-and-complete      # 毎回 Claude がブラウザを操作
 ```
 
-`mode: live` の spec は `sessionName: <name>` を spec.yaml の top-level に書くと、agent-browser に渡される session 名がその値で固定されます。指定しない場合は run ごとに `ccqa-live-<timestamp>` が自動採番されるので cookies は引き継がれません。Slack の "We don't recognize this browser" のようなデバイス信頼ゲートを 1 回突破して以降スキップしたいときは、 spec で session 名を固定して agent-browser の session 永続化 (cookies + localStorage の auto save/restore) に乗せます。
+`mode: live` の spec は `sessionName: <name>` を spec.yaml の top-level に書くと、agent-browser の **sticky session** (`--session-name`) を使うようになります。cookies と localStorage が `~/.agent-browser/sessions/<name>.json` に auto-save され、次回 run で auto-restore されます。指定しない場合は run ごとに `ccqa-live-<timestamp>` が自動採番された ephemeral session (`--session`) で動き、状態は browser 終了時に破棄されます。Slack の "We don't recognize this browser" のようなデバイス信頼ゲートを 1 回突破して以降スキップしたいときに使います。
 
 ```yaml
 title: Slack App Home でカテゴリ管理者ユーザーは管理対象カテゴリのみ操作可能であることを確認する

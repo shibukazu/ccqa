@@ -10,6 +10,12 @@ export interface LiveSystemPromptPrefixInput {
   /** All steps from the expanded spec, included for global context. */
   allSteps: ExpandedActionStep[];
   sessionName: string;
+  /**
+   * `"sticky"` flips the prompt to instruct the model to use
+   * `--session-name` (cookies + localStorage persist across runs);
+   * `"ephemeral"` (default) keeps the original `--session` flag.
+   */
+  sessionMode?: "ephemeral" | "sticky";
 }
 
 /**
@@ -48,13 +54,18 @@ export function buildLiveSystemPromptPrefix(input: LiveSystemPromptPrefixInput):
     )
     .join("\n\n");
 
+  const sessionFlag = input.sessionMode === "sticky" ? "--session-name" : "--session";
+  const stickyNote = input.sessionMode === "sticky"
+    ? " This is a sticky session — cookies and localStorage from previous `ccqa run` invocations of this spec are already restored, so you may find the user already signed in to gated services."
+    : "";
+
   return `You are a QA execution agent. You are executing ONE step of a browser-based end-to-end test and judging whether the step's expected outcome was achieved. You are NOT recording a replayable test script — be flexible, explore the DOM as needed, and make a clear pass / fail call at the end.
 
 ## Session
 
 SESSION NAME: \`${input.sessionName}\`
 
-Always pass \`--session ${input.sessionName}\` to every \`agent-browser\` command. The session persists across steps within this test run, so the browser state from previous steps is already loaded when this turn starts.
+Always pass \`${sessionFlag} ${input.sessionName}\` to every \`agent-browser\` command. The session persists across steps within this test run, so the browser state from previous steps is already loaded when this turn starts.${stickyNote}
 
 ## Tools
 

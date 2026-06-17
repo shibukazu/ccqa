@@ -83,6 +83,13 @@ export interface RunLiveExecutorInput {
   runId: string;
   runDir: string;
   sessionName: string;
+  /**
+   * `"sticky"` (set when the spec declared `sessionName:`) makes every
+   * agent-browser invocation — model-driven via Bash, plus the executor's own
+   * screenshot calls — use `--session-name` so cookies and localStorage
+   * persist across runs. Defaults to `"ephemeral"`.
+   */
+  sessionMode?: "ephemeral" | "sticky";
   systemPromptSuffix?: string | null;
   model?: string;
   language?: string;
@@ -118,16 +125,22 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
   // change per step. Computing them once avoids both per-step filesystem
   // walks (resolveAgentBrowserBinDir → statSync up the tree) and per-step
   // ~5 KB string rebuilds of the full allSteps block.
+  const sessionMode = input.sessionMode ?? "ephemeral";
   const promptPrefix = buildLiveSystemPromptPrefix({
     title: input.spec.title,
     allSteps: input.steps,
     sessionName: input.sessionName,
+    sessionMode,
   });
   const suffixBlock = input.systemPromptSuffix
     ? `\n## Project-specific guidance\n\n${input.systemPromptSuffix}\n`
     : "";
   const langDirective = languageDirective(input.language);
-  const invokeBase = agentBrowserInvokeBase({ sessionName: input.sessionName, runId: input.runId });
+  const invokeBase = agentBrowserInvokeBase({
+    sessionName: input.sessionName,
+    runId: input.runId,
+    sessionMode,
+  });
 
   const retries = Math.max(0, input.retries ?? 0);
 
@@ -189,7 +202,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     systemPrompt: string,
     userPrompt: string,
   ): Promise<StepAttemptOutcome> {
-    const before = takeScreenshot(input.sessionName, paths.beforePng);
+    const before = takeScreenshot(input.sessionName, paths.beforePng, { sessionMode });
     if (!before.ok) log.warn(`screenshot (before, ${step.id}) failed: ${before.error}`);
 
     const transcriptParts: string[] = [];
@@ -233,7 +246,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     // After: full page so the assertion target is in the artifact regardless of
     // scroll position. Before stays viewport-only (lighter, and the before-state
     // doesn't usually need to prove "this row appeared below the fold").
-    const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
+    const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true, sessionMode });
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
     await writeFile(paths.logTxt, transcript || "(no assistant text captured)", "utf-8");
