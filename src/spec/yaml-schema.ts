@@ -49,6 +49,15 @@ export const TestSpecSchema = z
     title: z.string().min(1),
     relatedPaths: z.array(z.string().min(1)).optional(),
     mode: SpecModeSchema.optional(),
+    /**
+     * When set on a `mode: live` spec, overrides the auto-generated
+     * `ccqa-live-<timestamp>` session name and passes the value verbatim to
+     * agent-browser. Lets a spec opt into a stable session so cookies and
+     * localStorage persist across runs (used to dodge Slack-style "we don't
+     * recognize this browser" verification gates). Ignored for deterministic
+     * specs — they don't drive agent-browser directly.
+     */
+    sessionName: z.string().min(1).optional(),
     steps: z.array(StepSchema).min(1),
   })
   .strict();

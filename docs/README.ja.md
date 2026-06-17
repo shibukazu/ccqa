@@ -69,6 +69,16 @@ ccqa run tasks/create-and-complete      # vitest が test.spec.ts を再生 (LLM
 ccqa run tasks/create-and-complete      # 毎回 Claude がブラウザを操作
 ```
 
+`mode: live` の spec は `sessionName: <name>` を spec.yaml の top-level に書くと、agent-browser に渡される session 名がその値で固定されます。指定しない場合は run ごとに `ccqa-live-<timestamp>` が自動採番されるので cookies は引き継がれません。Slack の "We don't recognize this browser" のようなデバイス信頼ゲートを 1 回突破して以降スキップしたいときは、 spec で session 名を固定して agent-browser の session 永続化 (cookies + localStorage の auto save/restore) に乗せます。
+
+```yaml
+title: Slack App Home でカテゴリ管理者ユーザーは管理対象カテゴリのみ操作可能であることを確認する
+mode: live
+sessionName: ccqa-live-slack-stg    # この spec は常に同じ agent-browser session で走る
+steps:
+  - ...
+```
+
 deterministic spec はデフォルトで step 境界のスクショとメタデータを `ccqa-report/evidence/<feature>/<spec>/` に書き出します。`expected` が記述する状態に実際に到達したか、レビュアーが確認できます。`--no-evidence` で抑止できます。
 
 CI で HTML 実行レポートを出力したい場合は `--report` を付けます。失敗 spec ごとに drift audit と、ブランチの git 差分をコンテキストとした原因分類 (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) が付き、レポート上で人が正解を入力すると分類精度 (混同行列) をその場で計測できます。分析には `ANTHROPIC_API_KEY` か Claude Code のログインが必要です。`--no-failure-analysis` で分類を止められます (drift audit も連動して止まります — drift は分類の根拠として表示されるため、分類を止めるなら drift も無駄になるからです)。分類は欲しいが audit だけ止めたい場合は `--no-drift-audit` を使ってください。詳細は [Run report](./report.md)。

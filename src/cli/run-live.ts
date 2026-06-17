@@ -242,8 +242,15 @@ async function runOneSpec(args: {
   const includes = collectIncludedBlockNames(spec);
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
 
-  const sessionName = generateLiveSessionName();
+  // A `sessionName` declared on the spec lets the spec opt into a stable
+  // agent-browser session — cookies and localStorage persist across runs, so
+  // sites that gate on device-trust (Slack's "we don't recognize this
+  // browser" email-verification screen, MFA prompts, …) can be cleared once
+  // and then dodged on subsequent runs. Without it we mint a fresh
+  // `ccqa-live-<timestamp>` name as before.
+  const sessionName = spec.sessionName ?? generateLiveSessionName();
   log.meta("session", sessionName);
+  if (spec.sessionName) log.meta("session-source", "spec.yaml (sticky)");
 
   const runId = buildRunId();
   const runDir = opts.out ?? join(specDir, "runs", runId);

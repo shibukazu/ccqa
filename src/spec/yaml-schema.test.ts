@@ -61,6 +61,26 @@ describe("TestSpecSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts an optional sessionName for sticky live sessions", () => {
+    const parsed = TestSpecSchema.parse({
+      title: "x",
+      mode: "live",
+      sessionName: "ccqa-live-slack-stg",
+      steps: [{ instruction: "i", expected: "e" }],
+    });
+    expect(parsed.sessionName).toBe("ccqa-live-slack-stg");
+  });
+
+  it("rejects empty sessionName", () => {
+    expect(() =>
+      TestSpecSchema.parse({
+        title: "x",
+        sessionName: "",
+        steps: [{ instruction: "i", expected: "e" }],
+      }),
+    ).toThrow();
+  });
 });
 
 describe("BlockSpecSchema", () => {
