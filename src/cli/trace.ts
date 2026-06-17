@@ -3,7 +3,7 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   loadAllBlocks,
-  loadTraceUserPrompt,
+  loadRecordPromptBundle,
   readSpecFile,
   saveRoute,
   saveTraceActions,
@@ -30,13 +30,22 @@ import type {
 } from "../types.ts";
 import * as log from "./logger.ts";
 
+export interface RunTraceResult {
+  /** RouteStep list captured from ROUTE_STEP lines, in order. */
+  route: Route;
+  /** Number of TraceActions kept after scrub / dedup / validation. */
+  actionsKept: number;
+  /** Total TraceActions emitted before scrub / dedup / validation. */
+  actionsRecorded: number;
+}
+
 export async function runTrace(
   featureName: string,
   specName: string,
   model?: string,
   validationMode: ValidationMode = "lenient",
   language?: string,
-): Promise<void> {
+): Promise<RunTraceResult> {
   log.header("trace", `${featureName}/${specName}`);
 
   await preflightAgentBrowserCommand();
@@ -75,12 +84,12 @@ export async function runTrace(
     steps: expanded,
     sessionName,
   });
-  const userPrompt = await loadTraceUserPrompt();
-  if (userPrompt !== null) log.meta("user-prompt", ".ccqa/prompts/trace.user.md");
+  const promptBundle = await loadRecordPromptBundle();
+  if (promptBundle !== null) log.meta("user-prompt", promptBundle.loaded.join(" + "));
   const systemPrompt =
-    (userPrompt === null
+    (promptBundle === null
       ? baseSystemPrompt
-      : `${baseSystemPrompt}\n## Project-specific guidance\n\n${userPrompt}\n`) +
+      : `${baseSystemPrompt}\n## Project-specific guidance\n\n${promptBundle.text}\n`) +
     languageDirective(language);
   const prompt = buildTracePrompt(spec.title);
 
@@ -190,6 +199,12 @@ export async function runTrace(
   }
 
   log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
+
+  return {
+    route,
+    actionsKept: validatedActions.length,
+    actionsRecorded: traceActions.length,
+  };
 }
 
 /**

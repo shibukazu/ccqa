@@ -8,7 +8,7 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * silently mixed.
  *
  * v4: `script`/`failureLog` became optional and an alternate
- * `ndTranscriptExcerpt` source was added so the same classifier could
+ * `liveTranscriptExcerpt` source was added so the same classifier could
  * analyze live-spec (`mode: live`) failures alongside deterministic ones.
  */
 export const ANALYSIS_PROMPT_VERSION = "4";
@@ -16,8 +16,8 @@ export const ANALYSIS_PROMPT_VERSION = "4";
 export interface FailureAnalysisPromptInput {
   /**
    * Generated vitest script for the deterministic execution path. Optional:
-   * non-deterministic runs do not produce a script, and pass
-   * `ndTranscriptExcerpt` instead.
+   * live-mode runs do not produce a script, and pass
+   * `liveTranscriptExcerpt` instead.
    */
   script?: string;
   /**
@@ -29,10 +29,10 @@ export interface FailureAnalysisPromptInput {
    * Summary of the Claude transcript from a `mode: live` spec execution:
    * the final failed step's reasoning + truncated assistant log, plus a
    * one-line summary of every preceding step. See
-   * `src/report/nd-transcript-excerpt.ts:buildNdTranscriptExcerpt`.
+   * `src/report/live-transcript-excerpt.ts:buildLiveTranscriptExcerpt`.
    * Optional: deterministic runs leave this null.
    */
-  ndTranscriptExcerpt?: string;
+  liveTranscriptExcerpt?: string;
   specYaml: string;
   /** Unified diff base...HEAD, already scoped to the spec's relatedPaths and truncated. */
   diffPatch: string | null;
@@ -51,7 +51,7 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     script,
     specYaml,
     failureLog,
-    ndTranscriptExcerpt,
+    liveTranscriptExcerpt,
     diffPatch,
     changedFiles,
     baseRef,
@@ -66,10 +66,10 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
   );
 
   // Either deterministic artefacts (script + failureLog) or live artefacts
-  // (ndTranscriptExcerpt) populate this block. When neither is available
+  // (liveTranscriptExcerpt) populate this block. When neither is available
   // we still emit a header so the model isn't surprised by the missing
   // section; downgrades the call to UNKNOWN with low confidence.
-  const executionBlock = buildExecutionEvidenceBlock(script, failureLog, ndTranscriptExcerpt);
+  const executionBlock = buildExecutionEvidenceBlock(script, failureLog, liveTranscriptExcerpt);
 
   const diffBlock = diffPatch
     ? `## Source changes since ${baseRef ?? "base"} (git diff, may be truncated)
@@ -196,7 +196,7 @@ ${driftBlock}`;
 function buildExecutionEvidenceBlock(
   script: string | undefined,
   failureLog: string | undefined,
-  ndTranscriptExcerpt: string | undefined,
+  liveTranscriptExcerpt: string | undefined,
 ): string {
   const sections: string[] = [];
 
@@ -210,9 +210,9 @@ ${numberLines(script)}`);
 ${failureLog.slice(0, 8000)}`);
   }
 
-  if (ndTranscriptExcerpt && ndTranscriptExcerpt.length > 0) {
+  if (liveTranscriptExcerpt && liveTranscriptExcerpt.length > 0) {
     sections.push(`## Live Run Transcript (summary of Claude's per-step execution)
-${ndTranscriptExcerpt}`);
+${liveTranscriptExcerpt}`);
   }
 
   if (sections.length === 0) {

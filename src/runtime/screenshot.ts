@@ -17,7 +17,7 @@ export interface ScreenshotOptions {
 
 /**
  * Take a PNG screenshot of the current page in the given agent-browser session
- * and write it to `outPath`. Used by `ccqa run-nd` to capture per-step
+ * and write it to `outPath`. Used by `ccqa run` (live mode) to capture per-step
  * artifacts (before / after the step's actions) so the human-readable run
  * report has a visual trail even though no AB_ACTION stream is recorded.
  *

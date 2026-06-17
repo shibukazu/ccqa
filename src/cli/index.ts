@@ -5,6 +5,7 @@ import { runCommand } from "./run.ts";
 import { recordCommand } from "./record.ts";
 import { draftCommand } from "./draft.ts";
 import { driftCommand } from "./drift.ts";
+import { initCommand } from "./init.ts";
 import { perspectivesCommand } from "./perspectives.ts";
 
 // dist build copies package.json next to the bundle (../package.json);
@@ -29,7 +30,9 @@ program
   .description("E2E test CLI using Claude Code + agent-browser")
   .version(version);
 
-// Lifecycle order: draft → perspectives → record → run → drift
+// `init` is a one-shot bootstrap, listed first so it's discoverable.
+// Lifecycle order for the rest: draft → perspectives → record → run → drift
+program.addCommand(initCommand);
 program.addCommand(draftCommand);
 program.addCommand(perspectivesCommand);
 program.addCommand(recordCommand);

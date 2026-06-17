@@ -96,11 +96,11 @@ export const ReportEvidenceSchema = z.object({
 export type ReportEvidence = z.infer<typeof ReportEvidenceSchema>;
 
 /**
- * Per-step row for a non-deterministic run (`ccqa run-nd`). Mirrors the
- * structure produced by `src/runtime/nd-executor.ts:NdStepResult` but
+ * Per-step row for a live-mode run (spec.yaml `mode: live`). Mirrors the
+ * structure produced by `src/runtime/live-executor.ts:LiveStepResult` but
  * encoded against the report schema so the HTML renderer can carry both
- * deterministic (`evidence`) and non-deterministic (`ndRun`) sources of
- * step-boundary screenshots.
+ * deterministic (`evidence`) and live (`liveRun`) sources of step-boundary
+ * screenshots.
  *
  * `beforePng` / `afterPng` are RELATIVE to the HTML report directory — the
  * caller computes the relative path with `node:path`'s `relative()` so the
@@ -115,7 +115,7 @@ export type ReportEvidence = z.infer<typeof ReportEvidenceSchema>;
  * `models` is the union of model ids the SDK reported using; usually a
  * single element, but the SDK can fan out across models in some modes.
  */
-export const NdReportCostSchema = z.object({
+export const LiveReportCostSchema = z.object({
   totalCostUsd: z.number().nullable(),
   durationApiMs: z.number().nullable(),
   numTurns: z.number().nullable(),
@@ -125,9 +125,9 @@ export const NdReportCostSchema = z.object({
   outputTokens: z.number().nullable(),
   models: z.array(z.string()),
 });
-export type NdReportCost = z.infer<typeof NdReportCostSchema>;
+export type LiveReportCost = z.infer<typeof LiveReportCostSchema>;
 
-export const NdReportStepSchema = z.object({
+export const LiveReportStepSchema = z.object({
   stepId: z.string(),
   source: z.string(),
   instruction: z.string(),
@@ -137,19 +137,19 @@ export const NdReportStepSchema = z.object({
   beforePng: z.string().nullable(),
   afterPng: z.string().nullable(),
   durationMs: z.number(),
-  cost: NdReportCostSchema,
+  cost: LiveReportCostSchema,
 });
-export type NdReportStep = z.infer<typeof NdReportStepSchema>;
+export type LiveReportStep = z.infer<typeof LiveReportStepSchema>;
 
-export const NdReportRunSchema = z.object({
+export const LiveReportRunSchema = z.object({
   runId: z.string(),
   sessionName: z.string(),
   startedAt: z.string(),
   durationMs: z.number(),
-  steps: z.array(NdReportStepSchema),
-  cost: NdReportCostSchema,
+  steps: z.array(LiveReportStepSchema),
+  cost: LiveReportCostSchema,
 });
-export type NdReportRun = z.infer<typeof NdReportRunSchema>;
+export type LiveReportRun = z.infer<typeof LiveReportRunSchema>;
 
 export const ReportSpecResultSchema = z.object({
   feature: z.string(),
@@ -181,11 +181,11 @@ export const ReportSpecResultSchema = z.object({
   /** Step-boundary screenshots for the deterministic (`ccqa run`) path, in capture order. */
   evidence: z.array(ReportEvidenceSchema).nullable(),
   /**
-   * Set for specs produced by `ccqa run-nd`. The renderer shows the per-step
-   * verdicts + before/after screenshots instead of (or in addition to) the
-   * vitest assertion list. `assertions` is null for ND-only specs.
+   * Set for specs executed in live mode (`mode: live`). The renderer shows the
+   * per-step verdicts + before/after screenshots instead of (or in addition
+   * to) the vitest assertion list. `assertions` is null for live-only specs.
    */
-  ndRun: NdReportRunSchema.nullable(),
+  liveRun: LiveReportRunSchema.nullable(),
 });
 export type ReportSpecResult = z.infer<typeof ReportSpecResultSchema>;
 

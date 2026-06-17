@@ -2,7 +2,7 @@ import { describe, test, expect } from "vitest";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadRunNdUserPrompt, loadTraceUserPrompt, routeToMarkdown } from "./index.ts";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadLivePromptBundle, loadRecordPromptBundle, routeToMarkdown } from "./index.ts";
 import type { Route } from "../types.ts";
 
 describe("parseSpecPath", () => {
@@ -157,92 +157,151 @@ describe("routeToMarkdown", () => {
   });
 });
 
-describe("loadTraceUserPrompt", () => {
+describe("loadRecordPromptBundle", () => {
   async function makeWorkspace(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "ccqa-trace-user-prompt-"));
+    const dir = await mkdtemp(join(tmpdir(), "ccqa-record-prompt-bundle-"));
     await mkdir(join(dir, ".ccqa", "prompts"), { recursive: true });
     return dir;
   }
 
-  test("returns null when the file does not exist", async () => {
+  test("returns null when both files are missing", async () => {
     const dir = await makeWorkspace();
-    expect(await loadTraceUserPrompt(dir)).toBeNull();
+    expect(await loadRecordPromptBundle(dir)).toBeNull();
   });
 
-  test("returns null when the file is empty or whitespace-only", async () => {
+  test("returns a user-only bundle when only record.user.md exists", async () => {
     const dir = await makeWorkspace();
-    await writeFile(join(dir, ".ccqa/prompts/trace.user.md"), "   \n\n  ", "utf-8");
-    expect(await loadTraceUserPrompt(dir)).toBeNull();
+    await writeFile(
+      join(dir, ".ccqa/prompts/record.user.md"),
+      "Use only [data-testid='*'] selectors.\n",
+      "utf-8",
+    );
+    const out = await loadRecordPromptBundle(dir);
+    expect(out).not.toBeNull();
+    expect(out!.loaded).toEqual([".ccqa/prompts/record.user.md"]);
+    expect(out!.text).toContain("Project guidance (human-maintained)");
+    expect(out!.text).toContain("Use only [data-testid='*'] selectors.");
+    expect(out!.text).not.toContain("Agent learnings");
   });
 
-  test("returns the trimmed contents when the file is non-empty", async () => {
+  test("returns an agent-only bundle when only record.agent.md exists", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(
+      join(dir, ".ccqa/prompts/record.agent.md"),
+      "Auto-learned: the login form uses [name=identifier].\n",
+      "utf-8",
+    );
+    const out = await loadRecordPromptBundle(dir);
+    expect(out).not.toBeNull();
+    expect(out!.loaded).toEqual([".ccqa/prompts/record.agent.md"]);
+    expect(out!.text).toContain("Agent learnings (auto-updated by ccqa --update-agent-prompt)");
+    expect(out!.text).toContain("Auto-learned");
+    expect(out!.text).not.toContain("Project guidance");
+  });
+
+  test("returns a combined bundle when both files exist", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(join(dir, ".ccqa/prompts/record.user.md"), "Stable rule.\n", "utf-8");
+    await writeFile(join(dir, ".ccqa/prompts/record.agent.md"), "Learned hint.\n", "utf-8");
+    const out = await loadRecordPromptBundle(dir);
+    expect(out).not.toBeNull();
+    expect(out!.loaded).toEqual([
+      ".ccqa/prompts/record.user.md",
+      ".ccqa/prompts/record.agent.md",
+    ]);
+    expect(out!.text).toContain("Stable rule.");
+    expect(out!.text).toContain("Learned hint.");
+    // user section appears before agent section
+    expect(out!.text.indexOf("Stable rule.")).toBeLessThan(out!.text.indexOf("Learned hint."));
+  });
+
+  test("truncates the concatenated bundle at 32 KiB", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(join(dir, ".ccqa/prompts/record.user.md"), "x".repeat(20_000), "utf-8");
+    await writeFile(join(dir, ".ccqa/prompts/record.agent.md"), "y".repeat(20_000), "utf-8");
+    const out = await loadRecordPromptBundle(dir);
+    expect(out).not.toBeNull();
+    expect(out!.text).toMatch(/prompt bundle truncated at 32768 bytes/);
+  });
+
+  test("does NOT read the old .ccqa/prompts/trace.user.md path", async () => {
     const dir = await makeWorkspace();
     await writeFile(
       join(dir, ".ccqa/prompts/trace.user.md"),
-      "\n  Use only [data-testid='*'] selectors.\n",
+      "legacy content",
       "utf-8",
     );
-    expect(await loadTraceUserPrompt(dir)).toBe("Use only [data-testid='*'] selectors.");
-  });
-
-  test("truncates contents that exceed the 32 KiB cap and appends a warning", async () => {
-    const dir = await makeWorkspace();
-    const huge = "x".repeat(40_000);
-    await writeFile(join(dir, ".ccqa/prompts/trace.user.md"), huge, "utf-8");
-    const out = await loadTraceUserPrompt(dir);
-    expect(out).not.toBeNull();
-    expect(out!.length).toBeLessThan(huge.length);
-    expect(out).toMatch(/truncated at 32768 bytes/);
+    expect(await loadRecordPromptBundle(dir)).toBeNull();
   });
 });
 
-describe("loadRunNdUserPrompt", () => {
+describe("loadLivePromptBundle", () => {
   async function makeWorkspace(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "ccqa-run-nd-user-prompt-"));
+    const dir = await mkdtemp(join(tmpdir(), "ccqa-live-prompt-bundle-"));
     await mkdir(join(dir, ".ccqa", "prompts"), { recursive: true });
     return dir;
   }
 
-  test("returns null when the file does not exist", async () => {
+  test("returns null when both files are missing", async () => {
     const dir = await makeWorkspace();
-    expect(await loadRunNdUserPrompt(dir)).toBeNull();
+    expect(await loadLivePromptBundle(dir)).toBeNull();
   });
 
-  test("returns null when the file is empty or whitespace-only", async () => {
+  test("returns a user-only bundle when only live.user.md exists", async () => {
     const dir = await makeWorkspace();
-    await writeFile(join(dir, ".ccqa/prompts/run-nd.user.md"), "  \n\n  ", "utf-8");
-    expect(await loadRunNdUserPrompt(dir)).toBeNull();
+    await writeFile(
+      join(dir, ".ccqa/prompts/live.user.md"),
+      "Project guidance line.\n",
+      "utf-8",
+    );
+    const out = await loadLivePromptBundle(dir);
+    expect(out).not.toBeNull();
+    expect(out!.loaded).toEqual([".ccqa/prompts/live.user.md"]);
+    expect(out!.text).toContain("Project guidance line.");
   });
 
-  test("returns the trimmed contents when the file is non-empty", async () => {
+  test("returns an agent-only bundle when only live.agent.md exists", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(
+      join(dir, ".ccqa/prompts/live.agent.md"),
+      "Auto-learned hint.\n",
+      "utf-8",
+    );
+    const out = await loadLivePromptBundle(dir);
+    expect(out).not.toBeNull();
+    expect(out!.loaded).toEqual([".ccqa/prompts/live.agent.md"]);
+    expect(out!.text).toContain("Auto-learned hint.");
+  });
+
+  test("returns a combined bundle when both files exist", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(join(dir, ".ccqa/prompts/live.user.md"), "Stable rule.", "utf-8");
+    await writeFile(join(dir, ".ccqa/prompts/live.agent.md"), "Learned hint.", "utf-8");
+    const out = await loadLivePromptBundle(dir);
+    expect(out).not.toBeNull();
+    expect(out!.loaded).toEqual([
+      ".ccqa/prompts/live.user.md",
+      ".ccqa/prompts/live.agent.md",
+    ]);
+    expect(out!.text.indexOf("Stable rule.")).toBeLessThan(out!.text.indexOf("Learned hint."));
+  });
+
+  test("truncates the concatenated bundle at 32 KiB", async () => {
+    const dir = await makeWorkspace();
+    await writeFile(join(dir, ".ccqa/prompts/live.user.md"), "u".repeat(20_000), "utf-8");
+    await writeFile(join(dir, ".ccqa/prompts/live.agent.md"), "a".repeat(20_000), "utf-8");
+    const out = await loadLivePromptBundle(dir);
+    expect(out).not.toBeNull();
+    expect(out!.text).toMatch(/prompt bundle truncated at 32768 bytes/);
+  });
+
+  test("does NOT read the old .ccqa/prompts/run-nd.user.md path", async () => {
     const dir = await makeWorkspace();
     await writeFile(
       join(dir, ".ccqa/prompts/run-nd.user.md"),
-      "\n  Sample project-specific guidance line.\n",
+      "legacy content",
       "utf-8",
     );
-    expect(await loadRunNdUserPrompt(dir)).toBe(
-      "Sample project-specific guidance line.",
-    );
-  });
-
-  test("does NOT fall back to trace.user.md (the two prompts are separate)", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(
-      join(dir, ".ccqa/prompts/trace.user.md"),
-      "this should not leak into run-nd",
-      "utf-8",
-    );
-    expect(await loadRunNdUserPrompt(dir)).toBeNull();
-  });
-
-  test("truncates contents that exceed the 32 KiB cap and appends a warning", async () => {
-    const dir = await makeWorkspace();
-    const huge = "y".repeat(40_000);
-    await writeFile(join(dir, ".ccqa/prompts/run-nd.user.md"), huge, "utf-8");
-    const out = await loadRunNdUserPrompt(dir);
-    expect(out).not.toBeNull();
-    expect(out!.length).toBeLessThan(huge.length);
-    expect(out).toMatch(/run-nd\.user\.md truncated at 32768 bytes/);
+    expect(await loadLivePromptBundle(dir)).toBeNull();
   });
 });

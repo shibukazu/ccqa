@@ -1,10 +1,13 @@
 import { Command } from "commander";
 import { parseSpecPath } from "../store/index.ts";
-import { runTrace } from "./trace.ts";
+import { runTrace, type RunTraceResult } from "./trace.ts";
 import { runGenerate } from "./generate.ts";
 import { addLanguageOption, DEFAULT_LANGUAGE } from "./options.ts";
+import { resolveCwd } from "./resolve-cwd.ts";
+import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { FixMode } from "../diagnose/loop.ts";
 import type { ValidationMode } from "../runtime/replay-validate.ts";
+import type { Route } from "../types.ts";
 import * as log from "./logger.ts";
 
 const AUTO_FIX_MODES = ["interactive", "auto", "skip"] as const;
@@ -22,6 +25,8 @@ interface RecordOptions {
   snapshot?: boolean;
   skipTrace?: boolean;
   skipCodegen?: boolean;
+  updateAgentPrompt?: boolean;
+  cwd?: string;
 }
 
 // Maps the user-facing `--auto-fix` 3-value flag to the internal `FixMode`:
@@ -79,7 +84,15 @@ export const recordCommand = addLanguageOption(
       "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
     )
     .option("--skip-trace", "Skip the trace step and run codegen against an existing actions.json")
-    .option("--skip-codegen", "Run only the trace step (do not generate test.spec.ts)"),
+    .option("--skip-codegen", "Run only the trace step (do not generate test.spec.ts)")
+    .option(
+      "--update-agent-prompt",
+      "After the trace finishes, ask Claude to refresh .ccqa/prompts/record.agent.md from a summary of the run.",
+    )
+    .option(
+      "--cwd <path>",
+      "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
+    ),
 ).action(async (specPath: string, opts: RecordOptions) => {
   const { featureName, specName } = parseSpecPath(specPath);
   const language = opts.language ?? DEFAULT_LANGUAGE;
@@ -89,8 +102,9 @@ export const recordCommand = addLanguageOption(
     process.exit(2);
   }
 
+  let traceResult: RunTraceResult | null = null;
   if (!opts.skipTrace) {
-    await runTrace(featureName, specName, opts.model, opts.validationMode ?? "lenient", language);
+    traceResult = await runTrace(featureName, specName, opts.model, opts.validationMode ?? "lenient", language);
     log.blank();
   }
 
@@ -108,4 +122,46 @@ export const recordCommand = addLanguageOption(
       opts.model,
     );
   }
+
+  if (opts.updateAgentPrompt) {
+    if (traceResult === null) {
+      log.warn("--update-agent-prompt is ignored when --skip-trace is set (no run summary available)");
+    } else {
+      const cwd = resolveCwd(opts.cwd);
+      log.blank();
+      await updateAgentPrompt({
+        mode: "record",
+        runSummary: buildRecordRunSummary(featureName, specName, traceResult),
+        cwd,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(language ? { language } : {}),
+      });
+    }
+  }
 });
+
+/**
+ * Compact summary of the trace pass for the record agent-prompt refresh:
+ * per-step title / action / observation / status. The route steps already
+ * carry the assistant's own framing of what happened — perfect input for
+ * "what should I remember next time".
+ */
+function buildRecordRunSummary(featureName: string, specName: string, t: RunTraceResult): string {
+  const header = `## ${featureName}/${specName} — ${t.route.status}\nActions: ${t.actionsKept} kept / ${t.actionsRecorded} recorded`;
+  const steps = t.route.steps.length === 0
+    ? "(no route steps recorded)"
+    : t.route.steps.map((s: Route["steps"][number]) =>
+        [
+          `### ${s.title} (${s.status})`,
+          `- action: ${oneLineSummary(s.action)}`,
+          `- observation: ${oneLineSummary(s.observation)}`,
+          ...(s.reason ? [`- reason: ${oneLineSummary(s.reason)}`] : []),
+        ].join("\n"),
+      ).join("\n\n");
+  return `${header}\n\n${steps}`;
+}
+
+function oneLineSummary(s: string): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > 240 ? flat.slice(0, 240) + "…" : flat || "(none)";
+}

@@ -1,10 +1,10 @@
 import { describe, test, expect } from "vitest";
 import {
-  buildRunNdSystemPromptPrefix,
-  buildRunNdSystemPromptStepSection,
-  buildRunNdUserPrompt,
-  generateRunNdSessionName,
-} from "./run-nd.ts";
+  buildLiveSystemPromptPrefix,
+  buildLiveSystemPromptStepSection,
+  buildLiveUserPrompt,
+  generateLiveSessionName,
+} from "./live.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
 
 // Fully synthetic fixture — no product-specific vocabulary. We use opaque
@@ -16,21 +16,21 @@ const STEPS: ExpandedActionStep[] = [
   { id: "step-03", source: "spec", instruction: "INSTRUCTION_C", expected: "EXPECTED_C" },
 ];
 
-describe("buildRunNdSystemPromptPrefix", () => {
+describe("buildLiveSystemPromptPrefix", () => {
   test("includes the spec title, session name, and STEP_RESULT contract template", () => {
-    const p = buildRunNdSystemPromptPrefix({
+    const p = buildLiveSystemPromptPrefix({
       title: SAMPLE_TITLE,
       allSteps: STEPS,
-      sessionName: "ccqa-run-nd-test",
+      sessionName: "ccqa-live-test",
     });
     expect(p).toContain(SAMPLE_TITLE);
-    expect(p).toContain("ccqa-run-nd-test");
+    expect(p).toContain("ccqa-live-test");
     expect(p).toContain("STEP_RESULT|<stepId>|pass");
     expect(p).toContain("STEP_RESULT|<stepId>|fail");
   });
 
   test("renders every step with its source tag", () => {
-    const p = buildRunNdSystemPromptPrefix({
+    const p = buildLiveSystemPromptPrefix({
       title: SAMPLE_TITLE,
       allSteps: STEPS,
       sessionName: "s",
@@ -41,7 +41,7 @@ describe("buildRunNdSystemPromptPrefix", () => {
   });
 
   test("explicitly states agent-browser constraints are relaxed", () => {
-    const p = buildRunNdSystemPromptPrefix({
+    const p = buildLiveSystemPromptPrefix({
       title: SAMPLE_TITLE,
       allSteps: STEPS,
       sessionName: "s",
@@ -56,9 +56,9 @@ describe("buildRunNdSystemPromptPrefix", () => {
     // sessionName). The check is structural — we don't enumerate "bad"
     // strings, we assert that the only URL-like / email-like tokens present
     // are ones the test fed in. Project-specific hints belong in
-    // `.ccqa/prompts/run-nd.user.md`, which the caller appends after this
-    // prefix.
-    const p = buildRunNdSystemPromptPrefix({
+    // `.ccqa/prompts/live.user.md` / `.ccqa/prompts/live.agent.md`, which
+    // the caller appends after this prefix.
+    const p = buildLiveSystemPromptPrefix({
       title: "TITLE_T",
       allSteps: [
         { id: "step-01", source: "spec", instruction: "INSTR_A", expected: "EXP_A" },
@@ -79,24 +79,24 @@ describe("buildRunNdSystemPromptPrefix", () => {
   });
 });
 
-describe("buildRunNdSystemPromptStepSection", () => {
+describe("buildLiveSystemPromptStepSection", () => {
   test("renders the current step's id, instruction, and expected", () => {
-    const s = buildRunNdSystemPromptStepSection(STEPS[1]!);
+    const s = buildLiveSystemPromptStepSection(STEPS[1]!);
     expect(s).toContain("step-02");
     expect(s).toContain("INSTRUCTION_B");
     expect(s).toContain("EXPECTED_B");
   });
 });
 
-describe("buildRunNdUserPrompt", () => {
+describe("buildLiveUserPrompt", () => {
   test("references the stepId so the model knows which step to judge", () => {
-    expect(buildRunNdUserPrompt(STEPS[1]!)).toContain("step-02");
+    expect(buildLiveUserPrompt(STEPS[1]!)).toContain("step-02");
   });
 });
 
-describe("generateRunNdSessionName", () => {
-  test("returns a filename-safe ccqa-run-nd-* string", () => {
-    const s = generateRunNdSessionName();
-    expect(s).toMatch(/^ccqa-run-nd-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/);
+describe("generateLiveSessionName", () => {
+  test("returns a filename-safe ccqa-live-* string", () => {
+    const s = generateLiveSessionName();
+    expect(s).toMatch(/^ccqa-live-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/);
   });
 });

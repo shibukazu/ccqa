@@ -1,33 +1,33 @@
 import { relative } from "node:path";
 import { tryParseTestSpec } from "../spec/parser.ts";
-import type { NdRunResult } from "../runtime/nd-executor.ts";
-import type { NdReportRun, NdReportStep, ReportSpecResult } from "./schema.ts";
+import type { LiveRunResult } from "../runtime/live-executor.ts";
+import type { LiveReportRun, LiveReportStep, ReportSpecResult } from "./schema.ts";
 
 /**
- * Convert one `run-nd` execution result into the persistence-layer
- * `ReportSpecResult` shape consumed by `renderRunReport`. The conversion
- * does two non-trivial things:
+ * Convert one live-mode (`mode: live`) execution result into the
+ * persistence-layer `ReportSpecResult` shape consumed by `renderRunReport`.
+ * The conversion does two non-trivial things:
  *
  *   - rewrites the executor's absolute `beforePng`/`afterPng` paths as
  *     `reportDir`-relative hrefs so the rendered HTML opens its PNGs
  *     directly when the report dir + the run dir are downloaded together
  *     as a CI artifact bundle
  *   - nulls out every vitest-only field so the report renderer falls
- *     through to its `ndRun` branch
+ *     through to its `liveRun` branch
  *
  * Lives in `src/report/` (not the CLI) because the relative-path contract
- * on `NdReportStep.beforePng`/`afterPng` is a report-layer invariant,
+ * on `LiveReportStep.beforePng`/`afterPng` is a report-layer invariant,
  * documented next to the schema, and the CLI should not own it.
  */
-export function ndRunToReportResult(args: {
+export function liveRunToReportResult(args: {
   featureName: string;
   specName: string;
   specYaml: string;
-  result: NdRunResult;
+  result: LiveRunResult;
   reportDir: string;
 }): ReportSpecResult {
   const { featureName, specName, specYaml, result, reportDir } = args;
-  const steps: NdReportStep[] = result.steps.map((s) => ({
+  const steps: LiveReportStep[] = result.steps.map((s) => ({
     stepId: s.stepId,
     source: s.source,
     instruction: s.instruction,
@@ -39,7 +39,7 @@ export function ndRunToReportResult(args: {
     durationMs: s.durationMs,
     cost: { ...s.cost },
   }));
-  const ndRun: NdReportRun = {
+  const liveRun: LiveReportRun = {
     runId: result.runId,
     sessionName: result.sessionName,
     startedAt: result.startedAt,
@@ -62,7 +62,7 @@ export function ndRunToReportResult(args: {
     diffExcerpt: null,
     specYaml,
     evidence: null,
-    ndRun,
+    liveRun,
   };
 }
 

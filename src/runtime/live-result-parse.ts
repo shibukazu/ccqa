@@ -1,8 +1,8 @@
 /**
- * Non-deterministic mode (`ccqa run-nd`) judges each spec step with a single
- * Claude turn. The model emits its verdict as a STEP_RESULT line that lives in
- * the same pipe-delimited family as trace mode's STEP_DONE / AB_ACTION, so we
- * parse it with the same shape.
+ * Live mode (`ccqa run` against `mode: live` specs) judges each spec step with
+ * a single Claude turn. The model emits its verdict as a STEP_RESULT line that
+ * lives in the same pipe-delimited family as trace mode's STEP_DONE / AB_ACTION,
+ * so we parse it with the same shape.
  *
  * Wire format (one line, no surrounding code fence):
  *
