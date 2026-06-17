@@ -1,4 +1,4 @@
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
@@ -8,7 +8,7 @@ import { installFakeAgentBrowser } from "../_helpers/fake-ab.ts";
 import { writeMockMessages } from "../_helpers/fake-claude.ts";
 
 // Build a JSONL fixture that mirrors what the Claude Agent SDK streams to
-// invokeClaudeStreaming's `onEvent` callback. The run-nd executor only
+// invokeClaudeStreaming's `onEvent` callback. The live executor only
 // reads:
 //   - assistant text blocks (to extract a STEP_RESULT line)
 //   - the terminal result message (to set isError)
@@ -45,7 +45,7 @@ describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
   });
 
   test("all steps pass: exits 0, writes per-step PNGs and run.json, --report emits HTML", async () => {
-    project = await makeFakeProject("run-nd-stub", { linkCcqa: true });
+    project = await makeFakeProject("run-live-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 
     // CCQA_CLAUDE_MOCK_FILE replays the same JSONL on every invokeClaudeStreaming
@@ -83,7 +83,7 @@ describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
       expect(s.size).toBeGreaterThan(0);
     }
 
-    // HTML report contains the ND badge and links to the per-step PNGs.
+    // HTML report contains the LIVE badge and links to the per-step PNGs.
     const html = await readFile(join(reportDir, "index.html"), "utf8");
     expect(html).toContain(">LIVE<");
     expect(html).toMatch(/step-01\.before\.png/);
@@ -91,7 +91,7 @@ describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
   }, 120_000);
 
   test("STEP_RESULT|...|fail aborts the run: later steps recorded as skipped, exit code 1", async () => {
-    project = await makeFakeProject("run-nd-stub", { linkCcqa: true });
+    project = await makeFakeProject("run-live-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 
     // step-01 fails → overallFailed flips → steps 02/03 are pushed as
@@ -125,6 +125,5 @@ describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
 
 async function readDirEntries(dir: string): Promise<string[]> {
   await mkdir(dir, { recursive: true });
-  const { readdir } = await import("node:fs/promises");
   return (await readdir(dir)).sort();
 }

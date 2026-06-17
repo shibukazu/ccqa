@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
-import type { NdRunResult, NdStepResult } from "../runtime/nd-executor.ts";
+import type { LiveRunResult, LiveStepResult } from "../runtime/live-executor.ts";
 
 /**
  * The failure-analysis prompt only has so much context window to give. A
- * full ND transcript is several hundred KB of Claude assistant text spread
- * across step-NN.log.txt files. We summarise it for the classifier:
+ * full live-mode transcript is several hundred KB of Claude assistant text
+ * spread across step-NN.log.txt files. We summarise it for the classifier:
  *
  *   - For every step before the failing one: a one-line `[step-NN passed: reason]` row.
  *   - For the failing step: the full reasoning, plus the head + tail of its
@@ -15,7 +15,7 @@ import type { NdRunResult, NdStepResult } from "../runtime/nd-executor.ts";
  * which empirically captures the meaningful framing without ballooning
  * tokens. Callers can override for testing.
  */
-export interface BuildNdTranscriptExcerptOptions {
+export interface BuildLiveTranscriptExcerptOptions {
   /** Bytes from the head of the failing step's log. Default 5000. */
   headBytes?: number;
   /** Bytes from the tail of the failing step's log. Default 5000. */
@@ -30,9 +30,9 @@ export interface BuildNdTranscriptExcerptOptions {
  * Returns `null` when the run has no failed step (every step passed/skipped),
  * since the failure analyzer has nothing to explain in that case.
  */
-export async function buildNdTranscriptExcerpt(
-  result: NdRunResult,
-  options: BuildNdTranscriptExcerptOptions = {},
+export async function buildLiveTranscriptExcerpt(
+  result: LiveRunResult,
+  options: BuildLiveTranscriptExcerptOptions = {},
 ): Promise<string | null> {
   const failingIndex = result.steps.findIndex((s) => s.status === "failed");
   if (failingIndex === -1) return null;
@@ -62,13 +62,13 @@ export async function buildNdTranscriptExcerpt(
     : combined;
 }
 
-function formatPreviousStep(step: NdStepResult): string {
+function formatPreviousStep(step: LiveStepResult): string {
   const reason = oneLine(step.reasoning) || "(no reason given)";
   return `[${step.stepId} ${step.status}: ${reason}]`;
 }
 
 async function formatFailingStep(
-  step: NdStepResult,
+  step: LiveStepResult,
   headBytes: number,
   tailBytes: number,
 ): Promise<string> {

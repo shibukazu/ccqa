@@ -1,5 +1,5 @@
 import { DRAFT_CATEGORY_LABEL } from "../types.ts";
-import { formatNdCost } from "../runtime/nd-cost-format.ts";
+import { formatLiveCost } from "../runtime/live-cost-format.ts";
 import { MAX_EVIDENCE_ITEMS } from "./analyze.ts";
 import { reportStrings, type ReportStrings } from "./i18n.ts";
 import { FAILURE_LABELS, type ReportSpecResult, type RunReportData } from "./schema.ts";
@@ -131,7 +131,7 @@ function renderResult(r: ReportSpecResult, index: number, s: ReportStrings): str
     r.status === "failed" && r.analysis
       ? `<span class="needs-grading-dot" data-case-id="${esc(id)}" title="${esc(s.needsGrading)}"></span>`
       : "";
-  const modeTag = r.ndRun
+  const modeTag = r.liveRun
     ? `<span class="mode-tag" title="executed in live mode (Claude drove the browser per step)">LIVE</span>`
     : `<span class="mode-tag" title="executed in deterministic mode (vitest replayed test.spec.ts)">DETERMINISTIC</span>`;
 
@@ -147,7 +147,7 @@ function renderResult(r: ReportSpecResult, index: number, s: ReportStrings): str
   </summary>
   <div class="spec-body">
     ${renderEvidence(r, s)}
-    ${r.ndRun ? renderNdRun(r.ndRun, s) : ""}
+    ${r.liveRun ? renderLiveRun(r.liveRun, s) : ""}
     ${renderSpecBody(r, index, s)}
     ${collapsible(s.collSpecYaml, s.collSpecYamlHelp, r.specYaml)}
   </div>
@@ -160,8 +160,8 @@ function renderSpecBody(r: ReportSpecResult, index: number, s: ReportStrings): s
   return renderSkippedWithSupporting(r, s);
 }
 
-function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>, strings: ReportStrings): string {
-  const stepItems = nd.steps
+function renderLiveRun(live: NonNullable<ReportSpecResult["liveRun"]>, strings: ReportStrings): string {
+  const stepItems = live.steps
     .map((s) => {
       const before = s.beforePng
         ? `<a class="shot" href="${esc(s.beforePng)}" target="_blank" rel="noopener"><img src="${esc(s.beforePng)}" alt="before ${esc(s.stepId)}" loading="lazy"><span>before</span></a>`
@@ -170,11 +170,11 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>, strings: Report
         ? `<a class="shot" href="${esc(s.afterPng)}" target="_blank" rel="noopener"><img src="${esc(s.afterPng)}" alt="after ${esc(s.stepId)}" loading="lazy"><span>after</span></a>`
         : "";
       const dur = s.durationMs > 0 ? `<span class="duration">${formatDuration(s.durationMs)}</span>` : "";
-      const stepCost = formatNdCostChip(s.cost);
+      const stepCost = formatLiveCostChip(s.cost);
       const stepModel = formatModelChip(s.cost.models);
-      const sourceBadge = s.source && s.source !== "spec" ? `<span class="nd-source">[${esc(s.source)}]</span>` : "";
-      return `<li class="nd-step ${s.status}">
-        <div class="nd-step-head">
+      const sourceBadge = s.source && s.source !== "spec" ? `<span class="live-source">[${esc(s.source)}]</span>` : "";
+      return `<li class="live-step ${s.status}">
+        <div class="live-step-head">
           ${statusIcon(s.status)}
           <span class="step-name">${esc(s.stepId)}</span>
           ${sourceBadge}
@@ -183,51 +183,51 @@ function renderNdRun(nd: NonNullable<ReportSpecResult["ndRun"]>, strings: Report
           ${stepCost}
           ${dur}
         </div>
-        <div class="nd-step-body">
-          <p class="nd-instr"><strong>${esc(strings.stepDoLabel)}:</strong> ${esc(s.instruction)}</p>
-          <p class="nd-instr"><strong>${esc(strings.stepExpectLabel)}:</strong> ${esc(s.expected)}</p>
-          ${s.reasoning ? `<p class="nd-reasoning">${esc(s.reasoning)}</p>` : ""}
-          ${before || after ? `<div class="nd-shots">${before}${after}</div>` : ""}
+        <div class="live-step-body">
+          <p class="live-instr"><strong>${esc(strings.stepDoLabel)}:</strong> ${esc(s.instruction)}</p>
+          <p class="live-instr"><strong>${esc(strings.stepExpectLabel)}:</strong> ${esc(s.expected)}</p>
+          ${s.reasoning ? `<p class="live-reasoning">${esc(s.reasoning)}</p>` : ""}
+          ${before || after ? `<div class="live-shots">${before}${after}</div>` : ""}
         </div>
       </li>`;
     })
     .join("\n");
-  const runCost = formatNdCostChip(nd.cost);
-  const runModel = formatModelChip(nd.cost.models);
+  const runCost = formatLiveCostChip(live.cost);
+  const runModel = formatModelChip(live.cost.models);
   // The LIVE badge in the spec header already identifies the mode; the runId/
   // session/total-cost row is only useful when correlating the report with
   // on-disk artifacts or billing, so it's folded into a details block.
-  return `<section class="nd-run">
-    <details class="nd-run-meta">
+  return `<section class="live-run">
+    <details class="live-run-meta">
       <summary>${labelWithHelp(esc(strings.collLiveRunMeta), strings.collLiveRunMetaHelp)}</summary>
-      <div class="nd-run-meta-body">
+      <div class="live-run-meta-body">
         <span class="dim">${esc(strings.liveRunIdLabel)}</span>
-        <code>${esc(nd.runId)}</code>
+        <code>${esc(live.runId)}</code>
         <span class="dim">${esc(strings.liveSessionLabel)}</span>
-        <code>${esc(nd.sessionName)}</code>
+        <code>${esc(live.sessionName)}</code>
         ${runModel}
         ${runCost}
-        <span class="duration">${formatDuration(nd.durationMs)}</span>
+        <span class="duration">${formatDuration(live.durationMs)}</span>
       </div>
     </details>
-    <ol class="nd-steps">${stepItems}</ol>
+    <ol class="live-steps">${stepItems}</ol>
   </section>`;
 }
 
 /** Compact dot-separated cost chip, e.g. "$0.1234 · 4 turns · 42 in / 6,511 out · 2.0M cached". */
-function formatNdCostChip(cost: NonNullable<ReportSpecResult["ndRun"]>["cost"]): string {
-  const line = formatNdCost(cost, { compact: true });
+function formatLiveCostChip(cost: NonNullable<ReportSpecResult["liveRun"]>["cost"]): string {
+  const line = formatLiveCost(cost, { compact: true });
   if (line === null) return "";
-  return `<span class="nd-cost" title="cost · turns · fresh-input/output tokens · cache-read input">${esc(line)}</span>`;
+  return `<span class="live-cost" title="cost · turns · fresh-input/output tokens · cache-read input">${esc(line)}</span>`;
 }
 
 function formatModelChip(models: string[]): string {
   if (!models || models.length === 0) return "";
-  return `<span class="nd-model" title="Claude model id(s) reported by the SDK">${esc(models.join(", "))}</span>`;
+  return `<span class="live-model" title="Claude model id(s) reported by the SDK">${esc(models.join(", "))}</span>`;
 }
 
 /**
- * Per-step UI for deterministic runs. Adopts the same `nd-step` card layout
+ * Per-step UI for deterministic runs. Adopts the same `live-step` card layout
  * used by live runs so reviewers don't have to context-switch between two
  * visual idioms. We map the evidence entries (which are already keyed by
  * stepId) onto the same shape, leaving live-only fields (before png, cost,
@@ -236,18 +236,18 @@ function formatModelChip(models: string[]): string {
 function renderEvidence(r: ReportSpecResult, s: ReportStrings): string {
   if (!r.evidence || r.evidence.length === 0) return "";
   const stepItems = r.evidence.map((e) => renderDetStepCard(e, s)).join("\n");
-  return `<section class="nd-run">
-    <ol class="nd-steps">${stepItems}</ol>
+  return `<section class="live-run">
+    <ol class="live-steps">${stepItems}</ol>
   </section>`;
 }
 
 function renderDetStepCard(e: NonNullable<ReportSpecResult["evidence"]>[number], s: ReportStrings): string {
   const status = e.status === "failed" ? "failed" : "passed";
   const description = e.description
-    ? `<p class="nd-instr"><strong>${esc(s.stepExpectLabel)}:</strong> ${esc(e.description)}</p>`
+    ? `<p class="live-instr"><strong>${esc(s.stepExpectLabel)}:</strong> ${esc(e.description)}</p>`
     : "";
   const failureBlock = e.status === "failed" && e.failureSummary
-    ? `<p class="nd-reasoning">${esc(e.failureSummary)}</p>`
+    ? `<p class="live-reasoning">${esc(e.failureSummary)}</p>`
     : "";
   const metaRows: string[] = [];
   if (e.url) {
@@ -264,16 +264,16 @@ function renderDetStepCard(e: NonNullable<ReportSpecResult["evidence"]>[number],
   const meta = metaRows.length > 0 ? `<div class="evidence-meta">${metaRows.join("")}</div>` : "";
   const after = `<a class="shot" href="${esc(e.pngPath)}" target="_blank" rel="noopener"><img src="${esc(e.pngPath)}" alt="${esc(e.stepId)}" loading="lazy"><span>after</span></a>`;
 
-  return `<li class="nd-step ${status}">
-    <div class="nd-step-head">
+  return `<li class="live-step ${status}">
+    <div class="live-step-head">
       ${statusIcon(status)}
       <span class="step-name">${esc(e.stepId)}</span>
       <span class="spacer"></span>
     </div>
-    <div class="nd-step-body">
+    <div class="live-step-body">
       ${description}
       ${failureBlock}
-      <div class="nd-shots">${after}</div>
+      <div class="live-shots">${after}</div>
       ${meta}
     </div>
   </li>`;
@@ -759,54 +759,54 @@ table.matrix td.miss-nonzero { background: var(--fail-bg); }
 
 /* Per-step block: indented + a thin rail under the test title so the
    hierarchy spec → test → step is visible. */
-.nd-run {
+.live-run {
   padding: 0 0 0 14px;
   margin-left: 6px;
   border-left: 1px solid var(--border-soft);
 }
-.nd-run-meta { margin: 0 0 8px; font-size: 11.5px; }
-.nd-run-meta > summary {
+.live-run-meta { margin: 0 0 8px; font-size: 11.5px; }
+.live-run-meta > summary {
   cursor: pointer; color: var(--text-mute); list-style: none;
   padding: 4px 0;
 }
-.nd-run-meta > summary::-webkit-details-marker { display: none; }
-.nd-run-meta > summary::before {
+.live-run-meta > summary::-webkit-details-marker { display: none; }
+.live-run-meta > summary::before {
   content: "▸"; color: var(--text-dim); font-size: 10px;
   margin-right: 6px; transition: transform 0.12s ease;
   display: inline-block;
 }
-.nd-run-meta[open] > summary::before { transform: rotate(90deg); }
-.nd-run-meta-body {
+.live-run-meta[open] > summary::before { transform: rotate(90deg); }
+.live-run-meta-body {
   display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap;
   color: var(--text-mute); padding: 6px 0 8px 16px;
 }
-.nd-run-meta-body code { background: transparent; padding: 0; font-size: 11.5px; color: var(--text-dim); }
-.nd-run-meta-body .dim { color: var(--text-mute); }
+.live-run-meta-body code { background: transparent; padding: 0; font-size: 11.5px; color: var(--text-dim); }
+.live-run-meta-body .dim { color: var(--text-mute); }
 
 /* Steps: flat list. The separator between steps has to outweigh anything
    *inside* a step (e.g. evidence-meta footer) so the eye finds the
    step boundary at a glance — hence a solid var(--border), not the
    softer hairline used inside the step body. */
-.nd-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0; }
-.nd-step { border-top: 1px solid var(--border); padding: 16px 0; background: transparent; }
-.nd-step:first-child { border-top: 0; padding-top: 0; }
-.nd-step.skipped { opacity: 0.55; }
-.nd-step-head { display: flex; align-items: baseline; gap: 8px; padding: 0; background: transparent; border-bottom: 0; font-size: 13px; margin-bottom: 6px; }
-.nd-step-body { padding: 0; font-size: 12.5px; line-height: 1.55; }
-.nd-step-body p { margin: 4px 0; }
-.nd-instr strong { color: var(--text-mute); font-weight: 600; margin-right: 4px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
+.live-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0; }
+.live-step { border-top: 1px solid var(--border); padding: 16px 0; background: transparent; }
+.live-step:first-child { border-top: 0; padding-top: 0; }
+.live-step.skipped { opacity: 0.55; }
+.live-step-head { display: flex; align-items: baseline; gap: 8px; padding: 0; background: transparent; border-bottom: 0; font-size: 13px; margin-bottom: 6px; }
+.live-step-body { padding: 0; font-size: 12.5px; line-height: 1.55; }
+.live-step-body p { margin: 4px 0; }
+.live-instr strong { color: var(--text-mute); font-weight: 600; margin-right: 4px; font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; }
 
 /* Reasoning: left rail, no fill. */
-.nd-reasoning { color: var(--text-dim); font-style: italic; background: transparent; padding: 4px 0 4px 12px; border-left: 2px solid var(--fail); border-radius: 0; margin: 6px 0; }
-.nd-step.passed .nd-reasoning { border-left-color: var(--border); color: var(--text-mute); font-style: normal; }
+.live-reasoning { color: var(--text-dim); font-style: italic; background: transparent; padding: 4px 0 4px 12px; border-left: 2px solid var(--fail); border-radius: 0; margin: 6px 0; }
+.live-step.passed .live-reasoning { border-left-color: var(--border); color: var(--text-mute); font-style: normal; }
 
-.nd-source { font-size: 11px; color: var(--text-mute); }
-.nd-shots { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
-.nd-shots .shot { display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--text-mute); font-size: 10px; letter-spacing: 0.08em; }
-.nd-shots .shot img { max-width: 280px; max-height: 180px; border: 1px solid var(--border-soft); border-radius: 3px; object-fit: contain; background: #000; }
+.live-source { font-size: 11px; color: var(--text-mute); }
+.live-shots { display: flex; gap: 12px; margin-top: 10px; flex-wrap: wrap; }
+.live-shots .shot { display: flex; flex-direction: column; align-items: center; gap: 4px; text-decoration: none; color: var(--text-mute); font-size: 10px; letter-spacing: 0.08em; }
+.live-shots .shot img { max-width: 280px; max-height: 180px; border: 1px solid var(--border-soft); border-radius: 3px; object-fit: contain; background: #000; }
 
 /* Cost / model chips: muted text, no fill. */
-.nd-cost, .nd-model {
+.live-cost, .live-model {
   font-size: 11px; padding: 0;
   background: transparent;
   color: var(--text-mute);

@@ -94,6 +94,7 @@ ccqa run --changed --report                    # only specs whose relatedPaths t
 ## Commands
 
 ```
+ccqa init                          Scaffold .ccqa/prompts/{live,record}.{user,agent}.md templates
 ccqa draft [feature/spec]          Co-author a test spec with Claude
 ccqa perspectives                  Inventory existing test coverage into .ccqa/perspectives.yaml
 ccqa record <feature/spec>         (deterministic specs only) Trace browser actions + generate test.spec.ts
@@ -114,6 +115,7 @@ ccqa drift [feature/spec]          Standalone spec ↔ codebase static audit (fo
 - `--retry <n>` — (live specs only) retry each failing step up to N more times
 - `--format <fmt>` — `text` (default), `json` (report.json), `github` (Actions annotations)
 - `--out <dir>` — (live specs only, single-spec invocations) override the per-run artifact directory
+- `--update-agent-prompt` — (live specs only) after the run, summarise it back to Claude and rewrite `.ccqa/prompts/live.agent.md` so the next run inherits the lessons learned. `ccqa record` ships the same flag, refreshing `record.agent.md` from the trace summary.
 
 All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` | `haiku`, or a full model ID). The flag overrides `CCQA_MODEL`; when both are unset, the Claude Code CLI default is used. They also accept `--language <bcp47>` (e.g. `ja`, `en`) to set the language of human-readable output; the default `auto` follows the language of the spec/codebase. `--cwd <path>` works on `record` / `run` / `drift` so you can target a subpackage inside a monorepo from the repo root. Interactive commands authenticate via your local Claude Code login; commands that talk to Claude in CI (`ccqa run --report`, `ccqa drift`) additionally honor `ANTHROPIC_API_KEY`.
 
@@ -125,9 +127,11 @@ All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` 
 .ccqa/
   perspectives.yaml              # Inventory of existing coverage (machine-readable, canonical)
   perspectives.md                # Category index, regenerated from the YAML
-  prompts/
-    trace.user.md                # Project-specific guidance appended to `ccqa record` (trace phase)
-    run-nd.user.md               # Project-specific guidance appended to `ccqa run` (live specs)
+  prompts/                       # Run `ccqa init` to scaffold these
+    record.user.md               # Human-maintained guidance appended to `ccqa record` (trace phase)
+    record.agent.md              # Auto-updated by `ccqa record --update-agent-prompt`
+    live.user.md                 # Human-maintained guidance appended to `ccqa run` (live specs)
+    live.agent.md                # Auto-updated by `ccqa run --update-agent-prompt`
   blocks/
     login/
       spec.yaml                  # Reusable block (params + steps)
@@ -175,11 +179,16 @@ ccqa run --retry 2 tasks/create-and-complete
 
 Constraints on selectors / `agent-browser` subcommands that apply during `ccqa record` (no `eval`, no `@ref`, no bare-tag positional `find`, no chained agent-browser calls) are **relaxed** for live specs — Claude can use any subcommand and any selector style because there is no replay contract to honour.
 
-### Per-project guidance (`.ccqa/prompts/run-nd.user.md`)
+### Per-project guidance (`.ccqa/prompts/live.user.md` + `live.agent.md`)
 
-ccqa's live-mode system prompt is deliberately product-agnostic. Anything specific to **your** project — staging URLs, login flow quirks, rich-editor types, common access-denied wording — belongs in `.ccqa/prompts/run-nd.user.md`. The file is read once per invocation and appended to the system prompt under a "Project-specific guidance" heading.
+ccqa's live-mode system prompt is deliberately product-agnostic. Anything specific to **your** project — staging URLs, login flow quirks, rich-editor types, common access-denied wording — belongs in two sibling files (run `ccqa init` to scaffold both):
 
-Keep it short. A page or two of focused notes beats a long handbook — Claude has the spec's `expected` text to work from, the file is for the *non-obvious* product knowledge that isn't in any single spec. Examples of what's useful here:
+- `.ccqa/prompts/live.user.md` — human-maintained stable guidance.
+- `.ccqa/prompts/live.agent.md` — auto-updated by `ccqa run --update-agent-prompt` from each run's summary. You can hand-edit it, but the next `--update-agent-prompt` run may rewrite the whole file; durable rules should live in `live.user.md`.
+
+Both files (when present) are read once per invocation and appended to the system prompt under "Project-specific guidance". The `ccqa record` (trace) side has the same split: `record.user.md` + `record.agent.md`, refreshed by `ccqa record --update-agent-prompt`.
+
+Keep them short. A page or two of focused notes beats a long handbook — Claude has the spec's `expected` text to work from, these files are for the *non-obvious* product knowledge that isn't in any single spec. Examples of what's useful here:
 
 - "the rich text editor is `[contenteditable='true']` — use `fill`, not keystrokes"
 - "login redirects through an IDP service-selection screen; you can skip it by opening the destination URL directly"
@@ -189,9 +198,9 @@ Examples of what does **not** belong:
 
 - per-spec details (those belong in the spec's `instruction` / `expected`)
 - restating the STEP_RESULT contract (already in the system prompt)
-- copy-pasted style guidelines from `trace.user.md` (the relaxed-constraint mode doesn't need them)
+- copy-pasted style guidelines from `record.user.md` (the relaxed-constraint mode doesn't need them)
 
-The file is capped at 32 KiB; anything beyond that is truncated with a warning.
+The combined bundle is capped at 32 KiB; anything beyond that is truncated with a warning.
 
 ## License
 

@@ -1,11 +1,11 @@
-import { buildRunId } from "../runtime/nd-artifacts.ts";
+import { buildRunId } from "../runtime/live-artifacts.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
 
-export function generateRunNdSessionName(): string {
-  return `ccqa-run-nd-${buildRunId()}`;
+export function generateLiveSessionName(): string {
+  return `ccqa-live-${buildRunId()}`;
 }
 
-export interface RunNdSystemPromptPrefixInput {
+export interface LiveSystemPromptPrefixInput {
   title: string;
   /** All steps from the expanded spec, included for global context. */
   allSteps: ExpandedActionStep[];
@@ -13,10 +13,10 @@ export interface RunNdSystemPromptPrefixInput {
 }
 
 /**
- * Static prefix of the `ccqa run-nd` system prompt. Built once per run and
- * reused across every step's invocation — the only piece that changes per
- * step is the trailing "Your Task: <stepId>" section produced by
- * `buildRunNdSystemPromptStepSection`. Keeping the split here lets the prompt
+ * Static prefix of the `ccqa run` (live spec) system prompt. Built once per
+ * run and reused across every step's invocation — the only piece that
+ * changes per step is the trailing "Your Task: <stepId>" section produced by
+ * `buildLiveSystemPromptStepSection`. Keeping the split here lets the prompt
  * cache absorb the shared bulk and keeps each turn's prompt construction down
  * to a small string concat.
  *
@@ -25,16 +25,18 @@ export interface RunNdSystemPromptPrefixInput {
  * but never names a specific product, URL, account, role, or UI element.
  * Project-specific guidance ("the admin tenant is foo.example", "session
  * times out at X minutes", …) is appended from
- * `.ccqa/prompts/run-nd.user.md` by the caller, so ccqa stays clean of
- * downstream-product context.
+ * `.ccqa/prompts/live.user.md` (human-maintained) and
+ * `.ccqa/prompts/live.agent.md` (updated by `ccqa run --update-agent-prompt`)
+ * by the caller, so ccqa stays clean of downstream-product context.
  *
- * Constraint posture: `ccqa trace` enforces a strict selector whitelist and
- * blocks `eval` / `@ref` / chained agent-browser invocations because those
- * trace outputs need to replay deterministically. `run-nd` has no replay —
- * the model judges the step live — so those guards are off and the model is
- * told it may use any agent-browser subcommand and any selector strategy.
+ * Constraint posture: `ccqa record` (trace) enforces a strict selector
+ * whitelist and blocks `eval` / `@ref` / chained agent-browser invocations
+ * because those trace outputs need to replay deterministically. Live specs
+ * have no replay — the model judges the step live — so those guards are off
+ * and the model is told it may use any agent-browser subcommand and any
+ * selector strategy.
  */
-export function buildRunNdSystemPromptPrefix(input: RunNdSystemPromptPrefixInput): string {
+export function buildLiveSystemPromptPrefix(input: LiveSystemPromptPrefixInput): string {
   // The "Your Task: <stepId>" trailer below identifies the current step;
   // the all-steps block here is purely contextual (so the model knows what
   // came before and what's next), with no per-step marker.
@@ -112,7 +114,7 @@ Everything else you write (narrative, tool output summaries, etc.) is fine — o
 }
 
 /** Per-step trailer with the current step's instruction / expected. */
-export function buildRunNdSystemPromptStepSection(step: ExpandedActionStep): string {
+export function buildLiveSystemPromptStepSection(step: ExpandedActionStep): string {
   return `
 ## Your Task: ${step.id}
 
@@ -124,6 +126,6 @@ Execute the instruction in the running browser session, then judge whether the e
 }
 
 /** Per-turn user message — the system prompt already carries all spec context. */
-export function buildRunNdUserPrompt(step: ExpandedActionStep): string {
+export function buildLiveUserPrompt(step: ExpandedActionStep): string {
   return `Execute step ${step.id} and emit your STEP_RESULT verdict as instructed in the system prompt.`;
 }

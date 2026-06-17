@@ -303,61 +303,81 @@ export async function readBlockSpec(name: string, cwd?: string): Promise<BlockSp
   return parseBlockSpec(content, path);
 }
 
-const TRACE_USER_PROMPT_PATH = ".ccqa/prompts/trace.user.md";
-const RUN_ND_USER_PROMPT_PATH = ".ccqa/prompts/run-nd.user.md";
+const RECORD_USER_PROMPT_PATH = ".ccqa/prompts/record.user.md";
+const RECORD_AGENT_PROMPT_PATH = ".ccqa/prompts/record.agent.md";
+const LIVE_USER_PROMPT_PATH = ".ccqa/prompts/live.user.md";
+const LIVE_AGENT_PROMPT_PATH = ".ccqa/prompts/live.agent.md";
 const USER_PROMPT_MAX_BYTES = 32_768;
 
-/**
- * Load project-specific guidance to append to the trace system prompt.
- *
- * Returns the file's contents (trimmed) when `.ccqa/prompts/trace.user.md`
- * exists and is non-empty. Missing file, empty file, or read error all
- * resolve to `null` so callers can treat the override as strictly optional.
- *
- * The file is meant for organisation-specific rules that don't belong in
- * the OSS-default prompt — naming conventions, staging URL hints, repeated
- * UI quirks that recur across specs. Anything that genuinely belongs in
- * one spec should go in that spec's instruction, not here.
- *
- * Size-capped at 32 KiB to keep accidental commits of huge files from
- * blowing up the system prompt; the cap is observable to callers as a
- * truncated warning suffix.
- */
-export async function loadTraceUserPrompt(cwd?: string): Promise<string | null> {
-  return loadUserPromptFile(TRACE_USER_PROMPT_PATH, cwd, "trace.user.md");
+export interface PromptBundle {
+  /** Final concatenated string to append after the system prompt prefix, or null when nothing was loaded. */
+  text: string;
+  /** Files actually read (for logging). */
+  loaded: string[];
 }
 
 /**
- * Load project-specific guidance to append to the `ccqa run-nd` system prompt.
+ * Load the prompt bundle appended to the `ccqa record` (trace) system prompt.
  *
- * Same shape as `loadTraceUserPrompt`, but reads from
- * `.ccqa/prompts/run-nd.user.md`. The non-deterministic test mode delegates
- * every step to Claude live, so anything that helps Claude do that job for a
- * particular product — domain glossary, staging URL conventions, known
- * "this is fine" warnings, login flow quirks — belongs here. Keeping it in the
+ * Reads `.ccqa/prompts/record.user.md` (human-maintained, stable project
+ * rules) and `.ccqa/prompts/record.agent.md` (auto-rewritten by
+ * `ccqa record --update-agent-prompt`). Returns null when both files are
+ * missing / empty. The combined text is capped at 32 KiB after concatenation.
+ *
+ * Use `ccqa init` to scaffold both files.
+ */
+export async function loadRecordPromptBundle(cwd?: string): Promise<PromptBundle | null> {
+  return loadPromptBundle(RECORD_USER_PROMPT_PATH, RECORD_AGENT_PROMPT_PATH, cwd);
+}
+
+/**
+ * Load the prompt bundle appended to the `ccqa run` (live mode) system prompt.
+ *
+ * Reads `.ccqa/prompts/live.user.md` (human-maintained, stable project
+ * rules) and `.ccqa/prompts/live.agent.md` (auto-rewritten by
+ * `ccqa run --update-agent-prompt`). Same null / cap semantics as
+ * `loadRecordPromptBundle`. Keeping product-specific context in the
  * consuming repo (not the ccqa OSS prompt) is the explicit non-contamination
- * boundary: ccqa stays product-agnostic, projects can layer in whatever
- * context they need.
+ * boundary.
  */
-export async function loadRunNdUserPrompt(cwd?: string): Promise<string | null> {
-  return loadUserPromptFile(RUN_ND_USER_PROMPT_PATH, cwd, "run-nd.user.md");
+export async function loadLivePromptBundle(cwd?: string): Promise<PromptBundle | null> {
+  return loadPromptBundle(LIVE_USER_PROMPT_PATH, LIVE_AGENT_PROMPT_PATH, cwd);
 }
 
-async function loadUserPromptFile(
-  relPath: string,
+async function loadPromptBundle(
+  userRelPath: string,
+  agentRelPath: string,
   cwd: string | undefined,
-  labelForTruncation: string,
-): Promise<string | null> {
+): Promise<PromptBundle | null> {
+  const [userText, agentText] = await Promise.all([
+    readPromptFile(userRelPath, cwd),
+    readPromptFile(agentRelPath, cwd),
+  ]);
+  if (userText === null && agentText === null) return null;
+  const sections: string[] = [];
+  const loaded: string[] = [];
+  if (userText !== null) {
+    sections.push(`### Project guidance (human-maintained)\n\n${userText}`);
+    loaded.push(userRelPath);
+  }
+  if (agentText !== null) {
+    sections.push(`### Agent learnings (auto-updated by ccqa --update-agent-prompt)\n\n${agentText}`);
+    loaded.push(agentRelPath);
+  }
+  let text = sections.join("\n\n");
+  if (text.length > USER_PROMPT_MAX_BYTES) {
+    text = text.slice(0, USER_PROMPT_MAX_BYTES) +
+      `\n\n[ccqa] (prompt bundle truncated at ${USER_PROMPT_MAX_BYTES} bytes)`;
+  }
+  return { text, loaded };
+}
+
+async function readPromptFile(relPath: string, cwd: string | undefined): Promise<string | null> {
   const path = join(cwd ?? process.cwd(), relPath);
   const content = await readFile(path, "utf-8").catch(() => null);
   if (content === null) return null;
   const trimmed = content.trim();
-  if (trimmed.length === 0) return null;
-  if (trimmed.length > USER_PROMPT_MAX_BYTES) {
-    return trimmed.slice(0, USER_PROMPT_MAX_BYTES) +
-      `\n\n[ccqa] (${labelForTruncation} truncated at ${USER_PROMPT_MAX_BYTES} bytes)`;
-  }
-  return trimmed;
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 /**
@@ -420,9 +440,9 @@ export async function listAllSpecs(cwd?: string): Promise<Array<{ featureName: s
 
 /**
  * Variant of `listAllSpecs` for callers that care about the spec definition
- * itself (spec.yaml) rather than its compiled vitest script. `ccqa run-nd`
- * uses this because it skips codegen entirely — a freshly drafted spec with
- * no `test.spec.ts` is still a valid target.
+ * itself (spec.yaml) rather than its compiled vitest script. `ccqa run` uses
+ * this for live-mode specs because they skip codegen entirely — a freshly
+ * drafted spec with no `test.spec.ts` is still a valid target.
  */
 export async function listAllSpecsWithSpecFile(cwd?: string): Promise<Array<{ featureName: string; specName: string }>> {
   return listAllSpecsFilteredBy(SPEC_FILE, cwd);
@@ -454,10 +474,10 @@ async function listAllSpecsFilteredBy(
 }
 
 /**
- * Resolve a CLI `<target>` argument into a list of spec refs. Shared between
- * `ccqa run` and `ccqa run-nd`. Callers pass the right enumerator for "no
- * target" (run wants `test.spec.ts`-having specs; run-nd wants `spec.yaml`-
- * having specs).
+ * Resolve a CLI `<target>` argument into a list of spec refs. Used by
+ * `ccqa run`. Callers pass the right enumerator for "no target" (deterministic
+ * specs want `test.spec.ts`-having specs; live specs want `spec.yaml`-having
+ * specs).
  */
 export async function resolveSpecTargets(
   target: string | undefined,

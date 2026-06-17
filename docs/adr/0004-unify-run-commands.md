@@ -5,7 +5,7 @@
 
 ## Context and problem statement
 
-The pre-0.8 CLI shipped four execution-flavoured commands (`trace`, `generate`, `run`, `run-nd`) with overlapping flags (`--drift-report`, `--report-dir`, `--drift-base`, `--session`, `--auto`, `--no-interactive`) whose intent was not obvious from the name. Two separate workflows existed in users' heads — "deterministic" (`trace + generate + run`) and "non-deterministic" (`run-nd`) — but the commands didn't reflect that grouping. Issue #49 raised that this surface was wide enough to be a friction point on its own, and Issue #47 surfaced that ND-mode failures had no root-cause classification (the existing `analyzeFailure` was tied to the deterministic script + vitest log pair).
+The pre-0.8 CLI shipped four execution-flavoured commands (`trace`, `generate`, `run`, and a "non-deterministic" `run-nd`) with overlapping flags (`--drift-report`, `--report-dir`, `--drift-base`, `--session`, `--auto`, `--no-interactive`) whose intent was not obvious from the name. Two separate workflows existed in users' heads — "deterministic" (`trace + generate + run`) and "live" (the `run-nd` flow) — but the commands didn't reflect that grouping. Issue #49 raised that this surface was wide enough to be a friction point on its own, and Issue #47 surfaced that ND-mode failures had no root-cause classification (the existing `analyzeFailure` was tied to the deterministic script + vitest log pair).
 
 ## Considered options
 
@@ -39,7 +39,7 @@ This is a breaking change. No alias period — the user base is small enough tha
 - Good: the mode is declared once with the spec, so CI configs and shell scripts never need to know it. A project that mixes both modes runs them in one `ccqa run` invocation and gets one report.
 - Good: one failure analyser feeds the report regardless of mode; flag names are consistent (`--base`, `--cwd`, `--report`, `--format`) across `run` and `drift`.
 - Good: ND failures now get the same root-cause classification deterministic runs already had, so the report's accuracy panel is meaningful in both modes.
-- Bad / cost: existing users must rewrite scripts (`ccqa generate X` → `ccqa record X --skip-trace`; `ccqa run --drift-report` → `ccqa run --report`) and add `mode: live` to spec.yaml files that previously used `run-nd`.
+- Bad / cost: existing users must rewrite scripts (`ccqa generate X` → `ccqa record X --skip-trace`; `ccqa run --drift-report` → `ccqa run --report`) and add `mode: live` to spec.yaml files that previously relied on the old `run-nd` command.
 - Follow-up: doc the migration in the v0.8.0 release notes; consider deeper integration between record's trace and codegen halves in a later issue.
 
 ### Confirmation
@@ -55,6 +55,10 @@ This is a breaking change. No alias period — the user base is small enough tha
 - `src/cli/run.ts` — per-spec dispatcher.
 - `src/cli/spec-mode.ts` — reads `mode:` from spec.yaml.
 - `src/cli/record.ts` — combined trace + generate.
-- `src/cli/run-nd.ts` — live-spec runner (kept as a module; not exported as a CLI command).
+- `src/cli/run-live.ts` — live-spec runner (kept as a module; not exported as a CLI command).
 - `src/report/prompt.ts` — generalised `FailureAnalysisPromptInput` and prompt version 4.
-- `src/report/nd-transcript-excerpt.ts` — live-mode transcript summariser.
+- `src/report/live-transcript-excerpt.ts` — live-mode transcript summariser.
+
+### Update (v0.9.0)
+
+The original implementation kept the user-facing name `live` (in spec.yaml `mode: live` and in the HTML report's `LIVE` badge) but left the internal `run-nd` / `Nd*` identifiers from the pre-0.8 codebase wherever they sat. v0.9.0 finishes that rename: every internal `RunNd*` / `Nd*` / `nd-*` identifier and file name is now `Live*` / `live-*`, including `src/cli/run-nd.ts` → `src/cli/run-live.ts`, `src/runtime/nd-executor.ts` → `src/runtime/live-executor.ts`, the session-name prefix `ccqa-run-nd-` → `ccqa-live-`, and the report schema field `ndRun` → `liveRun`. Alongside the rename, `.ccqa/prompts/trace.user.md` and `run-nd.user.md` are split into a 4-file bundle — `record.user.md` + `record.agent.md` (for `ccqa record`) and `live.user.md` + `live.agent.md` (for `ccqa run` in live mode) — with a new `--update-agent-prompt` flag on `record` and `run` that asks Claude to rewrite the `*.agent.md` half from the just-completed run's summary. `ccqa init` scaffolds all four files. Spec.yaml `mode:` values are unchanged — the user-facing API stays as is.

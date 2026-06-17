@@ -40,7 +40,7 @@ export interface ClaudeInvokeOptions {
    * all bypassed. `extractAbActionFromBashCommand` is also skipped because the
    * caller is not building a replayable AB_ACTION stream.
    *
-   * Used by `ccqa run-nd` (non-deterministic test mode), where Claude needs
+   * Used by `ccqa run` against `mode: live` specs, where Claude needs
    * free-form DOM exploration and judges pass/fail per spec step rather than
    * recording structured actions. Default false preserves trace-mode behaviour
    * byte-for-byte.
@@ -265,7 +265,7 @@ export async function invokeClaudeStreaming(
   // The SDK throws (rather than emitting a `result` message) when the Claude
   // Code subprocess exits with a non-success terminal state (max-turn budget
   // exhausted, internal SDK error, etc). Treat that as an analyzable failure
-  // so callers (failure analysis, drift audit, run-nd executor) can degrade
+  // so callers (failure analysis, drift audit, live executor) can degrade
   // gracefully instead of crashing the whole run.
   try {
     for await (const msg of q) {

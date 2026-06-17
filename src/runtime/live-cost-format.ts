@@ -1,6 +1,6 @@
-import type { NdRunResult } from "./nd-executor.ts";
+import type { LiveRunResult } from "./live-executor.ts";
 
-type Cost = NdRunResult["cost"];
+type Cost = LiveRunResult["cost"];
 
 /**
  * Compact one-line cost summary. Format:
@@ -11,7 +11,7 @@ type Cost = NdRunResult["cost"];
  * `model=...` segment. `compact: true` (HTML chip) thousand-separates fresh
  * tokens, abbreviates cache-read with K/M, drops the `model=` prefix.
  */
-export function formatNdCost(cost: Cost, options: { compact: boolean }): string | null {
+export function formatLiveCost(cost: Cost, options: { compact: boolean }): string | null {
   if (cost.totalCostUsd === null) return null;
   const compact = options.compact;
   const sep = compact ? " · " : " / ";
@@ -41,7 +41,7 @@ export function formatNdCost(cost: Cost, options: { compact: boolean }): string 
  * Sum of per-spec costs for a batch. Used only by the CLI batch summary.
  * Returns null when no spec has cost data.
  */
-export function formatNdBatchCost(costs: readonly Cost[]): string | null {
+export function formatLiveBatchCost(costs: readonly Cost[]): string | null {
   let totalUsd = 0;
   let seen = false;
   let totalIn = 0;

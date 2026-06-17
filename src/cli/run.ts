@@ -37,7 +37,8 @@ import { ReportEvidenceSchema, type ReportEvidence, type ReportSpecResult, type 
 import { addLanguageOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveSpecsModes } from "./spec-mode.ts";
-import { runLiveSpecs, type RunNdOptions } from "./run-nd.ts";
+import { runLiveSpecs, type RunLiveOptions } from "./run-live.ts";
+import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import { collectChangedSpecs } from "./changed-specs.ts";
 import * as log from "./logger.ts";
 
@@ -109,6 +110,7 @@ export interface RunOptions {
   retry?: number;
   out?: string;
   changed?: boolean;
+  updateAgentPrompt?: boolean;
 }
 
 export const runCommand = addLanguageOption(
@@ -176,6 +178,10 @@ export const runCommand = addLanguageOption(
     .option(
       "--out <dir>",
       "(live only) Override the per-spec artifact directory. Default: <specDir>/runs/<runId>. Ignored when running multiple specs.",
+    )
+    .option(
+      "--update-agent-prompt",
+      "(live only) After the run finishes, ask Claude to refresh .ccqa/prompts/live.agent.md from a summary of the run.",
     ),
 ).action(async (target: string | undefined, opts: RunOptions) => {
   await runDispatcher(target, opts);
@@ -230,6 +236,7 @@ async function runDispatcher(target: string | undefined, opts: RunOptions): Prom
   if (liveSpecs.length === 0) {
     if (typeof opts.retry === "number" && opts.retry > 0) log.warn("--retry is ignored without any 'mode: live' spec");
     if (opts.out) log.warn("--out is ignored without any 'mode: live' spec");
+    if (opts.updateAgentPrompt) log.warn("--update-agent-prompt is ignored without any 'mode: live' spec");
   }
   if (detSpecs.length === 0 && opts.evidence === false) {
     log.warn("--no-evidence is ignored without any 'mode: deterministic' spec");
@@ -243,7 +250,7 @@ async function runDispatcher(target: string | undefined, opts: RunOptions): Prom
 
   const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDirForEvidence);
 
-  const ndOpts: RunNdOptions = {
+  const liveOpts: RunLiveOptions = {
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
     ...(opts.out ? { out: opts.out } : {}),
@@ -254,7 +261,7 @@ async function runDispatcher(target: string | undefined, opts: RunOptions): Prom
     ...(reportDir && opts.driftAudit !== false ? { driftAudit: true } : {}),
     ...(reportDir && opts.failureAnalysis === false ? { failureAnalysis: false } : {}),
   };
-  const live = await runLiveSpecs(liveSpecs, ndOpts);
+  const live = await runLiveSpecs(liveSpecs, liveOpts);
 
   let overallExitCode = det.exitCode;
   if (live.failedCount > 0 && overallExitCode === 0) overallExitCode = 1;
@@ -275,7 +282,44 @@ async function runDispatcher(target: string | undefined, opts: RunOptions): Prom
     });
   }
 
+  // "ignored without any 'mode: live' spec" already warned upfront alongside
+  // the other live-only flags.
+  if (opts.updateAgentPrompt && liveSpecs.length > 0) {
+    log.blank();
+    await updateAgentPrompt({
+      mode: "live",
+      runSummary: buildLiveRunSummary(live.reportResults),
+      cwd,
+      ...(opts.model ? { model: opts.model } : {}),
+      ...(opts.language ? { language: opts.language } : {}),
+    });
+  }
+
   process.exit(overallExitCode);
+}
+
+/**
+ * Compact, prompt-friendly summary of one ccqa run for the live agent-prompt
+ * update step. One section per spec: header line + per-step verdicts.
+ * Kept to a few KB even with many specs/steps so the prompt cache can absorb
+ * the bulk.
+ */
+function buildLiveRunSummary(results: readonly ReportSpecResult[]): string {
+  const sections: string[] = [];
+  for (const r of results) {
+    if (!r.liveRun) continue;
+    const head = `## ${r.feature}/${r.spec} — ${r.status}`;
+    const steps = r.liveRun.steps
+      .map((s) => `- [${s.status}] ${s.stepId}: ${oneLineSummary(s.reasoning)}`)
+      .join("\n");
+    sections.push(`${head}\n${steps}`);
+  }
+  return sections.length === 0 ? "(no live runs executed)" : sections.join("\n\n");
+}
+
+function oneLineSummary(s: string): string {
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > 240 ? flat.slice(0, 240) + "…" : flat || "(no reason given)";
 }
 
 type RunDeterministicResult = {
@@ -494,7 +538,7 @@ async function analyzeDeterministicSummaries(
         failureLogExcerpt: null,
         diffExcerpt: null,
         specYaml: null,
-        ndRun: null,
+        liveRun: null,
       });
       continue;
     }
@@ -563,7 +607,7 @@ async function analyzeDeterministicSummaries(
       failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
       diffExcerpt,
       specYaml,
-      ndRun: null,
+      liveRun: null,
     });
   }
 

@@ -9,24 +9,24 @@ import { driftAuthAvailable } from "../drift/auth.ts";
 import { resolveBaseRef } from "../drift/affected.ts";
 import { capturePrDiff, type PrDiffResult } from "../report/diff.ts";
 import { analyzeFailure } from "../report/analyze.ts";
-import { buildNdTranscriptExcerpt } from "../report/nd-transcript-excerpt.ts";
+import { buildLiveTranscriptExcerpt } from "../report/live-transcript-excerpt.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import {
   getSpecDir,
   loadAllBlocks,
   loadAvailableBlocks,
-  loadRunNdUserPrompt,
+  loadLivePromptBundle,
   readSpecFile,
 } from "../store/index.ts";
-import { buildRunId } from "../runtime/nd-artifacts.ts";
-import { formatNdBatchCost, formatNdCost } from "../runtime/nd-cost-format.ts";
-import { runNdExecutor, type NdRunResult, type NdStepResult } from "../runtime/nd-executor.ts";
-import { generateRunNdSessionName } from "../prompts/run-nd.ts";
-import { ndRunToReportResult } from "../report/nd-adapter.ts";
+import { buildRunId } from "../runtime/live-artifacts.ts";
+import { formatLiveBatchCost, formatLiveCost } from "../runtime/live-cost-format.ts";
+import { runLiveExecutor, type LiveRunResult, type LiveStepResult } from "../runtime/live-executor.ts";
+import { generateLiveSessionName } from "../prompts/live.ts";
+import { liveRunToReportResult } from "../report/live-adapter.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 
-export interface RunNdOptions {
+export interface RunLiveOptions {
   model?: string;
   language?: string;
   out?: string;
@@ -46,13 +46,13 @@ export type LiveSpecRun = {
 };
 
 /**
- * Run pre-filtered `mode: live` specs through `runNdExecutor` (Claude +
+ * Run pre-filtered `mode: live` specs through `runLiveExecutor` (Claude +
  * agent-browser) and, when `reportDir` is set, run drift audit + failure
  * analysis to produce report rows. Sibling of `runDeterministicSpecs`.
  */
 export async function runLiveSpecs(
   specs: readonly { featureName: string; specName: string }[],
-  opts: RunNdOptions,
+  opts: RunLiveOptions,
 ): Promise<LiveSpecRun> {
   if (specs.length === 0) return { reportResults: [], failedCount: 0 };
 
@@ -61,8 +61,11 @@ export async function runLiveSpecs(
 
   log.meta("live-specs", specs.length);
 
-  const userPromptSuffix = await loadRunNdUserPrompt(cwd);
-  if (userPromptSuffix !== null) log.meta("user-prompt", ".ccqa/prompts/run-nd.user.md");
+  const userPromptBundle = await loadLivePromptBundle(cwd);
+  if (userPromptBundle !== null) {
+    log.meta("user-prompt", userPromptBundle.loaded.join(" + "));
+  }
+  const userPromptSuffix = userPromptBundle?.text ?? null;
 
   // Fresh agent-browser session per spec so Chrome state doesn't bleed across.
   const runs: SpecRunOutcome[] = [];
@@ -118,7 +121,7 @@ function buildLiveReportResults(
   return runs.flatMap((r) => {
     if (r.kind !== "run") return [];
     const key = `${r.featureName}/${r.specName}`;
-    const base = ndRunToReportResult({
+    const base = liveRunToReportResult({
       featureName: r.featureName,
       specName: r.specName,
       specYaml: r.specYaml,
@@ -160,11 +163,11 @@ function analysisFieldsFor(
 /**
  * Run `analyzeDrift` against every successfully-loaded spec and return a
  * `featureName/specName → driftIssues` map. Drift findings are advisory —
- * they show in the HTML report but do not change the run-nd exit code.
+ * they show in the HTML report but do not change the live-run exit code.
  */
 async function runDriftAudit(
   runs: SpecRunOutcome[],
-  opts: RunNdOptions,
+  opts: RunLiveOptions,
   cwd: string,
 ): Promise<Map<string, ReportSpecResult["driftIssues"]>> {
   const targets = runs
@@ -203,7 +206,7 @@ type SpecRunOutcome =
       specName: string;
       runDir: string;
       specYaml: string;
-      result: NdRunResult;
+      result: LiveRunResult;
     }
   | {
       kind: "error";
@@ -215,7 +218,7 @@ type SpecRunOutcome =
 async function runOneSpec(args: {
   featureName: string;
   specName: string;
-  opts: RunNdOptions;
+  opts: RunLiveOptions;
   userPromptSuffix: string | null;
   cwd: string;
 }): Promise<SpecRunOutcome> {
@@ -239,7 +242,7 @@ async function runOneSpec(args: {
   const includes = collectIncludedBlockNames(spec);
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
 
-  const sessionName = generateRunNdSessionName();
+  const sessionName = generateLiveSessionName();
   log.meta("session", sessionName);
 
   const runId = buildRunId();
@@ -247,7 +250,7 @@ async function runOneSpec(args: {
   await mkdir(runDir, { recursive: true });
   log.meta("runDir", runDir);
 
-  const result = await runNdExecutor({
+  const result = await runLiveExecutor({
     spec: { title: spec.title },
     steps: expanded,
     runId,
@@ -270,7 +273,7 @@ async function runOneSpec(args: {
     "step-summary",
     `${count(result.steps, "passed")} passed / ${count(result.steps, "failed")} failed / ${count(result.steps, "skipped")} skipped`,
   );
-  const costLine = formatNdCost(result.cost, { compact: false });
+  const costLine = formatLiveCost(result.cost, { compact: false });
   if (costLine) log.meta("cost", costLine);
 
   return {
@@ -285,7 +288,7 @@ async function runOneSpec(args: {
 
 function logBatchCost(runs: SpecRunOutcome[]): void {
   const costs = runs.flatMap((r) => (r.kind === "run" ? [r.result.cost] : []));
-  const line = formatNdBatchCost(costs);
+  const line = formatLiveBatchCost(costs);
   if (line) log.meta("total-cost", line);
 }
 
@@ -304,7 +307,7 @@ type LiveFailureAnalysis = {
 async function runFailureAnalysisForLiveRuns(
   runs: SpecRunOutcome[],
   driftBySpec: Map<string, ReportSpecResult["driftIssues"]>,
-  opts: RunNdOptions,
+  opts: RunLiveOptions,
   cwd: string,
 ): Promise<Map<string, LiveFailureAnalysis>> {
   const out = new Map<string, LiveFailureAnalysis>();
@@ -338,7 +341,7 @@ async function runFailureAnalysisForLiveRuns(
   for (const r of failed) {
     const key = `${r.featureName}/${r.specName}`;
     log.info(`failure analysis: ${key}`);
-    const excerpt = await buildNdTranscriptExcerpt(r.result);
+    const excerpt = await buildLiveTranscriptExcerpt(r.result);
     if (excerpt === null) {
       out.set(key, {
         analysis: null,
@@ -350,7 +353,7 @@ async function runFailureAnalysisForLiveRuns(
     }
     const outcome = await analyzeFailure(
       {
-        ndTranscriptExcerpt: excerpt,
+        liveTranscriptExcerpt: excerpt,
         specYaml: r.specYaml,
         diffPatch: diff.ok ? diff.diff.patch : null,
         changedFiles: diff.ok ? diff.diff.nameStatus : null,
@@ -373,11 +376,11 @@ async function runFailureAnalysisForLiveRuns(
   return out;
 }
 
-function count(steps: NdStepResult[], target: NdStepResult["status"]): number {
+function count(steps: LiveStepResult[], target: LiveStepResult["status"]): number {
   return steps.filter((s) => s.status === target).length;
 }
 
-function renderRunMarkdown(featureName: string, specName: string, result: NdRunResult): string {
+function renderRunMarkdown(featureName: string, specName: string, result: LiveRunResult): string {
   const head = [
     `# live run: ${featureName}/${specName}`,
     "",
@@ -410,4 +413,3 @@ function renderRunMarkdown(featureName: string, specName: string, result: NdRunR
 function oneLine(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
-

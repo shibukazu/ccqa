@@ -9,7 +9,7 @@ import {
 
 /**
  * Shared startup steps for every command that drives a real `agent-browser`
- * (currently `ccqa trace` and `ccqa run-nd`):
+ * (currently `ccqa record` (trace) and `ccqa run` (live mode)):
  *
  *   1. Verify the peer-installed agent-browser binary is reachable. On
  *      failure print the standard guidance and `process.exit(1)`; on

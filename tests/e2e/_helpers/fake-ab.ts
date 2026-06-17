@@ -43,7 +43,7 @@ if (logPath) {
     appendFileSync(logPath, JSON.stringify(argv) + "\\n");
   } catch {}
 }
-// run-nd takes per-step PNG screenshots via \`agent-browser ... screenshot <path>\`.
+// Live mode takes per-step PNG screenshots via \`agent-browser ... screenshot <path>\`.
 // In the e2e harness the real Chrome isn't available, so write a 1x1 PNG to the
 // requested path so the executor sees \`before.ok / after.ok\` true and the
 // renderer can link to a file that actually exists.

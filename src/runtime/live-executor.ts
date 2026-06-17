@@ -7,13 +7,13 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import * as log from "../cli/logger.ts";
 import { languageDirective } from "../prompts/language.ts";
 import {
-  buildRunNdSystemPromptPrefix,
-  buildRunNdSystemPromptStepSection,
-  buildRunNdUserPrompt,
-} from "../prompts/run-nd.ts";
+  buildLiveSystemPromptPrefix,
+  buildLiveSystemPromptStepSection,
+  buildLiveUserPrompt,
+} from "../prompts/live.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
-import { stepArtifactPaths } from "./nd-artifacts.ts";
-import { findLastStepResult } from "./nd-result-parse.ts";
+import { stepArtifactPaths } from "./live-artifacts.ts";
+import { findLastStepResult } from "./live-result-parse.ts";
 import { takeScreenshot } from "./screenshot.ts";
 
 /**
@@ -24,7 +24,7 @@ import { takeScreenshot } from "./screenshot.ts";
  * All fields are `null` when the SDK didn't emit a `result` message for the
  * step (e.g. the run was interrupted or the mock replay shim was used).
  */
-export interface NdStepCost {
+export interface LiveStepCost {
   totalCostUsd: number | null;
   durationApiMs: number | null;
   numTurns: number | null;
@@ -36,7 +36,7 @@ export interface NdStepCost {
   models: string[];
 }
 
-export interface NdStepResult {
+export interface LiveStepResult {
   stepId: string;
   source: string;
   instruction: string;
@@ -47,7 +47,7 @@ export interface NdStepResult {
   afterPng: string | null;
   logTxt: string | null;
   durationMs: number;
-  cost: NdStepCost;
+  cost: LiveStepCost;
 }
 
 /**
@@ -55,7 +55,7 @@ export interface NdStepResult {
  * `null` when no step produced an SDK `result` message at all (typically a
  * test fixture).
  */
-export interface NdRunCost {
+export interface LiveRunCost {
   totalCostUsd: number | null;
   durationApiMs: number | null;
   numTurns: number | null;
@@ -67,17 +67,17 @@ export interface NdRunCost {
   models: string[];
 }
 
-export interface NdRunResult {
+export interface LiveRunResult {
   runId: string;
   status: "passed" | "failed";
   sessionName: string;
   startedAt: string;
   durationMs: number;
-  steps: NdStepResult[];
-  cost: NdRunCost;
+  steps: LiveStepResult[];
+  cost: LiveRunCost;
 }
 
-export interface RunNdExecutorInput {
+export interface RunLiveExecutorInput {
   spec: { title: string };
   steps: ExpandedActionStep[];
   runId: string;
@@ -96,8 +96,8 @@ export interface RunNdExecutorInput {
 }
 
 /**
- * Run all spec steps once through Claude (non-deterministic mode). Each step
- * is one Claude invocation that:
+ * Run all spec steps once through Claude (live mode). Each step is one Claude
+ * invocation that:
  *   1. takes a "before" screenshot of the live session
  *   2. lets Claude execute the step's instruction via agent-browser (full
  *      surface, no replay-time selector constraints)
@@ -108,9 +108,9 @@ export interface RunNdExecutorInput {
  * the overall run status flips to `failed`. The Chrome session persists
  * across steps so step N+1 starts on whatever page step N left the browser on.
  */
-export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunResult> {
+export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<LiveRunResult> {
   const startedAt = new Date();
-  const stepResults: NdStepResult[] = [];
+  const stepResults: LiveStepResult[] = [];
   let overallFailed = false;
 
   // Hoisted out of the loop: the system prompt's static prefix (everything
@@ -118,7 +118,7 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
   // change per step. Computing them once avoids both per-step filesystem
   // walks (resolveAgentBrowserBinDir → statSync up the tree) and per-step
   // ~5 KB string rebuilds of the full allSteps block.
-  const promptPrefix = buildRunNdSystemPromptPrefix({
+  const promptPrefix = buildLiveSystemPromptPrefix({
     title: input.spec.title,
     allSteps: input.steps,
     sessionName: input.sessionName,
@@ -145,8 +145,8 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
     await ensureDir(paths.beforePng);
     const stepStartedAt = Date.now();
     const systemPrompt =
-      promptPrefix + buildRunNdSystemPromptStepSection(step) + suffixBlock + langDirective;
-    const userPrompt = buildRunNdUserPrompt(step);
+      promptPrefix + buildLiveSystemPromptStepSection(step) + suffixBlock + langDirective;
+    const userPrompt = buildLiveUserPrompt(step);
 
     let attempt = 0;
     let lastOutcome: StepAttemptOutcome | null = null;
@@ -194,7 +194,7 @@ export async function runNdExecutor(input: RunNdExecutorInput): Promise<NdRunRes
 
     const transcriptParts: string[] = [];
     let isError = false;
-    let cost: NdStepCost = emptyStepCost();
+    let cost: LiveStepCost = emptyStepCost();
     try {
       const result = await invokeClaudeStreaming(
         {
@@ -270,10 +270,10 @@ interface StepAttemptOutcome {
   reasoning: string;
   beforePng: string | null;
   afterPng: string | null;
-  cost: NdStepCost;
+  cost: LiveStepCost;
 }
 
-function emptyStepCost(): NdStepCost {
+function emptyStepCost(): LiveStepCost {
   return {
     totalCostUsd: null,
     durationApiMs: null,
@@ -292,8 +292,8 @@ function emptyStepCost(): NdStepCost {
  * was null on every step stays null (instead of collapsing to 0, which would
  * hide "we never got SDK telemetry" from the report).
  */
-function sumStepCosts(steps: NdStepResult[]): NdRunCost {
-  const sum = (pick: (c: NdStepCost) => number | null): number | null => {
+function sumStepCosts(steps: LiveStepResult[]): LiveRunCost {
+  const sum = (pick: (c: LiveStepCost) => number | null): number | null => {
     let total = 0;
     let seen = false;
     for (const s of steps) {
@@ -355,7 +355,7 @@ function judgeStepOutcome({ step, isError, judged }: JudgeInput): {
   return { status, reasoning };
 }
 
-function buildSkippedStep(step: ExpandedActionStep, reason: string): NdStepResult {
+function buildSkippedStep(step: ExpandedActionStep, reason: string): LiveStepResult {
   return {
     stepId: step.id,
     source: step.source,

@@ -21,7 +21,7 @@ function passedResult(spec: string): ReportSpecResult {
     diffExcerpt: null,
     specYaml: null,
     evidence: null,
-    ndRun: null,
+    liveRun: null,
   };
 }
 
@@ -60,7 +60,7 @@ function failedResult(spec: string, overrides: Partial<ReportSpecResult> = {}): 
     diffExcerpt: "diff --git a/src/app.tsx b/src/app.tsx",
     specYaml: "title: complete a task",
     evidence: null,
-    ndRun: null,
+    liveRun: null,
     ...overrides,
   };
 }
@@ -205,8 +205,8 @@ describe("renderRunReport", () => {
     expect(html).toContain('src="evidence/tasks/complete/step-01.png"');
     expect(html).toContain("Redirected to /dashboard, user avatar visible in the header");
     // Det step adopts the same per-step card UI as live runs.
-    expect(html).toContain("nd-step");
-    expect(html).toContain("nd-shots");
+    expect(html).toContain("live-step");
+    expect(html).toContain("live-shots");
     // Footer shows labelled rows so reviewers don't have to guess what they're looking at.
     expect(html).toContain(">URL<");
     expect(html).toContain(">Page<");
@@ -252,11 +252,11 @@ describe("renderRunReport", () => {
         },
       ]),
     );
-    // Each step is its own nd-step card (live UI), with passed/failed wiring.
-    expect(html).toContain('nd-step passed');
-    expect(html).toContain('nd-step failed');
+    // Each step is its own live-step card (live UI), with passed/failed wiring.
+    expect(html).toContain('live-step passed');
+    expect(html).toContain('live-step failed');
     // Failure summary surfaces in the per-step reasoning slot.
-    expect(html).toContain("nd-reasoning");
+    expect(html).toContain("live-reasoning");
     expect(html).toContain("expected &#39;Saved&#39; to be visible");
     // Failed step keeps its spec.yaml expected as the main caption line.
     expect(html).toContain("Detail page shows the row I clicked");

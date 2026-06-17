@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { buildRunId, stepArtifactPaths } from "./nd-artifacts.ts";
+import { buildRunId, stepArtifactPaths } from "./live-artifacts.ts";
 
 describe("buildRunId", () => {
   test("returns a filename-safe ISO8601 stamp", () => {

@@ -31,7 +31,7 @@ function sampleData(): RunReportData {
         diffExcerpt: null,
         specYaml: null,
         evidence: null,
-        ndRun: null,
+        liveRun: null,
       },
       {
         feature: "tasks",
@@ -76,7 +76,7 @@ function sampleData(): RunReportData {
             failureSummary: null,
           },
         ],
-        ndRun: null,
+        liveRun: null,
       },
     ],
   };

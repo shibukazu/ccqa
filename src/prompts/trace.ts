@@ -1,4 +1,4 @@
-import { buildRunId } from "../runtime/nd-artifacts.ts";
+import { buildRunId } from "../runtime/live-artifacts.ts";
 
 export function generateSessionName(): string {
   return `ccqa-trace-${buildRunId()}`;
