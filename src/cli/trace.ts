@@ -85,7 +85,7 @@ export async function runTrace(
     sessionName,
   });
   const promptBundle = await loadRecordPromptBundle();
-  if (promptBundle !== null) log.meta("user-prompt", promptBundle.loaded.join(" + "));
+  if (promptBundle !== null) log.meta("prompt", promptBundle.loaded.join(" + "));
   const systemPrompt =
     (promptBundle === null
       ? baseSystemPrompt
