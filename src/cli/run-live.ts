@@ -63,7 +63,7 @@ export async function runLiveSpecs(
 
   const userPromptBundle = await loadLivePromptBundle(cwd);
   if (userPromptBundle !== null) {
-    log.meta("user-prompt", userPromptBundle.loaded.join(" + "));
+    log.meta("prompt", userPromptBundle.loaded.join(" + "));
   }
   const userPromptSuffix = userPromptBundle?.text ?? null;
 
