@@ -337,6 +337,26 @@ describe("renderSpecMarkdown", () => {
     note: "QAチームで重要度=高に合意",
   };
 
+  test("emits the mode and status rows exactly once, positioned between the spec link and the related-code paths", () => {
+    const md = renderSpecMarkdown(fullSpec).join("\n");
+    // Regression guard for a bug that shipped in 0.8.2 where the mode and
+    // status rows were inserted in the new position without removing the
+    // old (top-of-table) ones, doubling each row in every detail table.
+    const modeMatches = md.match(/\| モード \|/g);
+    const statusMatches = md.match(/\| 状態 \|/g);
+    expect(modeMatches?.length).toBe(1);
+    expect(statusMatches?.length).toBe(1);
+    // And they should land between spec and 関連コード, in that order.
+    const idxSpec = md.indexOf("| spec |");
+    const idxMode = md.indexOf("| モード |");
+    const idxStatus = md.indexOf("| 状態 |");
+    const idxRelated = md.indexOf("| 関連コード |");
+    expect(idxSpec).toBeGreaterThan(-1);
+    expect(idxMode).toBeGreaterThan(idxSpec);
+    expect(idxStatus).toBeGreaterThan(idxMode);
+    expect(idxRelated).toBeGreaterThan(idxStatus);
+  });
+
   test("leads with 検証内容 then 前提条件, drops テスト条件/実装状況, links spec relative to the category file", () => {
     const md = renderSpecMarkdown(fullSpec).join("\n");
     expect(md).toContain("## タスクを作成して完了にできる");
