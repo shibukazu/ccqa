@@ -1,0 +1,9 @@
+title: Demo live spec
+mode: live
+steps:
+  - instruction: open the home page
+    expected: greeting is visible
+  - instruction: open the next page
+    expected: second screen is visible
+  - instruction: open the third page
+    expected: footer is visible

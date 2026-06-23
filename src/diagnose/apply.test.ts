@@ -1,0 +1,191 @@
+import { describe, test, expect } from "vitest";
+import { applyDiagnosis, applyOverAssertion, applySelectorDrift, applyTiming, previewDiff } from "./apply.ts";
+
+const SCRIPT = [
+  `import { test } from "vitest";`,
+  `import { ab, abAssertVisible } from "ccqa/test-helpers";`,
+  ``,
+  `test("demo", () => {`,
+  `  ab("open", "http://localhost:3000");`,
+  `  spawnSync("sleep", ["3"], { stdio: "inherit" });`,
+  `  ab("fill", "[name='q']", "hello");`,
+  `  ab("press", "Enter");`,
+  `  abAssertVisible("[aria-label='Old']");`,
+  `  abAssertVisible("[role='banner']");`,
+  `});`,
+].join("\n");
+
+describe("applyTiming", () => {
+  test("inserts a sleep at the given line (1-based, before)", () => {
+    const out = applyTiming(SCRIPT, [{ kind: "insert", line: 8, seconds: 2, reason: "after press" }]);
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    const lines = out.script.split("\n");
+    expect(lines[7]).toContain(`spawnSync("sleep", ["2"]`);
+  });
+
+  test("increases an existing sleep", () => {
+    const out = applyTiming(SCRIPT, [{ kind: "increase", line: 6, increase_to: 7, reason: "slow" }]);
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).toContain(`spawnSync("sleep", ["7"]`);
+    expect(out.script).not.toContain(`spawnSync("sleep", ["3"]`);
+  });
+
+  test("bails when no fixes", () => {
+    expect(applyTiming(SCRIPT, []).applied).toBe(false);
+  });
+
+  test("bails when increase target line has no sleep", () => {
+    const out = applyTiming(SCRIPT, [{ kind: "increase", line: 5, increase_to: 9, reason: "x" }]);
+    expect(out.applied).toBe(false);
+  });
+});
+
+describe("applyOverAssertion", () => {
+  test("removes assertion lines (preserves indices via descending sort)", () => {
+    const out = applyOverAssertion(SCRIPT, [9, 10]);
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).not.toContain("[aria-label='Old']");
+    expect(out.script).not.toContain("[role='banner']");
+  });
+
+  test("refuses to delete non-assertion lines", () => {
+    const out = applyOverAssertion(SCRIPT, [5]);
+    expect(out.applied).toBe(false);
+  });
+
+  test("bails on empty list", () => {
+    expect(applyOverAssertion(SCRIPT, []).applied).toBe(false);
+  });
+
+  test("treats abWait as a removable assertion (it is an implicit existence assert)", () => {
+    const scriptWithWait = [
+      `import { test } from "vitest";`,
+      `import { ab, abWait } from "ccqa/test-helpers";`,
+      ``,
+      `test("demo", () => {`,
+      `  ab("open", "/");`,
+      `  abWait("[aria-label='Execute']");`,
+      `  ab("click", "text=Execute");`,
+      `});`,
+    ].join("\n");
+    const out = applyOverAssertion(scriptWithWait, [6]);
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).not.toContain("abWait(");
+    expect(out.script).toContain("ab(\"click\"");
+  });
+});
+
+describe("applySelectorDrift", () => {
+  test("replaces selector on the given line", () => {
+    const out = applySelectorDrift(SCRIPT, 9, "[aria-label='Old']", "[aria-label='New']");
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).toContain("[aria-label='New']");
+    expect(out.script).not.toContain("[aria-label='Old']");
+  });
+
+  test("bails when oldSelector not present on the line", () => {
+    const out = applySelectorDrift(SCRIPT, 9, "[aria-label='WRONG']", "[aria-label='New']");
+    expect(out.applied).toBe(false);
+  });
+
+  test("promotes a \"...\" literal to a backtick template when the replacement contains an env-ref", () => {
+    // Regression: previously this produced
+    //   abWait("text=run-${process.env.X ?? \"\"}");
+    // which esbuild rejected because the `${...}` lived inside a double-quoted string.
+    const script = [
+      `import { test } from "vitest";`,
+      `import { abWait } from "ccqa/test-helpers";`,
+      ``,
+      `test("demo", () => {`,
+      `  abWait("text=run-\${CCQA_TEST_RUN_ID}");`,
+      `});`,
+    ].join("\n");
+    const out = applySelectorDrift(
+      script,
+      5,
+      "text=run-${CCQA_TEST_RUN_ID}",
+      'text=run-${process.env.CCQA_TEST_RUN_ID ?? ""}',
+    );
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).toContain('abWait(`text=run-${process.env.CCQA_TEST_RUN_ID ?? ""}`);');
+    expect(out.script).not.toMatch(/abWait\("text=run-\${process\.env/);
+  });
+
+  test("leaves an existing backtick template intact when splicing in a replacement", () => {
+    const script = [
+      `import { test } from "vitest";`,
+      `import { abWait } from "ccqa/test-helpers";`,
+      ``,
+      `test("demo", () => {`,
+      "  abWait(`text=run-${process.env.OLD ?? \"\"}`);",
+      `});`,
+    ].join("\n");
+    const out = applySelectorDrift(
+      script,
+      5,
+      'run-${process.env.OLD ?? ""}',
+      'run-${process.env.NEW ?? ""}',
+    );
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).toContain('abWait(`text=run-${process.env.NEW ?? ""}`);');
+    expect(out.script).not.toContain("OLD");
+  });
+
+  test("plain-text replacement still uses a regular string literal", () => {
+    const out = applySelectorDrift(SCRIPT, 9, "[aria-label='Old']", "[aria-label='New']");
+    expect(out.applied).toBe(true);
+    if (!out.applied) return;
+    expect(out.script).toContain(`abAssertVisible("[aria-label='New']");`);
+    expect(out.script).not.toMatch(/abAssertVisible\(`/);
+  });
+});
+
+describe("applyDiagnosis dispatch", () => {
+  test("DATA_MISSING bails", () => {
+    const out = applyDiagnosis(SCRIPT, { type: "DATA_MISSING", reason: "no record" });
+    expect(out.applied).toBe(false);
+  });
+  test("UNKNOWN bails", () => {
+    const out = applyDiagnosis(SCRIPT, { type: "UNKNOWN", reason: "?" });
+    expect(out.applied).toBe(false);
+  });
+});
+
+describe("previewDiff", () => {
+  test("emits a unified-diff hunk for a single-line change", () => {
+    const before = "a\nb\nc";
+    const after = "a\nB\nc";
+    expect(previewDiff(before, after)).toBe(["@@ -1,3 +1,3 @@", " a", "-b", "+B", " c"].join("\n"));
+  });
+
+  test("renders an insertion as a single + without the cascading -/+ pairs the naive impl produced", () => {
+    const before = "a\nb\nc\nd";
+    const after = "a\nb\nNEW\nc\nd";
+    const out = previewDiff(before, after);
+    expect(out).toContain("+NEW");
+    // The lines after the insertion must NOT show up as -/+ pairs.
+    expect(out).not.toMatch(/^-c$/m);
+    expect(out).not.toMatch(/^-d$/m);
+  });
+
+  test("groups distant changes into separate hunks with their own headers", () => {
+    const before = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nl14\nl15";
+    const after = "l1\nl2\nX\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nl11\nl12\nl13\nY\nl15";
+    const out = previewDiff(before, after);
+    const headers = out.split("\n").filter((l) => l.startsWith("@@"));
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toBe("@@ -1,6 +1,6 @@");
+    expect(headers[1]).toBe("@@ -11,5 +11,5 @@");
+  });
+
+  test("identical inputs yield an empty diff", () => {
+    expect(previewDiff("a\nb", "a\nb")).toBe("");
+  });
+});

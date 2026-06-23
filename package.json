@@ -1,0 +1,69 @@
+{
+  "name": "ccqa",
+  "version": "0.9.1",
+  "type": "module",
+  "description": "Browser test recorder powered by Claude Code and agent-browser",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shibukazu/ccqa.git"
+  },
+  "homepage": "https://github.com/shibukazu/ccqa#readme",
+  "bugs": {
+    "url": "https://github.com/shibukazu/ccqa/issues"
+  },
+  "bin": {
+    "ccqa": "./dist/bin/ccqa.mjs"
+  },
+  "exports": {
+    "./test-helpers": {
+      "types": "./dist/runtime/test-helpers.d.mts",
+      "import": "./dist/runtime/test-helpers.mjs"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.87",
+    "commander": "^14.0.3",
+    "yaml": "^2.9.0",
+    "zod": "^4.3.6"
+  },
+  "peerDependencies": {
+    "agent-browser": "*",
+    "vitest": ">=2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "agent-browser": {
+      "optional": false
+    },
+    "vitest": {
+      "optional": false
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsdown": "^0.21.9",
+    "typescript": "^5",
+    "vitest": "^4.1.2"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "node --experimental-strip-types ./bin/ccqa.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run src/",
+    "test:e2e": "vitest run tests/e2e",
+    "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": ">=22.6"
+    }
+  },
+  "packageManager": "pnpm@10.1.0"
+}

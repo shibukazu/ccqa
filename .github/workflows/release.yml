@@ -1,0 +1,103 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run (skip npm publish and git push)"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      BUMP: ${{ inputs.bump }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Build dist/
+        run: pnpm build
+
+      - name: Run tests
+        run: pnpm test
+
+      - name: Bump version
+        id: bump
+        run: |
+          new_version=$(pnpm version "$BUMP" --no-git-tag-version)
+          echo "version=${new_version}" >> "$GITHUB_OUTPUT"
+          echo "Bumped to ${new_version}"
+
+      - name: Rebuild dist/ with bumped version
+        run: pnpm build
+
+      - name: Commit and tag
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git add package.json
+          git commit -m "chore: release ${VERSION}"
+          git tag "${VERSION}"
+
+      - name: Push to main
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          git push origin HEAD:main
+          git push origin "${VERSION}"
+
+      # IMPORTANT: invoke npm via `npx -y npm@latest`, not the bundled
+      # npm that ships with the runner's Node toolchain. npm Trusted
+      # Publishers (OIDC) requires npm 11.5+; the runner ships npm
+      # 10.9.7, which does not propagate the OIDC token in the form the
+      # registry expects and PUTs return E404. v0.1.x releases worked
+      # because that workflow used `npx -y npm@latest publish` directly.
+      - name: Publish to npm (trusted publishing + provenance)
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: npx -y npm@latest publish --provenance --access public
+
+      - name: Dry-run publish
+        if: ${{ env.DRY_RUN == 'true' }}
+        run: npx -y npm@latest publish --dry-run --access public

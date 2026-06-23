@@ -1,0 +1,58 @@
+# dependencies
+node_modules
+
+# pnpm-lock.yaml is the canonical lockfile and IS tracked. bun.lock is
+# local-dev convenience only. package-lock.json is blocked to prevent
+# accidental checkins (pnpm is the repo's package manager).
+bun.lock
+package-lock.json
+
+# output
+out
+dist
+*.tgz
+tmp
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+
+# playwright
+playwright-report/
+test-results/
+
+# ccqa temp files
+/tmp/ccqa-*
+
+# ccqa report output dirs (HTML + per-run PNG screenshots from `--report`).
+# Often include staging URLs / product UI screenshots — never commit.
+/ccqa-report*/
+
+# ccqa test
+.ccqa/
+# but keep E2E fixture .ccqa dirs
+!tests/e2e/fixtures/**/.ccqa/
+!tests/e2e/fixtures/**/.ccqa/**

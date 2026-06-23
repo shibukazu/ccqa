@@ -1,0 +1,4 @@
+title: demo/helper-smoke
+steps:
+  - instruction: noop
+    expected: noop
