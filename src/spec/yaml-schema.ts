@@ -49,6 +49,22 @@ export const TestSpecSchema = z
     title: z.string().min(1),
     relatedPaths: z.array(z.string().min(1)).optional(),
     mode: SpecModeSchema.optional(),
+    /**
+     * Path to a pre-recorded agent-browser auth-state file (cookies +
+     * localStorage), produced locally by `agent-browser state save <path>`.
+     * When set, `ccqa run` (live mode) passes `--state <statePath>` to every
+     * agent-browser invocation so the spec starts already signed-in. The file
+     * is **read-only** — ccqa never updates it, so neither local re-runs nor
+     * CI mutate any state outside the spec's own `runs/` directory.
+     *
+     * Relative paths are resolved against `--cwd` (project root). Convention:
+     * keep them under `.ccqa/sessions/<name>.json` and gitignore the
+     * directory; auth cookies must never be committed.
+     *
+     * Ignored for deterministic specs — they don't drive agent-browser
+     * directly.
+     */
+    statePath: z.string().min(1).optional(),
     steps: z.array(StepSchema).min(1),
   })
   .strict();

@@ -10,6 +10,15 @@ export interface LiveSystemPromptPrefixInput {
   /** All steps from the expanded spec, included for global context. */
   allSteps: ExpandedActionStep[];
   sessionName: string;
+  /**
+   * When set, the prompt instructs the model to forward `--state <path>` to
+   * every `agent-browser` invocation so the spec starts already signed-in
+   * against the cookies + localStorage saved at that path. The file is
+   * **read-only** — agent-browser's `--state` flag loads it but never writes
+   * back to it, so a spec can be re-run locally or in CI without mutating
+   * the source-of-truth state file.
+   */
+  statePath?: string | null;
 }
 
 /**
@@ -48,13 +57,17 @@ export function buildLiveSystemPromptPrefix(input: LiveSystemPromptPrefixInput):
     )
     .join("\n\n");
 
+  const stateLine = input.statePath
+    ? `\n\nA pre-recorded auth-state file is provided at \`${input.statePath}\` (also in the env var \`CCQA_AB_STATE\`). **Always also pass \`--state "$CCQA_AB_STATE"\`** to every \`agent-browser\` command — this restores cookies and localStorage from a prior interactive login, so the user is already signed in to the application under test from step 1. The file is loaded read-only; do not run \`agent-browser state save\`.`
+    : "";
+
   return `You are a QA execution agent. You are executing ONE step of a browser-based end-to-end test and judging whether the step's expected outcome was achieved. You are NOT recording a replayable test script — be flexible, explore the DOM as needed, and make a clear pass / fail call at the end.
 
 ## Session
 
 SESSION NAME: \`${input.sessionName}\`
 
-Always pass \`--session ${input.sessionName}\` to every \`agent-browser\` command. The session persists across steps within this test run, so the browser state from previous steps is already loaded when this turn starts.
+Always pass \`--session ${input.sessionName}\` to every \`agent-browser\` command. The session persists across steps within this test run, so the browser state from previous steps is already loaded when this turn starts.${stateLine}
 
 ## Tools
 

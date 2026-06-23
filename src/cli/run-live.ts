@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, mkdir, writeFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 
 import * as log from "./logger.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
@@ -242,8 +242,25 @@ async function runOneSpec(args: {
   const includes = collectIncludedBlockNames(spec);
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
 
+  // Every run uses a fresh ephemeral session name. Pre-authenticated state
+  // (cookies + localStorage) is brought in separately via `statePath:` and
+  // loaded read-only with agent-browser's `--state` flag, so re-running the
+  // spec — locally or in CI — never mutates the source-of-truth state file.
   const sessionName = generateLiveSessionName();
   log.meta("session", sessionName);
+
+  let statePath: string | null = null;
+  if (spec.statePath) {
+    statePath = isAbsolute(spec.statePath) ? spec.statePath : resolve(cwd, spec.statePath);
+    try {
+      await access(statePath);
+    } catch {
+      const msg = `spec.statePath points to a missing file: ${statePath}`;
+      log.error(msg);
+      return { kind: "error", featureName, specName, error: msg };
+    }
+    log.meta("state", statePath);
+  }
 
   const runId = buildRunId();
   const runDir = opts.out ?? join(specDir, "runs", runId);
@@ -256,6 +273,7 @@ async function runOneSpec(args: {
     runId,
     runDir,
     sessionName,
+    statePath,
     systemPromptSuffix: userPromptSuffix,
     model: opts.model,
     language: opts.language,
