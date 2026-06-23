@@ -65,7 +65,8 @@ export function actionsToScript(input: ActionsToScriptInput): string {
   const { actions, testName, stepMarkers = [], emptySteps = [] } = input;
 
   const helperImports = [
-    "ab", "abWait", "abAssertTextVisible", "abAssertVisible", "abAssertNotVisible",
+    "ab", "abWait", "abUpload",
+    "abAssertTextVisible", "abAssertVisible", "abAssertNotVisible",
     "abAssertUrl", "abAssertEnabled", "abAssertDisabled", "abAssertChecked", "abAssertUnchecked",
     "abStepEvidence",
     "__setCurrentStep",
@@ -99,7 +100,7 @@ export function actionsToScript(input: ActionsToScriptInput): string {
 
 /** Commands that interact with page elements and need the page to be loaded */
 const ELEMENT_COMMANDS = new Set<string>([
-  "click", "dblclick", "fill", "type", "check", "uncheck", "select", "hover", "drag",
+  "click", "dblclick", "fill", "type", "check", "uncheck", "select", "hover", "drag", "upload",
   "find_click", "find_dblclick", "find_fill", "find_type", "find_hover", "find_focus",
   "find_check", "find_uncheck",
 ]);
@@ -321,6 +322,16 @@ function actionToLine(action: TraceAction): string | null {
 
     case "drag":
       return `ab("drag", ${j(action.selector!)}, ${j(action.target!)});`;
+
+    case "upload": {
+      // File paths run through `jExpr` so `${FIXTURE_DIR}/sample.pdf` survives
+      // codegen as a template literal that resolves at test run time, the same
+      // shape fill values use.
+      const files = action.files ?? [];
+      if (!action.selector || files.length === 0) return null;
+      const args = [j(action.selector), ...files.map(jExpr)].join(", ");
+      return `abUpload(${args});`;
+    }
 
     case "wait": {
       const sel = action.selector!;

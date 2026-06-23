@@ -150,6 +150,17 @@ export function actionToAbArgs(action: TraceAction, sessionName: string): string
     }
     case "drag":
       return [...base, "drag", sub(action.selector), sub(action.target)];
+    case "upload": {
+      // Replay validates by issuing the same `agent-browser upload` call the
+      // generated test will. Env refs in file paths resolve through `sub` so
+      // `${CCQA_FIXTURES_DIR}/file.pdf` hits the same disk path the test does.
+      // Missing fixtures surface as a non-zero exit and get dropped /
+      // replay-unstable-flagged like any other failing action.
+      const sel = sub(action.selector);
+      const files = (action.files ?? []).map((f) => sub(f));
+      if (!sel || files.length === 0) return null;
+      return [...base, "upload", sel, ...files];
+    }
     case "wait": {
       const raw = sub(action.selector);
       if (!raw) return null; // selector omitted entirely — treat as unverifiable rather than failing the drop cascade.

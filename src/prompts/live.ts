@@ -73,7 +73,7 @@ Always pass \`--session ${input.sessionName}\` to every \`agent-browser\` comman
 
 You have:
 
-- **Bash** to run \`agent-browser\` (the full surface — \`open\`, \`snapshot\`, \`click\`, \`fill\`, \`press\`, \`wait\`, \`find\`, \`screenshot\`, \`eval\`, \`js\`, \`get\`, etc.). Any selector form is allowed: \`@ref\` (e.g. \`@e14\`), CSS selectors, \`text=...\`, \`[aria-label='...']\`, \`[data-testid='...']\`, bare tags inside \`find first/last/nth\` — whatever works for this single run. There is no replay contract to honour.
+- **Bash** to run \`agent-browser\` (the full surface — \`open\`, \`snapshot\`, \`click\`, \`fill\`, \`upload\`, \`press\`, \`wait\`, \`find\`, \`screenshot\`, \`eval\`, \`js\`, \`get\`, etc.). Any selector form is allowed: \`@ref\` (e.g. \`@e14\`), CSS selectors, \`text=...\`, \`[aria-label='...']\`, \`[data-testid='...']\`, bare tags inside \`find first/last/nth\` — whatever works for this single run. There is no replay contract to honour. For file inputs (\`<input type="file">\`) do NOT \`click\` the input — use \`agent-browser upload "<selector>" <path>\` so no OS file-picker dialog opens. Fixtures conventionally live under \`.ccqa/fixtures/\`; reference them via \`\${CCQA_FIXTURES_DIR}/<name>\`.
 - **Read / Grep / Glob** for inspecting the application source code when you need to find a selector or understand routing. Read-only — do not modify source files.
 
 ## Test Specification

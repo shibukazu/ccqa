@@ -1,5 +1,5 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { FAILURE_SOURCE, FAILURE_STEP_ID } from "./evidence-constants.ts";
 import { sleepSync, spawnAB, type Result } from "./spawn-ab.ts";
 
@@ -122,6 +122,28 @@ export function abWait(selector: string, timeoutMs = 30_000): void {
   // CSS selector: poll `get count` instead of `wait <selector>` (which ignores --timeout).
   if (!pollSelector(selector, "present", timeoutMs)) {
     fail(`wait failed: ${selector} not present within ${timeoutMs}ms`, { status: 1, stdout: "", stderr: "" });
+  }
+}
+
+/**
+ * Upload one or more files to a file input via `agent-browser upload`.
+ * Relative paths resolve against the test's cwd. We pre-check existence
+ * locally so a typo in a fixture path surfaces as a clear error before
+ * agent-browser exits with an opaque non-zero status.
+ */
+export function abUpload(selector: string, ...files: string[]): void {
+  logStep("upload", [selector, ...files]);
+  const resolved: string[] = [];
+  for (const file of files) {
+    const abs = isAbsolute(file) ? file : resolve(process.cwd(), file);
+    if (!existsSync(abs)) {
+      fail(`abUpload: file not found (${file} → ${abs})`, { status: 1, stdout: "", stderr: "" });
+    }
+    resolved.push(abs);
+  }
+  const result = spawnAB(["upload", selector, ...resolved]);
+  if (result.status !== 0) {
+    fail(`agent-browser upload failed (exit ${result.status})`, result);
   }
 }
 

@@ -86,6 +86,7 @@ ccqa run --changed --report                    # only specs whose relatedPaths t
 |---|---|
 | Write specs interactively with Claude | [Draft](./docs/draft.md) |
 | Reuse login and other shared step sequences | [Blocks](./docs/blocks.md) |
+| Drive `<input type="file">` without an OS picker | [File upload](./docs/file-upload.md) |
 | Assertion helper functions | [Assertions](./docs/assertions.md) |
 | Auto-fix failing tests | [Auto-fix](./docs/auto-fix.md) |
 | Detect spec/code drift in CI | [Drift](./docs/drift.md) |

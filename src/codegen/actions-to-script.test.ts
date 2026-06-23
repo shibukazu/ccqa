@@ -355,6 +355,63 @@ describe("actionsToScript", () => {
     });
   });
 
+  describe("upload command", () => {
+    it("emits abUpload(...) with a single literal file path", () => {
+      const actions: TraceAction[] = [
+        {
+          command: "upload",
+          selector: "[aria-label='Attach']",
+          files: ["/tmp/sample.pdf"],
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain(`abUpload("[aria-label='Attach']", "/tmp/sample.pdf")`);
+    });
+
+    it("expands ${ENV_VAR} refs in file paths to template literals", () => {
+      const actions: TraceAction[] = [
+        {
+          command: "upload",
+          selector: "[type='file']",
+          files: ["${CCQA_FIXTURES_DIR}/a.pdf"],
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      // jExpr turns `${VAR}/...` into a back-tick template literal — the same
+      // shape used for fill values.
+      expect(script).toMatch(/abUpload\("\[type='file'\]", `\$\{process\.env\.CCQA_FIXTURES_DIR \?\? ""\}\/a\.pdf`\)/);
+    });
+
+    it("emits multiple positional file args", () => {
+      const actions: TraceAction[] = [
+        {
+          command: "upload",
+          selector: "[aria-label='Attach']",
+          files: ["/tmp/a.png", "/tmp/b.png"],
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain(`abUpload("[aria-label='Attach']", "/tmp/a.png", "/tmp/b.png")`);
+    });
+
+    it("imports abUpload from ccqa/test-helpers", () => {
+      const actions: TraceAction[] = [
+        { command: "upload", selector: "[type='file']", files: ["/tmp/a.png"] },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toMatch(/import \{[^}]*\babUpload\b[^}]*\} from "ccqa\/test-helpers"/);
+    });
+
+    it("skips upload missing selector or files", () => {
+      const actions: TraceAction[] = [
+        { command: "upload", files: ["/tmp/a.png"] },
+        { command: "upload", selector: "[type='file']" },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain("abUpload(");
+    });
+  });
+
   describe("emptySteps notices", () => {
     it("injects a warning block for a spec step that lost all its actions", () => {
       const actions: TraceAction[] = [
@@ -518,7 +575,7 @@ describe("actionsToScript", () => {
       const script = actionsToScript({ actions, testName: "demo", stepMarkers: markers });
 
       expect(script).toContain("abStepEvidence");
-      expect(script).toContain(`import { ab, abWait, abAssertTextVisible`);
+      expect(script).toContain(`import { ab, abWait, abUpload, abAssertTextVisible`);
       expect(script).toContain("__setCurrentStep");
       const evidenceLines = script
         .split("\n")

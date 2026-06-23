@@ -49,6 +49,33 @@ describe("extractAbActionFromBashCommand", () => {
       extractAbActionFromBashCommand(`agent-browser --session s1 wait --text "Done"`),
     ).toBe("AB_ACTION|wait|--text|Done");
   });
+
+  test("parses upload with a single file", () => {
+    expect(
+      extractAbActionFromBashCommand(
+        `agent-browser --session s1 upload "[aria-label='Attach']" "/fixtures/a.pdf"`,
+      ),
+    ).toBe("AB_ACTION|upload|[aria-label='Attach']|/fixtures/a.pdf");
+  });
+
+  test("parses upload with multiple files", () => {
+    expect(
+      extractAbActionFromBashCommand(
+        `agent-browser --session s1 upload "[type='file']" "/tmp/a.png" "/tmp/b.png"`,
+      ),
+    ).toBe("AB_ACTION|upload|[type='file']|/tmp/a.png|/tmp/b.png");
+  });
+
+  test("returns null for upload without selector or files", () => {
+    // `upload` with no positionals — not a recordable action.
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 upload`),
+    ).toBeNull();
+    // selector only, no files
+    expect(
+      extractAbActionFromBashCommand(`agent-browser --session s1 upload "[type='file']"`),
+    ).toBeNull();
+  });
 });
 
 describe("isBlockedAbSubcommand", () => {

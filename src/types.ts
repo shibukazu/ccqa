@@ -51,6 +51,7 @@ export type TraceCommand =
   | "open" | "click" | "dblclick" | "fill" | "type"
   | "check" | "uncheck" | "press" | "select"
   | "hover" | "scroll" | "drag" | "wait" | "snapshot"
+  | "upload"
   | "assert"
   | "find_click" | "find_dblclick" | "find_fill" | "find_type"
   | "find_hover" | "find_focus" | "find_check" | "find_uncheck";
@@ -100,6 +101,14 @@ export interface TraceAction {
   /** For scroll: direction (up/down/left/right) and optional pixels */
   direction?: string;
   pixels?: string;
+  /**
+   * For command: "upload". One or more file paths handed to
+   * `agent-browser upload <selector> <files...>`. Each entry may contain
+   * `${ENV_VAR}` / `$VAR` references (resolved at run time the same way fill
+   * values are) so fixtures can be located via `${CCQA_FIXTURES_DIR}` and
+   * survive moves between machines / CI.
+   */
+  files?: string[];
   observation?: string;
   /** Only for command: "assert" */
   assertType?: AssertType;

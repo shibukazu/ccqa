@@ -550,6 +550,15 @@ export function extractAbActionFromBashCommand(cmd: string): string | null {
       return `AB_ACTION|${subCmd}|${args[0] ?? ""}|${args[1] ?? ""}|${args[2] ?? ""}`;
     case "drag":
       return `AB_ACTION|drag|${args[0] ?? ""}|${args[1] ?? ""}|${args[2] ?? ""}`;
+    case "upload": {
+      // `upload <selector> <file1> [<file2> ...]` — selector first, then one or
+      // more file paths. Encoded as `AB_ACTION|upload|<sel>|<file1>|<file2>|...`
+      // (variable trailing positionals; trace.ts splits the same way).
+      const sel = args[0] ?? "";
+      const files = args.slice(1);
+      if (!sel || files.length === 0) return null;
+      return `AB_ACTION|upload|${sel}|${files.join("|")}`;
+    }
     case "snapshot":
       // snapshot AB_ACTION is emitted by LLM with its own observation
       return null;

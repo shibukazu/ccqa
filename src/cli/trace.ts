@@ -278,7 +278,8 @@ function isAdjacentDuplicate(a: TraceAction, b: TraceAction): boolean {
     (a.findValue ?? "") === (b.findValue ?? "") &&
     (a.findName ?? "") === (b.findName ?? "") &&
     (a.findIndex ?? -1) === (b.findIndex ?? -1) &&
-    (a.findExact ?? false) === (b.findExact ?? false)
+    (a.findExact ?? false) === (b.findExact ?? false) &&
+    (a.files ?? []).join("|") === (b.files ?? []).join("|")
   );
 }
 
@@ -514,6 +515,13 @@ export function parseAbAction(line: string): TraceAction | null {
       return { command, selector: parts[2], value: parts[3], label: parts[4] };
     case "drag":
       return { command, selector: parts[2], target: parts[3], label: parts[4] };
+    case "upload": {
+      // AB_ACTION|upload|<sel>|<file1>[|<file2>...]
+      const selector = parts[2];
+      const files = parts.slice(3).filter((f) => f !== "");
+      if (!selector || files.length === 0) return null;
+      return { command, selector, files };
+    }
     case "find_click":
     case "find_dblclick":
     case "find_hover":

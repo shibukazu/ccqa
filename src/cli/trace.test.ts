@@ -134,6 +134,29 @@ describe("parseAbAction", () => {
     });
   });
 
+  test("parses upload with one file", () => {
+    expect(parseAbAction("AB_ACTION|upload|[aria-label='Attach']|/fixtures/a.pdf")).toEqual({
+      command: "upload",
+      selector: "[aria-label='Attach']",
+      files: ["/fixtures/a.pdf"],
+    });
+  });
+
+  test("parses upload with multiple files", () => {
+    expect(
+      parseAbAction("AB_ACTION|upload|[type='file']|/tmp/a.png|/tmp/b.png|/tmp/c.png"),
+    ).toEqual({
+      command: "upload",
+      selector: "[type='file']",
+      files: ["/tmp/a.png", "/tmp/b.png", "/tmp/c.png"],
+    });
+  });
+
+  test("rejects upload missing selector or files", () => {
+    expect(parseAbAction("AB_ACTION|upload||/fixtures/a.pdf")).toBeNull();
+    expect(parseAbAction("AB_ACTION|upload|[type='file']")).toBeNull();
+  });
+
   test("parses find_click with text locator", () => {
     expect(parseAbAction("AB_ACTION|find_click|text|Sign In|||")).toEqual({
       command: "find_click",

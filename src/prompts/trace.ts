@@ -66,6 +66,7 @@ agent-browser --session SESSION wait --load networkidle
 agent-browser --session SESSION get count "<selector>"   # element-existence check (returns a number, fast)
 agent-browser --session SESSION cookies clear
 agent-browser --session SESSION find <locator> <value> <action> [<input>] [--name "<n>"] [--exact]
+agent-browser --session SESSION upload "<input[type=file] selector>" <file> [<file> ...]
 # See "Selector Rules" for the full \`find\` subset.
 # IMPORTANT: do NOT use \`wait "<css-selector>"\`. agent-browser ignores --timeout on a
 # CSS-selector wait and blocks for ~150s when the selector never matches, killing the run.
@@ -140,6 +141,8 @@ find nth <index> "<ALLOWED-css>" <action>
 **combobox / select with a required marker (\`*\`)**: required form fields often include the marker in their accessible name. If \`find role combobox click --name "<label>"\` misses, prefer \`find label "<label>" click\` or \`click "[aria-label='<label> *']"\`.
 
 **Verifying cleanup / deletion**: assert the *absence* of the deleted thing, not the surrounding listing screen's text. Use \`wait --fn "!document.body.innerText.includes('<unique-label>')"\` (text disappearance) — never \`wait "<css-selector>" --state hidden\` (blocks the daemon) and never \`wait --text "<navbar label>"\` (passes regardless of the deletion).
+
+**File inputs (\`<input type="file">\`) / OS file-picker dialogs**: do NOT \`click\` the input — that opens the OS picker, which agent-browser cannot drive. Use \`upload "<selector>" <path>\` instead. agent-browser sets the input's files directly via the underlying browser API, no native dialog ever opens. Use an ALLOWED selector to identify the input (\`[aria-label='…']\`, \`[data-testid='…']\`, \`[type='file']\` only when it's unique on the page). File paths must be plain shell args — wrap each in \`"\` for safety. Reference fixtures via \`\${CCQA_FIXTURES_DIR}/<name>\` so the same spec works locally and in CI; conventionally fixtures live under \`.ccqa/fixtures/\` and the env var resolves there. Multi-file inputs accept several positionals: \`upload "[aria-label='Attach']" "\${CCQA_FIXTURES_DIR}/a.pdf" "\${CCQA_FIXTURES_DIR}/b.pdf"\`.
 
 ## Test Specification
 
@@ -223,6 +226,7 @@ AB_ACTION|select|<selector>|<value>|<aria label>
 AB_ACTION|hover|<selector>|<visible label>
 AB_ACTION|scroll|<direction>|<pixels>
 AB_ACTION|drag|<source selector>|<target selector>|<source label>
+AB_ACTION|upload|<file-input selector>|<file1>[|<file2>...]
 AB_ACTION|wait|<selector or text>|<label>
 AB_ACTION|snapshot|<key observation, max 100 chars>
 AB_ACTION|assert|<assertType>|<selector or "">|<value or "">|<observation>
