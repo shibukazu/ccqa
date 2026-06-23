@@ -69,6 +69,8 @@ ccqa run tasks/create-and-complete      # vitest replays test.spec.ts; no LLM
 ccqa run tasks/create-and-complete      # Claude drives the browser every time
 ```
 
+Live specs can start already-signed-in by pointing `statePath:` at a saved agent-browser state file (cookies + localStorage). Run an interactive login locally once, save the state with `agent-browser state save .ccqa/sessions/<name>.json`, then commit the path (not the file) — see [Pre-authenticated state](#pre-authenticated-state-statepath) below for the local bootstrap and the CI restore pattern.
+
 By default deterministic runs write step-boundary screenshots and metadata to `ccqa-report/evidence/<feature>/<spec>/` so a reviewer can confirm a passing spec actually reached the states its `expected` clauses describe. Disable with `--no-evidence`.
 
 In CI you can opt in to an HTML run report by passing `--report` — every failing spec gets a drift audit plus a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) using the branch's git diff as context, and the report lets a human grade those calls to measure their accuracy. Requires `ANTHROPIC_API_KEY` or a local Claude login for the analysis part. Opt out with `--no-failure-analysis` (which also implicitly skips the drift audit — the audit is rendered as evidence under the classification, so without the classification the cost has nowhere to land). Use `--no-drift-audit` to keep the classification but skip the audit. See [Run report](./docs/report.md).
@@ -178,6 +180,72 @@ ccqa run --retry 2 tasks/create-and-complete
 ```
 
 Constraints on selectors / `agent-browser` subcommands that apply during `ccqa record` (no `eval`, no `@ref`, no bare-tag positional `find`, no chained agent-browser calls) are **relaxed** for live specs — Claude can use any subcommand and any selector style because there is no replay contract to honour.
+
+### Pre-authenticated state (`statePath:`)
+
+By default each `ccqa run` of a live spec spins up a fresh `agent-browser` session and starts signed-out. That keeps runs hermetic but forces every device-trust gate (Slack "we don't recognize this browser", Google's unfamiliar-device prompt, MFA challenges, …) to fire on every run.
+
+To skip them, save an authenticated browser state to a JSON file once locally and point the spec at it:
+
+```yaml
+title: Slack App Home — non-admin access denied
+mode: live
+statePath: .ccqa/sessions/slack-stg.json   # cookies + localStorage to restore
+steps:
+  - ...
+```
+
+ccqa resolves the path against the project root and passes `--state <path>` to every `agent-browser` invocation in the run (including ccqa's own screenshot calls). The file is **read-only** — `--state` loads it but never writes back to it. Re-running locally or in CI does not mutate it.
+
+Bootstrap once locally:
+
+```bash
+# 1. Log in interactively in a headed browser.
+agent-browser --headed open https://app.slack.com
+# …complete login + device-trust prompts by hand…
+
+# 2. Snapshot cookies + localStorage to the path the spec references.
+mkdir -p .ccqa/sessions
+agent-browser state save .ccqa/sessions/slack-stg.json
+agent-browser close
+
+# 3. ccqa run reuses the saved state — no login prompt.
+ccqa run slack/app-home-non-admin-access-denied
+```
+
+Add `.ccqa/sessions/` to `.gitignore` — these files contain live auth cookies and must never be committed.
+
+#### CI: bring the state file with you
+
+`statePath:` lives entirely inside `.ccqa/` and never touches `~/`. CI re-uses the state by writing the file into the same path the spec already references:
+
+```bash
+# Locally, after the interactive bootstrap above:
+base64 -i .ccqa/sessions/slack-stg.json | pbcopy
+# paste into your CI secret store as CCQA_SLACK_STG_STATE_B64
+```
+
+```yaml
+# .github/workflows/ccqa.yml (sketch)
+- name: Restore agent-browser state
+  env:
+    CCQA_SLACK_STG_STATE_B64: ${{ secrets.CCQA_SLACK_STG_STATE_B64 }}
+  run: |
+    mkdir -p .ccqa/sessions
+    printf '%s' "$CCQA_SLACK_STG_STATE_B64" | base64 -d \
+      > .ccqa/sessions/slack-stg.json
+
+- name: Run live specs
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  run: pnpm ccqa run --report
+```
+
+Caveats:
+
+- **Expiry.** Whatever the upstream service's "remember this device" window is (Slack ≈ 30 days, others vary), the cookies in the state file eventually expire and CI starts failing on the device-trust gate again. Re-bootstrap locally and rotate the secret.
+- **Treat the file as a credential.** It contains live auth cookies. Store it in your CI secret manager (GitHub Actions encrypted secrets, Vault, …) and never commit it.
+- **Deterministic specs ignore `statePath:`.** Today it only affects `mode: live`; vitest-replayed specs always run isolated.
 
 ### Per-project guidance (`.ccqa/prompts/live.user.md` + `live.agent.md`)
 

@@ -61,6 +61,26 @@ describe("TestSpecSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts an optional statePath pointing at a saved auth-state file", () => {
+    const parsed = TestSpecSchema.parse({
+      title: "x",
+      mode: "live",
+      statePath: ".ccqa/sessions/slack-stg.json",
+      steps: [{ instruction: "i", expected: "e" }],
+    });
+    expect(parsed.statePath).toBe(".ccqa/sessions/slack-stg.json");
+  });
+
+  it("rejects empty statePath", () => {
+    expect(() =>
+      TestSpecSchema.parse({
+        title: "x",
+        statePath: "",
+        steps: [{ instruction: "i", expected: "e" }],
+      }),
+    ).toThrow();
+  });
 });
 
 describe("BlockSpecSchema", () => {

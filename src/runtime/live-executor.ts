@@ -83,6 +83,14 @@ export interface RunLiveExecutorInput {
   runId: string;
   runDir: string;
   sessionName: string;
+  /**
+   * Absolute path to a saved agent-browser auth-state file (cookies +
+   * localStorage). When provided, every agent-browser invocation in this run
+   * — both the screenshot helpers ccqa drives directly and the
+   * model-issued `agent-browser` Bash commands — load it via `--state` so
+   * the spec starts already signed-in. The file is never written back to.
+   */
+  statePath?: string | null;
   systemPromptSuffix?: string | null;
   model?: string;
   language?: string;
@@ -118,16 +126,22 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
   // change per step. Computing them once avoids both per-step filesystem
   // walks (resolveAgentBrowserBinDir → statSync up the tree) and per-step
   // ~5 KB string rebuilds of the full allSteps block.
+  const statePath = input.statePath ?? null;
   const promptPrefix = buildLiveSystemPromptPrefix({
     title: input.spec.title,
     allSteps: input.steps,
     sessionName: input.sessionName,
+    statePath,
   });
   const suffixBlock = input.systemPromptSuffix
     ? `\n## Project-specific guidance\n\n${input.systemPromptSuffix}\n`
     : "";
   const langDirective = languageDirective(input.language);
-  const invokeBase = agentBrowserInvokeBase({ sessionName: input.sessionName, runId: input.runId });
+  const invokeBase = agentBrowserInvokeBase({
+    sessionName: input.sessionName,
+    runId: input.runId,
+    statePath,
+  });
 
   const retries = Math.max(0, input.retries ?? 0);
 
@@ -189,7 +203,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     systemPrompt: string,
     userPrompt: string,
   ): Promise<StepAttemptOutcome> {
-    const before = takeScreenshot(input.sessionName, paths.beforePng);
+    const before = takeScreenshot(input.sessionName, paths.beforePng, { statePath });
     if (!before.ok) log.warn(`screenshot (before, ${step.id}) failed: ${before.error}`);
 
     const transcriptParts: string[] = [];
@@ -233,7 +247,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     // After: full page so the assertion target is in the artifact regardless of
     // scroll position. Before stays viewport-only (lighter, and the before-state
     // doesn't usually need to prove "this row appeared below the fold").
-    const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
+    const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true, statePath });
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
     await writeFile(paths.logTxt, transcript || "(no assistant text captured)", "utf-8");
