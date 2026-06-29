@@ -110,6 +110,7 @@ ccqa drift [feature/spec]          Standalone spec ↔ codebase static audit (fo
 `ccqa run` flags:
 
 - `--report [dir]` — write a self-contained HTML run report (default dir: `ccqa-report/`)
+- `--profile <name>` — load `.ccqa/profiles/<name>.env` into the environment before resolving spec `${VAR}` references, so one spec targets dev/stg/prd without per-environment copies. See [Profiles](#profiles---profile).
 - `--changed` — restrict execution to specs whose `relatedPaths` intersect `git diff <base>...HEAD`. Mutually exclusive with explicit spec targets.
 - `--concurrency <n>` — run up to N specs in parallel **within each mode** (deterministic specs run as one phase, live specs as the next; parallelism is within a phase, not across). Default `1` (sequential, identical to before). Above 1, each spec's output is buffered and flushed as a labelled block so parallel logs stay legible. Live specs each launch their own headed Chrome, so high values spawn many browser instances.
 - `--base <ref>` — base ref for the git diff (default: `$GITHUB_BASE_REF`, then `origin/main`)
@@ -131,6 +132,9 @@ All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` 
 .ccqa/
   perspectives.yaml              # Inventory of existing coverage (machine-readable, canonical)
   perspectives.md                # Category index, regenerated from the YAML
+  profiles/                      # `--profile <name>` env files
+    stg.env                      # URLs + credential refs; commit if it uses secret-manager refs, gitignore if it holds plaintext secrets
+    prd.env
   prompts/                       # Run `ccqa init` to scaffold these
     record.user.md               # Human-maintained guidance appended to `ccqa record` (trace phase)
     record.agent.md              # Auto-updated by `ccqa record --update-agent-prompt`
@@ -158,6 +162,53 @@ All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` 
 ```
 
 Add `.ccqa/features/*/test-cases/*/runs/` to `.gitignore` — these are per-run artefacts that should not be committed. Likewise `ccqa-report*/`.
+
+## Profiles (`--profile`)
+
+Environment-specific values (base URLs, the login URL, the test account) differ between dev/stg/prd. Keep them out of the spec as `${VAR}` references and supply them from a **profile** — a `.env` file under `.ccqa/profiles/<name>.env`. `ccqa run --profile <name>` (and `ccqa record`) merges it into the environment before resolving `${VAR}`, so one spec runs against any environment.
+
+```yaml
+# spec.yaml — environment-agnostic
+steps:
+  - include: login
+    params:
+      loginUrl: ${ID_PROVIDER_URL}
+      email: ${TEST_USER_EMAIL}
+  - instruction: Open ${APP_BASE_URL}/dashboard
+    expected: The dashboard renders
+```
+
+```bash
+# .ccqa/profiles/stg.env
+APP_BASE_URL=https://app-stg.example.com
+ID_PROVIDER_URL=https://id-stg.example.com/
+TEST_USER_EMAIL=stg-tester@example.com
+TEST_USER_PASSWORD=...
+```
+
+```bash
+ccqa run auth/login --profile stg    # same spec, stg values
+ccqa run auth/login --profile prd    # same spec, prd values
+```
+
+- **Name** is free-form (`stg`/`prd` are just conventions); it maps to `.ccqa/profiles/<name>.env`. Path separators / `..` / a leading dot are rejected. A missing or mistyped profile fails fast (exit 2). The name is logged; values never are.
+- **Format** is a small `.env` subset: `KEY=value`, `#` comments, optional `export`, quoted values. Profile values **override** the inherited environment.
+- **No `--profile`?** ccqa auto-loads `<cwd>/.env` if it exists (like dotenv/Next.js). No `.env` and no flag → `${VAR}` resolves against the existing `process.env` (e.g. via `direnv`), exactly as before.
+
+### Secrets
+
+If you store literal secrets in a profile, **gitignore it** (e.g. `/.ccqa/profiles/*.env`).
+
+To keep plaintext off disk, put a secret-manager reference in the value and let an external tool resolve it before ccqa runs. **ccqa does not resolve `op://` (or any reference) itself** — it just merges the file into `process.env` verbatim. You wrap the run in the secret manager's own command, which substitutes the real values and hands them to ccqa as ordinary env vars. The whole profile is then committable, and one command works both locally and in CI ([1Password](https://developer.1password.com/docs/cli/secrets-environment-variables/) shown; Vault / SOPS work the same):
+
+```bash
+# .ccqa/profiles/stg.env — references only, committable
+TEST_USER_PASSWORD=op://<vault>/<item>/password
+
+op run --env-file=.ccqa/profiles/stg.env -- ccqa run auth/login
+```
+
+Here `op` resolves the references and injects the real values into the environment, so you **drop `--profile`** — ccqa reads the already-resolved values from `process.env`. (Passing `--profile stg` instead would merge the literal `op://…` strings unresolved, and login would fail.) In CI, authenticate `op` with a [service-account token](https://developer.1password.com/docs/service-accounts/) — then that token is the only CI secret.
 
 ## Live specs (`mode: live`)
 

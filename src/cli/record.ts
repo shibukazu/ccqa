@@ -2,7 +2,7 @@ import { Command } from "commander";
 import { parseSpecPath } from "../store/index.ts";
 import { runTrace, type RunTraceResult } from "./trace.ts";
 import { runGenerate } from "./generate.ts";
-import { addLanguageOption, DEFAULT_LANGUAGE } from "./options.ts";
+import { addLanguageOption, addProfileOption, applyProfileFromOption, DEFAULT_LANGUAGE } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { FixMode } from "../diagnose/loop.ts";
@@ -18,6 +18,7 @@ const VALIDATION_MODES = ["lenient", "strict"] as const;
 interface RecordOptions {
   model?: string;
   language?: string;
+  profile?: string;
   validationMode?: ValidationMode;
   autoFix?: AutoFixMode;
   maxRetries?: string;
@@ -44,7 +45,7 @@ function toFixMode(autoFix: AutoFixMode): FixMode {
   }
 }
 
-export const recordCommand = addLanguageOption(
+export const recordCommand = addProfileOption(addLanguageOption(
   new Command("record")
     .argument(
       "<feature/spec>",
@@ -93,7 +94,7 @@ export const recordCommand = addLanguageOption(
       "--cwd <path>",
       "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
     ),
-).action(async (specPath: string, opts: RecordOptions) => {
+)).action(async (specPath: string, opts: RecordOptions) => {
   const { featureName, specName } = parseSpecPath(specPath);
   const language = opts.language ?? DEFAULT_LANGUAGE;
 
@@ -101,6 +102,11 @@ export const recordCommand = addLanguageOption(
     log.error("--skip-trace and --skip-codegen cannot be combined; nothing would run");
     process.exit(2);
   }
+
+  // Trace drives a real browser and resolves the spec's ${VAR} (login URL,
+  // credentials) against process.env, so the profile (or default .env) must be
+  // merged first.
+  await applyProfileFromOption(opts.profile, resolveCwd(opts.cwd));
 
   let traceResult: RunTraceResult | null = null;
   if (!opts.skipTrace) {
