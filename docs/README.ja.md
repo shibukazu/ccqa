@@ -250,16 +250,7 @@ ccqa run auth/login --profile stg    # 同じ spec、stg の値
 - 形式は小さな `.env` サブセット (`KEY=value`、`#` コメント、`export`、クォート)。プロファイルの値は既存環境を**上書き**します。
 - `--profile` 無しなら `<cwd>/.env` を自動ロード (dotenv と同じ)。どちらも無ければ `${VAR}` は既存の `process.env` (例: `direnv`) から解決。
 
-**secret:** 平文 secret を含むプロファイルは gitignore してください。より良いのは値に secret manager の参照を書いて実行時に解決する方法です — **ccqa は `op://` を解決せず、ファイルをそのままマージするだけ**。run をラップし、`--profile` は付けません (解決済みの値が `process.env` に入ります):
-
-```bash
-# コミット可: 参照のみ
-TEST_USER_PASSWORD=op://<vault>/<item>/password
-
-op run --env-file=.ccqa/profiles/stg.env -- ccqa run auth/login
-```
-
-CI でも同じコマンドが [1Password service account トークン](https://developer.1password.com/docs/service-accounts/) を唯一の CI secret として動きます。Vault / SOPS も同様です。
+**secret:** 平文 secret を含むプロファイルは gitignore してください。ccqa は `.env` をパースするだけで secret manager の参照は解決しないので、secret をディスクに置きたくなければ `--profile` を外し、secret manager 経由で ccqa を実行します (例: `op run --env-file=.ccqa/profiles/stg.env -- ccqa run ...`)。解決済みの値が `process.env` に入り、ccqa はそれを読みます。
 
 ## ライセンス
 

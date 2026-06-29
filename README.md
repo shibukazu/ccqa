@@ -181,16 +181,7 @@ ccqa run auth/login --profile stg    # same spec, stg values
 - Format is a small `.env` subset (`KEY=value`, `#` comments, `export`, quotes). Profile values **override** the inherited environment.
 - Without `--profile`, ccqa auto-loads `<cwd>/.env` if present (like dotenv); with neither, `${VAR}` resolves against the existing `process.env` (e.g. `direnv`).
 
-**Secrets:** gitignore any profile holding plaintext secrets. Better, store a secret-manager reference and resolve it at run time — **ccqa never resolves `op://`, it only merges the file verbatim**. Wrap the run instead, and drop `--profile` (the values arrive pre-resolved in `process.env`):
-
-```bash
-# committable: references only
-TEST_USER_PASSWORD=op://<vault>/<item>/password
-
-op run --env-file=.ccqa/profiles/stg.env -- ccqa run auth/login
-```
-
-The same command works in CI with a [1Password service-account token](https://developer.1password.com/docs/service-accounts/) as the only CI secret; Vault / SOPS work the same way.
+**Secrets:** gitignore any profile that holds plaintext secrets. ccqa only parses `.env` files — it doesn't resolve secret-manager references — so to keep secrets off disk, drop `--profile` and run ccqa under your secret manager instead (e.g. `op run --env-file=.ccqa/profiles/stg.env -- ccqa run ...`), which injects the resolved values into `process.env` for ccqa to read.
 
 ## Live specs (`mode: live`)
 
