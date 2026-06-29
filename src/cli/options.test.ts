@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { Command } from "commander";
-import { addLanguageOption, DEFAULT_LANGUAGE, languageDirective, useJapanesePrompts } from "./options.ts";
+import { addLanguageOption, addProfileOption, DEFAULT_LANGUAGE, languageDirective, useJapanesePrompts } from "./options.ts";
 
 describe("languageDirective", () => {
   test("returns empty for 'auto' so prompts stay material-following", () => {
@@ -55,5 +55,21 @@ describe("addLanguageOption", () => {
     cmd.action(() => {});
     cmd.parse(["--language", "ja"], { from: "user" });
     expect(cmd.opts().language).toBe("ja");
+  });
+});
+
+describe("addProfileOption", () => {
+  test("leaves profile undefined when the flag is absent (load is then a no-op)", () => {
+    const cmd = addProfileOption(new Command("demo").exitOverride());
+    cmd.action(() => {});
+    cmd.parse([], { from: "user" });
+    expect(cmd.opts().profile).toBeUndefined();
+  });
+
+  test("parses an explicit --profile value", () => {
+    const cmd = addProfileOption(new Command("demo").exitOverride());
+    cmd.action(() => {});
+    cmd.parse(["--profile", "stg"], { from: "user" });
+    expect(cmd.opts().profile).toBe("stg");
   });
 });

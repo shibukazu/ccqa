@@ -113,6 +113,7 @@ ccqa drift [feature/spec]          単独の仕様 ↔ コードベース監査 
 `ccqa run` の主なフラグ:
 
 - `--report [dir]` — 単一の HTML 実行レポートを出力 (デフォルトディレクトリ: `ccqa-report/`)
+- `--profile <name>` — spec の `${VAR}` 参照を解決する前に `.ccqa/profiles/<name>.env` を環境に読み込み、1 つの spec を環境ごとにコピーせず dev/stg/prd に向けられるようにする。詳細は [プロファイル](#プロファイル---profile)。
 - `--changed` — `relatedPaths` が `git diff <base>...HEAD` に当たる spec だけに絞って実行 (明示的な spec 指定とは併用不可)
 - `--concurrency <n>` — **各モード内**で最大 N spec を並列実行 (deterministic は 1 フェーズ、live は次フェーズ。並列化はフェーズ内のみで、フェーズ間はしない)。デフォルト `1` (逐次。従来と完全に同じ挙動)。2 以上では spec ごとに出力をバッファし、完了時にラベル付きブロックでまとめて flush するのでログが混ざらない。live spec は spec 数ぶんの headed Chrome を起動するため、高い値に注意。
 - `--base <ref>` — git 差分の base ref (デフォルト: `$GITHUB_BASE_REF` → `origin/main`)
@@ -200,6 +201,9 @@ base64 -i .ccqa/sessions/slack-stg.json | pbcopy
 .ccqa/
   perspectives.yaml              # 既存カバレッジの棚卸し (機械可読・正)
   perspectives.md                # カテゴリ一覧インデックス (YAML から再生成)
+  profiles/                      # `--profile <name>` の環境変数ファイル
+    stg.env                      # URL + 認証情報の参照。secret manager 参照ならコミット可、平文 secret なら gitignore
+    prd.env
   prompts/                       # `ccqa init` でテンプレートを作成可能
     record.user.md               # `ccqa record` (trace 段) に追加される人手メンテのプロジェクト固有ガイダンス
     record.agent.md              # `ccqa record --update-agent-prompt` が更新する自動学習ノート
@@ -227,6 +231,26 @@ base64 -i .ccqa/sessions/slack-stg.json | pbcopy
 ```
 
 `.ccqa/features/*/test-cases/*/runs/` と `ccqa-report*/` は `.gitignore` に追加してください。前者は per-run の一時成果物、後者は HTML レポート出力先で、いずれもコミット対象ではありません。
+
+## プロファイル (`--profile`)
+
+環境依存値を `${VAR}` 参照として spec の外に出し、環境ごとに**プロファイル** (`.ccqa/profiles/<name>.env`) から供給します。`ccqa run`/`record --profile <name>` は `${VAR}` を解決する前に環境へマージするので、1 つの spec をどの環境にも向けられます。
+
+```bash
+# .ccqa/profiles/stg.env
+APP_BASE_URL=https://<your-app-host>
+TEST_USER_EMAIL=<stg-test-account>
+TEST_USER_PASSWORD=...
+```
+```bash
+ccqa run auth/login --profile stg    # 同じ spec、stg の値
+```
+
+- 名前は自由 (`stg`/`prd` は慣例)。パス区切り・`..`・先頭ドットは拒否、存在しない名前は exit 2。ログに出るのは名前だけで値は出ません。
+- 形式は小さな `.env` サブセット (`KEY=value`、`#` コメント、`export`、クォート)。プロファイルの値は既存環境を**上書き**します。
+- `--profile` 無しなら `<cwd>/.env` を自動ロード (dotenv と同じ)。どちらも無ければ `${VAR}` は既存の `process.env` (例: `direnv`) から解決。
+
+**secret:** 平文 secret を含むプロファイルは gitignore してください。ccqa は `.env` をパースするだけで secret manager の参照は解決しないので、secret をディスクに置きたくなければ `--profile` を外し、secret manager 経由で ccqa を実行します (例: `op run --env-file=.ccqa/profiles/stg.env -- ccqa run ...`)。解決済みの値が `process.env` に入り、ccqa はそれを読みます。
 
 ## ライセンス
 

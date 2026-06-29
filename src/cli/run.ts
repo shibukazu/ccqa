@@ -35,7 +35,7 @@ import {
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { renderRunReport } from "../report/render.ts";
 import { ReportEvidenceSchema, type ReportEvidence, type ReportSpecResult, type RunReportData } from "../report/schema.ts";
-import { addLanguageOption } from "./options.ts";
+import { addLanguageOption, addProfileOption, applyProfileFromOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveSpecsModes } from "./spec-mode.ts";
 import { runLiveSpecs, type RunLiveOptions } from "./run-live.ts";
@@ -102,6 +102,7 @@ export interface RunOptions {
   report?: string | boolean;
   base?: string;
   cwd?: string;
+  profile?: string;
   model?: string;
   language?: string;
   format?: ReportFormat;
@@ -115,7 +116,7 @@ export interface RunOptions {
   concurrency?: number;
 }
 
-export const runCommand = addLanguageOption(
+export const runCommand = addProfileOption(addLanguageOption(
   new Command("run")
     .argument(
       "[targets...]",
@@ -194,7 +195,7 @@ export const runCommand = addLanguageOption(
       parseConcurrency,
       1,
     ),
-).action(async (targets: string[], opts: RunOptions) => {
+)).action(async (targets: string[], opts: RunOptions) => {
   await runDispatcher(targets, opts);
 });
 
@@ -248,6 +249,13 @@ async function runDispatcher(targets: string[], opts: RunOptions): Promise<void>
   }
 
   const cwd = resolveCwd(opts.cwd);
+
+  // Merge the profile (or the default .env when no --profile) into process.env
+  // before any spec work — every `${VAR}` path (vitest replay, live
+  // agent-browser) bottoms out at process.env, so this single injection covers
+  // both modes.
+  await applyProfileFromOption(opts.profile, cwd);
+
   // No targets means "all specs"; resolveSpecTargets(undefined) enumerates them.
   // Multiple targets may overlap (e.g. a feature plus one of its specs), so dedupe.
   const enumerateAll = () => listAllSpecsWithSpecFile(cwd);
