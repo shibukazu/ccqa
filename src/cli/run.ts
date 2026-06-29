@@ -460,6 +460,12 @@ async function runOneDeterministicSpec(
 
   log.run(`${featureName}/${specName}`);
   log.meta("test", scriptFile);
+  // Unique-per-spec run id, mirroring the live path (run-live.ts): generated
+  // once, logged, and handed to the spec as CCQA_RUN_ID. A spec that embeds
+  // `${CCQA_RUN_ID}` (e.g. in created-content names) needs this set; otherwise
+  // the ref resolves to "" and the run collides with a prior one.
+  const runId = buildRunId();
+  log.meta("runId", runId);
   log.blank();
 
   const reportFile = join(ctx.tmpDir, `report-${index}.json`);
@@ -468,11 +474,7 @@ async function runOneDeterministicSpec(
     await rm(evidenceDir, { recursive: true, force: true });
     await mkdir(evidenceDir, { recursive: true });
   }
-  // Expose a unique-per-spec run id to the replayed test, mirroring the live
-  // path (see agent-browser-invoke.ts). A spec that embeds `${CCQA_RUN_ID}` in
-  // created-content names etc. needs this to be set; without it the ref
-  // resolves to "" and the run collides with a prior one.
-  const specEnv: NodeJS.ProcessEnv = { ...process.env, CCQA_RUN_ID: buildRunId() };
+  const specEnv: NodeJS.ProcessEnv = { ...process.env, CCQA_RUN_ID: runId };
   if (evidenceDir) specEnv.CCQA_EVIDENCE_DIR = evidenceDir;
   const proc = spawnVitestStreaming(
     [
