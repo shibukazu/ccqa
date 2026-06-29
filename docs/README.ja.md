@@ -234,50 +234,32 @@ base64 -i .ccqa/sessions/slack-stg.json | pbcopy
 
 ## プロファイル (`--profile`)
 
-環境依存値 (base URL、ログイン URL、テストアカウント) は dev / stg / prd で異なります。これらを `${VAR}` 参照として spec の外に出し、**プロファイル** — `.ccqa/profiles/<name>.env` の `.env` ファイル — から供給します。`ccqa run --profile <name>` (および `ccqa record`) は `${VAR}` を解決する前に環境へマージするので、1 つの spec をどの環境にも向けられます。
-
-```yaml
-# spec.yaml — 環境非依存
-steps:
-  - include: login
-    params:
-      loginUrl: ${ID_PROVIDER_URL}
-      email: ${TEST_USER_EMAIL}
-  - instruction: ${APP_BASE_URL}/dashboard を開く
-    expected: ダッシュボードが表示される
-```
+環境依存値を `${VAR}` 参照として spec の外に出し、環境ごとに**プロファイル** (`.ccqa/profiles/<name>.env`) から供給します。`ccqa run`/`record --profile <name>` は `${VAR}` を解決する前に環境へマージするので、1 つの spec をどの環境にも向けられます。
 
 ```bash
 # .ccqa/profiles/stg.env
 APP_BASE_URL=https://<your-app-host>
-ID_PROVIDER_URL=https://<your-idp-host>/
 TEST_USER_EMAIL=<stg-test-account>
 TEST_USER_PASSWORD=...
 ```
-
 ```bash
 ccqa run auth/login --profile stg    # 同じ spec、stg の値
-ccqa run auth/login --profile prd    # 同じ spec、prd の値
 ```
 
-- **名前**は自由 (`stg`/`prd` は単なる慣例)。`.ccqa/profiles/<name>.env` に対応します。パス区切り・`..`・先頭ドットは拒否。存在しない/誤記の名前は即失敗 (exit 2)。名前のみログ出力、値は出力しません。
-- **形式**は小さな `.env` サブセット: `KEY=value`、`#` コメント、任意の `export`、クォート値。プロファイルの値は既存環境を**上書き**します。
-- **`--profile` 無し**なら ccqa は `<cwd>/.env` があれば自動ロード (dotenv / Next.js と同じ)。`.env` もフラグも無ければ `${VAR}` は既存の `process.env` (例: `direnv`) から解決 (従来どおり)。
+- 名前は自由 (`stg`/`prd` は慣例)。パス区切り・`..`・先頭ドットは拒否、存在しない名前は exit 2。ログに出るのは名前だけで値は出ません。
+- 形式は小さな `.env` サブセット (`KEY=value`、`#` コメント、`export`、クォート)。プロファイルの値は既存環境を**上書き**します。
+- `--profile` 無しなら `<cwd>/.env` を自動ロード (dotenv と同じ)。どちらも無ければ `${VAR}` は既存の `process.env` (例: `direnv`) から解決。
 
-### secret の扱い
-
-リテラルの secret をプロファイルに書くなら **gitignore** を (例: `/.ccqa/profiles/*.env`)。
-
-平文をディスクに置きたくなければ、値に secret manager の参照を書き、ccqa 実行前に外部ツールで解決させます。**ccqa 自身は `op://` (などの参照) を解決しません** — `.env` をそのまま `process.env` にマージするだけです。secret manager のコマンドで run をラップすると、それが実値に置換して ccqa に通常の環境変数として渡します。プロファイル全体をコミットでき、ローカルも CI も同じコマンドで動きます ([1Password](https://developer.1password.com/docs/cli/secrets-environment-variables/) の例、Vault / SOPS なども同様):
+**secret:** 平文 secret を含むプロファイルは gitignore してください。より良いのは値に secret manager の参照を書いて実行時に解決する方法です — **ccqa は `op://` を解決せず、ファイルをそのままマージするだけ**。run をラップし、`--profile` は付けません (解決済みの値が `process.env` に入ります):
 
 ```bash
-# .ccqa/profiles/stg.env — 参照のみ、コミット可
+# コミット可: 参照のみ
 TEST_USER_PASSWORD=op://<vault>/<item>/password
 
 op run --env-file=.ccqa/profiles/stg.env -- ccqa run auth/login
 ```
 
-`op` が参照を解決して実値を環境に注入するので **`--profile` は付けません** — ccqa は解決済みの値を `process.env` から読みます。(代わりに `--profile stg` を付けると未解決の `op://…` 文字列がそのままマージされ、ログインは失敗します。) CI では [service account トークン](https://developer.1password.com/docs/service-accounts/) で `op` を認証すれば、CI secret はそのトークンだけで済みます。
+CI でも同じコマンドが [1Password service account トークン](https://developer.1password.com/docs/service-accounts/) を唯一の CI secret として動きます。Vault / SOPS も同様です。
 
 ## ライセンス
 

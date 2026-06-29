@@ -165,50 +165,32 @@ Add `.ccqa/features/*/test-cases/*/runs/` to `.gitignore` — these are per-run 
 
 ## Profiles (`--profile`)
 
-Environment-specific values (base URLs, the login URL, the test account) differ between dev/stg/prd. Keep them out of the spec as `${VAR}` references and supply them from a **profile** — a `.env` file under `.ccqa/profiles/<name>.env`. `ccqa run --profile <name>` (and `ccqa record`) merges it into the environment before resolving `${VAR}`, so one spec runs against any environment.
-
-```yaml
-# spec.yaml — environment-agnostic
-steps:
-  - include: login
-    params:
-      loginUrl: ${ID_PROVIDER_URL}
-      email: ${TEST_USER_EMAIL}
-  - instruction: Open ${APP_BASE_URL}/dashboard
-    expected: The dashboard renders
-```
+Keep environment-specific values out of specs as `${VAR}` references and supply them per environment from a **profile** — a `.env` under `.ccqa/profiles/<name>.env`. `ccqa run`/`record --profile <name>` merges it into the environment before resolving `${VAR}`, so one spec runs anywhere.
 
 ```bash
 # .ccqa/profiles/stg.env
 APP_BASE_URL=https://<your-app-host>
-ID_PROVIDER_URL=https://<your-idp-host>/
 TEST_USER_EMAIL=<stg-test-account>
 TEST_USER_PASSWORD=...
 ```
-
 ```bash
 ccqa run auth/login --profile stg    # same spec, stg values
-ccqa run auth/login --profile prd    # same spec, prd values
 ```
 
-- **Name** is free-form (`stg`/`prd` are just conventions); it maps to `.ccqa/profiles/<name>.env`. Path separators / `..` / a leading dot are rejected. A missing or mistyped profile fails fast (exit 2). The name is logged; values never are.
-- **Format** is a small `.env` subset: `KEY=value`, `#` comments, optional `export`, quoted values. Profile values **override** the inherited environment.
-- **No `--profile`?** ccqa auto-loads `<cwd>/.env` if it exists (like dotenv/Next.js). No `.env` and no flag → `${VAR}` resolves against the existing `process.env` (e.g. via `direnv`), exactly as before.
+- Name is free-form (`stg`/`prd` are conventions); a path separator / `..` / leading dot is rejected, and a missing profile exits 2. Only the name is logged, never values.
+- Format is a small `.env` subset (`KEY=value`, `#` comments, `export`, quotes). Profile values **override** the inherited environment.
+- Without `--profile`, ccqa auto-loads `<cwd>/.env` if present (like dotenv); with neither, `${VAR}` resolves against the existing `process.env` (e.g. `direnv`).
 
-### Secrets
-
-If you store literal secrets in a profile, **gitignore it** (e.g. `/.ccqa/profiles/*.env`).
-
-To keep plaintext off disk, put a secret-manager reference in the value and let an external tool resolve it before ccqa runs. **ccqa does not resolve `op://` (or any reference) itself** — it just merges the file into `process.env` verbatim. You wrap the run in the secret manager's own command, which substitutes the real values and hands them to ccqa as ordinary env vars. The whole profile is then committable, and one command works both locally and in CI ([1Password](https://developer.1password.com/docs/cli/secrets-environment-variables/) shown; Vault / SOPS work the same):
+**Secrets:** gitignore any profile holding plaintext secrets. Better, store a secret-manager reference and resolve it at run time — **ccqa never resolves `op://`, it only merges the file verbatim**. Wrap the run instead, and drop `--profile` (the values arrive pre-resolved in `process.env`):
 
 ```bash
-# .ccqa/profiles/stg.env — references only, committable
+# committable: references only
 TEST_USER_PASSWORD=op://<vault>/<item>/password
 
 op run --env-file=.ccqa/profiles/stg.env -- ccqa run auth/login
 ```
 
-Here `op` resolves the references and injects the real values into the environment, so you **drop `--profile`** — ccqa reads the already-resolved values from `process.env`. (Passing `--profile stg` instead would merge the literal `op://…` strings unresolved, and login would fail.) In CI, authenticate `op` with a [service-account token](https://developer.1password.com/docs/service-accounts/) — then that token is the only CI secret.
+The same command works in CI with a [1Password service-account token](https://developer.1password.com/docs/service-accounts/) as the only CI secret; Vault / SOPS work the same way.
 
 ## Live specs (`mode: live`)
 
