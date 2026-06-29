@@ -180,9 +180,9 @@ steps:
 
 ```bash
 # .ccqa/profiles/stg.env
-APP_BASE_URL=https://app-stg.example.com
-ID_PROVIDER_URL=https://id-stg.example.com/
-TEST_USER_EMAIL=stg-tester@example.com
+APP_BASE_URL=https://<your-app-host>
+ID_PROVIDER_URL=https://<your-idp-host>/
+TEST_USER_EMAIL=<stg-test-account>
 TEST_USER_PASSWORD=...
 ```
 
