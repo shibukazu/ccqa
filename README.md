@@ -101,16 +101,17 @@ ccqa init                          Scaffold .ccqa/prompts/{live,record}.{user,ag
 ccqa draft [feature/spec]          Co-author a test spec with Claude
 ccqa perspectives                  Inventory existing test coverage into .ccqa/perspectives.yaml
 ccqa record <feature/spec>         (deterministic specs only) Trace browser actions + generate test.spec.ts
-ccqa run [feature/spec]            Execute specs. Per spec, the spec.yaml `mode:` field selects deterministic
+ccqa run [feature/spec...]         Execute specs. Per spec, the spec.yaml `mode:` field selects deterministic
                                    (vitest replay) or live (Claude drives every time). One run can mix both;
-                                   `--report` writes one unified HTML.
+                                   `--report` writes one unified HTML. Pass multiple targets space-separated.
 ccqa drift [feature/spec]          Standalone spec ↔ codebase static audit (for PR checks)
 ```
 
 `ccqa run` flags:
 
 - `--report [dir]` — write a self-contained HTML run report (default dir: `ccqa-report/`)
-- `--changed` — restrict execution to specs whose `relatedPaths` intersect `git diff <base>...HEAD`. Mutually exclusive with an explicit spec id.
+- `--changed` — restrict execution to specs whose `relatedPaths` intersect `git diff <base>...HEAD`. Mutually exclusive with explicit spec targets.
+- `--concurrency <n>` — run up to N specs in parallel **within each mode** (deterministic specs run as one phase, live specs as the next; parallelism is within a phase, not across). Default `1` (sequential, identical to before). Above 1, each spec's output is buffered and flushed as a labelled block so parallel logs stay legible. Live specs each launch their own headed Chrome, so high values spawn many browser instances.
 - `--base <ref>` — base ref for the git diff (default: `$GITHUB_BASE_REF`, then `origin/main`)
 - `--no-failure-analysis` — skip the per-failure root-cause classification (also skips the drift audit, since the audit only shows under the classification)
 - `--no-drift-audit` — skip the spec ↔ code drift audit while keeping the classification
@@ -122,7 +123,7 @@ ccqa drift [feature/spec]          Standalone spec ↔ codebase static audit (fo
 
 All Claude-driven commands accept `-m, --model <name>` (alias `sonnet` | `opus` | `haiku`, or a full model ID). The flag overrides `CCQA_MODEL`; when both are unset, the Claude Code CLI default is used. They also accept `--language <bcp47>` (e.g. `ja`, `en`) to set the language of human-readable output; the default `auto` follows the language of the spec/codebase. `--cwd <path>` works on `record` / `run` / `drift` so you can target a subpackage inside a monorepo from the repo root. Interactive commands authenticate via your local Claude Code login; commands that talk to Claude in CI (`ccqa run --report`, `ccqa drift`) additionally honor `ANTHROPIC_API_KEY`.
 
-`<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`.
+`<feature/spec>` is a 2-segment alias for the on-disk path `.ccqa/features/<feature>/test-cases/<spec>/`. `ccqa run` accepts several targets space-separated (each a `<feature>/<spec>`, a bare `<feature>` for all its specs, or omitted for everything); duplicates are de-duped and `--changed` cannot be combined with explicit targets.
 
 ## File structure
 

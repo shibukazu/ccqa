@@ -20,6 +20,7 @@ import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
 import type { BlockSpec } from "../types.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
+import { runPool } from "../runtime/pool.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
 import { resolveBaseRef } from "../drift/affected.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
@@ -111,11 +112,15 @@ export interface RunOptions {
   out?: string;
   changed?: boolean;
   updateAgentPrompt?: boolean;
+  concurrency?: number;
 }
 
 export const runCommand = addLanguageOption(
   new Command("run")
-    .argument("[target]", "Spec to run: '<feature>/<spec>', '<feature>', or omit for all")
+    .argument(
+      "[targets...]",
+      "Specs to run, space-separated: each '<feature>/<spec>', '<feature>', or omit for all. Duplicates are de-duped.",
+    )
     .description(
       "Run specs. Each spec's execution mode comes from its spec.yaml `mode:` field " +
         "(default deterministic; set `mode: live` to have Claude drive agent-browser live per step). " +
@@ -182,10 +187,26 @@ export const runCommand = addLanguageOption(
     .option(
       "--update-agent-prompt",
       "(live only) After the run finishes, ask Claude to refresh .ccqa/prompts/live.agent.md from a summary of the run.",
+    )
+    .option(
+      "--concurrency <n>",
+      "Run up to N specs in parallel within each mode (deterministic / live). Default 1 (sequential). Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
+      parseConcurrency,
+      1,
     ),
-).action(async (target: string | undefined, opts: RunOptions) => {
-  await runDispatcher(target, opts);
+).action(async (targets: string[], opts: RunOptions) => {
+  await runDispatcher(targets, opts);
 });
+
+/** Parse --concurrency: a positive integer. Rejects 0, negatives, non-integers. */
+function parseConcurrency(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    log.error(`invalid --concurrency: ${raw} (expected positive integer)`);
+    process.exit(2);
+  }
+  return n;
+}
 
 function resolveReportDir(
   report: string | boolean | undefined,
@@ -196,16 +217,44 @@ function resolveReportDir(
   return resolve(cwd, raw);
 }
 
-async function runDispatcher(target: string | undefined, opts: RunOptions): Promise<void> {
-  log.header("run", target ?? (opts.changed ? "(changed)" : "(all specs)"));
+/** Header label shown after `ccqa run`: the lone target, a count, or a mode marker. */
+function headerTarget(targets: string[], opts: RunOptions): string {
+  if (targets.length === 1) return targets[0]!;
+  if (targets.length > 1) return `${targets.length} targets`;
+  return opts.changed ? "(changed)" : "(all specs)";
+}
 
-  if (opts.changed && target) {
+/** De-dupe by `featureName/specName`, keeping first-seen order. */
+function dedupeSpecs(
+  specs: Array<{ featureName: string; specName: string }>,
+): Array<{ featureName: string; specName: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ featureName: string; specName: string }> = [];
+  for (const s of specs) {
+    const key = `${s.featureName}/${s.specName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(s);
+  }
+  return out;
+}
+
+async function runDispatcher(targets: string[], opts: RunOptions): Promise<void> {
+  log.header("run", headerTarget(targets, opts));
+
+  if (opts.changed && targets.length > 0) {
     log.error("--changed and an explicit spec target cannot be combined");
     process.exit(2);
   }
 
   const cwd = resolveCwd(opts.cwd);
-  let specs = await resolveSpecTargets(target, () => listAllSpecsWithSpecFile(cwd), cwd);
+  // No targets means "all specs"; resolveSpecTargets(undefined) enumerates them.
+  // Multiple targets may overlap (e.g. a feature plus one of its specs), so dedupe.
+  const enumerateAll = () => listAllSpecsWithSpecFile(cwd);
+  const resolved = await Promise.all(
+    (targets.length ? targets : [undefined]).map((t) => resolveSpecTargets(t, enumerateAll, cwd)),
+  );
+  let specs = dedupeSpecs(resolved.flat());
 
   if (opts.changed) {
     const before = specs.length;
@@ -237,6 +286,11 @@ async function runDispatcher(target: string | undefined, opts: RunOptions): Prom
     if (typeof opts.retry === "number" && opts.retry > 0) log.warn("--retry is ignored without any 'mode: live' spec");
     if (opts.out) log.warn("--out is ignored without any 'mode: live' spec");
     if (opts.updateAgentPrompt) log.warn("--update-agent-prompt is ignored without any 'mode: live' spec");
+  } else if (opts.out && liveSpecs.length > 1) {
+    // A single --out dir can't hold multiple specs' artifacts without them
+    // overwriting each other (worse under --concurrency), so it only applies
+    // to single-spec runs, matching the flag's help text.
+    log.warn("--out is ignored when running multiple live specs");
   }
   if (detSpecs.length === 0 && opts.evidence === false) {
     log.warn("--no-evidence is ignored without any 'mode: deterministic' spec");
@@ -253,11 +307,12 @@ async function runDispatcher(target: string | undefined, opts: RunOptions): Prom
   const liveOpts: RunLiveOptions = {
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
-    ...(opts.out ? { out: opts.out } : {}),
+    ...(opts.out && liveSpecs.length === 1 ? { out: opts.out } : {}),
     cwd,
     ...(opts.base ? { base: opts.base } : {}),
     ...(reportDir ? { reportDir } : {}),
     ...(typeof opts.retry === "number" ? { retry: opts.retry } : {}),
+    concurrency: opts.concurrency ?? 1,
     ...(reportDir && opts.driftAudit !== false ? { driftAudit: true } : {}),
     ...(reportDir && opts.failureAnalysis === false ? { failureAnalysis: false } : {}),
   };
@@ -341,78 +396,107 @@ async function runDeterministicSpecs(
   if (specs.length === 0) return { summaries: [], exitCode: 0 };
 
   const tmpDir = await mkdtemp(join(tmpdir(), "ccqa-run-"));
-  const summaries: SpecRunSummary[] = [];
-  let exitCode = 0;
   const vitestConfig = await resolveVitestConfig(cwd);
   const captureOutput = Boolean(opts.report);
   // Evidence lives under the report dir even when --report is absent so the
   // PNGs work as a standalone CI artifact.
   const evidenceRoot = opts.evidence !== false ? join(reportDirAbs, EVIDENCE_SUBDIR) : null;
+  // Parallel vitest streams interleave illegibly, so above 1 worker each spec
+  // buffers its narration + vitest output (via log.withBuffer) and flushes one
+  // labelled block on completion. At 1 worker output streams live, as before.
+  const concurrency = Math.max(1, opts.concurrency ?? 1);
+  const ctx: DeterministicSpecContext = { cwd, tmpDir, vitestConfig, captureOutput, evidenceRoot };
 
   try {
-    for (let i = 0; i < specs.length; i++) {
-      const { featureName, specName } = specs[i]!;
-      const scriptFile = await getTestScript(featureName, specName, cwd);
-      if (!scriptFile) {
-        log.warn(`${featureName}/${specName}: no test.spec.ts found`);
-        log.hint("run 'ccqa record <feature>/<spec>' to record it, or set 'mode: live' in spec.yaml");
-        continue;
-      }
-
-      log.run(`${featureName}/${specName}`);
-      log.meta("test", scriptFile);
-      log.blank();
-
-      const reportFile = join(tmpDir, `report-${i}.json`);
-      const evidenceDir = evidenceRoot ? join(evidenceRoot, featureName, specName) : null;
-      if (evidenceDir) {
-        await rm(evidenceDir, { recursive: true, force: true });
-        await mkdir(evidenceDir, { recursive: true });
-      }
-      const proc = spawnVitestStreaming(
-        [
-          "run",
-          "--config",
-          vitestConfig,
-          scriptFile,
-          "--reporter=json",
-          `--outputFile.json=${reportFile}`,
-        ],
-        {
-          cwd,
-          env: evidenceDir
-            ? { ...process.env, CCQA_EVIDENCE_DIR: evidenceDir }
-            : process.env,
-        },
-      );
-
-      const tail = captureOutput ? new TailBuffer(OUTPUT_TAIL_CAP) : null;
-      await Promise.all([
-        streamFiltered(proc.stdout, process.stdout, tail),
-        streamFiltered(proc.stderr, process.stderr, tail),
-      ]);
-      const specExitCode = await proc.exited;
-      if (specExitCode !== 0) exitCode = specExitCode;
-
-      const report = await readReport(reportFile);
-      summaries.push({
-        featureName,
-        specName,
-        scriptFile,
-        report,
-        exitCode: specExitCode,
-        outputTail: tail ? tail.toString() : null,
-        evidenceDir,
-      });
-      log.blank();
-    }
-
+    const settled = await runPool(specs, concurrency, (spec, i) =>
+      log.withBuffer(`${spec.featureName}/${spec.specName}`, concurrency > 1, () =>
+        runOneDeterministicSpec(spec, i, ctx),
+      ),
+    );
+    // runPool preserves input order, so summaries stay stable for the report.
+    const summaries = settled.filter((s): s is SpecRunSummary => s !== null);
     printSummary(summaries);
+    const exitCode = summaries.reduce((acc, s) => (s.exitCode !== 0 ? s.exitCode : acc), 0);
+    return { summaries, exitCode };
   } finally {
     await rm(tmpDir, { recursive: true, force: true });
   }
+}
 
-  return { summaries, exitCode };
+interface DeterministicSpecContext {
+  cwd: string;
+  tmpDir: string;
+  vitestConfig: string;
+  captureOutput: boolean;
+  evidenceRoot: string | null;
+}
+
+/**
+ * Run one spec under vitest. Returns null when the spec has no recorded
+ * test.spec.ts (skipped). All output goes through the logger, so under a
+ * `log.withBuffer` scope it's captured and flushed as one labelled block.
+ */
+async function runOneDeterministicSpec(
+  spec: { featureName: string; specName: string },
+  index: number,
+  ctx: DeterministicSpecContext,
+): Promise<SpecRunSummary | null> {
+  const { featureName, specName } = spec;
+  const scriptFile = await getTestScript(featureName, specName, ctx.cwd);
+  if (!scriptFile) {
+    log.warn(`${featureName}/${specName}: no test.spec.ts found`);
+    log.hint("run 'ccqa record <feature>/<spec>' to record it, or set 'mode: live' in spec.yaml");
+    return null;
+  }
+
+  log.run(`${featureName}/${specName}`);
+  log.meta("test", scriptFile);
+  log.blank();
+
+  const reportFile = join(ctx.tmpDir, `report-${index}.json`);
+  const evidenceDir = ctx.evidenceRoot ? join(ctx.evidenceRoot, featureName, specName) : null;
+  if (evidenceDir) {
+    await rm(evidenceDir, { recursive: true, force: true });
+    await mkdir(evidenceDir, { recursive: true });
+  }
+  const proc = spawnVitestStreaming(
+    [
+      "run",
+      "--config",
+      ctx.vitestConfig,
+      scriptFile,
+      "--reporter=json",
+      `--outputFile.json=${reportFile}`,
+    ],
+    {
+      cwd: ctx.cwd,
+      env: evidenceDir
+        ? { ...process.env, CCQA_EVIDENCE_DIR: evidenceDir }
+        : process.env,
+    },
+  );
+
+  // vitest's stdout/stderr aren't logger lines; route them through emitRaw so
+  // they land in the same buffer as the narration above under a buffered scope.
+  const sink = { write: log.emitRaw };
+  const tail = ctx.captureOutput ? new TailBuffer(OUTPUT_TAIL_CAP) : null;
+  await Promise.all([
+    streamFiltered(proc.stdout, sink, tail),
+    streamFiltered(proc.stderr, sink, tail),
+  ]);
+  const specExitCode = await proc.exited;
+  log.blank();
+
+  const report = await readReport(reportFile);
+  return {
+    featureName,
+    specName,
+    scriptFile,
+    report,
+    exitCode: specExitCode,
+    outputTail: tail ? tail.toString() : null,
+    evidenceDir,
+  };
 }
 
 export function failedSpec(s: SpecRunSummary): boolean {
@@ -941,7 +1025,7 @@ const NOISE_LINE_PATTERNS = [/^JSON report written to /];
 
 async function streamFiltered(
   source: Readable,
-  sink: NodeJS.WritableStream,
+  sink: { write(chunk: string): void },
   capture?: TailBuffer | null,
 ): Promise<void> {
   source.setEncoding("utf8");

@@ -1,0 +1,5 @@
+title: Demo live spec Y
+mode: live
+steps:
+  - instruction: open the home page
+    expected: greeting is visible

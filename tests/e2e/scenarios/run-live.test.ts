@@ -90,6 +90,39 @@ describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
     expect(html).toMatch(/step-03\.after\.png/);
   }, 120_000);
 
+  test("two live specs with --concurrency 2: both pass, each writes its own run.json", async () => {
+    project = await makeFakeProject("run-live-stub", { linkCcqa: true });
+    await installFakeAgentBrowser(project.cwd);
+
+    const mockPath = join(project.cwd, "claude-mock.jsonl");
+    await writeMockMessages(mockPath, [
+      ...mockStepMessages("step-01", "pass", "ok"),
+    ]);
+
+    const result = await runCcqa(
+      ["run", "demo/x", "demo/y", "--concurrency", "2"],
+      {
+        cwd: project.cwd,
+        env: { ...noColorEnv(), CCQA_CLAUDE_MOCK_FILE: mockPath },
+        timeoutMs: 90_000,
+      },
+    );
+    const combined = stripAnsi(result.stdout + result.stderr);
+    expect(result.exitCode, combined).toBe(0);
+
+    // Each spec ran once in its own fresh session, recorded under its own dir.
+    for (const spec of ["x", "y"]) {
+      const runsDir = join(project.cwd, `.ccqa/features/demo/test-cases/${spec}/runs`);
+      const runIds = await readDirEntries(runsDir);
+      expect(runIds.length, `runs for demo/${spec}`).toBe(1);
+      const runJson = JSON.parse(
+        await readFile(join(runsDir, runIds[0]!, "run.json"), "utf8"),
+      ) as { status: string };
+      expect(runJson.status).toBe("passed");
+    }
+    expect(combined).toMatch(/2 passed \/ 0 failed/);
+  }, 120_000);
+
   test("STEP_RESULT|...|fail aborts the run: later steps recorded as skipped, exit code 1", async () => {
     project = await makeFakeProject("run-live-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);

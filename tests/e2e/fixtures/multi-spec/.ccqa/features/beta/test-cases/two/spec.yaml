@@ -1,0 +1,4 @@
+title: beta/two
+steps:
+  - instruction: noop
+    expected: noop
