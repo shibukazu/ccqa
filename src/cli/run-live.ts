@@ -20,6 +20,7 @@ import {
   readSpecFile,
 } from "../store/index.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
+import { runPool } from "../runtime/pool.ts";
 import { formatLiveBatchCost, formatLiveCost } from "../runtime/live-cost-format.ts";
 import { runLiveExecutor, type LiveRunResult, type LiveStepResult } from "../runtime/live-executor.ts";
 import { generateLiveSessionName } from "../prompts/live.ts";
@@ -36,6 +37,7 @@ export interface RunLiveOptions {
   failureAnalysis?: boolean;
   base?: string;
   cwd?: string;
+  concurrency?: number;
 }
 
 export type LiveSpecRun = {
@@ -68,16 +70,21 @@ export async function runLiveSpecs(
   const userPromptSuffix = userPromptBundle?.text ?? null;
 
   // Fresh agent-browser session per spec so Chrome state doesn't bleed across.
-  const runs: SpecRunOutcome[] = [];
-  for (let i = 0; i < specs.length; i++) {
-    const { featureName, specName } = specs[i]!;
-    const label = `${featureName}/${specName}`;
-    if (specs.length > 1) {
-      log.blank();
-      log.info(`[${i + 1}/${specs.length}] ${label}`);
-    }
-    runs.push(await runOneSpec({ featureName, specName, opts, userPromptSuffix, cwd }));
-  }
+  // Above 1 worker each spec buffers its narration and flushes one labelled
+  // block on completion, so parallel Chrome sessions stay legible.
+  const concurrency = Math.max(1, opts.concurrency ?? 1);
+  const runs = await runPool(specs, concurrency, (spec, i) => {
+    const label = `${spec.featureName}/${spec.specName}`;
+    return log.withBuffer(label, concurrency > 1, () => {
+      // Sequential runs print a live [i/n] header; parallel runs get the
+      // labelled block from withBuffer instead, so skip the header there.
+      if (concurrency === 1 && specs.length > 1) {
+        log.blank();
+        log.info(`[${i + 1}/${specs.length}] ${label}`);
+      }
+      return runOneSpec({ ...spec, opts, userPromptSuffix, cwd });
+    });
+  });
 
   const failedCount = runs.filter(
     (r) => r.kind === "error" || (r.kind === "run" && r.result.status === "failed"),

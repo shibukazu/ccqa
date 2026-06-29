@@ -4,6 +4,7 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { buildDriftSystemPrompt, buildDriftUserPrompt } from "../prompts/drift.ts";
 import { languageDirective } from "../prompts/language.ts";
 import { tryReadSpecFile, type AvailableBlock } from "../store/index.ts";
+import { runPool } from "../runtime/pool.ts";
 import { DraftReportSchema, type DraftReport } from "../types.ts";
 import type { SpecResult, SpecTarget } from "./types.ts";
 
@@ -30,22 +31,10 @@ const DEFAULT_CONCURRENCY = 3;
 export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult[]> {
   const { targets, cwd, blocks, concurrency = DEFAULT_CONCURRENCY, model, language, onSpecStart } = input;
 
-  const results: SpecResult[] = new Array(targets.length);
-  let cursor = 0;
-
-  const worker = async (): Promise<void> => {
-    while (true) {
-      const idx = cursor++;
-      if (idx >= targets.length) return;
-      const target = targets[idx]!;
-      onSpecStart?.(target);
-      results[idx] = await checkSpec(target, { cwd, blocks, model, language });
-    }
-  };
-
-  const pool = Array.from({ length: Math.min(concurrency, targets.length) }, () => worker());
-  await Promise.all(pool);
-  return results;
+  return runPool(targets, concurrency, async (target) => {
+    onSpecStart?.(target);
+    return checkSpec(target, { cwd, blocks, model, language });
+  });
 }
 
 interface CheckSpecOptions {

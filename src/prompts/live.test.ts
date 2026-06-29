@@ -95,8 +95,15 @@ describe("buildLiveUserPrompt", () => {
 });
 
 describe("generateLiveSessionName", () => {
-  test("returns a filename-safe ccqa-live-* string", () => {
+  test("returns a filename-safe ccqa-live-* string with a random suffix", () => {
     const s = generateLiveSessionName();
-    expect(s).toMatch(/^ccqa-live-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z$/);
+    expect(s).toMatch(/^ccqa-live-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}$/);
+  });
+
+  test("is unique across rapid calls so parallel specs never share a session", () => {
+    // The timestamp is millisecond-precision; two specs starting in the same
+    // millisecond under --concurrency must still get distinct sessions.
+    const names = new Set(Array.from({ length: 1000 }, () => generateLiveSessionName()));
+    expect(names.size).toBe(1000);
   });
 });
