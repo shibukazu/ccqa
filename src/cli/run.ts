@@ -20,6 +20,7 @@ import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
 import type { BlockSpec } from "../types.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
+import { buildRunId } from "../runtime/live-artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
 import { resolveBaseRef } from "../drift/affected.ts";
@@ -467,6 +468,12 @@ async function runOneDeterministicSpec(
     await rm(evidenceDir, { recursive: true, force: true });
     await mkdir(evidenceDir, { recursive: true });
   }
+  // Expose a unique-per-spec run id to the replayed test, mirroring the live
+  // path (see agent-browser-invoke.ts). A spec that embeds `${CCQA_RUN_ID}` in
+  // created-content names etc. needs this to be set; without it the ref
+  // resolves to "" and the run collides with a prior one.
+  const specEnv: NodeJS.ProcessEnv = { ...process.env, CCQA_RUN_ID: buildRunId() };
+  if (evidenceDir) specEnv.CCQA_EVIDENCE_DIR = evidenceDir;
   const proc = spawnVitestStreaming(
     [
       "run",
@@ -478,9 +485,7 @@ async function runOneDeterministicSpec(
     ],
     {
       cwd: ctx.cwd,
-      env: evidenceDir
-        ? { ...process.env, CCQA_EVIDENCE_DIR: evidenceDir }
-        : process.env,
+      env: specEnv,
     },
   );
 
