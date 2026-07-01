@@ -1,5 +1,5 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 import * as log from "./logger.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
@@ -20,6 +20,13 @@ import {
   readSpecFile,
 } from "../store/index.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
+import {
+  loadStorageState,
+  mergeStorageStates,
+  sessionFilePath,
+  writeMergedTempState,
+  type StorageState,
+} from "../runtime/session-state.ts";
 import { runPool } from "../runtime/pool.ts";
 import { formatLiveBatchCost, formatLiveCost } from "../runtime/live-cost-format.ts";
 import { runLiveExecutor, type LiveRunResult, type LiveStepResult } from "../runtime/live-executor.ts";
@@ -38,6 +45,8 @@ export interface RunLiveOptions {
   base?: string;
   cwd?: string;
   concurrency?: number;
+  /** Active `--profile` name; selects the sessions bucket for `spec.session`. */
+  profile?: string;
 }
 
 export type LiveSpecRun = {
@@ -222,6 +231,54 @@ type SpecRunOutcome =
       error: string;
     };
 
+type SessionResolution =
+  | { ok: true; statePath: string }
+  | { ok: false; error: string; hint: string };
+
+/**
+ * Resolve `spec.session` names to a single state file to restore. Each name
+ * maps to `.ccqa/sessions/<profile>/<name>.json` and must load as a valid
+ * agent-browser state (the spec assumes it starts signed-in). One name is
+ * restored from its file directly; several are merged into a temp file. A
+ * missing or malformed session fails with a `ccqa session bootstrap` hint
+ * instead of running unauthenticated.
+ */
+export async function resolveSessionState(
+  names: readonly string[],
+  profile: string | undefined,
+  cwd: string,
+): Promise<SessionResolution> {
+  const paths = names.map((name) => ({ name, path: sessionFilePath(name, profile, cwd) }));
+
+  // Load every named session up front; a missing or malformed file is a hard
+  // stop (same bootstrap hint), so single- and multi-session specs validate
+  // identically rather than deferring a broken single file to agent-browser.
+  const loaded: StorageState[] = [];
+  const broken = [];
+  for (const p of paths) {
+    try {
+      loaded.push(await loadStorageState(p.path));
+    } catch {
+      broken.push(p);
+    }
+  }
+  if (broken.length > 0) {
+    const list = broken.map((b) => b.name).join(", ");
+    const profileFlag = profile ? ` --profile ${profile}` : "";
+    return {
+      ok: false,
+      error: `session not usable: ${list} (looked under ${dirname(broken[0]!.path)})`,
+      hint: `create it with: ${broken.map((b) => `ccqa session bootstrap ${b.name}${profileFlag}`).join("  ·  ")}`,
+    };
+  }
+
+  // Single session restores from its own file; multiple merge into a temp file
+  // so the source-of-truth files stay untouched.
+  if (paths.length === 1) return { ok: true, statePath: paths[0]!.path };
+  const statePath = await writeMergedTempState(mergeStorageStates(loaded));
+  return { ok: true, statePath };
+}
+
 async function runOneSpec(args: {
   featureName: string;
   specName: string;
@@ -250,23 +307,24 @@ async function runOneSpec(args: {
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
 
   // Every run uses a fresh ephemeral session name. Pre-authenticated state
-  // (cookies + localStorage) is brought in separately via `statePath:` and
+  // (cookies + localStorage) is brought in separately via `spec.session` and
   // loaded read-only with agent-browser's `--state` flag, so re-running the
-  // spec — locally or in CI — never mutates the source-of-truth state file.
+  // spec — locally or in CI — never mutates the source-of-truth state files.
   const sessionName = generateLiveSessionName();
   log.meta("session", sessionName);
 
+  // Restore any sessions named by `spec.session` (see resolveSessionState); a
+  // missing one stops the run rather than starting unauthenticated.
   let statePath: string | null = null;
-  if (spec.statePath) {
-    statePath = isAbsolute(spec.statePath) ? spec.statePath : resolve(cwd, spec.statePath);
-    try {
-      await access(statePath);
-    } catch {
-      const msg = `spec.statePath points to a missing file: ${statePath}`;
-      log.error(msg);
-      return { kind: "error", featureName, specName, error: msg };
+  if (spec.session && spec.session.length > 0) {
+    const resolution = await resolveSessionState(spec.session, opts.profile, cwd);
+    if (!resolution.ok) {
+      log.error(resolution.error);
+      log.hint(resolution.hint);
+      return { kind: "error", featureName, specName, error: resolution.error };
     }
-    log.meta("state", statePath);
+    statePath = resolution.statePath;
+    log.meta("state", spec.session.join(", "));
   }
 
   const runId = buildRunId();

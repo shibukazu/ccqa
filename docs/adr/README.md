@@ -25,6 +25,8 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0001](0001-lenient-post-trace-validation.md) | Post-trace validation defaults to lenient (warn, don't drop) | accepted |
 | [0002](0002-avoid-agent-browser-wait-selector.md) | Never use `agent-browser wait <css-selector>`; poll `get count` instead | accepted |
 | [0003](0003-perspectives-factual-inventory.md) | `perspectives` is a factual coverage inventory, not a decision record | accepted |
+| [0004](0004-unify-run-commands.md) | Per-spec mode dispatcher: `run` reads `mode:`, `record` collapses `trace + generate` | accepted |
+| [0005](0005-session-restore-model.md) | Restore browser sessions by name, not by spec-embedded path | accepted |
 
 ## Template
 

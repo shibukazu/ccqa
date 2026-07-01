@@ -69,7 +69,7 @@ ccqa run tasks/create-and-complete      # vitest replays test.spec.ts; no LLM
 ccqa run tasks/create-and-complete      # Claude drives the browser every time
 ```
 
-Live specs can start already-signed-in by pointing `statePath:` at a saved agent-browser state file (cookies + localStorage). Run an interactive login locally once, save the state with `agent-browser state save .ccqa/sessions/<name>.json`, then commit the path (not the file) — see [Pre-authenticated state](#pre-authenticated-state-statepath) below for the local bootstrap and the CI restore pattern.
+Live specs can start already-signed-in by naming a saved session with `session:`. Create it once with `ccqa session bootstrap <name>` (log in by hand, ccqa saves the cookies + localStorage), then specs restore it — see [Saved sessions](#saved-sessions-session) below for the bootstrap and the CI restore pattern.
 
 By default deterministic runs write step-boundary screenshots and metadata to `ccqa-report/evidence/<feature>/<spec>/` so a reviewer can confirm a passing spec actually reached the states its `expected` clauses describe. Disable with `--no-evidence`.
 
@@ -207,71 +207,67 @@ ccqa run --retry 2 tasks/create-and-complete
 
 Constraints on selectors / `agent-browser` subcommands that apply during `ccqa record` (no `eval`, no `@ref`, no bare-tag positional `find`, no chained agent-browser calls) are **relaxed** for live specs — Claude can use any subcommand and any selector style because there is no replay contract to honour.
 
-### Pre-authenticated state (`statePath:`)
+### Saved sessions (`session:`)
 
-By default each `ccqa run` of a live spec spins up a fresh `agent-browser` session and starts signed-out. That keeps runs hermetic but forces every device-trust gate (Slack "we don't recognize this browser", Google's unfamiliar-device prompt, MFA challenges, …) to fire on every run.
+By default each `ccqa run` of a live spec starts signed-out and logs in through its own steps. That's fine for plain form logins, but some providers gate every fresh browser with a device-trust check (an "unrecognized device" e-mail code, an MFA prompt) that a human has to clear by hand — impractical to repeat on every run, impossible in CI.
 
-To skip them, save an authenticated browser state to a JSON file once locally and point the spec at it:
+For those, save the signed-in browser state once and let the spec **restore** it. ccqa does not manage authentication — `session` is purely an optional restore of cookies + localStorage. Specs that can just log in normally don't use it.
 
 ```yaml
-title: Slack App Home — non-admin access denied
+title: Admin can open the settings page
 mode: live
-statePath: .ccqa/sessions/slack-stg.json   # cookies + localStorage to restore
+session: admin            # restore the saved "admin" session before step 1
 steps:
-  - ...
+  - ...                   # no login steps — the spec starts signed-in
 ```
 
-ccqa resolves the path against the project root and passes `--state <path>` to every `agent-browser` invocation in the run (including ccqa's own screenshot calls). The file is **read-only** — `--state` loads it but never writes back to it. Re-running locally or in CI does not mutate it.
+A spec can also restore several sessions at once (e.g. one provider in each), and ccqa merges them:
 
-Bootstrap once locally:
-
-```bash
-# 1. Log in interactively in a headed browser.
-agent-browser --headed open https://app.slack.com
-# …complete login + device-trust prompts by hand…
-
-# 2. Snapshot cookies + localStorage to the path the spec references.
-mkdir -p .ccqa/sessions
-agent-browser state save .ccqa/sessions/slack-stg.json
-agent-browser close
-
-# 3. ccqa run reuses the saved state — no login prompt.
-ccqa run slack/app-home-non-admin-access-denied
+```yaml
+session:
+  - admin                 # one provider, signed in as admin
+  - admin-chat            # another provider, same person
 ```
 
-Add `.ccqa/sessions/` to `.gitignore` — these files contain live auth cookies and must never be committed.
-
-#### CI: bring the state file with you
-
-`statePath:` lives entirely inside `.ccqa/` and never touches `~/`. CI re-uses the state by writing the file into the same path the spec already references:
+#### Create a session — `ccqa session bootstrap`
 
 ```bash
-# Locally, after the interactive bootstrap above:
-base64 -i .ccqa/sessions/slack-stg.json | pbcopy
-# paste into your CI secret store as CCQA_SLACK_STG_STATE_B64
+# Opens a headed browser. Log in by hand (clear any device-trust gate),
+# then press Enter and ccqa saves the session.
+ccqa session bootstrap admin --url https://app.example.com/login
+
+# List saved sessions (names + save times; no secret values shown).
+ccqa session ls
+```
+
+Sessions are saved to `.ccqa/sessions/<profile>/<name>.json`. The `<profile>` is the same `--profile` that selects the `.ccqa/profiles/<profile>.env` file, so one flag picks both the environment and its sessions bucket; with no `--profile` the bucket is `default`. `ccqa init` drops a self-ignoring `.ccqa/sessions/.gitignore` so saved sessions stay out of git — **they contain live auth cookies and must never be committed.**
+
+When a spec names a session that hasn't been created yet, the run stops and tells you which `ccqa session bootstrap` to run, rather than starting unauthenticated.
+
+#### CI: restore the session
+
+Saved sessions live entirely inside `.ccqa/` and never touch `~/`. In CI, write each session file back to the path the run expects (read it from your secret store):
+
+```bash
+# Locally, after bootstrapping, copy the file into your CI secret store:
+base64 -i .ccqa/sessions/default/admin.json | pbcopy   # paste as CCQA_SESSION_ADMIN_B64
 ```
 
 ```yaml
-# .github/workflows/ccqa.yml (sketch)
-- name: Restore agent-browser state
+# CI step (sketch) — restore before `ccqa run`
+- name: Restore session
   env:
-    CCQA_SLACK_STG_STATE_B64: ${{ secrets.CCQA_SLACK_STG_STATE_B64 }}
+    CCQA_SESSION_ADMIN_B64: ${{ secrets.CCQA_SESSION_ADMIN_B64 }}
   run: |
-    mkdir -p .ccqa/sessions
-    printf '%s' "$CCQA_SLACK_STG_STATE_B64" | base64 -d \
-      > .ccqa/sessions/slack-stg.json
-
-- name: Run live specs
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-  run: pnpm ccqa run --report
+    mkdir -p .ccqa/sessions/default
+    printf '%s' "$CCQA_SESSION_ADMIN_B64" | base64 -d > .ccqa/sessions/default/admin.json
 ```
 
-Caveats:
+Notes:
 
-- **Expiry.** Whatever the upstream service's "remember this device" window is (Slack ≈ 30 days, others vary), the cookies in the state file eventually expire and CI starts failing on the device-trust gate again. Re-bootstrap locally and rotate the secret.
-- **Treat the file as a credential.** It contains live auth cookies. Store it in your CI secret manager (GitHub Actions encrypted secrets, Vault, …) and never commit it.
-- **Deterministic specs ignore `statePath:`.** Today it only affects `mode: live`; vitest-replayed specs always run isolated.
+- **Expiry.** The provider's "remember this device" window eventually lapses and the saved cookies stop working. Re-run `ccqa session bootstrap` locally and rotate the secret.
+- **Treat session files as credentials.** They hold live auth cookies. Keep them in a secret manager; never commit them.
+- **Deterministic specs ignore `session:`.** It only affects `mode: live`; vitest-replayed specs always run isolated.
 
 ### Per-project guidance (`.ccqa/prompts/live.user.md` + `live.agent.md`)
 

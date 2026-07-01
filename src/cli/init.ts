@@ -38,6 +38,16 @@ Write stable, hand-maintained context here for the trace phase of 'ccqa record'.
 This file is updated by 'ccqa record --update-agent-prompt'. Same convention as live.agent.md — stable rules go in record.user.md.
 `,
   },
+  {
+    // Saved sessions hold live auth cookies — never commit them. This self-
+    // ignoring .gitignore keeps the whole directory out of git while staying
+    // tracked itself, so `ccqa session bootstrap` has a safe place to write.
+    relPath: ".ccqa/sessions/.gitignore",
+    content: `# Saved browser sessions contain live auth cookies. Never commit them.
+*
+!.gitignore
+`,
+  },
 ];
 
 interface InitOptions {
@@ -56,6 +66,7 @@ export const initCommand = new Command("init")
     log.header("init", cwd);
 
     await mkdir(join(cwd, ".ccqa", "prompts"), { recursive: true });
+    await mkdir(join(cwd, ".ccqa", "sessions"), { recursive: true });
 
     const created: string[] = [];
     const skipped: string[] = [];
