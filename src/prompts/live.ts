@@ -20,10 +20,11 @@ export interface LiveSystemPromptPrefixInput {
   /**
    * When set, the prompt instructs the model to forward `--state <path>` to
    * every `agent-browser` invocation so the spec starts already signed-in
-   * against the cookies + localStorage saved at that path. The file is
-   * **read-only** — agent-browser's `--state` flag loads it but never writes
-   * back to it, so a spec can be re-run locally or in CI without mutating
-   * the source-of-truth state file.
+   * against the cookies + localStorage saved at that path. The path is a
+   * single state file even when several saved sessions were requested — ccqa
+   * merges them upstream. The file is **read-only** — agent-browser's
+   * `--state` flag loads it but never writes back to it, so a spec can be
+   * re-run locally or in CI without mutating the source-of-truth sessions.
    */
   statePath?: string | null;
 }
@@ -65,7 +66,7 @@ export function buildLiveSystemPromptPrefix(input: LiveSystemPromptPrefixInput):
     .join("\n\n");
 
   const stateLine = input.statePath
-    ? `\n\nA pre-recorded auth-state file is provided at \`${input.statePath}\` (also in the env var \`CCQA_AB_STATE\`). **Always also pass \`--state "$CCQA_AB_STATE"\`** to every \`agent-browser\` command — this restores cookies and localStorage from a prior interactive login, so the user is already signed in to the application under test from step 1. The file is loaded read-only; do not run \`agent-browser state save\`.`
+    ? `\n\nA pre-recorded auth-state file is provided at \`${input.statePath}\` (also in the env var \`CCQA_AB_STATE\`). **Always also pass \`--state "$CCQA_AB_STATE"\`** to every \`agent-browser\` command — this restores cookies and localStorage saved from a prior interactive login (one or more providers), so the user is already signed in to the application under test from step 1. The file is loaded read-only; do not run \`agent-browser state save\`.`
     : "";
 
   return `You are a QA execution agent. You are executing ONE step of a browser-based end-to-end test and judging whether the step's expected outcome was achieved. You are NOT recording a replayable test script — be flexible, explore the DOM as needed, and make a clear pass / fail call at the end.

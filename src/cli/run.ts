@@ -322,6 +322,7 @@ async function runDispatcher(targets: string[], opts: RunOptions): Promise<void>
     ...(reportDir ? { reportDir } : {}),
     ...(typeof opts.retry === "number" ? { retry: opts.retry } : {}),
     concurrency: opts.concurrency ?? 1,
+    ...(opts.profile ? { profile: opts.profile } : {}),
     ...(reportDir && opts.driftAudit !== false ? { driftAudit: true } : {}),
     ...(reportDir && opts.failureAnalysis === false ? { failureAnalysis: false } : {}),
   };

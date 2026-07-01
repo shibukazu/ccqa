@@ -43,6 +43,31 @@ export type Step = z.infer<typeof StepSchema>;
 export const SpecModeSchema = z.enum(["deterministic", "live"]);
 export type SpecMode = z.infer<typeof SpecModeSchema>;
 
+/**
+ * A session name: the identifier of a saved browser session (cookies +
+ * localStorage) to restore before the spec runs. Resolved to
+ * `.ccqa/sessions/<profile>/<name>.json` at run time. Restricted to a safe
+ * slug so the name can't escape the sessions directory.
+ */
+export const SessionNameSchema = z
+  .string()
+  .min(1)
+  .regex(
+    /^[a-z0-9][a-z0-9._-]*$/i,
+    "session name must be a slug (letters, digits, '.', '_', '-'; no path separators)",
+  );
+
+/**
+ * Sessions to restore before a `mode: live` spec runs: a single name or a
+ * list. Always normalized to an array. Each name maps to a saved
+ * agent-browser state file; multiple names are merged (their cookies +
+ * localStorage are unioned) and restored together, so a spec can start
+ * signed-in to several providers at once.
+ */
+export const SessionFieldSchema = z
+  .union([SessionNameSchema, z.array(SessionNameSchema).min(1)])
+  .transform((v) => (Array.isArray(v) ? v : [v]));
+
 /** Top-level spec schema. `.strict()` rejects any unknown key. */
 export const TestSpecSchema = z
   .object({
@@ -50,21 +75,15 @@ export const TestSpecSchema = z
     relatedPaths: z.array(z.string().min(1)).optional(),
     mode: SpecModeSchema.optional(),
     /**
-     * Path to a pre-recorded agent-browser auth-state file (cookies +
-     * localStorage), produced locally by `agent-browser state save <path>`.
-     * When set, `ccqa run` (live mode) passes `--state <statePath>` to every
-     * agent-browser invocation so the spec starts already signed-in. The file
-     * is **read-only** — ccqa never updates it, so neither local re-runs nor
-     * CI mutate any state outside the spec's own `runs/` directory.
-     *
-     * Relative paths are resolved against `--cwd` (project root). Convention:
-     * keep them under `.ccqa/sessions/<name>.json` and gitignore the
-     * directory; auth cookies must never be committed.
-     *
-     * Ignored for deterministic specs — they don't drive agent-browser
-     * directly.
+     * Saved browser session(s) to restore so a `mode: live` spec starts
+     * already signed-in (see SessionFieldSchema for the name/merge mechanics).
+     * Each name comes from `ccqa session bootstrap <name>`; the state files are
+     * restored read-only, so re-runs (local or CI) never mutate them. A missing
+     * session stops the run with a bootstrap hint rather than running
+     * unauthenticated. Ignored for deterministic specs — to log in normally,
+     * omit `session` and do it in the steps.
      */
-    statePath: z.string().min(1).optional(),
+    session: SessionFieldSchema.optional(),
     steps: z.array(StepSchema).min(1),
   })
   .strict();

@@ -62,21 +62,41 @@ describe("TestSpecSchema", () => {
     ).toThrow();
   });
 
-  it("accepts an optional statePath pointing at a saved auth-state file", () => {
+  it("accepts a single session name and normalizes it to an array", () => {
     const parsed = TestSpecSchema.parse({
       title: "x",
       mode: "live",
-      statePath: ".ccqa/sessions/slack-stg.json",
+      session: "admin",
       steps: [{ instruction: "i", expected: "e" }],
     });
-    expect(parsed.statePath).toBe(".ccqa/sessions/slack-stg.json");
+    expect(parsed.session).toEqual(["admin"]);
   });
 
-  it("rejects empty statePath", () => {
+  it("accepts a list of session names", () => {
+    const parsed = TestSpecSchema.parse({
+      title: "x",
+      mode: "live",
+      session: ["admin", "viewer"],
+      steps: [{ instruction: "i", expected: "e" }],
+    });
+    expect(parsed.session).toEqual(["admin", "viewer"]);
+  });
+
+  it("rejects a session name with a path separator", () => {
     expect(() =>
       TestSpecSchema.parse({
         title: "x",
-        statePath: "",
+        session: "../escape",
+        steps: [{ instruction: "i", expected: "e" }],
+      }),
+    ).toThrow();
+  });
+
+  it("rejects an empty session list", () => {
+    expect(() =>
+      TestSpecSchema.parse({
+        title: "x",
+        session: [],
         steps: [{ instruction: "i", expected: "e" }],
       }),
     ).toThrow();

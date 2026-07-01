@@ -69,7 +69,7 @@ ccqa run tasks/create-and-complete      # vitest が test.spec.ts を再生 (LLM
 ccqa run tasks/create-and-complete      # 毎回 Claude がブラウザを操作
 ```
 
-live spec は spec.yaml の top-level に `statePath: <path>` を書くと、`agent-browser state save` で保存した認証済みブラウザステート (cookies + localStorage) を起動時に読み込めます。Slack の "We don't recognize this browser" などのデバイス信頼ゲートを 1 度ローカルで突破して保存しておけば、以後のローカル run・CI run でずっとスキップできます。詳細は下の [Pre-authenticated state](#pre-authenticated-state-statepath) を参照。
+live spec は spec.yaml の top-level に `session: <name>` を書くと、保存済みのブラウザセッション (cookies + localStorage) を起動時に復元できます。`ccqa session bootstrap <name>` で 1 度ローカルで手動ログインして保存しておけば、デバイス信頼ゲートを以後の run でスキップできます。詳細は下の [保存済みセッション](#保存済みセッション-session) を参照。
 
 deterministic spec はデフォルトで step 境界のスクショとメタデータを `ccqa-report/evidence/<feature>/<spec>/` に書き出します。`expected` が記述する状態に実際に到達したか、レビュアーが確認できます。`--no-evidence` で抑止できます。
 
@@ -129,71 +129,67 @@ ccqa drift [feature/spec]          単独の仕様 ↔ コードベース監査 
 
 `<feature/spec>` は `.ccqa/features/<feature>/test-cases/<spec>/` への 2 セグメントのエイリアスです。`ccqa run` は複数 target をスペース区切りで受け付けます (各 target は `<feature>/<spec>`、配下全件を指す `<feature>`、または省略で全件)。重複は排除され、`--changed` と明示的な target は併用できません。
 
-## Pre-authenticated state (`statePath:`)
+## 保存済みセッション (`session:`)
 
-live spec はデフォルトでは run のたびに `agent-browser` を新規セッションで起動し、未ログイン状態から始まります。run が hermetic になる代わりに、Slack の "We don't recognize this browser" や Google の見慣れないデバイス確認、MFA プロンプトなどのデバイス信頼ゲートが毎回発火します。
+live spec はデフォルトでは未ログイン状態から始まり、spec の steps の中でログインします。単純なフォームログインならそれで十分ですが、プロバイダによっては新規ブラウザごとにデバイス信頼ゲート (見慣れないデバイス確認のメールコード、MFA プロンプトなど) が出て、人間が手で突破する必要があります。これを毎回 run で繰り返すのは非現実的で、CI では不可能です。
 
-これを回避するには、認証済みブラウザステートをローカルで 1 度 JSON ファイルに保存し、spec.yaml の top-level でそのパスを参照します。
+そうしたケースでは、サインイン済みのブラウザステートを 1 度保存しておき、spec から **復元** します。ccqa は認証そのものを管理しません。`session` は cookies + localStorage を復元するだけの任意機能です。普通にログインできる spec は `session` を使いません。
 
 ```yaml
-title: Slack App Home — 非管理者ユーザーはアクセスを拒否される
+title: admin は設定ページを開ける
 mode: live
-statePath: .ccqa/sessions/slack-stg.json   # 復元する cookies + localStorage
+session: admin            # step 1 の前に保存済み "admin" セッションを復元
 steps:
-  - ...
+  - ...                   # ログイン手順は書かない。サインイン済みで始まる
 ```
 
-ccqa はこの path をプロジェクトルートから resolve し、その run 中の全 `agent-browser` 呼び出し (ccqa 自身の screenshot も含む) に `--state <path>` を渡します。このファイルは **read-only** — `--state` は読み込むだけで書き戻しません。ローカルでも CI でも、 何度 run してもファイルは変化しません。
+1 つの spec で複数のセッションを同時に復元することもできます (例: プロバイダごとに 1 つ)。ccqa がそれらをマージします。
 
-初回だけローカルで bootstrap:
-
-```bash
-# 1. headed ブラウザで手動ログイン。
-agent-browser --headed open https://app.slack.com
-# …ログインとデバイス信頼プロンプトを手で通す…
-
-# 2. spec が参照するパスに cookies + localStorage を保存。
-mkdir -p .ccqa/sessions
-agent-browser state save .ccqa/sessions/slack-stg.json
-agent-browser close
-
-# 3. ccqa run は保存済みステートを再利用 — ログイン不要。
-ccqa run slack/app-home-non-admin-access-denied
+```yaml
+session:
+  - admin                 # あるプロバイダに admin でサインイン
+  - admin-chat            # 別のプロバイダ、同一人物
 ```
 
-`.ccqa/sessions/` は `.gitignore` に必ず追加してください。 ファイルには有効な認証 cookie が入っており、コミット禁止です。
-
-### CI でステートを持ち込む
-
-`statePath:` は完全に `.ccqa/` 配下に閉じているので、 CI でも `~/` に触らず spec が参照する同じパスにファイルを置くだけで再利用できます。
+### セッションを作る — `ccqa session bootstrap`
 
 ```bash
-# ローカルで bootstrap した後:
-base64 -i .ccqa/sessions/slack-stg.json | pbcopy
-# CI の secret store に CCQA_SLACK_STG_STATE_B64 として貼り付け
+# headed ブラウザが開く。手でログインし (デバイス信頼ゲートも突破)、
+# Enter を押すと ccqa がセッションを保存する。
+ccqa session bootstrap admin --url https://app.example.com/login
+
+# 保存済みセッション一覧 (名前と保存時刻のみ。秘密値は表示しない)。
+ccqa session ls
+```
+
+セッションは `.ccqa/sessions/<profile>/<name>.json` に保存されます。`<profile>` は `.ccqa/profiles/<profile>.env` を選ぶ `--profile` と同じもので、1 つのフラグで環境とそのセッションバケットの両方が決まります（無指定なら `default`）。`ccqa init` が自己無視する `.ccqa/sessions/.gitignore` を作るので、保存済みセッションは git の外に保たれます。**ファイルには有効な認証 cookie が入っており、コミット禁止です。**
+
+spec が未作成のセッション名を指すと、run は未認証で始める代わりに停止し、どの `ccqa session bootstrap` を実行すればよいか案内します。
+
+### CI でセッションを復元する
+
+保存済みセッションは完全に `.ccqa/` 配下に閉じており `~/` に触りません。CI では各セッションファイルを run が期待するパスへ書き戻すだけです (secret store から読み込む)。
+
+```bash
+# ローカルで bootstrap した後、CI の secret store にコピー:
+base64 -i .ccqa/sessions/default/admin.json | pbcopy   # CCQA_SESSION_ADMIN_B64 として貼り付け
 ```
 
 ```yaml
-# .github/workflows/ccqa.yml (抜粋)
-- name: Restore agent-browser state
+# CI step (抜粋) — `ccqa run` の前に復元
+- name: Restore session
   env:
-    CCQA_SLACK_STG_STATE_B64: ${{ secrets.CCQA_SLACK_STG_STATE_B64 }}
+    CCQA_SESSION_ADMIN_B64: ${{ secrets.CCQA_SESSION_ADMIN_B64 }}
   run: |
-    mkdir -p .ccqa/sessions
-    printf '%s' "$CCQA_SLACK_STG_STATE_B64" | base64 -d \
-      > .ccqa/sessions/slack-stg.json
-
-- name: Run live specs
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-  run: pnpm ccqa run --report
+    mkdir -p .ccqa/sessions/default
+    printf '%s' "$CCQA_SESSION_ADMIN_B64" | base64 -d > .ccqa/sessions/default/admin.json
 ```
 
 注意点:
 
-- **有効期限**: 上流サービスの「このデバイスを記憶する」期間 (Slack ≈ 30 日、他サービスは様々) を過ぎると state ファイル内の cookie が失効し、CI でまたデバイス信頼ゲートに引っかかります。ローカルで再 bootstrap して secret を rotate してください。
-- **クレデンシャル扱い**: ファイルには有効な認証 cookie が入っています。GitHub Actions の encrypted secrets / Vault などの secret manager に必ず格納し、リポジトリにコミットしないでください。
-- **deterministic spec は `statePath:` を無視します**: 現状 `mode: live` だけが対象で、vitest 再生は常に isolated に走ります。
+- **有効期限**: プロバイダの「このデバイスを記憶する」期間を過ぎると保存済み cookie が失効します。ローカルで `ccqa session bootstrap` をやり直し、secret を rotate してください。
+- **クレデンシャル扱い**: セッションファイルには有効な認証 cookie が入っています。secret manager に格納し、コミットしないでください。
+- **deterministic spec は `session:` を無視します**: `mode: live` だけが対象で、vitest 再生は常に isolated に走ります。
 
 ## ファイル構成
 

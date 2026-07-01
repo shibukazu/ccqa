@@ -7,6 +7,7 @@ import { draftCommand } from "./draft.ts";
 import { driftCommand } from "./drift.ts";
 import { initCommand } from "./init.ts";
 import { perspectivesCommand } from "./perspectives.ts";
+import { sessionCommand } from "./session.ts";
 
 // dist build copies package.json next to the bundle (../package.json);
 // source-tree dev still needs the repo-root copy (../../package.json).
@@ -38,5 +39,6 @@ program.addCommand(perspectivesCommand);
 program.addCommand(recordCommand);
 program.addCommand(runCommand);
 program.addCommand(driftCommand);
+program.addCommand(sessionCommand);
 
 program.parse();
