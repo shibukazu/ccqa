@@ -1,10 +1,11 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   loadStorageState,
   mergeStorageStates,
+  removeTempStateDir,
   sessionFilePath,
   writeMergedTempState,
   type StorageState,
@@ -72,9 +73,21 @@ describe("loadStorageState", () => {
 });
 
 describe("writeMergedTempState", () => {
-  test("writes the merged state to a fresh temp file", async () => {
+  test("writes the merged state to a fresh temp file with 0600 permissions", async () => {
     const s = state([{ name: "s", domain: "a.example", path: "/" }], []);
     const path = await writeMergedTempState(s);
     expect(JSON.parse(await readFile(path, "utf8"))).toEqual(s);
+    const mode = (await stat(path)).mode & 0o777;
+    expect(mode).toBe(0o600);
+    await removeTempStateDir(path);
+  });
+});
+
+describe("removeTempStateDir", () => {
+  test("removes the temp dir created by writeMergedTempState", async () => {
+    const s = state([], []);
+    const path = await writeMergedTempState(s);
+    await removeTempStateDir(path);
+    await expect(stat(dirname(path))).rejects.toThrow();
   });
 });

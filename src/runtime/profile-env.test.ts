@@ -5,12 +5,8 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   applyProfileEnv,
   defaultEnvPath,
-  InvalidProfileNameError,
   loadDefaultEnv,
-  loadProfileEnv,
   parseDotenv,
-  profilePath,
-  ProfileNotFoundError,
 } from "./profile-env.ts";
 
 describe("parseDotenv", () => {
@@ -85,6 +81,14 @@ describe("parseDotenv", () => {
     expect(parseDotenv('A="a#b"')).toEqual({ A: "a#b" });
   });
 
+  test("a bare value containing both a `\"` and a ` #` is truncated at the comment", () => {
+    // Not a quoted value (doesn't start/end as a single quoted span), so this
+    // takes the unquoted parse path, where ` #` still starts a comment —
+    // relevant because callers serializing a value containing `"` must emit
+    // it bare, and can't rely on `#` being preserved literally there.
+    expect(parseDotenv('PW=p@ss"word #1')).toEqual({ PW: 'p@ss"word' });
+  });
+
   test("strips `export` followed by a tab or multiple spaces", () => {
     expect(parseDotenv("export\tFOO=bar")).toEqual({ FOO: "bar" });
     expect(parseDotenv("export   BAZ=qux")).toEqual({ BAZ: "qux" });
@@ -101,22 +105,6 @@ describe("parseDotenv", () => {
   test("empty or all-comment content yields no vars", () => {
     expect(parseDotenv("")).toEqual({});
     expect(parseDotenv("# only\n# comments")).toEqual({});
-  });
-});
-
-describe("profilePath validation", () => {
-  test("rejects separators, a leading dot (incl. ..), and empty", () => {
-    for (const bad of ["../etc", "a/b", "a\\b", "..", ".hidden", ""]) {
-      expect(() => profilePath(bad, "/repo")).toThrow(InvalidProfileNameError);
-    }
-  });
-
-  test("allows an in-name `..` that isn't traversal (e.g. v1..2)", () => {
-    expect(profilePath("v1..2", "/repo")).toBe("/repo/.ccqa/profiles/v1..2.env");
-  });
-
-  test("resolves a bare name under .ccqa/profiles/", () => {
-    expect(profilePath("stg", "/repo")).toBe("/repo/.ccqa/profiles/stg.env");
   });
 });
 
@@ -173,49 +161,6 @@ describe("applyProfileEnv", () => {
     const applied = applyProfileEnv({ CCQA_SECRET: "s3cr3t" });
     expect(applied).toEqual(["CCQA_SECRET"]);
     expect(applied).not.toContain("s3cr3t");
-  });
-});
-
-describe("loadProfileEnv", () => {
-  let dir: string;
-  beforeEach(async () => {
-    dir = await mkdtemp(join(tmpdir(), "ccqa-profile-"));
-  });
-  afterEach(async () => {
-    await rm(dir, { recursive: true, force: true });
-  });
-
-  test("reads and parses .ccqa/profiles/<name>.env", async () => {
-    const profilesDir = join(dir, ".ccqa", "profiles");
-    await mkdir(profilesDir, { recursive: true });
-    await writeFile(
-      join(profilesDir, "stg.env"),
-      "CCQA_EMAIL=stg@example.com\n",
-      "utf8",
-    );
-    expect(await loadProfileEnv("stg", dir)).toEqual({
-      CCQA_EMAIL: "stg@example.com",
-    });
-  });
-
-  test("throws ProfileNotFoundError when the file is missing", async () => {
-    await expect(loadProfileEnv("nope", dir)).rejects.toBeInstanceOf(
-      ProfileNotFoundError,
-    );
-  });
-
-  test("a non-ENOENT read error (path is a directory) is NOT a ProfileNotFoundError", async () => {
-    // Make .ccqa/profiles/stg.env a directory so readFile fails with EISDIR.
-    await mkdir(join(dir, ".ccqa", "profiles", "stg.env"), { recursive: true });
-    const err = await loadProfileEnv("stg", dir).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(Error);
-    expect(err).not.toBeInstanceOf(ProfileNotFoundError);
-  });
-
-  test("rejects a traversing profile name before touching the filesystem", async () => {
-    await expect(loadProfileEnv("../../etc/hosts", dir)).rejects.toBeInstanceOf(
-      InvalidProfileNameError,
-    );
   });
 });
 

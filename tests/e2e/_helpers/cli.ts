@@ -23,7 +23,7 @@ export type RunCcqaOptions = {
 // so the same E2E suite can be retargeted across migration phases:
 //   Phase 2 (default): "node --experimental-strip-types <repo>/bin/ccqa.ts"
 //   Phase 3:           "<repo>/dist/bin/ccqa.js"
-function resolveCcqaCommand(): { cmd: string; args: string[] } {
+export function resolveCcqaCommand(): { cmd: string; args: string[] } {
   const override = process.env.CCQA_CLI;
   if (override && override.trim().length > 0) {
     const parts = override.trim().split(/\s+/);

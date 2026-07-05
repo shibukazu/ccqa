@@ -4,7 +4,7 @@ Drift analysis asks Claude whether each `spec.yaml` is still in sync with the cu
 
 There are two ways to invoke drift:
 
-1. **`ccqa run --drift-report`** — the common case. When `ccqa run` finishes, an HTML run report is written; each failing spec gets a drift audit plus a three-way root-cause call. See [Run report](./report.md) for the full feature and [Auto-fix](./auto-fix.md) for how this complements the `generate` auto-fix loop.
+1. **`ccqa run --report`** — the common case. When `ccqa run` finishes, an HTML run report is written; each failing spec gets a drift audit plus a three-way root-cause call. See [Run report](./report.md) for the full feature and [Auto-fix](./auto-fix.md) for how this complements the `record` auto-fix loop.
 2. **`ccqa drift`** — standalone. Use this for a full audit (scheduled job, pre-merge sweep), or to inspect a single spec without running its test. The flags below describe this mode.
 
 ```bash
@@ -37,7 +37,7 @@ steps:
 ```
 
 These are glob patterns identifying the source files the spec depends on. Both
-`ccqa draft` (provisional) and `ccqa trace` (refined from real browser
+`ccqa draft` (provisional) and `ccqa record` (refined from real browser
 observations — URLs visited, aria-labels clicked, etc.) maintain this list, so
 typically you do not write it by hand. Commit `relatedPaths` to git alongside
 the spec — that way reviewers see which areas a spec covers.
@@ -74,7 +74,7 @@ package's specs in.
 
 ## GitHub Actions example
 
-Primary path — `ccqa run --drift-report`. The deterministic vitest run gates the build; the report (with drift audit and failure analysis) is uploaded as an artifact — see [Run report](./report.md) for the recommended workflow.
+Primary path — `ccqa run --report`. The deterministic vitest run gates the build; the report (with drift audit and failure analysis) is uploaded as an artifact — see [Run report](./report.md) for the recommended workflow.
 
 Standalone full sweep — `ccqa drift` — for scheduled audits that run regardless of test status:
 

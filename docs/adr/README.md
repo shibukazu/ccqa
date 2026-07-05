@@ -27,6 +27,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0003](0003-perspectives-factual-inventory.md) | `perspectives` is a factual coverage inventory, not a decision record | accepted |
 | [0004](0004-unify-run-commands.md) | Per-spec mode dispatcher: `run` reads `mode:`, `record` collapses `trace + generate` | accepted |
 | [0005](0005-session-restore-model.md) | Restore browser sessions by name, not by spec-embedded path | accepted |
+| [0006](0006-hub-results-control-plane.md) | Hub is a results/sessions/variables control plane, not a remote executor | accepted |
 
 ## Template
 

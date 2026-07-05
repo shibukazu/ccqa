@@ -17,6 +17,7 @@ export default defineConfig({
     "bin/ccqa": "./bin/ccqa.ts",
     "runtime/test-helpers": "./src/runtime/test-helpers.ts",
     "runtime/vitest.config": "./src/runtime/vitest.config.ts",
+    "hub-client/index": "./src/hub-client/index.ts",
   },
   format: "esm",
   platform: "node",

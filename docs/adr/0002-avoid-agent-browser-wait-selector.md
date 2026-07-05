@@ -5,8 +5,8 @@
 
 ## Context and problem statement
 
-The single biggest source of "replay-unstable" noise was `agent-browser wait
-"<css-selector>"`. It does **not** honour `--timeout`: when the selector never
+The single biggest source of "replay-unstable" noise was
+`agent-browser wait "<css-selector>"`. It does **not** honour `--timeout`: when the selector never
 matches, it blocks the agent-browser daemon for ~150s and then dies with
 `Resource temporarily unavailable` (`os error 35`), which cascades into every
 following command. Measured directly: `wait "[data-x='NOPE']" --timeout 2000`

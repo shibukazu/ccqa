@@ -53,6 +53,8 @@ test-results/
 
 # ccqa test
 .ccqa/
-# but keep E2E fixture .ccqa dirs
+# but keep E2E fixture .ccqa dirs and the hub-docker example's demo spec
 !tests/e2e/fixtures/**/.ccqa/
 !tests/e2e/fixtures/**/.ccqa/**
+!examples/hub-docker/.ccqa/
+!examples/hub-docker/.ccqa/**

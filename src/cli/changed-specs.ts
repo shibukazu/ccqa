@@ -4,6 +4,7 @@ import {
   resolveBaseRef,
   type ChangedFile,
 } from "../drift/affected.ts";
+import { RunUsageError } from "../run/errors.ts";
 import { listFeatureTree, parseBlockPath, type SpecRef } from "../store/index.ts";
 import * as log from "./logger.ts";
 
@@ -27,12 +28,20 @@ export async function collectChangedSpecs(
   try {
     changed = await getChangedFiles(baseRef, cwd);
   } catch (e) {
-    log.error(`failed to run 'git diff' against ${baseRef}: ${(e as Error).message}`);
-    process.exit(2);
+    throw new RunUsageError(`failed to run 'git diff' against ${baseRef}: ${(e as Error).message}`);
   }
 
   log.meta("changed-base", baseRef);
   log.meta("changed-files", changed.length);
+  return filterAffectedSpecs(specs, changed, cwd);
+}
+
+/** Matching core: see `collectChangedSpecs` for the "affected" rules. */
+async function filterAffectedSpecs(
+  specs: readonly SpecRef[],
+  changed: readonly { path: string }[],
+  cwd: string,
+): Promise<SpecRef[]> {
   if (changed.length === 0) return [];
 
   const tree = await listFeatureTree(cwd);

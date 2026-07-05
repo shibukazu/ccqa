@@ -3,12 +3,13 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   loadAllBlocks,
-  loadRecordPromptBundle,
+  loadPromptBundleFromHub,
   readSpecFile,
   saveRoute,
   saveTraceActions,
   updateSpecRelatedPaths,
 } from "../store/index.ts";
+import type { HubContext } from "./hub-conn.ts";
 import { parseRelatedPathsBlock } from "../drift/parse-related-paths.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
@@ -45,14 +46,15 @@ export async function runTrace(
   model?: string,
   validationMode: ValidationMode = "lenient",
   language?: string,
+  opts: { cwd?: string; hubContext?: HubContext | null } = {},
 ): Promise<RunTraceResult> {
   log.header("trace", `${featureName}/${specName}`);
 
   await preflightAgentBrowserCommand();
 
-  const specContent = await readSpecFile(featureName, specName);
+  const specContent = await readSpecFile(featureName, specName, opts.cwd);
   const spec = parseTestSpec(specContent);
-  const blocks = await loadAllBlocks();
+  const blocks = await loadAllBlocks(opts.cwd);
   const expanded = expandSpec(spec, { blocks });
 
   // Build the env-value → `${VAR}` scrub map BEFORE the trace starts so
@@ -84,7 +86,7 @@ export async function runTrace(
     steps: expanded,
     sessionName,
   });
-  const promptBundle = await loadRecordPromptBundle();
+  const promptBundle = await loadPromptBundleFromHub(opts.hubContext ?? null, "record");
   if (promptBundle !== null) log.meta("prompt", promptBundle.loaded.join(" + "));
   const systemPrompt =
     (promptBundle === null
@@ -176,8 +178,8 @@ export async function runTrace(
   const route: Route = { specName, timestamp, status: overallStatus, steps: routeSteps };
 
   const [routePath, actionsPath] = await Promise.all([
-    saveRoute(featureName, specName, route),
-    saveTraceActions(featureName, specName, validatedActions),
+    saveRoute(featureName, specName, route, opts.cwd),
+    saveTraceActions(featureName, specName, validatedActions, opts.cwd),
   ]);
 
   log.blank();
@@ -190,7 +192,7 @@ export async function runTrace(
     ? parseRelatedPathsBlock(relatedPathsBuffer)
     : null;
   if (relatedPaths !== null) {
-    const written = await updateSpecRelatedPaths(featureName, specName, relatedPaths);
+    const written = await updateSpecRelatedPaths(featureName, specName, relatedPaths, opts.cwd);
     if (written) {
       log.meta("relatedPaths", `${relatedPaths.length} path(s) written to ${written}`);
     }

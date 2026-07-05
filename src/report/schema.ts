@@ -13,8 +13,8 @@ import { DraftIssueSchema } from "../types.ts";
  *                 a product regression.
  *
  * The stakeholder ask behind this module is measurement-first: the call is
- * known to be hard, so every prediction is embedded in the HTML report where
- * a human records the ground truth and the report computes the confusion
+ * known to be hard, so every prediction is carried in report.json where the
+ * hub UI lets a human record the ground truth and computes the confusion
  * matrix client-side. Accuracy may start low; it must be *visible*.
  */
 export const FAILURE_LABELS = ["TEST_DRIFT", "SPEC_CHANGE", "PRODUCT_BUG"] as const;
@@ -72,8 +72,8 @@ export type ReportAssertion = z.infer<typeof ReportAssertionSchema>;
 /**
  * Step-boundary evidence captured at runtime by abStepEvidence() for the
  * deterministic test path (`ccqa run --drift-report`). The path fields are
- * relative to the report's index.html so the HTML can link to PNGs sitting
- * on disk without duplicating their (potentially large) bytes inline.
+ * relative to the report directory so consumers (the hub UI, CI tooling) can
+ * resolve the PNGs without duplicating their (potentially large) bytes inline.
  */
 export const ReportEvidenceSchema = z.object({
   stepId: z.string(),
@@ -102,10 +102,12 @@ export type ReportEvidence = z.infer<typeof ReportEvidenceSchema>;
  * deterministic (`evidence`) and live (`liveRun`) sources of step-boundary
  * screenshots.
  *
- * `beforePng` / `afterPng` are RELATIVE to the HTML report directory — the
- * caller computes the relative path with `node:path`'s `relative()` so the
- * generated report opens correctly when the CI artifact bundle (the report
- * dir + the .ccqa runs dir) is downloaded together.
+ * `beforePng` / `afterPng` are RELATIVE to the report directory, same
+ * convention as `ReportEvidenceSchema.pngPath` above. The caller copies the
+ * PNG files into `<reportDir>/evidence/<feature>/<spec>/` and computes the
+ * relative path with `node:path`'s `relative()`, so the report directory is
+ * self-contained: it can be archived and shipped on its own (e.g. a hub
+ * push) without also bundling the `.ccqa` runs dir.
  */
 /**
  * Per-step / per-run cost+usage record, pulled from the SDK's `result` message.
@@ -212,6 +214,12 @@ export const RunReportDataSchema = z.object({
    * compared apples-to-apples across prompt iterations.
    */
   promptVersion: z.string(),
+  /**
+   * The analysis custom prompt version applied to this run's failure analysis, or
+   * null when none was active (base prompt only). Lets accuracy be compared
+   * across custom prompt iterations. `.default(null)` keeps older report.json valid.
+   */
+  customPromptVersion: z.string().nullable().default(null),
   results: z.array(ReportSpecResultSchema),
 });
 export type RunReportData = z.infer<typeof RunReportDataSchema>;

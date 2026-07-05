@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import * as log from "./logger.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
@@ -16,14 +16,17 @@ import {
   getSpecDir,
   loadAllBlocks,
   loadAvailableBlocks,
-  loadLivePromptBundle,
+  loadPromptBundleFromHub,
   readSpecFile,
 } from "../store/index.ts";
+import type { HubContext } from "./hub-conn.ts";
+import { isStorageStateShape } from "./hub.ts";
+import type { AnalysisCustomPrompt } from "../prompts/custom-prompt.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import {
-  loadStorageState,
+  DEFAULT_SESSION_PROFILE,
   mergeStorageStates,
-  sessionFilePath,
+  removeTempStateDir,
   writeMergedTempState,
   type StorageState,
 } from "../runtime/session-state.ts";
@@ -47,10 +50,12 @@ export interface RunLiveOptions {
   concurrency?: number;
   /** Active `--profile` name; selects the sessions bucket for `spec.session`. */
   profile?: string;
+  hubContext?: HubContext | null;
+  customPrompt?: AnalysisCustomPrompt | null;
 }
 
 export type LiveSpecRun = {
-  /** ReportSpecResult rows the dispatcher can merge into the unified HTML. */
+  /** ReportSpecResult rows the dispatcher can merge into the unified report.json. */
   reportResults: ReportSpecResult[];
   /** Failed (or unloadable) specs; the dispatcher uses this to set the exit code. */
   failedCount: number;
@@ -72,7 +77,7 @@ export async function runLiveSpecs(
 
   log.meta("live-specs", specs.length);
 
-  const userPromptBundle = await loadLivePromptBundle(cwd);
+  const userPromptBundle = await loadPromptBundleFromHub(opts.hubContext ?? null, "live");
   if (userPromptBundle !== null) {
     log.meta("prompt", userPromptBundle.loaded.join(" + "));
   }
@@ -123,33 +128,35 @@ export async function runLiveSpecs(
   const reportDir = opts.reportDir ?? ".";
   return {
     failedCount,
-    reportResults: buildLiveReportResults(runs, driftBySpec, analysisBySpec, reportDir, failureAnalysisEnabled),
+    reportResults: await buildLiveReportResults(runs, driftBySpec, analysisBySpec, reportDir, failureAnalysisEnabled),
   };
 }
 
-function buildLiveReportResults(
+async function buildLiveReportResults(
   runs: SpecRunOutcome[],
   driftBySpec: Map<string, ReportSpecResult["driftIssues"]>,
   analysisBySpec: Map<string, LiveFailureAnalysis>,
   reportDir: string,
   failureAnalysisEnabled: boolean,
-): ReportSpecResult[] {
-  return runs.flatMap((r) => {
-    if (r.kind !== "run") return [];
-    const key = `${r.featureName}/${r.specName}`;
-    const base = liveRunToReportResult({
-      featureName: r.featureName,
-      specName: r.specName,
-      specYaml: r.specYaml,
-      result: r.result,
-      reportDir,
-    });
-    return [{
-      ...base,
-      driftIssues: driftBySpec.get(key) ?? null,
-      ...analysisFieldsFor(analysisBySpec.get(key), r.result.status, failureAnalysisEnabled),
-    }];
-  });
+): Promise<ReportSpecResult[]> {
+  const completed = runs.filter((r): r is Extract<SpecRunOutcome, { kind: "run" }> => r.kind === "run");
+  return Promise.all(
+    completed.map(async (r) => {
+      const key = `${r.featureName}/${r.specName}`;
+      const base = await liveRunToReportResult({
+        featureName: r.featureName,
+        specName: r.specName,
+        specYaml: r.specYaml,
+        result: r.result,
+        reportDir,
+      });
+      return {
+        ...base,
+        driftIssues: driftBySpec.get(key) ?? null,
+        ...analysisFieldsFor(analysisBySpec.get(key), r.result.status, failureAnalysisEnabled),
+      };
+    }),
+  );
 }
 
 /**
@@ -179,7 +186,7 @@ function analysisFieldsFor(
 /**
  * Run `analyzeDrift` against every successfully-loaded spec and return a
  * `featureName/specName → driftIssues` map. Drift findings are advisory —
- * they show in the HTML report but do not change the live-run exit code.
+ * they show in the report (report.json / hub UI) but do not change the live-run exit code.
  */
 async function runDriftAudit(
   runs: SpecRunOutcome[],
@@ -232,51 +239,61 @@ type SpecRunOutcome =
     };
 
 type SessionResolution =
-  | { ok: true; statePath: string }
+  | { ok: true; statePath: string; cleanup: () => Promise<void> }
   | { ok: false; error: string; hint: string };
 
 /**
- * Resolve `spec.session` names to a single state file to restore. Each name
- * maps to `.ccqa/sessions/<profile>/<name>.json` and must load as a valid
- * agent-browser state (the spec assumes it starts signed-in). One name is
- * restored from its file directly; several are merged into a temp file. A
- * missing or malformed session fails with a `ccqa session bootstrap` hint
- * instead of running unauthenticated.
+ * Resolve `spec.session` names to a single state file to restore, fetching
+ * each named session from the hub (`.ccqa/sessions/*.json` is no longer
+ * read here). Every name must load as a valid agent-browser state (the spec
+ * assumes it starts signed-in); a missing/malformed session fails with a
+ * `ccqa session bootstrap` hint instead of running unauthenticated. Loaded
+ * states are always merged (even a single one) and written to a fresh temp
+ * file — callers must invoke the returned `cleanup()` once the run is done.
  */
 export async function resolveSessionState(
   names: readonly string[],
+  hubCtx: HubContext | null,
   profile: string | undefined,
-  cwd: string,
 ): Promise<SessionResolution> {
-  const paths = names.map((name) => ({ name, path: sessionFilePath(name, profile, cwd) }));
-
-  // Load every named session up front; a missing or malformed file is a hard
-  // stop (same bootstrap hint), so single- and multi-session specs validate
-  // identically rather than deferring a broken single file to agent-browser.
-  const loaded: StorageState[] = [];
-  const broken = [];
-  for (const p of paths) {
-    try {
-      loaded.push(await loadStorageState(p.path));
-    } catch {
-      broken.push(p);
-    }
-  }
-  if (broken.length > 0) {
-    const list = broken.map((b) => b.name).join(", ");
-    const profileFlag = profile ? ` --profile ${profile}` : "";
+  if (names.length === 0 || hubCtx === null) {
+    const list = names.join(", ");
     return {
       ok: false,
-      error: `session not usable: ${list} (looked under ${dirname(broken[0]!.path)})`,
-      hint: `create it with: ${broken.map((b) => `ccqa session bootstrap ${b.name}${profileFlag}`).join("  ·  ")}`,
+      error: `session '${list}' requires a hub connection`,
+      hint: "set --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN) to restore sessions from the hub",
     };
   }
 
-  // Single session restores from its own file; multiple merge into a temp file
-  // so the source-of-truth files stay untouched.
-  if (paths.length === 1) return { ok: true, statePath: paths[0]!.path };
+  const resolvedProfile = profile ?? DEFAULT_SESSION_PROFILE;
+  const loaded: StorageState[] = [];
+  const broken: string[] = [];
+  for (const name of names) {
+    let state: unknown;
+    try {
+      state = await hubCtx.hub.getSession(hubCtx.project, resolvedProfile, name);
+    } catch {
+      broken.push(name);
+      continue;
+    }
+    if (!isStorageStateShape(state)) {
+      broken.push(name);
+      continue;
+    }
+    loaded.push(state as StorageState);
+  }
+
+  if (broken.length > 0) {
+    const profileFlag = profile ? ` --profile ${profile}` : "";
+    return {
+      ok: false,
+      error: `session not usable on the hub: ${broken.join(", ")}`,
+      hint: `create it with: ${broken.map((name) => `ccqa session bootstrap ${name}${profileFlag}`).join("  ·  ")}`,
+    };
+  }
+
   const statePath = await writeMergedTempState(mergeStorageStates(loaded));
-  return { ok: true, statePath };
+  return { ok: true, statePath, cleanup: () => removeTempStateDir(statePath) };
 }
 
 async function runOneSpec(args: {
@@ -313,60 +330,68 @@ async function runOneSpec(args: {
   const sessionName = generateLiveSessionName();
   log.meta("session", sessionName);
 
-  // Restore any sessions named by `spec.session` (see resolveSessionState); a
-  // missing one stops the run rather than starting unauthenticated.
+  // Restore any sessions named by `spec.session` from the hub (see
+  // resolveSessionState); a missing one stops the run rather than starting
+  // unauthenticated. The resolved state always lives in a temp file, cleaned
+  // up in the `finally` below once the run (pass, fail, or throw) is done.
   let statePath: string | null = null;
+  let cleanupSession: (() => Promise<void>) | null = null;
   if (spec.session && spec.session.length > 0) {
-    const resolution = await resolveSessionState(spec.session, opts.profile, cwd);
+    const resolution = await resolveSessionState(spec.session, opts.hubContext ?? null, opts.profile);
     if (!resolution.ok) {
       log.error(resolution.error);
       log.hint(resolution.hint);
       return { kind: "error", featureName, specName, error: resolution.error };
     }
     statePath = resolution.statePath;
+    cleanupSession = resolution.cleanup;
     log.meta("state", spec.session.join(", "));
   }
 
-  const runId = buildRunId();
-  const runDir = opts.out ?? join(specDir, "runs", runId);
-  await mkdir(runDir, { recursive: true });
-  log.meta("runDir", runDir);
+  try {
+    const runId = buildRunId();
+    const runDir = opts.out ?? join(specDir, "runs", runId);
+    await mkdir(runDir, { recursive: true });
+    log.meta("runDir", runDir);
 
-  const result = await runLiveExecutor({
-    spec: { title: spec.title },
-    steps: expanded,
-    runId,
-    runDir,
-    sessionName,
-    statePath,
-    systemPromptSuffix: userPromptSuffix,
-    model: opts.model,
-    language: opts.language,
-    retries: opts.retry,
-  });
+    const result = await runLiveExecutor({
+      spec: { title: spec.title },
+      steps: expanded,
+      runId,
+      runDir,
+      sessionName,
+      statePath,
+      systemPromptSuffix: userPromptSuffix,
+      model: opts.model,
+      language: opts.language,
+      retries: opts.retry,
+    });
 
-  const runJsonPath = join(runDir, "run.json");
-  const runMdPath = join(runDir, "run.md");
-  await writeFile(runJsonPath, JSON.stringify(result, null, 2) + "\n", "utf-8");
-  await writeFile(runMdPath, renderRunMarkdown(featureName, specName, result), "utf-8");
+    const runJsonPath = join(runDir, "run.json");
+    const runMdPath = join(runDir, "run.md");
+    await writeFile(runJsonPath, JSON.stringify(result, null, 2) + "\n", "utf-8");
+    await writeFile(runMdPath, renderRunMarkdown(featureName, specName, result), "utf-8");
 
-  log.meta("saved", runJsonPath);
-  log.meta("status", result.status.toUpperCase());
-  log.meta(
-    "step-summary",
-    `${count(result.steps, "passed")} passed / ${count(result.steps, "failed")} failed / ${count(result.steps, "skipped")} skipped`,
-  );
-  const costLine = formatLiveCost(result.cost, { compact: false });
-  if (costLine) log.meta("cost", costLine);
+    log.meta("saved", runJsonPath);
+    log.meta("status", result.status.toUpperCase());
+    log.meta(
+      "step-summary",
+      `${count(result.steps, "passed")} passed / ${count(result.steps, "failed")} failed / ${count(result.steps, "skipped")} skipped`,
+    );
+    const costLine = formatLiveCost(result.cost, { compact: false });
+    if (costLine) log.meta("cost", costLine);
 
-  return {
-    kind: "run",
-    featureName,
-    specName,
-    runDir,
-    specYaml: specContent,
-    result,
-  };
+    return {
+      kind: "run",
+      featureName,
+      specName,
+      runDir,
+      specYaml: specContent,
+      result,
+    };
+  } finally {
+    if (cleanupSession) await cleanupSession();
+  }
 }
 
 function logBatchCost(runs: SpecRunOutcome[]): void {
@@ -443,6 +468,7 @@ async function runFailureAnalysisForLiveRuns(
         baseRef: diff.ok ? baseRef : null,
         driftIssues: driftBySpec.get(key) ?? null,
         ...(opts.language ? { outputLanguage: opts.language } : {}),
+        ...(opts.customPrompt ? { customPrompt: opts.customPrompt } : {}),
       },
       { ...(opts.model ? { model: opts.model } : {}), cwd },
     );

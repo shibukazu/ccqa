@@ -1,7 +1,8 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
+import { HubApiError } from "../hub-client/index.ts";
+import type { HubContext } from "./hub-conn.ts";
+import type { PromptName } from "../prompts/prompt-names.ts";
 import {
   buildAgentUpdateSystemPrompt,
   buildAgentUpdateUserPrompt,
@@ -12,70 +13,83 @@ export interface UpdateAgentPromptArgs {
   mode: "live" | "record";
   /** Multi-line summary of the run, fed to the prompt as context. */
   runSummary: string;
-  cwd: string;
+  hubContext: HubContext | null;
   model?: string;
   language?: string;
 }
 
 /**
- * Refresh `.ccqa/prompts/<mode>.agent.md` from the latest run.
+ * Refresh the `<mode>.agent` prompt stored on the hub from the latest run.
  *
- * Reads the existing file (if any) and a caller-supplied run summary, sends
- * both to Claude, and writes the response back over the agent prompt file.
- * Degrades gracefully when auth is missing — logs and returns — so the run
- * exit code is unaffected by this opt-in side step.
+ * Reads the existing prompt (if any) and a caller-supplied run summary, sends
+ * both to Claude, and writes the response back to the hub. Degrades
+ * gracefully when auth or the hub connection is missing — logs and returns —
+ * so the run exit code is unaffected by this opt-in side step.
  */
 export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<void> {
-  const { mode, runSummary, cwd, model, language } = args;
-  const agentMdPath = join(cwd, ".ccqa", "prompts", `${mode}.agent.md`);
-  const relPath = relative(cwd, agentMdPath);
+  const { mode, runSummary, hubContext, model, language } = args;
 
   const auth = driftAuthAvailable();
   if (!auth.ok) {
     log.warn(`--update-agent-prompt skipped (${auth.reason})`);
     return;
   }
-
-  const currentAgentMd = await readFile(agentMdPath, "utf-8").catch(() => null);
-  const promptInput = {
-    mode,
-    currentAgentMd,
-    runSummary,
-    ...(language ? { language } : {}),
-  };
-  const systemPrompt = buildAgentUpdateSystemPrompt(promptInput);
-  const userPrompt = buildAgentUpdateUserPrompt(promptInput);
-
-  log.info(`--update-agent-prompt: refreshing ${relPath}`);
-
-  // We don't expose a non-streaming wrapper today; use the streaming one with
-  // a no-op event handler — `result` carries the full assistant text.
-  // No Bash tool is exposed (allowedTools: [] + disableBuiltinTools: true),
-  // so there are no tool_use blocks to silence.
-  const { result, isError } = await invokeClaudeStreaming(
-    {
-      prompt: userPrompt,
-      systemPrompt,
-      allowedTools: [],
-      disableBuiltinTools: true,
-      ...(model ? { model } : {}),
-    },
-    () => {},
-  );
-
-  if (isError || !result || result.trim().length === 0) {
+  if (!hubContext) {
     log.warn(
-      `--update-agent-prompt: Claude returned no usable output${isError ? " (SDK error)" : ""}; leaving ${relPath} unchanged`,
+      "--update-agent-prompt skipped (hub connection required; pass --hub-url/--hub-token or set CCQA_HUB_URL/CCQA_HUB_TOKEN)",
     );
     return;
   }
+  const { hub, project } = hubContext;
+  const promptName = `${mode}.agent` as PromptName;
 
-  const newText = stripCodeFences(result.trim()) + "\n";
-  await mkdir(dirname(agentMdPath), { recursive: true });
-  await writeFile(agentMdPath, newText, "utf-8");
+  try {
+    const currentAgentMd = await hub.getPrompt(project, promptName);
+    const promptInput = {
+      mode,
+      currentAgentMd,
+      runSummary,
+      ...(language ? { language } : {}),
+    };
+    const systemPrompt = buildAgentUpdateSystemPrompt(promptInput);
+    const userPrompt = buildAgentUpdateUserPrompt(promptInput);
 
-  log.info(`--update-agent-prompt: wrote ${relPath} (${newText.length} bytes)`);
-  log.info(`--update-agent-prompt: review the diff with: git diff -- "${relPath}"`);
+    log.info(`--update-agent-prompt: refreshing prompt "${promptName}" on the hub (project ${project})`);
+
+    // We don't expose a non-streaming wrapper today; use the streaming one with
+    // a no-op event handler — `result` carries the full assistant text.
+    // No Bash tool is exposed (allowedTools: [] + disableBuiltinTools: true),
+    // so there are no tool_use blocks to silence.
+    const { result, isError } = await invokeClaudeStreaming(
+      {
+        prompt: userPrompt,
+        systemPrompt,
+        allowedTools: [],
+        disableBuiltinTools: true,
+        ...(model ? { model } : {}),
+      },
+      () => {},
+    );
+
+    if (isError || !result || result.trim().length === 0) {
+      log.warn(
+        `--update-agent-prompt: Claude returned no usable output${isError ? " (SDK error)" : ""}; leaving prompt "${promptName}" unchanged`,
+      );
+      return;
+    }
+
+    const newText = stripCodeFences(result.trim()) + "\n";
+    await hub.putPrompt(project, promptName, newText);
+
+    log.info(`--update-agent-prompt: updated prompt "${promptName}" on the hub`);
+    log.info("--update-agent-prompt: review it in the hub UI's Prompts tab");
+  } catch (err) {
+    if (err instanceof HubApiError) {
+      log.warn(`--update-agent-prompt skipped (hub request failed: ${err.status} ${err.code}: ${err.message})`);
+      return;
+    }
+    throw err;
+  }
 }
 
 /**
