@@ -42,12 +42,14 @@ describe("ccqa run --mode=deterministic --report", () => {
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).not.toBe(0);
     expect(combined).toMatch(/failure analysis skipped/);
-    expect(combined).toMatch(/run report written to .*ccqa-report\/index\.html/);
+    expect(combined).toMatch(/run report \(json\) written to .*ccqa-report\/report\.json/);
 
-    const html = await readFile(join(project.cwd, "ccqa-report", "index.html"), "utf8");
-    expect(html).toContain("demo/boom");
-    expect(html).toContain("analysis skipped");
-    expect(html).toContain("Failure log");
+    const json = await readFile(join(project.cwd, "ccqa-report", "report.json"), "utf8");
+    const data = JSON.parse(json);
+    const boom = data.results.find((r: { feature: string; spec: string }) => r.feature === "demo" && r.spec === "boom");
+    expect(boom).toBeDefined();
+    expect(boom.analysisSkipped).toBeTruthy();
+    expect(boom.failureLogExcerpt).toBeTruthy();
   });
 
   test("passing spec: report is still written as a run summary, without the measurement panel", async () => {
@@ -60,10 +62,12 @@ describe("ccqa run --mode=deterministic --report", () => {
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(0);
 
-    const html = await readFile(join(project.cwd, "my-report", "index.html"), "utf8");
-    expect(html).toContain("demo/smoke");
-    expect(html).toContain("1 passed");
-    expect(html).not.toContain('id="measure-panel"');
+    const json = await readFile(join(project.cwd, "my-report", "report.json"), "utf8");
+    const data = JSON.parse(json);
+    const smoke = data.results.find((r: { feature: string; spec: string }) => r.feature === "demo" && r.spec === "smoke");
+    expect(smoke).toBeDefined();
+    expect(smoke.status).toBe("passed");
+    expect(smoke.testCounts.passed).toBe(1);
   });
 
   test("without --report no report directory is created", async () => {
@@ -75,7 +79,7 @@ describe("ccqa run --mode=deterministic --report", () => {
     });
     expect(result.exitCode).toBe(0);
     await expect(
-      readFile(join(project.cwd, "ccqa-report", "index.html"), "utf8"),
+      readFile(join(project.cwd, "ccqa-report", "report.json"), "utf8"),
     ).rejects.toThrow();
   });
 });

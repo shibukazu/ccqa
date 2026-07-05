@@ -5,6 +5,8 @@ import { collectIncludedBlockNames } from "../spec/expand.ts";
 import { parseBlockSpec, parseTestSpec } from "../spec/parser.ts";
 import { isParamRequired } from "../spec/yaml-schema.ts";
 import type { BlockSpec, Route, TestSpec, TraceAction } from "../types.ts";
+import type { HubContext } from "../cli/hub-conn.ts";
+import type { PromptName } from "../prompts/prompt-names.ts";
 
 export interface AvailableBlock {
   name: string;
@@ -303,66 +305,60 @@ export async function readBlockSpec(name: string, cwd?: string): Promise<BlockSp
   return parseBlockSpec(content, path);
 }
 
-const RECORD_USER_PROMPT_PATH = ".ccqa/prompts/record.user.md";
-const RECORD_AGENT_PROMPT_PATH = ".ccqa/prompts/record.agent.md";
-const LIVE_USER_PROMPT_PATH = ".ccqa/prompts/live.user.md";
-const LIVE_AGENT_PROMPT_PATH = ".ccqa/prompts/live.agent.md";
 const USER_PROMPT_MAX_BYTES = 32_768;
 
 export interface PromptBundle {
   /** Final concatenated string to append after the system prompt prefix, or null when nothing was loaded. */
   text: string;
-  /** Files actually read (for logging). */
+  /** Sources actually loaded (hub prompt names), for logging. */
   loaded: string[];
 }
 
 /**
- * Load the prompt bundle appended to the `ccqa record` (trace) system prompt.
- *
- * Reads `.ccqa/prompts/record.user.md` (human-maintained, stable project
- * rules) and `.ccqa/prompts/record.agent.md` (auto-rewritten by
- * `ccqa record --update-agent-prompt`). Returns null when both files are
- * missing / empty. The combined text is capped at 32 KiB after concatenation.
- *
- * Use `ccqa init` to scaffold both files.
+ * Load the prompt bundle from the hub (guidance kind: "record" or "live").
+ * Best-effort: no hub client, a fetch failure, or both prompts absent all
+ * resolve to null — a broken/missing hub prompt must never stop a run.
  */
-export async function loadRecordPromptBundle(cwd?: string): Promise<PromptBundle | null> {
-  return loadPromptBundle(RECORD_USER_PROMPT_PATH, RECORD_AGENT_PROMPT_PATH, cwd);
+export async function loadPromptBundleFromHub(
+  ctx: HubContext | null,
+  kind: "record" | "live",
+): Promise<PromptBundle | null> {
+  if (!ctx) return null;
+  const userName: PromptName = `${kind}.user`;
+  const agentName: PromptName = `${kind}.agent`;
+  try {
+    const [userText, agentText] = await Promise.all([
+      ctx.hub.getPrompt(ctx.project, userName).then(normalizePromptText),
+      ctx.hub.getPrompt(ctx.project, agentName).then(normalizePromptText),
+    ]);
+    return assemblePromptBundle(
+      { text: userText, label: userName },
+      { text: agentText, label: agentName },
+    );
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Load the prompt bundle appended to the `ccqa run` (live mode) system prompt.
- *
- * Reads `.ccqa/prompts/live.user.md` (human-maintained, stable project
- * rules) and `.ccqa/prompts/live.agent.md` (auto-rewritten by
- * `ccqa run --update-agent-prompt`). Same null / cap semantics as
- * `loadRecordPromptBundle`. Keeping product-specific context in the
- * consuming repo (not the ccqa OSS prompt) is the explicit non-contamination
- * boundary.
+ * Shared concatenation logic behind `loadPromptBundleFromHub`: section
+ * headers, `loaded` labels, and the 32 KiB cap. Returns null when both
+ * inputs are absent.
  */
-export async function loadLivePromptBundle(cwd?: string): Promise<PromptBundle | null> {
-  return loadPromptBundle(LIVE_USER_PROMPT_PATH, LIVE_AGENT_PROMPT_PATH, cwd);
-}
-
-async function loadPromptBundle(
-  userRelPath: string,
-  agentRelPath: string,
-  cwd: string | undefined,
-): Promise<PromptBundle | null> {
-  const [userText, agentText] = await Promise.all([
-    readPromptFile(userRelPath, cwd),
-    readPromptFile(agentRelPath, cwd),
-  ]);
-  if (userText === null && agentText === null) return null;
+function assemblePromptBundle(
+  user: { text: string | null; label: string },
+  agent: { text: string | null; label: string },
+): PromptBundle | null {
+  if (user.text === null && agent.text === null) return null;
   const sections: string[] = [];
   const loaded: string[] = [];
-  if (userText !== null) {
-    sections.push(`### Project guidance (human-maintained)\n\n${userText}`);
-    loaded.push(userRelPath);
+  if (user.text !== null) {
+    sections.push(`### Project guidance (human-maintained)\n\n${user.text}`);
+    loaded.push(user.label);
   }
-  if (agentText !== null) {
-    sections.push(`### Agent learnings (auto-updated by ccqa --update-agent-prompt)\n\n${agentText}`);
-    loaded.push(agentRelPath);
+  if (agent.text !== null) {
+    sections.push(`### Agent learnings (auto-updated by ccqa --update-agent-prompt)\n\n${agent.text}`);
+    loaded.push(agent.label);
   }
   let text = sections.join("\n\n");
   if (text.length > USER_PROMPT_MAX_BYTES) {
@@ -372,9 +368,8 @@ async function loadPromptBundle(
   return { text, loaded };
 }
 
-async function readPromptFile(relPath: string, cwd: string | undefined): Promise<string | null> {
-  const path = join(cwd ?? process.cwd(), relPath);
-  const content = await readFile(path, "utf-8").catch(() => null);
+/** Trim + empty-string-to-null normalization applied to hub prompt sources. */
+function normalizePromptText(content: string | null): string | null {
   if (content === null) return null;
   const trimmed = content.trim();
   return trimmed.length === 0 ? null : trimmed;

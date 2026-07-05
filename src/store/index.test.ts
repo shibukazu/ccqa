@@ -1,9 +1,12 @@
 import { describe, test, expect } from "vitest";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadLivePromptBundle, loadRecordPromptBundle, routeToMarkdown } from "./index.ts";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundleFromHub, routeToMarkdown } from "./index.ts";
 import type { Route } from "../types.ts";
+import type { HubClient } from "../hub-client/index.ts";
+
+/** Minimal fake — only `getPrompt` is exercised by these tests. */
+function fakeHubClient(getPrompt: HubClient["getPrompt"]): HubClient {
+  return { getPrompt } as unknown as HubClient;
+}
 
 describe("parseSpecPath", () => {
   test("parses valid feature/spec path", () => {
@@ -157,151 +160,31 @@ describe("routeToMarkdown", () => {
   });
 });
 
-describe("loadRecordPromptBundle", () => {
-  async function makeWorkspace(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "ccqa-record-prompt-bundle-"));
-    await mkdir(join(dir, ".ccqa", "prompts"), { recursive: true });
-    return dir;
-  }
-
-  test("returns null when both files are missing", async () => {
-    const dir = await makeWorkspace();
-    expect(await loadRecordPromptBundle(dir)).toBeNull();
+describe("loadPromptBundleFromHub", () => {
+  test("returns null when there's no hub client", async () => {
+    expect(await loadPromptBundleFromHub(null, "live")).toBeNull();
   });
 
-  test("returns a user-only bundle when only record.user.md exists", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(
-      join(dir, ".ccqa/prompts/record.user.md"),
-      "Use only [data-testid='*'] selectors.\n",
-      "utf-8",
+  test("returns null when the hub has neither prompt stored", async () => {
+    const hub = fakeHubClient(async () => null);
+    expect(await loadPromptBundleFromHub({ hub, project: "demo" }, "record")).toBeNull();
+  });
+
+  test("assembles a combined bundle with hub prompt names as `loaded` labels", async () => {
+    const hub = fakeHubClient(async (_project, name) =>
+      name === "live.user" ? "Stable rule." : name === "live.agent" ? "Learned hint." : null,
     );
-    const out = await loadRecordPromptBundle(dir);
+    const out = await loadPromptBundleFromHub({ hub, project: "demo" }, "live");
     expect(out).not.toBeNull();
-    expect(out!.loaded).toEqual([".ccqa/prompts/record.user.md"]);
-    expect(out!.text).toContain("Project guidance (human-maintained)");
-    expect(out!.text).toContain("Use only [data-testid='*'] selectors.");
-    expect(out!.text).not.toContain("Agent learnings");
-  });
-
-  test("returns an agent-only bundle when only record.agent.md exists", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(
-      join(dir, ".ccqa/prompts/record.agent.md"),
-      "Auto-learned: the login form uses [name=identifier].\n",
-      "utf-8",
-    );
-    const out = await loadRecordPromptBundle(dir);
-    expect(out).not.toBeNull();
-    expect(out!.loaded).toEqual([".ccqa/prompts/record.agent.md"]);
-    expect(out!.text).toContain("Agent learnings (auto-updated by ccqa --update-agent-prompt)");
-    expect(out!.text).toContain("Auto-learned");
-    expect(out!.text).not.toContain("Project guidance");
-  });
-
-  test("returns a combined bundle when both files exist", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(join(dir, ".ccqa/prompts/record.user.md"), "Stable rule.\n", "utf-8");
-    await writeFile(join(dir, ".ccqa/prompts/record.agent.md"), "Learned hint.\n", "utf-8");
-    const out = await loadRecordPromptBundle(dir);
-    expect(out).not.toBeNull();
-    expect(out!.loaded).toEqual([
-      ".ccqa/prompts/record.user.md",
-      ".ccqa/prompts/record.agent.md",
-    ]);
+    expect(out!.loaded).toEqual(["live.user", "live.agent"]);
     expect(out!.text).toContain("Stable rule.");
     expect(out!.text).toContain("Learned hint.");
-    // user section appears before agent section
-    expect(out!.text.indexOf("Stable rule.")).toBeLessThan(out!.text.indexOf("Learned hint."));
   });
 
-  test("truncates the concatenated bundle at 32 KiB", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(join(dir, ".ccqa/prompts/record.user.md"), "x".repeat(20_000), "utf-8");
-    await writeFile(join(dir, ".ccqa/prompts/record.agent.md"), "y".repeat(20_000), "utf-8");
-    const out = await loadRecordPromptBundle(dir);
-    expect(out).not.toBeNull();
-    expect(out!.text).toMatch(/prompt bundle truncated at 32768 bytes/);
-  });
-
-  test("does NOT read the old .ccqa/prompts/trace.user.md path", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(
-      join(dir, ".ccqa/prompts/trace.user.md"),
-      "legacy content",
-      "utf-8",
-    );
-    expect(await loadRecordPromptBundle(dir)).toBeNull();
-  });
-});
-
-describe("loadLivePromptBundle", () => {
-  async function makeWorkspace(): Promise<string> {
-    const dir = await mkdtemp(join(tmpdir(), "ccqa-live-prompt-bundle-"));
-    await mkdir(join(dir, ".ccqa", "prompts"), { recursive: true });
-    return dir;
-  }
-
-  test("returns null when both files are missing", async () => {
-    const dir = await makeWorkspace();
-    expect(await loadLivePromptBundle(dir)).toBeNull();
-  });
-
-  test("returns a user-only bundle when only live.user.md exists", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(
-      join(dir, ".ccqa/prompts/live.user.md"),
-      "Project guidance line.\n",
-      "utf-8",
-    );
-    const out = await loadLivePromptBundle(dir);
-    expect(out).not.toBeNull();
-    expect(out!.loaded).toEqual([".ccqa/prompts/live.user.md"]);
-    expect(out!.text).toContain("Project guidance line.");
-  });
-
-  test("returns an agent-only bundle when only live.agent.md exists", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(
-      join(dir, ".ccqa/prompts/live.agent.md"),
-      "Auto-learned hint.\n",
-      "utf-8",
-    );
-    const out = await loadLivePromptBundle(dir);
-    expect(out).not.toBeNull();
-    expect(out!.loaded).toEqual([".ccqa/prompts/live.agent.md"]);
-    expect(out!.text).toContain("Auto-learned hint.");
-  });
-
-  test("returns a combined bundle when both files exist", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(join(dir, ".ccqa/prompts/live.user.md"), "Stable rule.", "utf-8");
-    await writeFile(join(dir, ".ccqa/prompts/live.agent.md"), "Learned hint.", "utf-8");
-    const out = await loadLivePromptBundle(dir);
-    expect(out).not.toBeNull();
-    expect(out!.loaded).toEqual([
-      ".ccqa/prompts/live.user.md",
-      ".ccqa/prompts/live.agent.md",
-    ]);
-    expect(out!.text.indexOf("Stable rule.")).toBeLessThan(out!.text.indexOf("Learned hint."));
-  });
-
-  test("truncates the concatenated bundle at 32 KiB", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(join(dir, ".ccqa/prompts/live.user.md"), "u".repeat(20_000), "utf-8");
-    await writeFile(join(dir, ".ccqa/prompts/live.agent.md"), "a".repeat(20_000), "utf-8");
-    const out = await loadLivePromptBundle(dir);
-    expect(out).not.toBeNull();
-    expect(out!.text).toMatch(/prompt bundle truncated at 32768 bytes/);
-  });
-
-  test("does NOT read the old .ccqa/prompts/run-nd.user.md path", async () => {
-    const dir = await makeWorkspace();
-    await writeFile(
-      join(dir, ".ccqa/prompts/run-nd.user.md"),
-      "legacy content",
-      "utf-8",
-    );
-    expect(await loadLivePromptBundle(dir)).toBeNull();
+  test("returns null when getPrompt throws", async () => {
+    const hub = fakeHubClient(async () => {
+      throw new Error("network error");
+    });
+    expect(await loadPromptBundleFromHub({ hub, project: "demo" }, "record")).toBeNull();
   });
 });

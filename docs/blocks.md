@@ -57,11 +57,10 @@ steps:
 
 The block's `${paramName}` references are substituted with the values the include site provided (so the Claude trace prompt sees `open ${APP_LOGIN_URL}` for the first step, `Fill [type='password'] with ${APP_PASSWORD}` for the second). Unresolved refs flow through unchanged so the test-time `process.env` lookup can fill them in.
 
-## 3. Trace and generate the spec
+## 3. Record the spec
 
 ```bash
-ccqa trace tasks/create-and-complete       # records actions for ALL steps (login + spec)
-ccqa generate tasks/create-and-complete    # emits a single test.spec.ts for the spec
+ccqa record tasks/create-and-complete      # records actions and generates test.spec.ts for the spec (login + spec steps)
 ```
 
 The generated test is one flat function — block content is inlined and tagged with `// step: step-XX [<block name>]` so you can still see which step came from which block:
@@ -85,7 +84,7 @@ test("Create a task and mark it complete", () => {
 ## Editing a block
 
 1. Update `.ccqa/blocks/<name>/spec.yaml`.
-2. Re-run `ccqa trace <feature>/<spec> && ccqa generate <feature>/<spec>` for every spec that includes the block.
+2. Re-run `ccqa record <feature>/<spec>` for every spec that includes the block.
 
 The trade-off vs the recorded-block model is explicit: a block change costs N traces (one per including spec) instead of 1, but each trace runs end-to-end so a block step that was always going to fail under spec B is caught immediately, not at spec B's runtime.
 
@@ -96,4 +95,4 @@ Earlier v0.4 builds wrote one of two artifacts under each block dir:
 - `.ccqa/blocks/<name>/test.spec.ts` — function-export form
 - `.ccqa/blocks/<name>/actions.json` and/or `route.md` — recorded form
 
-Both are now dead. `ccqa trace` and `ccqa generate` emit a hint when they detect any of them; delete them manually. The `ccqa trace-block` and `ccqa generate-block` commands have been removed.
+Both are now dead. `ccqa record` emits a hint when it detects any of them; delete them manually. The `ccqa trace-block` and `ccqa generate-block` commands have been removed.

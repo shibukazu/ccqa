@@ -43,7 +43,7 @@ export const driftCommand = addLanguageOption(
     )
     .description(
       "Standalone spec ↔ codebase static audit. Use for PR checks where the browser isn't run. " +
-        "For run-time audit with an HTML report, see `ccqa run --report`.",
+        "For run-time audit with a structured report, see `ccqa run --report`.",
     )
     .option("--format <fmt>", "Output format: text | json | github", "text")
     .option(

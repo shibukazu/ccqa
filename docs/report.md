@@ -1,11 +1,16 @@
 # Run report
 
-`ccqa run --drift-report` writes a **self-contained HTML report** of the run — one file, inline CSS/JS, no server — meant to be uploaded as a CI artifact the same way Playwright's HTML report is.
+`ccqa run --report` writes a **machine-readable report** of the run — a
+`report.json` plus the per-step evidence PNGs — meant to be pushed to the
+[ccqa hub](./hub.md) (`ccqa hub push`) and viewed in the hub UI, or consumed
+directly by CI tooling. There is no standalone HTML file: the hub UI is the
+report, rendering results from `report.json` and the evidence images it serves
+over its API.
 
 ```bash
-ccqa run --drift-report                          # writes ccqa-report/index.html
-ccqa run --drift-report my-report                # custom output directory
-ccqa run --drift-report --drift-base origin/main # base ref for the source diff
+ccqa run --report                          # writes ccqa-report/report.json (+ evidence/)
+ccqa run --report my-report                # custom output directory
+ccqa run --report --base origin/main       # base ref for the source diff
 ```
 
 ## What the report contains
@@ -15,9 +20,9 @@ ccqa run --drift-report --drift-base origin/main # base ref for the source diff
   step (plus a JSON sidecar with URL/title/timestamp) so a reviewer can confirm
   the test actually drove the app through the intended states. Captured by
   default; pass `--no-evidence` to skip. Files land in
-  `<report-dir>/evidence/<feature>/<spec>/<stepId>.{png,json}` and are linked
-  from the report; they survive on disk even when `--drift-report` is not
-  passed, so they work as a standalone CI artifact.
+  `<report-dir>/evidence/<feature>/<spec>/<stepId>.{png,json}`, are referenced
+  from `report.json`, and are served by the hub UI over its API; they survive on
+  disk even when `--report` is not passed.
 - For each **failing** spec:
   - a **root-cause call** made by Claude with the PR diff as context:
     - `TEST_DRIFT` — what the spec verifies is unchanged; only the test code drifted from the source (selector rename, timing, over-assertion)
@@ -32,19 +37,26 @@ The failure analysis classifies; it never modifies anything. The exit code of `c
 
 ## Measuring prediction accuracy
 
-The root-cause call is known to be hard, so the report is built measurement-first: it is also the **grading UI**.
+The root-cause call is known to be hard, so ccqa is built measurement-first:
+after pushing a run, the [hub UI](./hub.md#the-bundled-ui) is the **grading UI**.
 
-1. Open the report and review a failing case (you are investigating the failure anyway).
-2. Pick the true cause with the radio buttons (`TEST_DRIFT` / `SPEC_CHANGE` / `PRODUCT_BUG`) and optionally leave a note.
-3. The accuracy panel recomputes live: overall accuracy, a confusion matrix (predicted × actual, including UNKNOWN predictions), and per-class precision / recall / F1.
+1. Open a failing run in the hub and review a failing spec (you are
+   investigating the failure anyway).
+2. Pick the true cause with the segmented control (`TEST_DRIFT` / `SPEC_CHANGE`
+   / `PRODUCT_BUG`); the grade is saved to the hub.
+3. A confusion matrix (predicted × actual, including UNKNOWN predictions) and
+   overall accuracy update live.
 
-Labels are saved in the browser's localStorage and can be **exported/imported as JSON**, so grading work survives the session and can be collected across runs. The export embeds the analysis `promptVersion`, so numbers from different prompt iterations are never silently mixed.
+Grades are stored on the hub (keyed to the run's analysis `promptVersion`, so
+numbers from different prompt iterations are never mixed), and they feed the
+[triage-learning](./hub.md#triage-learning) job that improves the analysis
+custom prompt over time.
 
 ## How the diff context is resolved
 
 The base ref for the source diff follows the same precedence as `ccqa drift --changed`:
 
-1. explicit `--drift-base <ref>`
+1. explicit `--base <ref>`
 2. `GITHUB_BASE_REF` (set automatically on `pull_request` events)
 3. `origin/main`
 
@@ -65,7 +77,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa run --drift-report
+      - run: pnpm exec ccqa run --report
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       - uses: actions/upload-artifact@v4
@@ -79,9 +91,9 @@ Add `ccqa-report/` to the consuming repo's `.gitignore`.
 
 ## Migrating from `ccqa run --drift` / `--drift-strict`
 
-`ccqa run --drift` and `ccqa run --drift-strict` were replaced by `--drift-report`: the same drift audit now lands inside the report (and feeds the root-cause analysis) instead of being printed to stdout.
+`ccqa run --drift`, `ccqa run --drift-strict`, and `ccqa run --drift-report` were all unified into `--report`: the same drift audit now lands inside the report (and feeds the root-cause analysis) instead of being printed to stdout.
 
-- `--drift` → `--drift-report`.
+- `--drift` / `--drift-report` → `--report`.
 - `--drift-strict` (fail the build on drift ERRORs even when tests pass) → run the standalone [`ccqa drift`](./drift.md) as its own CI step; it audits without running tests and exits non-zero on findings.
 
 ## Authentication

@@ -11,5 +11,11 @@ export default defineConfig({
     testTimeout: 60_000,
     hookTimeout: 60_000,
     pool: "forks",
+    // Cap fork parallelism: E2E scenarios each spawn a `ccqa` child process
+    // (and some, live-mode/hub runs, spawn vitest + agent-browser under
+    // that), so a full-core worker count oversubscribes CPU/FDs and causes
+    // spurious timeouts. Half the cores keeps the suite fast without the
+    // contention flakes.
+    maxWorkers: "50%",
   },
 });

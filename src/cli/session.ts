@@ -1,13 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdir, readdir, stat } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 
-import { DEFAULT_SESSION_PROFILE, sessionFilePath, sessionsDir } from "../runtime/session-state.ts";
+import { DEFAULT_SESSION_PROFILE, loadStorageState } from "../runtime/session-state.ts";
 import { SessionNameSchema } from "../spec/yaml-schema.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
+import { resolveProject } from "./resolve-project.ts";
+import { HubConnectionError, hubTokenOption, hubUrlOption, requireHubClient, type HubConnOptions } from "./hub-conn.ts";
 import * as log from "./logger.ts";
 
 const require = createRequire(import.meta.url);
@@ -35,26 +38,48 @@ function validateName(name: string): string {
 
 const profileOption = [
   "--profile <name>",
-  "Sessions bucket to read/write (.ccqa/sessions/<profile>/). Defaults to 'default'.",
+  "Sessions bucket to read/write on the hub. Defaults to 'default'.",
 ] as const;
+const projectOption = [
+  "--project <name>",
+  "Project the session belongs to on the hub. Defaults to the current directory's name.",
+] as const;
+
+interface BootstrapOptions extends HubConnOptions {
+  url?: string;
+  profile?: string;
+  project?: string;
+  cwd?: string;
+}
 
 const bootstrapCommand = new Command("bootstrap")
   .description(
-    "Open a headed browser so you can log in by hand, then save the resulting " +
-      "session (cookies + localStorage) for `session:` specs to restore. The saved " +
-      "file holds live auth cookies — keep .ccqa/sessions/ gitignored.",
+    "Open a headed browser so you can log in by hand, then upload the resulting " +
+      "session (cookies + localStorage) to the hub for `session:` specs to restore.",
   )
-  .argument("<name>", "Session name to save (a slug; resolves to .ccqa/sessions/<profile>/<name>.json)")
+  .argument("<name>", "Session name to save")
   .option("--url <url>", "URL to open first (e.g. the login page). Omit to start with a blank tab.")
   .option(...profileOption)
-  .option("--cwd <path>", "Project root containing .ccqa/ (defaults to the current directory).")
-  .action(async (rawName: string, opts: { url?: string; profile?: string; cwd?: string }) => {
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .option(...projectOption)
+  .option("--cwd <path>", "Directory the default --project name is derived from (defaults to the current directory).")
+  .action(async (rawName: string, opts: BootstrapOptions) => {
     const name = validateName(rawName);
     const cwd = resolveCwd(opts.cwd);
-    const dest = sessionFilePath(name, opts.profile, cwd);
+    const project = resolveProject(opts);
+    let hub;
+    try {
+      hub = requireHubClient(opts);
+    } catch (err) {
+      if (!(err instanceof HubConnectionError)) throw err;
+      log.error(err.message);
+      process.exit(2);
+    }
+
     log.header("session bootstrap", name);
+    log.meta("project", project);
     log.meta("profile", opts.profile ?? DEFAULT_SESSION_PROFILE);
-    log.meta("save to", dest);
     log.blank();
 
     const openArgs = ["--headed", "open", ...(opts.url ? [opts.url] : ["about:blank"])];
@@ -69,45 +94,30 @@ const bootstrapCommand = new Command("bootstrap")
     await rl.question("\nPress Enter once you are fully logged in to save the session… ");
     rl.close();
 
-    await mkdir(dirname(dest), { recursive: true });
-    const saveStatus = runAbInteractive(["state", "save", dest]);
-    runAbInteractive(["close"]);
-    if (saveStatus !== 0) {
-      log.error(`agent-browser state save exited ${saveStatus}`);
-      process.exit(1);
+    const tmpDir = await mkdtemp(join(tmpdir(), "ccqa-session-bootstrap-"));
+    try {
+      const tmpPath = join(tmpDir, "state.json");
+      const saveStatus = runAbInteractive(["state", "save", tmpPath]);
+      runAbInteractive(["close"]);
+      if (saveStatus !== 0) {
+        log.error(`agent-browser state save exited ${saveStatus}`);
+        process.exit(1);
+      }
+
+      const state = await loadStorageState(tmpPath);
+      await hub.putSession(project, opts.profile ?? DEFAULT_SESSION_PROFILE, name, state);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
     }
+
     log.blank();
-    log.info(`saved session "${name}" → ${dest}`);
+    log.info(`uploaded session "${name}" to the hub (encrypted at rest)`);
     log.hint("reference it from a spec with:  session: " + name);
   });
 
-const lsCommand = new Command("ls")
-  .description("List saved sessions for a profile (names + last-saved times). No secret values are shown.")
-  .option(...profileOption)
-  .option("--cwd <path>", "Project root containing .ccqa/ (defaults to the current directory).")
-  .action(async (opts: { profile?: string; cwd?: string }) => {
-    const cwd = resolveCwd(opts.cwd);
-    const profile = opts.profile ?? DEFAULT_SESSION_PROFILE;
-    const dir = sessionsDir(profile, cwd);
-    log.header("sessions", profile);
-    let entries: string[];
-    try {
-      entries = (await readdir(dir)).filter((f) => f.endsWith(".json"));
-    } catch {
-      entries = [];
-    }
-    if (entries.length === 0) {
-      log.info(`no saved sessions in ${dir}`);
-      log.hint("create one with:  ccqa session bootstrap <name>");
-      return;
-    }
-    for (const file of entries.sort()) {
-      const info = await stat(join(dir, file));
-      log.meta(file.replace(/\.json$/, ""), `saved ${info.mtime.toISOString()}`);
-    }
-  });
-
 export const sessionCommand = new Command("session")
-  .description("Manage saved browser sessions (cookies + localStorage) for `session:` specs.")
-  .addCommand(bootstrapCommand)
-  .addCommand(lsCommand);
+  .description(
+    "Manage saved browser sessions (cookies + localStorage) for `session:` specs. " +
+      "Use `ccqa hub session ls` to list sessions stored on the hub.",
+  )
+  .addCommand(bootstrapCommand);

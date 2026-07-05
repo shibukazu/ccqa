@@ -44,7 +44,7 @@ describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
     }
   });
 
-  test("all steps pass: exits 0, writes per-step PNGs and run.json, --report emits HTML", async () => {
+  test("all steps pass: exits 0, writes per-step PNGs and run.json, --report emits report.json", async () => {
     project = await makeFakeProject("run-live-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 
@@ -83,11 +83,28 @@ describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
       expect(s.size).toBeGreaterThan(0);
     }
 
-    // HTML report contains the LIVE badge and links to the per-step PNGs.
-    const html = await readFile(join(reportDir, "index.html"), "utf8");
-    expect(html).toContain(">LIVE<");
-    expect(html).toMatch(/step-01\.before\.png/);
-    expect(html).toMatch(/step-03\.after\.png/);
+    // report.json records the live run with per-step before/after PNG paths
+    // (there is no standalone HTML report — the hub UI renders from this).
+    const report = JSON.parse(await readFile(join(reportDir, "report.json"), "utf8")) as {
+      results: Array<{ liveRun: { steps: Array<{ beforePng: string | null; afterPng: string | null }> } | null }>;
+    };
+    const live = report.results[0]?.liveRun;
+    expect(live).not.toBeNull();
+    const pngPaths = live!.steps.flatMap((s) => [s.beforePng, s.afterPng]).filter((p): p is string => Boolean(p));
+    const pngs = pngPaths.join(" ");
+    expect(pngs).toMatch(/step-01\.before\.png/);
+    expect(pngs).toMatch(/step-03\.after\.png/);
+
+    // Evidence PNGs are copied into the report dir (not just referenced by
+    // relative path), so reportDir is self-contained for a hub push: no path
+    // escapes reportDir, every path lives under evidence/, and the copied
+    // file actually exists on disk.
+    for (const p of pngPaths) {
+      expect(p).not.toMatch(/\.\.\//);
+      expect(p).toMatch(/^evidence\//);
+      const s = await stat(join(reportDir, p));
+      expect(s.size).toBeGreaterThan(0);
+    }
   }, 120_000);
 
   test("two live specs with --concurrency 2: both pass, each writes its own run.json", async () => {

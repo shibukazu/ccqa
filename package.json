@@ -18,6 +18,10 @@
     "./test-helpers": {
       "types": "./dist/runtime/test-helpers.d.mts",
       "import": "./dist/runtime/test-helpers.mjs"
+    },
+    "./hub-client": {
+      "types": "./dist/hub-client/index.d.mts",
+      "import": "./dist/hub-client/index.mjs"
     }
   },
   "files": [

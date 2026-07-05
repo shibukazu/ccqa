@@ -5,9 +5,14 @@ import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
 import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
 
-// The fixture's test.spec.ts asserts process.env.CCQA_PROFILE_BASE_URL equals
-// the value declared in .ccqa/profiles/stg.env — so the spec only passes when
-// `--profile stg` actually merged the profile into the environment.
+// --profile now fetches variables from a hub (listVariables) instead of a
+// local .ccqa/profiles/<name>.env file. Without --hub-url/--hub-token (or
+// CCQA_HUB_URL/CCQA_HUB_TOKEN), any --profile usage fails fast with
+// HubConnectionError → exit 2. Explicitly blank out the hub env vars so a
+// stray CCQA_HUB_URL/CCQA_HUB_TOKEN in the test runner's own environment
+// can't leak into the child process and mask that error.
+const noHubEnv = () => ({ ...noColorEnv(), CCQA_HUB_URL: "", CCQA_HUB_TOKEN: "" });
+
 describe("ccqa run --profile", () => {
   let project: FakeProject | null = null;
 
@@ -16,18 +21,6 @@ describe("ccqa run --profile", () => {
       await project.cleanup();
       project = null;
     }
-  });
-
-  test("loads .ccqa/profiles/<name>.env into the spec environment", async () => {
-    project = await makeFakeProject("profile-spec", { linkCcqa: true });
-    const result = await runCcqa(["run", "demo/smoke", "--profile", "stg"], {
-      cwd: project.cwd,
-      env: noColorEnv(),
-    });
-    const combined = stripAnsi(result.stdout + result.stderr);
-    expect(result.exitCode, combined).toBe(0);
-    expect(combined).toMatch(/profile:\s*stg/);
-    expect(combined).toMatch(/1\/1\s+passed/);
   });
 
   test("fails the spec when no profile supplies the env var", async () => {
@@ -41,37 +34,26 @@ describe("ccqa run --profile", () => {
     expect(result.exitCode, combined).not.toBe(0);
   });
 
-  test("exits 2 with a clear error on an unknown profile name", async () => {
+  test("exits 2 with a clear error when --profile is used without hub connection info", async () => {
     project = await makeFakeProject("profile-spec", { linkCcqa: true });
     const result = await runCcqa(["run", "demo/smoke", "--profile", "nope"], {
       cwd: project.cwd,
-      env: noColorEnv(),
+      env: noHubEnv(),
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(2);
-    expect(combined).toMatch(/profile "nope" not found/);
+    expect(combined).toMatch(/hub URL and token are required/);
   });
 
-  test("exits 2 on a path-traversing profile name without reading outside the dir", async () => {
-    project = await makeFakeProject("profile-spec", { linkCcqa: true });
-    const result = await runCcqa(["run", "demo/smoke", "--profile", "../../../etc/hosts"], {
-      cwd: project.cwd,
-      env: noColorEnv(),
-    });
-    const combined = stripAnsi(result.stdout + result.stderr);
-    expect(result.exitCode, combined).toBe(2);
-    expect(combined).toMatch(/invalid profile name/);
-  });
-
-  test("exits 2 on an explicitly empty profile rather than silently skipping", async () => {
+  test("exits 2 on an explicitly empty profile (still requires hub connection info)", async () => {
     project = await makeFakeProject("profile-spec", { linkCcqa: true });
     const result = await runCcqa(["run", "demo/smoke", "--profile", ""], {
       cwd: project.cwd,
-      env: noColorEnv(),
+      env: noHubEnv(),
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(2);
-    expect(combined).toMatch(/invalid profile name/);
+    expect(combined).toMatch(/hub URL and token are required/);
   });
 });
 

@@ -35,15 +35,40 @@ export type Scope = "run" | "fix" | "meta" | "info" | "warn" | "error" | "hint";
  */
 const bufferStore = new AsyncLocalStorage<{ out: string[] }>();
 
+/**
+ * A sink intercepts every log line instead of it reaching stdout/stderr.
+ * Used by the hub runner to capture a run's full narration into a per-run
+ * log file/stream without the pipeline needing to know it's being captured.
+ */
+export interface LogSink {
+  write(text: string): void;
+}
+
+const sinkStore = new AsyncLocalStorage<LogSink>();
+
 /** True while inside a `withBuffer` scope: progress lines avoid TTY cursor tricks. */
 export function isBuffered(): boolean {
   return bufferStore.getStore() !== undefined;
+}
+
+/**
+ * Run `fn` with all log output (stdout and stderr alike) routed to `sink`
+ * instead of the real streams. `withBuffer` scopes nested inside `fn` still
+ * buffer for ordering, but flush into the sink rather than stdout.
+ */
+export async function withSink<T>(sink: LogSink, fn: () => Promise<T>): Promise<T> {
+  return sinkStore.run(sink, fn);
 }
 
 function emit(text: string, sink: NodeJS.WritableStream = process.stdout): void {
   const store = bufferStore.getStore();
   if (store) {
     store.out.push(text);
+    return;
+  }
+  const activeSink = sinkStore.getStore();
+  if (activeSink) {
+    activeSink.write(text);
     return;
   }
   sink.write(text);
@@ -72,7 +97,7 @@ export async function withBuffer<T>(label: string, buffered: boolean, fn: () => 
   try {
     return await bufferStore.run(store, fn);
   } finally {
-    process.stdout.write(`\n──── ${label} ────\n${store.out.join("")}`);
+    emit(`\n──── ${label} ────\n${store.out.join("")}`);
   }
 }
 

@@ -1,6 +1,7 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { rmSync } from "node:fs";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 /**
  * A saved browser session: agent-browser's storage-state JSON (cookies +
@@ -30,22 +31,19 @@ const SESSIONS_SUBDIR = ".ccqa/sessions";
 /** The profile bucket sessions live under when no `--profile` was given. */
 export const DEFAULT_SESSION_PROFILE = "default";
 
-/** The per-profile sessions directory: `<cwd>/.ccqa/sessions/<profile>/`. */
-export function sessionsDir(profile: string | undefined, cwd: string): string {
-  return join(cwd, SESSIONS_SUBDIR, profile ?? DEFAULT_SESSION_PROFILE);
-}
-
 /**
  * Resolve a session name to its state file path:
  * `<cwd>/.ccqa/sessions/<profile>/<name>.json`. The name is a slug (validated
- * by SessionNameSchema), so it can't escape the sessions directory.
+ * by SessionNameSchema), so it can't escape the sessions directory. Used by
+ * `ccqa hub session push`, which uploads an externally-produced storage-state
+ * file from this local path to the hub.
  */
 export function sessionFilePath(
   name: string,
   profile: string | undefined,
   cwd: string,
 ): string {
-  return join(sessionsDir(profile, cwd), `${name}.json`);
+  return join(cwd, SESSIONS_SUBDIR, profile ?? DEFAULT_SESSION_PROFILE, `${name}.json`);
 }
 
 /** Read and parse a saved session file. Throws if missing or malformed. */
@@ -77,13 +75,56 @@ export function mergeStorageStates(states: StorageState[]): StorageState {
 }
 
 /**
+ * Temp directories created by `writeMergedTempState` that haven't been
+ * cleaned up yet via `removeTempStateDir`. Holds auth cookies, so anything
+ * left behind at process exit is removed by `cleanupTrackedDirsSync`.
+ */
+const trackedTempDirs = new Set<string>();
+
+function cleanupTrackedDirsSync(): void {
+  for (const dir of trackedTempDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // best-effort on process exit; nothing to recover into.
+    }
+  }
+  trackedTempDirs.clear();
+}
+
+let signalHandlersRegistered = false;
+function ensureProcessCleanupRegistered(): void {
+  if (signalHandlersRegistered) return;
+  signalHandlersRegistered = true;
+  process.once("exit", cleanupTrackedDirsSync);
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.once(sig, () => {
+      cleanupTrackedDirsSync();
+      process.exit(sig === "SIGINT" ? 130 : 143);
+    });
+  }
+}
+
+/**
  * Write a merged state to a fresh temp file and return its path. Source
  * session files are never modified; the temp file is what gets restored via
  * `--state`, so re-runs (local or CI) leave the source-of-truth untouched.
+ * The file holds live auth cookies, so it's written 0600 and tracked so a
+ * killed process still cleans it up (`removeTempStateDir` is the normal path).
  */
 export async function writeMergedTempState(state: StorageState): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "ccqa-session-"));
+  ensureProcessCleanupRegistered();
+  trackedTempDirs.add(dir);
   const file = join(dir, "merged-state.json");
   await writeFile(file, JSON.stringify(state), "utf8");
+  await chmod(file, 0o600);
   return file;
+}
+
+/** Remove a temp state dir created by `writeMergedTempState` and stop tracking it. */
+export async function removeTempStateDir(statePath: string): Promise<void> {
+  const dir = dirname(statePath);
+  trackedTempDirs.delete(dir);
+  await rm(dir, { recursive: true, force: true });
 }

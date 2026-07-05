@@ -7,8 +7,8 @@ way Playwright does: set the input's files via the browser API rather than
 clicking the input.
 
 The plumbing is built in. You write the upload step in plain English in your
-spec.yaml; `ccqa record` records it as a structured `upload` action and `ccqa
-generate` emits `abUpload(...)` into `test.spec.ts`.
+spec.yaml; `ccqa record` records it as a structured `upload` action and
+`ccqa generate` emits `abUpload(...)` into `test.spec.ts`.
 
 ## Fixture layout
 

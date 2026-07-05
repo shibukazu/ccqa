@@ -1,4 +1,5 @@
 import { numberLines, outputLanguageBlock } from "../prompts/format.ts";
+import { type AnalysisCustomPrompt, buildCustomPromptBlock } from "../prompts/custom-prompt.ts";
 import type { DraftIssue } from "../types.ts";
 import { DRAFT_CATEGORY_LABEL } from "../types.ts";
 
@@ -44,6 +45,13 @@ export interface FailureAnalysisPromptInput {
   driftIssues: DraftIssue[] | null;
   /** BCP-47 tag or "auto" (no directive). Identifiers/labels stay verbatim regardless. */
   outputLanguage?: string;
+  /**
+   * Claude-written calibration guidance learned from human-graded past
+   * failures (a hub triage-learning job). Omitted/null means base-only — the
+   * prompt is then byte-identical to before this field existed (backward
+   * compatibility).
+   */
+  customPrompt?: AnalysisCustomPrompt | null;
 }
 
 export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): string {
@@ -57,7 +65,11 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     baseRef,
     driftIssues,
     outputLanguage = "auto",
+    customPrompt,
   } = input;
+
+  // "" when no custom prompt is supplied, so the prompt is unchanged from before.
+  const customPromptBlock = buildCustomPromptBlock(customPrompt);
 
   const languageBlock = outputLanguageBlock(
     outputLanguage,
@@ -138,7 +150,7 @@ Alongside the label, report the closest fine-grained mechanic:
 - DATA_MISSING — missing test data/state; usually UNKNOWN or PRODUCT_BUG depending on cause
 - NONE — when nothing fits (typical for SPEC_CHANGE and PRODUCT_BUG)
 
-## Output
+${customPromptBlock}## Output
 
 Your **final** assistant message must start with \`{\` and end with \`}\` — a single JSON object, nothing before or after. No prose preamble, no markdown fences, no tool calls in the same turn.
 

@@ -2,10 +2,11 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
- * Profile env (Issue #37). A profile is a named `.env` under
- * `.ccqa/profiles/<name>.env`; its contents merge into `process.env` before any
- * spec work, so one spec targets dev/stg/prd without per-environment copies.
- * Spec `${VAR}` references all resolve against `process.env` downstream.
+ * Profile env vars are hub-sourced (pulled via `ccqa hub`) and merged into
+ * `process.env` by `applyProfileEnv` before any spec work, so one spec targets
+ * dev/stg/prd without per-environment copies. Spec `${VAR}` references all
+ * resolve against `process.env` downstream. `<cwd>/.env` is still read
+ * automatically as a local default layer.
  *
  * The `.env` parser is a small hand-rolled subset (no dotenv dependency).
  */
@@ -51,50 +52,6 @@ function parseValue(raw: string): string {
   return hash === -1 ? raw : raw.slice(0, hash).trimEnd();
 }
 
-export class ProfileNotFoundError extends Error {
-  readonly profile: string;
-  readonly path: string;
-  constructor(profile: string, path: string) {
-    super(`profile "${profile}" not found: ${path}`);
-    this.name = "ProfileNotFoundError";
-    this.profile = profile;
-    this.path = path;
-  }
-}
-
-export class InvalidProfileNameError extends Error {
-  readonly profile: string;
-  constructor(profile: string) {
-    super(
-      `invalid profile name "${profile}": expected a bare name like "stg" ` +
-        `(no path separators, no leading dot)`,
-    );
-    this.name = "InvalidProfileNameError";
-    this.profile = profile;
-  }
-}
-
-/**
- * A profile name must be a single, non-dot-leading path segment, so
- * `--profile <name>` can't read a file outside the profiles dir (e.g.
- * `--profile ../../etc/hosts`). Rejecting separators and a leading dot already
- * blocks `..` traversal, so an in-name `..` (like `v1..2`) stays allowed.
- */
-function assertValidProfileName(profile: string): void {
-  const invalid =
-    profile === "" ||
-    profile.includes("/") ||
-    profile.includes("\\") ||
-    profile.startsWith(".");
-  if (invalid) throw new InvalidProfileNameError(profile);
-}
-
-/** Absolute path of the `.env` file backing `<profile>` under `<cwd>/.ccqa/`. */
-export function profilePath(profile: string, cwd: string): string {
-  assertValidProfileName(profile);
-  return join(cwd, ".ccqa", "profiles", `${profile}.env`);
-}
-
 /** Read + parse a `.env`, or `null` if absent. Other read errors propagate. */
 async function readDotenv(path: string): Promise<Record<string, string> | null> {
   let content: string;
@@ -105,20 +62,6 @@ async function readDotenv(path: string): Promise<Record<string, string> | null> 
     throw err;
   }
   return parseDotenv(content);
-}
-
-/**
- * Load `.ccqa/profiles/<profile>.env`. A missing file throws — a typo must fail
- * loudly, not silently resolve every credential to empty.
- */
-export async function loadProfileEnv(
-  profile: string,
-  cwd: string,
-): Promise<Record<string, string>> {
-  const path = profilePath(profile, cwd);
-  const vars = await readDotenv(path);
-  if (vars === null) throw new ProfileNotFoundError(profile, path);
-  return vars;
 }
 
 /** Absolute path of the default `.env` ccqa loads when `--profile` is absent. */

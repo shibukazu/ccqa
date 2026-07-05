@@ -2,8 +2,10 @@ import { Command } from "commander";
 import { parseSpecPath } from "../store/index.ts";
 import { runTrace, type RunTraceResult } from "./trace.ts";
 import { runGenerate } from "./generate.ts";
-import { addLanguageOption, addProfileOption, applyProfileFromOption, DEFAULT_LANGUAGE } from "./options.ts";
+import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOption, DEFAULT_LANGUAGE } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
+import { resolveProject } from "./resolve-project.ts";
+import { resolveHubClient, type HubContext } from "./hub-conn.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { FixMode } from "../diagnose/loop.ts";
 import type { ValidationMode } from "../runtime/replay-validate.ts";
@@ -28,6 +30,9 @@ interface RecordOptions {
   skipCodegen?: boolean;
   updateAgentPrompt?: boolean;
   cwd?: string;
+  hubUrl?: string;
+  hubToken?: string;
+  project?: string;
 }
 
 // Maps the user-facing `--auto-fix` 3-value flag to the internal `FixMode`:
@@ -45,7 +50,7 @@ function toFixMode(autoFix: AutoFixMode): FixMode {
   }
 }
 
-export const recordCommand = addProfileOption(addLanguageOption(
+export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
   new Command("record")
     .argument(
       "<feature/spec>",
@@ -88,13 +93,17 @@ export const recordCommand = addProfileOption(addLanguageOption(
     .option("--skip-codegen", "Run only the trace step (do not generate test.spec.ts)")
     .option(
       "--update-agent-prompt",
-      "After the trace finishes, ask Claude to refresh .ccqa/prompts/record.agent.md from a summary of the run.",
+      "After the trace finishes, ask Claude to refresh the \"record.agent\" prompt on the hub from a summary of the run. Requires a hub connection.",
     )
     .option(
       "--cwd <path>",
       "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
+    )
+    .option(
+      "--project <name>",
+      "Project name for the hub. Defaults to the current directory's name.",
     ),
-)).action(async (specPath: string, opts: RecordOptions) => {
+))).action(async (specPath: string, opts: RecordOptions) => {
   const { featureName, specName } = parseSpecPath(specPath);
   const language = opts.language ?? DEFAULT_LANGUAGE;
 
@@ -105,12 +114,35 @@ export const recordCommand = addProfileOption(addLanguageOption(
 
   // Trace drives a real browser and resolves the spec's ${VAR} (login URL,
   // credentials) against process.env, so the profile (or default .env) must be
-  // merged first.
-  await applyProfileFromOption(opts.profile, resolveCwd(opts.cwd));
+  // merged first. Project resolution (for scoping the hub lookup) only
+  // happens when --profile is actually given.
+  const cwdForProfile = resolveCwd(opts.cwd);
+  const project = opts.profile !== undefined ? resolveProject(opts) : undefined;
+  if (opts.profile !== undefined) {
+    await applyProfileFromOption({
+      profile: opts.profile,
+      project: project!,
+      cwd: cwdForProfile,
+      hubUrl: opts.hubUrl,
+      hubToken: opts.hubToken,
+    });
+  } else {
+    await applyProfileFromOption({ profile: undefined, project: "", cwd: cwdForProfile });
+  }
+
+  // Compose HubContext by hand (not via resolveHubContext) — project here was
+  // already resolved via the exiting `resolveProject`, and mixing in the
+  // throwing resolver would change the error mode for an invalid --project
+  // from process.exit(2) to an uncaught throw.
+  const hubClientForTrace = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken });
+  const hubContext: HubContext | null = hubClientForTrace && project ? { hub: hubClientForTrace, project } : null;
 
   let traceResult: RunTraceResult | null = null;
   if (!opts.skipTrace) {
-    traceResult = await runTrace(featureName, specName, opts.model, opts.validationMode ?? "lenient", language);
+    traceResult = await runTrace(featureName, specName, opts.model, opts.validationMode ?? "lenient", language, {
+      cwd: cwdForProfile,
+      hubContext,
+    });
     log.blank();
   }
 
@@ -133,12 +165,11 @@ export const recordCommand = addProfileOption(addLanguageOption(
     if (traceResult === null) {
       log.warn("--update-agent-prompt is ignored when --skip-trace is set (no run summary available)");
     } else {
-      const cwd = resolveCwd(opts.cwd);
       log.blank();
       await updateAgentPrompt({
         mode: "record",
         runSummary: buildRecordRunSummary(featureName, specName, traceResult),
-        cwd,
+        hubContext,
         ...(opts.model ? { model: opts.model } : {}),
         ...(language ? { language } : {}),
       });
