@@ -1,5 +1,6 @@
-import { createHubClient, type HubClient } from "../hub-client/index.ts";
+import { createHubClient, HubApiError, type HubClient } from "../hub-client/index.ts";
 import { resolveProjectOrThrow } from "./resolve-project.ts";
+import * as log from "./logger.ts";
 
 /**
  * Single source of truth for hub connection flags/env, shared by every
@@ -75,4 +76,24 @@ export function resolveHubContext(
   if (!hub) return null;
   const project = resolveProjectOrThrow(opts.project, opts.cwd ?? process.cwd());
   return { hub, project };
+}
+
+/**
+ * Wrap a subcommand action so a `HubApiError` (hub request failed, e.g. a
+ * 503 when the hub has no encryption key configured) prints a clean message
+ * and exits 2, instead of surfacing as an unhandled rejection with a stack
+ * trace.
+ */
+export function withHubErrors<A extends unknown[]>(fn: (...args: A) => Promise<void>): (...args: A) => Promise<void> {
+  return async (...args) => {
+    try {
+      await fn(...args);
+    } catch (err) {
+      if (err instanceof HubApiError) {
+        log.error(`hub request failed (${err.status} ${err.code}): ${err.message}`);
+        process.exit(2);
+      }
+      throw err;
+    }
+  };
 }

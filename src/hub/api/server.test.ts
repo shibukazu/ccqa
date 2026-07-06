@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createFileHubStorage } from "../core/storage/file/index.ts";
 import type { HubStorage } from "../core/storage/types.ts";
 import { packTarGz, type TarEntry } from "../core/tar.ts";
-import type { RunReportData } from "../../report/schema.ts";
+import type { ReportSpecResult, RunReportData } from "../../report/schema.ts";
 import { createHubServer } from "./server.ts";
 
 // This server builds its own triage-learning worker internally with no
@@ -33,6 +33,7 @@ async function json(res: Response): Promise<any> {
 function makeReportTarGz(opts: { status?: "passed" | "failed" } = {}): Uint8Array {
   const report: RunReportData = {
     schemaVersion: 1,
+    kind: "run",
     createdAt: new Date().toISOString(),
     runId: null,
     git: { head: null, base: null },
@@ -61,6 +62,62 @@ function makeReportTarGz(opts: { status?: "passed" | "failed" } = {}): Uint8Arra
           },
         ]
       : [],
+  };
+  const entries: TarEntry[] = [
+    { path: "report.json", content: new TextEncoder().encode(JSON.stringify(report)), mode: 0o644 },
+    { path: "index.html", content: new TextEncoder().encode("<html></html>"), mode: 0o644 },
+  ];
+  return packTarGz(entries);
+}
+
+/**
+ * Build a pushed-report archive with `driftIssues` set on its specs, as
+ * produced by `ccqa drift --push` (`kind: "drift"` report.json). Two specs:
+ * one with a mix of ERROR/WARN/OK issues, one with none.
+ */
+function makeDriftReportTarGz(): Uint8Array {
+  const baseResult: Omit<ReportSpecResult, "feature" | "spec" | "driftIssues"> = {
+    title: null,
+    status: "passed",
+    testCounts: null,
+    durationMs: null,
+    assertions: null,
+    analysis: null,
+    analysisSkipped: null,
+    failureLogExcerpt: null,
+    diffExcerpt: null,
+    specYaml: null,
+    evidence: null,
+    liveRun: null,
+  };
+  const report: RunReportData = {
+    schemaVersion: 1,
+    kind: "drift",
+    createdAt: new Date().toISOString(),
+    runId: null,
+    git: { head: null, base: null },
+    model: null,
+    language: null,
+    promptVersion: "1",
+    customPromptVersion: null,
+    results: [
+      {
+        ...baseResult,
+        feature: "demo",
+        spec: "with-issues",
+        driftIssues: [
+          { severity: "ERROR", category: "assertable", stepId: "step-1", message: "mismatch", detail: null },
+          { severity: "WARN", category: "blocks", stepId: null, message: "stale block", detail: null },
+          { severity: "OK", category: "granularity", stepId: null, message: "fine", detail: null },
+        ],
+      },
+      {
+        ...baseResult,
+        feature: "demo",
+        spec: "clean",
+        driftIssues: [],
+      },
+    ],
   };
   const entries: TarEntry[] = [
     { path: "report.json", content: new TextEncoder().encode(JSON.stringify(report)), mode: 0o644 },
@@ -281,6 +338,37 @@ describe("hub API server", () => {
       expect(reportRes.status).toBe(200);
     });
 
+    test("POST ?kind=drift stores drift summary counts derived from driftIssues", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=demo&kind=drift`, authed({
+        method: "POST",
+        body: makeDriftReportTarGz(),
+      }));
+      expect(res.status).toBe(201);
+      const run = await json(res);
+      expect(run.kind).toBe("drift");
+      expect(run.drift).toEqual({ issues: 3, errors: 1, warnings: 1, specsWithIssues: 1 });
+    });
+
+    test("POST with no ?kind (and explicit ?kind=run) defaults to a kind:\"run\" Run with drift:null", async () => {
+      for (const url of [`${baseUrl}/api/v1/runs?project=demo`, `${baseUrl}/api/v1/runs?project=demo&kind=run`]) {
+        const res = await fetch(url, authed({ method: "POST", body: makeReportTarGz({ status: "passed" }) }));
+        expect(res.status).toBe(201);
+        const run = await json(res);
+        expect(run.kind).toBe("run");
+        expect(run.drift).toBeNull();
+      }
+    });
+
+    test("POST with an invalid ?kind returns 400", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=demo&kind=foo`, authed({
+        method: "POST",
+        body: makeReportTarGz({ status: "passed" }),
+      }));
+      expect(res.status).toBe(400);
+      const body = await json(res);
+      expect(body.error.code).toBe("invalid_param");
+    });
+
     test("a request body over the limit returns 413", async () => {
       const oversized = new Uint8Array(33 * 1024 * 1024); // over the 32MB push default
       const res = await fetch(`${baseUrl}/api/v1/runs?project=demo`, authed({
@@ -461,6 +549,7 @@ describe("hub API server", () => {
     async function seedGradedCase(): Promise<void> {
       await storage.runs.create({
         id: "run-lj", project: "demo", profile: null, branch: null, status: "failed",
+        kind: "run", drift: null,
         specs: { total: 1, passed: 0, failed: 1 }, gitHead: null, promptVersion: "4",
         ciRunId: null, reportCreatedAt: "2026-07-01T00:00:00.000Z", createdAt: "2026-07-01T00:00:00.000Z",
       });

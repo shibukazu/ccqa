@@ -48,6 +48,8 @@ describe("path traversal guards", () => {
       profile: null,
       branch: null,
       status: "passed",
+      kind: "run",
+      drift: null,
       specs: { total: 1, passed: 1, failed: 0 },
       gitHead: null,
       promptVersion: "1",

@@ -707,6 +707,7 @@ async function writeUnifiedReport(args: {
   const { reportDir, results, diff, baseRef, customPromptVersion, opts } = args;
   const data: RunReportData = {
     schemaVersion: 1,
+    kind: "run",
     createdAt: new Date().toISOString(),
     runId: process.env["GITHUB_RUN_ID"] ?? null,
     git: {

@@ -17,7 +17,19 @@ ccqa drift --concurrency 5              # parallel spec checks (default: 3)
 ccqa drift --cwd packages/web           # for monorepos: pin .ccqa root and codebase scope
 ccqa drift --changed                    # only check specs affected by the PR diff
 ccqa drift --changed --base origin/dev  # diff against an explicit base ref
+ccqa drift --push --hub-url <url> --hub-token <token>  # also push the result to a ccqa hub
 ```
+
+## Pushing to a hub
+
+`--push` uploads the drift result to a [ccqa hub](./hub.md) as a `kind: "drift"`
+run (`POST /api/v1/runs?kind=drift`), so it shows up alongside `ccqa run` runs
+in the hub UI with its own issue/error/warning counts. Requires a hub
+connection (`--hub-url`/`--hub-token`, or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`); if
+none is configured, `--push` logs a warning and is skipped — it never changes
+`ccqa drift`'s own exit code (still driven by `--severity`). `--project`
+scopes the pushed run, defaulting to the current directory's name like
+`ccqa hub push`.
 
 ## Scoping with `--changed` and `relatedPaths`
 

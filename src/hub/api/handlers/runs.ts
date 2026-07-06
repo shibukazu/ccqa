@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type Run, type RunStatus } from "../../contract/schema.ts";
-import { RunReportDataSchema } from "../../../report/schema.ts";
+import { RunReportDataSchema, type ReportSpecResult } from "../../../report/schema.ts";
 import { unpackTarGz } from "../../core/tar.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
@@ -35,6 +35,11 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
     // for display only — runs are not scoped by profile.
     const profileRaw = ctx.url.searchParams.get("profile");
     const profile = profileRaw ? requireSafeSegment(profileRaw, "profile") : null;
+    const kindRaw = ctx.url.searchParams.get("kind");
+    if (kindRaw !== null && kindRaw !== "run" && kindRaw !== "drift") {
+      throw new HttpError(400, "invalid_param", `invalid kind: must be "run" or "drift"`);
+    }
+    const kind = kindRaw ?? "run";
 
     const body = await readBody(ctx.req, maxPushBytes);
 
@@ -63,10 +68,18 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
         throw new HttpError(400, "invalid_report", `report.json is not a valid report: ${parsed.error.issues[0]?.message ?? "schema mismatch"}`);
       }
       const report = parsed.data;
+      if (report.kind !== kind) {
+        throw new HttpError(
+          400,
+          "kind_mismatch",
+          `?kind=${kind} does not match report.json's kind ("${report.kind}") — push with the matching ?kind= query param`,
+        );
+      }
 
       const total = report.results.length;
       const failed = report.results.filter((r) => r.status === "failed").length;
       const status: RunStatus = failed > 0 ? "failed" : "passed";
+      const drift = kind === "drift" ? summarizeDrift(report.results) : null;
 
       const run: Run = {
         id: randomUUID(),
@@ -74,6 +87,8 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
         profile,
         branch,
         status,
+        kind,
+        drift,
         specs: { total, passed: total - failed, failed },
         gitHead: report.git.head,
         promptVersion: report.promptVersion,
@@ -161,6 +176,24 @@ async function getRunOr404(storage: HubStorage, id: string): Promise<Run> {
   const run = await storage.runs.get(id);
   if (!run) throw new HttpError(404, "not_found", `run "${id}" not found`);
   return run;
+}
+
+/** Tally `driftIssues` across all specs into the `Run.drift` summary counters. */
+function summarizeDrift(results: ReportSpecResult[]): { issues: number; errors: number; warnings: number; specsWithIssues: number } {
+  let issues = 0;
+  let errors = 0;
+  let warnings = 0;
+  let specsWithIssues = 0;
+  for (const r of results) {
+    const driftIssues = r.driftIssues ?? [];
+    if (driftIssues.length > 0) specsWithIssues++;
+    for (const issue of driftIssues) {
+      issues++;
+      if (issue.severity === "ERROR") errors++;
+      else if (issue.severity === "WARN") warnings++;
+    }
+  }
+  return { issues, errors, warnings, specsWithIssues };
 }
 
 /**
