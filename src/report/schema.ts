@@ -193,6 +193,8 @@ export type ReportSpecResult = z.infer<typeof ReportSpecResultSchema>;
 
 export const RunReportDataSchema = z.object({
   schemaVersion: z.literal(1),
+  /** "run" = ccqa run/live execution result; "drift" = ccqa drift --push. */
+  kind: z.enum(["run", "drift"]).default("run"),
   createdAt: z.string(),
   /** GITHUB_RUN_ID when running in Actions; null locally. Links the report back to its CI run. */
   runId: z.string().nullable(),

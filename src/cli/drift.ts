@@ -1,4 +1,7 @@
 import { Command } from "commander";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   ensureCcqaDir,
   listFeatureTree,
@@ -10,6 +13,7 @@ import {
 import { analyzeDrift } from "../drift/analyze.ts";
 import { renderDrift } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
+import { driftResultsToReport } from "../drift/to-report.ts";
 import type { Format, SpecResult, SpecTarget, Threshold } from "../drift/types.ts";
 import {
   getChangedFiles,
@@ -18,8 +22,13 @@ import {
   type ChangedFile,
 } from "../drift/affected.ts";
 import { routeNewFilesToSpecs } from "../drift/route-new-files.ts";
+import { packDirToTarGz } from "../hub/core/tar.ts";
+import { HubApiError, type HubClient } from "../hub-client/index.ts";
 import { addLanguageOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
+import { resolveProject } from "./resolve-project.ts";
+import { hubTokenOption, hubUrlOption, resolveHubClient } from "./hub-conn.ts";
+import { detectBranch, getGitHead } from "./git-branch.ts";
 import * as log from "./logger.ts";
 
 interface DriftOptions {
@@ -31,6 +40,10 @@ interface DriftOptions {
   changed?: boolean;
   base?: string;
   language?: string;
+  push?: boolean;
+  project?: string;
+  hubUrl?: string;
+  hubToken?: string;
 }
 
 const DEFAULT_CONCURRENCY = 3;
@@ -67,7 +80,11 @@ export const driftCommand = addLanguageOption(
     .option(
       "--base <ref>",
       "Base ref to diff against when --changed is set. Defaults to $GITHUB_BASE_REF (CI) or origin/main.",
-    ),
+    )
+    .option("--push", "Push the drift result to a ccqa hub as a run (kind: drift).")
+    .option("--project <name>", "Logical project name for the pushed run. Defaults to the current directory's name.")
+    .option(...hubUrlOption)
+    .option(...hubTokenOption),
 ).action(async (specPath: string | undefined, opts: DriftOptions) => {
     const format = parseFormat(opts.format);
     const threshold = parseSeverity(opts.severity);
@@ -90,6 +107,8 @@ export const driftCommand = addLanguageOption(
       log.header("drift", specPath ?? `${targets.length} spec${targets.length > 1 ? "s" : ""}`);
       if (opts.cwd) log.meta("cwd", cwd);
     }
+
+    const baseRef = opts.changed ? resolveBaseRef(opts.base) : null;
 
     if (opts.changed) {
       const total = targets.length;
@@ -116,8 +135,75 @@ export const driftCommand = addLanguageOption(
     });
 
     process.stdout.write(renderDrift(results, format, cwd));
+
+    if (opts.push) {
+      await pushDriftResults({ results, threshold, cwd, opts, format, baseRef });
+    }
+
     process.exit(determineExitCode(results, threshold));
   });
+
+/**
+ * Push a finished drift audit to a ccqa hub as a `kind: "drift"` run, so it
+ * shows up alongside `ccqa run` runs in the hub UI. Best-effort: a missing
+ * hub connection warns and returns rather than failing the command (`--push`
+ * never changes drift's own exit code).
+ *
+ * `resolveHub` is injectable so tests can supply a fake `HubClient` without
+ * a real hub connection; it defaults to the real flag/env resolution.
+ */
+export async function pushDriftResults(
+  args: {
+    results: SpecResult[];
+    threshold: Threshold;
+    cwd: string;
+    opts: DriftOptions;
+    format: Format;
+    baseRef?: string | null;
+  },
+  resolveHub: (opts: DriftOptions) => HubClient | null = resolveHubClient,
+): Promise<void> {
+  const { results, threshold, cwd, opts, format, baseRef } = args;
+  const hub = resolveHub(opts);
+  if (!hub) {
+    log.warn("--push requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN) — skipping push");
+    return;
+  }
+
+  try {
+    const project = resolveProject({ project: opts.project, cwd });
+    const [branch, head] = await Promise.all([detectBranch(cwd), getGitHead(cwd)]);
+
+    const report = driftResultsToReport(results, {
+      threshold,
+      git: { head, base: baseRef ?? null },
+    });
+
+    const dir = await mkdtemp(join(tmpdir(), "ccqa-drift-push-"));
+    try {
+      await writeFile(join(dir, "report.json"), JSON.stringify(report, null, 2), "utf8");
+      const archive = await packDirToTarGz(dir);
+      const run = await hub.pushRun(archive, {
+        project,
+        ...(branch ? { branch } : {}),
+        kind: "drift",
+      });
+      if (format === "text") {
+        // best-effort push なので、URL未設定時にexitするresolveBaseUrlではなくここで独立導出する
+        const baseUrl = (opts.hubUrl ?? process.env.CCQA_HUB_URL ?? "").replace(/\/+$/, "");
+        log.info(`pushed drift result to hub: ${baseUrl}/#/runs/${run.id}`);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  } catch (err) {
+    if (err instanceof HubApiError) {
+      log.error(`hub request failed (${err.status} ${err.code}): ${err.message}`);
+      process.exit(2);
+    }
+    throw err;
+  }
+}
 
 function exitWithNoSpecs(format: Format, message: string): never {
   if (format === "json") {

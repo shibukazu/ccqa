@@ -152,7 +152,7 @@ const HTML_BODY = `
 
         <!-- Triage first: grading + learning is the most important action, so it
              sits above the spec list rather than being buried below it. -->
-        <div class="triage-head">
+        <div class="triage-head" id="triage-head">
           <h3 style="font-size:14px" data-i18n="detail.triage">Triage</h3>
           <span class="triage-summary" id="triage-summary"></span>
         </div>
@@ -488,7 +488,16 @@ const CSS = `
   .badge-det { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   .badge.drift-warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
   .badge.drift-warn .d { background: var(--amber); }
+  .badge-drift { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
   .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); }
+  /* Below .chip in source order so these override its background/border/color
+     when combined as class="chip drift-*-chip" (same specificity — source
+     order decides). */
+  .chip.kind-chip { color: var(--violet); background: var(--violet-bg); border-color: var(--violet-border); font-family: var(--font); margin-left: 6px; }
+  .chip.drift-count-chip { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); margin-left: 6px; }
+  .chip.drift-errors-chip { color: var(--fail); background: var(--fail-bg); border-color: var(--fail-border); }
+  .drift-meta-box { display: flex; flex-direction: column; gap: 4px; }
+  .drift-meta-chips { display: flex; gap: 6px; }
   .specs { display: inline-flex; align-items: center; gap: 9px; }
   .meter { width: 54px; height: 6px; border-radius: 3px; background: var(--fail-bg); overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--pass); }
@@ -577,6 +586,7 @@ const CSS = `
   .drift-step { font-family: var(--mono); font-size: 11px; color: var(--muted-2); }
   .drift-msg { margin-top: 4px; color: var(--fg-dim); }
   .drift-detail { margin-top: 3px; color: var(--muted); font-size: 12px; }
+  .drift-clean { color: var(--pass); font-size: 13px; }
 
   /* triage grading — an explicit question + a segmented single-select, framed
      as an action ("tell us the real cause"), not a data readout. */
@@ -795,12 +805,17 @@ const CLIENT_JS = `
       "detail.triage": "Triage",
       "meta.branch": "Branch", "meta.specs": "Specs", "meta.prompt": "Prompt",
       "meta.created": "Created", "meta.passed": "passed", "meta.profile": "Profile",
+      "meta.drift": "Drift",
       "rec.title": "Recommendation",
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
       "acc.assertions": "Assertions", "acc.drift": "Drift audit",
       "acc.assertions.hint": "Test cases from the recorded spec run",
       "spec.kind.live": "Live", "spec.kind.det": "Deterministic",
       "spec.driftWarn": "Spec drift", "det.steps": "Steps",
+      "kind.run": "Test run", "kind.drift": "Drift audit",
+      "drift.summary.issues": "Issues", "drift.summary.errors": "Errors",
+      "drift.summary.warnings": "Warnings", "drift.summary.specsWithIssues": "Specs with issues",
+      "drift.clean": "No drift issues",
       "grade.question": "What was the real cause?", "grade.predicted": "predicted",
       "grade.ungraded": "ungraded", "grade.matches": "saved · matches",
       "grade.corrected": "saved · corrected", "grade.saving": "saving…",
@@ -856,12 +871,17 @@ const CLIENT_JS = `
       "detail.triage": "トリアージ",
       "meta.branch": "ブランチ", "meta.specs": "スペック", "meta.prompt": "プロンプト",
       "meta.created": "作成", "meta.passed": "合格", "meta.profile": "プロファイル",
+      "meta.drift": "ドリフト",
       "rec.title": "推奨対応",
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
       "acc.assertions": "アサーション", "acc.drift": "ドリフト監査",
       "acc.assertions.hint": "記録したスペック実行のテストケース",
       "spec.kind.live": "ライブ", "spec.kind.det": "決定的",
       "spec.driftWarn": "仕様ドリフト", "det.steps": "ステップ",
+      "kind.run": "テスト実行", "kind.drift": "ドリフト監査",
+      "drift.summary.issues": "問題数", "drift.summary.errors": "エラー",
+      "drift.summary.warnings": "警告", "drift.summary.specsWithIssues": "問題のあるスペック",
+      "drift.clean": "ドリフトの問題なし",
       "grade.question": "実際の原因は何でしたか？", "grade.predicted": "予測",
       "grade.ungraded": "未評価", "grade.matches": "保存済み · 一致",
       "grade.corrected": "保存済み · 修正", "grade.saving": "保存中…",
@@ -1241,6 +1261,19 @@ const CLIENT_JS = `
       runCell.appendChild(el("div", "runid", r.id.slice(0, 8)));
       var sub = el("div", "subline");
       sub.appendChild(ciBadge(r));
+      if (r.kind === "drift") {
+        sub.appendChild(el("span", "chip kind-chip", t("kind.drift")));
+        if (r.drift) {
+          if (r.drift.errors > 0) {
+            sub.appendChild(el("span", "chip drift-errors-chip", t("drift.summary.errors") + " " + r.drift.errors));
+          }
+          if (r.drift.warnings > 0) {
+            sub.appendChild(el("span", "chip drift-count-chip", t("drift.summary.warnings") + " " + r.drift.warnings));
+          }
+        }
+      } else {
+        sub.appendChild(el("span", "chip kind-chip", t("kind.run")));
+      }
       runCell.appendChild(sub);
       tr.appendChild(runCell);
 
@@ -1316,7 +1349,29 @@ const CLIENT_JS = `
     metaItem(t("meta.branch"), branchChip);
     // Which environment the run executed against (recorded at push, display-only).
     if (run.profile) metaItem(t("meta.profile"), el("span", "chip", run.profile));
-    metaItem(t("meta.specs"), run.specs.passed + " / " + run.specs.total + " " + t("meta.passed"));
+    if (run.kind === "drift" && run.drift) {
+      // Drift runs have no live/deterministic spec pass count. Errors/warnings
+      // are the actionable counts and get colored chips; issues/specsWithIssues
+      // are supplementary totals shown as a muted line below.
+      if (run.drift.errors === 0 && run.drift.warnings === 0) {
+        metaItem(t("meta.drift"), el("div", "drift-clean", t("drift.clean")));
+      } else {
+        var driftBox = el("div", "drift-meta-box");
+        var chips = el("div", "drift-meta-chips");
+        if (run.drift.errors > 0) {
+          chips.appendChild(el("span", "chip drift-errors-chip", t("drift.summary.errors") + " " + run.drift.errors));
+        }
+        if (run.drift.warnings > 0) {
+          chips.appendChild(el("span", "chip drift-count-chip", t("drift.summary.warnings") + " " + run.drift.warnings));
+        }
+        driftBox.appendChild(chips);
+        var driftSub = el("div", "muted", t("drift.summary.specsWithIssues") + " " + run.drift.specsWithIssues + " / " + t("drift.summary.issues") + " " + run.drift.issues);
+        driftBox.appendChild(driftSub);
+        metaItem(t("meta.drift"), driftBox);
+      }
+    } else {
+      metaItem(t("meta.specs"), run.specs.passed + " / " + run.specs.total + " " + t("meta.passed"));
+    }
     metaItem(t("meta.prompt"), run.promptVersion || "—");
     metaItem(t("meta.created"), relTime(run.createdAt));
     head.appendChild(meta);
@@ -1654,7 +1709,7 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  function renderSpecCard(runId, r, triageState) {
+  function renderSpecCard(runId, r, triageState, isDrift) {
     var card = el("div", "spec-card " + r.status); // .passed / .failed rail
     var head = el("div", "spec-card-head");
     var nameBlock = el("div");
@@ -1662,7 +1717,10 @@ const CLIENT_JS = `
     nameBlock.appendChild(el("div", "slug", r.feature + " / " + r.spec));
     head.appendChild(nameBlock);
     head.appendChild(el("div", "spacer"));
-    head.appendChild(r.liveRun ? el("span", "badge-live", t("spec.kind.live")) : el("span", "badge-det", t("spec.kind.det")));
+    head.appendChild(
+      isDrift ? el("span", "badge badge-drift", t("kind.drift"))
+              : (r.liveRun ? el("span", "badge-live", t("spec.kind.live"))
+                           : el("span", "badge-det", t("spec.kind.det"))));
     head.appendChild(statusBadge(r.status));
     var hasDriftError = r.driftIssues && r.driftIssues.some(function (d) { return d.severity === "ERROR"; });
     if (hasDriftError) {
@@ -1675,6 +1733,11 @@ const CLIENT_JS = `
 
     var body = el("div", "spec-card-body");
     var any = false;
+
+    if (isDrift && (!r.driftIssues || r.driftIssues.length === 0)) {
+      body.appendChild(el("div", "drift-clean", t("drift.clean")));
+      any = true;
+    }
 
     if (r.status === "failed" && r.analysis) {
       // Tier2: the verdict block (analysis) + the grading action, always shown.
@@ -1722,10 +1785,10 @@ const CLIENT_JS = `
     return card;
   }
 
-  function renderSpecCards(runId, results, triageState) {
+  function renderSpecCards(runId, results, triageState, isDrift) {
     var container = document.getElementById("spec-cards");
     clear(container);
-    results.forEach(function (r) { container.appendChild(renderSpecCard(runId, r, triageState)); });
+    results.forEach(function (r) { container.appendChild(renderSpecCard(runId, r, triageState, isDrift)); });
     document.getElementById("detail-spec-count").textContent = "· " + results.length;
   }
 
@@ -1862,9 +1925,14 @@ const CLIENT_JS = `
       // triage loads so the saved grades restore. Keeping these separate means
       // a triage failure (or a throw while rendering cards) can't be mislabelled
       // as the other, and neither escapes its own catch.
-      renderSpecCards(runId, report.results, { byKey: {} });
+      var isDrift = report.kind === "drift";
+      document.getElementById("triage-head").hidden = isDrift;
+      document.getElementById("matrix-card").hidden = isDrift;
+      document.getElementById("triage-progress").hidden = isDrift;
+      renderSpecCards(runId, report.results, { byKey: {} }, isDrift);
+      if (isDrift) return; // drift runs have no triage: skip loadTriage entirely
       loadTriage(runId, function (triageState) {
-        renderSpecCards(runId, report.results, triageState);
+        renderSpecCards(runId, report.results, triageState, isDrift);
       });
     }).catch(detailError("Error loading report"));
   }

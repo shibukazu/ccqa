@@ -49,7 +49,10 @@ export interface HubPromptMeta {
 
 export interface HubClient {
   /** Push a report directory (as a tar.gz) for an already-finished `ccqa run`. */
-  pushRun(archive: Uint8Array, meta: { project: string; branch?: string; profile?: string }): Promise<Run>;
+  pushRun(
+    archive: Uint8Array,
+    meta: { project: string; branch?: string; profile?: string; kind?: "run" | "drift" },
+  ): Promise<Run>;
   listRuns(q?: { project?: string; branch?: string; status?: RunStatus; limit?: number }): Promise<Run[]>;
   getRun(id: string): Promise<Run>;
   getReport(id: string): Promise<unknown>;
@@ -183,6 +186,7 @@ export function createHubClient(opts: HubClientOptions): HubClient {
       const params = new URLSearchParams({ project: meta.project });
       if (meta.branch) params.set("branch", meta.branch);
       if (meta.profile) params.set("profile", meta.profile);
+      if (meta.kind) params.set("kind", meta.kind);
       return json(`/api/v1/runs?${params}`, {
         method: "POST",
         headers: { "Content-Type": "application/gzip" },

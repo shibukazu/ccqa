@@ -33,6 +33,18 @@ export const RunSchema = z.object({
   profile: z.string().nullable(),
   branch: z.string().nullable(),
   status: RunStatusSchema,
+  /** "run" = ccqa run/live execution; "drift" = ccqa drift --push. */
+  kind: z.enum(["run", "drift"]).default("run"),
+  /** Drift result pushed via `ccqa drift --push`; null for kind:"run". */
+  drift: z
+    .object({
+      issues: z.number(),
+      errors: z.number(),
+      warnings: z.number(),
+      specsWithIssues: z.number(),
+    })
+    .nullable()
+    .default(null),
   /** Spec-level counts derived from the report's `results[]`. */
   specs: z.object({ total: z.number(), passed: z.number(), failed: z.number() }),
   gitHead: z.string().nullable(),

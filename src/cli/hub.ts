@@ -1,8 +1,7 @@
 import { Command } from "commander";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { HubApiError, type HubClient } from "../hub-client/index.ts";
-import { execFileP } from "../drift/affected.ts";
+import type { HubClient } from "../hub-client/index.ts";
 import { RunReportDataSchema } from "../report/schema.ts";
 import { packDirToTarGz } from "../hub/core/tar.ts";
 import {
@@ -15,7 +14,8 @@ import { isPromptName, PROMPT_NAMES, type PromptName, resolvePromptLocalPath } f
 import { DEFAULT_REPORT_DIR } from "../run/report-constants.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
-import { hubTokenOption, hubUrlOption, resolveHubClient, type HubConnOptions } from "./hub-conn.ts";
+import { hubTokenOption, hubUrlOption, resolveHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
+import { detectBranch } from "./git-branch.ts";
 import * as log from "./logger.ts";
 
 /**
@@ -86,26 +86,6 @@ async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   return Buffer.concat(chunks).toString("utf8");
-}
-
-/**
- * Wrap a subcommand action so a `HubApiError` (hub request failed, e.g. a
- * 503 when the hub has no encryption key configured) prints a clean message
- * and exits 2, instead of surfacing as an unhandled rejection with a stack
- * trace.
- */
-function withHubErrors<A extends unknown[]>(fn: (...args: A) => Promise<void>): (...args: A) => Promise<void> {
-  return async (...args) => {
-    try {
-      await fn(...args);
-    } catch (err) {
-      if (err instanceof HubApiError) {
-        log.error(`hub request failed (${err.status} ${err.code}): ${err.message}`);
-        process.exit(2);
-      }
-      throw err;
-    }
-  };
 }
 
 // ── sessions ────────────────────────────────────────────────────────────
@@ -419,19 +399,6 @@ export const hubCommand = new Command("hub")
   .addCommand(sessionCommand)
   .addCommand(varCommand)
   .addCommand(promptCommand);
-
-/** Best-effort current branch: CI env vars first, then git, else null. */
-async function detectBranch(cwd: string): Promise<string | null> {
-  const fromEnv = process.env.GITHUB_HEAD_REF || process.env.GITHUB_REF_NAME;
-  if (fromEnv) return fromEnv;
-  try {
-    const { stdout } = await execFileP("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd });
-    const branch = stdout.trim();
-    return branch && branch !== "HEAD" ? branch : null;
-  } catch {
-    return null;
-  }
-}
 
 /** Loose check that a fetched session is agent-browser storage-state, mirroring loadStorageState. */
 export function isStorageStateShape(state: unknown): state is { cookies: unknown[]; origins: unknown[] } {

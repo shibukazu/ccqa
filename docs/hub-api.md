@@ -43,10 +43,11 @@ archive. Every field of the resulting `Run` is derived server-side from that
 report; a run is immutable once created (there is no update/patch).
 
 ```
-POST /api/v1/runs?project=<name>&branch=<branch>&profile=<profile>
+POST /api/v1/runs?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>
   Content-Type: application/gzip
   body: gzip tar of a `ccqa run --report` output directory (must contain report.json)
   ?profile is optional — recorded on the Run for display; runs are not scoped by profile
+  ?kind is optional — "run" (default) or "drift"; "drift" is a `ccqa drift --push` audit, not an executed run
   → 201 Run
 
 GET /api/v1/runs?project=<name>&branch=<branch>&status=<status>&limit=<n>
@@ -72,6 +73,8 @@ interface Run {
   profile: string | null;    // which profile/environment the run executed against; display-only
   branch: string | null;
   status: "passed" | "failed";
+  kind: "run" | "drift";     // "run" = ccqa run/live execution; "drift" = ccqa drift --push
+  drift: { issues: number; errors: number; warnings: number; specsWithIssues: number } | null; // set only for kind: "drift"
   specs: { total: number; passed: number; failed: number };
   gitHead: string | null;
   promptVersion: string;
@@ -81,11 +84,12 @@ interface Run {
 }
 ```
 
-`branch` defaults from the pushing client (`ccqa hub push` resolves
-`$GITHUB_HEAD_REF` → `$GITHUB_REF_NAME` → the local git branch), and is
+`branch` defaults from the pushing client (`ccqa hub push` / `ccqa drift --push`
+resolve `$GITHUB_HEAD_REF` → `$GITHUB_REF_NAME` → the local git branch), and is
 `null` if the client sent none. `status` is exactly `"passed"` or
 `"failed"` — there is no `queued` or `running` state, since nothing was
-ever running on the hub in the first place.
+ever running on the hub in the first place. `drift` is derived from the
+pushed report's `results[].driftIssues` and is `null` for `kind: "run"`.
 
 ## Triage
 

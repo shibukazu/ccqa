@@ -16,6 +16,8 @@ function makeRun(id: string, project: string): Run {
     profile: null,
     branch: null,
     status: "failed",
+    kind: "run",
+    drift: null,
     specs: { total: 1, passed: 0, failed: 1 },
     gitHead: null,
     promptVersion: "4",

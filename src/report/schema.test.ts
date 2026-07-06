@@ -9,6 +9,7 @@ import {
 function sampleData(): RunReportData {
   return {
     schemaVersion: 1,
+    kind: "run",
     createdAt: "2026-06-10T00:00:00.000Z",
     runId: "1234567",
     git: { head: "abc1234", base: "origin/main" },
@@ -98,6 +99,17 @@ describe("RunReportDataSchema", () => {
   test("rejects a wrong schemaVersion", () => {
     const data = { ...sampleData(), schemaVersion: 2 };
     expect(RunReportDataSchema.safeParse(data).success).toBe(false);
+  });
+
+  test("defaults kind to \"run\" when omitted (older report.json)", () => {
+    const { kind: _kind, ...withoutKind } = sampleData();
+    const parsed = RunReportDataSchema.parse(JSON.parse(JSON.stringify(withoutKind)));
+    expect(parsed.kind).toBe("run");
+  });
+
+  test("accepts kind: \"drift\"", () => {
+    const data = { ...sampleData(), kind: "drift" as const };
+    expect(RunReportDataSchema.parse(data).kind).toBe("drift");
   });
 });
 
