@@ -28,6 +28,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0004](0004-unify-run-commands.md) | Per-spec mode dispatcher: `run` reads `mode:`, `record` collapses `trace + generate` | accepted |
 | [0005](0005-session-restore-model.md) | Restore browser sessions by name, not by spec-embedded path | accepted |
 | [0006](0006-hub-results-control-plane.md) | Hub is a results/sessions/variables control plane, not a remote executor | accepted |
+| [0007](0007-cli-hub-responsibility-split.md) | Where a capability lives: the CLI executes and touches the repo, the hub holds shared state | accepted |
 
 ## Template
 

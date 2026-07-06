@@ -80,3 +80,19 @@ test fixtures **must stay neutral and generic**.
   resulting `chore: release <version>` commit + tag, then publishes to npm.
 - The source of truth for the version is **`package.json`**, not git tags. Choosing
   `major` from `0.9.x` produces `1.0.0`.
+
+## Writing Markdown (docs, ADRs, READMEs)
+
+Block-level elements need a **blank line** around them, or renderers collapse
+them into the previous paragraph. This is the most common formatting mistake —
+check for it before committing any `.md` file.
+
+- A heading (`#`…`######`) and a bold "label" line used as a pseudo-heading
+  (e.g. `**Axis 1 — …**`) must be followed by a **blank line** before the body
+  text. `**Label**\ntext` renders as one run-on paragraph; `**Label**\n\ntext`
+  renders as a label plus its own paragraph.
+- Put a blank line before and after lists, tables, and fenced code blocks.
+- Match the surrounding file's wrapping. The ADRs and docs here hard-wrap prose
+  at ~80 columns; keep to that rather than emitting one long unwrapped line.
+- After writing or editing a `.md` file, re-read the changed region and confirm
+  no pseudo-heading or heading is glued to the line below it.
