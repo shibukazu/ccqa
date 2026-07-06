@@ -32,6 +32,7 @@ interface RecordOptions {
   cwd?: string;
   hubUrl?: string;
   hubToken?: string;
+  hubHeader?: string[];
   project?: string;
 }
 
@@ -125,6 +126,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       cwd: cwdForProfile,
       hubUrl: opts.hubUrl,
       hubToken: opts.hubToken,
+      hubHeader: opts.hubHeader,
     });
   } else {
     await applyProfileFromOption({ profile: undefined, project: "", cwd: cwdForProfile });
@@ -134,7 +136,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
   // already resolved via the exiting `resolveProject`, and mixing in the
   // throwing resolver would change the error mode for an invalid --project
   // from process.exit(2) to an uncaught throw.
-  const hubClientForTrace = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken });
+  const hubClientForTrace = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken, hubHeader: opts.hubHeader });
   const hubContext: HubContext | null = hubClientForTrace && project ? { hub: hubClientForTrace, project } : null;
 
   let traceResult: RunTraceResult | null = null;

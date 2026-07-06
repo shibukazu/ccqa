@@ -83,6 +83,9 @@ tar.gz to the hub, which records it as an immutable `Run`. Flags:
   `$GITHUB_REF_NAME`, then the current git branch, then omitted if none
   resolve.
 - `--hub-url` / `--hub-token` (or `CCQA_HUB_URL` / `CCQA_HUB_TOKEN`).
+- `--hub-header <key:value>` — extra header sent with every hub request
+  (repeatable; or `CCQA_HUB_HEADER` for a single entry). Useful when the hub
+  sits behind infra that gates on a header, e.g. `--hub-header "x-my-gate:secret"`.
 - `--cwd <path>` — directory the report dir is resolved against.
 
 `push` packs the report directory (report.json + evidence PNGs) and uploads
@@ -98,7 +101,8 @@ a link to the run in the hub's UI.
 
 There is no `pull` command — `ccqa run` and `ccqa record` fetch what they
 need from the hub directly as they execute, whenever `--hub-url`/`--hub-token`
-(or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) are set:
+(or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) are set. Both commands also accept
+`--hub-header`/`CCQA_HUB_HEADER` (see above) for hub requests made during the run:
 
 - A spec's `session:` restores fetch the named session(s) for the resolved
   project/profile straight from the hub.

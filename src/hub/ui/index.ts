@@ -495,7 +495,7 @@ const CSS = `
      order decides). */
   .chip.kind-chip { color: var(--violet); background: var(--violet-bg); border-color: var(--violet-border); font-family: var(--font); margin-left: 6px; }
   .chip.drift-count-chip { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); margin-left: 6px; }
-  .chip.drift-errors-chip { color: var(--fail); background: var(--fail-bg); border-color: var(--fail-border); }
+  .chip.drift-errors-chip { color: var(--fail); background: var(--fail-bg); border-color: var(--fail-border); margin-left: 6px; }
   .drift-meta-box { display: flex; flex-direction: column; gap: 4px; }
   .drift-meta-chips { display: flex; gap: 6px; }
   .specs { display: inline-flex; align-items: center; gap: 9px; }

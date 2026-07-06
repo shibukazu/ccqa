@@ -19,6 +19,12 @@ import type { LabelsExport } from "../report/schema.ts";
 export interface HubClientOptions {
   baseUrl: string;
   token: string;
+  /**
+   * Extra headers sent on every request, ahead of any per-call headers and
+   * the `Authorization` header (e.g. an infra gateway/ALB bypass header in
+   * CI — never overrides `Authorization`).
+   */
+  headers?: Record<string, string>;
   /** Override for testing; defaults to the global `fetch`. */
   fetchImpl?: typeof fetch;
 }
@@ -134,7 +140,7 @@ export function createHubClient(opts: HubClientOptions): HubClient {
         res = await doFetch(`${baseUrl}${path}`, {
           ...init,
           signal,
-          headers: { ...init.headers, Authorization: `Bearer ${opts.token}` },
+          headers: { ...opts.headers, ...init.headers, Authorization: `Bearer ${opts.token}` },
         });
       } catch (err) {
         // Transient network/socket error (or timeout abort) — retry GET/DELETE.
