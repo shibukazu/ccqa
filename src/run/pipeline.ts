@@ -129,6 +129,7 @@ export interface RunOptions {
   concurrency?: number;
   hubUrl?: string;
   hubToken?: string;
+  hubHeader?: string[];
   project?: string;
 }
 
@@ -201,6 +202,7 @@ export async function executeRun(
         cwd,
         hubUrl: opts.hubUrl,
         hubToken: opts.hubToken,
+        hubHeader: opts.hubHeader,
       });
     } else {
       await resolveProfileEnv({ profile: undefined, project: "", cwd });
@@ -225,7 +227,13 @@ export async function executeRun(
   // (once for the profile, once here).
   let hubCtx: HubContext | null = null;
   try {
-    hubCtx = resolveHubContext({ hubUrl: opts.hubUrl, hubToken: opts.hubToken, project: opts.project, cwd });
+    hubCtx = resolveHubContext({
+      hubUrl: opts.hubUrl,
+      hubToken: opts.hubToken,
+      hubHeader: opts.hubHeader,
+      project: opts.project,
+      cwd,
+    });
   } catch {
     hubCtx = null;
   }

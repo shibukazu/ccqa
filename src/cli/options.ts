@@ -3,7 +3,7 @@ import { DEFAULT_LANGUAGE } from "../prompts/language.ts";
 import { applyProfileEnv, defaultEnvPath, loadDefaultEnv } from "../runtime/profile-env.ts";
 import { HubApiError } from "../hub-client/index.ts";
 import { HubConnectionError, requireHubClient, type HubConnOptions } from "./hub-conn.ts";
-import { hubTokenOption, hubUrlOption } from "./hub-conn.ts";
+import { hubHeaderOption, hubTokenOption, hubUrlOption } from "./hub-conn.ts";
 import * as log from "./logger.ts";
 
 export { DEFAULT_LANGUAGE, languageDirective, useJapanesePrompts } from "../prompts/language.ts";
@@ -39,7 +39,7 @@ export function addProfileOption(command: Command): Command {
  * options so help text and behaviour don't drift.
  */
 export function addHubOptions(command: Command): Command {
-  return command.option(...hubUrlOption).option(...hubTokenOption);
+  return command.option(...hubUrlOption).option(...hubTokenOption).option(...hubHeaderOption);
 }
 
 export interface ResolveProfileEnvOptions extends HubConnOptions {

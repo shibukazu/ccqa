@@ -60,3 +60,50 @@ describe("createHubClient retry behavior", () => {
     await expect(hub.getPrompt("demo", "analysis-custom-prompt")).resolves.toBeNull();
   });
 });
+
+describe("createHubClient custom headers", () => {
+  test("sends opts.headers on every request", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(fakeResponse(200, { id: "run-1" }));
+    const hub = createHubClient({
+      baseUrl: "https://hub.example",
+      token: "t",
+      headers: { "x-foo": "bar" },
+      fetchImpl,
+    });
+
+    await hub.getRun("run-1");
+
+    const [, init] = fetchImpl.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ "x-foo": "bar" });
+  });
+
+  test("Authorization always wins, even if opts.headers sets it", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(fakeResponse(200, { id: "run-1" }));
+    const hub = createHubClient({
+      baseUrl: "https://hub.example",
+      token: "t",
+      headers: { Authorization: "Bearer stolen" },
+      fetchImpl,
+    });
+
+    await hub.getRun("run-1");
+
+    const [, init] = fetchImpl.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer t" });
+  });
+
+  test("per-call headers (e.g. Content-Type) take precedence over opts.headers", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(fakeResponse(200, {}));
+    const hub = createHubClient({
+      baseUrl: "https://hub.example",
+      token: "t",
+      headers: { "Content-Type": "text/plain" },
+      fetchImpl,
+    });
+
+    await hub.putPrompt("demo", "analysis-custom-prompt", "body");
+
+    const [, init] = fetchImpl.mock.calls[0]!;
+    expect((init as RequestInit).headers).toMatchObject({ "Content-Type": "text/markdown; charset=utf-8" });
+  });
+});

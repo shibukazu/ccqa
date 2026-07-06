@@ -27,7 +27,7 @@ import { HubApiError, type HubClient } from "../hub-client/index.ts";
 import { addLanguageOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
-import { hubTokenOption, hubUrlOption, resolveHubClient } from "./hub-conn.ts";
+import { hubHeaderOption, hubTokenOption, hubUrlOption, resolveHubClient } from "./hub-conn.ts";
 import { detectBranch, getGitHead } from "./git-branch.ts";
 import * as log from "./logger.ts";
 
@@ -44,6 +44,7 @@ interface DriftOptions {
   project?: string;
   hubUrl?: string;
   hubToken?: string;
+  hubHeader?: string[];
 }
 
 const DEFAULT_CONCURRENCY = 3;
@@ -84,7 +85,8 @@ export const driftCommand = addLanguageOption(
     .option("--push", "Push the drift result to a ccqa hub as a run (kind: drift).")
     .option("--project <name>", "Logical project name for the pushed run. Defaults to the current directory's name.")
     .option(...hubUrlOption)
-    .option(...hubTokenOption),
+    .option(...hubTokenOption)
+    .option(...hubHeaderOption),
 ).action(async (specPath: string | undefined, opts: DriftOptions) => {
     const format = parseFormat(opts.format);
     const threshold = parseSeverity(opts.severity);
