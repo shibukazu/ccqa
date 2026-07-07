@@ -29,6 +29,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0005](0005-session-restore-model.md) | Restore browser sessions by name, not by spec-embedded path | accepted |
 | [0006](0006-hub-results-control-plane.md) | Hub is a results/sessions/variables control plane, not a remote executor | accepted |
 | [0007](0007-cli-hub-responsibility-split.md) | Where a capability lives: the CLI executes and touches the repo, the hub holds shared state | accepted |
+| [0008](0008-classification-and-action-are-orthogonal.md) | Classification and action are orthogonal: `run` classifies, `act` responds, the workflow maps label→action | accepted |
 
 ## Template
 

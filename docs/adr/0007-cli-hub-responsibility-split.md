@@ -124,6 +124,12 @@ CLI-only, always.
 
 ### How this decides the three classification follow-ups
 
+> Superseded in part by ADR-0008: the fixed 1:1 `TEST_DRIFT → fix` /
+> `SPEC_CHANGE → propose` / `PRODUCT_BUG → notify` binding described below is
+> retired in favour of user-chosen label→action routing. The per-surface
+> placements (edits/PRs = CLI, approval state = hub, notify send = CLI) still
+> hold.
+
 The failure classifier (`TEST_DRIFT` / `SPEC_CHANGE` / `PRODUCT_BUG`) already
 runs inside `ccqa run` and its prediction is aggregated by the hub. The
 follow-up *actions* place cleanly by the rule:
