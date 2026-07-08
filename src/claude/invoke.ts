@@ -55,17 +55,16 @@ export function resolveModel(explicit?: string): string | undefined {
 }
 
 /**
- * Environment variables that redirect the underlying Claude Code process to a
- * custom endpoint (e.g. a corporate LLM gateway / proxy) instead of talking to
- * the Anthropic API directly. These are the standard variables Claude Code
- * itself honours; ccqa only forwards them.
+ * Standard Claude Code environment variables that select the API endpoint and
+ * credentials. ccqa forwards whichever of these are set to the underlying
+ * Claude Code process; it does not read or interpret their values.
  *
- * - `ANTHROPIC_BASE_URL`     — the gateway endpoint to send requests to.
- * - `ANTHROPIC_AUTH_TOKEN`   — the token sent as `Authorization: Bearer <token>`.
- * - `ANTHROPIC_API_KEY`      — an API key, if the gateway expects one instead.
- * - `ANTHROPIC_CUSTOM_HEADERS` — extra headers (e.g. gateway routing headers).
+ * - `ANTHROPIC_BASE_URL`      — the API endpoint to send requests to.
+ * - `ANTHROPIC_AUTH_TOKEN`    — sent as `Authorization: Bearer <token>`.
+ * - `ANTHROPIC_API_KEY`       — API key, when used instead of a token.
+ * - `ANTHROPIC_CUSTOM_HEADERS` — extra request headers.
  */
-const GATEWAY_ENV_KEYS = [
+const ENDPOINT_ENV_KEYS = [
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_API_KEY",
@@ -73,23 +72,18 @@ const GATEWAY_ENV_KEYS = [
 ] as const;
 
 /**
- * Collects the gateway/auth variables set in the current process environment so
- * they can be forwarded, verbatim, to every Claude Code invocation. Returns only
- * the keys that are actually set (non-empty), so unset variables never override
- * the SDK's own defaults.
- *
- * ccqa deliberately does not mint or rotate these values — the caller (a CI
- * pipeline, wrapper script, or a key-issuing tool) is expected to `export` them
- * before running ccqa. This keeps ccqa a generic tool with no knowledge of any
- * specific gateway.
+ * Collects the endpoint/auth variables set in the current process environment
+ * so they can be forwarded, verbatim, to every Claude Code invocation. Returns
+ * only the keys that are actually set (non-empty), so unset variables never
+ * override the SDK's own defaults.
  */
-export function resolveGatewayEnv(): Record<string, string> {
-  const gateway: Record<string, string> = {};
-  for (const key of GATEWAY_ENV_KEYS) {
+export function resolveEndpointEnv(): Record<string, string> {
+  const endpointEnv: Record<string, string> = {};
+  for (const key of ENDPOINT_ENV_KEYS) {
     const value = process.env[key];
-    if (value && value.length > 0) gateway[key] = value;
+    if (value && value.length > 0) endpointEnv[key] = value;
   }
-  return gateway;
+  return endpointEnv;
 }
 
 /**
@@ -147,15 +141,15 @@ export async function invokeClaudeStreaming(
 
   const resolvedModel = resolveModel(model);
 
-  // Forward the gateway/auth variables (ANTHROPIC_BASE_URL, ...) to the Claude
-  // Code process so it can be pointed at a corporate LLM gateway. When any is
-  // set (or the caller passes its own env), we materialise `env` from the full
-  // process environment and layer the caller's overrides on top, so the gateway
-  // vars are always carried through. When none is set and the caller passes no
-  // env, we leave `env` unset and let the SDK use its own default.
-  const hasGatewayEnv = Object.keys(resolveGatewayEnv()).length > 0;
+  // Forward the endpoint/auth variables (ANTHROPIC_BASE_URL, ...) to the Claude
+  // Code process so it can be pointed at a custom endpoint. When any is set (or
+  // the caller passes its own env), we materialise `env` from the full process
+  // environment and layer the caller's overrides on top, so those variables are
+  // always carried through. When none is set and the caller passes no env, we
+  // leave `env` unset and let the SDK use its own default.
+  const hasEndpointEnv = Object.keys(resolveEndpointEnv()).length > 0;
   const mergedEnv =
-    env || hasGatewayEnv
+    env || hasEndpointEnv
       ? ({ ...process.env, ...env } as Record<string, string | undefined>)
       : undefined;
 
