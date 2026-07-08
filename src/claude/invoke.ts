@@ -55,6 +55,38 @@ export function resolveModel(explicit?: string): string | undefined {
 }
 
 /**
+ * Standard Claude Code environment variables that select the API endpoint and
+ * credentials. ccqa forwards whichever of these are set to the underlying
+ * Claude Code process; it does not read or interpret their values.
+ *
+ * - `ANTHROPIC_BASE_URL`      — the API endpoint to send requests to.
+ * - `ANTHROPIC_AUTH_TOKEN`    — sent as `Authorization: Bearer <token>`.
+ * - `ANTHROPIC_API_KEY`       — API key, when used instead of a token.
+ * - `ANTHROPIC_CUSTOM_HEADERS` — extra request headers.
+ */
+const ENDPOINT_ENV_KEYS = [
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_CUSTOM_HEADERS",
+] as const;
+
+/**
+ * Collects the endpoint/auth variables set in the current process environment
+ * so they can be forwarded, verbatim, to every Claude Code invocation. Returns
+ * only the keys that are actually set (non-empty), so unset variables never
+ * override the SDK's own defaults.
+ */
+export function resolveEndpointEnv(): Record<string, string> {
+  const endpointEnv: Record<string, string> = {};
+  for (const key of ENDPOINT_ENV_KEYS) {
+    const value = process.env[key];
+    if (value && value.length > 0) endpointEnv[key] = value;
+  }
+  return endpointEnv;
+}
+
+/**
  * Per-invocation cost + usage record extracted from the SDK's `result` message.
  * All fields are `null` when the SDK didn't surface a `result` message (e.g.
  * the mock replay shim used in unit tests).
@@ -109,6 +141,18 @@ export async function invokeClaudeStreaming(
 
   const resolvedModel = resolveModel(model);
 
+  // Forward the endpoint/auth variables (ANTHROPIC_BASE_URL, ...) to the Claude
+  // Code process so it can be pointed at a custom endpoint. When any is set (or
+  // the caller passes its own env), we materialise `env` from the full process
+  // environment and layer the caller's overrides on top, so those variables are
+  // always carried through. When none is set and the caller passes no env, we
+  // leave `env` unset and let the SDK use its own default.
+  const hasEndpointEnv = Object.keys(resolveEndpointEnv()).length > 0;
+  const mergedEnv =
+    env || hasEndpointEnv
+      ? ({ ...process.env, ...env } as Record<string, string | undefined>)
+      : undefined;
+
   // Track the last agent-browser tool_use_id so the post-tool hooks can roll
   // it back at most once. `claimAbToolUse` atomically tests-and-clears the id
   // so PostToolUse and PostToolUseFailure can't both fire `onAbActionFailed`
@@ -128,7 +172,7 @@ export async function invokeClaudeStreaming(
     allowDangerouslySkipPermissions: true,
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(cwd ? { cwd } : {}),
-    ...(env ? { env: { ...process.env, ...env } as Record<string, string | undefined> } : {}),
+    ...(mergedEnv ? { env: mergedEnv } : {}),
     ...(disableBuiltinTools ? { tools: [] } : {}),
     hooks:
       onAbAction || onAbActionFailed
