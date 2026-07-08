@@ -55,6 +55,44 @@ export function resolveModel(explicit?: string): string | undefined {
 }
 
 /**
+ * Environment variables that redirect the underlying Claude Code process to a
+ * custom endpoint (e.g. a corporate LLM gateway / proxy) instead of talking to
+ * the Anthropic API directly. These are the standard variables Claude Code
+ * itself honours; ccqa only forwards them.
+ *
+ * - `ANTHROPIC_BASE_URL`     — the gateway endpoint to send requests to.
+ * - `ANTHROPIC_AUTH_TOKEN`   — the token sent as `Authorization: Bearer <token>`.
+ * - `ANTHROPIC_API_KEY`      — an API key, if the gateway expects one instead.
+ * - `ANTHROPIC_CUSTOM_HEADERS` — extra headers (e.g. gateway routing headers).
+ */
+const GATEWAY_ENV_KEYS = [
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_CUSTOM_HEADERS",
+] as const;
+
+/**
+ * Collects the gateway/auth variables set in the current process environment so
+ * they can be forwarded, verbatim, to every Claude Code invocation. Returns only
+ * the keys that are actually set (non-empty), so unset variables never override
+ * the SDK's own defaults.
+ *
+ * ccqa deliberately does not mint or rotate these values — the caller (a CI
+ * pipeline, wrapper script, or a key-issuing tool) is expected to `export` them
+ * before running ccqa. This keeps ccqa a generic tool with no knowledge of any
+ * specific gateway.
+ */
+export function resolveGatewayEnv(): Record<string, string> {
+  const gateway: Record<string, string> = {};
+  for (const key of GATEWAY_ENV_KEYS) {
+    const value = process.env[key];
+    if (value && value.length > 0) gateway[key] = value;
+  }
+  return gateway;
+}
+
+/**
  * Per-invocation cost + usage record extracted from the SDK's `result` message.
  * All fields are `null` when the SDK didn't surface a `result` message (e.g.
  * the mock replay shim used in unit tests).
@@ -109,6 +147,18 @@ export async function invokeClaudeStreaming(
 
   const resolvedModel = resolveModel(model);
 
+  // Forward the gateway/auth variables (ANTHROPIC_BASE_URL, ...) to the Claude
+  // Code process so it can be pointed at a corporate LLM gateway. When any is
+  // set (or the caller passes its own env), we materialise `env` from the full
+  // process environment and layer the caller's overrides on top, so the gateway
+  // vars are always carried through. When none is set and the caller passes no
+  // env, we leave `env` unset and let the SDK use its own default.
+  const hasGatewayEnv = Object.keys(resolveGatewayEnv()).length > 0;
+  const mergedEnv =
+    env || hasGatewayEnv
+      ? ({ ...process.env, ...env } as Record<string, string | undefined>)
+      : undefined;
+
   // Track the last agent-browser tool_use_id so the post-tool hooks can roll
   // it back at most once. `claimAbToolUse` atomically tests-and-clears the id
   // so PostToolUse and PostToolUseFailure can't both fire `onAbActionFailed`
@@ -128,7 +178,7 @@ export async function invokeClaudeStreaming(
     allowDangerouslySkipPermissions: true,
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(cwd ? { cwd } : {}),
-    ...(env ? { env: { ...process.env, ...env } as Record<string, string | undefined> } : {}),
+    ...(mergedEnv ? { env: mergedEnv } : {}),
     ...(disableBuiltinTools ? { tools: [] } : {}),
     hooks:
       onAbAction || onAbActionFailed
