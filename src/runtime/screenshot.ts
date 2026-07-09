@@ -13,17 +13,6 @@ export interface ScreenshotOptions {
    * guaranteed to be in the artifact regardless of scroll position.
    */
   fullPage?: boolean;
-  /**
-   * Absolute path to a saved auth-state file (as produced by
-   * `agent-browser state save`). When set, the screenshot subprocess is
-   * launched with `--state <statePath>` so it attaches to the same
-   * pre-authenticated origin the live executor is driving — without it the
-   * spawned agent-browser would open a fresh, signed-out browser and the
-   * screenshot would miss the live page state.
-   *
-   * The flag is load-only; agent-browser never writes back to this file.
-   */
-  statePath?: string | null;
 }
 
 /**
@@ -43,7 +32,6 @@ export function takeScreenshot(
   options?: ScreenshotOptions,
 ): ScreenshotResult {
   const args = ["--session", sessionName];
-  if (options?.statePath) args.push("--state", options.statePath);
   args.push("screenshot");
   if (options?.fullPage) args.push("--full");
   args.push(outPath);

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 
-import { DEFAULT_SESSION_PROFILE, loadStorageState } from "../runtime/session-state.ts";
+import { DEFAULT_SESSION_PROFILE, loadStorageState, verifySessionRestores } from "../runtime/session-state.ts";
 import { SessionNameSchema } from "../spec/yaml-schema.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
@@ -105,6 +105,27 @@ const bootstrapCommand = new Command("bootstrap")
       }
 
       const state = await loadStorageState(tmpPath);
+
+      // Prove the saved state actually restores to a signed-in page before
+      // uploading it. Catches the common failure where the login wasn't fully
+      // complete at save time (cookies restore, but the app still shows a
+      // sign-in form) — which would otherwise only surface later in CI. Needs
+      // a URL to navigate; when `--url` was omitted we can't verify, so we
+      // skip the gate rather than block the save.
+      if (opts.url) {
+        log.info("verifying the saved session restores to a signed-in page…");
+        const check = verifySessionRestores(tmpPath, opts.url);
+        if (!check.restored) {
+          log.error(`session did not restore cleanly: ${check.reason}`);
+          log.hint(
+            "fully load the application (sign in, open the target workspace/page, wait for it " +
+              "to settle) before pressing Enter, then run bootstrap again. Nothing was uploaded.",
+          );
+          process.exit(1);
+        }
+        log.info("restore verified — the session starts signed in.");
+      }
+
       await hub.putSession(project, opts.profile ?? DEFAULT_SESSION_PROFILE, name, state);
     } finally {
       await rm(tmpDir, { recursive: true, force: true });

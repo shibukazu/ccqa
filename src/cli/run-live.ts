@@ -379,8 +379,9 @@ async function runOneSpec(args: {
 
   // Every run uses a fresh ephemeral session name. Pre-authenticated state
   // (cookies + localStorage) is brought in separately via `spec.session` and
-  // loaded read-only with agent-browser's `--state` flag, so re-running the
-  // spec — locally or in CI — never mutates the source-of-truth state files.
+  // restored into the session read-only before the run starts (see the live
+  // executor), so re-running the spec — locally or in CI — never mutates the
+  // source-of-truth state files.
   const sessionName = generateLiveSessionName();
   log.meta("session", sessionName);
   opts.teardown?.trackSession(sessionName);

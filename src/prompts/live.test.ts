@@ -50,6 +50,28 @@ describe("buildLiveSystemPromptPrefix", () => {
     expect(p).toMatch(/no replay contract/i);
   });
 
+  test("tells the model the session is already signed in and not to touch state, only when a statePath is set", () => {
+    // ccqa restores the auth-state into the session before the run, so the
+    // prompt must NOT ask the model to pass --state (that only works at daemon
+    // boot) and must forbid state save/load. Without a statePath, none of this
+    // guidance should appear.
+    const withState = buildLiveSystemPromptPrefix({
+      title: SAMPLE_TITLE,
+      allSteps: STEPS,
+      sessionName: "s",
+      statePath: "/tmp/state.json",
+    });
+    expect(withState).toMatch(/already been restored into this session/i);
+    expect(withState).not.toContain("--state");
+
+    const withoutState = buildLiveSystemPromptPrefix({
+      title: SAMPLE_TITLE,
+      allSteps: STEPS,
+      sessionName: "s",
+    });
+    expect(withoutState).not.toMatch(/already been restored/i);
+  });
+
   test("steers text entry to inserttext and forbids Backspace-loop clears", () => {
     // Guards the fix for keystroke-based input corrupting non-ASCII text in
     // rich-text editors, and for background Backspace loops hanging the session.

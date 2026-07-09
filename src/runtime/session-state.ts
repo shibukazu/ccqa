@@ -3,6 +3,8 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { spawnAB } from "./spawn-ab.ts";
+
 /**
  * A saved browser session: agent-browser's storage-state JSON (cookies +
  * per-origin localStorage / sessionStorage), as written by
@@ -127,4 +129,90 @@ export async function removeTempStateDir(statePath: string): Promise<void> {
   const dir = dirname(statePath);
   trackedTempDirs.delete(dir);
   await rm(dir, { recursive: true, force: true });
+}
+
+export interface StateInjectionResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Cold-start an agent-browser daemon for `sessionName` and attach a saved
+ * auth-state to it, up front and exactly once, before any real navigation.
+ *
+ * Why not just pass `--state` on the first real command? agent-browser treats
+ * `--state` as a *daemon-launch* flag: it only takes effect on the invocation
+ * that boots the daemon, and later `--state` flags are ignored with a
+ * misleading "already running" warning. Relying on the model (or a screenshot
+ * helper) to carry `--state` on whichever command happens to boot the daemon
+ * couples restore to command ordering. Doing `open about:blank` (boot, no
+ * navigation) and then `state load <path>` (a runtime command that sets the
+ * state path in place) makes injection explicit and order-independent: cookies
+ * + localStorage are attached to the session once, up front, so the very first
+ * screenshot / step already sees a signed-in page.
+ *
+ * `state load` never writes back to the file (load-only), so re-runs leave the
+ * source-of-truth untouched. Returns `{ ok: false, error }` on failure rather
+ * than throwing; the caller decides whether an un-restored session is fatal.
+ */
+export function loadStateIntoSession(sessionName: string, statePath: string): StateInjectionResult {
+  // Boot the daemon without navigating, so the state attaches to the session
+  // rather than racing a page load.
+  const boot = spawnAB(["--session", sessionName, "open", "about:blank"]);
+  if (boot.status !== 0) {
+    return { ok: false, error: (boot.stderr || boot.stdout || `open exited ${boot.status}`).trim() };
+  }
+  const load = spawnAB(["--session", sessionName, "state", "load", statePath]);
+  if (load.status !== 0) {
+    return { ok: false, error: (load.stderr || load.stdout || `state load exited ${load.status}`).trim() };
+  }
+  return { ok: true };
+}
+
+export type SessionRestoreCheck =
+  | { restored: true }
+  | { restored: false; reason: string };
+
+/**
+ * Prove a just-saved session actually restores to a signed-in page, in a fresh
+ * throwaway agent-browser session, before it's trusted (e.g. uploaded to the
+ * hub). Loads `statePath` into a clean session, navigates to `verifyUrl`, and
+ * checks that a login form did NOT appear — the common failure mode where a
+ * bootstrap was saved before the app finished signing in, so cookies restore
+ * but the app still demands re-auth.
+ *
+ * "Signed-in" is detected generically (no product strings): a password input
+ * present means a login form is showing → not restored. This is a positive
+ * gate on the save, not a runtime check. Best-effort: on infrastructure errors
+ * (daemon won't start, navigation fails) it returns `restored: false` with the
+ * error so the caller can surface it rather than silently trusting the save.
+ * Always closes the throwaway session.
+ */
+export function verifySessionRestores(statePath: string, verifyUrl: string): SessionRestoreCheck {
+  const verifySession = `ccqa-session-verify-${process.pid}-${trackedTempDirs.size}`;
+  try {
+    const injected = loadStateIntoSession(verifySession, statePath);
+    if (!injected.ok) return { restored: false, reason: injected.error ?? "state load failed" };
+
+    const nav = spawnAB(["--session", verifySession, "open", verifyUrl]);
+    if (nav.status !== 0) {
+      return { restored: false, reason: (nav.stderr || nav.stdout || `open exited ${nav.status}`).trim() };
+    }
+    // Let the app settle so an SPA that redirects to a sign-in screen has time
+    // to render it before we probe.
+    spawnAB(["--session", verifySession, "wait", "--load", "networkidle"]);
+    spawnAB(["--session", verifySession, "wait", "3000"]);
+
+    const probe = spawnAB(["--session", verifySession, "get", "count", "input[type=password]"]);
+    if (probe.status !== 0) {
+      return { restored: false, reason: (probe.stderr || probe.stdout || `probe exited ${probe.status}`).trim() };
+    }
+    const passwordInputs = Number.parseInt(probe.stdout.replace(/[^0-9]/g, ""), 10) || 0;
+    if (passwordInputs >= 1) {
+      return { restored: false, reason: "a sign-in form appeared — the app is not signed in after restore" };
+    }
+    return { restored: true };
+  } finally {
+    spawnAB(["--session", verifySession, "close"]);
+  }
 }
