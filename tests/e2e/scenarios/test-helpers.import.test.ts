@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
-import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
+import { noAuthEnv, noColorEnv, stripAnsi, stubSecurityBinary } from "../_helpers/env.ts";
 import { installFakeAgentBrowser } from "../_helpers/fake-ab.ts";
 
 describe("ccqa/test-helpers — ab() integration", () => {
@@ -38,13 +38,16 @@ describe("ccqa/test-helpers — ab() integration", () => {
     project = await makeFakeProject("with-test-helpers", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 
+    // The spec fails (agent-browser exit 2), which now triggers failure
+    // analysis; force the auth probe to fail so it's skipped (no Claude call).
     const result = await runCcqa(["run", "demo/helper-smoke"], {
       cwd: project.cwd,
       env: {
-        ...noColorEnv(),
+        ...noAuthEnv(project.cwd),
         CCQA_FAKE_AB_LOG: join(project.cwd, "ab.log"),
         CCQA_FAKE_AB_EXIT: "2",
       },
+      pathPrepend: [await stubSecurityBinary(project.cwd)],
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).not.toBe(0);

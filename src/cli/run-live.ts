@@ -36,6 +36,12 @@ import { runLiveExecutor, type LiveRunResult, type LiveStepResult } from "../run
 import { generateLiveSessionName } from "../prompts/live.ts";
 import { liveRunToReportResult } from "../report/live-adapter.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
+import { closeSession } from "../diagnose/snapshot.ts";
+import type { RunTeardown } from "./run-teardown.ts";
+import type { IncrementalReport } from "../run/incremental-report.ts";
+
+/** Result of `driftAuthAvailable()`, hoisted once and shared across workers. */
+type DriftAuth = ReturnType<typeof driftAuthAvailable>;
 
 export interface RunLiveOptions {
   model?: string;
@@ -52,6 +58,14 @@ export interface RunLiveOptions {
   profile?: string;
   hubContext?: HubContext | null;
   customPrompt?: AnalysisCustomPrompt | null;
+  /** Reaps orphaned agent-browser sessions on SIGINT/SIGTERM. See run-teardown.ts. */
+  teardown?: RunTeardown;
+  /**
+   * When set, each spec upserts its report row and flushes report.json as it
+   * finishes (incremental report). Absent (no --report) keeps the legacy
+   * behaviour: rows are only returned for the caller's final batch write.
+   */
+  report?: IncrementalReport;
 }
 
 export type LiveSpecRun = {
@@ -83,23 +97,66 @@ export async function runLiveSpecs(
   }
   const userPromptSuffix = userPromptBundle?.text ?? null;
 
+  // Both pieces of automated analysis cost Claude turns. They run by default
+  // (a report is always written); disabling the failure analysis implicitly
+  // disables the drift audit too (the audit is rendered as supporting evidence
+  // under the classification). --no-drift-audit remains independent for
+  // "classify but skip the audit".
+  const failureAnalysisEnabled = opts.failureAnalysis !== false;
+  const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
+
+  // Drift audit, failure-analysis auth, and the source diff are all
+  // spec-independent, so hoist them out of the per-spec worker and compute them
+  // once before the pool. Drift is a static spec↔code audit (it only needs the
+  // spec ids, not run results), so running it up front lets each worker classify
+  // its own failure inline with the drift context already in hand — which is
+  // what makes the incremental per-spec upsert possible.
+  const driftBySpec = driftAuditEnabled
+    ? await runDriftAudit(specs, opts, cwd)
+    : new Map<string, ReportSpecResult["driftIssues"]>();
+  const auth: DriftAuth = failureAnalysisEnabled ? driftAuthAvailable() : { ok: false, reason: "disabled" };
+  if (failureAnalysisEnabled && !auth.ok) log.info(`failure analysis skipped (${auth.reason})`);
+  const baseRef = resolveBaseRef(opts.base);
+  let diff: PrDiffResult = { ok: false, error: "diff not captured" };
+  if (failureAnalysisEnabled && auth.ok) {
+    diff = await capturePrDiff(baseRef, cwd);
+    if (!diff.ok) {
+      log.info(`failure analysis: source diff unavailable (${diff.error}) — analyzing without diff context`);
+    }
+  }
+
+  const reportDir = opts.reportDir ?? ".";
+
   // Fresh agent-browser session per spec so Chrome state doesn't bleed across.
   // Above 1 worker each spec buffers its narration and flushes one labelled
-  // block on completion, so parallel Chrome sessions stay legible.
+  // block on completion, so parallel Chrome sessions stay legible. Each worker
+  // executes the spec, builds its report row (drift + failure analysis), and —
+  // when an incremental writer is present — upserts+flushes report.json so an
+  // interrupt keeps the specs that already finished.
   const concurrency = Math.max(1, opts.concurrency ?? 1);
-  const runs = await runPool(specs, concurrency, (spec, i) => {
+  const built = await runPool(specs, concurrency, (spec, i) => {
     const label = `${spec.featureName}/${spec.specName}`;
-    return log.withBuffer(label, concurrency > 1, () => {
+    return log.withBuffer(label, concurrency > 1, async () => {
       // Sequential runs print a live [i/n] header; parallel runs get the
       // labelled block from withBuffer instead, so skip the header there.
       if (concurrency === 1 && specs.length > 1) {
         log.blank();
         log.info(`[${i + 1}/${specs.length}] ${label}`);
       }
-      return runOneSpec({ ...spec, opts, userPromptSuffix, cwd });
+      const outcome = await runOneSpec({ ...spec, opts, userPromptSuffix, cwd });
+      if (outcome.kind !== "run") return { outcome, row: null };
+      const row = await buildLiveReportRow(
+        outcome,
+        { driftBySpec, auth, diff, baseRef, reportDir, failureAnalysisEnabled },
+        opts,
+        cwd,
+      );
+      await opts.report?.upsert(row);
+      return { outcome, row };
     });
   });
 
+  const runs = built.map((b) => b.outcome);
   const failedCount = runs.filter(
     (r) => r.kind === "error" || (r.kind === "run" && r.result.status === "failed"),
   ).length;
@@ -111,52 +168,48 @@ export async function runLiveSpecs(
   );
   logBatchCost(runs);
 
-  // Both pieces of automated analysis cost Claude turns. Disabling the
-  // failure analysis implicitly disables the drift audit too (the audit
-  // is rendered as supporting evidence under the classification).
-  // --no-drift-audit remains independent for "classify but skip the audit".
-  const failureAnalysisEnabled = opts.reportDir != null && opts.failureAnalysis !== false;
-  const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
-  const driftBySpec = driftAuditEnabled
-    ? await runDriftAudit(runs, opts, cwd)
-    : new Map<string, ReportSpecResult["driftIssues"]>();
-
-  const analysisBySpec = failureAnalysisEnabled
-    ? await runFailureAnalysisForLiveRuns(runs, driftBySpec, opts, cwd)
-    : new Map<string, LiveFailureAnalysis>();
-
-  const reportDir = opts.reportDir ?? ".";
   return {
     failedCount,
-    reportResults: await buildLiveReportResults(runs, driftBySpec, analysisBySpec, reportDir, failureAnalysisEnabled),
+    reportResults: built.flatMap((b) => (b.row ? [b.row] : [])),
   };
 }
 
-async function buildLiveReportResults(
-  runs: SpecRunOutcome[],
-  driftBySpec: Map<string, ReportSpecResult["driftIssues"]>,
-  analysisBySpec: Map<string, LiveFailureAnalysis>,
-  reportDir: string,
-  failureAnalysisEnabled: boolean,
-): Promise<ReportSpecResult[]> {
-  const completed = runs.filter((r): r is Extract<SpecRunOutcome, { kind: "run" }> => r.kind === "run");
-  return Promise.all(
-    completed.map(async (r) => {
-      const key = `${r.featureName}/${r.specName}`;
-      const base = await liveRunToReportResult({
-        featureName: r.featureName,
-        specName: r.specName,
-        specYaml: r.specYaml,
-        result: r.result,
-        reportDir,
-      });
-      return {
-        ...base,
-        driftIssues: driftBySpec.get(key) ?? null,
-        ...analysisFieldsFor(analysisBySpec.get(key), r.result.status, failureAnalysisEnabled),
-      };
-    }),
-  );
+/**
+ * Build one spec's report row: the live-run base row plus drift findings and
+ * (for a failed spec) the failure-analysis fields. Runs inside the pool worker
+ * so the row can be upserted incrementally the moment the spec finishes.
+ */
+async function buildLiveReportRow(
+  r: Extract<SpecRunOutcome, { kind: "run" }>,
+  ctx: {
+    driftBySpec: Map<string, ReportSpecResult["driftIssues"]>;
+    auth: DriftAuth;
+    diff: PrDiffResult;
+    baseRef: string;
+    reportDir: string;
+    failureAnalysisEnabled: boolean;
+  },
+  opts: RunLiveOptions,
+  cwd: string,
+): Promise<ReportSpecResult> {
+  const key = `${r.featureName}/${r.specName}`;
+  const driftForSpec = ctx.driftBySpec.get(key) ?? null;
+  const base = await liveRunToReportResult({
+    featureName: r.featureName,
+    specName: r.specName,
+    specYaml: r.specYaml,
+    result: r.result,
+    reportDir: ctx.reportDir,
+  });
+  const analysis =
+    ctx.failureAnalysisEnabled && r.result.status === "failed"
+      ? await analyzeOneLiveFailure(r, ctx.diff, ctx.baseRef, driftForSpec, ctx.auth, opts, cwd)
+      : undefined;
+  return {
+    ...base,
+    driftIssues: driftForSpec,
+    ...analysisFieldsFor(analysis, r.result.status, ctx.failureAnalysisEnabled),
+  };
 }
 
 /**
@@ -184,18 +237,19 @@ function analysisFieldsFor(
 }
 
 /**
- * Run `analyzeDrift` against every successfully-loaded spec and return a
- * `featureName/specName → driftIssues` map. Drift findings are advisory —
- * they show in the report (report.json / hub UI) but do not change the live-run exit code.
+ * Run `analyzeDrift` against every spec and return a
+ * `featureName/specName → driftIssues` map. This is a static spec↔code audit,
+ * so it takes the spec list directly and runs before execution — each worker
+ * then has its spec's drift context in hand for the failure-analysis prompt.
+ * Drift findings are advisory — they show in the report (report.json / hub UI)
+ * but do not change the live-run exit code.
  */
 async function runDriftAudit(
-  runs: SpecRunOutcome[],
+  specs: readonly { featureName: string; specName: string }[],
   opts: RunLiveOptions,
   cwd: string,
 ): Promise<Map<string, ReportSpecResult["driftIssues"]>> {
-  const targets = runs
-    .filter((r): r is Extract<SpecRunOutcome, { kind: "run" }> => r.kind === "run")
-    .map((r) => ({ featureName: r.featureName, specName: r.specName }));
+  const targets = specs.map((s) => ({ featureName: s.featureName, specName: s.specName }));
   const out = new Map<string, ReportSpecResult["driftIssues"]>();
   if (targets.length === 0) return out;
 
@@ -329,6 +383,7 @@ async function runOneSpec(args: {
   // spec — locally or in CI — never mutates the source-of-truth state files.
   const sessionName = generateLiveSessionName();
   log.meta("session", sessionName);
+  opts.teardown?.trackSession(sessionName);
 
   // Restore any sessions named by `spec.session` from the hub (see
   // resolveSessionState); a missing one stops the run rather than starting
@@ -391,6 +446,10 @@ async function runOneSpec(args: {
     };
   } finally {
     if (cleanupSession) await cleanupSession();
+    opts.teardown?.untrackSession(sessionName);
+    // Close the agent-browser session now that the spec is done — otherwise
+    // it lingers as an orphaned daemon process.
+    await closeSession(sessionName);
   }
 }
 
@@ -408,81 +467,57 @@ type LiveFailureAnalysis = {
 };
 
 /**
- * Classify each failed live run via `analyzeFailure` — same prompt as the
+ * Classify one failed live run via `analyzeFailure` — same prompt as the
  * deterministic path (Issue #47), fed the live transcript instead of the
- * vitest log. Auth / diff failures degrade to `analysisSkipped`.
+ * vitest log. `auth`, `diff`, and `baseRef` are hoisted once by the caller and
+ * shared across specs. Auth-unavailable / no-failed-step degrade to
+ * `analysisSkipped` rather than throwing.
  */
-async function runFailureAnalysisForLiveRuns(
-  runs: SpecRunOutcome[],
-  driftBySpec: Map<string, ReportSpecResult["driftIssues"]>,
+async function analyzeOneLiveFailure(
+  r: Extract<SpecRunOutcome, { kind: "run" }>,
+  diff: PrDiffResult,
+  baseRef: string,
+  driftForSpec: ReportSpecResult["driftIssues"],
+  auth: DriftAuth,
   opts: RunLiveOptions,
   cwd: string,
-): Promise<Map<string, LiveFailureAnalysis>> {
-  const out = new Map<string, LiveFailureAnalysis>();
-  const failed = runs.filter(
-    (r): r is Extract<SpecRunOutcome, { kind: "run" }> =>
-      r.kind === "run" && r.result.status === "failed",
-  );
-  if (failed.length === 0) return out;
-
-  const auth = driftAuthAvailable();
+): Promise<LiveFailureAnalysis> {
+  const key = `${r.featureName}/${r.specName}`;
   if (!auth.ok) {
-    log.info(`failure analysis skipped (${auth.reason})`);
-    for (const r of failed) {
-      out.set(`${r.featureName}/${r.specName}`, {
-        analysis: null,
-        analysisSkipped: auth.reason,
-        failureLogExcerpt: null,
-        diffExcerpt: null,
-      });
-    }
-    return out;
+    return { analysis: null, analysisSkipped: auth.reason, failureLogExcerpt: null, diffExcerpt: null };
   }
-
-  const baseRef = resolveBaseRef(opts.base);
-  const diff: PrDiffResult = await capturePrDiff(baseRef, cwd);
-  if (!diff.ok) {
-    log.info(`failure analysis: source diff unavailable (${diff.error}) — analyzing without diff context`);
+  log.info(`failure analysis: ${key}`);
+  const excerpt = await buildLiveTranscriptExcerpt(r.result);
+  if (excerpt === null) {
+    return {
+      analysis: null,
+      analysisSkipped: "no failed step found in run result",
+      failureLogExcerpt: null,
+      diffExcerpt: null,
+    };
   }
-
-  log.blank();
-  for (const r of failed) {
-    const key = `${r.featureName}/${r.specName}`;
-    log.info(`failure analysis: ${key}`);
-    const excerpt = await buildLiveTranscriptExcerpt(r.result);
-    if (excerpt === null) {
-      out.set(key, {
-        analysis: null,
-        analysisSkipped: "no failed step found in run result",
-        failureLogExcerpt: null,
-        diffExcerpt: null,
-      });
-      continue;
-    }
-    const outcome = await analyzeFailure(
-      {
-        liveTranscriptExcerpt: excerpt,
-        specYaml: r.specYaml,
-        diffPatch: diff.ok ? diff.diff.patch : null,
-        changedFiles: diff.ok ? diff.diff.nameStatus : null,
-        baseRef: diff.ok ? baseRef : null,
-        driftIssues: driftBySpec.get(key) ?? null,
-        ...(opts.language ? { outputLanguage: opts.language } : {}),
-        ...(opts.customPrompt ? { customPrompt: opts.customPrompt } : {}),
-      },
-      { ...(opts.model ? { model: opts.model } : {}), cwd },
-    );
-    const pct = Math.round(outcome.analysis.confidence * 100);
-    const headline = outcome.analysis.headline.trim() || (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();
-    log.info(`  → ${outcome.analysis.label} (${pct}%) ${headline}`);
-    out.set(key, {
-      analysis: outcome.analysis,
-      analysisSkipped: null,
-      failureLogExcerpt: excerpt,
-      diffExcerpt: diff.ok ? diff.diff.patch : null,
-    });
-  }
-  return out;
+  const outcome = await analyzeFailure(
+    {
+      liveTranscriptExcerpt: excerpt,
+      specYaml: r.specYaml,
+      diffPatch: diff.ok ? diff.diff.patch : null,
+      changedFiles: diff.ok ? diff.diff.nameStatus : null,
+      baseRef: diff.ok ? baseRef : null,
+      driftIssues: driftForSpec,
+      ...(opts.language ? { outputLanguage: opts.language } : {}),
+      ...(opts.customPrompt ? { customPrompt: opts.customPrompt } : {}),
+    },
+    { ...(opts.model ? { model: opts.model } : {}), cwd },
+  );
+  const pct = Math.round(outcome.analysis.confidence * 100);
+  const headline = outcome.analysis.headline.trim() || (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();
+  log.info(`  → ${outcome.analysis.label} (${pct}%) ${headline}`);
+  return {
+    analysis: outcome.analysis,
+    analysisSkipped: null,
+    failureLogExcerpt: excerpt,
+    diffExcerpt: diff.ok ? diff.diff.patch : null,
+  };
 }
 
 function count(steps: LiveStepResult[], target: LiveStepResult["status"]): number {

@@ -10,11 +10,12 @@ import { FailureLabelSchema, PredictedLabelSchema } from "../../report/schema.ts
  */
 
 /**
- * A run's outcome. The hub never executes — a run is created when a client
- * pushes the report of an already-finished `ccqa run`, so the only two
- * terminal states that reach the hub are "passed" and "failed".
+ * A run's outcome. "running" is non-terminal/mutable — an opened run
+ * (`POST /runs/open`) sits in this state while it's patched incrementally.
+ * "passed"/"failed" are terminal/immutable: a pushed run (`POST /runs`)
+ * starts there directly, and an opened run ends there once done.
  */
-export const RunStatusSchema = z.enum(["passed", "failed"]);
+export const RunStatusSchema = z.enum(["passed", "failed", "running"]);
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 
 /**

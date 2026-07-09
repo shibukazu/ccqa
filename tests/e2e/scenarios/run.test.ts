@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
-import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
+import { noAuthEnv, noColorEnv, stripAnsi, stubSecurityBinary } from "../_helpers/env.ts";
 
 describe("ccqa run", () => {
   let project: FakeProject | null = null;
@@ -26,9 +26,13 @@ describe("ccqa run", () => {
 
   test("exits non-zero and renders a failing spec entry", async () => {
     project = await makeFakeProject("failing-spec", { linkCcqa: true });
+    // A report is always written now, so a failing spec triggers failure
+    // analysis. Force the auth probe to fail so it's skipped (no real Claude
+    // call) — this test asserts run behaviour, not analysis.
     const result = await runCcqa(["run", "demo/boom"], {
       cwd: project.cwd,
-      env: noColorEnv(),
+      env: noAuthEnv(project.cwd),
+      pathPrepend: [await stubSecurityBinary(project.cwd)],
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).not.toBe(0);

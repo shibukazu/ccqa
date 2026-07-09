@@ -12,6 +12,7 @@ import {
 } from "../run/pipeline.ts";
 import { addHubOptions, addLanguageOption, addProfileOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
+import { createRunTeardown, installTeardownSignalHandlers } from "./run-teardown.ts";
 import * as log from "./logger.ts";
 
 export {
@@ -33,11 +34,15 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Run specs. Each spec's execution mode comes from its spec.yaml `mode:` field " +
         "(default deterministic; set `mode: live` to have Claude drive agent-browser live per step). " +
         "Deterministic specs replay the recorded test.spec.ts under vitest. " +
-        "Pass --report to write structured run results (report.json + evidence) covering both modes; push them to a hub to view.",
+        "A structured report (report.json + evidence) is always written; use --push-report to also stream it to a hub.",
     )
     .option(
       "--report [dir]",
-      `Write structured run results (report.json + evidence PNGs; failure analysis + drift audit by default) for hub push. Default dir: ${DEFAULT_REPORT_DIR}/`,
+      `Directory for the structured run results (report.json + evidence PNGs) that are always written. Default: ${DEFAULT_REPORT_DIR}/. Pass this only to change the location.`,
+    )
+    .option(
+      "--push-report",
+      "Incrementally push the run report to the hub as the run progresses (open → patch per spec → finalize). Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN). Without it, hub credentials are used only to fetch variables/sessions/prompts, not to push.",
     )
     .option(
       "--changed",
@@ -137,8 +142,14 @@ async function runCliAction(targets: string[], opts: RunOptions): Promise<void> 
 
   const cwd = resolveCwd(opts.cwd);
 
+  const teardown = createRunTeardown();
+  const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
   try {
-    const result = await executeRun(targets, { ...opts, cwd });
+    const result = await executeRun(targets, { ...opts, cwd, teardown });
+    // Reap tracked sessions on the normal exit path too — the signal handler
+    // only covers SIGINT/SIGTERM. run() is idempotent, so no risk of a
+    // double-reap if a signal arrives right around here.
+    await teardown.run();
     process.exit(result.exitCode);
   } catch (err) {
     if (err instanceof RunUsageError) {
@@ -146,5 +157,7 @@ async function runCliAction(targets: string[], opts: RunOptions): Promise<void> 
       process.exit(err.exitCode);
     }
     throw err;
+  } finally {
+    disposeSignalHandlers();
   }
 }

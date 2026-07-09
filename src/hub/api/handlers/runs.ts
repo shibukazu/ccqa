@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { type Run, type RunStatus } from "../../contract/schema.ts";
-import { RunReportDataSchema, type ReportSpecResult } from "../../../report/schema.ts";
+import { RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
+import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
@@ -27,19 +29,7 @@ export interface PushRunHandlerConfig {
 export function createPushRunHandler(config: PushRunHandlerConfig) {
   const maxPushBytes = config.maxPushBytes ?? DEFAULT_MAX_PUSH_BYTES;
   return async (ctx: RouteContext): Promise<void> => {
-    const projectRaw = ctx.url.searchParams.get("project");
-    if (!projectRaw) throw new HttpError(400, "missing_param", "project query parameter is required");
-    const project = requireSafeSegment(projectRaw, "project");
-    const branch = requireBranch(ctx.url.searchParams.get("branch"));
-    // Optional: which profile (env-var set) the run executed against, recorded
-    // for display only — runs are not scoped by profile.
-    const profileRaw = ctx.url.searchParams.get("profile");
-    const profile = profileRaw ? requireSafeSegment(profileRaw, "profile") : null;
-    const kindRaw = ctx.url.searchParams.get("kind");
-    if (kindRaw !== null && kindRaw !== "run" && kindRaw !== "drift") {
-      throw new HttpError(400, "invalid_param", `invalid kind: must be "run" or "drift"`);
-    }
-    const kind = kindRaw ?? "run";
+    const { project, branch, profile, kind } = parseRunScope(ctx);
 
     const body = await readBody(ctx.req, maxPushBytes);
 
@@ -106,6 +96,167 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  };
+}
+
+export interface OpenRunHandlerConfig {
+  storage: HubStorage;
+}
+
+/**
+ * POST /api/v1/runs/open?project=&branch=&profile=&kind= — start a "running"
+ * run with no report yet. Unlike `POST /runs`, nothing is pushed up front:
+ * the caller patches results in as they finish (`PATCH /runs/:id`), so an
+ * interrupted run still leaves a partial report on the hub instead of none.
+ */
+export function createOpenRunHandler(config: OpenRunHandlerConfig) {
+  return async (ctx: RouteContext): Promise<void> => {
+    const { project, branch, profile, kind } = parseRunScope(ctx);
+
+    const now = new Date().toISOString();
+    const run: Run = {
+      id: randomUUID(),
+      project,
+      profile,
+      branch,
+      status: "running",
+      kind,
+      drift: null,
+      specs: { total: 0, passed: 0, failed: 0 },
+      gitHead: null,
+      promptVersion: "",
+      ciRunId: null,
+      reportCreatedAt: now,
+      createdAt: now,
+    };
+
+    await config.storage.runs.create(run);
+    sendJson(ctx.res, 201, run);
+  };
+}
+
+const PatchRunRequestSchema = z.object({
+  rows: z.array(ReportSpecResultSchema),
+  evidence: z.record(z.string(), z.string()).optional(),
+  done: z.boolean().optional(),
+  finalStatus: z.enum(["passed", "failed"]).optional(),
+  reportMeta: z
+    .object({
+      git: z.object({ head: z.string().nullable(), base: z.string().nullable() }).partial().optional(),
+      model: z.string().nullable().optional(),
+      language: z.string().nullable().optional(),
+      promptVersion: z.string().optional(),
+      customPromptVersion: z.string().nullable().optional(),
+    })
+    .partial()
+    .optional(),
+});
+
+export interface PatchRunHandlerConfig {
+  storage: HubStorage;
+  maxPushBytes?: number;
+}
+
+/** Insert or replace `rows` into `results`, upserting by feature/spec identity. */
+function mergeResults(existing: ReportSpecResult[], rows: ReportSpecResult[]): ReportSpecResult[] {
+  const byKey = new Map(existing.map((r) => [`${r.feature}/${r.spec}`, r]));
+  for (const row of rows) byKey.set(`${row.feature}/${row.spec}`, row);
+  return [...byKey.values()];
+}
+
+function countSpecs(results: ReportSpecResult[]): { total: number; passed: number; failed: number } {
+  const total = results.length;
+  const failed = results.filter((r) => r.status === "failed").length;
+  return { total, passed: total - failed, failed };
+}
+
+/**
+ * PATCH /api/v1/runs/:id — incrementally add spec results (and evidence) to a
+ * "running" run. Once the run is terminal (`done: true` was sent, or it was
+ * pushed immutably via `POST /runs`), further patches are rejected with 409.
+ */
+export function createPatchRunHandler(config: PatchRunHandlerConfig) {
+  const maxPushBytes = config.maxPushBytes ?? DEFAULT_MAX_PUSH_BYTES;
+  return async (ctx: RouteContext): Promise<void> => {
+    const id = ctx.params.id!;
+    const run = await getRunOr404(config.storage, id);
+    if (run.status !== "running") {
+      throw new HttpError(409, "conflict", "run is not running (already terminal)");
+    }
+    // report.json and the Run record are each updated through their own
+    // per-path serialization (updateJsonFile / runs.update), and the terminal
+    // check above is a separate read. That's sufficient because a single
+    // `ccqa run` is the only writer for a given run id and serializes its own
+    // patches (the incremental-report promise chain; the reconcile is awaited
+    // after the pool drains). If the hub ever allows concurrent writers to one
+    // run id, the report mutation + specs recompute + record write would need a
+    // single run-id-keyed critical section to keep Run.specs and report.json in
+    // agreement.
+
+    const raw = await readBody(ctx.req, maxPushBytes);
+    let bodyJson: unknown;
+    try {
+      bodyJson = JSON.parse(raw.toString("utf8"));
+    } catch {
+      throw new HttpError(400, "invalid_body", "request body is not valid JSON");
+    }
+    const parsed = PatchRunRequestSchema.safeParse(bodyJson);
+    if (!parsed.success) {
+      throw new HttpError(400, "invalid_body", `request body is invalid: ${parsed.error.issues[0]?.message ?? "schema mismatch"}`);
+    }
+    const { rows, evidence, done, finalStatus, reportMeta } = parsed.data;
+
+    // `mutate` runs inside the storage layer; capture the recomputed specs via
+    // closure so they're available afterward to update the Run record.
+    let specs = run.specs;
+    await config.storage.artifacts.updateJsonFile<RunReportData>(id, "report.json", (current) => {
+      // The per-spec patches created report.json early with provisional
+      // metadata (git=null, model=null — the diff isn't known until failure
+      // analysis). The reconcile patch carries the real `reportMeta`, so merge
+      // any provided fields over the existing envelope rather than discarding
+      // them when report.json already exists — otherwise git/model/language
+      // would stay stuck at their open-time defaults forever.
+      const base: ReportEnvelope = current ?? {
+        schemaVersion: 1,
+        kind: run.kind,
+        createdAt: run.reportCreatedAt,
+        runId: run.ciRunId,
+        git: { head: null, base: null },
+        model: null,
+        language: null,
+        promptVersion: "",
+        customPromptVersion: null,
+      };
+      const envelope: ReportEnvelope = {
+        ...base,
+        ...(reportMeta?.git ? { git: { head: reportMeta.git.head ?? base.git.head, base: reportMeta.git.base ?? base.git.base } } : {}),
+        ...(reportMeta?.model !== undefined ? { model: reportMeta.model } : {}),
+        ...(reportMeta?.language !== undefined ? { language: reportMeta.language } : {}),
+        ...(reportMeta?.promptVersion !== undefined ? { promptVersion: reportMeta.promptVersion } : {}),
+        ...(reportMeta?.customPromptVersion !== undefined ? { customPromptVersion: reportMeta.customPromptVersion } : {}),
+      };
+      const merged = mergeResults(current?.results ?? [], rows);
+      specs = countSpecs(merged);
+      return { ...envelope, results: merged };
+    });
+
+    if (evidence) {
+      for (const [relPath, b64] of Object.entries(evidence)) {
+        await config.storage.artifacts.putFile(id, relPath, Buffer.from(b64, "base64"));
+      }
+    }
+
+    const patch: Partial<Run> = done
+      ? {
+          status: finalStatus ?? (specs.failed > 0 ? "failed" : "passed"),
+          specs,
+          ...(reportMeta?.git?.head ? { gitHead: reportMeta.git.head } : {}),
+          ...(reportMeta?.promptVersion ? { promptVersion: reportMeta.promptVersion } : {}),
+        }
+      : { specs };
+    const updated = await config.storage.runs.update(id, patch);
+
+    sendJson(ctx.res, 200, updated);
   };
 }
 
@@ -194,6 +345,31 @@ function summarizeDrift(results: ReportSpecResult[]): { issues: number; errors: 
     }
   }
   return { issues, errors, warnings, specsWithIssues };
+}
+
+/**
+ * Parse the `project`/`branch`/`profile`/`kind` query params shared by
+ * `POST /runs` (push) and `POST /runs/open`. `project` is required; `profile`
+ * is optional and recorded for display only (runs are not scoped by profile);
+ * `kind` defaults to "run".
+ */
+function parseRunScope(ctx: RouteContext): {
+  project: string;
+  branch: string | null;
+  profile: string | null;
+  kind: "run" | "drift";
+} {
+  const projectRaw = ctx.url.searchParams.get("project");
+  if (!projectRaw) throw new HttpError(400, "missing_param", "project query parameter is required");
+  const project = requireSafeSegment(projectRaw, "project");
+  const branch = requireBranch(ctx.url.searchParams.get("branch"));
+  const profileRaw = ctx.url.searchParams.get("profile");
+  const profile = profileRaw ? requireSafeSegment(profileRaw, "profile") : null;
+  const kindRaw = ctx.url.searchParams.get("kind");
+  if (kindRaw !== null && kindRaw !== "run" && kindRaw !== "drift") {
+    throw new HttpError(400, "invalid_param", `invalid kind: must be "run" or "drift"`);
+  }
+  return { project, branch, profile, kind: kindRaw ?? "run" };
 }
 
 /**

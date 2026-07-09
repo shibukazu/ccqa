@@ -59,6 +59,30 @@ describe("createHubClient retry behavior", () => {
 
     await expect(hub.getPrompt("demo", "analysis-custom-prompt")).resolves.toBeNull();
   });
+
+  test("openRun POSTs to /runs/open with the project query and does not retry", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(fakeResponse(201, { id: "run-9", status: "running" }));
+    const hub = createHubClient({ baseUrl: "https://hub.example", token: "t", fetchImpl });
+
+    const run = await hub.openRun({ project: "demo", branch: "main" });
+
+    expect(run).toEqual({ id: "run-9", status: "running" });
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(String(url)).toContain("/api/v1/runs/open?");
+    expect(String(url)).toContain("project=demo");
+    expect((init as RequestInit).method).toBe("POST");
+  });
+
+  test("patchRun PATCHes /runs/:id and does not retry on 503", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(fakeResponse(503, { error: { code: "server_error" } }));
+    const hub = createHubClient({ baseUrl: "https://hub.example", token: "t", fetchImpl });
+
+    await expect(hub.patchRun("run-9", { rows: [] })).rejects.toThrow(HubApiError);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(String(url)).toContain("/api/v1/runs/run-9");
+    expect((init as RequestInit).method).toBe("PATCH");
+  });
 });
 
 describe("createHubClient custom headers", () => {

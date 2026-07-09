@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
-import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
+import { noAuthEnv, noColorEnv, stripAnsi, stubSecurityBinary } from "../_helpers/env.ts";
 
 // --profile now fetches variables from a hub (listVariables) instead of a
 // local .ccqa/profiles/<name>.env file. Without --hub-url/--hub-token (or
@@ -25,9 +25,13 @@ describe("ccqa run --profile", () => {
 
   test("fails the spec when no profile supplies the env var", async () => {
     project = await makeFakeProject("profile-spec", { linkCcqa: true });
+    // The spec fails (missing env var), which now triggers failure analysis
+    // since a report is always written; force the auth probe to fail so it's
+    // skipped (no real Claude call that would hang this test).
     const result = await runCcqa(["run", "demo/smoke"], {
       cwd: project.cwd,
-      env: noColorEnv(),
+      env: noAuthEnv(project.cwd),
+      pathPrepend: [await stubSecurityBinary(project.cwd)],
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     // Without the profile the assertion on process.env fails → non-zero exit.

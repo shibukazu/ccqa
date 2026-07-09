@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
-import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
+import { noAuthEnv, stripAnsi, stubSecurityBinary } from "../_helpers/env.ts";
 
 async function addSpec(cwd: string, feature: string, spec: string, body: string): Promise<void> {
   const dir = join(cwd, ".ccqa", "features", feature, "test-cases", spec);
@@ -38,9 +38,12 @@ describe("ccqa run — summary format is stable", () => {
       "boom",
       `import { test, expect } from "vitest";\ntest("fail", () => { expect(1).toBe(2); });\n`,
     );
+    // A report is always written now, so the failing spec triggers failure
+    // analysis; force the auth probe to fail so it's skipped (no Claude call).
     const result = await runCcqa(["run"], {
       cwd: project.cwd,
-      env: noColorEnv(),
+      env: noAuthEnv(project.cwd),
+      pathPrepend: [await stubSecurityBinary(project.cwd)],
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).not.toBe(0);

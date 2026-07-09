@@ -6,7 +6,23 @@ import type {
   TriageCase,
 } from "../hub/contract/schema.ts";
 import type { PromptName } from "../prompts/prompt-names.ts";
-import type { LabelsExport } from "../report/schema.ts";
+import type { LabelsExport, ReportSpecResult } from "../report/schema.ts";
+import type { ReportEnvelope } from "../run/incremental-report.ts";
+
+/**
+ * Body of a `PATCH /runs/:id` incremental push: the newly-finished spec rows,
+ * their evidence PNGs (posix relPath → base64), the report envelope metadata
+ * (filled once the real git diff is known), and — on the last patch — `done`
+ * with the terminal status.
+ */
+export interface PatchRunRequest {
+  rows: ReportSpecResult[];
+  /** reportDir-relative posix path → base64 PNG bytes. */
+  evidence?: Record<string, string>;
+  done?: boolean;
+  finalStatus?: "passed" | "failed";
+  reportMeta?: Partial<ReportEnvelope>;
+}
 
 /**
  * TypeScript client for the ccqa hub's public REST API (docs/hub-api.md).
@@ -59,6 +75,14 @@ export interface HubClient {
     archive: Uint8Array,
     meta: { project: string; branch?: string; profile?: string; kind?: "run" | "drift" },
   ): Promise<Run>;
+  /**
+   * Open a `running` run to push results into incrementally. Returns the new
+   * run's id. Non-retryable (a dropped response after the server committed
+   * would leave a second open run); callers degrade to local-only on failure.
+   */
+  openRun(meta: { project: string; branch?: string; profile?: string; kind?: "run" | "drift" }): Promise<Run>;
+  /** Add finished spec rows (+ evidence) to a running run; `done` closes it. */
+  patchRun(id: string, body: PatchRunRequest): Promise<Run>;
   listRuns(q?: { project?: string; branch?: string; status?: RunStatus; limit?: number }): Promise<Run[]>;
   getRun(id: string): Promise<Run>;
   getReport(id: string): Promise<unknown>;
@@ -197,6 +221,20 @@ export function createHubClient(opts: HubClientOptions): HubClient {
         method: "POST",
         headers: { "Content-Type": "application/gzip" },
         body: toBodyInit(archive),
+      });
+    },
+    openRun(meta) {
+      const params = new URLSearchParams({ project: meta.project });
+      if (meta.branch) params.set("branch", meta.branch);
+      if (meta.profile) params.set("profile", meta.profile);
+      if (meta.kind) params.set("kind", meta.kind);
+      return json(`/api/v1/runs/open?${params}`, { method: "POST" });
+    },
+    patchRun(id, body) {
+      return json(`/api/v1/runs/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       });
     },
     async listRuns(q = {}) {

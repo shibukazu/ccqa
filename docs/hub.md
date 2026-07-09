@@ -45,16 +45,21 @@ enabled, the allowed CORS origins (if any), and the URL it's listening at.
 Runs and secrets take two independent, one-directional paths:
 
 ```
-ccqa run --report ──► ccqa hub push ──► hub   (stores as an immutable Run)
+ccqa run ──► ccqa hub push ──► hub   (stores as an immutable Run)
+
+ccqa run --push-report ──► hub       (incremental: open, patch per spec, seal)
 
 ccqa hub session push / var set ──► hub ──► ccqa run / ccqa record (fetched at run time)
 ```
 
 `ccqa hub push` never triggers a run, and fetching sessions/variables/prompts
 never uploads a result — the only thing that connects the two directions is
-that a CI job typically runs `ccqa run --report` (which fetches what it needs
+that a CI job typically runs `ccqa run` (which fetches what it needs
 from the hub as it goes) then `ccqa hub push` in sequence, all authenticated
-with the same `CCQA_HUB_TOKEN`.
+with the same `CCQA_HUB_TOKEN`. Passing `--push-report` to `ccqa run`
+folds that second step into the run itself, pushing incrementally instead of
+in one shot at the end — see [Incremental push during `ccqa
+run`](#incremental-push-during-ccqa-run) below.
 
 ### Projects
 
@@ -73,7 +78,7 @@ managing secrets from the same tree land in the same project — pass
 ccqa hub push --project demo
 ```
 
-Uploads the report directory of an already-finished `ccqa run --report` as a
+Uploads the report directory produced by an already-finished `ccqa run` as a
 tar.gz to the hub, which records it as an immutable `Run`. Flags:
 
 - `--report <dir>` — report directory to push. Default `ccqa-report`.
@@ -91,11 +96,37 @@ tar.gz to the hub, which records it as an immutable `Run`. Flags:
 `push` packs the report directory (report.json + evidence PNGs) and uploads
 it; the hub UI renders the results and serves each evidence image over its
 API. It exits 2 if `report.json` is missing or invalid in the
-report directory, with a hint to run `ccqa run --report` first — `push`
-only uploads a result, it never re-runs or re-judges anything, so its exit
-code reflects the upload itself, not the run's pass/fail outcome. On
-success it prints the run id, project, branch, status, spec pass count, and
-a link to the run in the hub's UI.
+report directory, with a hint to run `ccqa run` first — note that
+`--report <dir>` passed to `hub push` must match wherever `ccqa run
+--report <dir>` (if used) wrote it. `push` only uploads a result, it never
+re-runs or re-judges anything, so its exit code reflects the upload itself,
+not the run's pass/fail outcome. On success it prints the run id, project,
+branch, status, spec pass count, and a link to the run in the hub's UI. Use
+it for pushing a report from a run that didn't use `--push-report`, or from
+a separate job — see the next section for pushing incrementally instead.
+
+### Incremental push during `ccqa run`
+
+Passing `--push-report` to `ccqa run` (alongside hub credentials:
+`--hub-url`/`--hub-token` or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) pushes results
+incrementally as the run executes — spec by spec — instead of only via a
+separate `ccqa hub push` step at the end. A long run's progress is then
+visible on the hub in near-real time, and an interrupted run (Ctrl-C, OOM, a
+CI timeout) still leaves its already-finished specs recorded on the hub, not
+just in the local `report.json`. This is the one place a run is mutable, and
+only transiently: it is `running` while `ccqa run` still holds it open, and
+becomes immutable (`passed`/`failed`) once the run finishes or is torn down,
+same as any other run everywhere else in this document. It's best-effort —
+if the hub is unreachable, the CLI logs it and keeps running the tests
+locally; the local report.json is unaffected either way.
+
+If you passed `--push-report` to `ccqa run`, a separate `ccqa hub push` step
+for the same run is redundant and would create a second, separate run
+record — drop the extra push step from CI in that case. Only add a plain
+`ccqa hub push` step when you did *not* pass `--push-report`. Without
+`--push-report`, hub credentials passed to `ccqa run` are used only for
+fetching sessions/variables/prompts (see the next section) — they never
+cause `ccqa run` to create or push a run to the hub on their own.
 
 ### Fetching sessions, variables, and prompts at run time
 
@@ -139,6 +170,10 @@ and sessions per project/profile (sensitive values stay hidden in listings).
 
 ### GitHub Actions example
 
+Recommended: push incrementally by adding `--push-report` to the run step
+itself, so progress is visible on the hub as the run executes and no
+separate push step is needed:
+
 ```yaml
 name: ccqa
 on: [pull_request]
@@ -154,9 +189,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa run --project demo --profile staging --report
-      - run: pnpm exec ccqa hub push --project demo
-        if: always()
+      - run: pnpm exec ccqa run --project demo --profile staging --push-report
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -164,9 +197,17 @@ jobs:
           path: ccqa-report/
 ```
 
-`if: always()` on the push step matters: a failing run is exactly the kind
-of result a team wants recorded on the hub, not just a passing one.
-`ccqa run --report`'s own failure analysis still needs `ANTHROPIC_API_KEY` /
+The `upload-artifact` step still keeps the local report directory as a
+backup artifact even though the hub already has the results.
+
+Alternative: without `--push-report`, run `ccqa run` (report.json is always
+written) and add a separate `ccqa hub push --project demo` step with
+`if: always()` after it — still valid, e.g. when you want to push from a
+different job/step or don't need incremental visibility.
+
+`if: always()` on a separate push step matters: a failing run is exactly the
+kind of result a team wants recorded on the hub, not just a passing one.
+`ccqa run`'s own failure analysis still needs `ANTHROPIC_API_KEY` /
 a logged-in Claude Code session, independent of the hub — see
 [Authentication in CI](./drift.md#authentication-in-ci). The hub does no
 Claude-driven analysis of pushed reports (that already happened locally or in

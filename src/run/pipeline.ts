@@ -43,10 +43,13 @@ import { HubApiError } from "../hub-client/index.ts";
 import { resolveProjectOrThrow, ProjectNameError } from "../cli/resolve-project.ts";
 import { resolveSpecsModes } from "../cli/spec-mode.ts";
 import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
+import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
+import { detectBranch } from "../cli/git-branch.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import * as log from "../cli/logger.ts";
 import { RunUsageError } from "./errors.ts";
+import type { RunTeardown } from "../cli/run-teardown.ts";
 
 export { RunUsageError } from "./errors.ts";
 
@@ -130,23 +133,29 @@ export interface RunOptions {
   hubUrl?: string;
   hubToken?: string;
   hubHeader?: string[];
+  /** Opt-in for incremental hub push during the run (see run.ts --push-report help). */
+  pushReport?: boolean;
   project?: string;
+  /** Reap agent-browser sessions / flush the report on SIGINT/SIGTERM. See run-teardown.ts. */
+  teardown?: RunTeardown;
 }
 
 export interface RunPipelineResult {
   /** 0 when every spec passed, 1 when at least one spec failed. Usage errors throw `RunUsageError` instead. */
   exitCode: 0 | 1;
-  /** Set only when `--report` was requested. */
+  /** The written report; null only when there were no specs to run. */
   report: RunReportData | null;
-  /** Absolute path `--report` was resolved to, when requested. */
+  /** Where the report was written; null only when there were no specs to run. */
   reportDir: string | null;
 }
 
-function resolveReportDir(
-  report: string | boolean | undefined,
-  cwd: string,
-): string | undefined {
-  if (report === undefined || report === false) return undefined;
+/**
+ * Resolve the report directory. A report (report.json + evidence) is always
+ * written now, so this is never undefined: `--report <dir>` only picks *where*
+ * it lands, defaulting to `DEFAULT_REPORT_DIR`. `--report` with no value (a
+ * bare boolean flag) also means "default location".
+ */
+function resolveReportDir(report: string | boolean | undefined, cwd: string): string {
   const raw = typeof report === "string" ? report : DEFAULT_REPORT_DIR;
   return resolve(cwd, raw);
 }
@@ -288,12 +297,101 @@ export async function executeRun(
   }
   log.blank();
 
-  // Resolve report dir against `cwd` (not process.cwd()) so HTML, JSON, and
-  // evidence PNGs share a directory even when --cwd points at a subpackage.
+  // Resolve report dir against `cwd` (not process.cwd()) so JSON and evidence
+  // PNGs share a directory even when --cwd points at a subpackage. A report is
+  // always written now; --report only picks where.
   const reportDir = resolveReportDir(opts.report, cwd);
-  const reportDirForEvidence = reportDir ?? resolve(cwd, DEFAULT_REPORT_DIR);
 
-  const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDirForEvidence);
+  const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDir);
+
+  // Incremental hub push: when --push-report is set and a hub is configured,
+  // open a "running" run up front so each finished spec can be PATCHed to the
+  // hub as it lands (real-time reflection of a long run). The report dir always
+  // exists, so the only thing that can still block the push is a missing hub
+  // connection. Best-effort throughout — a hub failure never fails the local
+  // run (test execution is the point). The open is not retried: a dropped
+  // response could leave a second orphan running run, so on failure we degrade
+  // to local-report-only.
+  if (opts.pushReport && hubCtx == null) {
+    log.warn("--push-report requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN); skipping push");
+  }
+  let hubRunId: string | null = null;
+  let hubSink: ReportSink | undefined;
+  if (hubCtx != null && opts.pushReport) {
+    try {
+      const branch = await detectBranch(cwd);
+      const opened = await hubCtx.hub.openRun({
+        project: hubCtx.project,
+        ...(branch ? { branch } : {}),
+        ...(opts.profile ? { profile: opts.profile } : {}),
+        kind: "run",
+      });
+      hubRunId = opened.id;
+      log.info(`hub: incremental run opened (${opened.id})`);
+      const runId = opened.id;
+      hubSink = {
+        onUpsert: async (row) => {
+          try {
+            const evidence = await readEvidenceBase64(row, reportDir);
+            await hubCtx.hub.patchRun(runId, { rows: [row], evidence });
+          } catch (err) {
+            log.warn(`hub: incremental push failed for ${row.feature}/${row.spec}: ${errMessage(err)}`);
+          }
+        },
+      };
+    } catch (err) {
+      log.warn(`hub: could not open incremental run (${errMessage(err)}); continuing with local report only`);
+    }
+  }
+
+  // Incremental report: each live spec upserts its row and flushes report.json,
+  // so an interrupt leaves a valid partial report instead of nothing. The
+  // envelope here is provisional — the source diff (git head/base) isn't
+  // captured until the failure analysis below, so the live writer runs with
+  // git=null; the authoritative git metadata is stamped by the final
+  // writeUnifiedReport, which rewrites the whole file. An interrupt before that
+  // leaves correct per-spec results with null git metadata — acceptable.
+  //
+  // Scope note: only *live* rows are upserted incrementally. Deterministic rows
+  // are built later (analyzeDeterministicSummaries) and only reach the report /
+  // hub via the final write + reconcile patch, so an interrupt during the live
+  // phase omits already-finished det specs from the partial report. Det specs
+  // are fast and run first, so this window is small; full det incrementalism is
+  // deferred.
+  const incrementalReport = createIncrementalReport(
+    reportDir,
+    buildReportEnvelope({
+      diff: { ok: false, error: "diff not yet captured" },
+      baseRef: null,
+      customPromptVersion: customPrompt?.customPromptVersion ?? null,
+      opts,
+    }),
+    hubSink,
+  );
+  // On SIGINT/SIGTERM, flush whatever rows finished so an interrupt leaves a
+  // valid partial report. Skipped once the run completes normally: the final
+  // writeUnifiedReport below is authoritative (it holds the deterministic rows
+  // and the real git metadata the provisional incremental envelope lacks), so
+  // re-flushing the incremental writer afterwards would clobber it — the
+  // teardown finalizer also runs on the normal exit path (run.ts).
+  let completedNormally = false;
+  opts.teardown?.onFinalize(async () => {
+    // On the normal exit path the final writeUnifiedReport (below) is
+    // authoritative and already closed the hub run, so skip both.
+    if (completedNormally) return;
+    await incrementalReport.flush();
+    // Flip the hub's still-"running" run to a terminal state so an interrupt
+    // doesn't leave it dangling (the startup GC would otherwise have to reap
+    // it). The rows already patched stay; we just finalize. finalStatus is
+    // "failed" — the run was interrupted, not a clean pass. Best-effort.
+    if (hubRunId && hubCtx) {
+      try {
+        await hubCtx.hub.patchRun(hubRunId, { rows: incrementalReport.rows(), done: true, finalStatus: "failed" });
+      } catch (err) {
+        log.warn(`hub: could not finalize interrupted run ${hubRunId}: ${errMessage(err)}`);
+      }
+    }
+  });
 
   const liveOpts: RunLiveOptions = {
     ...(opts.model ? { model: opts.model } : {}),
@@ -301,27 +399,29 @@ export async function executeRun(
     ...(opts.out && liveSpecs.length === 1 ? { out: opts.out } : {}),
     cwd,
     ...(opts.base ? { base: opts.base } : {}),
-    ...(reportDir ? { reportDir } : {}),
+    reportDir,
     ...(typeof opts.retry === "number" ? { retry: opts.retry } : {}),
     concurrency: opts.concurrency ?? 1,
     ...(opts.profile ? { profile: opts.profile } : {}),
-    ...(reportDir && opts.driftAudit !== false ? { driftAudit: true } : {}),
-    ...(reportDir && opts.failureAnalysis === false ? { failureAnalysis: false } : {}),
+    ...(opts.driftAudit !== false ? { driftAudit: true } : {}),
+    ...(opts.failureAnalysis === false ? { failureAnalysis: false } : {}),
     hubContext: hubCtx,
     customPrompt,
+    ...(opts.teardown ? { teardown: opts.teardown } : {}),
+    report: incrementalReport,
   };
   const live = await runLiveSpecs(liveSpecs, liveOpts);
 
   let overallExitCode: 0 | 1 = det.exitCode !== 0 ? 1 : 0;
   if (live.failedCount > 0 && overallExitCode === 0) overallExitCode = 1;
 
-  let report: RunReportData | null = null;
-  if (reportDir) {
+  let report: RunReportData;
+  {
     const detReport = await analyzeDeterministicSummaries(
       det.summaries,
       opts,
       cwd,
-      reportDirForEvidence,
+      reportDir,
       customPrompt,
     );
     report = await writeUnifiedReport({
@@ -332,6 +432,34 @@ export async function executeRun(
       customPromptVersion: detReport.customPromptVersion,
       opts,
     });
+    // The authoritative report is on disk; a later teardown flush (normal exit
+    // or a signal arriving now) must not overwrite it with the provisional one.
+    completedNormally = true;
+
+    // Reconcile the hub run: re-send every final row (upsert is idempotent, so
+    // this heals any mid-run patch that failed), stamp the real git metadata
+    // the provisional per-spec patches lacked, and flip running → terminal.
+    // Best-effort: a hub failure here still leaves a complete local report.
+    if (hubRunId) {
+      const finalStatus = overallExitCode === 0 ? "passed" : "failed";
+      const reportMeta = buildReportEnvelope({
+        diff: detReport.diff,
+        baseRef: detReport.baseRef,
+        customPromptVersion: detReport.customPromptVersion,
+        opts,
+      });
+      try {
+        await hubCtx!.hub.patchRun(hubRunId, {
+          rows: report.results,
+          done: true,
+          finalStatus,
+          reportMeta,
+        });
+        log.info(`hub: incremental run finalized (${hubRunId}, ${finalStatus})`);
+      } catch (err) {
+        log.warn(`hub: could not finalize incremental run ${hubRunId}: ${errMessage(err)}`);
+      }
+    }
   }
 
   // "ignored without any 'mode: live' spec" already warned upfront alongside
@@ -347,7 +475,7 @@ export async function executeRun(
     });
   }
 
-  return { exitCode: overallExitCode, report, reportDir: reportDir ?? null };
+  return { exitCode: overallExitCode, report, reportDir };
 }
 
 /**
@@ -394,9 +522,10 @@ async function runDeterministicSpecs(
 
   const tmpDir = await mkdtemp(join(tmpdir(), "ccqa-run-"));
   const vitestConfig = await resolveVitestConfig(cwd);
-  const captureOutput = Boolean(opts.report);
-  // Evidence lives under the report dir even when --report is absent so the
-  // PNGs work as a standalone CI artifact.
+  // A report is always written, so keep the vitest output tail unless failure
+  // analysis (its only consumer, via failureLogExcerpt) is turned off.
+  const captureOutput = opts.failureAnalysis !== false;
+  // Evidence lives under the report dir for the standalone CI artifact.
   const evidenceRoot = opts.evidence !== false ? join(reportDirAbs, EVIDENCE_SUBDIR) : null;
   // Parallel vitest streams interleave illegibly, so above 1 worker each spec
   // buffers its narration + vitest output (via log.withBuffer) and flushes one
@@ -703,17 +832,21 @@ async function analyzeDeterministicSummaries(
   return { results, diff, baseRef, customPromptVersion: customPrompt?.customPromptVersion ?? null };
 }
 
-/** Write the unified JSON (+ optional GitHub-annotation) report for one run. Returns the report data. */
-async function writeUnifiedReport(args: {
-  reportDir: string;
-  results: ReportSpecResult[];
+/**
+ * Build the report envelope — every `RunReportData` field except `results`.
+ * Extracted so the incremental writer (which flushes report.json after each
+ * spec) and the final batch write share one source of truth for these fields.
+ * Key order matches the historical `writeUnifiedReport` object literal so the
+ * final report.json stays byte-identical (existing e2e goldens compare it).
+ */
+function buildReportEnvelope(args: {
   diff: PrDiffResult;
   baseRef: string | null;
   customPromptVersion: string | null;
   opts: RunOptions;
-}): Promise<RunReportData> {
-  const { reportDir, results, diff, baseRef, customPromptVersion, opts } = args;
-  const data: RunReportData = {
+}): ReportEnvelope {
+  const { diff, baseRef, customPromptVersion, opts } = args;
+  return {
     schemaVersion: 1,
     kind: "run",
     createdAt: new Date().toISOString(),
@@ -726,6 +859,21 @@ async function writeUnifiedReport(args: {
     language: opts.language ?? null,
     promptVersion: ANALYSIS_PROMPT_VERSION,
     customPromptVersion,
+  };
+}
+
+/** Write the unified JSON (+ optional GitHub-annotation) report for one run. Returns the report data. */
+async function writeUnifiedReport(args: {
+  reportDir: string;
+  results: ReportSpecResult[];
+  diff: PrDiffResult;
+  baseRef: string | null;
+  customPromptVersion: string | null;
+  opts: RunOptions;
+}): Promise<RunReportData> {
+  const { reportDir, results, diff, baseRef, customPromptVersion, opts } = args;
+  const data: RunReportData = {
+    ...buildReportEnvelope({ diff, baseRef, customPromptVersion, opts }),
     results,
   };
 
@@ -743,6 +891,38 @@ async function writeUnifiedReport(args: {
   }
 
   return data;
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Read a live row's evidence PNGs and return them as `{ reportDir-relative
+ * posix path → base64 }` for a hub `PATCH`. The paths come straight off
+ * `row.liveRun.steps[].beforePng/afterPng`, which `live-adapter.ts` already
+ * rewrote to reportDir-relative posix — the same keys the hub stores them
+ * under. A PNG that can't be read (evidence-capture miss) is skipped, not
+ * fatal. Deterministic rows carry no `liveRun`, so this returns `{}` for them.
+ */
+async function readEvidenceBase64(
+  row: ReportSpecResult,
+  reportDir: string,
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  const steps = row.liveRun?.steps ?? [];
+  for (const step of steps) {
+    for (const relPath of [step.beforePng, step.afterPng]) {
+      if (!relPath || out[relPath] !== undefined) continue;
+      try {
+        const bytes = await readFile(join(reportDir, relPath));
+        out[relPath] = bytes.toString("base64");
+      } catch {
+        // best-effort: a missing PNG just isn't pushed with this patch.
+      }
+    }
+  }
+  return out;
 }
 
 /**

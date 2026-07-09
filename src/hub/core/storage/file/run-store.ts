@@ -1,6 +1,6 @@
 import type { Run } from "../../../contract/schema.ts";
 import type { RunStore } from "../types.ts";
-import { listSubdirsOrEmpty, readJson, writeJson } from "./fs-helpers.ts";
+import { listSubdirsOrEmpty, readJson, updateJson, writeJson } from "./fs-helpers.ts";
 import { runMetaPath, runsDir } from "./paths.ts";
 
 /**
@@ -26,6 +26,13 @@ export function createFileRunStore(root: string): RunStore {
 
     async get(id) {
       return await readJson<Run>(runMetaPath(root, id));
+    },
+
+    async update(id, patch) {
+      return await updateJson<Run>(runMetaPath(root, id), (current) => {
+        if (!current) throw new Error(`run "${id}" not found`);
+        return { ...current, ...patch };
+      });
     },
 
     async list({ project, branch, status, limit }) {

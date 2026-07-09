@@ -6,6 +6,8 @@ import {
   createGetReportHandler,
   createGetRunHandler,
   createListRunsHandler,
+  createOpenRunHandler,
+  createPatchRunHandler,
   createPushRunHandler,
 } from "./handlers/runs.ts";
 import {
@@ -63,6 +65,25 @@ export function createHubServer(config: HubServerConfig): Server {
   queue.recoverFromRestart().catch((err) => {
     console.error("hub: learning-job recovery on startup failed:", err);
   });
+
+  // Any run still "running" at startup was left mid-flight by a previous
+  // process (this one never resumes a patch stream) — mark it failed so it
+  // doesn't sit unpatchable-but-not-terminal forever. One run's failure to
+  // flip must not block the others.
+  config.storage.runs
+    .list({ status: "running" })
+    .then((runs) =>
+      Promise.all(
+        runs.map((r) =>
+          config.storage.runs.update(r.id, { status: "failed" }).catch((err) => {
+            console.error(`hub: failed to mark orphaned running run "${r.id}" as failed on startup:`, err);
+          }),
+        ),
+      ),
+    )
+    .catch((err) => {
+      console.error("hub: orphaned-running-run sweep on startup failed:", err);
+    });
 
   const router = new Router();
   registerRoutes(router, config, queue);
@@ -136,6 +157,11 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.post("/api/v1/runs", createPushRunHandler({
     storage,
     ...(config.maxPushBytes ? { maxPushBytes: config.maxPushBytes } : {}),
+  }));
+  router.post("/api/v1/runs/open", createOpenRunHandler({ storage }));
+  router.patch("/api/v1/runs/:id", createPatchRunHandler({
+    storage,
+    ...(config.maxPushBytes != null ? { maxPushBytes: config.maxPushBytes } : {}),
   }));
   router.get("/api/v1/runs", createListRunsHandler(storage));
   router.get("/api/v1/runs/:id", createGetRunHandler(storage));

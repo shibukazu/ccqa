@@ -2,7 +2,7 @@ import { cp } from "node:fs/promises";
 import { join } from "node:path";
 import { packFilesToTarGz } from "../../tar.ts";
 import type { ArtifactStore } from "../types.ts";
-import { listFilesRecursive, readBytesOrNull } from "./fs-helpers.ts";
+import { listFilesRecursive, readBytesOrNull, updateJson, writeBytes } from "./fs-helpers.ts";
 import { artifactsRunDir } from "./paths.ts";
 
 /**
@@ -45,6 +45,16 @@ export function createFileArtifactStore(root: string): ArtifactStore {
 
     async listFiles(runId) {
       return listFilesRecursive(artifactsRunDir(root, runId));
+    },
+
+    async putFile(runId, relPath, bytes) {
+      assertSafeRelPath(relPath);
+      await writeBytes(join(artifactsRunDir(root, runId), relPath), bytes);
+    },
+
+    async updateJsonFile(runId, relPath, mutate) {
+      assertSafeRelPath(relPath);
+      await updateJson(join(artifactsRunDir(root, runId), relPath), mutate);
     },
   };
 }

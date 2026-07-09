@@ -126,6 +126,28 @@ function makeDriftReportTarGz(): Uint8Array {
   return packTarGz(entries);
 }
 
+/** A minimal valid `ReportSpecResult` row, as used by the incremental-run PATCH tests below. */
+function makeRow(overrides: Partial<ReportSpecResult> = {}): ReportSpecResult {
+  return {
+    feature: "demo",
+    spec: "example",
+    title: null,
+    status: "passed",
+    testCounts: null,
+    durationMs: null,
+    assertions: null,
+    analysis: null,
+    analysisSkipped: null,
+    driftIssues: null,
+    failureLogExcerpt: null,
+    diffExcerpt: null,
+    specYaml: null,
+    evidence: null,
+    liveRun: null,
+    ...overrides,
+  };
+}
+
 /** Pack a tar.gz from raw string contents, for exercising malformed-push cases. */
 function packStringFilesTarGz(files: Record<string, string>): Uint8Array {
   const entries: TarEntry[] = Object.entries(files).map(([path, content]) => ({
@@ -377,6 +399,180 @@ describe("hub API server", () => {
       }));
       expect(res.status).toBe(413);
     }, 20_000);
+  });
+
+  describe("incremental run", () => {
+    async function openRun(): Promise<Record<string, unknown>> {
+      const res = await fetch(`${baseUrl}/api/v1/runs/open?project=demo`, authed({ method: "POST" }));
+      expect(res.status).toBe(201);
+      return json(res);
+    }
+
+    function patch(id: string, body: unknown): Promise<Response> {
+      return fetch(`${baseUrl}/api/v1/runs/${id}`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+    }
+
+    test("POST /runs/open returns a running run with all-zero specs", async () => {
+      const run = await openRun();
+      expect(run.status).toBe("running");
+      expect(run.specs).toEqual({ total: 0, passed: 0, failed: 0 });
+
+      const getRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}`, authed());
+      const fetched = await json(getRes);
+      expect(fetched.status).toBe("running");
+      expect(fetched.specs).toEqual({ total: 0, passed: 0, failed: 0 });
+    });
+
+    test("PATCH with one row (no done) updates the report and specs, and stays running", async () => {
+      const run = await openRun();
+      const res = await patch(run.id as string, { rows: [makeRow({ status: "passed" })] });
+      expect(res.status).toBe(200);
+      const updated = await json(res);
+      expect(updated.status).toBe("running");
+      expect(updated.specs).toEqual({ total: 1, passed: 1, failed: 0 });
+
+      const reportRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}/report`, authed());
+      const report = await json(reportRes);
+      expect(report.results).toEqual([makeRow({ status: "passed" })]);
+    });
+
+    test("a second PATCH accumulates rows, and re-patching the same feature/spec upserts", async () => {
+      const run = await openRun();
+      await patch(run.id as string, { rows: [makeRow({ feature: "a", spec: "one", status: "passed" })] });
+      await patch(run.id as string, { rows: [makeRow({ feature: "a", spec: "two", status: "failed" })] });
+      const res = await patch(run.id as string, {
+        rows: [makeRow({ feature: "a", spec: "one", status: "failed" })],
+      });
+      const updated = await json(res);
+      expect(updated.specs).toEqual({ total: 2, passed: 0, failed: 2 });
+
+      const reportRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}/report`, authed());
+      const report = await json(reportRes);
+      expect(report.results).toHaveLength(2);
+      const one = report.results.find((r: ReportSpecResult) => r.spec === "one");
+      expect(one.status).toBe("failed");
+    });
+
+    test("PATCH done:true makes the run terminal; a further PATCH returns 409", async () => {
+      const run = await openRun();
+      const res = await patch(run.id as string, { rows: [makeRow({ status: "passed" })], done: true });
+      expect(res.status).toBe(200);
+      const updated = await json(res);
+      expect(updated.status).toBe("passed");
+
+      const secondRes = await patch(run.id as string, { rows: [makeRow({ status: "passed" })] });
+      expect(secondRes.status).toBe(409);
+      const body = await json(secondRes);
+      expect(body.error.code).toBe("conflict");
+    });
+
+    test("done:true with a failed row and no explicit finalStatus resolves to failed", async () => {
+      const run = await openRun();
+      const res = await patch(run.id as string, { rows: [makeRow({ status: "failed" })], done: true });
+      const updated = await json(res);
+      expect(updated.status).toBe("failed");
+    });
+
+    test("reportMeta on a later PATCH updates the report envelope built by an earlier one", async () => {
+      const run = await openRun();
+      // First patch creates report.json with the provisional envelope (git=null,
+      // model=null) — mirrors a mid-run per-spec sink patch.
+      await patch(run.id as string, { rows: [makeRow({ feature: "a", spec: "one" })] });
+      // Reconcile patch carries the real metadata; it must land even though
+      // report.json already exists (regression: it used to be dropped).
+      await patch(run.id as string, {
+        rows: [],
+        done: true,
+        finalStatus: "passed",
+        reportMeta: { git: { head: "abc123", base: "main" }, model: "opus", promptVersion: "7" },
+      });
+      const reportRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}/report`, authed());
+      const report = await json(reportRes);
+      expect(report.git).toEqual({ head: "abc123", base: "main" });
+      expect(report.model).toBe("opus");
+      expect(report.promptVersion).toBe("7");
+      expect(report.results).toHaveLength(1);
+    });
+
+    test("PATCH on a nonexistent run returns 404", async () => {
+      const res = await patch("nonexistent-id", { rows: [] });
+      expect(res.status).toBe(404);
+    });
+
+    test("PATCH on an already-terminal pushed run (POST /runs) returns 409", async () => {
+      const pushRes = await fetch(`${baseUrl}/api/v1/runs?project=demo`, authed({
+        method: "POST",
+        body: makeReportTarGz({ status: "passed" }),
+      }));
+      const pushed = await json(pushRes);
+      const res = await patch(pushed.id, { rows: [makeRow()] });
+      expect(res.status).toBe(409);
+    });
+
+    test("PATCH with evidence stores the file, fetchable as image/png", async () => {
+      const run = await openRun();
+      const b64 = Buffer.from("fake-png-bytes").toString("base64");
+      const res = await patch(run.id as string, {
+        rows: [makeRow()],
+        evidence: { "evidence/x.png": b64 },
+      });
+      expect(res.status).toBe(200);
+
+      const fileRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}/artifacts/evidence/x.png`, authed());
+      expect(fileRes.status).toBe(200);
+      expect(fileRes.headers.get("content-type")).toBe("image/png");
+      expect(Buffer.from(await fileRes.arrayBuffer()).toString()).toBe("fake-png-bytes");
+    });
+
+    test("N parallel PATCH calls all land in report.json with no corruption", async () => {
+      const run = await openRun();
+      const n = 10;
+      const results = await Promise.all(
+        Array.from({ length: n }, (_, i) =>
+          patch(run.id as string, { rows: [makeRow({ feature: "concurrent", spec: `s${i}` })] }),
+        ),
+      );
+      for (const res of results) expect(res.status).toBe(200);
+
+      const reportRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}/report`, authed());
+      const report = await json(reportRes);
+      expect(report.results).toHaveLength(n);
+      expect(new Set(report.results.map((r: ReportSpecResult) => r.spec)).size).toBe(n);
+    });
+
+    test("a run left 'running' is swept to 'failed' when the hub restarts", async () => {
+      // A run whose producer never sent `done` (hub crashed mid-run) is
+      // orphaned: nothing will resume patching it. Simulate a restart over the
+      // same data dir and assert the startup sweep seals it terminal.
+      const orphan = await openRun();
+      expect(orphan.status).toBe("running");
+
+      const restarted = createHubServer({
+        storage: createFileHubStorage(dataDir),
+        token: TOKEN,
+        encryptionKey: null,
+        allowedOrigins: ["https://intranet.example"],
+      });
+      try {
+        await new Promise<void>((r) => restarted.listen(0, "127.0.0.1", r));
+        // The sweep is fire-and-forget on startup; poll until it lands.
+        const swept = createFileHubStorage(dataDir);
+        for (let i = 0; i < 50; i++) {
+          const run = await swept.runs.get(orphan.id as string);
+          if (run?.status === "failed") break;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        const finalRun = await swept.runs.get(orphan.id as string);
+        expect(finalRun?.status).toBe("failed");
+      } finally {
+        restarted.closeAllConnections();
+        await new Promise<void>((r) => restarted.close(() => r()));
+      }
+    });
   });
 
   describe("sessions (missing encryption key)", () => {

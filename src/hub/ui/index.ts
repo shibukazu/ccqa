@@ -483,6 +483,8 @@ const CSS = `
   .badge.fail .d, .badge.failed .d { background: var(--fail); }
   .badge.skipped { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   .badge.skipped .d { background: var(--muted); }
+  .badge.running { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+  .badge.running .d { background: var(--amber); }
   .badge-live, .badge-det { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; border: 1px solid transparent; }
   .badge-live { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
   .badge-det { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
