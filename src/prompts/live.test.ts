@@ -50,6 +50,18 @@ describe("buildLiveSystemPromptPrefix", () => {
     expect(p).toMatch(/no replay contract/i);
   });
 
+  test("steers text entry to inserttext and forbids Backspace-loop clears", () => {
+    // Guards the fix for keystroke-based input corrupting non-ASCII text in
+    // rich-text editors, and for background Backspace loops hanging the session.
+    const p = buildLiveSystemPromptPrefix({
+      title: SAMPLE_TITLE,
+      allSteps: STEPS,
+      sessionName: "s",
+    });
+    expect(p).toContain("keyboard inserttext");
+    expect(p).toMatch(/never\b.*\bbackspace/is);
+  });
+
   test("renders only input-derived dynamic content (no hostnames, brand names, accounts)", () => {
     // Guardrail: every domain-flavoured substring in the prompt prefix must
     // come from `input` (title / step.instruction / step.expected /

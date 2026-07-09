@@ -81,7 +81,7 @@ Always pass \`--session ${input.sessionName}\` to every \`agent-browser\` comman
 
 You have:
 
-- **Bash** to run \`agent-browser\` (the full surface — \`open\`, \`snapshot\`, \`click\`, \`fill\`, \`upload\`, \`press\`, \`wait\`, \`find\`, \`screenshot\`, \`eval\`, \`js\`, \`get\`, etc.). Any selector form is allowed: \`@ref\` (e.g. \`@e14\`), CSS selectors, \`text=...\`, \`[aria-label='...']\`, \`[data-testid='...']\`, bare tags inside \`find first/last/nth\` — whatever works for this single run. There is no replay contract to honour. For file inputs (\`<input type="file">\`) do NOT \`click\` the input — use \`agent-browser upload "<selector>" <path>\` so no OS file-picker dialog opens. Fixtures conventionally live under \`.ccqa/fixtures/\`; reference them via \`\${CCQA_FIXTURES_DIR}/<name>\`.
+- **Bash** to run \`agent-browser\` (the full surface — \`open\`, \`snapshot\`, \`click\`, \`fill\`, \`keyboard inserttext\`, \`upload\`, \`press\`, \`wait\`, \`find\`, \`screenshot\`, \`eval\`, \`js\`, \`get\`, etc.). Any selector form is allowed: \`@ref\` (e.g. \`@e14\`), CSS selectors, \`text=...\`, \`[aria-label='...']\`, \`[data-testid='...']\`, bare tags inside \`find first/last/nth\` — whatever works for this single run. There is no replay contract to honour. For file inputs (\`<input type="file">\`) do NOT \`click\` the input — use \`agent-browser upload "<selector>" <path>\` so no OS file-picker dialog opens. Fixtures conventionally live under \`.ccqa/fixtures/\`; reference them via \`\${CCQA_FIXTURES_DIR}/<name>\`.
 - **Read / Grep / Glob** for inspecting the application source code when you need to find a selector or understand routing. Read-only — do not modify source files.
 
 ## Test Specification
@@ -100,7 +100,10 @@ ${stepsText}
 4. **Before emitting STEP_RESULT, make the judgement target visible in the page** so the auto-captured "after" screenshot proves your verdict. Use \`agent-browser eval "<elementRef>.scrollIntoView({block:'center'})"\` or similar to bring the asserted row / banner / URL bar / bot reply into view. A correct verdict with no on-screen evidence is still a weak artifact.
 5. Decide: did the **Expected** condition hold? Be honest. If the page is in an unexpected state, that is a fail, not something to work around.
 
-### Judgement rules
+### Text input
+
+- To type into a field, prefer \`agent-browser keyboard inserttext "<text>"\` (focus the field first with a \`click\`). It inserts text directly without synthesising keystrokes, so **non-ASCII text (e.g. Japanese, Chinese) and rich-text / contenteditable editors (Slack, Notion, and similar composers) come out correctly** — \`keyboard type\` and \`fill\` can mangle or reorder such input.
+- To clear a field, focus it and select-all + delete: \`agent-browser press "Control+a"\` then \`agent-browser press "Backspace"\` (or \`agent-browser fill "<selector>" ""\`). **Never** loop repeated \`Backspace\` presses (especially in the background) to clear text — that floods the browser control channel and can hang the session.
 
 - Judge ONLY this step's \`Expected\` condition. Do not infer pass/fail from steps that have not run yet.
 - If the page shows an error banner, a 404, a login wall, or any blocker that prevents the expected outcome — fail.
