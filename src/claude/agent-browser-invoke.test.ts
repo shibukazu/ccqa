@@ -18,20 +18,4 @@ describe("agentBrowserInvokeBase", () => {
     expect(a.env?.["CCQA_RUN_ID"]).toBe("abc");
     expect(b.env?.["CCQA_RUN_ID"]).toBe("xyz");
   });
-
-  test("CCQA_AB_STATE is set when a statePath is provided", () => {
-    const base = agentBrowserInvokeBase({
-      sessionName: "sess",
-      runId: "run",
-      statePath: "/abs/.ccqa/sessions/slack.json",
-    });
-    expect(base.env?.["CCQA_AB_STATE"]).toBe("/abs/.ccqa/sessions/slack.json");
-  });
-
-  test("CCQA_AB_STATE is omitted when statePath is unset or null", () => {
-    const noField = agentBrowserInvokeBase({ sessionName: "s", runId: "r" });
-    const nullField = agentBrowserInvokeBase({ sessionName: "s", runId: "r", statePath: null });
-    expect(noField.env).not.toHaveProperty("CCQA_AB_STATE");
-    expect(nullField.env).not.toHaveProperty("CCQA_AB_STATE");
-  });
 });

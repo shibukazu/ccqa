@@ -15,6 +15,7 @@ import type { ExpandedActionStep } from "../spec/expand.ts";
 import { stepArtifactPaths } from "./live-artifacts.ts";
 import { findLastStepResult } from "./live-result-parse.ts";
 import { takeScreenshot } from "./screenshot.ts";
+import { loadStateIntoSession } from "./session-state.ts";
 
 /**
  * Per-step cost / usage / turn snapshot, derived from the SDK's `result`
@@ -85,10 +86,9 @@ export interface RunLiveExecutorInput {
   sessionName: string;
   /**
    * Absolute path to a saved agent-browser auth-state file (cookies +
-   * localStorage). When provided, every agent-browser invocation in this run
-   * — both the screenshot helpers ccqa drives directly and the
-   * model-issued `agent-browser` Bash commands — load it via `--state` so
-   * the spec starts already signed-in. The file is never written back to.
+   * localStorage). When provided, ccqa restores it into the session once,
+   * before any step runs (see loadStateIntoSession), so the spec starts
+   * already signed-in. Restore is load-only; the file is never written back to.
    */
   statePath?: string | null;
   systemPromptSuffix?: string | null;
@@ -140,10 +140,21 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
   const invokeBase = agentBrowserInvokeBase({
     sessionName: input.sessionName,
     runId: input.runId,
-    statePath,
   });
 
   const retries = Math.max(0, input.retries ?? 0);
+
+  // Restore the saved auth-state up front, once, before any step runs. This
+  // cold-starts the session's daemon and attaches cookies + localStorage
+  // deterministically (see loadStateIntoSession), so step 1's "before"
+  // screenshot and the model's first command already see a signed-in page —
+  // rather than relying on a `--state` flag racing the daemon boot.
+  if (statePath) {
+    const injected = loadStateIntoSession(input.sessionName, statePath);
+    if (!injected.ok) {
+      log.warn(`session state restore failed: ${injected.error}`);
+    }
+  }
 
   for (let i = 0; i < input.steps.length; i++) {
     const step = input.steps[i]!;
@@ -203,7 +214,11 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     systemPrompt: string,
     userPrompt: string,
   ): Promise<StepAttemptOutcome> {
-    const before = takeScreenshot(input.sessionName, paths.beforePng, { statePath });
+    // No --state here: loadStateIntoSession already attached the auth-state to
+    // the daemon before the loop, so this screenshot connects to that same
+    // signed-in session. Passing --state now would only draw an "already
+    // running" warning.
+    const before = takeScreenshot(input.sessionName, paths.beforePng);
     if (!before.ok) log.warn(`screenshot (before, ${step.id}) failed: ${before.error}`);
 
     const transcriptParts: string[] = [];
@@ -247,7 +262,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     // After: full page so the assertion target is in the artifact regardless of
     // scroll position. Before stays viewport-only (lighter, and the before-state
     // doesn't usually need to prove "this row appeared below the fold").
-    const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true, statePath });
+    const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
     await writeFile(paths.logTxt, transcript || "(no assistant text captured)", "utf-8");

@@ -18,13 +18,14 @@ export interface LiveSystemPromptPrefixInput {
   allSteps: ExpandedActionStep[];
   sessionName: string;
   /**
-   * When set, the prompt instructs the model to forward `--state <path>` to
-   * every `agent-browser` invocation so the spec starts already signed-in
-   * against the cookies + localStorage saved at that path. The path is a
-   * single state file even when several saved sessions were requested — ccqa
-   * merges them upstream. The file is **read-only** — agent-browser's
-   * `--state` flag loads it but never writes back to it, so a spec can be
-   * re-run locally or in CI without mutating the source-of-truth sessions.
+   * When set, ccqa has already restored this auth-state into the session
+   * (see `loadStateIntoSession`) before the run starts, so the spec begins
+   * signed-in against the saved cookies + localStorage. The prompt then just
+   * tells the model it's already authenticated and must not touch the state —
+   * it does NOT ask the model to pass `--state` (that flag only applies at
+   * daemon boot, which ccqa owns). Restore is read-only, so re-runs never
+   * mutate the source-of-truth sessions. Only the truthiness is used here;
+   * the value isn't interpolated into the prompt.
    */
   statePath?: string | null;
 }
@@ -66,7 +67,7 @@ export function buildLiveSystemPromptPrefix(input: LiveSystemPromptPrefixInput):
     .join("\n\n");
 
   const stateLine = input.statePath
-    ? `\n\nA pre-recorded auth-state file is provided at \`${input.statePath}\` (also in the env var \`CCQA_AB_STATE\`). **Always also pass \`--state "$CCQA_AB_STATE"\`** to every \`agent-browser\` command — this restores cookies and localStorage saved from a prior interactive login (one or more providers), so the user is already signed in to the application under test from step 1. The file is loaded read-only; do not run \`agent-browser state save\`.`
+    ? `\n\nA saved auth-state (from a prior interactive login) has **already been restored into this session**, so you are signed in to the application under test from step 1 — you do not need to restore any state or run any login steps yourself. Do not run \`agent-browser state save\` or \`agent-browser state load\`; the auth-state is loaded read-only and managed for you.`
     : "";
 
   return `You are a QA execution agent. You are executing ONE step of a browser-based end-to-end test and judging whether the step's expected outcome was achieved. You are NOT recording a replayable test script — be flexible, explore the DOM as needed, and make a clear pass / fail call at the end.
