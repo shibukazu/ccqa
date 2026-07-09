@@ -33,5 +33,7 @@ jobs:
       - name: Unit tests
         run: pnpm test:unit
 
-      - name: E2E tests (includes install-smoke since dist/ is built)
+      - name: E2E tests (dist/ is built, so the shipped-artifact test must not skip)
         run: pnpm test:e2e
+        env:
+          CCQA_REQUIRE_DIST: "1"

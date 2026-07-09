@@ -11,11 +11,11 @@ import { writeMockMessages } from "../_helpers/fake-claude.ts";
 import { createHubServer } from "../../../src/hub/api/server.ts";
 import { createFileHubStorage } from "../../../src/hub/core/storage/file/index.ts";
 
-// End-to-end for incremental hub push: `ccqa run --push` opens a "running" run
-// on the hub, PATCHes each finished spec's row as it lands, and finalizes the
-// run (running → terminal) at the end. `--push` alone is enough (it implies the
-// default report dir); `--report <dir>` only controls where the local copy
-// lives. Drives a real in-process hub (same pattern as
+// End-to-end for incremental hub push: `ccqa run --push-report` opens a
+// "running" run on the hub, PATCHes each finished spec's row as it lands, and
+// finalizes the run (running → terminal) at the end. `--push-report` alone is
+// enough (it implies the default report dir); `--report <dir>` only controls
+// where the local copy lives. Drives a real in-process hub (same pattern as
 // src/hub/api/server.test.ts) and a mocked Claude so the live executor runs
 // deterministically without network/model access.
 
@@ -28,7 +28,7 @@ function mockStepMessages(stepId: string): Array<Record<string, unknown>> {
   ];
 }
 
-describe("ccqa run --report --hub-url — incremental hub push", () => {
+describe("ccqa run --push-report — incremental hub push", () => {
   let project: FakeProject | null = null;
   let server: Server;
   let dataDir: string;
@@ -71,53 +71,14 @@ describe("ccqa run --report --hub-url — incremental hub push", () => {
     return runs;
   };
 
-  test("opens a running run, patches each spec, finalizes to a terminal run with the spec's row", async () => {
+  test("--push-report opens, patches, and finalizes a run, and writes the default local report", async () => {
     project = await makeFakeProject("run-live-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
     const mockPath = join(project.cwd, "claude-mock.jsonl");
     await writeMockMessages(mockPath, [...mockStepMessages("step-01")]);
 
-    const result = await runCcqa(
-      ["run", "demo/x", "--report", join(project.cwd, "ccqa-report"), "--project", "demo-proj", "--push-report"],
-      {
-        cwd: project.cwd,
-        env: {
-          ...noColorEnv(),
-          CCQA_CLAUDE_MOCK_FILE: mockPath,
-          CCQA_HUB_URL: baseUrl,
-          CCQA_HUB_TOKEN: TOKEN,
-        },
-        timeoutMs: 90_000,
-      },
-    );
-    expect(result.exitCode).toBe(0);
-
-    // Exactly one run reached the hub, and it was finalized (running → terminal).
-    const runs = await listRuns();
-    expect(runs).toHaveLength(1);
-    const run = runs[0]!;
-    expect(run.status).toBe("passed");
-    expect(run.specs.total).toBe(1);
-
-    // The finalized report carries the live spec's row (pushed incrementally,
-    // then reconciled at close).
-    const report = (await hubGet(`/api/v1/runs/${run.id}/report`)) as {
-      results: Array<{ feature: string; spec: string; status: string; liveRun: unknown }>;
-    };
-    expect(report.results).toHaveLength(1);
-    expect(report.results[0]!.feature).toBe("demo");
-    expect(report.results[0]!.spec).toBe("x");
-    expect(report.results[0]!.liveRun).not.toBeNull();
-  }, 120_000);
-
-  test("--push alone (no --report) still pushes, using the default report dir locally", async () => {
-    project = await makeFakeProject("run-live-stub", { linkCcqa: true });
-    await installFakeAgentBrowser(project.cwd);
-    const mockPath = join(project.cwd, "claude-mock.jsonl");
-    await writeMockMessages(mockPath, [...mockStepMessages("step-01")]);
-
-    // No --report: --push must imply the default report dir so it has something
-    // to upload, and drive the same open → patch → finalize flow.
+    // No --report: --push-report implies the default report dir so it has
+    // something to upload, and drives the full open → patch → finalize flow.
     const result = await runCcqa(
       ["run", "demo/x", "--project", "demo-proj", "--push-report"],
       {
@@ -133,63 +94,26 @@ describe("ccqa run --report --hub-url — incremental hub push", () => {
     );
     expect(result.exitCode).toBe(0);
 
-    // The run reached the hub and finalized, with the live spec's row.
+    // Exactly one run reached the hub, finalized (running → terminal), and
+    // carries the live spec's row (pushed incrementally, reconciled at close).
     const runs = await listRuns();
     expect(runs).toHaveLength(1);
-    expect(runs[0]!.status).toBe("passed");
-    const report = (await hubGet(`/api/v1/runs/${runs[0]!.id}/report`)) as {
-      results: Array<{ feature: string; spec: string }>;
+    const run = runs[0]!;
+    expect(run.status).toBe("passed");
+    expect(run.specs.total).toBe(1);
+    const report = (await hubGet(`/api/v1/runs/${run.id}/report`)) as {
+      results: Array<{ feature: string; spec: string; liveRun: unknown }>;
     };
     expect(report.results).toHaveLength(1);
+    expect(report.results[0]!.feature).toBe("demo");
     expect(report.results[0]!.spec).toBe("x");
+    expect(report.results[0]!.liveRun).not.toBeNull();
 
-    // Option (a): --push writes a local copy to the default dir (ccqa-report/).
+    // --push-report also writes a local copy to the default dir (ccqa-report/).
     const localReport = JSON.parse(
       await readFile(join(project.cwd, "ccqa-report", "report.json"), "utf8"),
     ) as { results: Array<{ spec: string }> };
     expect(localReport.results[0]!.spec).toBe("x");
-  }, 120_000);
-
-  test("without hub creds no run is opened on the hub", async () => {
-    project = await makeFakeProject("run-live-stub", { linkCcqa: true });
-    await installFakeAgentBrowser(project.cwd);
-    const mockPath = join(project.cwd, "claude-mock.jsonl");
-    await writeMockMessages(mockPath, [...mockStepMessages("step-01")]);
-
-    const result = await runCcqa(
-      ["run", "demo/x", "--report", join(project.cwd, "ccqa-report"), "--project", "demo-proj"],
-      {
-        cwd: project.cwd,
-        // Explicitly clear any hub env the runner might carry.
-        env: { ...noColorEnv(), CCQA_CLAUDE_MOCK_FILE: mockPath, CCQA_HUB_URL: "", CCQA_HUB_TOKEN: "" },
-        timeoutMs: 90_000,
-      },
-    );
-    expect(result.exitCode).toBe(0);
-    expect(await listRuns()).toHaveLength(0);
-  }, 120_000);
-
-  test("without --push no run is opened on the hub even with hub creds and --report", async () => {
-    project = await makeFakeProject("run-live-stub", { linkCcqa: true });
-    await installFakeAgentBrowser(project.cwd);
-    const mockPath = join(project.cwd, "claude-mock.jsonl");
-    await writeMockMessages(mockPath, [...mockStepMessages("step-01")]);
-
-    const result = await runCcqa(
-      ["run", "demo/x", "--report", join(project.cwd, "ccqa-report"), "--project", "demo-proj"],
-      {
-        cwd: project.cwd,
-        env: {
-          ...noColorEnv(),
-          CCQA_CLAUDE_MOCK_FILE: mockPath,
-          CCQA_HUB_URL: baseUrl,
-          CCQA_HUB_TOKEN: TOKEN,
-        },
-        timeoutMs: 90_000,
-      },
-    );
-    expect(result.exitCode).toBe(0);
-    expect(await listRuns()).toHaveLength(0);
   }, 120_000);
 
   test("an unreachable hub is best-effort: the run still succeeds with a local report", async () => {
@@ -222,4 +146,28 @@ describe("ccqa run --report --hub-url — incremental hub push", () => {
     expect(report.results).toHaveLength(1);
     expect(report.results[0]!.spec).toBe("x");
   }, 120_000);
+
+  // Gate on hub-run creation: a run is opened on the hub ONLY when both
+  // --push-report and hub creds are present. Uses a deterministic spec (no live
+  // executor) so the two negative branches stay cheap.
+  test("no run is opened without both --push-report and hub creds", async () => {
+    project = await makeFakeProject("passing-spec", { linkCcqa: true });
+    const baseArgs = ["run", "demo/smoke", "--project", "demo-proj"];
+
+    // (a) hub creds present, but --push-report absent → no run opened.
+    const noFlag = await runCcqa(baseArgs, {
+      cwd: project.cwd,
+      env: { ...noColorEnv(), CCQA_HUB_URL: baseUrl, CCQA_HUB_TOKEN: TOKEN },
+    });
+    expect(noFlag.exitCode).toBe(0);
+    expect(await listRuns()).toHaveLength(0);
+
+    // (b) --push-report present, but hub creds absent → no run opened.
+    const noCreds = await runCcqa([...baseArgs, "--push-report"], {
+      cwd: project.cwd,
+      env: { ...noColorEnv(), CCQA_HUB_URL: "", CCQA_HUB_TOKEN: "" },
+    });
+    expect(noCreds.exitCode).toBe(0);
+    expect(await listRuns()).toHaveLength(0);
+  });
 });
