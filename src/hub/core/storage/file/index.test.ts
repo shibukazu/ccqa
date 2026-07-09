@@ -103,6 +103,24 @@ describe("HubStorage (file backend)", () => {
     test("read returns null for a missing file", async () => {
       expect(await storage.artifacts.read("nonexistent-run", "report.json")).toBeNull();
     });
+
+    test("putFile writes a file that read then returns byte-for-byte", async () => {
+      const bytes = new TextEncoder().encode("fake-png-bytes");
+      await storage.artifacts.putFile("run-1", "evidence/step1.png", bytes);
+      expect(await storage.artifacts.read("run-1", "evidence/step1.png")).toEqual(bytes);
+    });
+
+    test("updateJsonFile creates on first call, then merges on subsequent calls", async () => {
+      await storage.artifacts.updateJsonFile<{ n: number[] }>("run-1", "report.json", (current) => ({
+        n: [...(current?.n ?? []), 1],
+      }));
+      await storage.artifacts.updateJsonFile<{ n: number[] }>("run-1", "report.json", (current) => ({
+        n: [...(current?.n ?? []), 2],
+      }));
+
+      const bytes = await storage.artifacts.read("run-1", "report.json");
+      expect(JSON.parse(new TextDecoder().decode(bytes!))).toEqual({ n: [1, 2] });
+    });
   });
 
   describe.each(["sessions", "variables"] as const)("%s (SecretStore)", (kind) => {

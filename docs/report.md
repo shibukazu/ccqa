@@ -1,16 +1,17 @@
 # Run report
 
-`ccqa run --report` writes a **machine-readable report** of the run — a
+`ccqa run` always writes a **machine-readable report** of the run — a
 `report.json` plus the per-step evidence PNGs — meant to be pushed to the
-[ccqa hub](./hub.md) (`ccqa hub push`) and viewed in the hub UI, or consumed
-directly by CI tooling. There is no standalone HTML file: the hub UI is the
-report, rendering results from `report.json` and the evidence images it serves
+[ccqa hub](./hub.md) (`ccqa hub push`, or streamed incrementally with
+`--push-report`) and viewed in the hub UI, or consumed directly by CI
+tooling. There is no standalone HTML file: the hub UI is the report,
+rendering results from `report.json` and the evidence images it serves
 over its API.
 
 ```bash
-ccqa run --report                          # writes ccqa-report/report.json (+ evidence/)
-ccqa run --report my-report                # custom output directory
-ccqa run --report --base origin/main       # base ref for the source diff
+ccqa run                                   # writes ccqa-report/report.json (+ evidence/)
+ccqa run --report my-report                # write to a custom output directory instead
+ccqa run --base origin/main                # base ref for the source diff
 ```
 
 ## What the report contains
@@ -21,8 +22,8 @@ ccqa run --report --base origin/main       # base ref for the source diff
   the test actually drove the app through the intended states. Captured by
   default; pass `--no-evidence` to skip. Files land in
   `<report-dir>/evidence/<feature>/<spec>/<stepId>.{png,json}`, are referenced
-  from `report.json`, and are served by the hub UI over its API; they survive on
-  disk even when `--report` is not passed.
+  from `report.json`, and are served by the hub UI over its API; they are
+  written to disk on every run, regardless of whether `--report` is passed.
 - For each **failing** spec:
   - a **root-cause call** made by Claude with the PR diff as context:
     - `TEST_DRIFT` — what the spec verifies is unchanged; only the test code drifted from the source (selector rename, timing, over-assertion)
@@ -77,7 +78,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa run --report
+      - run: pnpm exec ccqa run
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       - uses: actions/upload-artifact@v4
@@ -87,7 +88,9 @@ jobs:
           path: ccqa-report/
 ```
 
-Add `ccqa-report/` to the consuming repo's `.gitignore`.
+Add `ccqa-report/` to the consuming repo's `.gitignore`. To also push results
+to a hub incrementally as the run progresses, add `--push-report` (plus hub
+credentials) to the `ccqa run` step — see [docs/hub.md](./hub.md).
 
 ## Migrating from `ccqa run --drift` / `--drift-strict`
 

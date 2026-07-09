@@ -23,9 +23,11 @@ export interface HubStorage {
 }
 
 export interface RunStore {
-  /** A pushed run is immutable — there is no update; it is created once and only read afterward. */
+  /** Create once — used both by an immutable push and by opening a mutable "running" run. */
   create(run: Run): Promise<void>;
   get(id: string): Promise<Run | null>;
+  /** Mutable while running; immutable once terminal (enforced by the API layer, not the store). */
+  update(id: string, patch: Partial<Run>): Promise<Run>;
   /** Newest first, optionally filtered by project / branch / status. */
   list(q: { project?: string; branch?: string; status?: RunStatus; limit?: number }): Promise<Run[]>;
   /** Distinct project names across all stored runs. Feeds `GET /projects`. */
@@ -40,6 +42,10 @@ export interface ArtifactStore {
   /** Every stored file, tarred and gzipped, for bulk download. Null when nothing was stored. */
   readTarGz(runId: string): Promise<Uint8Array | null>;
   listFiles(runId: string): Promise<string[]>;
+  /** Write-once evidence file (e.g. a step PNG) under the run's artifact tree. */
+  putFile(runId: string, relPath: string, bytes: Uint8Array): Promise<void>;
+  /** Concurrency-safe read-modify-write for a JSON artifact (e.g. report.json). */
+  updateJsonFile<T>(runId: string, relPath: string, mutate: (current: T | null) => T): Promise<void>;
 }
 
 /**

@@ -92,17 +92,17 @@ function cleanupTrackedDirsSync(): void {
   trackedTempDirs.clear();
 }
 
-let signalHandlersRegistered = false;
+let cleanupRegistered = false;
 function ensureProcessCleanupRegistered(): void {
-  if (signalHandlersRegistered) return;
-  signalHandlersRegistered = true;
+  if (cleanupRegistered) return;
+  cleanupRegistered = true;
+  // Only hook "exit" — the temp-dir removal runs no matter how we leave.
+  // We deliberately do NOT register SIGINT/SIGTERM handlers here: a signal
+  // handler that calls process.exit() would preempt the run command's own
+  // teardown (report finalize + agent-browser reap) and exit before it runs.
+  // The run command owns signal handling; its exit still triggers this
+  // "exit" hook, so the temp state dir is cleaned up on Ctrl-C too.
   process.once("exit", cleanupTrackedDirsSync);
-  for (const sig of ["SIGINT", "SIGTERM"] as const) {
-    process.once(sig, () => {
-      cleanupTrackedDirsSync();
-      process.exit(sig === "SIGINT" ? 130 : 143);
-    });
-  }
 }
 
 /**

@@ -52,6 +52,11 @@ issue rather than resurrected inline here.
 
 ### Major design decisions
 
+> Superseded in part by ADR-0009: a run may now pass through a mutable
+> `running` state (opened and patched incrementally as a long `ccqa run`
+> executes) before becoming immutable at `passed`/`failed`. The
+> no-remote-execution decision below is unaffected and remains in force.
+
 - **A pushed run is immutable and fully derived from an already-produced
   `report.json`** — no create-then-run lifecycle, no run states beyond
   `passed`/`failed`. `ccqa hub push` uploads a finished report directory;

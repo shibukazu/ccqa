@@ -66,13 +66,38 @@ GET /api/v1/runs/:id/artifacts/*path
   → 200 (individual file — the hub UI fetches evidence PNGs this way) | 404
 ```
 
+As an alternative to the single-shot push above, a still-executing
+`ccqa run` can stream results into the hub incrementally, spec by spec,
+instead of waiting until it finishes:
+
+```
+POST /api/v1/runs/open?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>
+  (same query params as POST /api/v1/runs, no body)
+  → 201 Run   (status: "running")
+
+PATCH /api/v1/runs/:id
+  Content-Type: application/json
+  body: {
+    rows: ReportSpecResult[],
+    evidence?: Record<string, string>,  // relative path -> base64 file bytes
+    done?: boolean,
+    finalStatus?: "passed" | "failed",
+    reportMeta?: Partial<ReportEnvelope>,
+  }
+  → 200 Run | 404 (no such run) | 409 (run is not currently "running")
+  Spec rows upsert into report.json's `results`, keyed by feature/spec — safe
+  to resend the same row. Evidence files are written individually, not as a
+  re-upload of the whole tarball. `done: true` seals the run to `finalStatus`
+  if given, else `specs.failed > 0 ? "failed" : "passed"`.
+```
+
 ```ts
 interface Run {
   id: string;
   project: string;
   profile: string | null;    // which profile/environment the run executed against; display-only
   branch: string | null;
-  status: "passed" | "failed";
+  status: "passed" | "failed" | "running";
   kind: "run" | "drift";     // "run" = ccqa run/live execution; "drift" = ccqa drift --push
   drift: { issues: number; errors: number; warnings: number; specsWithIssues: number } | null; // set only for kind: "drift"
   specs: { total: number; passed: number; failed: number };
@@ -86,10 +111,21 @@ interface Run {
 
 `branch` defaults from the pushing client (`ccqa hub push` / `ccqa drift --push`
 resolve `$GITHUB_HEAD_REF` → `$GITHUB_REF_NAME` → the local git branch), and is
-`null` if the client sent none. `status` is exactly `"passed"` or
-`"failed"` — there is no `queued` or `running` state, since nothing was
-ever running on the hub in the first place. `drift` is derived from the
-pushed report's `results[].driftIssues` and is `null` for `kind: "run"`.
+`null` if the client sent none. `status` is `"passed"`, `"failed"`, or
+`"running"` — `running` never means the hub itself is executing anything;
+it only means a `ccqa run` elsewhere is currently streaming results into
+this run record via `POST /api/v1/runs/open` and `PATCH /api/v1/runs/:id`.
+`drift` is derived from the pushed report's `results[].driftIssues` and is
+`null` for `kind: "run"`.
+
+A run opened via `POST /api/v1/runs/open` accepts repeated `PATCH` calls
+while it's `running`: each one upserts spec rows (by feature/spec) and adds
+evidence files incrementally. A `PATCH` with `done: true` seals the run to
+`passed`/`failed`; any `PATCH` after that returns `409`, matching the
+existing rule that a terminal run is immutable. If the hub process itself
+restarts while a run is still `running` (e.g. it crashed or was redeployed
+mid-run), a one-time startup sweep flips every such orphaned run to
+`"failed"`, since nothing will ever resume patching it.
 
 ## Triage
 
@@ -288,6 +324,8 @@ Full method list:
 
 ```ts
 pushRun(archive: Uint8Array, meta: { project: string; branch?: string }): Promise<Run>
+openRun(meta: { project: string; branch?: string; profile?: string; kind?: "run" | "drift" }): Promise<Run>
+patchRun(id, body: PatchRunRequest): Promise<Run>
 listRuns(q?: { project?; branch?; status?; limit? }): Promise<Run[]>
 getRun(id): Promise<Run>
 getReport(id): Promise<unknown>

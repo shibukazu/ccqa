@@ -67,7 +67,7 @@ ccqa run tasks/create-and-complete      # Claude drives the browser every time
 
 Live specs can start already-signed-in by naming a saved session with `session:` — see [Saved sessions](./docs/sessions.md). Deterministic runs also write step-boundary screenshots to `ccqa-report/evidence/` (disable with `--no-evidence`).
 
-In CI, add `--report` to write a `report.json` (+ evidence PNGs) you push to the [ccqa hub](./docs/hub.md) and view in its UI; each failing spec gets a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) you can grade for accuracy. Needs `ANTHROPIC_API_KEY` or a local Claude login. See [Run report](./docs/report.md).
+In CI, a `report.json` (+ evidence PNGs) is always written that you push to the [ccqa hub](./docs/hub.md) and view in its UI; each failing spec gets a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) you can grade for accuracy. Needs `ANTHROPIC_API_KEY` or a local Claude login. See [Run report](./docs/report.md). Add `--push-report` (opt-in, plus hub credentials) to push results incrementally as the run executes instead of in one shot afterward — see [docs/hub.md](./docs/hub.md).
 
 ```bash
 ccqa run tasks/create-and-complete --report --base origin/main
@@ -100,7 +100,7 @@ ccqa perspectives                  Inventory existing test coverage into .ccqa/p
 ccqa record <feature/spec>         (deterministic specs only) Trace browser actions + generate test.spec.ts
 ccqa run [feature/spec...]         Execute specs. Per spec, the spec.yaml `mode:` field selects deterministic
                                    (vitest replay) or live (Claude drives every time). One run can mix both;
-                                   `--report` writes one unified HTML. Pass multiple targets space-separated.
+                                   a report.json is always written. Pass multiple targets space-separated.
 ccqa drift [feature/spec]          Standalone spec ↔ codebase static audit (for PR checks)
 ccqa serve                         Start a hub: a control-plane HTTP server that aggregates run results,
                                    sessions, and variables (it does not execute tests)
@@ -110,7 +110,8 @@ ccqa hub session|var <cmd>         Manage sessions/variables stored on a hub
 
 Key `ccqa run` flags (see `ccqa run --help` for the rest):
 
-- `--report [dir]` — write the run report (report.json + evidence PNGs) for `ccqa hub push` (default dir: `ccqa-report/`)
+- `--report [dir]` — change where the run report (report.json + evidence PNGs, always written) is saved (default: `ccqa-report/`)
+- `--push-report` — stream the report to a hub incrementally as the run executes (opt-in; requires hub credentials)
 - `--profile <name>` — load `.ccqa/profiles/<name>.env` before resolving spec `${VAR}` references, so one spec targets dev/stg/prd. See [Profiles](#profiles---profile).
 - `--changed` — restrict execution to specs whose `relatedPaths` intersect `git diff <base>...HEAD`
 - `--concurrency <n>` — run up to N specs in parallel **within each mode** (deterministic phase, then live phase — parallelism is per-phase, not across phases). Default `1` (sequential, same behavior as before).
@@ -190,7 +191,7 @@ See [Saved sessions](./docs/sessions.md) for how to bootstrap a session and use 
 
 ## CI result aggregation (hub)
 
-`ccqa serve` starts a hub — a control-plane HTTP server that aggregates CI run results, saved sessions, and variables on a shared server. It does not execute tests: a CI job (or a laptop) runs `ccqa run --report` as usual, fetching whatever sessions/variables/prompts it needs from the hub directly at run time, then `ccqa hub push` uploads the resulting report to the hub. Sessions and variables are registered on the hub ahead of time (`ccqa hub session push`, `ccqa hub var set`, or the bundled UI's Secrets tab), so a CI job needs only one secret: `CCQA_HUB_TOKEN`. One hub manages many projects — secrets are scoped per project/profile, and `--project` defaults to the current directory's name. See [docs/hub.md](./docs/hub.md) for setup and usage.
+`ccqa serve` starts a hub — a control-plane HTTP server that aggregates CI run results, saved sessions, and variables on a shared server. It does not execute tests: a CI job (or a laptop) runs `ccqa run` as usual, fetching whatever sessions/variables/prompts it needs from the hub directly at run time, then `ccqa hub push` uploads the resulting report to the hub. Sessions and variables are registered on the hub ahead of time (`ccqa hub session push`, `ccqa hub var set`, or the bundled UI's Secrets tab), so a CI job needs only one secret: `CCQA_HUB_TOKEN`. One hub manages many projects — secrets are scoped per project/profile, and `--project` defaults to the current directory's name. Instead of that separate push step, `ccqa run --push-report` pushes results incrementally as the run executes (opt-in); see [docs/hub.md](./docs/hub.md) for setup and usage.
 
 ## License
 
