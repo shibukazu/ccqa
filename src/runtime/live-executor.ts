@@ -49,6 +49,14 @@ export interface LiveStepResult {
   logTxt: string | null;
   durationMs: number;
   cost: LiveStepCost;
+  /**
+   * The `agent-browser` commands (Bash `tool_use`) Claude actually issued on
+   * the accepted attempt, tail-trimmed. Feeds prompt auto-learning: the
+   * command that finally worked is the shortcut a later run can jump straight
+   * to instead of re-exploring. Empty when the step was skipped or issued no
+   * agent-browser command.
+   */
+  commands: string[];
 }
 
 /**
@@ -198,6 +206,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       logTxt: paths.logTxt,
       durationMs: Date.now() - stepStartedAt,
       cost: outcome.cost,
+      commands: outcome.commands,
     });
 
     if (outcome.status === "passed") {
@@ -222,6 +231,11 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     if (!before.ok) log.warn(`screenshot (before, ${step.id}) failed: ${before.error}`);
 
     const transcriptParts: string[] = [];
+    // The agent-browser commands Claude actually ran, in order. Text blocks
+    // (the transcript) and tool_use blocks (these commands) are collected
+    // side by side so STEP_RESULT parsing keeps working off the text while
+    // the commands feed prompt learning.
+    const commandParts: string[] = [];
     let isError = false;
     let cost: LiveStepCost = emptyStepCost();
     try {
@@ -237,6 +251,11 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
           if (msg.type !== "assistant") return;
           for (const block of msg.message.content ?? []) {
             if (block.type === "text" && block.text) transcriptParts.push(block.text);
+            // Same access pattern proven in claude/invoke.ts's Bash logging.
+            if (block.type === "tool_use" && block.name === "Bash") {
+              const cmd = (block.input as Record<string, unknown>)?.["command"];
+              if (typeof cmd === "string") commandParts.push(cmd);
+            }
           }
         },
       );
@@ -279,6 +298,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       beforePng: before.ok ? paths.beforePng : null,
       afterPng: after.ok ? paths.afterPng : null,
       cost,
+      commands: commandParts.slice(-MAX_LEARNED_COMMANDS),
     };
   }
 
@@ -300,7 +320,16 @@ interface StepAttemptOutcome {
   beforePng: string | null;
   afterPng: string | null;
   cost: LiveStepCost;
+  /** Tail-trimmed agent-browser commands issued during this attempt. */
+  commands: string[];
 }
+
+/**
+ * Keep only the tail of the command list. A step that churned through many
+ * selectors shouldn't blow the learning-summary budget, and the last commands
+ * are the winning path — exactly the shortcut a later run should reuse.
+ */
+const MAX_LEARNED_COMMANDS = 15;
 
 function emptyStepCost(): LiveStepCost {
   return {
@@ -397,6 +426,7 @@ function buildSkippedStep(step: ExpandedActionStep, reason: string): LiveStepRes
     logTxt: null,
     durationMs: 0,
     cost: emptyStepCost(),
+    commands: [],
   };
 }
 

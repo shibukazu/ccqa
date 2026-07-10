@@ -54,6 +54,7 @@ export async function liveRunToReportResult(args: {
         afterPng,
         durationMs: s.durationMs,
         cost: { ...s.cost },
+        commands: s.commands,
       };
     }),
   );

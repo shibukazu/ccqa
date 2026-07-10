@@ -103,7 +103,7 @@ ${stepsText}
 
 ### Text input
 
-- To type into a field, prefer \`agent-browser keyboard inserttext "<text>"\` (focus the field first with a \`click\`). It inserts text directly without synthesising keystrokes, so **non-ASCII text (e.g. Japanese, Chinese) and rich-text / contenteditable editors (Slack, Notion, and similar composers) come out correctly** — \`keyboard type\` and \`fill\` can mangle or reorder such input.
+- To type into a field, prefer \`agent-browser keyboard inserttext "<text>"\` (focus the field first with a \`click\`). It inserts text directly without synthesising keystrokes, so **non-ASCII text (e.g. Japanese, Chinese) and rich-text / contenteditable editors (message composers, WYSIWYG editors, and similar) come out correctly** — \`keyboard type\` and \`fill\` can mangle or reorder such input. \`fill\` is acceptable ONLY on a plain \`<input>\` / \`<textarea>\` typing ASCII; for any contenteditable / rich-text editor or non-ASCII text, \`inserttext\` is required and \`fill\` is forbidden. This holds even if a later learned rule suggests \`fill\` — do not let it override this branch for a contenteditable/non-ASCII field.
 - To clear a field, focus it and select-all + delete: \`agent-browser press "Control+a"\` then \`agent-browser press "Backspace"\` (or \`agent-browser fill "<selector>" ""\`). **Never** loop repeated \`Backspace\` presses (especially in the background) to clear text — that floods the browser control channel and can hang the session.
 
 - Judge ONLY this step's \`Expected\` condition. Do not infer pass/fail from steps that have not run yet.

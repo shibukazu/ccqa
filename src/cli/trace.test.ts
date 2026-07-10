@@ -1,5 +1,6 @@
 import { describe, test, expect } from "vitest";
-import { parseAbAction, parseStatusLine, parseRouteStep } from "./trace.ts";
+import { parseAbAction, parseStatusLine, parseRouteStep, countRedundantByStep } from "./trace.ts";
+import type { TraceAction } from "../types.ts";
 
 describe("parseAbAction", () => {
   test("returns null for non-AB_ACTION lines", () => {
@@ -285,6 +286,7 @@ describe("parseRouteStep", () => {
   test("parses a complete ROUTE_STEP line", () => {
     const line = "ROUTE_STEP|step-01|Login|ACTION:filled form and pressed Enter|OBSERVATION:redirected to /dashboard|STATUS:PASSED";
     expect(parseRouteStep(line)).toEqual({
+      stepId: "step-01",
       title: "Login",
       action: "filled form and pressed Enter",
       observation: "redirected to /dashboard",
@@ -317,6 +319,42 @@ describe("parseRouteStep", () => {
     const result = parseRouteStep(line);
     expect(result?.action).toBe("my action");
     expect(result?.observation).toBe("my observation");
+  });
+});
+
+describe("countRedundantByStep", () => {
+  const fill = (o: Partial<TraceAction>): TraceAction => ({ command: "fill", ...o });
+
+  test("same value via two different selectors on one step counts as 1 redundant", () => {
+    const actions = [
+      fill({ stepId: "step-01", selector: "[aria-label='Email']", value: "${EMAIL}" }),
+      fill({ command: "find_fill", stepId: "step-01", findLocator: "label", findValue: "Email", value: "${EMAIL}" }),
+    ];
+    expect(countRedundantByStep(actions).get("step-01")).toBe(1);
+  });
+
+  test("different values (email vs password) are not redundant", () => {
+    const actions = [
+      fill({ stepId: "step-01", selector: "#email", value: "${EMAIL}" }),
+      fill({ stepId: "step-01", selector: "#password", value: "${PASSWORD}" }),
+    ];
+    expect(countRedundantByStep(actions).has("step-01")).toBe(false);
+  });
+
+  test("trivial values (bare numbers) never count, even via two selectors", () => {
+    const actions = [
+      fill({ stepId: "step-01", selector: "#a", value: "100" }),
+      fill({ stepId: "step-01", selector: "#b", value: "100" }),
+    ];
+    expect(countRedundantByStep(actions).has("step-01")).toBe(false);
+  });
+
+  test("same value via the same selector is not redundant (a legit re-fill)", () => {
+    const actions = [
+      fill({ stepId: "step-01", selector: "#email", value: "${EMAIL}" }),
+      fill({ stepId: "step-01", selector: "#email", value: "${EMAIL}" }),
+    ];
+    expect(countRedundantByStep(actions).has("step-01")).toBe(false);
   });
 });
 

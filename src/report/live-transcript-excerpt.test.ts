@@ -27,6 +27,7 @@ function makeStep(overrides: Partial<LiveStepResult>): LiveStepResult {
       outputTokens: null,
       models: [],
     },
+    commands: [],
     ...overrides,
   };
 }

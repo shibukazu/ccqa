@@ -9,7 +9,7 @@ import { resolveHubClient, type HubContext } from "./hub-conn.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { FixMode } from "../diagnose/loop.ts";
 import type { ValidationMode } from "../runtime/replay-validate.ts";
-import type { Route } from "../types.ts";
+import type { Route, TraceAction } from "../types.ts";
 import * as log from "./logger.ts";
 
 const AUTO_FIX_MODES = ["interactive", "auto", "skip"] as const;
@@ -180,24 +180,89 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
 });
 
 /**
- * Compact summary of the trace pass for the record agent-prompt refresh:
- * per-step title / action / observation / status. The route steps already
- * carry the assistant's own framing of what happened — perfect input for
- * "what should I remember next time".
+ * Compact summary of the trace pass for the record agent-prompt refresh.
+ * Each step carries the assistant's own prose framing (action / observation)
+ * plus the **concrete kept commands** for that step — the selectors that
+ * actually survived scrub / dedup / validation. The record playbook is told
+ * to record canonical selectors, so it needs those exact tokens; the prose
+ * alone doesn't carry them. The header's kept/recorded totals flag how much
+ * the run thrashed through selectors overall.
  */
-function buildRecordRunSummary(featureName: string, specName: string, t: RunTraceResult): string {
+export function buildRecordRunSummary(featureName: string, specName: string, t: RunTraceResult): string {
   const header = `## ${featureName}/${specName} — ${t.route.status}\nActions: ${t.actionsKept} kept / ${t.actionsRecorded} recorded`;
+  const commandsByStep = groupCommandsByStep(t.actions);
+  const unstableByStep = countUnstableByStep(t.actions);
   const steps = t.route.steps.length === 0
     ? "(no route steps recorded)"
-    : t.route.steps.map((s: Route["steps"][number]) =>
-        [
+    : t.route.steps.map((s: Route["steps"][number]) => {
+        const id = s.stepId;
+        const cmds = id ? commandsByStep.get(id) ?? [] : [];
+        const churn = id ? t.churnByStep.get(id) : undefined;
+        const dropped = churn ? churn.recorded - churn.kept : 0;
+        const redundant = churn?.redundant ?? 0;
+        const unstable = id ? unstableByStep.get(id) ?? 0 : 0;
+        return [
           `### ${s.title} (${s.status})`,
           `- action: ${oneLineSummary(s.action)}`,
           `- observation: ${oneLineSummary(s.observation)}`,
           ...(s.reason ? [`- reason: ${oneLineSummary(s.reason)}`] : []),
-        ].join("\n"),
-      ).join("\n\n");
+          // Surface churn above the commands so the learner reads "this step
+          // thrashed" before it sees which selector survived. Three kinds:
+          // dropped = failed selector attempts; redundant = same field reached
+          // via 2+ selectors that both stuck; unstable = kept-but-flaky
+          // selectors it must NOT record as canonical.
+          ...(dropped > 0 ? [`- churn: ${churn!.recorded} attempts → ${churn!.kept} kept (${dropped} dropped)`] : []),
+          ...(redundant > 0 ? [`- redundant: ${redundant} field(s) entered via 2+ selectors (kept both — record one canonical selector)`] : []),
+          ...(unstable > 0 ? [`- replay-unstable: ${unstable} kept command(s) marked [unstable] — do NOT record these as canonical; prefer a more stable locator even if it costs one more probe`] : []),
+          ...(cmds.length > 0 ? [`- kept commands: ${cmds.join(" ; ")}`] : []),
+        ].join("\n");
+      }).join("\n\n");
   return `${header}\n\n${steps}`;
+}
+
+/** Group each kept action's `command selector` form under its stepId. */
+function groupCommandsByStep(actions: TraceAction[]): Map<string, string[]> {
+  const byStep = new Map<string, string[]>();
+  for (const a of actions) {
+    if (!a.stepId) continue;
+    const list = byStep.get(a.stepId) ?? [];
+    list.push(formatTraceAction(a));
+    byStep.set(a.stepId, list);
+  }
+  return byStep;
+}
+
+/** Per-step count of kept-but-replay-unstable actions (the flaky selectors). */
+function countUnstableByStep(actions: TraceAction[]): Map<string, number> {
+  const byStep = new Map<string, number>();
+  for (const a of actions) {
+    if (!a.stepId || !a.replayUnstable) continue;
+    byStep.set(a.stepId, (byStep.get(a.stepId) ?? 0) + 1);
+  }
+  return byStep;
+}
+
+/**
+ * One kept action as `command selector` (with the fill/find value or assert
+ * type when present) — the canonical form the record playbook should reuse.
+ * Unlike the live summary this keeps selectors verbatim: record learns
+ * concrete per-spec selectors, so masking them would defeat the purpose.
+ *
+ * A replay-unstable action (kept in lenient mode but flagged because its
+ * selector wasn't present on a fresh replay) is tagged `[unstable](<reason>)`
+ * so the learner does NOT record its selector as canonical — the reason is the
+ * teacher signal ("not present within Nms" = timing-fragile, not stable).
+ */
+function formatTraceAction(a: TraceAction): string {
+  const parts: string[] = [a.command];
+  const anchor = a.selector ?? a.findValue ?? a.label;
+  if (anchor) parts.push(anchor);
+  if (a.value) parts.push(`= ${a.value}`);
+  if (a.assertType) parts.push(`(${a.assertType})`);
+  const line = oneLineSummary(parts.join(" "));
+  return a.replayUnstable
+    ? `${line} [unstable](${oneLineSummary(a.replayReason ?? "no reason")})`
+    : line;
 }
 
 function oneLineSummary(s: string): string {
