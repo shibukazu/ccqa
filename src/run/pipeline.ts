@@ -36,7 +36,7 @@ import { emitGithubAnnotations } from "../report/github-format.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { fetchCustomPrompt } from "../prompts/custom-prompt.ts";
 import type { AnalysisCustomPrompt } from "../prompts/custom-prompt.ts";
-import { ReportEvidenceSchema, type ReportEvidence, type ReportSpecResult, type RunReportData } from "../report/schema.ts";
+import { ReportEvidenceSchema, type LiveReportStep, type ReportEvidence, type ReportSpecResult, type RunReportData } from "../report/schema.ts";
 import { resolveProfileEnv } from "../cli/options.ts";
 import { resolveHubContext, HubConnectionError, type HubContext } from "../cli/hub-conn.ts";
 import { HubApiError } from "../hub-client/index.ts";
@@ -480,22 +480,68 @@ export async function executeRun(
 
 /**
  * Compact, prompt-friendly summary of one ccqa run for the live agent-prompt
- * update step. One section per spec: header line + per-step verdicts.
- * Kept to a few KB even with many specs/steps so the prompt cache can absorb
- * the bulk.
+ * update step. One section per spec: header line + per-step verdicts (see
+ * `liveStepSummaryLine`). Kept to a few KB even with many specs/steps so the
+ * prompt cache can absorb the bulk.
  */
-function buildLiveRunSummary(results: readonly ReportSpecResult[]): string {
+export function buildLiveRunSummary(results: readonly ReportSpecResult[]): string {
   const sections: string[] = [];
   for (const r of results) {
     if (!r.liveRun) continue;
     const head = `## ${r.feature}/${r.spec} — ${r.status}`;
-    const steps = r.liveRun.steps
-      .map((s) => `- [${s.status}] ${s.stepId}: ${oneLineSummary(s.reasoning)}`)
-      .join("\n");
+    const steps = r.liveRun.steps.map(liveStepSummaryLine).join("\n");
     sections.push(`${head}\n${steps}`);
   }
   return sections.length === 0 ? "(no live runs executed)" : sections.join("\n\n");
 }
+
+/**
+ * One step's line for the learning summary. Leads with the step's
+ * `instruction` (its intent) so the learner can abstract "this was a login" /
+ * "this was a static-banner check" and turn the shortcut into a rule keyed on
+ * the *kind* of screen/operation rather than this spec's step id. The step id
+ * is demoted to a trailing tag — it has no cross-spec meaning, so it must not
+ * be the thing the learner anchors on. Churned steps additionally carry their
+ * `expected` and the commands that worked (with per-run snapshot refs masked).
+ */
+function liveStepSummaryLine(s: LiveReportStep): string {
+  const turns = s.cost.numTurns;
+  const cost = s.cost.totalCostUsd;
+  const metrics = [
+    turns !== null ? `${turns} turns` : null,
+    `${(s.durationMs / 1000).toFixed(1)}s`,
+    cost !== null ? `$${cost.toFixed(3)}` : null,
+  ]
+    .filter((x): x is string => x !== null)
+    .join(", ");
+  const head = `- [${s.status}] ${oneLineSummary(s.instruction)} (${metrics}, ${s.stepId}): ${oneLineSummary(s.reasoning)}`;
+  // Only surface commands for steps that took real exploration — a step that
+  // passed in 1-2 turns has no shortcut worth learning.
+  const worthShortcut = (turns ?? 0) >= LIVE_SHORTCUT_TURN_THRESHOLD;
+  const commands = s.commands ?? [];
+  if (!worthShortcut || commands.length === 0) return head;
+  const cmdList = commands.map((c) => oneLineSummary(maskRunLocalTokens(c))).join(" ; ");
+  return `${head}\n  expected: ${oneLineSummary(s.expected)}\n  commands (snapshot refs masked — re-derive from each element's role/label/text): ${cmdList}`;
+}
+
+/**
+ * Strip run-local tokens from a command string before it enters the learning
+ * input. Two kinds are noise a cross-spec rule must never carry forward:
+ *   - snapshot refs (`@e4`, `@e12`) — renumbered every run, so a copied ref
+ *     points nowhere or misclicks next run; masked to `@ref` to force the
+ *     learner to describe the element by its stable identity instead.
+ *   - the per-run `--session <id>` flag — a fresh timestamped id each run, pure
+ *     noise that only tempts the learner to paste a dead session name.
+ */
+function maskRunLocalTokens(command: string): string {
+  return command.replace(/@e\d+/g, "@ref").replace(/\s--session\s+\S+/g, "");
+}
+
+/**
+ * A step at or above this many turns did enough exploring that its command
+ * trail is worth learning a shortcut from. Below it, the step is already fast.
+ */
+const LIVE_SHORTCUT_TURN_THRESHOLD = 3;
 
 function oneLineSummary(s: string): string {
   const flat = s.replace(/\s+/g, " ").trim();

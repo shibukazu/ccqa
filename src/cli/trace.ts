@@ -31,6 +31,18 @@ import type {
 } from "../types.ts";
 import * as log from "./logger.ts";
 
+/**
+ * Per-step churn counts. `recorded` vs `kept` is emit-then-drop waste (a
+ * selector that failed and was dropped); `redundant` is fields entered through
+ * 2+ selectors that BOTH survived. Both signal steps the record playbook should
+ * learn to skip.
+ */
+export interface StepChurn {
+  recorded: number;
+  kept: number;
+  redundant: number;
+}
+
 export interface RunTraceResult {
   /** RouteStep list captured from ROUTE_STEP lines, in order. */
   route: Route;
@@ -38,6 +50,15 @@ export interface RunTraceResult {
   actionsKept: number;
   /** Total TraceActions emitted before scrub / dedup / validation. */
   actionsRecorded: number;
+  /**
+   * The kept actions themselves (post scrub / dedup / validation), in order.
+   * The record agent-prompt refresh needs the concrete commands + selectors
+   * that survived — the RouteStep prose alone doesn't carry them, so without
+   * this the learner can't name the canonical selector it's told to record.
+   */
+  actions: TraceAction[];
+  /** Per-step churn (see {@link StepChurn}), keyed by stepId. */
+  churnByStep: Map<string, StepChurn>;
 }
 
 export async function runTrace(
@@ -206,7 +227,81 @@ export async function runTrace(
     route,
     actionsKept: validatedActions.length,
     actionsRecorded: traceActions.length,
+    actions: validatedActions,
+    churnByStep: buildChurnByStep(traceActions, validatedActions),
   };
+}
+
+/**
+ * Per-step churn: `recorded` (raw trace before scrub) vs `kept` (survivors) —
+ * their delta is emit-then-drop waste — plus `redundant`, the count of fields
+ * entered through 2+ selectors that both survived (`countRedundantByStep`).
+ * Spans scrub + dedup + validate, unlike `reportPerStepBreakdown` which only
+ * covers the validation stage.
+ */
+function buildChurnByStep(raw: TraceAction[], kept: TraceAction[]): Map<string, StepChurn> {
+  const recordedByStep = groupCountByStep(raw);
+  const keptByStep = groupCountByStep(kept);
+  const redundantByStep = countRedundantByStep(kept);
+  const churn = new Map<string, StepChurn>();
+  for (const [stepId, recorded] of recordedByStep) {
+    churn.set(stepId, {
+      recorded,
+      kept: keptByStep.get(stepId) ?? 0,
+      redundant: redundantByStep.get(stepId) ?? 0,
+    });
+  }
+  return churn;
+}
+
+/** Input commands whose `.value` holds the typed text (the cross-command key). */
+const INPUT_COMMANDS = new Set<TraceCommand>(["fill", "type", "find_fill", "find_type"]);
+
+/** How an action reaches its target — a CSS selector or a `find` locator. */
+function targetSignature(a: TraceAction): string {
+  return a.selector ?? `${a.findLocator ?? ""}:${a.findValue ?? ""}:${a.findName ?? ""}:${a.findIndex ?? ""}`;
+}
+
+/**
+ * A value too generic to prove two fills hit the *same* field. `${VAR}` refs
+ * are always significant (distinct vars = distinct fields); bare numbers and
+ * very short literals collide legitimately (e.g. "100" into two amount fields),
+ * so they don't count as redundancy.
+ */
+function isTrivialValue(v: string): boolean {
+  const t = v.trim();
+  if (t.length === 0) return true;
+  if (/^\$\{?\w+\}?$/.test(t)) return false;
+  return t.length < 3 || /^-?\d+(\.\d+)?$/.test(t);
+}
+
+/**
+ * Per-step count of fields entered via 2+ different selectors that both
+ * survived — the agent reached the same field two ways (e.g. `fill "[aria-…]"`
+ * then `find_fill label=…` with the same value) and neither was dropped, so
+ * drop-churn misses it. Keyed on exact `value` equality with a triviality guard
+ * to stay conservative; counts distinct values (not pairs) to avoid over-count.
+ */
+export function countRedundantByStep(kept: TraceAction[]): Map<string, number> {
+  const perStep = new Map<string, Map<string, Set<string>>>();
+  for (const a of kept) {
+    if (!INPUT_COMMANDS.has(a.command)) continue;
+    const v = a.value;
+    if (!v || isTrivialValue(v)) continue;
+    const step = a.stepId ?? "<no step>";
+    const byValue = perStep.get(step) ?? new Map<string, Set<string>>();
+    const sigs = byValue.get(v) ?? new Set<string>();
+    sigs.add(targetSignature(a));
+    byValue.set(v, sigs);
+    perStep.set(step, byValue);
+  }
+  const out = new Map<string, number>();
+  for (const [step, byValue] of perStep) {
+    let n = 0;
+    for (const sigs of byValue.values()) if (sigs.size >= 2) n += 1;
+    if (n > 0) out.set(step, n);
+  }
+  return out;
 }
 
 /**
@@ -467,13 +562,14 @@ export function parseRouteStep(line: string): RouteStep | null {
   const parts = line.split("|");
   if (parts.length < 6) return null;
 
+  const stepId = (parts[1] ?? "").trim();
   const title = parts[2] ?? "";
   const action = (parts[3] ?? "").replace(/^ACTION:/, "").trim();
   const observation = (parts[4] ?? "").replace(/^OBSERVATION:/, "").trim();
   const statusRaw = (parts[5] ?? "").replace(/^STATUS:/, "").trim();
 
   const status = (["PASSED", "FAILED", "SKIPPED"] as const).find((s) => s === statusRaw) ?? "FAILED";
-  return { title, action, observation, status };
+  return { ...(stepId ? { stepId } : {}), title, action, observation, status };
 }
 
 export function parseAbAction(line: string): TraceAction | null {

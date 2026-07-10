@@ -29,6 +29,8 @@ export {
 } from "./spec/perspectives-schema.ts";
 
 export const RouteStepSchema = z.object({
+  /** The `step-NN` id from the ROUTE_STEP line; ties the step to its actions. */
+  stepId: z.string().optional(),
   title: z.string(),
   action: z.string(),
   observation: z.string(),

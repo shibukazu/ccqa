@@ -140,6 +140,13 @@ export const LiveReportStepSchema = z.object({
   afterPng: z.string().nullable(),
   durationMs: z.number(),
   cost: LiveReportCostSchema,
+  /**
+   * agent-browser commands Claude issued on the accepted attempt (tail-trimmed).
+   * Optional for backward compatibility with reports written before this field
+   * existed. Consumed by the live prompt-learning summary as the concrete
+   * shortcut a later run can reuse instead of re-exploring.
+   */
+  commands: z.array(z.string()).optional(),
 });
 export type LiveReportStep = z.infer<typeof LiveReportStepSchema>;
 
