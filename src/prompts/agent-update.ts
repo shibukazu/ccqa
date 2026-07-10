@@ -111,7 +111,7 @@ ${FILLER_BLOCKLIST}
 
 A bullet is filler if it is **true without having run anything**, or if it names no command you would otherwise have wasted turns discovering. Every bullet must override a default the agent would otherwise follow.
 
-**Never emit an unconditional or default \`fill\` text-entry rule.** The base prompt already mandates \`keyboard inserttext\` for non-ASCII / contenteditable / rich-text editors, where \`fill\` corrupts input. A \`fill\` win observed on a plain login \`<input>\` must NOT be generalized into "type with \`fill\`" — that rule would reach a Slack/Notion contenteditable field and break it. If you record a text-entry shortcut at all, narrow its \`when\` slot to the element class you actually saw (e.g. "a plain \`<input>\` in a login form") and never phrase it as a cross-field default.
+**Never emit an unconditional or default \`fill\` text-entry rule.** The base prompt already mandates \`keyboard inserttext\` for non-ASCII / contenteditable / rich-text editors, where \`fill\` corrupts input. A \`fill\` win observed on a plain login \`<input>\` must NOT be generalized into "type with \`fill\`" — that rule would reach a contenteditable / rich-text field and break it. If you record a text-entry shortcut at all, narrow its \`when\` slot to the element class you actually saw (e.g. "a plain \`<input>\` in a login form") and never phrase it as a cross-field default.
 
 ## Output format
 
