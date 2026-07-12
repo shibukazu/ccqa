@@ -1,0 +1,264 @@
+# Running specs and reading results
+
+`ccqa run` executes specs and always writes a machine-readable **run
+report**. This page covers the run command, profiles, the report and its
+evidence/artifacts, failure triage, drift detection, and CI integration.
+
+## `ccqa run`
+
+```bash
+ccqa run tasks/create-and-complete    # one spec
+ccqa run tasks                        # every spec under a feature
+ccqa run                              # everything
+ccqa run tasks auth/login             # several targets, space-separated
+```
+
+One run mixes every kind of spec; each group is dispatched by the spec's
+`target:` and `mode:` fields, in phases:
+
+1. **Deterministic** agent-browser specs — vitest replays the recorded
+   `test.spec.ts`; no LLM at run time.
+2. **External targets** (e.g. `playwright`, `runn`) — executed through their
+   configured `runCommand`; targets without one are listed as skipped. See
+   [Generation targets](./targets.md).
+3. **Live** agent-browser specs — Claude drives the browser per step and
+   judges each step's `expected`. See [Live specs](./live.md).
+
+Key flags (see `ccqa run --help` for the rest):
+
+- `--report [dir]` — where the report (always written) is saved. Default
+  `ccqa-report/`.
+- `--push-report` — stream results to a [hub](./hub.md) incrementally as
+  the run executes (opt-in; needs hub credentials).
+- `--profile <name>` — apply the hub-stored variables for this profile
+  before resolving `${VAR}` references (below).
+- `--changed` / `--base <ref>` — restrict execution to specs whose
+  `relatedPaths` intersect the git diff (below). `--changed` cannot be
+  combined with explicit targets.
+- `--concurrency <n>` — run up to N specs in parallel **within each phase**
+  (never across phases). Default 1.
+- `--no-evidence` — skip the step-boundary screenshots of deterministic
+  specs.
+- `--no-failure-analysis` / `--no-drift-audit` — the former skips failure
+  classification (and its drift audit, since drift is the classification's
+  evidence); the latter keeps classification but skips just the audit.
+- `--format <fmt>` — `text` (default), `json` (print report.json), `github`
+  (GitHub Actions annotations).
+- `--retry <n>` — live specs only: retry each failing step up to N times.
+- `--update-agent-prompt` — live specs only: refresh the hub-stored
+  `live.agent` learning notes from this run.
+- `-m/--model <name>` — `sonnet` / `opus` / `haiku` alias or a full model
+  id; overrides the `CCQA_MODEL` env var. `--language <bcp47>` picks the
+  language of human-readable output (default `auto` follows the
+  spec/codebase). `--cwd <path>` pins the `.ccqa/` root for monorepos. All
+  Claude-driven commands accept these three.
+- `--project`, `--hub-url`, `--hub-token`, `--hub-header` — hub connection
+  for fetching sessions/variables/prompts and for `--push-report`.
+
+Exit code: `0` when every executed spec passed, `1` when any failed, `2` on
+usage errors. The failure analysis never changes the exit code.
+
+## Profiles and environment variables
+
+Keep environment-specific values out of specs as `${VAR}` references and
+supply them per environment:
+
+- **Without `--profile`**, ccqa auto-loads `<cwd>/.env` if present (it does
+  not override variables already set in the shell); otherwise `${VAR}`
+  resolves against the existing `process.env`, so a secret manager (e.g.
+  `op run -- ccqa run ...`) works as-is.
+- **With `--profile <name>`**, ccqa fetches every variable stored on the
+  [hub](./hub.md) for the resolved project/profile and applies them to the
+  process environment (overriding inherited values) before the run starts.
+  This requires a hub connection; an unreachable hub or unknown profile is
+  an error. Only variable *names* are ever logged.
+
+Register variables once per project/profile:
+
+```bash
+ccqa hub var set BASE_URL --value https://staging.example --profile staging
+echo "$TOKEN" | ccqa hub var set API_TOKEN --sensitive --profile staging
+ccqa run auth/login --profile staging     # same spec, staging values
+```
+
+`--sensitive` hides the value from `ccqa hub var ls` listings. The same
+`--profile` also selects the sessions bucket for `session:` restores — one
+flag picks both. `ccqa record` accepts `--profile` the same way.
+
+## The run report
+
+`ccqa run` always writes `report.json` (plus evidence PNGs) to the report
+directory. There is no standalone HTML file: push the directory to a
+[hub](./hub.md) (`ccqa hub push`, or incrementally with `--push-report`)
+and the hub UI renders it — spec rows with a target chip, pass/fail status,
+test counts, screenshots, artifacts, and failure analysis.
+
+Per spec, the report contains:
+
+- **Evidence** — for deterministic specs, one PNG per `spec.yaml` step plus
+  a JSON sidecar (URL/title/status), captured by default (`--no-evidence`
+  to skip); for live specs, before/after PNGs per step. Files land in
+  `<report-dir>/evidence/<feature>/<spec>/` and are referenced from
+  `report.json`.
+- **Artifacts** — for external-target specs, the command's full
+  stdout+stderr as `output.log` (captured on pass and fail) plus every file
+  the command wrote into its `{artifactsDir}`
+  (`<report-dir>/artifacts/<feature>__<spec>/`). Collection is capped at 50
+  files / 32 MB per spec; dropped files are named in a warning. The hub UI
+  renders images inline, previews small text/JSON, and links the rest.
+- **Failure analysis** — for failing specs, the root-cause call described
+  next, plus the drift-audit findings, the failure log excerpt, the scoped
+  source diff, and the spec.yaml.
+
+## Failure triage
+
+Each failing spec gets a **root-cause call** made by Claude with the PR diff
+as context:
+
+- `TEST_DRIFT` — what the spec verifies is unchanged; only the test code
+  drifted from the source (selector rename, timing, over-assertion).
+- `SPEC_CHANGE` — the thing being verified itself changed (UI redesign,
+  spec change); the diff hunk is cited as evidence.
+- `PRODUCT_BUG` — neither of the above explains the failure.
+- `UNKNOWN` — evidence too weak to choose.
+
+Alongside the label come a confidence score, a sub-diagnosis, evidence, and
+reasoning. The analysis classifies; it never modifies anything.
+
+**Diff context.** The base ref resolves as `--base <ref>`, then
+`GITHUB_BASE_REF` (set on `pull_request` events), then `origin/main`. For
+each failing spec the diff is scoped to its `relatedPaths` globs (falling
+back to the full diff when nothing matches — "no related change" is itself
+a PRODUCT_BUG signal) and truncated to keep the prompt bounded. Outside a
+git checkout the analysis still runs, with lower expected confidence.
+
+**Authentication.** The analysis needs `ANTHROPIC_API_KEY` (CI) or a local
+Claude Code login. With neither, the report is still written — only the
+analysis is skipped, with the reason recorded per spec.
+
+### Grading and learning
+
+The root-cause call is known to be hard, so ccqa is built
+measurement-first. In the [hub UI](./hub.md#the-bundled-ui), pick the true
+cause for each failing spec you review; a confusion matrix (predicted x
+actual) and accuracy update live, keyed to the analysis prompt version so
+prompt iterations are never mixed. Grades feed the hub's
+[triage-learning](./hub.md#triage-learning) job, which writes a calibration
+note that future runs fetch automatically.
+
+Standing, human-maintained classification guidance lives in the
+`triage.user` prompt (e.g. "wording changes on the settings screen count as
+SPEC_CHANGE"). Write it in the hub UI's Prompts tab, or edit
+`.ccqa/prompts/triage.user.md` locally and upload it with
+`ccqa hub prompt push triage.user`; `ccqa run` fetches it at run time and
+injects it ahead of the learned calibration note.
+
+## Drift detection
+
+Drift analysis asks Claude whether each `spec.yaml` is still in sync with
+the current codebase — renamed aria-labels, removed routes, missing blocks,
+assertions about UI that no longer exists. It is read-only: no browser, no
+patches. It runs in two places:
+
+1. **Inside `ccqa run`** — each failing spec's report entry includes a
+   drift audit, used as evidence for the root-cause call above.
+2. **Standalone `ccqa drift`** — a full audit without running any tests,
+   for scheduled jobs or pre-merge sweeps.
+
+```bash
+ccqa drift                              # check every spec under .ccqa/features/
+ccqa drift tasks/create-and-complete    # single spec
+ccqa drift --format github              # emit GitHub Actions annotations
+ccqa drift --severity warn              # exit non-zero on WARN or higher (default: error)
+ccqa drift --concurrency 5              # parallel spec checks (default: 3)
+ccqa drift --changed --base origin/dev  # only specs affected by the PR diff
+ccqa drift --cwd packages/web           # monorepo: pin .ccqa root and codebase scope
+ccqa drift --push                       # also push the result to a ccqa hub
+```
+
+`--push` uploads the drift result to a hub as a `kind: "drift"` run, shown
+alongside `ccqa run` runs in the hub UI with its own issue counts. It needs
+a hub connection (`--hub-url`/`--hub-token` or `CCQA_HUB_URL`/
+`CCQA_HUB_TOKEN`); without one it logs a warning and is skipped, never
+changing the exit code (still driven by `--severity`).
+
+### Scoping with `--changed` and `relatedPaths`
+
+When `--changed` is set (on `ccqa drift` or `ccqa run`):
+
+1. ccqa runs `git diff --name-status <base>...HEAD` (base = `--base`, else
+   `$GITHUB_BASE_REF`, else `origin/main`).
+2. Changed files are intersected with each spec's `relatedPaths` globs; a
+   spec is in scope if any change matches.
+3. For files **added** in the PR, a single lightweight Claude call maps each
+   new file to the specs it plausibly affects — catching drift no existing
+   glob could know about.
+4. Specs with no `relatedPaths` at all are always in scope.
+
+Supported glob syntax: `**` (any depth), `*` (run of non-slash chars), `?`
+(single non-slash char) — intentionally minimal so `relatedPaths` stays
+human-readable.
+
+`relatedPaths` are interpreted relative to the cwd hosting `.ccqa/`. In a
+monorepo, run from each package's directory (or use `--cwd packages/foo`)
+and write paths as that package sees them; changes outside the cwd are
+ignored.
+
+## CI integration
+
+The recommended shape: run with `--push-report` so results stream to the
+hub as the run executes, keep the local report directory as a backup
+artifact, and hold exactly one secret (`CCQA_HUB_TOKEN`) plus
+`ANTHROPIC_API_KEY` for the failure analysis. Profile variables come from
+the hub (`ccqa hub var set`), not from files in the repo.
+
+```yaml
+name: ccqa
+on: [pull_request]
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      CCQA_HUB_URL: https://hub.example
+      CCQA_HUB_TOKEN: ${{ secrets.CCQA_HUB_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }   # the failure-analysis diff needs the base ref
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec ccqa run --project demo --profile staging --push-report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ccqa-report
+          path: ccqa-report/
+```
+
+Add `ccqa-report/` to the consuming repo's `.gitignore`. Without
+`--push-report`, add a separate `ccqa hub push` step with `if: always()`
+instead — see [Hub](./hub.md) for the trade-off.
+
+For a scheduled audit that runs regardless of test status, run standalone
+drift:
+
+```yaml
+name: ccqa drift audit
+on:
+  schedule:
+    - cron: "0 9 * * 1"   # weekly Monday 09:00 UTC
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec ccqa drift --format github
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```

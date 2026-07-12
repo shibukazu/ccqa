@@ -81,6 +81,16 @@ test fixtures **must stay neutral and generic**.
 - The source of truth for the version is **`package.json`**, not git tags. Choosing
   `major` from `0.9.x` produces `1.0.0`.
 
+## Documentation language policy
+
+- **English is canonical.** Every file under `docs/` (references, ADRs) is
+  written in English only.
+- The **single Japanese document** is `docs/README.ja.md`, a faithful mirror
+  of the root `README.md` — same section structure, same content. Do not add
+  other Japanese docs.
+- When you change `README.md`, update `docs/README.ja.md` **in the same PR**
+  so the two never drift.
+
 ## Writing Markdown (docs, ADRs, READMEs)
 
 Block-level elements need a **blank line** around them, or renderers collapse
