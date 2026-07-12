@@ -107,6 +107,9 @@ ccqa run tasks/create-and-complete
 するとチームで次のことができます:
 
 - 実行結果のダッシュボード（step ごとのスクリーンショット付き）
+- テスト観点の一覧
+  （[perspectives](./spec.md#inventory-coverage-with-perspectives)）—
+  `record`/`generate` のたびに自動で最新化
 - 失敗 triage の採点 — 分類の正誤をマークすると hub が採点から学習
 - 保存済みセッション・変数・学習プロンプトの一元管理 — CI が持つ secret は
   1 つで済む

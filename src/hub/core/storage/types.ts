@@ -19,6 +19,7 @@ export interface HubStorage {
   variables: SecretStore;
   triage: TriageStore;
   prompts: PromptStore;
+  perspectives: PerspectivesStore;
   jobs: JobStore;
 }
 
@@ -118,4 +119,24 @@ export interface PromptStore {
   delete(project: string, name: string): Promise<void>;
   /** Distinct project names that have at least one stored prompt. Feeds `GET /projects`. */
   listProjects(): Promise<string[]>;
+}
+
+/**
+ * The per-project perspectives document — `ccqa perspectives`' coverage
+ * inventory, stored on the hub only (never in the consuming repo). One JSON
+ * blob per project; the document carries its own `generatedAt`, so there is
+ * no separate meta. Plain UTF-8, no encryption — an inventory of what is
+ * tested is not a secret.
+ */
+export interface PerspectivesStore {
+  put(project: string, blob: Uint8Array): Promise<void>;
+  get(project: string): Promise<Uint8Array | null>;
+  /**
+   * Serialized read-modify-write on the stored JSON document (the UI's note
+   * editing) — two concurrent edits must not clobber each other. `mutate`
+   * receives the parsed document (`null` when none is stored) and returns
+   * what to write; a throw aborts without writing.
+   */
+  update(project: string, mutate: (current: unknown | null) => unknown): Promise<void>;
+  delete(project: string): Promise<void>;
 }

@@ -3,8 +3,9 @@
 `ccqa run` is the execution engine; it works standalone on a laptop or in CI
 with no server involved, and that is unchanged. `ccqa serve` — the **hub** —
 is a thin control plane on top: a small HTTP server that stores the results
-of runs that already happened elsewhere, plus the sessions, variables, and
-triage records a team wants to share. The hub never executes `ccqa run`
+of runs that already happened elsewhere, plus the sessions, variables,
+triage records, and coverage inventory (perspectives) a team wants to
+share. The hub never executes `ccqa run`
 itself and has no notion of a "queue" — every run it knows about was already
 finished before it was pushed.
 
@@ -246,6 +247,13 @@ else is scoped to the selected project.
   spec's **actual cause** right here — the grade is saved to the hub (not just
   your browser) and a confusion matrix of predicted-vs-actual updates live. Each
   run also shows which **profile** (environment) it executed against.
+- **Perspectives** renders the project's coverage inventory (see
+  [perspectives in the spec guide](./spec.md#inventory-coverage-with-perspectives)):
+  a summary strip (features, test cases, deterministic/live breakdown, and a
+  runnable-coverage bar) above one searchable, filterable table of every
+  case, grouped by feature. Expanding a row shows the case's preconditions,
+  start screen, related code, and a **note** field editable right here — the
+  document's only human-written field, preserved across regenerations.
 - **Secrets** lists, adds, and deletes the variables and sessions for the
   selected project, per **profile** (chosen with the selector in this tab —
   profiles scope secrets only; prompts and runs are project-wide). Sensitive

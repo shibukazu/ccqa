@@ -636,6 +636,94 @@ describe("hub API server", () => {
     });
   });
 
+  describe("perspectives", () => {
+    const doc = {
+      generatedAt: "2026-07-13T00:00:00.000Z",
+      features: [
+        {
+          featureName: "tasks",
+          specs: [
+            {
+              specName: "search-tasks",
+              title: "検索できる",
+              summary: "検索の確認",
+              status: { mode: "deterministic", traced: true, generated: true },
+            },
+          ],
+        },
+      ],
+    };
+
+    function putDoc() {
+      return fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed({
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(doc),
+      }));
+    }
+
+    test("PUT then GET round-trips; PATCH sets and clears the note", async () => {
+      expect((await putDoc()).status).toBe(204);
+
+      const getRes = await fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed());
+      expect(getRes.status).toBe(200);
+      expect(getRes.headers.get("content-type")).toContain("application/json");
+      expect(await json(getRes)).toEqual(doc);
+
+      const patchRes = await fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feature: "tasks", spec: "search-tasks", note: "QA-owned" }),
+      }));
+      expect(patchRes.status).toBe(204);
+      const withNote = await json(await fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed()));
+      expect(withNote.features[0].specs[0].note).toBe("QA-owned");
+
+      // An empty note clears the field entirely rather than storing "".
+      const clearRes = await fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feature: "tasks", spec: "search-tasks", note: "" }),
+      }));
+      expect(clearRes.status).toBe(204);
+      const cleared = await json(await fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed()));
+      expect("note" in cleared.features[0].specs[0]).toBe(false);
+    });
+
+    test("PUT rejects non-JSON and non-object bodies with 400", async () => {
+      const notJson = await fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed({
+        method: "PUT",
+        body: "not json",
+      }));
+      expect(notJson.status).toBe(400);
+      const array = await fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed({
+        method: "PUT",
+        body: "[1,2]",
+      }));
+      expect(array.status).toBe(400);
+    });
+
+    test("GET without a stored doc, and PATCH on a missing doc/spec, return 404", async () => {
+      const getRes = await fetch(`${baseUrl}/api/v1/projects/never-stored/perspectives`, authed());
+      expect(getRes.status).toBe(404);
+
+      const patchMissingDoc = await fetch(`${baseUrl}/api/v1/projects/never-stored/perspectives`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feature: "f", spec: "s", note: "x" }),
+      }));
+      expect(patchMissingDoc.status).toBe(404);
+
+      expect((await putDoc()).status).toBe(204);
+      const patchMissingSpec = await fetch(`${baseUrl}/api/v1/projects/demo/perspectives`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feature: "tasks", spec: "no-such-spec", note: "x" }),
+      }));
+      expect(patchMissingSpec.status).toBe(404);
+    });
+  });
+
   describe("sessions and variables (with encryption key configured)", () => {
     let keyedDataDir: string;
     let keyedServer: Server;

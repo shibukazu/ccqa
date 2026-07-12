@@ -88,3 +88,13 @@ export function promptBlobPath(root: string, project: string, name: string): str
 export function promptMetaPath(root: string, project: string, name: string): string {
   return join(promptProjectDir(root, project), `${name}.meta.json`);
 }
+
+// Perspectives are one JSON document per project, no meta file — the document
+// carries its own `generatedAt`: perspectives/<project>.json.
+export function perspectivesKindDir(root: string): string {
+  return join(root, "perspectives");
+}
+
+export function perspectivesPath(root: string, project: string): string {
+  return join(perspectivesKindDir(root), `${project}.json`);
+}

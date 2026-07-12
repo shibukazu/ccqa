@@ -93,6 +93,7 @@ const HTML_BODY = `
     <div class="nav-group" id="sidebar-project">no project</div>
     <nav class="nav">
       <a href="#/runs" class="nav-runs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg> <span data-i18n="nav.runs">Runs</span></a>
+      <a href="#/perspectives" class="nav-perspectives"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg> <span data-i18n="nav.perspectives">Perspectives</span></a>
       <a href="#/secrets" class="nav-secrets"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> <span data-i18n="nav.secrets">Secrets</span></a>
       <a href="#/prompts" class="nav-prompts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 4v6h6"/><path d="M8 13h6M8 17h6"/></svg> <span data-i18n="nav.prompts">Prompts</span></a>
       <a href="#/jobs" class="nav-jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg> <span data-i18n="nav.learning">Learning</span></a>
@@ -138,6 +139,34 @@ const HTML_BODY = `
           </div>
         </div>
         <p class="empty-note" id="runs-empty" hidden data-i18n="runs.empty">Select a project to see its runs.</p>
+      </div>
+    </section>
+
+    <!-- ===== PERSPECTIVES ===== -->
+    <section id="view-perspectives" hidden>
+      <div class="page-bar">
+        <h1 data-i18n="perspectives.title">Perspectives</h1>
+        <span class="updated" id="persp-updated"></span>
+        <div class="spacer"></div>
+        <button class="btn ghost sm" id="persp-refresh" data-i18n="common.refresh">Refresh</button>
+      </div>
+      <div class="content">
+        <p id="persp-status" class="empty-note" hidden></p>
+        <div id="persp-body" hidden>
+          <div class="ov" id="persp-ov"></div>
+          <div class="toolbar">
+            <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="persp-q" type="search" data-i18n-ph="perspectives.search" aria-label="Search cases"></label>
+            <button class="fchip" data-f="all" aria-pressed="true" type="button" data-i18n="perspectives.filter.all">All</button>
+            <button class="fchip" data-f="deterministic" aria-pressed="false" type="button" data-i18n="perspectives.filter.deterministic">Deterministic</button>
+            <button class="fchip" data-f="live" aria-pressed="false" type="button" data-i18n="perspectives.filter.live">Live</button>
+            <button class="fchip" data-f="norec" aria-pressed="false" type="button" data-i18n="perspectives.filter.norec">Not recorded only</button>
+          </div>
+          <div class="tblcard"><div class="table-wrap"><table>
+            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th data-i18n="perspectives.col.status">Status</th><th></th></tr></thead>
+            <tbody id="persp-tbody"></tbody>
+          </table></div></div>
+          <p class="empty-note" id="persp-no-hit" hidden data-i18n="perspectives.noHit">No matching cases.</p>
+        </div>
       </div>
     </section>
 
@@ -765,6 +794,63 @@ const CSS = `
   .prompt-diff pre { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2);
     font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--fg-dim); white-space: pre-wrap; word-break: break-word; max-height: 480px; overflow-y: auto; }
 
+  /* perspectives — coverage strip, filter toolbar, and the one-table-per-project
+     view (feature section rows + expandable case detail rows). Reuses the
+     existing badge/chip primitives above; --pass/--amber cover the "runnable"
+     vs "not recorded" coloring so no new tokens are needed. */
+  .ov { display: flex; align-items: center; gap: 28px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 16px; flex-wrap: wrap; }
+  .ov .num { display: flex; flex-direction: column; }
+  .ov .num b { font-size: 24px; line-height: 1.15; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .ov .num span { font-size: 12px; color: var(--muted); }
+  .ov .sep { width: 1px; align-self: stretch; background: var(--border); }
+  .ov .breakdown { display: flex; gap: 20px; }
+  .covwrap { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 6px; }
+  .covbar { height: 8px; border-radius: 999px; overflow: hidden; display: flex; background: var(--surface-3); }
+  .covbar .ok { background: var(--pass); }
+  .covbar .no { background: var(--amber); opacity: 0.75; }
+  .covleg { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
+  .covleg i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
+  .covleg .lg-ok i { background: var(--pass); }
+  .covleg .lg-no i { background: var(--amber); opacity: 0.75; }
+
+  .search { flex: 1; min-width: 200px; max-width: 340px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 10px; height: 32px; background: var(--surface); }
+  .search svg { width: 15px; height: 15px; flex: none; color: var(--muted-2); }
+  .search input { border: none; outline: none; font: inherit; font-size: 13px; width: 100%; background: transparent; color: var(--fg); }
+  .fchip { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; color: var(--muted); }
+  .fchip[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+
+  .chip.live { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
+  .badge.ok { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
+  .badge.ok .d { background: var(--pass); }
+  .badge.norec { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+  .badge.norec .d { background: var(--amber); }
+
+  .tblcard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  tr.grp td { background: var(--surface-2); border-bottom: 1px solid var(--border); padding: 6px 12px; font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--fg-dim); }
+  tr.grp td .gcount { color: var(--muted-2); font-weight: 500; margin-left: 8px; }
+  td.c-title { font-weight: 500; max-width: 460px; }
+  td.c-title .csum { display: block; font-weight: 400; color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+  td.c-chev { width: 28px; color: var(--muted-2); text-align: right; }
+  .chev-i { display: inline-block; transition: transform 0.15s; font-size: 11px; }
+  tr.row[aria-expanded="true"] .chev-i { transform: rotate(90deg); }
+  tr.detail { display: none; }
+  tr.detail.open { display: table-row; }
+  tr.detail > td { background: var(--surface-2); padding: 14px 16px 16px; }
+
+  .d-grid { display: grid; grid-template-columns: 120px 1fr; gap: 7px 14px; font-size: 13px; max-width: 860px; }
+  .d-grid dt { color: var(--muted); font-size: 12px; padding-top: 1px; }
+  .d-grid dd { color: var(--fg-dim); }
+  .d-grid dd ul { list-style: none; display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; }
+  .d-grid dd li::before { content: "\\2022 "; color: var(--muted-2); }
+  .d-grid code { font-size: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+  .notebox { margin-top: 12px; max-width: 860px; }
+  .notebox .nlabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .notebox textarea { width: 100%; min-height: 54px; resize: vertical; font: inherit; font-size: 13px; color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 8px 10px; }
+  .notebox .nact { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+  .notebox .nstatus { font-size: 12px; color: var(--muted); }
+  .notebox .nstatus.ok { color: var(--pass); }
+  .notebox .nstatus.err { color: var(--fail); }
+
   @media (max-width: 900px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } .logo .wm { display: none; } .split { grid-template-columns: 1fr; } .rd-head .meta { margin-left: 0; } }
   @media (max-width: 700px) { .prompt-grid { grid-template-columns: 1fr; } .prompt-diff { grid-template-columns: 1fr; } }
 `;
@@ -804,7 +890,7 @@ const CLIENT_JS = `
   // only their display text is localized via FAILURE_LABEL_JA.
   var I18N = {
     en: {
-      "nav.projects": "Projects", "nav.runs": "Runs", "nav.secrets": "Secrets",
+      "nav.projects": "Projects", "nav.runs": "Runs", "nav.perspectives": "Perspectives", "nav.secrets": "Secrets",
       "nav.prompts": "Prompts", "nav.learning": "Learning",
       "app.project": "project", "app.profile": "profile", "app.disconnect": "Disconnect", "app.noProject": "no project",
       "app.newProfile": "New profile",
@@ -846,6 +932,27 @@ const CLIENT_JS = `
       "learn.cta.desc": "Learn from what you graded so ccqa classifies failure causes the same way next time.",
       "learn.cta.run": "Learn",
       "secrets.title": "Secrets", "prompts.title": "Prompts", "learning.title": "Learning",
+      "perspectives.title": "Perspectives",
+      "perspectives.search": "Search cases…",
+      "perspectives.filter.all": "All", "perspectives.filter.deterministic": "Deterministic",
+      "perspectives.filter.live": "Live", "perspectives.filter.norec": "Not recorded only",
+      "perspectives.col.case": "Case", "perspectives.col.mode": "Mode", "perspectives.col.status": "Status",
+      "perspectives.noHit": "No matching cases.",
+      "perspectives.updated": "Last updated:",
+      "perspectives.empty": "No perspectives yet. Run ccqa perspectives, or record a test — it's created automatically.",
+      "perspectives.loadFailed": "Loading perspectives failed",
+      "perspectives.mode.deterministic": "deterministic", "perspectives.mode.live": "live",
+      "perspectives.status.runnable": "runnable", "perspectives.status.notRecorded": "not recorded",
+      "perspectives.metric.features": "Features", "perspectives.metric.cases": "Test cases",
+      "perspectives.metric.deterministic": "Deterministic", "perspectives.metric.live": "Live",
+      "perspectives.cov.runnable": "runnable", "perspectives.cov.notRecorded": "not recorded",
+      "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
+      "perspectives.d.testCondition": "Condition", "perspectives.d.spec": "spec",
+      "perspectives.d.relatedPaths": "Related code",
+      "perspectives.note.label": "Note",
+      "perspectives.note.placeholder": "Notes about this case…",
+      "perspectives.note.saved": "Saved",
+      "perspectives.note.error": "Could not save — retry",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.customPrompt": "Failure-cause classification",
@@ -873,7 +980,7 @@ const CLIENT_JS = `
       "jobs.failed": "The learning job failed.", "jobs.newCustomPrompt": "New custom prompt:", "jobs.empty": "No learning jobs yet. Grade failing specs on a run, then Learn."
     },
     ja: {
-      "nav.projects": "プロジェクト", "nav.runs": "実行", "nav.secrets": "シークレット",
+      "nav.projects": "プロジェクト", "nav.runs": "実行", "nav.perspectives": "Perspectives", "nav.secrets": "シークレット",
       "nav.prompts": "プロンプト", "nav.learning": "学習",
       "app.project": "プロジェクト", "app.profile": "プロファイル", "app.disconnect": "切断", "app.noProject": "プロジェクト未選択",
       "app.newProfile": "新規プロファイル",
@@ -915,6 +1022,27 @@ const CLIENT_JS = `
       "learn.cta.desc": "採点した内容をもとに、ccqaが次回から同じように失敗の原因を分類できるよう学習します。",
       "learn.cta.run": "学習",
       "secrets.title": "シークレット", "prompts.title": "プロンプト", "learning.title": "学習",
+      "perspectives.title": "Perspectives",
+      "perspectives.search": "ケースを検索…",
+      "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
+      "perspectives.filter.live": "ライブ", "perspectives.filter.norec": "未recordのみ",
+      "perspectives.col.case": "ケース", "perspectives.col.mode": "モード", "perspectives.col.status": "状態",
+      "perspectives.noHit": "該当するケースがありません。",
+      "perspectives.updated": "最終更新:",
+      "perspectives.empty": "まだperspectivesがありません。ccqa perspectives を実行するか、recordすると自動作成されます。",
+      "perspectives.loadFailed": "perspectivesの読み込みに失敗しました",
+      "perspectives.mode.deterministic": "決定的", "perspectives.mode.live": "ライブ",
+      "perspectives.status.runnable": "実行可能", "perspectives.status.notRecorded": "未record",
+      "perspectives.metric.features": "機能", "perspectives.metric.cases": "テストケース",
+      "perspectives.metric.deterministic": "決定的", "perspectives.metric.live": "ライブ",
+      "perspectives.cov.runnable": "実行可能", "perspectives.cov.notRecorded": "未record",
+      "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
+      "perspectives.d.testCondition": "実行条件", "perspectives.d.spec": "spec",
+      "perspectives.d.relatedPaths": "関連コード",
+      "perspectives.note.label": "note",
+      "perspectives.note.placeholder": "このケースについてのメモ…",
+      "perspectives.note.saved": "保存しました",
+      "perspectives.note.error": "保存に失敗しました — 再試行してください",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.customPrompt": "失敗原因の分類",
@@ -1170,8 +1298,8 @@ const CLIENT_JS = `
 
   // ── view routing ────────────────────────────────────────────────────
 
-  var VIEWS = ["projects", "runs", "detail", "secrets", "prompts", "jobs"];
-  var NAV_FOR_VIEW = { projects: ".nav-projects", secrets: ".nav-secrets", prompts: ".nav-prompts", runs: ".nav-runs", detail: ".nav-runs", jobs: ".nav-jobs" };
+  var VIEWS = ["projects", "runs", "detail", "perspectives", "secrets", "prompts", "jobs"];
+  var NAV_FOR_VIEW = { projects: ".nav-projects", secrets: ".nav-secrets", prompts: ".nav-prompts", runs: ".nav-runs", detail: ".nav-runs", jobs: ".nav-jobs", perspectives: ".nav-perspectives" };
   function showView(id) {
     // Any in-flight job poll belongs to the view we're leaving — bump the token
     // so its next tick is a no-op (see pollJob).
@@ -1189,6 +1317,7 @@ const CLIENT_JS = `
   function updateNavGate() {
     var gated = !state.project;
     document.querySelector(".nav-runs").classList.toggle("disabled", gated);
+    document.querySelector(".nav-perspectives").classList.toggle("disabled", gated);
     document.querySelector(".nav-secrets").classList.toggle("disabled", gated);
     document.querySelector(".nav-prompts").classList.toggle("disabled", gated);
     document.querySelector(".nav-jobs").classList.toggle("disabled", gated);
@@ -1204,6 +1333,7 @@ const CLIENT_JS = `
     if (location.hash === "#/projects" || !state.project) { openProjects(); return; }
     var m = location.hash.match(/^#\\/runs\\/(.+)$/);
     if (m) { openRunDetail(decodeURIComponent(m[1])); return; }
+    if (location.hash === "#/perspectives") { openPerspectives(); return; }
     if (location.hash === "#/secrets") { openSecrets(); return; }
     if (location.hash === "#/prompts") { openPrompts(); return; }
     var j = location.hash.match(/^#\\/jobs\\/(.+)$/);
@@ -2460,6 +2590,305 @@ const CLIENT_JS = `
     loadPrompts();
   }
 
+  // ── perspectives ──────────────────────────────────────────────────────
+  // A read-mostly coverage inventory the CLI generates ("ccqa perspectives" /
+  // record); the hub UI's only write path is the per-case note (PATCH). The
+  // whole document is fetched once per view-open and filtered/rendered
+  // client-side — small enough that there is no pagination.
+
+  var perspState = { doc: null, q: "", f: "all" };
+
+  function perspectivesPath() {
+    return "/api/v1/projects/" + encodeURIComponent(state.project) + "/perspectives";
+  }
+
+  // GET the perspectives document. Resolves null on 404 (no document stored
+  // yet — the normal "nothing recorded" state) instead of throwing, so
+  // loadPerspectives can tell that apart from a real fetch/parse failure.
+  function fetchPerspectives() {
+    return fetch(perspectivesPath(), { headers: { Authorization: "Bearer " + state.token } }).then(function (res) {
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(res.status + " " + res.statusText);
+      return res.json();
+    }, function () { throw new Error("Network unreachable — check the hub URL and your connection"); });
+  }
+
+  // The execution mode lives inside the mechanically-derived status object
+  // (spec.status.mode), not at the top level of a spec entry.
+  function perspMode(spec) {
+    return spec.status && spec.status.mode === "live" ? "live" : "deterministic";
+  }
+
+  function perspRunnable(spec) {
+    return perspMode(spec) === "live" || (spec.status && spec.status.generated === true);
+  }
+
+  function setPerspStatus(message) {
+    var box = document.getElementById("persp-status");
+    box.hidden = !message;
+    box.textContent = message || "";
+  }
+
+  function perspModeChip(mode) {
+    var span = el("span", "chip" + (mode === "live" ? " live" : ""));
+    span.textContent = t(mode === "live" ? "perspectives.mode.live" : "perspectives.mode.deterministic");
+    return span;
+  }
+
+  function perspStatusBadge(spec) {
+    var ok = perspRunnable(spec);
+    var span = el("span", "badge " + (ok ? "ok" : "norec"));
+    span.appendChild(el("span", "d"));
+    span.appendChild(document.createTextNode(" " + t(ok ? "perspectives.status.runnable" : "perspectives.status.notRecorded")));
+    return span;
+  }
+
+  // Overview strip: feature/case counts, deterministic/live breakdown, and a
+  // runnable-vs-not-recorded coverage bar.
+  function renderPerspOverview(doc) {
+    var host = document.getElementById("persp-ov");
+    clear(host);
+    var allSpecs = doc.features.reduce(function (acc, f) { return acc.concat(f.specs); }, []);
+    var total = allSpecs.length;
+    var ok = allSpecs.filter(perspRunnable).length;
+    var no = total - ok;
+    var det = allSpecs.filter(function (s) { return perspMode(s) === "deterministic"; }).length;
+    var live = total - det;
+
+    function numBlock(value, labelKey) {
+      var box = el("div", "num");
+      box.appendChild(el("b", null, String(value)));
+      box.appendChild(el("span", null, t(labelKey)));
+      return box;
+    }
+
+    host.appendChild(numBlock(doc.features.length, "perspectives.metric.features"));
+    host.appendChild(el("div", "sep"));
+    host.appendChild(numBlock(total, "perspectives.metric.cases"));
+    host.appendChild(el("div", "sep"));
+    var breakdown = el("div", "breakdown");
+    breakdown.appendChild(numBlock(det, "perspectives.metric.deterministic"));
+    breakdown.appendChild(numBlock(live, "perspectives.metric.live"));
+    host.appendChild(breakdown);
+
+    var covwrap = el("div", "covwrap");
+    var covbar = el("div", "covbar");
+    if (total > 0) {
+      var okBar = el("div", "ok");
+      okBar.style.width = (ok / total) * 100 + "%";
+      var noBar = el("div", "no");
+      noBar.style.width = (no / total) * 100 + "%";
+      covbar.appendChild(okBar);
+      covbar.appendChild(noBar);
+    }
+    covwrap.appendChild(covbar);
+    var covleg = el("div", "covleg");
+    var legOk = el("span", "lg-ok");
+    legOk.appendChild(el("i"));
+    legOk.appendChild(document.createTextNode(t("perspectives.cov.runnable") + " " + ok));
+    covleg.appendChild(legOk);
+    if (no > 0) {
+      var legNo = el("span", "lg-no");
+      legNo.appendChild(el("i"));
+      legNo.appendChild(document.createTextNode(t("perspectives.cov.notRecorded") + " " + no));
+      covleg.appendChild(legNo);
+    }
+    covwrap.appendChild(covleg);
+    host.appendChild(covwrap);
+  }
+
+  function perspMatches(spec) {
+    if (perspState.f === "deterministic" && perspMode(spec) !== "deterministic") return false;
+    if (perspState.f === "live" && perspMode(spec) !== "live") return false;
+    if (perspState.f === "norec" && perspRunnable(spec)) return false;
+    if (perspState.q) {
+      var hay = (spec.title + " " + (spec.summary || "") + " " + spec.specName).toLowerCase();
+      if (hay.indexOf(perspState.q) === -1) return false;
+    }
+    return true;
+  }
+
+  // Detail row: a definition list of the case's fields plus the note editor.
+  // Built with createElement/textContent throughout — every field here is
+  // API-derived, so none of it may go through innerHTML.
+  function perspDetailContent(feature, spec) {
+    var frag = document.createDocumentFragment();
+    var dl = el("dl", "d-grid");
+    function row(labelKey, valueNode) {
+      dl.appendChild(el("dt", null, t(labelKey)));
+      var dd = el("dd");
+      if (typeof valueNode === "string") dd.textContent = valueNode;
+      else dd.appendChild(valueNode);
+      dl.appendChild(dd);
+    }
+    if (spec.preconditions && spec.preconditions.length) {
+      var ul = el("ul");
+      spec.preconditions.forEach(function (p) { ul.appendChild(el("li", null, p)); });
+      row("perspectives.d.preconditions", ul);
+    }
+    if (spec.startScreen) row("perspectives.d.startScreen", spec.startScreen);
+    if (spec.testCondition) row("perspectives.d.testCondition", spec.testCondition);
+    var specCode = el("code", null, spec.specName);
+    row("perspectives.d.spec", specCode);
+    if (spec.relatedPaths && spec.relatedPaths.length) {
+      var pathsWrap = el("span");
+      spec.relatedPaths.forEach(function (p, i) {
+        if (i > 0) pathsWrap.appendChild(document.createTextNode(" "));
+        pathsWrap.appendChild(el("code", null, p));
+      });
+      row("perspectives.d.relatedPaths", pathsWrap);
+    }
+    frag.appendChild(dl);
+
+    var notebox = el("div", "notebox");
+    notebox.appendChild(el("div", "nlabel", t("perspectives.note.label")));
+    var ta = el("textarea");
+    ta.placeholder = t("perspectives.note.placeholder");
+    ta.value = spec.note || "";
+    notebox.appendChild(ta);
+    var nact = el("div", "nact");
+    var saveBtn = el("button", "btn primary", t("common.save"));
+    saveBtn.type = "button";
+    var statusEl = el("span", "nstatus");
+    nact.appendChild(saveBtn);
+    nact.appendChild(statusEl);
+    notebox.appendChild(nact);
+    frag.appendChild(notebox);
+
+    saveBtn.addEventListener("click", function () {
+      saveBtn.disabled = true;
+      statusEl.className = "nstatus";
+      statusEl.textContent = "";
+      apiFetch(perspectivesPath(), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feature: feature.featureName, spec: spec.specName, note: ta.value }),
+      }).then(function () {
+        spec.note = ta.value || undefined;
+        statusEl.className = "nstatus ok";
+        statusEl.textContent = t("perspectives.note.saved");
+      }).catch(function (err) {
+        statusEl.className = "nstatus err";
+        statusEl.textContent = t("perspectives.note.error") + ": " + err.message;
+      }).then(function () { saveBtn.disabled = false; });
+    });
+
+    return frag;
+  }
+
+  function renderPerspTable(doc) {
+    var tbody = document.getElementById("persp-tbody");
+    clear(tbody);
+    var hits = 0;
+    doc.features.forEach(function (feature) {
+      var specs = feature.specs.filter(perspMatches);
+      if (!specs.length) return;
+      hits += specs.length;
+
+      var grpRow = el("tr", "grp");
+      var grpTd = el("td");
+      grpTd.colSpan = 4;
+      grpTd.appendChild(document.createTextNode(feature.featureName));
+      grpTd.appendChild(el("span", "gcount", specs.length + " " + t("perspectives.metric.cases").toLowerCase()));
+      grpRow.appendChild(grpTd);
+      tbody.appendChild(grpRow);
+
+      specs.forEach(function (spec) {
+        var row = el("tr", "row");
+        row.tabIndex = 0;
+        row.setAttribute("aria-expanded", "false");
+
+        var titleTd = el("td", "c-title");
+        titleTd.appendChild(document.createTextNode(spec.title));
+        if (spec.summary) titleTd.appendChild(el("span", "csum", spec.summary));
+        row.appendChild(titleTd);
+
+        var modeTd = el("td");
+        modeTd.appendChild(perspModeChip(perspMode(spec)));
+        row.appendChild(modeTd);
+
+        var statusTd = el("td");
+        statusTd.appendChild(perspStatusBadge(spec));
+        row.appendChild(statusTd);
+
+        var chevTd = el("td", "c-chev");
+        chevTd.appendChild(el("span", "chev-i", "\\u25b6"));
+        row.appendChild(chevTd);
+
+        var detailRow = el("tr", "detail");
+        var detailTd = el("td");
+        detailTd.colSpan = 4;
+        detailRow.appendChild(detailTd);
+        var built = false;
+
+        function toggle() {
+          var open = detailRow.classList.toggle("open");
+          row.setAttribute("aria-expanded", open ? "true" : "false");
+          if (open && !built) {
+            detailTd.appendChild(perspDetailContent(feature, spec));
+            built = true;
+          }
+        }
+        row.addEventListener("click", function (e) {
+          if (e.target.tagName === "TEXTAREA" || e.target.tagName === "BUTTON") return;
+          toggle();
+        });
+        row.addEventListener("keydown", function (e) {
+          if ((e.key === "Enter" || e.key === " ") && e.target === row) { e.preventDefault(); toggle(); }
+        });
+
+        tbody.appendChild(row);
+        tbody.appendChild(detailRow);
+      });
+    });
+    document.getElementById("persp-no-hit").hidden = hits > 0;
+  }
+
+  function renderPerspectives() {
+    var doc = perspState.doc;
+    if (!doc) return;
+    renderPerspOverview(doc);
+    renderPerspTable(doc);
+  }
+
+  function setPerspUpdated(doc) {
+    var span = document.getElementById("persp-updated");
+    if (doc && doc.generatedAt) {
+      span.hidden = false;
+      span.textContent = t("perspectives.updated") + " " + relTime(doc.generatedAt);
+    } else {
+      span.hidden = true;
+      span.textContent = "";
+    }
+  }
+
+  function loadPerspectives() {
+    setPerspStatus("");
+    document.getElementById("persp-body").hidden = true;
+    setPerspUpdated(null);
+    fetchPerspectives()
+      .then(function (doc) {
+        perspState.doc = doc;
+        if (!doc) { setPerspStatus(t("perspectives.empty")); return; }
+        setPerspUpdated(doc);
+        document.getElementById("persp-body").hidden = false;
+        renderPerspectives();
+      })
+      .catch(function (err) {
+        perspState.doc = null;
+        setPerspStatus(t("perspectives.loadFailed") + ": " + err.message);
+      });
+  }
+
+  function openPerspectives() {
+    showView("perspectives");
+    document.getElementById("persp-q").value = perspState.q;
+    document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-f") === perspState.f));
+    });
+    loadPerspectives();
+  }
+
   // The custom prompt body is JSON (schemaVersion/basePromptVersion/customPromptVersion/
   // generatedAt/guidance); the textarea only ever shows the learned guidance
   // text, never the raw JSON. A parse failure falls back to the raw text so a
@@ -2850,6 +3279,22 @@ const CLIENT_JS = `
   // Wrap so the click PointerEvent isn't passed as loadSecrets' statusAfter
   // argument (which would render "[object PointerEvent]" in the status box).
   document.getElementById("sec-load").addEventListener("click", function () { loadSecrets(); });
+
+  // perspectives view
+  document.getElementById("persp-refresh").addEventListener("click", function () { loadPerspectives(); });
+  document.getElementById("persp-q").addEventListener("input", function (e) {
+    perspState.q = e.target.value.trim().toLowerCase();
+    renderPerspectives();
+  });
+  document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
+    b.addEventListener("click", function () {
+      perspState.f = b.getAttribute("data-f");
+      document.querySelectorAll("#view-perspectives .fchip").forEach(function (x) {
+        x.setAttribute("aria-pressed", x === b ? "true" : "false");
+      });
+      renderPerspectives();
+    });
+  });
 
   // prompts view
   document.getElementById("pr-load").addEventListener("click", function () { loadPrompts(); });

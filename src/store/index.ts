@@ -110,71 +110,30 @@ export async function saveSpecFile(
   return specPath;
 }
 
-// --- Perspectives (repo-wide coverage inventory) ---
-
-/** Absolute path to the single repo-wide `.ccqa/perspectives.yaml`. */
-export function getPerspectivesPath(cwd?: string): string {
-  return join(getCcqaDir(cwd), PERSPECTIVES_FILE);
-}
+// --- Perspectives (repo-wide coverage inventory, stored on the hub) ---
 
 /**
- * Read `.ccqa/perspectives.yaml` raw. Returns null when the file does not
- * exist (first-ever generation) so callers can treat it as optional.
+ * The perspectives document now lives on the hub only. Earlier versions wrote
+ * it into the repo as `.ccqa/perspectives.yaml` + `.ccqa/perspectives.md` +
+ * `.ccqa/features/<feature>/perspectives.md`; remove any of those leftovers.
+ * Returns the paths that were actually deleted.
  */
-export async function tryReadPerspectives(cwd?: string): Promise<string | null> {
-  return readFile(getPerspectivesPath(cwd), "utf-8").catch(() => null);
-}
-
-/**
- * Write `.ccqa/perspectives.yaml`. Mirrors `saveSpecFile`: ensures the
- * directory exists and the content ends in a trailing newline.
- */
-export async function savePerspectives(content: string, cwd?: string): Promise<string> {
-  await mkdir(getCcqaDir(cwd), { recursive: true });
-  const path = getPerspectivesPath(cwd);
-  const normalized = content.endsWith("\n") ? content : content + "\n";
-  await writeFile(path, normalized, "utf-8");
-  return path;
-}
-
-/**
- * Human-readable Markdown companion to perspectives.yaml. The `.yaml` is the
- * machine-readable source of truth; the `.md` is a rendered view for review.
- */
-export function getPerspectivesMarkdownPath(cwd?: string): string {
-  return join(getCcqaDir(cwd), PERSPECTIVES_MD_FILE);
-}
-
-export async function savePerspectivesMarkdown(content: string, cwd?: string): Promise<string> {
-  await mkdir(getCcqaDir(cwd), { recursive: true });
-  const path = getPerspectivesMarkdownPath(cwd);
-  const normalized = content.endsWith("\n") ? content : content + "\n";
-  await writeFile(path, normalized, "utf-8");
-  return path;
-}
-
-/**
- * Per-category detail view: `.ccqa/features/<feature>/perspectives.md`. The
- * root `perspectives.md` is a thin category index that links here; this file
- * carries the full per-case tables for one feature. The feature dir already
- * exists (it holds the test cases), but `mkdir -p` keeps this safe when called
- * in isolation.
- */
-export function getFeaturePerspectivesMarkdownPath(featureName: string, cwd?: string): string {
-  return join(getFeatureDir(featureName, cwd), PERSPECTIVES_MD_FILE);
-}
-
-export async function saveFeaturePerspectivesMarkdown(
-  featureName: string,
-  content: string,
-  cwd?: string,
-): Promise<string> {
-  const dir = getFeatureDir(featureName, cwd);
-  await mkdir(dir, { recursive: true });
-  const path = getFeaturePerspectivesMarkdownPath(featureName, cwd);
-  const normalized = content.endsWith("\n") ? content : content + "\n";
-  await writeFile(path, normalized, "utf-8");
-  return path;
+export async function removeLegacyPerspectivesFiles(cwd?: string): Promise<string[]> {
+  const candidates = [
+    join(getCcqaDir(cwd), PERSPECTIVES_FILE),
+    join(getCcqaDir(cwd), PERSPECTIVES_MD_FILE),
+  ];
+  const featuresDir = join(getCcqaDir(cwd), "features");
+  const featureNames = await readdir(featuresDir).catch(() => [] as string[]);
+  for (const name of featureNames) {
+    candidates.push(join(featuresDir, name, PERSPECTIVES_MD_FILE));
+  }
+  const removed: string[] = [];
+  for (const path of candidates) {
+    const deleted = await unlink(path).then(() => true).catch(() => false);
+    if (deleted) removed.push(path);
+  }
+  return removed;
 }
 
 /**

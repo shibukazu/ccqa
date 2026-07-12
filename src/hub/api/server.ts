@@ -27,6 +27,12 @@ import {
   createPutPromptHandler,
 } from "./handlers/prompts.ts";
 import {
+  createDeletePerspectivesHandler,
+  createGetPerspectivesHandler,
+  createPatchPerspectivesNoteHandler,
+  createPutPerspectivesHandler,
+} from "./handlers/perspectives.ts";
+import {
   createCreateLearningJobHandler,
   createGetLearningJobHandler,
   createListLearningJobsHandler,
@@ -196,6 +202,14 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.get("/api/v1/projects/:project/prompts", createListPromptsHandler(promptConfig));
   router.get("/api/v1/projects/:project/prompts/:name", createGetPromptHandler(promptConfig));
   router.delete("/api/v1/projects/:project/prompts/:name", createDeletePromptHandler(promptConfig));
+
+  // Perspectives: one coverage-inventory document per project, hub-only
+  // (the consuming repo keeps no local copy). JSON in, JSON out.
+  const perspectivesConfig = { store: storage.perspectives };
+  router.put("/api/v1/projects/:project/perspectives", createPutPerspectivesHandler(perspectivesConfig));
+  router.get("/api/v1/projects/:project/perspectives", createGetPerspectivesHandler(perspectivesConfig));
+  router.patch("/api/v1/projects/:project/perspectives", createPatchPerspectivesNoteHandler(perspectivesConfig));
+  router.delete("/api/v1/projects/:project/perspectives", createDeletePerspectivesHandler(perspectivesConfig));
 
   // Triage-learning jobs: the UI creates one after grading, then polls it.
   router.post("/api/v1/projects/:project/learning-jobs", createCreateLearningJobHandler({ storage, queue }));
