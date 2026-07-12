@@ -13,6 +13,7 @@ import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOpt
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { resolveHubClient, type HubContext } from "./hub-conn.ts";
+import { syncSpecPerspectives } from "./perspectives-sync.ts";
 import * as log from "./logger.ts";
 
 const AUTO_FIX_MODES = ["interactive", "auto", "skip"] as const;
@@ -233,7 +234,11 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
   // references against process.env, so merge the profile (or default .env)
   // first — same contract as `ccqa record`.
   const cwd = resolveCwd(opts.cwd);
-  const project = opts.profile !== undefined ? resolveProject(opts) : undefined;
+  const hubClient = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken, hubHeader: opts.hubHeader });
+  // The project scope matters whenever a hub is configured (prompt lookups,
+  // the perspectives auto-update), not only when --profile asks for hub
+  // variables — resolve it in either case.
+  const project = opts.profile !== undefined || hubClient !== null ? resolveProject(opts) : undefined;
   if (opts.profile !== undefined) {
     await applyProfileFromOption({
       profile: opts.profile,
@@ -247,7 +252,6 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     await applyProfileFromOption({ profile: undefined, project: "", cwd });
   }
 
-  const hubClient = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken, hubHeader: opts.hubHeader });
   const hubContext: HubContext | null = hubClient && project ? { hub: hubClient, project } : null;
 
   try {
@@ -269,4 +273,11 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     }
     throw e;
   }
+
+  // Keep the hub's coverage inventory in step with what was just generated.
+  await syncSpecPerspectives(hubContext, {
+    ref: { featureName, specName },
+    ...(language ? { language } : {}),
+    ...(opts.model ? { model: opts.model } : {}),
+  });
 });

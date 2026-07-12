@@ -112,6 +112,9 @@ self-hosted server (or use the bundled `docker-compose.yaml`). Pushing
 reports to it gives your team:
 
 - a dashboard of runs, with per-step screenshots
+- a browsable inventory of what is tested
+  ([perspectives](./docs/spec.md#inventory-coverage-with-perspectives)),
+  kept fresh automatically by `record`/`generate`
 - triage grading — mark each failure call right or wrong; the hub learns
   from the grades
 - one place for shared sessions, variables, and learned prompts — CI

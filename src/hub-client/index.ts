@@ -113,6 +113,13 @@ export interface HubClient {
   getPrompt(project: string, name: PromptName): Promise<string | null>;
   listPrompts(project: string): Promise<HubPromptMeta[]>;
   deletePrompt(project: string, name: PromptName): Promise<void>;
+
+  /** The project's perspectives document (coverage inventory), stored hub-only. */
+  putPerspectives(project: string, doc: unknown): Promise<void>;
+  getPerspectives(project: string): Promise<unknown | null>;
+  /** Set (or clear, with an empty string) the human note on one spec's entry. */
+  patchPerspectivesNote(project: string, c: { feature: string; spec: string; note: string }): Promise<void>;
+  deletePerspectives(project: string): Promise<void>;
 }
 
 /** Per-attempt fetch timeout. Bounds how long a stalled socket can block a poll loop. */
@@ -332,6 +339,28 @@ export function createHubClient(opts: HubClientOptions): HubClient {
     deletePrompt(project, name) {
       return noBody(`${promptsPath(project)}/${encodeURIComponent(name)}`, "DELETE");
     },
+
+    putPerspectives(project, doc) {
+      return putJson(perspectivesPath(project), doc);
+    },
+    patchPerspectivesNote(project, c) {
+      return request(perspectivesPath(project), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(c),
+      }).then(() => undefined);
+    },
+    async getPerspectives(project) {
+      try {
+        return await json<unknown>(perspectivesPath(project));
+      } catch (err) {
+        if (err instanceof HubApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    deletePerspectives(project) {
+      return noBody(perspectivesPath(project), "DELETE");
+    },
   };
 }
 
@@ -343,6 +372,11 @@ function scopePath(project: string, kind: "sessions" | "variables", profile: str
 /** Prompts are project-scoped (not per-profile): `/api/v1/projects/<project>/prompts`. */
 function promptsPath(project: string): string {
   return `/api/v1/projects/${encodeURIComponent(project)}/prompts`;
+}
+
+/** Perspectives are one document per project: `/api/v1/projects/<project>/perspectives`. */
+function perspectivesPath(project: string): string {
+  return `/api/v1/projects/${encodeURIComponent(project)}/perspectives`;
 }
 
 function queryString(params: Record<string, string | number | undefined>): URLSearchParams {

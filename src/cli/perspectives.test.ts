@@ -1,18 +1,15 @@
 import { describe, expect, test } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
 import {
+  comparePerspectivesSkeleton,
   extractNotes,
-  labelsFor,
   mergePerspectives,
   parseSummaries,
-  renderFeatureMarkdown,
-  renderIndexMarkdown,
-  renderSpecMarkdown,
-  statusLabel,
   withoutGeneratedAt,
   type SummaryEntry,
 } from "./perspectives.ts";
-import { PerspectivesSchema, type PerspectiveFeature, type PerspectiveSpec } from "../types.ts";
+import { extractRelatedPaths, upsertSpec } from "./perspectives-sync.ts";
+import { PerspectivesSchema, type PerspectiveFeature, type Perspectives, type PerspectiveSpec } from "../types.ts";
 
 const skeleton: PerspectiveFeature[] = [
   {
@@ -267,8 +264,8 @@ describe("withoutGeneratedAt (no-op detection ignores the timestamp)", () => {
 });
 
 describe("extractNotes (round-trip note preservation)", () => {
-  test("recovers notes from a previously written perspectives.yaml", () => {
-    const prior = stringifyYaml({
+  test("recovers notes from the hub's current document", () => {
+    const prior = {
       generatedAt: "2026-05-25T00:00:00.000Z",
       features: [
         {
@@ -284,13 +281,13 @@ describe("extractNotes (round-trip note preservation)", () => {
           ],
         },
       ],
-    });
+    };
     const notes = extractNotes(prior);
     expect(notes.get("tasks/search-tasks")).toBe("deliberately kept by a human");
   });
 
   test("regression: a fresh skeleton + extracted notes keeps the human note", () => {
-    const prior = stringifyYaml({
+    const prior = {
       features: [
         {
           featureName: "tasks",
@@ -305,7 +302,7 @@ describe("extractNotes (round-trip note preservation)", () => {
           ],
         },
       ],
-    });
+    };
     const notes = extractNotes(prior);
     // New skeleton has a fresh summary/status; the note must still survive.
     const merged = mergePerspectives(
@@ -318,328 +315,134 @@ describe("extractNotes (round-trip note preservation)", () => {
     expect(spec?.note).toBe("QA-owned note");
   });
 
-  test("returns an empty map for empty or unparsable input", () => {
-    expect(extractNotes("").size).toBe(0);
-    expect(extractNotes(": : not yaml : :").size).toBe(0);
+  test("returns an empty map for an absent or schema-mismatched document", () => {
+    expect(extractNotes(null).size).toBe(0);
+    expect(extractNotes(undefined).size).toBe(0);
+    expect(extractNotes("not an object").size).toBe(0);
+    expect(extractNotes({ features: [{ bogus: true }] }).size).toBe(0);
   });
 });
 
-describe("renderSpecMarkdown", () => {
-  const fullSpec: PerspectiveSpec = {
-    specName: "create-and-complete",
-    title: "項目を作成して完了にできる",
-    summary: "項目を新規作成し、一覧・詳細に反映され、最後に削除されることを確認する。",
-    startScreen: "一覧画面 (/items)",
-    testCondition: "管理者でログイン済み",
-    preconditions: ["管理者でログイン"],
-    relatedPaths: ["src/features/items/**"],
+describe("upsertSpec (incremental record/generate sync)", () => {
+  const entry = (specName: string): PerspectiveSpec => ({
+    specName,
+    title: "t",
+    summary: "s",
     status: { mode: "deterministic", traced: true, generated: true },
-    note: "手動確認のみ",
-  };
-
-  test("emits the mode and status rows exactly once, positioned between the spec link and the related-code paths", () => {
-    const md = renderSpecMarkdown(fullSpec).join("\n");
-    // Regression guard for a bug that shipped in 0.8.2 where the mode and
-    // status rows were inserted in the new position without removing the
-    // old (top-of-table) ones, doubling each row in every detail table.
-    const modeMatches = md.match(/\| モード \|/g);
-    const statusMatches = md.match(/\| 状態 \|/g);
-    expect(modeMatches?.length).toBe(1);
-    expect(statusMatches?.length).toBe(1);
-    // And they should land between spec and 関連コード, in that order.
-    const idxSpec = md.indexOf("| spec |");
-    const idxMode = md.indexOf("| モード |");
-    const idxStatus = md.indexOf("| 状態 |");
-    const idxRelated = md.indexOf("| 関連コード |");
-    expect(idxSpec).toBeGreaterThan(-1);
-    expect(idxMode).toBeGreaterThan(idxSpec);
-    expect(idxStatus).toBeGreaterThan(idxMode);
-    expect(idxRelated).toBeGreaterThan(idxStatus);
   });
 
-  test("leads with 検証内容 then 前提条件, drops テスト条件/実装状況, links spec relative to the category file", () => {
-    const md = renderSpecMarkdown(fullSpec).join("\n");
-    expect(md).toContain("## 項目を作成して完了にできる");
-    // 検証内容 comes before 前提条件, which comes before 開始画面.
-    const idxSummary = md.indexOf("| 検証内容 |");
-    const idxPre = md.indexOf("| 前提条件 |");
-    const idxStart = md.indexOf("| 開始画面 |");
-    expect(idxSummary).toBeGreaterThan(-1);
-    expect(idxSummary).toBeLessThan(idxPre);
-    expect(idxPre).toBeLessThan(idxStart);
-    expect(md).toContain(
-      "| 検証内容 | 項目を新規作成し、一覧・詳細に反映され、最後に削除されることを確認する。 |",
-    );
-    expect(md).toContain("| 前提条件 | 管理者でログイン |");
-    expect(md).toContain("| 開始画面 | 一覧画面 (/items) |");
-    // テスト条件 (redundant with 前提条件) and 実装状況 are no longer shown.
-    expect(md).not.toContain("テスト条件");
-    expect(md).not.toContain("実装状況");
-    // spec link is relative to the category file (test-cases/<spec>/...), so
-    // it resolves on GitHub and locally.
-    expect(md).toContain(
-      "| spec | [test-cases/create-and-complete/spec.yaml](test-cases/create-and-complete/spec.yaml) |",
-    );
-    expect(md).toContain("| 📝 note | 手動確認のみ |");
-  });
-
-  test("renders related-code paths as inline code, not links (base is not reliably recoverable)", () => {
-    const spec: PerspectiveSpec = {
-      specName: "s",
-      title: "t",
-      summary: "",
-      relatedPaths: ["src/features/tasks/**", "src/components/Sidebar.tsx"],
-      status: { mode: "deterministic", traced: true, generated: true },
+  test("replaces an existing spec entry in place", () => {
+    const doc: Perspectives = {
+      features: [{ featureName: "tasks", specs: [{ ...entry("search-tasks"), summary: "old", note: "keep me" }] }],
     };
-    const md = renderSpecMarkdown(spec).join("\n");
-    expect(md).toContain("| 関連コード | `src/features/tasks/**`<br>`src/components/Sidebar.tsx` |");
-    // Not linked.
-    expect(md).not.toContain("](../../../");
+    upsertSpec(doc, "tasks", { ...entry("search-tasks"), note: "keep me" });
+    expect(doc.features[0]?.specs).toHaveLength(1);
+    expect(doc.features[0]?.specs[0]?.summary).toBe("s");
+    expect(doc.features[0]?.specs[0]?.note).toBe("keep me");
   });
 
-  test("emits everything inside the table — no prose blocks around it", () => {
-    const md = renderSpecMarkdown(fullSpec).join("\n");
-    expect(md).not.toContain("**前提条件**");
-    expect(md).not.toContain("**検証内容**");
-    expect(md).not.toContain("> 📝");
-  });
-
-  test("does NOT restate detailed steps or per-step expected results", () => {
-    const md = renderSpecMarkdown(fullSpec).join("\n");
-    expect(md).not.toContain("テスト手順");
-    expect(md).not.toContain("期待結果");
-  });
-
-  test("omits optional rows when the spec lacks them", () => {
-    const minimal: PerspectiveSpec = {
-      specName: "s",
-      title: "t",
-      summary: "",
-      status: { mode: "deterministic", traced: false, generated: false },
+  test("inserts a new spec name-sorted within its feature", () => {
+    const doc: Perspectives = {
+      features: [{ featureName: "tasks", specs: [entry("a-spec"), entry("z-spec")] }],
     };
-    const md = renderSpecMarkdown(minimal).join("\n");
-    expect(md).not.toContain("検証内容");
-    expect(md).not.toContain("前提条件");
-    expect(md).not.toContain("開始画面");
-    expect(md).not.toContain("note");
-    // spec link is always present, relative to the category file.
-    expect(md).toContain("| spec | [test-cases/s/spec.yaml]");
+    upsertSpec(doc, "tasks", entry("m-spec"));
+    expect(doc.features[0]?.specs.map((s) => s.specName)).toEqual(["a-spec", "m-spec", "z-spec"]);
   });
 
-  test("escapes pipes so a value stays in one table cell", () => {
-    const spec: PerspectiveSpec = {
-      specName: "s",
-      title: "t",
-      summary: "a | b",
-      status: { mode: "deterministic", traced: true, generated: true },
+  test("creates a missing feature and keeps features name-sorted", () => {
+    const doc: Perspectives = {
+      features: [{ featureName: "auth", specs: [entry("login")] }, { featureName: "tasks", specs: [entry("a")] }],
     };
-    const md = renderSpecMarkdown(spec).join("\n");
-    expect(md).toContain("a \\| b");
+    upsertSpec(doc, "notifications", entry("assign"));
+    expect(doc.features.map((f) => f.featureName)).toEqual(["auth", "notifications", "tasks"]);
   });
 });
 
-describe("renderIndexMarkdown", () => {
-  test("groups cases under each category heading with title and a spec link", () => {
-    const md = renderIndexMarkdown({
-      generatedAt: "2026-05-25T00:00:00.000Z",
-      features: [
-        {
-          featureName: "tasks",
-          specs: [
-            {
-              specName: "search-tasks",
-              title: "検索できる",
-              summary: "検索の確認",
-              status: { mode: "deterministic", traced: true, generated: true },
-            },
-            {
-              specName: "create-content",
-              title: "作成できる",
-              summary: "作成の確認",
-              status: { mode: "deterministic", traced: true, generated: false },
-            },
-          ],
-        },
-      ],
-    });
-    expect(md).toContain("# テスト観点インデックス (perspectives)");
-    // Category heading links to its own detail file, which is written under
-    // .ccqa/features/<feature>/perspectives.md — so the link must include the
-    // `features/` segment to resolve from the root .ccqa/perspectives.md.
-    expect(md).toContain("## [tasks](features/tasks/perspectives.md)");
-    // One row per case: title + mode + status + spec link. The mode column
-    // declares deterministic vs live; the status column is the runnable
-    // verdict so reviewers can scan for what is or isn't ready to run.
-    expect(md).toContain(
-      "| 検索できる | deterministic | ✅ 実行可能 | [spec](features/tasks/test-cases/search-tasks/spec.yaml) |",
-    );
-    expect(md).toContain(
-      "| 作成できる | deterministic | ⚠️ 未record | [spec](features/tasks/test-cases/create-content/spec.yaml) |",
-    );
-    // Raw boolean field names should not leak into the user-facing index.
-    expect(md).not.toContain("traced:");
-    expect(md).not.toContain("generated:");
-    // The index is meta only — no per-case summary text leaks in.
-    expect(md).not.toContain("検索の確認");
-    expect(md).not.toContain("作成の確認");
-  });
-
-  test("live specs are always shown as runnable regardless of trace/generate flags", () => {
-    const md = renderIndexMarkdown({
-      generatedAt: "2026-06-16T00:00:00.000Z",
-      features: [
-        {
-          featureName: "slack",
-          specs: [
-            {
-              specName: "report-bug",
-              title: "バグ報告できる",
-              summary: "",
-              status: { mode: "live", traced: false, generated: false },
-            },
-          ],
-        },
-      ],
-    });
-    // Live specs skip codegen entirely, so a missing test.spec.ts is not a
-    // problem — they are always runnable from the reviewer's perspective.
-    expect(md).toContain("| バグ報告できる | live | ✅ 実行可能 | [spec](features/slack/test-cases/report-bug/spec.yaml) |");
-    expect(md).not.toContain("未record");
-  });
-
-  test("deterministic specs without test.spec.ts are shown as not recorded", () => {
-    const md = renderIndexMarkdown({
-      generatedAt: "2026-06-16T00:00:00.000Z",
-      features: [
-        {
-          featureName: "tasks",
-          specs: [
-            {
-              specName: "skeleton-only",
-              title: "骨組みだけ",
-              summary: "",
-              status: { mode: "deterministic", traced: false, generated: false },
-            },
-          ],
-        },
-      ],
-    });
-    expect(md).toContain("⚠️ 未record");
-  });
-});
-
-describe("renderFeatureMarkdown", () => {
-  test("renders the category heading and one table per case (no boilerplate note)", () => {
-    const md = renderFeatureMarkdown({
-      featureName: "tasks",
-      specs: [
-        {
-          specName: "search-tasks",
-          title: "検索できる",
-          summary: "検索の確認",
-          status: { mode: "deterministic", traced: true, generated: true },
-        },
-        {
-          specName: "create-content",
-          title: "作成できる",
-          summary: "作成の確認",
-          status: { mode: "deterministic", traced: true, generated: false },
-        },
-      ],
-    });
-    expect(md).toContain("# tasks");
-    expect(md).toContain("spec.yaml"); // present as the spec link, not a steps restatement
-    expect(md).toContain("## 検索できる");
-    expect(md).toContain("## 作成できる");
-    expect(md).toContain("| 検証内容 | 検索の確認 |");
-    expect(md).toContain("| 検証内容 | 作成の確認 |");
-    // No boilerplate disclaimer line.
-    expect(md).not.toContain(">");
-  });
-});
-
-describe("labelsFor + English labels", () => {
-  test("only an explicit English tag switches labels to English", () => {
-    expect(labelsFor("en").summary).toBe("Verifies");
-    expect(labelsFor("en-US").itemCol).toBe("Item");
-    // auto / ja / undefined keep Japanese.
-    expect(labelsFor("auto").summary).toBe("検証内容");
-    expect(labelsFor("ja").summary).toBe("検証内容");
-    expect(labelsFor(undefined).itemCol).toBe("項目");
-  });
-
-  test("renderSpecMarkdown emits English labels when given the English set", () => {
-    const spec: PerspectiveSpec = {
-      specName: "access-admin-page",
-      title: "管理者ページにアクセスできる",
-      summary: "Verifies the page renders for an admin user.",
-      preconditions: ["Logged in as an admin"],
-      startScreen: "Admin page (/admin)",
-      relatedPaths: ["src/features/admin/**"],
-      status: { mode: "deterministic", traced: true, generated: true },
-    };
-    const md = renderSpecMarkdown(spec, labelsFor("en")).join("\n");
-    expect(md).toContain("| Item | Value |");
-    expect(md).toContain("| Verifies | Verifies the page renders for an admin user. |");
-    expect(md).toContain("| Preconditions | Logged in as an admin |");
-    expect(md).toContain("| Start screen | Admin page (/admin) |");
-    expect(md).toContain("| Related code | `src/features/admin/**` |");
-    // The case title stays verbatim from spec.yaml even under English labels.
-    expect(md).toContain("## 管理者ページにアクセスできる");
-    // Japanese labels must not leak in.
-    expect(md).not.toContain("検証内容");
-    expect(md).not.toContain("前提条件");
-  });
-
-  test("renderIndexMarkdown uses the English index title and case column", () => {
-    const md = renderIndexMarkdown(
+describe("comparePerspectivesSkeleton (--check)", () => {
+  const hubDoc = (over: Partial<PerspectiveSpec> = {}): Perspectives => ({
+    generatedAt: "2026-07-13T00:00:00.000Z",
+    features: [
       {
-        features: [
+        featureName: "tasks",
+        specs: [
           {
-            featureName: "admin",
-            specs: [
-              { specName: "s", title: "t", summary: "x", status: { mode: "deterministic", traced: true, generated: true } },
-            ],
+            specName: "search-tasks",
+            title: "項目を検索できる",
+            summary: "Claude が書いた要約（比較対象外）",
+            startScreen: "一覧画面",
+            status: { mode: "deterministic", traced: true, generated: true },
+            relatedPaths: ["src/features/tasks/**"],
+            note: "human note（比較対象外）",
+            ...over,
           },
         ],
       },
-      labelsFor("en"),
-    );
-    expect(md).toContain("# Test Perspectives (perspectives)");
-    expect(md).toContain("| Case | Mode | Status | spec |");
-    expect(md).not.toContain("テスト観点");
-    expect(md).not.toContain("ケース");
+    ],
+  });
+
+  test("in-sync mechanical fields yield no issues — descriptive fields and note are ignored", () => {
+    expect(comparePerspectivesSkeleton(skeleton, hubDoc())).toEqual([]);
+  });
+
+  test("flags a local spec missing from the hub and a hub entry with no local spec", () => {
+    const localOnly: PerspectiveFeature[] = [
+      ...skeleton,
+      {
+        featureName: "auth",
+        specs: [{ specName: "login", title: "t", summary: "", status: { mode: "deterministic", traced: false, generated: false } }],
+      },
+    ];
+    const issues = comparePerspectivesSkeleton(localOnly, {
+      features: [
+        ...hubDoc().features,
+        { featureName: "gone", specs: [{ specName: "old", title: "t", summary: "", status: { mode: "live", traced: false, generated: false } }] },
+      ],
+    });
+    expect(issues).toContain("auth/login: not in the hub document");
+    expect(issues).toContain("gone/old: no longer exists locally (stale hub entry)");
+    expect(issues).toHaveLength(2);
+  });
+
+  test("flags title / relatedPaths / status drift on one line per spec", () => {
+    const issues = comparePerspectivesSkeleton(skeleton, hubDoc({
+      title: "古いタイトル",
+      relatedPaths: ["src/other/**"],
+      status: { mode: "deterministic", traced: true, generated: false },
+    }));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("tasks/search-tasks: out of date");
+    expect(issues[0]).toContain("title");
+    expect(issues[0]).toContain("relatedPaths");
+    expect(issues[0]).toContain("generated=false");
+  });
+
+  test("treats an absent relatedPaths and an empty list as equal", () => {
+    const local: PerspectiveFeature[] = [
+      {
+        featureName: "tasks",
+        specs: [{ specName: "s", title: "t", summary: "", status: { mode: "deterministic", traced: false, generated: false } }],
+      },
+    ];
+    const remote: Perspectives = {
+      features: [
+        {
+          featureName: "tasks",
+          specs: [{ specName: "s", title: "t", summary: "x", relatedPaths: [], status: { mode: "deterministic", traced: false, generated: false } }],
+        },
+      ],
+    };
+    expect(comparePerspectivesSkeleton(local, remote)).toEqual([]);
   });
 });
 
-describe("statusLabel", () => {
-  const ja = labelsFor("ja");
-  const en = labelsFor("en");
-
-  test("live specs are always shown as runnable — codegen does not apply", () => {
-    expect(statusLabel({ mode: "live", traced: false, generated: false }, ja)).toBe("✅ 実行可能");
-    expect(statusLabel({ mode: "live", traced: true, generated: true }, ja)).toBe("✅ 実行可能");
-    expect(statusLabel({ mode: "live", traced: false, generated: false }, en)).toBe("✅ runnable");
+describe("extractRelatedPaths", () => {
+  test("transcribes string entries verbatim and drops non-strings", () => {
+    const yaml = ["title: t", "relatedPaths:", "  - src/features/tasks/**", "  - 42"].join("\n");
+    expect(extractRelatedPaths(yaml)).toEqual(["src/features/tasks/**"]);
   });
 
-  test("deterministic + generated is runnable", () => {
-    expect(statusLabel({ mode: "deterministic", traced: true, generated: true }, ja)).toBe(
-      "✅ 実行可能",
-    );
-    expect(statusLabel({ mode: "deterministic", traced: true, generated: true }, en)).toBe(
-      "✅ runnable",
-    );
-  });
-
-  test("deterministic without test.spec.ts is not runnable — both partial states collapse to the same warning", () => {
-    expect(statusLabel({ mode: "deterministic", traced: true, generated: false }, ja)).toBe(
-      "⚠️ 未record",
-    );
-    expect(statusLabel({ mode: "deterministic", traced: false, generated: false }, ja)).toBe(
-      "⚠️ 未record",
-    );
-    expect(statusLabel({ mode: "deterministic", traced: false, generated: false }, en)).toBe(
-      "⚠️ not recorded",
-    );
+  test("returns empty for a spec without relatedPaths or unparsable YAML", () => {
+    expect(extractRelatedPaths("title: t")).toEqual([]);
+    expect(extractRelatedPaths(": : not yaml : :")).toEqual([]);
   });
 });

@@ -10,6 +10,7 @@ import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOpt
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { resolveHubClient, type HubContext } from "./hub-conn.ts";
+import { syncSpecPerspectives } from "./perspectives-sync.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { ValidationMode } from "../runtime/replay-validate.ts";
 import type { Locator, ParsedStatusLine, RecordedAction } from "../types.ts";
@@ -127,12 +128,15 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     await applyProfileFromOption({ profile: undefined, project: "", cwd: cwdForProfile });
   }
 
-  // Compose HubContext by hand (not via resolveHubContext) — project here was
-  // already resolved via the exiting `resolveProject`, and mixing in the
-  // throwing resolver would change the error mode for an invalid --project
-  // from process.exit(2) to an uncaught throw.
+  // Compose HubContext by hand (not via resolveHubContext) — project is
+  // resolved via the existing `resolveProject`, and mixing in the throwing
+  // resolver would change the error mode for an invalid --project from
+  // process.exit(2) to an uncaught throw. The project scope matters whenever
+  // a hub is configured (prompt lookups, the perspectives auto-update), not
+  // only when --profile asked for hub variables.
   const hubClientForTrace = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken, hubHeader: opts.hubHeader });
-  const hubContext: HubContext | null = hubClientForTrace && project ? { hub: hubClientForTrace, project } : null;
+  const hubProject = project ?? (hubClientForTrace !== null ? resolveProject(opts) : undefined);
+  const hubContext: HubContext | null = hubClientForTrace && hubProject ? { hub: hubClientForTrace, project: hubProject } : null;
 
   // Hold the spec lock across trace + generate: a concurrent record/generate
   // of the same spec would interleave ir.json and output writes. runGenerate
@@ -187,6 +191,13 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       });
     }
   }
+
+  // Keep the hub's coverage inventory in step with what was just recorded.
+  await syncSpecPerspectives(hubContext, {
+    ref: { featureName, specName },
+    ...(language ? { language } : {}),
+    ...(opts.model ? { model: opts.model } : {}),
+  });
 });
 
 /**

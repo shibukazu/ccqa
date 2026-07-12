@@ -1,6 +1,6 @@
 # 0003. `perspectives` is a factual coverage inventory, not a decision record
 
-- Status: accepted
+- Status: accepted (amended 2026-07-13 — see Amendment below)
 - Date: 2026-05-25
 
 ## Context and problem statement
@@ -104,10 +104,43 @@ Unit tests cover the schema boundary (a `severity`-like key is rejected), the
 note-preservation merge, the QA-table field parsing/merge, and the Markdown
 rendering (including that it does not restate steps/expected results).
 
+## Amendment (2026-07-13): the inventory is hub-only; the repo carries no copy
+
+The original output layout — `.ccqa/perspectives.yaml` plus a tree of
+Markdown views — put a generated document into the consuming repo that
+nothing else read. Once the hub became the shared store for everything
+cross-cutting (runs, secrets, prompts), keeping a second, repo-committed copy
+of the inventory was pure noise: it churned diffs on every regeneration and
+could silently drift from what teammates saw.
+
+What changes (the *storage and freshness* of the inventory, not its scope):
+
+- The document is stored **on the hub only**, one JSON document per project
+  (`PUT/GET /api/v1/projects/:project/perspectives`). No `.yaml`/`.md` files
+  are written to the repo; `ccqa perspectives` deletes leftovers from older
+  versions when it runs, and it now requires a hub connection.
+- The Markdown views are replaced by the hub UI's **Perspectives** view
+  (summary strip, one feature-grouped table, expandable per-case detail).
+- The document stays fresh incrementally: a successful `ccqa record` /
+  `ccqa generate` upserts that one spec's entry (mechanical facts recomputed,
+  descriptive fields rewritten by a single-spec Claude call, `note`
+  preserved). The full command remains the way to build the document
+  initially and to prune deleted specs.
+- `note` — still the only human-authored field — is edited in the hub UI
+  (`PATCH .../perspectives`, a serialized read-modify-write), since there is
+  no local file left to hand-edit.
+
+The factual-inventory boundary (no severity, no gap analysis, `.strict()`
+schema) is unchanged.
+
 ## More information
 
 - Schema: `src/spec/perspectives-schema.ts`
-- Command: `src/cli/perspectives.ts`, prompt: `src/prompts/perspectives.ts`
+- Command: `src/cli/perspectives.ts`, prompt: `src/prompts/perspectives.ts`,
+  incremental sync: `src/cli/perspectives-sync.ts`
+- Hub endpoints: `src/hub/api/handlers/perspectives.ts`
+  (see `docs/hub-api.md#perspectives`)
 - Related: ADR-0001 (lenient over strict — preserve human-load-bearing data
   rather than silently dropping it; the `note` preservation here follows the
-  same instinct).
+  same instinct). ADR-0007 (hub/CLI responsibility split — the hub as the
+  shared store, the CLI as the executor).

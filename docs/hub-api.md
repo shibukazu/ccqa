@@ -259,6 +259,34 @@ DELETE /api/v1/projects/:project/prompts/:name
   → 204
 ```
 
+## Perspectives
+
+The project's coverage-inventory document (`ccqa perspectives`), stored on
+the hub only — one JSON document per project, plain text, no encryption key
+required. The CLI Zod-validates before pushing; the hub only rejects bodies
+that aren't a JSON object. `PATCH` is the hub UI's note editing: `note` is
+the document's only human-authored field and this is its only write path
+(an empty `note` clears the field). The edit is applied as a serialized
+read-modify-write so concurrent edits can't clobber each other.
+
+```
+PUT /api/v1/projects/:project/perspectives
+  Content-Type: application/json
+  body: the perspectives document (schema: src/spec/perspectives-schema.ts)
+  → 204 | 400 (not a JSON object)
+
+GET /api/v1/projects/:project/perspectives
+  → 200 (application/json, the stored document) | 404
+
+PATCH /api/v1/projects/:project/perspectives
+  Content-Type: application/json
+  body: { feature, spec, note }
+  → 204 | 400 (malformed body) | 404 (no document, or no such spec entry)
+
+DELETE /api/v1/projects/:project/perspectives
+  → 204
+```
+
 ## Learning jobs
 
 Turn graded triage into an improved analysis custom prompt. A job scans a project's

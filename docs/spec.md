@@ -18,7 +18,6 @@ spec directory accumulates these files as you work:
 ```
 .ccqa/
   config.yaml                    # generation-target settings (see targets.md)
-  perspectives.yaml              # coverage inventory (see below)
   blocks/
     login/spec.yaml              # reusable block (params + steps)
   features/
@@ -234,21 +233,33 @@ behavior.
 
 `ccqa perspectives` inventories the coverage that already exists under
 `.ccqa/` — the equivalent of a hand-kept QA spreadsheet, deliberately scoped
-to *facts about what is tested today*. It writes:
-
-- **`.ccqa/perspectives.yaml`** — the machine-readable source of truth.
-- **`.ccqa/perspectives.md`** — a thin category index (one row per case,
-  linking each category's detail file and each case's `spec.yaml`).
-- **`.ccqa/features/<feature>/perspectives.md`** — per-category detail: one
-  vertical table per case (verification summary, preconditions, start
-  screen, spec link, related code, note).
+to *facts about what is tested today*. The document lives **on the hub
+only** (one per project) and is browsed in the hub UI's *Perspectives* view;
+nothing is written into the repo. The command therefore needs a hub
+connection (`CCQA_HUB_URL` / `CCQA_HUB_TOKEN`, or `--hub-url` /
+`--hub-token`).
 
 ```bash
-ccqa perspectives                          # inventory every spec
+ccqa perspectives                          # regenerate the inventory and push it
 ccqa perspectives --instruction "..."      # steer how summaries are written
 ccqa perspectives --apply                  # skip the [y/N] confirmation
-ccqa perspectives --language en            # English fields and labels
+ccqa perspectives --language en            # English descriptive fields
+ccqa perspectives --check                  # CI: exit 1 when the document is stale
 ```
+
+The inventory also stays fresh without running the command: a successful
+`ccqa record` / `ccqa generate` automatically upserts that one spec's entry
+(when a hub is configured). The full command remains the way to build the
+document the first time and to prune entries for specs that were deleted.
+Earlier ccqa versions wrote `.ccqa/perspectives.yaml` / `.md` files into the
+repo; the command deletes those leftovers when it runs.
+
+`--check` is the staleness gate for CI: it rebuilds the mechanical skeleton
+from the local specs and compares it against the hub document — the spec
+set, titles, `relatedPaths`, and `status` — listing every mismatch and
+exiting 1 (no Claude calls, so it is fast and free). Claude-authored
+descriptive fields and the human `note` are not compared; they can't signal
+staleness.
 
 How each case is assembled:
 
@@ -259,8 +270,8 @@ How each case is assembled:
   codegen).
 - `summary` / `startScreen` / `testCondition` / `preconditions` are written
   by Claude from the spec's steps, with read-only tools.
-- `note` is **human-only** and preserved across regeneration, matched by
-  `(featureName, specName)`.
+- `note` is **human-only**, edited in the hub UI's Perspectives view, and
+  preserved across regeneration, matched by `(featureName, specName)`.
 
 Two things are intentionally out of scope (and rejected by the strict
 schema): severity/priority fields, and code-vs-test gap analysis. See
