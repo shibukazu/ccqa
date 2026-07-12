@@ -301,22 +301,25 @@ export interface LlmEngineRequest {
   invoke?: InvokeFn;
 }
 
-/** `targetConfig.outDir`, or a config-pointing error — LLM targets require it. */
-export function requireOutDir(ctx: GenerateContext, target: string): string {
-  const outDir = ctx.targetConfig.outDir;
-  if (!outDir) {
-    throw new Error(
-      `the ${target} target needs \`targets.${target}.outDir\` in .ccqa/config.yaml — ` +
-        `the directory generated tests are written to`,
-    );
-  }
-  return outDir;
+/**
+ * The spec's own directory, relative to the project root. This is the
+ * default write root when `targets.<target>.outDir` is not configured —
+ * mirroring the agent-browser target, one spec directory carries its own
+ * runnable test regardless of which target generated it.
+ */
+export function specDirRel(ctx: Pick<GenerateContext, "featureName" | "specName">): string {
+  return `.ccqa/features/${ctx.featureName}/test-cases/${ctx.specName}`;
+}
+
+/** `targets.<target>.outDir` when configured, else the spec's own directory. */
+export function resolveOutDir(ctx: GenerateContext): string {
+  return ctx.targetConfig.outDir ?? specDirRel(ctx);
 }
 
 /** Full LLM generation: prompt assembly → invoke → write → verify loop. */
 export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<GenerateResult> {
   const { ctx } = req;
-  const outDir = requireOutDir(ctx, req.target);
+  const outDir = resolveOutDir(ctx);
   const resources = await resolveResources(ctx.cwd, ctx.resources);
   const conventions = await loadConventions(ctx.cwd, ctx.conventions);
   const warnings = [...conventions.warnings];
@@ -401,7 +404,7 @@ export interface PreparedFilesRequest {
  */
 export async function finalizePreparedFiles(req: PreparedFilesRequest): Promise<GenerateResult> {
   const { ctx } = req;
-  const outDir = requireOutDir(ctx, req.target);
+  const outDir = resolveOutDir(ctx);
   const resources = await resolveResources(ctx.cwd, ctx.resources);
   const policy: OutputPathPolicy = {
     cwd: ctx.cwd,

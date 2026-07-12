@@ -67,7 +67,7 @@ defaultTarget: playwright   # used when a spec has no target: (default: agent-br
 
 targets:
   playwright:
-    outDir: e2e/specs                # where generated tests are written
+    outDir: e2e/specs                # optional — omit to write into the spec's own directory
     # optional; enables `ccqa run`. {artifactsDir} collects traces into the report.
     runCommand: "pnpm exec playwright test --trace retain-on-failure --output {artifactsDir} {files}"
 
@@ -112,10 +112,14 @@ should imitate. Entries may be globs.
 
 ### `outDir` and `generated.json`
 
-Generated files land under `outDir` (targets suggest
-`<outDir>/<feature>/<spec>.spec.ts`; an LLM pass may relocate within
-`outDir` to match repo conventions, never outside it). Each generated spec
-also gets a `generated.json` manifest in its spec directory:
+By default a generated test lands in the spec's own directory — the same
+convention as the agent-browser target, so every spec carries its runnable
+test next to its `spec.yaml` (`test.spec.ts` for playwright, `runbook.yaml`
+for runn). Configure `outDir` to write into a separate tree instead
+(targets then suggest `<outDir>/<feature>/<spec>.spec.ts`; an LLM pass may
+relocate within `outDir` to match repo conventions, never outside it).
+Each generated spec also gets a `generated.json` manifest in its spec
+directory:
 
 ```json
 {

@@ -3,7 +3,7 @@ import { runnTaskInstructions } from "../../prompts/llm-gen.ts";
 import {
   existingOutputFromManifest,
   generateWithLlmEngine,
-  requireOutDir,
+  specDirRel,
   type InvokeFn,
   type LlmGeneratedFile,
 } from "../llm-engine.ts";
@@ -32,11 +32,15 @@ export async function generateRunnRunbook(
   ctx: GenerateContext,
   invoke?: InvokeFn,
 ): Promise<GenerateResult> {
-  const outDir = requireOutDir(ctx, RUNN_TARGET);
+  // Without a configured outDir the runbook lands in the spec directory,
+  // next to spec.yaml — the same layout as the other targets.
+  const outDir = ctx.targetConfig.outDir;
   return generateWithLlmEngine({
     ctx,
     target: RUNN_TARGET,
-    taskInstructions: runnTaskInstructions(`${outDir}/${ctx.featureName}/${ctx.specName}.yaml`),
+    taskInstructions: runnTaskInstructions(
+      outDir ? `${outDir}/${ctx.featureName}/${ctx.specName}.yaml` : `${specDirRel(ctx)}/runbook.yaml`,
+    ),
     validateFile: validateRunnFile,
     invoke,
   });

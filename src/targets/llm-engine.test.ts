@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   existingOutputFromManifest,
@@ -270,17 +270,28 @@ describe("generateWithLlmEngine", () => {
     ).rejects.toThrow(/no "kind": "test" file/);
   });
 
-  it("errors when outDir is missing from the target config", async () => {
+  it("defaults the write root to the spec directory when outDir is not configured", async () => {
     await makeProject();
-    const { invoke } = fakeInvoke([okOutput()]);
+    const specDirTest = ".ccqa/features/todos/test-cases/add-item/test.spec.ts";
+    const { invoke } = fakeInvoke([okOutput(specDirTest)]);
+    const res = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({}) }),
+      target: "playwright",
+      taskInstructions: "x",
+      invoke,
+    });
+    expect(res.files.map((f) => relative(cwd, f.path))).toEqual([specDirTest]);
+
+    // ...and a path outside the spec directory is rejected by the policy.
+    const { invoke: badInvoke } = fakeInvoke([okOutput("e2e/todos/add-item.spec.ts")]);
     await expect(
       generateWithLlmEngine({
         ctx: makeContext({ targetConfig: TargetConfigSchema.parse({}) }),
         target: "playwright",
         taskInstructions: "x",
-        invoke,
+        invoke: badInvoke,
       }),
-    ).rejects.toThrow(/targets\.playwright\.outDir/);
+    ).rejects.toThrow(/escapes the allowed roots/);
   });
 
   it("runs the fix loop until the runCommand passes", async () => {
