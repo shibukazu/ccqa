@@ -2,12 +2,17 @@
 
 **Your Claude subscription already includes a QA engineer.**
 
-ccqa turns Claude Code into a browser test recorder and runner. Write a test
-spec in YAML; Claude drives the browser once to discover the route; ccqa
-compiles the recording into runnable test code for the target of your choice
-— its own vitest-based `test.spec.ts`, a plain Playwright spec, or a runn
-runbook — and `ccqa run` executes everything into one report you can push to
-a shared hub. No extra API key. Just `claude`.
+ccqa turns Claude Code into a browser test recorder and runner:
+
+1. Write a test spec in YAML — plain steps and expected results.
+2. Claude drives a real browser **once** to discover the route
+   (`ccqa record`).
+3. ccqa compiles the recording into runnable test code for your `target:`
+   — vitest replay, plain Playwright, or a runn runbook.
+4. `ccqa run` replays everything into one report you can push to a
+   shared hub.
+
+No extra API key. Just `claude`.
 
 [日本語版 README](./docs/README.ja.md)
 
@@ -27,15 +32,34 @@ test code ──► ccqa run ────────► report.json ─► ccqa
                drives per step)                   grading & learning
 ```
 
-- **Deterministic** (the default): record once, replay in CI under vitest —
-  no LLM at run time, cheapest and most stable.
-- **Live** (`mode: live`): no codegen; Claude drives every run and judges
-  each step's `expected` — for fragile, timing-heavy UIs.
-- **Other targets** (`target: playwright` / `runn`): the same recording (or
-  the spec itself) is emitted as test code that drops into your existing
-  suite and runs through your own command.
-- Every failing spec gets a root-cause call (TEST_DRIFT / SPEC_CHANGE /
-  PRODUCT_BUG) you can grade on the hub — and the hub learns from grades.
+A spec runs in one of two ways:
+
+**Deterministic (the default).** Claude drives the browser once
+(`ccqa record`), and the recording is compiled into plain test code. From
+then on, CI just replays that code — no LLM at run time, cheapest and most
+stable. The `target:` field picks only **what the recording compiles
+into**; every target is the same deterministic replay:
+
+| `target:` | Generated file | Replayed by |
+|---|---|---|
+| `agent-browser` (default) | `test.spec.ts` (vitest + agent-browser) | vitest |
+| `playwright` | `test.spec.ts` (plain `@playwright/test`) | your `runCommand` |
+| `runn` | `runbook.yaml` (API scenario — compiled from the spec, no recording) | your `runCommand` |
+
+`runCommand` is the one-line command your repo already uses to run that
+tool, declared once in `.ccqa/config.yaml` — e.g.
+`pnpm exec playwright test {files}`. ccqa substitutes the spec's generated
+test files for `{files}` and a per-spec artifacts directory for
+`{artifactsDir}`; see [Generation targets](./docs/targets.md) for the full
+contract.
+
+**Live (`mode: live`).** No codegen: Claude drives every run and judges
+each step's `expected` — for fragile, timing-heavy UIs where a fixed
+recording would break.
+
+Either way, every failing spec gets a root-cause call (TEST_DRIFT /
+SPEC_CHANGE / PRODUCT_BUG) you can grade on the hub — and the hub learns
+from your grades.
 
 ## Install
 
@@ -84,11 +108,14 @@ See [Running specs](./docs/running.md) for flags, CI recipes, and the
 report format.
 
 **4. Optional: share results on a hub** — `ccqa serve` starts a small
-self-hosted server (a `docker-compose.yaml` ships at the repo root) that
-turns pushed reports into a team dashboard: browse runs and screenshots,
-grade the failure triage (the hub learns from grades), and store the
-saved sessions, variables, and learned prompts that runs pull — CI then
-needs a single secret.
+self-hosted server (or use the bundled `docker-compose.yaml`). Pushing
+reports to it gives your team:
+
+- a dashboard of runs, with per-step screenshots
+- triage grading — mark each failure call right or wrong; the hub learns
+  from the grades
+- one place for shared sessions, variables, and learned prompts — CI
+  needs a single secret
 
 ```bash
 export CCQA_HUB_TOKEN=$(openssl rand -hex 24)

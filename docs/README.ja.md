@@ -2,12 +2,16 @@
 
 **あなたの Claude サブスクリプションには、すでに QA エンジニアが含まれています。**
 
-ccqa は Claude Code をブラウザテストのレコーダー兼ランナーに変えます。テスト仕様を
-YAML で書くと、Claude が 1 度だけブラウザを操作して経路を発見し、ccqa がその記録を
-選択した target のテストコード — vitest ベースの `test.spec.ts`、プレーンな
-Playwright spec、runn の runbook — にコンパイルします。`ccqa run` がすべてを実行して
-1 つのレポートにまとめ、共有 hub に push できます。追加の API キーは不要。
-`claude` だけで動きます。
+ccqa は Claude Code をブラウザテストのレコーダー兼ランナーに変えます:
+
+1. テスト仕様を YAML で書く — 素朴な steps と expected の列。
+2. Claude が実ブラウザを **1 度だけ**操作して経路を発見する（`ccqa record`）。
+3. ccqa がその記録を `target:` のテストコードにコンパイルする —
+   vitest リプレイ、プレーンな Playwright、runn の runbook。
+4. `ccqa run` がすべてを再生して 1 つのレポートにまとめ、共有 hub に
+   push できる。
+
+追加の API キーは不要。`claude` だけで動きます。
 
 [English README](../README.md)
 
@@ -26,14 +30,32 @@ spec.yaml ──► ccqa record ─────► ir.json ────► ccqa 
                毎回操作)                          採点と学習
 ```
 
-- **Deterministic**（デフォルト）: 1 度 record すれば CI では vitest で再生するだけ —
-  実行時に LLM は介在せず、最も安価で安定。
-- **Live**（`mode: live`）: codegen 不要。毎回 Claude がブラウザを操作し、各 step の
-  `expected` を判定 — タイミング依存のフラジャイルな UI 向け。
-- **その他の target**（`target: playwright` / `runn`）: 同じ記録（または spec 自体）を
-  既存のテストスイートに組み込めるテストコードとして emit し、自前のコマンドで実行。
-- 失敗した spec には原因分類（TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG）が付き、
-  hub 上で採点できます — hub は採点から学習します。
+spec の実行様式は 2 つです:
+
+**Deterministic（デフォルト）。** Claude がブラウザを 1 度だけ操作し
+（`ccqa record`）、その記録がプレーンなテストコードにコンパイルされます。
+以後の CI はそのコードを再生するだけ — 実行時に LLM は介在せず、最も安価で
+安定。`target:` は「記録を**どの形式のコードにコンパイルするか**」だけを
+選ぶもので、どの target も同じ deterministic な再生です:
+
+| `target:` | 生成ファイル | 再生手段 |
+|---|---|---|
+| `agent-browser`（既定） | `test.spec.ts`（vitest + agent-browser） | vitest |
+| `playwright` | `test.spec.ts`（プレーンな `@playwright/test`） | あなたの `runCommand` |
+| `runn` | `runbook.yaml`（API シナリオ — spec から直接生成、record 不要） | あなたの `runCommand` |
+
+`runCommand` は「そのリポジトリで普段そのツールを実行するコマンド」を
+`.ccqa/config.yaml` に 1 行宣言するものです — 例:
+`pnpm exec playwright test {files}`。`{files}` には spec の生成テスト
+ファイルが、`{artifactsDir}` には spec ごとの成果物ディレクトリが ccqa に
+よって代入されます。完全な仕様は [Generation targets](./targets.md)。
+
+**Live（`mode: live`）。** codegen なし: 毎回 Claude がブラウザを操作し、
+各 step の `expected` を判定します — 固定の記録では壊れてしまう、
+タイミング依存のフラジャイルな UI 向け。
+
+どちらの様式でも、失敗した spec には原因分類（TEST_DRIFT / SPEC_CHANGE /
+PRODUCT_BUG）が付き、hub 上で採点できます — hub は採点から学習します。
 
 ## インストール
 
@@ -80,11 +102,14 @@ ccqa run tasks/create-and-complete
 ます。フラグ・CI レシピ・レポート形式は [Running specs](./running.md) を参照して
 ください。
 
-**4. 任意: hub で結果を共有する** — `ccqa serve` でセルフホストの小さなサーバー
-（hub）が立ちます（リポジトリルートに `docker-compose.yaml` も同梱）。push した
-レポートがチームのダッシュボードになり、実行結果とスクリーンショットの閲覧、
-失敗 triage の採点（hub は採点から学習します）、保存済みセッション・変数・学習
-プロンプトの保管と配布ができます。CI が持つ secret は 1 つで済みます。
+**4. 任意: hub で結果を共有する** — `ccqa serve` でセルフホストの小さな
+サーバーが立ちます（同梱の `docker-compose.yaml` でも可）。レポートを push
+するとチームで次のことができます:
+
+- 実行結果のダッシュボード（step ごとのスクリーンショット付き）
+- 失敗 triage の採点 — 分類の正誤をマークすると hub が採点から学習
+- 保存済みセッション・変数・学習プロンプトの一元管理 — CI が持つ secret は
+  1 つで済む
 
 ```bash
 export CCQA_HUB_TOKEN=$(openssl rand -hex 24)

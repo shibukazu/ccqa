@@ -150,6 +150,11 @@ agent-browser specs. Without `runCommand`, the target is generate-only:
   passed run shows what ran. The directory is also exported to the command
   as `CCQA_ARTIFACTS_DIR`, for tools that can't take it as a flag.
 
+The command also runs with a fresh per-spec `CCQA_RUN_ID` in its
+environment — the same contract as the vitest runner, so specs that embed
+`${CCQA_RUN_ID}` in created-content names stay collision-free across specs
+and runs.
+
 Artifact collection is capped (50 files / 32 MB per spec); anything dropped
 is named in a warning, never silently cut. The examples above use
 `--output {artifactsDir}` (Playwright: failure traces land in the report)
