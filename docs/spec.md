@@ -244,6 +244,7 @@ ccqa perspectives                          # regenerate the inventory and push i
 ccqa perspectives --instruction "..."      # steer how summaries are written
 ccqa perspectives --apply                  # skip the [y/N] confirmation
 ccqa perspectives --language en            # English descriptive fields
+ccqa perspectives --check                  # CI: exit 1 when the document is stale
 ```
 
 The inventory also stays fresh without running the command: a successful
@@ -252,6 +253,13 @@ The inventory also stays fresh without running the command: a successful
 document the first time and to prune entries for specs that were deleted.
 Earlier ccqa versions wrote `.ccqa/perspectives.yaml` / `.md` files into the
 repo; the command deletes those leftovers when it runs.
+
+`--check` is the staleness gate for CI: it rebuilds the mechanical skeleton
+from the local specs and compares it against the hub document — the spec
+set, titles, `relatedPaths`, and `status` — listing every mismatch and
+exiting 1 (no Claude calls, so it is fast and free). Claude-authored
+descriptive fields and the human `note` are not compared; they can't signal
+staleness.
 
 How each case is assembled:
 

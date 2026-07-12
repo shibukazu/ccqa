@@ -826,8 +826,10 @@ const CSS = `
   .badge.norec .d { background: var(--amber); }
 
   .tblcard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-  tr.grp td { background: var(--surface-2); border-bottom: 1px solid var(--border); padding: 6px 12px; font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--fg-dim); }
-  tr.grp td .gcount { color: var(--muted-2); font-weight: 500; margin-left: 8px; }
+  /* Feature section rows must read as headings, not as just another data row —
+     larger, darker, extra padding, and a strong top rule marking the break. */
+  tr.grp td { background: var(--surface-2); border-top: 2px solid var(--border-strong); border-bottom: 1px solid var(--border); padding: 12px 12px 10px; font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--fg); }
+  tr.grp td .gcount { color: var(--muted); font-weight: 500; font-size: 12px; font-family: var(--font); margin-left: 10px; }
   td.c-title { font-weight: 500; max-width: 460px; }
   td.c-title .csum { display: block; font-weight: 400; color: var(--muted); font-size: 12.5px; margin-top: 1px; }
   td.c-chev { width: 28px; color: var(--muted-2); text-align: right; }

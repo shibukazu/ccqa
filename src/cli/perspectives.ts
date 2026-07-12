@@ -36,6 +36,7 @@ import * as log from "./logger.ts";
 interface PerspectivesOptions extends HubConnOptions {
   instruction?: string;
   apply?: boolean;
+  check?: boolean;
   model?: string;
   language?: string;
   project?: string;
@@ -48,17 +49,134 @@ export const perspectivesCommand = addHubOptions(addLanguageOption(
     )
     .option("--instruction <text>", "Hint to steer how summaries are written")
     .option("--apply", "Auto-apply without [y/N] confirmation", false)
+    .option(
+      "--check",
+      "Verify the hub document still matches the local specs (mechanical fields only) and exit 1 when it is stale. No Claude calls — cheap enough for CI.",
+      false,
+    )
     .option("-m, --model <name>", "Claude model alias ('sonnet'|'opus'|'haiku') or full ID")
     .option("--project <name>", "Hub project to store the document under (default: cwd directory name)"),
 )).action(withHubErrors(async (opts: PerspectivesOptions) => {
-  await runPerspectives(opts);
+  if (opts.check) {
+    await runPerspectivesCheck(opts);
+  } else {
+    await runPerspectives(opts);
+  }
 }));
 
-async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
-  // Perspectives live on the hub only — no hub, no place to store them.
-  let hub: HubClient;
+/**
+ * `--check`: compare the hub document against a freshly-built local skeleton
+ * on the CLI-owned mechanical fields only (the spec set, titles,
+ * relatedPaths, status). Claude-authored descriptive fields and the human
+ * note are deliberately not compared — they are not deterministic, so they
+ * can't signal staleness. Exit 1 on any mismatch; this is the CI gate for
+ * "someone changed the specs without the inventory catching up".
+ */
+async function runPerspectivesCheck(opts: PerspectivesOptions): Promise<void> {
+  const hub = requireHubOrExit(opts);
+  const project = resolveProject(opts);
+  log.header("perspectives", `check (project: ${project})`);
+
+  const skeleton = await buildSkeleton(await listFeatureTree());
+  const localCount = skeleton.reduce((n, f) => n + f.specs.length, 0);
+
+  const existingDoc = await hub.getPerspectives(project);
+  if (existingDoc === null) {
+    if (localCount === 0) {
+      log.info("no local test cases and no hub document — nothing to check.");
+      return;
+    }
+    log.error(`no perspectives document on the hub for project "${project}" — run \`ccqa perspectives\` to create it`);
+    process.exit(1);
+  }
+  const parsed = PerspectivesSchema.safeParse(existingDoc);
+  if (!parsed.success) {
+    log.error("the hub document does not match the perspectives schema — run `ccqa perspectives` to regenerate it");
+    process.exit(1);
+  }
+
+  log.info(`checking ${localCount} local test case(s) against the hub document...`);
+  const issues = comparePerspectivesSkeleton(skeleton, parsed.data);
+  if (issues.length === 0) {
+    log.blank();
+    log.info(`perspectives are up to date (${localCount} case(s)).`);
+    return;
+  }
+  log.blank();
+  for (const issue of issues) {
+    log.error(issue);
+  }
+  log.blank();
+  log.error(`perspectives are stale (${issues.length} issue(s)) — run \`ccqa perspectives\` to regenerate`);
+  process.exit(1);
+}
+
+/**
+ * Mechanical-field comparison behind `--check`. Returns one human-readable
+ * line per out-of-sync spec (empty when in sync). Exported for unit testing.
+ */
+export function comparePerspectivesSkeleton(
+  local: PerspectiveFeature[],
+  remote: Perspectives,
+): string[] {
+  const remoteMap = new Map<string, PerspectiveSpec>();
+  for (const feature of remote.features) {
+    for (const spec of feature.specs) {
+      remoteMap.set(noteKey(feature.featureName, spec.specName), spec);
+    }
+  }
+
+  const issues: string[] = [];
+  const seen = new Set<string>();
+  for (const feature of local) {
+    for (const spec of feature.specs) {
+      const key = noteKey(feature.featureName, spec.specName);
+      seen.add(key);
+      const remoteSpec = remoteMap.get(key);
+      if (!remoteSpec) {
+        issues.push(`${key}: not in the hub document`);
+        continue;
+      }
+      const fields: string[] = [];
+      if (remoteSpec.title !== spec.title) fields.push("title");
+      if (!sameStringArray(remoteSpec.relatedPaths, spec.relatedPaths)) fields.push("relatedPaths");
+      if (
+        remoteSpec.status.mode !== spec.status.mode ||
+        remoteSpec.status.traced !== spec.status.traced ||
+        remoteSpec.status.generated !== spec.status.generated
+      ) {
+        fields.push(
+          `status (local: ${formatStatus(spec.status)}, hub: ${formatStatus(remoteSpec.status)})`,
+        );
+      }
+      if (fields.length > 0) {
+        issues.push(`${key}: out of date — ${fields.join(", ")}`);
+      }
+    }
+  }
+  for (const key of remoteMap.keys()) {
+    if (!seen.has(key)) {
+      issues.push(`${key}: no longer exists locally (stale hub entry)`);
+    }
+  }
+  return issues;
+}
+
+function formatStatus(status: PerspectiveStatus): string {
+  return `${status.mode}/traced=${status.traced}/generated=${status.generated}`;
+}
+
+/** Order-sensitive equality; an absent list and an empty list are the same thing. */
+function sameStringArray(a: string[] | undefined, b: string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((v, i) => v === right[i]);
+}
+
+/** Perspectives live on the hub only — no hub, no place to store (or check) them. */
+function requireHubOrExit(opts: PerspectivesOptions): HubClient {
   try {
-    hub = requireHubClient(opts);
+    return requireHubClient(opts);
   } catch (err) {
     if (err instanceof HubConnectionError) {
       log.error(err.message);
@@ -67,6 +185,10 @@ async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
     }
     throw err;
   }
+}
+
+async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
+  const hub = requireHubOrExit(opts);
   const project = resolveProject(opts);
   log.header("perspectives", `project: ${project}`);
 

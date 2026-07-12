@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
 import {
+  comparePerspectivesSkeleton,
   extractNotes,
   mergePerspectives,
   parseSummaries,
@@ -354,6 +355,83 @@ describe("upsertSpec (incremental record/generate sync)", () => {
     };
     upsertSpec(doc, "notifications", entry("assign"));
     expect(doc.features.map((f) => f.featureName)).toEqual(["auth", "notifications", "tasks"]);
+  });
+});
+
+describe("comparePerspectivesSkeleton (--check)", () => {
+  const hubDoc = (over: Partial<PerspectiveSpec> = {}): Perspectives => ({
+    generatedAt: "2026-07-13T00:00:00.000Z",
+    features: [
+      {
+        featureName: "tasks",
+        specs: [
+          {
+            specName: "search-tasks",
+            title: "項目を検索できる",
+            summary: "Claude が書いた要約（比較対象外）",
+            startScreen: "一覧画面",
+            status: { mode: "deterministic", traced: true, generated: true },
+            relatedPaths: ["src/features/tasks/**"],
+            note: "human note（比較対象外）",
+            ...over,
+          },
+        ],
+      },
+    ],
+  });
+
+  test("in-sync mechanical fields yield no issues — descriptive fields and note are ignored", () => {
+    expect(comparePerspectivesSkeleton(skeleton, hubDoc())).toEqual([]);
+  });
+
+  test("flags a local spec missing from the hub and a hub entry with no local spec", () => {
+    const localOnly: PerspectiveFeature[] = [
+      ...skeleton,
+      {
+        featureName: "auth",
+        specs: [{ specName: "login", title: "t", summary: "", status: { mode: "deterministic", traced: false, generated: false } }],
+      },
+    ];
+    const issues = comparePerspectivesSkeleton(localOnly, {
+      features: [
+        ...hubDoc().features,
+        { featureName: "gone", specs: [{ specName: "old", title: "t", summary: "", status: { mode: "live", traced: false, generated: false } }] },
+      ],
+    });
+    expect(issues).toContain("auth/login: not in the hub document");
+    expect(issues).toContain("gone/old: no longer exists locally (stale hub entry)");
+    expect(issues).toHaveLength(2);
+  });
+
+  test("flags title / relatedPaths / status drift on one line per spec", () => {
+    const issues = comparePerspectivesSkeleton(skeleton, hubDoc({
+      title: "古いタイトル",
+      relatedPaths: ["src/other/**"],
+      status: { mode: "deterministic", traced: true, generated: false },
+    }));
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("tasks/search-tasks: out of date");
+    expect(issues[0]).toContain("title");
+    expect(issues[0]).toContain("relatedPaths");
+    expect(issues[0]).toContain("generated=false");
+  });
+
+  test("treats an absent relatedPaths and an empty list as equal", () => {
+    const local: PerspectiveFeature[] = [
+      {
+        featureName: "tasks",
+        specs: [{ specName: "s", title: "t", summary: "", status: { mode: "deterministic", traced: false, generated: false } }],
+      },
+    ];
+    const remote: Perspectives = {
+      features: [
+        {
+          featureName: "tasks",
+          specs: [{ specName: "s", title: "t", summary: "x", relatedPaths: [], status: { mode: "deterministic", traced: false, generated: false } }],
+        },
+      ],
+    };
+    expect(comparePerspectivesSkeleton(local, remote)).toEqual([]);
   });
 });
 
