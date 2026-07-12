@@ -77,9 +77,23 @@ ccqa run tasks/create-and-complete
 ```
 
 `report.json`（＋step ごとのスクリーンショット）が常に `ccqa-report/` に書き出され
-ます。[ccqa hub](./hub.md) に push すると、結果の閲覧、失敗 triage の採点、CI との
-セッション・変数共有ができ、CI が持つ secret は 1 つで済みます。フラグ・CI レシピ・
-レポート形式は [Running specs](./running.md) を参照してください。
+ます。フラグ・CI レシピ・レポート形式は [Running specs](./running.md) を参照して
+ください。
+
+**4. 任意: hub で結果を共有する** — `ccqa serve` でセルフホストの小さなサーバー
+（hub）が立ちます（リポジトリルートに `docker-compose.yaml` も同梱）。push した
+レポートがチームのダッシュボードになり、実行結果とスクリーンショットの閲覧、
+失敗 triage の採点（hub は採点から学習します）、保存済みセッション・変数・学習
+プロンプトの保管と配布ができます。CI が持つ secret は 1 つで済みます。
+
+```bash
+export CCQA_HUB_TOKEN=$(openssl rand -hex 24)
+ccqa serve                                  # または docker compose up -d
+ccqa run tasks/create-and-complete --push-report \
+  --hub-url http://localhost:8787 --hub-token $CCQA_HUB_TOKEN
+```
+
+詳細（暗号化・コンテナ配備・HTTP API）は [Hub](./hub.md) を参照してください。
 
 ## ドキュメント
 

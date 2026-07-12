@@ -80,10 +80,25 @@ ccqa run tasks/create-and-complete
 ```
 
 A `report.json` (+ step screenshots) is always written to `ccqa-report/`.
-Push it to a [ccqa hub](./docs/hub.md) to browse results, grade the failure
-triage, and share sessions/variables with CI — which then needs a single
-secret. See [Running specs](./docs/running.md) for flags, CI recipes, and
-the report format.
+See [Running specs](./docs/running.md) for flags, CI recipes, and the
+report format.
+
+**4. Optional: share results on a hub** — `ccqa serve` starts a small
+self-hosted server (a `docker-compose.yaml` ships at the repo root) that
+turns pushed reports into a team dashboard: browse runs and screenshots,
+grade the failure triage (the hub learns from grades), and store the
+saved sessions, variables, and learned prompts that runs pull — CI then
+needs a single secret.
+
+```bash
+export CCQA_HUB_TOKEN=$(openssl rand -hex 24)
+ccqa serve                                  # or: docker compose up -d
+ccqa run tasks/create-and-complete --push-report \
+  --hub-url http://localhost:8787 --hub-token $CCQA_HUB_TOKEN
+```
+
+See [Hub](./docs/hub.md) for the full setup (encryption, container
+deployment, HTTP API).
 
 ## Documentation
 
