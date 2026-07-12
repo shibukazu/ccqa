@@ -39,7 +39,7 @@ export async function collectChangedSpecs(
 /** Matching core: see `collectChangedSpecs` for the "affected" rules. */
 async function filterAffectedSpecs(
   specs: readonly SpecRef[],
-  changed: readonly { path: string }[],
+  changed: readonly Pick<ChangedFile, "path" | "outsideCwd">[],
   cwd: string,
 ): Promise<SpecRef[]> {
   if (changed.length === 0) return [];
@@ -53,6 +53,10 @@ async function filterAffectedSpecs(
 
   const touchedBlockNames = new Set<string>();
   for (const f of changed) {
+    // Blocks are a working-directory concern: a sibling package's
+    // .ccqa/blocks/<name>/spec.yaml must not invalidate this package's block
+    // of the same name.
+    if (f.outsideCwd) continue;
     const blockName = parseBlockPath(f.path);
     if (blockName) touchedBlockNames.add(blockName);
   }

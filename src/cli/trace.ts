@@ -9,7 +9,7 @@ import {
   updateSpecRelatedPaths,
 } from "../store/index.ts";
 import type { HubContext } from "./hub-conn.ts";
-import { parseRelatedPathsBlock } from "../drift/parse-related-paths.ts";
+import { normalizeRelatedPaths, parseRelatedPathsBlock } from "../drift/parse-related-paths.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
@@ -230,10 +230,18 @@ export async function runTrace(
   log.meta("actions", validatedActions.length);
   log.meta("status", overallStatus.toUpperCase());
 
-  const relatedPaths = relatedPathsBuffer !== null
+  const parsedRelatedPaths = relatedPathsBuffer !== null
     ? parseRelatedPathsBlock(relatedPathsBuffer)
     : null;
-  if (relatedPaths !== null) {
+  if (parsedRelatedPaths !== null) {
+    // Pin the entries to the bases the drift matcher expects (app-relative
+    // inside the working directory, repo-root-relative outside) — models
+    // sometimes emit repo-root or `../` forms that would never match.
+    const { paths: relatedPaths, warnings } = normalizeRelatedPaths(
+      parsedRelatedPaths,
+      await resolveCwdPrefix(opts.cwd),
+    );
+    for (const w of warnings) log.warn(w);
     const written = await updateSpecRelatedPaths(featureName, specName, relatedPaths, opts.cwd);
     if (written) {
       log.meta("relatedPaths", `${relatedPaths.length} path(s) written to ${written}`);
@@ -610,4 +618,24 @@ export function parseStatusLine(text: string): ParsedStatusLine | null {
     }
   }
   return null;
+}
+
+/**
+ * The working directory's path relative to the git repo root ("" when they
+ * coincide), used to pin relatedPaths bases. Null when git is unavailable —
+ * normalization then skips prefix handling rather than guessing.
+ */
+async function resolveCwdPrefix(cwd?: string): Promise<string | null> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const { relative, resolve } = await import("node:path");
+  const dir = resolve(cwd ?? process.cwd());
+  try {
+    const { stdout } = await promisify(execFile)("git", ["rev-parse", "--show-toplevel"], {
+      cwd: dir,
+    });
+    return relative(stdout.trim(), dir);
+  } catch {
+    return null;
+  }
 }

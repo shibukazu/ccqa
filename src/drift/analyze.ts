@@ -56,38 +56,39 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
     };
   }
 
-  const { result, isError } = await invokeClaudeStreaming(
-    {
-      prompt: buildDriftUserPrompt(existing),
-      systemPrompt: buildDriftSystemPrompt(opts.blocks) + languageDirective(opts.language),
-      allowedTools: ["Read", "Grep", "Glob"],
-      silenceBashLog: true,
-      cwd: opts.cwd,
-      ...(opts.model ? { model: opts.model } : {}),
-    },
-    (_msg: SDKMessage) => {},
-  );
+  // One CI drift row shouldn't die on a single malformed reply (truncated
+  // JSON, missing block) — retry the whole check once before reporting the
+  // spec as errored.
+  const MAX_ATTEMPTS = 2;
+  let lastError = "";
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const { result, isError } = await invokeClaudeStreaming(
+      {
+        prompt: buildDriftUserPrompt(existing),
+        systemPrompt: buildDriftSystemPrompt(opts.blocks) + languageDirective(opts.language),
+        allowedTools: ["Read", "Grep", "Glob"],
+        silenceBashLog: true,
+        cwd: opts.cwd,
+        ...(opts.model ? { model: opts.model } : {}),
+      },
+      (_msg: SDKMessage) => {},
+    );
 
-  if (isError) {
-    return { target, ok: false, issues: [], error: "Claude returned an error result" };
+    if (isError) {
+      lastError = "Claude returned an error result";
+      continue;
+    }
+    const json = extractJsonBlock(result);
+    if (!json) {
+      lastError = "Claude did not return a json block";
+      continue;
+    }
+    try {
+      const report: DraftReport = DraftReportSchema.parse(JSON.parse(json));
+      return { target, ok: true, issues: report.issues };
+    } catch (e) {
+      lastError = `failed to parse drift report: ${(e as Error).message}`;
+    }
   }
-
-  const json = extractJsonBlock(result);
-  if (!json) {
-    return { target, ok: false, issues: [], error: "Claude did not return a json block" };
-  }
-
-  let report: DraftReport;
-  try {
-    report = DraftReportSchema.parse(JSON.parse(json));
-  } catch (e) {
-    return {
-      target,
-      ok: false,
-      issues: [],
-      error: `failed to parse drift report: ${(e as Error).message}`,
-    };
-  }
-
-  return { target, ok: true, issues: report.issues };
+  return { target, ok: false, issues: [], error: `${lastError} (${MAX_ATTEMPTS} attempts)` };
 }

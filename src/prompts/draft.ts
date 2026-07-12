@@ -75,6 +75,11 @@ Top-level fields:
 - \`title\`: string (required) — short human-readable name for the test
 - \`relatedPaths\`: array of glob string (optional) — source files this spec depends on, used by \`ccqa drift --changed\`
 - \`steps\`: array (required, at least one)
+- \`target\`: string (optional) — generation-target id (e.g. \`playwright\`, \`runn\`); omitted = the project default (agent-browser)
+- \`mode\`: \`live\` (optional, agent-browser only) — Claude drives every run instead of replaying a recording
+- \`session\`: string or array of string (optional, agent-browser only) — saved browser session name(s) restored before the run
+
+Do not flag \`target\` / \`mode\` / \`session\` as unknown fields — they are part of the schema even though drafting rarely sets them.
 
 A step is one of two shapes:
 

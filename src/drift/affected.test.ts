@@ -125,7 +125,7 @@ describe("rerootChangedFiles", () => {
     ]);
   });
 
-  test("drops entries outside cwd", () => {
+  test("keeps entries outside cwd under their repo-root path, flagged outsideCwd", () => {
     const entries = [
       { path: "js/apps/web/src/a.ts", status: "modified" as const },
       { path: "js/apps/other/src/b.ts", status: "modified" as const },
@@ -133,15 +133,18 @@ describe("rerootChangedFiles", () => {
     ];
     expect(rerootChangedFiles(entries, "/repo", "/repo/js/apps/web")).toEqual([
       { path: "src/a.ts", status: "modified" },
+      { path: "js/apps/other/src/b.ts", status: "modified", outsideCwd: true },
+      { path: "README.md", status: "modified", outsideCwd: true },
     ]);
   });
 
-  test("drops a change to cwd itself (empty relative path)", () => {
+  test("a change to cwd itself (empty relative path) is kept as outsideCwd", () => {
     const entries = [
       { path: "js/apps/web", status: "modified" as const },
       { path: "js/apps/web/src/a.ts", status: "modified" as const },
     ];
     expect(rerootChangedFiles(entries, "/repo", "/repo/js/apps/web")).toEqual([
+      { path: "js/apps/web", status: "modified", outsideCwd: true },
       { path: "src/a.ts", status: "modified" },
     ]);
   });

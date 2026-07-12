@@ -463,6 +463,8 @@ After all steps are complete (regardless of pass/fail) and **before** \`RUN_COMP
 3. Prefer **directory globs** (e.g. \`src/features/tasks/**\`) over individual files when several related components live in the same area. Otherwise list specific files.
 4. Skip third-party files (\`node_modules/\`), build output (\`dist/\`, \`.next/\`), and generated code.
 5. Be conservative — false positives (extra paths) are fine; false negatives (missing paths) cause drift to be missed in CI. When unsure whether a path is relevant, include it.
+6. **Path base:** a path inside this working directory MUST be relative to it — the same base your \`Glob\`/\`Grep\` tools use (\`src/features/tasks/**\`, NOT the repo-root form \`apps/foo/src/features/tasks/**\`). For a file in a monorepo sibling package this spec genuinely depends on, use its **repo-root-relative** path (e.g. \`packages/ui-kit/src/FilePicker.tsx\`); never emit \`../\` forms.
+7. **Shared / design-system components:** include one only when the spec's checks depend on that component's specific behaviour (e.g. the flow exercises its file picker). Do NOT list generic primitives every screen uses (buttons, tags, dialogs, layout) — they would scope this spec into almost every UI change.
 
 **Output format (STRICT — one line per path, no leading dashes, no commentary inside the block):**
 
