@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, extractInvocationCost, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression } from "./invoke.ts";
+import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression } from "./invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 describe("extractAbActionFromBashCommand", () => {
@@ -76,6 +76,137 @@ describe("extractAbActionFromBashCommand", () => {
       extractAbActionFromBashCommand(`agent-browser --session s1 upload "[type='file']"`),
     ).toBeNull();
   });
+
+  test("a CCQA_STEP env prefix does not disturb the extraction", () => {
+    expect(
+      extractAbActionFromBashCommand(`CCQA_STEP=step-01 agent-browser --session s1 click "[aria-label='Submit']" "Submit"`),
+    ).toBe("AB_ACTION|click|[aria-label='Submit']|Submit");
+  });
+});
+
+describe("extractCcqaStepFromBashCommand", () => {
+  test("extracts the step id from a CCQA_STEP prefix", () => {
+    expect(
+      extractCcqaStepFromBashCommand(`CCQA_STEP=step-03 agent-browser --session s1 click "text=Submit"`),
+    ).toBe("step-03");
+  });
+
+  test("returns null when the prefix is absent", () => {
+    expect(
+      extractCcqaStepFromBashCommand(`agent-browser --session s1 click "text=Submit"`),
+    ).toBeNull();
+  });
+
+  test("finds CCQA_STEP anywhere in a run of env assignments", () => {
+    expect(
+      extractCcqaStepFromBashCommand(`FOO=x CCQA_STEP=step-02 BAR=y agent-browser --session s1 snapshot`),
+    ).toBe("step-02");
+  });
+
+  test("accepts a quoted value", () => {
+    expect(
+      extractCcqaStepFromBashCommand(`CCQA_STEP="step-04" agent-browser --session s1 snapshot`),
+    ).toBe("step-04");
+  });
+
+  test("finds the prefix on a later statement of a compound command", () => {
+    expect(
+      extractCcqaStepFromBashCommand(`cd /tmp && CCQA_STEP=step-05 agent-browser --session s1 click "text=OK"`),
+    ).toBe("step-05");
+  });
+
+  test("rejects invalid slugs (spaces, empty)", () => {
+    expect(
+      extractCcqaStepFromBashCommand(`CCQA_STEP='step 03' agent-browser --session s1 snapshot`),
+    ).toBeNull();
+    expect(
+      extractCcqaStepFromBashCommand(`CCQA_STEP= agent-browser --session s1 snapshot`),
+    ).toBeNull();
+  });
+
+  test("ignores CCQA_STEP on a non-agent-browser statement", () => {
+    expect(
+      extractCcqaStepFromBashCommand(`CCQA_STEP=step-09 echo hi && agent-browser --session s1 snapshot`),
+    ).toBeNull();
+  });
+
+  test("ignores an assignment from command substitution", () => {
+    expect(
+      extractCcqaStepFromBashCommand(`result=$(CCQA_STEP=step-05 agent-browser --session s1 snapshot 2>&1)`),
+    ).toBeNull();
+  });
+
+  test("returns null for non-agent-browser commands", () => {
+    expect(extractCcqaStepFromBashCommand(`CCQA_STEP=step-01 ls -la`)).toBeNull();
+  });
+});
+
+describe("extractCcqaAssertFromBashCommand", () => {
+  test("extracts the bare '1' marker (alongside CCQA_STEP)", () => {
+    expect(
+      extractCcqaAssertFromBashCommand(`CCQA_STEP=step-03 CCQA_ASSERT=1 agent-browser --session s1 wait --text "Submitted" --timeout 3000`),
+    ).toBe("1");
+  });
+
+  test("extracts an assert-type marker", () => {
+    expect(
+      extractCcqaAssertFromBashCommand(`CCQA_ASSERT=element_visible agent-browser --session s1 get count "[aria-label='Settings']"`),
+    ).toBe("element_visible");
+  });
+
+  test("extracts url_contains with its payload", () => {
+    expect(
+      extractCcqaAssertFromBashCommand(`CCQA_STEP=step-02 CCQA_ASSERT=url_contains:/settings/apps agent-browser --session s1 get url`),
+    ).toBe("url_contains:/settings/apps");
+  });
+
+  test("finds CCQA_ASSERT anywhere in a run of env assignments", () => {
+    expect(
+      extractCcqaAssertFromBashCommand(`FOO=x CCQA_ASSERT=1 CCQA_STEP=step-02 agent-browser --session s1 wait --text "OK"`),
+    ).toBe("1");
+  });
+
+  test("returns null when the prefix is absent or empty", () => {
+    expect(
+      extractCcqaAssertFromBashCommand(`CCQA_STEP=step-01 agent-browser --session s1 wait --text "OK"`),
+    ).toBeNull();
+    expect(
+      extractCcqaAssertFromBashCommand(`CCQA_ASSERT= agent-browser --session s1 wait --text "OK"`),
+    ).toBeNull();
+  });
+
+  test("ignores CCQA_ASSERT on a non-agent-browser statement", () => {
+    expect(
+      extractCcqaAssertFromBashCommand(`CCQA_ASSERT=1 echo hi && agent-browser --session s1 wait --text "OK"`),
+    ).toBeNull();
+    expect(extractCcqaAssertFromBashCommand(`CCQA_ASSERT=1 ls -la`)).toBeNull();
+  });
+});
+
+describe("extractObservationAbAction", () => {
+  test("surfaces `get count <selector>` as a get_count wire line", () => {
+    expect(
+      extractObservationAbAction(`CCQA_STEP=step-03 CCQA_ASSERT=element_visible agent-browser --session s1 get count "[data-qa='panel']"`),
+    ).toBe("AB_ACTION|get_count|[data-qa='panel']");
+  });
+
+  test("surfaces `get url` as a get_url wire line", () => {
+    expect(
+      extractObservationAbAction(`CCQA_ASSERT=url_contains:/x agent-browser --session s1 get url`),
+    ).toBe("AB_ACTION|get_url");
+  });
+
+  test("returns null for other get subcommands and non-get commands", () => {
+    expect(
+      extractObservationAbAction(`agent-browser --session s1 get text "[data-qa='panel']"`),
+    ).toBeNull();
+    expect(
+      extractObservationAbAction(`agent-browser --session s1 get count`),
+    ).toBeNull();
+    expect(
+      extractObservationAbAction(`agent-browser --session s1 click "text=OK"`),
+    ).toBeNull();
+  });
 });
 
 describe("isBlockedAbSubcommand", () => {
@@ -97,6 +228,15 @@ describe("isBlockedAbSubcommand", () => {
 
   test("does not block snapshot", () => {
     expect(isBlockedAbSubcommand("agent-browser --session s1 snapshot")).toBe(false);
+  });
+
+  test("a CCQA_ASSERT env prefix does not disturb the guard", () => {
+    expect(
+      isBlockedAbSubcommand(`CCQA_STEP=step-01 CCQA_ASSERT=1 agent-browser --session s1 eval "document.title"`),
+    ).toBe(true);
+    expect(
+      isBlockedAbSubcommand(`CCQA_ASSERT=element_visible agent-browser --session s1 get count "[data-qa='x']"`),
+    ).toBe(false);
   });
 
   test("does not block fill", () => {
@@ -335,6 +475,26 @@ describe("hasMultipleAbInvocations", () => {
 
   test("ignores non-ab statement chains (e.g. echo + ls)", () => {
     expect(hasMultipleAbInvocations(`echo foo && ls -la`)).toBe(false);
+  });
+
+  test("counts env-prefixed invocations (CCQA_STEP=... chains still blocked)", () => {
+    expect(
+      hasMultipleAbInvocations(`CCQA_STEP=step-01 agent-browser --session s1 snapshot && CCQA_STEP=step-01 agent-browser --session s1 click "x"`),
+    ).toBe(true);
+    expect(
+      hasMultipleAbInvocations(`CCQA_STEP=step-01 agent-browser --session s1 click "x"`),
+    ).toBe(false);
+    expect(
+      hasMultipleAbInvocations(`CCQA_STEP=step-01 CCQA_ASSERT=1 agent-browser --session s1 wait --text "OK" && CCQA_ASSERT=element_visible agent-browser --session s1 get count "x"`),
+    ).toBe(true);
+  });
+
+  test("does not count assignment-from-substitution reads (polling loops)", () => {
+    expect(
+      hasMultipleAbInvocations(
+        `for i in $(seq 1 3); do sleep 1; result=$(agent-browser --session s1 snapshot 2>&1); echo "$result" | grep -q done && break; done\nCCQA_STEP=step-02 agent-browser --session s1 snapshot`,
+      ),
+    ).toBe(false);
   });
 });
 

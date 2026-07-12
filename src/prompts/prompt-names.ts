@@ -8,7 +8,9 @@ import { join } from "node:path";
  *
  * Two kinds share one namespace:
  *  - "guidance": the record/live prompt bundle — `.user.md` (human-maintained)
- *    and `.agent.md` (auto-rewritten by `ccqa run --update-agent-prompt`).
+ *    and `.agent.md` (auto-rewritten by `ccqa run --update-agent-prompt`) —
+ *    plus `triage.user`, the human-maintained guidance injected into the
+ *    failure-analysis (triage) prompt.
  *  - "custom-prompt": `analysis-custom-prompt` — Claude-written calibration guidance
  *    learned from graded triage cases, injected into the failure-analysis
  *    prompt at run time.
@@ -22,8 +24,26 @@ export const PROMPT_NAMES = [
   "record.agent",
   "live.user",
   "live.agent",
+  "playwright.user",
+  "playwright.agent",
+  "runn.user",
+  "runn.agent",
+  "triage.user",
   "analysis-custom-prompt",
 ] as const;
+
+/**
+ * The `<kind>.user` / `<kind>.agent` guidance pairs above. Each generation
+ * flow loads its own pair (`loadPromptBundleFromHub`): record/live for the
+ * agent-browser flows, one pair per LLM-generation target otherwise.
+ *
+ * "triage" is deliberately NOT a guidance kind: it has a `.user` prompt but no
+ * `.agent` counterpart — the learned overlay for triage still lives as
+ * `analysis-custom-prompt` (a future migration may rename it `triage.agent`).
+ */
+export const GUIDANCE_KINDS = ["record", "live", "playwright", "runn"] as const;
+
+export type GuidanceKind = (typeof GUIDANCE_KINDS)[number];
 
 export type PromptName = (typeof PROMPT_NAMES)[number];
 
@@ -43,6 +63,11 @@ export const PROMPT_LOCAL_PATHS: Record<PromptName, string> = {
   "record.agent": ".ccqa/prompts/record.agent.md",
   "live.user": ".ccqa/prompts/live.user.md",
   "live.agent": ".ccqa/prompts/live.agent.md",
+  "playwright.user": ".ccqa/prompts/playwright.user.md",
+  "playwright.agent": ".ccqa/prompts/playwright.agent.md",
+  "runn.user": ".ccqa/prompts/runn.user.md",
+  "runn.agent": ".ccqa/prompts/runn.agent.md",
+  "triage.user": ".ccqa/prompts/triage.user.md",
   "analysis-custom-prompt": ".ccqa/prompts/analysis-custom-prompt.json",
 };
 

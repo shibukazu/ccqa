@@ -619,6 +619,21 @@ describe("hub API server", () => {
       const res = await fetch(`${baseUrl}/api/v1/projects/demo/prompts/live.agent`, authed());
       expect(res.status).toBe(404);
     });
+
+    test("triage.user round-trips as a markdown guidance prompt", async () => {
+      const body = "Treat copy changes on the settings screen as SPEC_CHANGE.\n";
+      const putRes = await fetch(`${baseUrl}/api/v1/projects/demo/prompts/triage.user`, authed({
+        method: "PUT",
+        headers: { "Content-Type": "text/markdown" },
+        body,
+      }));
+      expect(putRes.status).toBe(204);
+
+      const getRes = await fetch(`${baseUrl}/api/v1/projects/demo/prompts/triage.user`, authed());
+      expect(getRes.status).toBe(200);
+      expect(getRes.headers.get("content-type")).toContain("text/markdown");
+      expect(await getRes.text()).toBe(body);
+    });
   });
 
   describe("sessions and variables (with encryption key configured)", () => {

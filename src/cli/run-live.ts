@@ -58,6 +58,8 @@ export interface RunLiveOptions {
   profile?: string;
   hubContext?: HubContext | null;
   customPrompt?: AnalysisCustomPrompt | null;
+  /** Human-maintained `triage.user` hub prompt, injected ahead of `customPrompt`. */
+  triageUserPrompt?: string | null;
   /** Reaps orphaned agent-browser sessions on SIGINT/SIGTERM. See run-teardown.ts. */
   teardown?: RunTeardown;
   /**
@@ -506,6 +508,7 @@ async function analyzeOneLiveFailure(
       baseRef: diff.ok ? baseRef : null,
       driftIssues: driftForSpec,
       ...(opts.language ? { outputLanguage: opts.language } : {}),
+      ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),
       ...(opts.customPrompt ? { customPrompt: opts.customPrompt } : {}),
     },
     { ...(opts.model ? { model: opts.model } : {}), cwd },

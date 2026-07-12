@@ -96,6 +96,27 @@ export const ReportEvidenceSchema = z.object({
 export type ReportEvidence = z.infer<typeof ReportEvidenceSchema>;
 
 /**
+ * A file collected from an external (runCommand) target's execution — the
+ * command's output log plus whatever the run left in the spec's artifacts
+ * directory (screenshots, traces, result JSON). `path` is relative to the
+ * report directory (same convention as `ReportEvidenceSchema.pngPath`), so
+ * the report directory stays self-contained. `kind` is inferred from the
+ * file extension and only steers rendering (inline image / inline text /
+ * download link). agent-browser rows keep their runner-specific `evidence` /
+ * `liveRun` fields instead.
+ */
+export const ARTIFACT_KINDS = ["image", "text", "json", "binary"] as const;
+export const ReportArtifactSchema = z.object({
+  /** Display name: the path within the spec's artifacts dir (the bare file name for top-level files). */
+  name: z.string(),
+  /** Report-directory-relative posix path. */
+  path: z.string(),
+  kind: z.enum(ARTIFACT_KINDS),
+  sizeBytes: z.number(),
+});
+export type ReportArtifact = z.infer<typeof ReportArtifactSchema>;
+
+/**
  * Per-step row for a live-mode run (spec.yaml `mode: live`). Mirrors the
  * structure produced by `src/runtime/live-executor.ts:LiveStepResult` but
  * encoded against the report schema so the HTML renderer can carry both
@@ -169,7 +190,20 @@ export const ReportSpecResultSchema = z.object({
    * `<feature>/<spec>` slug. `null` when spec.yaml is unavailable.
    */
   title: z.string().nullable(),
-  status: z.enum(["passed", "failed"]),
+  /**
+   * Generation-target id this row ran under: "agent-browser" for the built-in
+   * det/live paths, the plugin id ("playwright", "runn", ...) for external
+   * runCommand rows. Optional so reports written before this field existed
+   * stay valid; unset when the target could not be determined at all.
+   */
+  target: z.string().optional(),
+  /**
+   * "skipped" marks a spec that could not execute at all (e.g. it belongs to
+   * a generate-only target with no `runCommand`); `skipReason` says why.
+   */
+  status: z.enum(["passed", "failed", "skipped"]),
+  /** Why the spec did not execute. Present only for "skipped" rows. */
+  skipReason: z.string().optional(),
   /** "3/4 passed" style detail from the vitest JSON report, when available. */
   testCounts: z
     .object({ total: z.number(), passed: z.number(), failed: z.number() })
@@ -189,6 +223,13 @@ export const ReportSpecResultSchema = z.object({
   specYaml: z.string().nullable(),
   /** Step-boundary screenshots for the deterministic (`ccqa run`) path, in capture order. */
   evidence: z.array(ReportEvidenceSchema).nullable(),
+  /**
+   * Generic run artifacts for external (runCommand) target specs: the
+   * command's `output.log` plus whatever it wrote into `{artifactsDir}`.
+   * Optional (not nullable) so report.json written before this field existed
+   * stays valid byte-for-byte.
+   */
+  artifacts: z.array(ReportArtifactSchema).optional(),
   /**
    * Set for specs executed in live mode (`mode: live`). The renderer shows the
    * per-step verdicts + before/after screenshots instead of (or in addition
@@ -229,6 +270,14 @@ export const RunReportDataSchema = z.object({
    * across custom prompt iterations. `.default(null)` keeps older report.json valid.
    */
   customPromptVersion: z.string().nullable().default(null),
+  /**
+   * Short content hash of the human-maintained `triage.user` hub prompt
+   * injected into this run's failure analysis. The Markdown body has no
+   * version of its own, so the hash is the stratification key across guidance
+   * edits. Absent (not null) when no user prompt was active, which keeps the
+   * envelope byte-identical to before this field existed.
+   */
+  triageUserPromptHash: z.string().optional(),
   results: z.array(ReportSpecResultSchema),
 });
 export type RunReportData = z.infer<typeof RunReportDataSchema>;

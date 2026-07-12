@@ -1,4 +1,5 @@
 import { FAILURE_LABELS, PREDICTED_LABELS } from "../../report/schema.ts";
+import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
 
 /**
  * The hub's bundled WebUI: a single static HTML page with vanilla JS, in a
@@ -488,6 +489,8 @@ const CSS = `
   .badge-live, .badge-det { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; border: 1px solid transparent; }
   .badge-live { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
   .badge-det { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
+  /* which generation target ran the spec (agent-browser / playwright / runn) */
+  .badge-target { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-family: var(--mono); background: var(--surface-3); color: var(--muted); border: 1px solid var(--border); }
   .badge.drift-warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
   .badge.drift-warn .d { background: var(--amber); }
   .badge-drift { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
@@ -555,6 +558,16 @@ const CSS = `
   .evidence-item .cap { padding: 6px 8px; font-size: 11px; color: var(--muted); }
   .evidence-item .cap .status { font-weight: 600; }
   .evidence-item .cap .status.failed { color: var(--fail); }
+  /* run artifacts (external runCommand targets): image grid + file rows */
+  .artifact-row { display: flex; align-items: center; gap: 10px; padding: 7px 4px; font-size: 12.5px; border-bottom: 1px solid var(--border); }
+  .artifact-row:last-child { border-bottom: none; }
+  .artifact-kind { flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1px 6px; }
+  .artifact-name { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+  .artifact-size { color: var(--muted-2); font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .artifact-open { font-size: 12px; white-space: nowrap; color: var(--fg-dim); text-decoration: underline; }
+  .artifact-open:hover { color: var(--fg); }
+  .artifact-acc > summary { height: 34px; }
+  .artifact-pre { margin: 2px 0 8px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   .section-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 4px; }
   /* live run steps: stacked cards with large before/after frames */
   .step-card { border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); padding: 12px 14px; margin-top: 10px; }
@@ -706,8 +719,8 @@ const CSS = `
   .path { font-family: var(--mono); font-size: 11.5px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
 
   /* prompts */
-  /* 3 stacked cards (record / live / custom prompt). Cards with 2 slots lay them out
-     side by side; the custom prompt card has 1 slot and spans full width. */
+  /* 3 stacked cards (record / live / triage). Cards with 2 slots lay them out
+     side by side; a card with a single slot spans full width. */
   .prompt-card { margin-bottom: 14px; }
   .prompt-card .panel-head { padding: 14px 18px; border-bottom: 1px solid var(--border); }
   .prompt-grid { display: grid; grid-template-columns: 1fr 1fr; }
@@ -775,6 +788,7 @@ const CLIENT_JS = `
   // the model can predict UNKNOWN. Columns (actual causes) are FAILURE_LABELS
   // only (a human never records UNKNOWN as the ground-truth cause).
   var PREDICTED_LABELS = ${JSON.stringify(PREDICTED_LABELS)};
+  var AGENT_BROWSER_TARGET = ${JSON.stringify(AGENT_BROWSER_TARGET)};
   var state = { token: "", project: "", profile: "default", detailRunId: "", jobPollToken: 0 };
   var knownProfiles = [];
   var TOKEN_KEY = "ccqa-hub-token";
@@ -811,6 +825,8 @@ const CLIENT_JS = `
       "rec.title": "Recommendation",
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
       "acc.assertions": "Assertions", "acc.drift": "Drift audit",
+      "acc.artifacts": "Artifacts",
+      "art.open": "Open", "art.loadFailed": "could not load (it may have been omitted from the push)",
       "acc.assertions.hint": "Test cases from the recorded spec run",
       "spec.kind.live": "Live", "spec.kind.det": "Deterministic",
       "spec.driftWarn": "Spec drift", "det.steps": "Steps",
@@ -838,6 +854,7 @@ const CLIENT_JS = `
       "prompt.recordAgent.hint": "Notes ccqa keeps for itself while recording, refined automatically as it runs. Read-only — ccqa regenerates it.",
       "prompt.liveUser.hint": "Rules you write for how the AI drives the browser to run a test on its own. Applied on every live run.",
       "prompt.liveAgent.hint": "Notes ccqa keeps for itself while running tests live, refined automatically as it runs. Read-only — ccqa regenerates it.",
+      "prompt.triageUser.hint": "Rules you write for how failure causes are classified — e.g. which kinds of changes count as a spec change on this project. Applied on every failure analysis.",
       "prompt.customPrompt.hint": "Learned from your triage grades to make ccqa classify failure causes the way you do. Read-only — a learning job creates it.",
       "prompt.readonly": "read-only",
       "prompt.notSet": "Not set. Type guidance and Save to store it on the hub.",
@@ -877,6 +894,8 @@ const CLIENT_JS = `
       "rec.title": "推奨対応",
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
       "acc.assertions": "アサーション", "acc.drift": "ドリフト監査",
+      "acc.artifacts": "成果物",
+      "art.open": "開く", "art.loadFailed": "読み込めませんでした（push時に省略された可能性があります）",
       "acc.assertions.hint": "記録したスペック実行のテストケース",
       "spec.kind.live": "ライブ", "spec.kind.det": "決定的",
       "spec.driftWarn": "仕様ドリフト", "det.steps": "ステップ",
@@ -904,6 +923,7 @@ const CLIENT_JS = `
       "prompt.recordAgent.hint": "記録中にccqaが自分用に書き留め、実行のたびに自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
       "prompt.liveUser.hint": "AIがその場でブラウザを操作してテストを実行するときのルールを自分で書きます。ライブ実行のたびに適用されます。",
       "prompt.liveAgent.hint": "ライブ実行中にccqaが自分用に書き留め、実行のたびに自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
+      "prompt.triageUser.hint": "失敗原因を分類するときのルールを自分で書きます（例: どの変更をこのプロジェクトで仕様変更として扱うか）。失敗分析のたびに適用されます。",
       "prompt.customPrompt.hint": "あなたの採点から学習し、ccqaがあなたと同じように失敗の原因を分類できるようにします。読み取り専用 — 学習ジョブが生成します。",
       "prompt.readonly": "読み取り専用",
       "prompt.notSet": "未設定。指示を入力して保存するとハブに保存されます。",
@@ -1504,6 +1524,98 @@ const CLIENT_JS = `
     return grid;
   }
 
+  // ── run detail: artifacts (external runCommand targets) ──
+  // Images render inline through the same auth-header data-URI loader as
+  // evidence; small text/json artifacts fold out to a preview fetched lazily
+  // on first open; anything else is a link to the artifact-file API. The link
+  // puts the token in the URL — same user-initiated, top-level-open tradeoff
+  // as the tarball download above.
+
+  var ARTIFACT_INLINE_MAX_BYTES = 64 * 1024;
+
+  function formatBytes(n) {
+    if (typeof n !== "number") return "";
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+    return (n / (1024 * 1024)).toFixed(1) + " MB";
+  }
+
+  function artifactOpenLink(runId, relPath) {
+    var segments = relPath.split("/").map(encodeURIComponent).join("/");
+    var a = document.createElement("a");
+    a.className = "artifact-open";
+    a.rel = "noopener";
+    a.target = "_blank";
+    a.href = "/api/v1/runs/" + encodeURIComponent(runId) + "/artifacts/" + segments +
+      "?token=" + encodeURIComponent(state.token);
+    a.textContent = t("art.open");
+    // Inside a <summary>, a plain click would also toggle the accordion.
+    a.addEventListener("click", function (ev) { ev.stopPropagation(); });
+    return a;
+  }
+
+  function loadArtifactText(pre, runId, relPath) {
+    var segments = relPath.split("/").map(encodeURIComponent).join("/");
+    fetch("/api/v1/runs/" + encodeURIComponent(runId) + "/artifacts/" + segments, {
+      headers: { Authorization: "Bearer " + state.token },
+    })
+      .then(function (res) {
+        if (!res.ok) throw new Error(res.status + " " + res.statusText);
+        return res.text();
+      })
+      .then(function (text) { pre.textContent = text; })
+      .catch(function (err) {
+        console.warn("artifact load failed", relPath, err);
+        pre.textContent = t("art.loadFailed");
+      });
+  }
+
+  function artifactsSection(runId, artifacts) {
+    var wrap = el("div");
+    var images = artifacts.filter(function (a) { return a.kind === "image"; });
+    if (images.length > 0) {
+      var grid = el("div", "evidence-grid");
+      images.forEach(function (a) {
+        var item = el("div", "evidence-item");
+        item.appendChild(evidenceImg(runId, a.path, a.name));
+        item.appendChild(el("div", "cap", a.name + " · " + formatBytes(a.sizeBytes)));
+        grid.appendChild(item);
+      });
+      wrap.appendChild(grid);
+    }
+    artifacts.forEach(function (a) {
+      if (a.kind === "image") return;
+      var textLike = a.kind === "text" || a.kind === "json";
+      if (!textLike || a.sizeBytes > ARTIFACT_INLINE_MAX_BYTES) {
+        var row = el("div", "artifact-row");
+        row.appendChild(el("span", "artifact-kind", a.kind));
+        row.appendChild(el("span", "artifact-name", a.name));
+        row.appendChild(el("span", "artifact-size", formatBytes(a.sizeBytes)));
+        row.appendChild(artifactOpenLink(runId, a.path));
+        wrap.appendChild(row);
+        return;
+      }
+      var det = el("details", "acc artifact-acc");
+      var sum = document.createElement("summary");
+      sum.appendChild(chevron());
+      sum.appendChild(el("span", "artifact-kind", a.kind));
+      sum.appendChild(el("span", "artifact-name", a.name));
+      sum.appendChild(el("span", "artifact-size", formatBytes(a.sizeBytes)));
+      sum.appendChild(artifactOpenLink(runId, a.path));
+      det.appendChild(sum);
+      var pre = el("pre", "artifact-pre", "…");
+      var loaded = false;
+      det.addEventListener("toggle", function () {
+        if (!det.open || loaded) return;
+        loaded = true;
+        loadArtifactText(pre, runId, a.path);
+      });
+      det.appendChild(pre);
+      wrap.appendChild(det);
+    });
+    return wrap;
+  }
+
   // The parts a live step and a deterministic step render identically: the
   // status-railed card, a header (#index + instruction + a status badge unless
   // passed), and an optional "expects:"/reasoning meta block. Returns { card,
@@ -1719,10 +1831,15 @@ const CLIENT_JS = `
     nameBlock.appendChild(el("div", "slug", r.feature + " / " + r.spec));
     head.appendChild(nameBlock);
     head.appendChild(el("div", "spacer"));
-    head.appendChild(
-      isDrift ? el("span", "badge badge-drift", t("kind.drift"))
-              : (r.liveRun ? el("span", "badge-live", t("spec.kind.live"))
-                           : el("span", "badge-det", t("spec.kind.det"))));
+    // Target ids are technical identifiers (like the failure-label values):
+    // shown verbatim, never localized.
+    if (r.target) head.appendChild(el("span", "badge-target", r.target));
+    // The live/det mode split only exists on the agent-browser target; an
+    // external-target row is identified by its target chip alone.
+    var external = r.target && r.target !== AGENT_BROWSER_TARGET;
+    if (isDrift) head.appendChild(el("span", "badge badge-drift", t("kind.drift")));
+    else if (r.liveRun) head.appendChild(el("span", "badge-live", t("spec.kind.live")));
+    else if (!external) head.appendChild(el("span", "badge-det", t("spec.kind.det")));
     head.appendChild(statusBadge(r.status));
     var hasDriftError = r.driftIssues && r.driftIssues.some(function (d) { return d.severity === "ERROR"; });
     if (hasDriftError) {
@@ -1770,6 +1887,11 @@ const CLIENT_JS = `
 
     if (r.liveRun && r.liveRun.steps && r.liveRun.steps.length > 0) {
       body.appendChild(detailsBlock(t("acc.steps"), r.liveRun.steps.length, liveStepsSection(runId, r.liveRun.steps)));
+      any = true;
+    }
+
+    if (r.artifacts && r.artifacts.length > 0) {
+      body.appendChild(detailsBlock(t("acc.artifacts"), r.artifacts.length, artifactsSection(runId, r.artifacts)));
       any = true;
     }
 
@@ -2184,7 +2306,8 @@ const CLIENT_JS = `
   // Reserved prompt names (mirror src/prompts/prompt-names.ts), grouped into 3
   // cards. Each ".user" slot is editable; the ".agent" slots and the custom prompt
   // are ccqa-generated and read-only. Each slot names its sub-label (Your
-  // instructions / Learned by ccqa) and a "when to use" hint.
+  // instructions / Learned by ccqa) and a "when to use" hint. The triage card
+  // pairs the editable triage.user guidance with the learned custom prompt.
   var CUSTOM_PROMPT_NAME = "analysis-custom-prompt";
   var PROMPT_CARDS = [
     { titleKey: "prompt.card.record", slots: [
@@ -2196,7 +2319,8 @@ const CLIENT_JS = `
       { name: "live.agent", subKey: "prompt.sub.agent", hintKey: "prompt.liveAgent.hint", agent: true },
     ] },
     { titleKey: "prompt.card.customPrompt", slots: [
-      { name: CUSTOM_PROMPT_NAME, subKey: null, hintKey: "prompt.customPrompt.hint", agent: true },
+      { name: "triage.user", subKey: "prompt.sub.user", hintKey: "prompt.triageUser.hint", agent: false },
+      { name: CUSTOM_PROMPT_NAME, subKey: "prompt.sub.agent", hintKey: "prompt.customPrompt.hint", agent: true },
     ] },
   ];
   // Flat list of every slot, for loadPrompts to fill via its _ta handle.

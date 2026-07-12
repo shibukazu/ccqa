@@ -1,0 +1,35 @@
+# Local ccqa hub in one command:
+#
+#   cp .env.example .env    # then fill in the secrets (see comments there)
+#   docker compose up -d
+#
+# The hub listens on http://localhost:8787 and persists runs/sessions/
+# variables in the `hub-data` named volume. See README.md
+# "Local hub with Docker Compose" and docs/hub.md.
+services:
+  hub:
+    build: .
+    image: ccqa-hub
+    ports:
+      - "8787:8787"
+    env_file: .env
+    volumes:
+      - hub-data:/data
+    restart: unless-stopped
+    healthcheck:
+      # /api/v1/health is the hub's tokenless liveness probe. node:*-slim has
+      # no curl, so probe with node's built-in fetch.
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/api/v1/health').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  hub-data:

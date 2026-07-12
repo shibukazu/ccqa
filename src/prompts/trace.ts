@@ -49,24 +49,40 @@ SESSION NAME: \`${sessionName}\`
 
 Always pass \`--session ${sessionName}\` to every \`agent-browser\` command.
 
+**Always prefix every \`agent-browser\` command with a \`CCQA_STEP=<step-id>\`
+env assignment naming the spec step it executes**, e.g.
+
+\`\`\`bash
+CCQA_STEP=step-03 agent-browser --session ${sessionName} click "text=Submit"
+\`\`\`
+
+This prefix is what ties each recorded action to its step in the generated
+test — a command without it loses its step attribution. Other env assignments
+may precede it (\`FOO=x CCQA_STEP=step-02 agent-browser ...\`); agent-browser
+itself ignores the variable.
+
+Verification commands additionally carry a \`CCQA_ASSERT=<marker>\` env
+assignment (alongside \`CCQA_STEP\`) that records the check as a test
+assertion — see "Assertion Protocol".
+
 ## Browser Commands
 
 \`\`\`
-agent-browser --session SESSION open <url>
-agent-browser --session SESSION snapshot
-agent-browser --session SESSION click "<selector>"
-agent-browser --session SESSION fill "<selector>" "<value>"
-agent-browser --session SESSION check "<selector>"
-agent-browser --session SESSION uncheck "<selector>"
-agent-browser --session SESSION press <Key>
-agent-browser --session SESSION select "<selector>" "<value>"
-agent-browser --session SESSION hover "<selector>"
-agent-browser --session SESSION wait --text "<text>" [--timeout <ms>]
-agent-browser --session SESSION wait --load networkidle
-agent-browser --session SESSION get count "<selector>"   # element-existence check (returns a number, fast)
-agent-browser --session SESSION cookies clear
-agent-browser --session SESSION find <locator> <value> <action> [<input>] [--name "<n>"] [--exact]
-agent-browser --session SESSION upload "<input[type=file] selector>" <file> [<file> ...]
+CCQA_STEP=<step-id> agent-browser --session SESSION open <url>
+CCQA_STEP=<step-id> agent-browser --session SESSION snapshot
+CCQA_STEP=<step-id> agent-browser --session SESSION click "<selector>"
+CCQA_STEP=<step-id> agent-browser --session SESSION fill "<selector>" "<value>"
+CCQA_STEP=<step-id> agent-browser --session SESSION check "<selector>"
+CCQA_STEP=<step-id> agent-browser --session SESSION uncheck "<selector>"
+CCQA_STEP=<step-id> agent-browser --session SESSION press <Key>
+CCQA_STEP=<step-id> agent-browser --session SESSION select "<selector>" "<value>"
+CCQA_STEP=<step-id> agent-browser --session SESSION hover "<selector>"
+CCQA_STEP=<step-id> agent-browser --session SESSION wait --text "<text>" [--timeout <ms>]
+CCQA_STEP=<step-id> agent-browser --session SESSION wait --load networkidle
+CCQA_STEP=<step-id> agent-browser --session SESSION get count "<selector>"   # element-existence check (returns a number, fast)
+agent-browser --session SESSION cookies clear                                # pre-step preamble — no CCQA_STEP prefix
+CCQA_STEP=<step-id> agent-browser --session SESSION find <locator> <value> <action> [<input>] [--name "<n>"] [--exact]
+CCQA_STEP=<step-id> agent-browser --session SESSION upload "<input[type=file] selector>" <file> [<file> ...]
 # See "Selector Rules" for the full \`find\` subset.
 # IMPORTANT: do NOT use \`wait "<css-selector>"\`. agent-browser ignores --timeout on a
 # CSS-selector wait and blocks for ~150s when the selector never matches, killing the run.
@@ -140,7 +156,7 @@ find nth <index> "<ALLOWED-css>" <action>
 
 **combobox / select with a required marker (\`*\`)**: required form fields often include the marker in their accessible name. If \`find role combobox click --name "<label>"\` misses, prefer \`find label "<label>" click\` or \`click "[aria-label='<label> *']"\`.
 
-**Verifying cleanup / deletion**: assert the *absence* of the deleted thing, not the surrounding listing screen's text. Use \`wait --fn "!document.body.innerText.includes('<unique-label>')"\` (text disappearance) — never \`wait "<css-selector>" --state hidden\` (blocks the daemon) and never \`wait --text "<navbar label>"\` (passes regardless of the deletion).
+**Verifying cleanup / deletion**: assert the *absence* of the deleted thing, not the surrounding listing screen's text. Wait for the deletion to settle with \`wait --fn "!document.body.innerText.includes('<unique-label>')"\`, then record the assert with a marked probe: \`CCQA_ASSERT=element_not_visible ... get count "text=<unique-label>"\` (see Assertion Protocol) — never \`wait "<css-selector>" --state hidden\` (blocks the daemon) and never \`wait --text "<navbar label>"\` (passes regardless of the deletion).
 
 **File inputs (\`<input type="file">\`) / OS file-picker dialogs**: do NOT \`click\` the input — that opens the OS picker, which agent-browser cannot drive. Use \`upload "<selector>" <path>\` instead. agent-browser sets the input's files directly via the underlying browser API, no native dialog ever opens. Use an ALLOWED selector to identify the input (\`[aria-label='…']\`, \`[data-testid='…']\`, \`[type='file']\` only when it's unique on the page). File paths must be plain shell args — wrap each in \`"\` for safety. Reference fixtures via \`\${CCQA_FIXTURES_DIR}/<name>\` so the same spec works locally and in CI; conventionally fixtures live under \`.ccqa/fixtures/\` and the env var resolves there. Multi-file inputs accept several positionals: \`upload "[aria-label='Attach']" "\${CCQA_FIXTURES_DIR}/a.pdf" "\${CCQA_FIXTURES_DIR}/b.pdf"\`.
 
@@ -159,13 +175,24 @@ ${stepsText}
 For each step:
 1. Emit \`STEP_START|<step-id>|<short description>\`.
 2. Run \`snapshot\` and identify selectors from the ARIA tree.
-3. Execute the action using an ALLOWED selector (see Selector Rules).
+3. Execute the action using an ALLOWED selector (see Selector Rules), prefixing the command with \`CCQA_STEP=<step-id>\` like every agent-browser command in the step.
 4. Emit \`AB_ACTION|...\` for every browser action (see AB_ACTION Protocol).
 5. Run \`snapshot\` again to verify the outcome.
 6. Confirm at least **two independent signals** (URL change, element appearance, text change, ...).
-7. For each verified signal, emit \`AB_ACTION|assert|...\` (see Assertion Protocol).
-8. Emit \`ROUTE_STEP|...\`.
-9. Emit \`STEP_DONE\`, \`ASSERTION_FAILED\`, or \`STEP_SKIPPED\`.
+7. Record each verified signal as an assertion by putting a \`CCQA_ASSERT=<marker>\` prefix on the verification command itself (see Assertion Protocol). Only the assert types markers cannot express fall back to \`AB_ACTION|assert|...\` text lines.
+8. Emit \`STEP_DONE\`, \`ASSERTION_FAILED\`, or \`STEP_SKIPPED\`.
+
+**Protocol lines are recorded ONLY from your plain assistant text.** Every
+\`STEP_START\` / \`STEP_DONE\` / \`RUN_COMPLETED\` line MUST be printed as normal
+message text between tool calls — never through Bash (\`echo\` etc.) and never
+omitted. Step attribution of browser actions comes from the \`CCQA_STEP\`
+prefix on each command (that prefix is authoritative, not the \`STEP_START\`
+line). Assertions are recorded primarily from the \`CCQA_ASSERT\` prefix on
+verification commands — same channel as the command, so they cannot be lost.
+A fallback \`AB_ACTION|assert|...\` text line (for the types markers cannot
+express) attaches to the step of the most recent \`CCQA_STEP\` prefix (or
+\`STEP_START\` line) and is silently dropped if you forget to print it — so
+prefer the marker form wherever it applies.
 
 **After form submission or navigation:** take a fresh snapshot before continuing. If an intermediate screen appears (account selection, role picker, ...), complete it and emit AB_ACTION for each interaction.
 
@@ -193,7 +220,7 @@ You have \`Read\`, \`Grep\`, and \`Glob\` to inspect the application source code
 Prefer \`wait\` over polling:
 
 \`\`\`bash
-agent-browser --session ${sessionName} wait --text "<completion text>"
+CCQA_STEP=<step-id> agent-browser --session ${sessionName} wait --text "<completion text>"
 \`\`\`
 
 If polling is required (e.g. waiting for a spinner to disappear):
@@ -204,7 +231,7 @@ for i in $(seq 1 18); do
   result=$(agent-browser --session ${sessionName} snapshot 2>&1)
   echo "$result" | grep -q "<done indicator>" && break
 done
-agent-browser --session ${sessionName} snapshot
+CCQA_STEP=<step-id> agent-browser --session ${sessionName} snapshot
 \`\`\`
 
 After waiting, always take a final snapshot. Emit \`AB_ACTION|wait|text=<text>|<label>\`.
@@ -255,9 +282,44 @@ Selectors in AB_ACTION must follow Selector Rules. \`find_*\` lines use the loca
 
 ## Assertion Protocol
 
-After verifying each step, emit \`AB_ACTION|assert\` lines for each signal you confirmed.
+Record each signal you verified as an assertion. The **primary mechanism** is
+a \`CCQA_ASSERT=<marker>\` env prefix on the verification command itself — the
+marker rides the same channel as the command, so the assertion is captured
+even if you print no protocol text. The check you were going to run anyway
+becomes the recorded assertion:
 
-**Available assertTypes:**
+\`\`\`bash
+# text_visible — the marked wait IS the assertion (no separate assert line)
+CCQA_STEP=<step-id> CCQA_ASSERT=1 agent-browser --session SESSION wait --text "Submitted" --timeout 3000
+# element_visible / element_not_visible — mark the get-count probe
+CCQA_STEP=<step-id> CCQA_ASSERT=element_visible agent-browser --session SESSION get count "[aria-label='Settings']"
+CCQA_STEP=<step-id> CCQA_ASSERT=element_not_visible agent-browser --session SESSION get count "text=Deleted item"
+# url_contains — the substring rides in the marker; put it on \`get url\`
+CCQA_STEP=<step-id> CCQA_ASSERT=url_contains:/dashboard agent-browser --session SESSION get url
+\`\`\`
+
+**Marker semantics:**
+
+| Marker | On command | Records |
+|--------|------------|---------|
+| \`1\` (alias of \`text_visible\`) | \`wait --text "<text>"\` | \`assert text_visible <text>\` — replaces the wait (the recorded assert waits itself) |
+| \`element_visible\` | \`get count "<selector>"\` | \`assert element_visible <selector>\` |
+| \`element_not_visible\` | \`get count "<selector>"\` | \`assert element_not_visible <selector>\` (use \`text=<text>\` as the selector to assert text absence) |
+| \`url_contains:<substring>\` | any command | \`assert url_contains <substring>\` in addition to whatever the command records |
+
+- A marked command that exits non-zero records nothing — fix the check and re-run it.
+- A marker that doesn't match its command (e.g. \`CCQA_ASSERT=1\` on a \`click\`) is ignored with a warning — never do that.
+- \`get count\` and \`get url\` exit 0 regardless of what they print. **Read the output**: if the printed count / URL contradicts the marker, the signal did NOT verify — treat it as a failed verification (emit \`ASSERTION_FAILED\` if the step cannot be confirmed another way).
+
+**Fallback text protocol** — ONLY for assert types the markers cannot express
+(\`element_enabled\`, \`element_disabled\`, \`element_checked\`,
+\`element_unchecked\`, \`text_not_visible\`): after verifying per the
+MUST-VERIFY rule below, print an \`AB_ACTION|assert|...\` line as plain
+assistant text.
+
+**Available assertTypes** (\`text_visible\`, \`element_visible\`,
+\`element_not_visible\`, and \`url_contains\` are marker-expressible — always
+prefer the marker form for them):
 
 | assertType | Use when | selector | value |
 |------------|----------|----------|-------|
@@ -294,7 +356,7 @@ The selector must identify *which* element by something **other than the state y
 
 - After a navigation, take a **fresh snapshot** before emitting any assertion. Don't assert on text from the previous page.
 - Assertion selectors follow the same Selector Rules as actions — never invent aria-label values; use the exact strings from the current snapshot.
-- When unsure, prefer \`text_visible\`/\`text_not_visible\` (no selector needed) — but pre-verify with \`wait --text\` per the MUST-VERIFY rule below.
+- When unsure, prefer \`text_visible\` — a \`CCQA_ASSERT=1\` marked \`wait --text\` verifies and records it in one command.
 
 **MUST-VERIFY rule — STRICT (applies to every assert except \`url_contains\`):**
 
@@ -304,36 +366,45 @@ The \`snapshot\` output is the **accessibility tree**, but \`agent-browser\` que
 2. *Text trap*: a snapshot row like \`link "Dashboard"\` may come from \`<a><img alt="Dashboard"></a>\` — the visible "text" is an \`alt\` attribute, not a text node. \`text_visible\` (which scans visible text nodes) will NOT find it.
 3. *Input-value trap*: after you \`fill\` an \`<input>\` / \`<textarea>\` / \`[contenteditable]\`, the text you typed lives in the element's **value**, not as a visible text node. **Do NOT assert the typed value with \`text_visible\`** — it will never match. The spec's "the field reflects X" expectation is implicitly confirmed when the form submits successfully and the value shows up on the *result* page (a list row, a detail page). Assert there, not on the input itself.
 
-Before emitting \`AB_ACTION|assert|...\`, **verify the assertion form actually resolves on the live page**:
+**Verify the assertion form actually resolves on the live page.** For the
+marker-expressible types the verification and the recorded assertion are the
+same marked command:
 
 \`\`\`bash
-# element_visible / element_enabled / element_disabled / element_checked / element_unchecked
-# Use get count (fast, returns a number). Do NOT use \`wait "<selector>"\` — it blocks the daemon.
-agent-browser --session SESSION get count "<selector>"   # >=1 means present
-# element_not_visible
-agent-browser --session SESSION get count "<selector>"   # 0 means absent
 # text_visible
-agent-browser --session SESSION wait --text "<text>" --timeout 3000
+CCQA_STEP=<step-id> CCQA_ASSERT=1 agent-browser --session SESSION wait --text "<text>" --timeout 3000
+# element_visible — >=1 printed means present
+CCQA_STEP=<step-id> CCQA_ASSERT=element_visible agent-browser --session SESSION get count "<selector>"
+# element_not_visible — 0 printed means absent (works for text too: "text=<text>")
+CCQA_STEP=<step-id> CCQA_ASSERT=element_not_visible agent-browser --session SESSION get count "<selector>"
+\`\`\`
+
+For the fallback types, pre-verify with an **unmarked** probe, then print the
+\`AB_ACTION|assert|...\` line:
+
+\`\`\`bash
+# element_enabled / element_disabled / element_checked / element_unchecked
+# Use get count (fast, returns a number). Do NOT use \`wait "<selector>"\` — it blocks the daemon.
+CCQA_STEP=<step-id> agent-browser --session SESSION get count "<selector>"   # >=1 means present
 # text_not_visible
-agent-browser --session SESSION wait --fn "!document.body.innerText.includes('<text>')" --timeout 3000
+CCQA_STEP=<step-id> agent-browser --session SESSION wait --fn "!document.body.innerText.includes('<text>')" --timeout 3000
 \`\`\`
 
 When *no* form verifies — e.g. \`[aria-label='X']\`, \`[placeholder='X']\`, and \`text=X\` all timed out, or the visible text turned out to be an \`alt\` — **drop the assertion entirely**. Fewer real assertions beat invented ones that fail at replay. \`url_contains\` is exempt (it checks the URL string, not the DOM).
 
-**Field positions — get these RIGHT.** The line is
+**Field positions in the fallback line — get these RIGHT.** The line is
 \`AB_ACTION|assert|<assertType>|<selector>|<value>|<observation>\`. The value
-(the asserted text for \`text_visible\`/\`text_not_visible\`/\`url_contains\`) goes
-in the **value** slot, NOT the observation slot. A common mistake is writing
-\`text_visible|||Done|...\` (three pipes → empty selector AND empty value, "Done"
-lands in observation): that records an assert with no value and it fails at
-replay. Use exactly two pipes after the assertType for text asserts.
+(the asserted text for \`text_not_visible\`) goes in the **value** slot, NOT
+the observation slot. A common mistake is writing \`text_not_visible|||Done|...\`
+(three pipes → empty selector AND empty value, "Done" lands in observation):
+that records an assert with no value and it fails at replay. Use exactly two
+pipes after the assertType for text asserts.
 
 \`\`\`
-AB_ACTION|assert|url_contains||/dashboard|Navigated to dashboard
 AB_ACTION|assert|element_disabled|.btn-submit||Submit disabled before form is valid
 AB_ACTION|assert|element_enabled|.btn-submit||Submit enabled after form is filled
-AB_ACTION|assert|text_visible||Loading|Operation started
-AB_ACTION|assert|text_visible||Done|Operation completed
+AB_ACTION|assert|element_checked|[data-testid='terms']||Terms checkbox ticked
+AB_ACTION|assert|text_not_visible||Draft|Draft badge cleared after publish
 \`\`\`
 
 ## Status Protocol
@@ -349,14 +420,6 @@ RUN_COMPLETED|passed|<summary>
 RUN_COMPLETED|failed|<summary>
 \`\`\`
 
-## Route Recording
-
-After each step (outside any code block):
-
-\`\`\`
-ROUTE_STEP|<step-id>|<short description>|ACTION:<what you did>|OBSERVATION:<what you verified>|STATUS:<PASSED|FAILED|SKIPPED>
-\`\`\`
-
 ${relatedPathsBlock}## Start
 
 Begin by clearing cookies, then proceed straight to the first step's instruction.
@@ -365,12 +428,17 @@ Begin by clearing cookies, then proceed straight to the first step's instruction
 agent-browser --session ${sessionName} cookies clear
 \`\`\`
 
+(The cookies-clear preamble belongs to no step, so it is the one command
+without a \`CCQA_STEP\` prefix.)
+
 Emit:
 \`\`\`
 AB_ACTION|cookies_clear
 \`\`\`
 
-Then emit \`STEP_START|step-01|...\` and execute the first step. The first step is responsible for opening the initial URL.
+Then emit \`STEP_START|step-01|...\` and execute the first step, prefixing
+every one of its agent-browser commands with \`CCQA_STEP=step-01\`. The first
+step is responsible for opening the initial URL.
 `;
 }
 

@@ -20,7 +20,7 @@ import { SpecModeSchema } from "./yaml-schema.ts";
 
 /**
  * Mechanically-derived facts about the spec's recording state, transcribed by
- * the CLI from spec.yaml + on-disk artifacts (actions.json / test.spec.ts).
+ * the CLI from spec.yaml + on-disk artifacts (ir.json / test.spec.ts).
  * Never written by Claude — these must not drift.
  *
  * `mode` mirrors spec.yaml's `mode:` field (defaulting to `deterministic`).

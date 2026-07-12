@@ -2,13 +2,47 @@ import { readFile } from "node:fs/promises";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, Options, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import * as log from "../cli/logger.ts";
-import { FIND_ACTIONS, FIND_LOCATORS } from "../types.ts";
+import { FIND_ACTIONS, FIND_LOCATORS } from "../ir/from-agent-browser.ts";
+
+/**
+ * One intercepted agent-browser command, as reported to `onAbAction`.
+ *
+ * `stepId` comes from the `CCQA_STEP=<step-id>` env prefix the trace prompt
+ * asks Claude to put on every agent-browser command. Carrying it here (the
+ * same channel as the command itself) keeps step attribution correct even
+ * when the model never prints the `STEP_START|...` text-protocol line.
+ *
+ * `assertMarker` comes from the `CCQA_ASSERT=<marker>` env prefix on
+ * verification commands, for the same reason: models reliably RUN the
+ * verification (`wait --text`, `get count`) but often skip the
+ * `AB_ACTION|assert|...` text line, so the assertion intent rides the
+ * command channel too. `promoteMarkedAssert` (ir/from-agent-browser.ts)
+ * turns the marked command into recorded assert action(s). `abAction` is
+ * absent when an observation-only command (`get count` / `get url`)
+ * surfaces solely because it carries a marker.
+ */
+export interface AbActionEvent {
+  /** The pipe-delimited AB_ACTION line extracted from the Bash command. */
+  abAction?: string;
+  /** Step id from the command's `CCQA_STEP=<step-id>` env prefix, if any. */
+  stepId?: string;
+  /** Raw value of the command's `CCQA_ASSERT=<marker>` env prefix, if any. */
+  assertMarker?: string;
+}
 
 export interface ClaudeInvokeOptions {
   prompt: string;
   systemPrompt?: string;
   allowedTools?: string[];
   disableBuiltinTools?: boolean;
+  /**
+   * Turn off extended thinking for this invocation. Thinking-first models can
+   * spend the whole response inside a `thinking` block and end the turn with
+   * no text at all, which callers that consume the plain-text `result` (e.g.
+   * the `.agent` prompt refresh) see as an empty answer. Text-only generation
+   * tasks should set this; tool-driven flows keep thinking on.
+   */
+  disableThinking?: boolean;
   mcpConfigPath?: string;
   maxTurns?: number;
   env?: Record<string, string>;
@@ -24,8 +58,8 @@ export interface ClaudeInvokeOptions {
    * point Claude at a specific package inside a monorepo.
    */
   cwd?: string;
-  /** Called when an agent-browser command is intercepted; receives the AB_ACTION line. */
-  onAbAction?: (abAction: string) => void;
+  /** Called when an agent-browser command is intercepted. */
+  onAbAction?: (event: AbActionEvent) => void;
   /** Called when an agent-browser command fails (exit non-zero); allows rolling back the last AB_ACTION. */
   onAbActionFailed?: () => void;
   /** When true, suppresses the default per-Bash-tool-call log line. Callers that
@@ -129,6 +163,7 @@ export async function invokeClaudeStreaming(
     systemPrompt,
     allowedTools,
     disableBuiltinTools = false,
+    disableThinking = false,
     maxTurns,
     env,
     model,
@@ -174,6 +209,7 @@ export async function invokeClaudeStreaming(
     ...(cwd ? { cwd } : {}),
     ...(mergedEnv ? { env: mergedEnv } : {}),
     ...(disableBuiltinTools ? { tools: [] } : {}),
+    ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
     hooks:
       onAbAction || onAbActionFailed
         ? {
@@ -225,7 +261,7 @@ export async function invokeClaudeStreaming(
 
                       // Block error-suppression decorators on agent-browser
                       // commands — they hide non-zero exits from PostToolUse and
-                      // let failed attempts get baked into actions.json.
+                      // let failed attempts get baked into ir.json.
                       if (hasErrorSuppression(cmd)) {
                         return {
                           decision: "block",
@@ -234,10 +270,23 @@ export async function invokeClaudeStreaming(
                       }
                     }
 
-                    const ab = relaxAbConstraints ? null : extractAbActionFromBashCommand(cmd);
-                    if (ab && onAbAction) {
+                    const assertMarker = relaxAbConstraints ? null : extractCcqaAssertFromBashCommand(cmd);
+                    // Observation commands (`get count` / `get url`) record
+                    // nothing by themselves, but when a CCQA_ASSERT marker
+                    // declares them a verification they must surface so the
+                    // trace can promote them to asserts.
+                    const ab = relaxAbConstraints
+                      ? null
+                      : extractAbActionFromBashCommand(cmd) ??
+                        (assertMarker !== null ? extractObservationAbAction(cmd) : null);
+                    if ((ab !== null || assertMarker !== null) && onAbAction) {
                       lastAbToolUseId = input.tool_use_id;
-                      onAbAction(ab);
+                      const stepId = extractCcqaStepFromBashCommand(cmd);
+                      onAbAction({
+                        ...(ab !== null ? { abAction: ab } : {}),
+                        ...(stepId ? { stepId } : {}),
+                        ...(assertMarker !== null ? { assertMarker } : {}),
+                      });
                     } else {
                       lastAbToolUseId = null;
                     }
@@ -477,23 +526,16 @@ export function hasRefSelector(cmd: string): boolean {
 }
 
 /**
- * Returns true when `cmd` contains more than one `agent-browser` invocation
- * chained together via shell operators (`&&`, `||`, `;`, `|`). The
- * PreToolUse hook only records ONE AB_ACTION per Bash call, so chained
- * invocations would silently drop every intermediate failure — turning
- * "I tried four selectors before one worked" into a clean-looking trace
- * with five orphaned actions that later fail at replay.
- *
- * The check tokenizes the command and counts `agent-browser` occurrences
- * that appear at the start of a shell command (i.e. immediately after a
- * statement separator or at index 0). String literals are honoured so
- * `agent-browser fill 'agent-browser'` doesn't false-fire.
+ * Split `cmd` into shell statements at unquoted separators (`;`, `|`, `&`,
+ * newline; consecutive separator chars like `&&` count once). String
+ * literals are honoured so `fill "a;b"` stays a single statement. This is a
+ * heuristic split (no subshell grammar), shared by the compound-invocation
+ * guard and the CCQA_STEP prefix extraction so both agree on what "one
+ * command" means.
  */
-export function hasMultipleAbInvocations(cmd: string): boolean {
-  // Walk the command and find statement boundaries that aren't inside
-  // string quotes. A statement starts at position 0 or right after one of
-  // these unquoted tokens.
-  const boundaries: number[] = [0];
+function splitShellStatements(cmd: string): string[] {
+  const statements: string[] = [];
+  let start = 0;
   let quote: '"' | "'" | "`" | null = null;
   for (let i = 0; i < cmd.length; i++) {
     const ch = cmd[i]!;
@@ -505,23 +547,111 @@ export function hasMultipleAbInvocations(cmd: string): boolean {
       quote = ch;
       continue;
     }
-    if (ch === ";" || ch === "|" || ch === "&") {
+    if (ch === ";" || ch === "|" || ch === "&" || ch === "\n") {
+      statements.push(cmd.slice(start, i));
       // Step past consecutive separator chars (`&&`, `||`, `;;` etc).
-      while (i + 1 < cmd.length && (cmd[i + 1] === "|" || cmd[i + 1] === "&" || cmd[i + 1] === ";")) i++;
-      boundaries.push(i + 1);
+      while (i + 1 < cmd.length && (cmd[i + 1] === "|" || cmd[i + 1] === "&" || cmd[i + 1] === ";" || cmd[i + 1] === "\n")) i++;
+      start = i + 1;
     }
   }
+  statements.push(cmd.slice(start));
+  return statements;
+}
+
+/** One leading `KEY=value` env assignment; value may be single/double-quoted. */
+const ENV_ASSIGN_HEAD_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(?:"([^"]*)"|'([^']*)'|(\S*))(?:\s+|$)/;
+
+/**
+ * Split a statement into its leading `KEY=value` env assignments and the
+ * command they prefix. An assignment whose value is a command substitution
+ * (`$(...)` / backticks) is NOT treated as a prefix — `result=$(agent-browser
+ * ... snapshot)` is an assignment statement, not an agent-browser invocation,
+ * and must stay invisible to the guards below.
+ */
+function splitLeadingEnvAssignments(statement: string): { env: Map<string, string>; command: string } {
+  const env = new Map<string, string>();
+  let command = statement.trimStart();
+  for (;;) {
+    const m = ENV_ASSIGN_HEAD_RE.exec(command);
+    if (!m) break;
+    const value = m[2] ?? m[3] ?? m[4] ?? "";
+    if (value.startsWith("$(") || value.startsWith("`")) return { env: new Map(), command: statement.trimStart() };
+    env.set(m[1]!, value);
+    command = command.slice(m[0].length);
+  }
+  return { env, command };
+}
+
+/** True when `command` starts with `agent-browser` as the command word. */
+function isAgentBrowserHead(command: string): boolean {
+  if (!command.startsWith("agent-browser")) return false;
+  const after = command["agent-browser".length];
+  // Followed by whitespace or end of string — anything else means this is
+  // a different word (e.g. `agent-browser-cli`).
+  return after === undefined || !/[A-Za-z0-9_\-]/.test(after);
+}
+
+/** Step ids passed via `CCQA_STEP=<step-id>` must be a plain slug. */
+const STEP_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * Extract the step id from the `CCQA_STEP=<step-id>` env prefix on the
+ * agent-browser invocation in `cmd` (e.g. `CCQA_STEP=step-03 agent-browser
+ * --session s click "text=Submit"`). The prefix may sit anywhere in the
+ * leading env-assignment run (`FOO=x CCQA_STEP=step-02 agent-browser ...`),
+ * and the invocation may be a later statement of a compound command
+ * (`cd app && CCQA_STEP=step-01 agent-browser ...`). Returns null when the
+ * prefix is absent or its value is not a valid slug — callers then fall back
+ * to the STEP_START text protocol.
+ */
+export function extractCcqaStepFromBashCommand(cmd: string): string | null {
+  for (const statement of splitShellStatements(cmd)) {
+    const { env, command } = splitLeadingEnvAssignments(statement);
+    if (!isAgentBrowserHead(command)) continue;
+    const value = env.get("CCQA_STEP");
+    return value !== undefined && STEP_SLUG_RE.test(value) ? value : null;
+  }
+  return null;
+}
+
+/**
+ * Extract the assert marker from the `CCQA_ASSERT=<marker>` env prefix on
+ * the agent-browser invocation in `cmd`, e.g. `CCQA_STEP=step-03
+ * CCQA_ASSERT=1 agent-browser --session s wait --text "Submitted" --timeout
+ * 3000`. The marker declares that the command verifies a step signal;
+ * `promoteMarkedAssert` maps it onto recorded assert action(s). Returns the
+ * raw value — semantic validation (which markers combine with which
+ * commands) happens at promotion time so mismatches surface as warnings
+ * instead of being silently dropped here. Returns null when the prefix is
+ * absent or empty.
+ */
+export function extractCcqaAssertFromBashCommand(cmd: string): string | null {
+  for (const statement of splitShellStatements(cmd)) {
+    const { env, command } = splitLeadingEnvAssignments(statement);
+    if (!isAgentBrowserHead(command)) continue;
+    const value = env.get("CCQA_ASSERT");
+    return value !== undefined && value.length > 0 ? value : null;
+  }
+  return null;
+}
+
+/**
+ * Returns true when `cmd` contains more than one `agent-browser` invocation
+ * chained together via shell operators (`&&`, `||`, `;`, `|`, newline). The
+ * PreToolUse hook only records ONE AB_ACTION per Bash call, so chained
+ * invocations would silently drop every intermediate failure — turning
+ * "I tried four selectors before one worked" into a clean-looking trace
+ * with five orphaned actions that later fail at replay.
+ *
+ * Counts statements whose command word is `agent-browser`, skipping any
+ * leading env assignments (the trace protocol prefixes every invocation
+ * with `CCQA_STEP=<step-id>`). String literals are honoured so
+ * `agent-browser fill 'agent-browser'` doesn't false-fire.
+ */
+export function hasMultipleAbInvocations(cmd: string): boolean {
   let count = 0;
-  for (const start of boundaries) {
-    // Skip leading whitespace at each boundary, then check if the next
-    // word is `agent-browser`. Word match avoids picking up substrings.
-    let j = start;
-    while (j < cmd.length && (cmd[j] === " " || cmd[j] === "\t" || cmd[j] === "\n")) j++;
-    if (cmd.slice(j, j + "agent-browser".length) !== "agent-browser") continue;
-    const after = cmd[j + "agent-browser".length];
-    // Followed by whitespace, end of string, or flag — anything that
-    // shows this is the command head, not e.g. `agent-browser-cli`.
-    if (after !== undefined && /[A-Za-z0-9_\-]/.test(after)) continue;
+  for (const statement of splitShellStatements(cmd)) {
+    if (!isAgentBrowserHead(splitLeadingEnvAssignments(statement).command)) continue;
     count++;
     if (count > 1) return true;
   }
@@ -538,7 +668,7 @@ export function hasMultipleAbInvocations(cmd: string): boolean {
  *
  * The agent-browser command itself returns exit 1 on selector miss, so
  * once one of these is present the PostToolUse hook sees `is_error=false`
- * and the bad attempt sneaks into actions.json.
+ * and the bad attempt sneaks into ir.json.
  */
 export function hasErrorSuppression(cmd: string): boolean {
   if (cmd.indexOf("agent-browser") === -1) return false;
@@ -613,6 +743,29 @@ export function extractAbActionFromBashCommand(cmd: string): string | null {
   }
 }
 
+/**
+ * Wire lines for the observation-only probes `get count <sel>` / `get url`.
+ * These commands read state without mutating it, so they have no place in
+ * the replay sequence and `extractAbActionFromBashCommand` ignores them.
+ * They matter only when a `CCQA_ASSERT=<marker>` env prefix declares the
+ * probe verifies a step signal — the hook layer then surfaces them via this
+ * function so `promoteMarkedAssert` can turn them into recorded asserts.
+ * Only consulted when a marker is present; unmarked `get` commands stay
+ * unobserved as before.
+ */
+export function extractObservationAbAction(cmd: string): string | null {
+  if (extractAbSubcommand(cmd) !== "get") return null;
+  const abIdx = cmd.indexOf("agent-browser");
+  const rest = cmd.slice(abIdx + "agent-browser".length).trim();
+  const parts = shellTokenize(rest).filter(t => !/^(2?>|[|&>])/.test(t));
+  let i = 0;
+  while (i < parts.length && parts[i]!.startsWith("-")) { i += 2; }
+  const args = parts.slice(i + 1);
+  if (args[0] === "count" && args[1]) return `AB_ACTION|get_count|${args[1]}`;
+  if (args[0] === "url") return "AB_ACTION|get_url";
+  return null;
+}
+
 const FIND_ACTION_SET: ReadonlySet<string> = new Set(FIND_ACTIONS);
 const FIND_LOCATOR_SET: ReadonlySet<string> = new Set(FIND_LOCATORS);
 
@@ -621,7 +774,8 @@ const FIND_LOCATOR_SET: ReadonlySet<string> = new Set(FIND_LOCATORS);
  * <action> [fillValue]` and produce a canonical
  *   `AB_ACTION|find_<action>|<locator>|<value>|<extra>|<exact>|...|<label>`
  * line. The wire format keeps a fixed positional layout across locators so
- * downstream `parseAbAction` in `cli/trace.ts` can split on `|` alone:
+ * downstream `parseAbActionLine` in `ir/from-agent-browser.ts` can split on
+ * `|` alone:
  *
  *   <extra> is `--name` value for role, integer index for nth, "" otherwise.
  *   <exact> is the literal "exact" if --exact was passed, "" otherwise.
@@ -686,16 +840,48 @@ async function buildMessageStream(
   options: Options,
 ): Promise<AsyncIterable<SDKMessage>> {
   const mockFile = process.env["CCQA_CLAUDE_MOCK_FILE"];
-  if (mockFile) return replayMockMessages(mockFile);
+  if (mockFile) return replayMockMessages(mockFile, options);
   return query({ prompt, options });
 }
 
-async function* replayMockMessages(path: string): AsyncIterable<SDKMessage> {
+async function* replayMockMessages(path: string, options: Options): AsyncIterable<SDKMessage> {
   const raw = await readFile(path, "utf8");
   for (const line of raw.split("\n")) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    yield JSON.parse(trimmed) as SDKMessage;
+    const msg = JSON.parse(trimmed) as SDKMessage;
+    await fireMockPreToolUseHooks(msg, options);
+    yield msg;
+  }
+}
+
+/**
+ * The real SDK fires PreToolUse hooks as it executes tool calls; the JSONL
+ * replay approximates that by invoking the configured PreToolUse hooks for
+ * every Bash tool_use block before yielding its message, so e2e stubs
+ * exercise the AB_ACTION recording path (including CCQA_STEP step
+ * attribution). Hook decisions are ignored and post-tool hooks are not
+ * simulated — the replay runs no tools, so there is nothing to block or fail.
+ */
+async function fireMockPreToolUseHooks(msg: SDKMessage, options: Options): Promise<void> {
+  const matchers = options.hooks?.PreToolUse;
+  if (!matchers || msg.type !== "assistant") return;
+  for (const block of msg.message.content ?? []) {
+    if (block.type !== "tool_use" || block.name !== "Bash") continue;
+    const input = {
+      hook_event_name: "PreToolUse",
+      tool_name: "Bash",
+      tool_input: block.input,
+      tool_use_id: block.id,
+      session_id: "mock",
+      transcript_path: "",
+      cwd: process.cwd(),
+    } as HookInput;
+    for (const matcher of matchers) {
+      for (const hook of matcher.hooks) {
+        await hook(input, block.id, { signal: new AbortController().signal });
+      }
+    }
   }
 }
 

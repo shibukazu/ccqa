@@ -262,7 +262,7 @@ const promptPush = new Command("push")
   .description(
     "Upload a locally-generated prompt asset to the hub, so it's available to other environments running against this project.",
   )
-  .argument("<name>", "Prompt name (record.user, record.agent, live.user, live.agent, or analysis-custom-prompt)")
+  .argument("<name>", `Prompt name (${PROMPT_NAMES.join(", ")})`)
   .option(...hubUrlOption)
   .option(...hubTokenOption)
   .option(...projectOption)
@@ -332,7 +332,7 @@ const promptRm = new Command("rm")
   }));
 
 const promptCommand = new Command("prompt")
-  .description("Manage prompt assets (record/live guidance, analysis custom prompt) stored on the hub (fetched automatically by `ccqa run` at run time).")
+  .description("Manage prompt assets (per-flow user/agent guidance, triage user guidance, analysis custom prompt) stored on the hub (fetched automatically by `ccqa run` at run time).")
   .addCommand(promptPush)
   .addCommand(promptLs)
   .addCommand(promptRm);
@@ -369,8 +369,9 @@ const pushCommand = new Command("push")
       process.exit(2);
     }
 
-    // The pushed tarball carries report.json + the evidence PNGs; the hub UI
-    // fetches each PNG through the artifacts API (no inlined HTML report).
+    // The pushed tarball carries report.json + the evidence PNGs + the run
+    // artifacts dir; the hub UI fetches each file through the artifacts API
+    // (no inlined HTML report).
     const branch = opts.branch ?? (await detectBranch(cwd));
     const archive = await packDirToTarGz(reportDir);
 

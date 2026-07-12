@@ -1,0 +1,12 @@
+# Allowlist: the image build needs exactly these inputs (see Dockerfile).
+# Everything else — node_modules, dist, .git, docs, tests, reports, .env —
+# stays out of the build context.
+*
+!bin
+!src
+!package.json
+!pnpm-lock.yaml
+!tsconfig.json
+!tsdown.config.ts
+# src is allowed above, but unit tests never ship into the image.
+src/**/*.test.ts

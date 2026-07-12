@@ -59,13 +59,16 @@ export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<vo
     // We don't expose a non-streaming wrapper today; use the streaming one with
     // a no-op event handler — `result` carries the full assistant text.
     // No Bash tool is exposed (allowedTools: [] + disableBuiltinTools: true),
-    // so there are no tool_use blocks to silence.
+    // so there are no tool_use blocks to silence. Thinking is disabled:
+    // thinking-first models can end the turn inside the thinking block with
+    // no text, which loses the whole update.
     const { result, isError } = await invokeClaudeStreaming(
       {
         prompt: userPrompt,
         systemPrompt,
         allowedTools: [],
         disableBuiltinTools: true,
+        disableThinking: true,
         ...(model ? { model } : {}),
       },
       () => {},
@@ -75,6 +78,13 @@ export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<vo
       log.warn(
         `--update-agent-prompt: Claude returned no usable output${isError ? " (SDK error)" : ""}; leaving prompt "${promptName}" unchanged`,
       );
+      return;
+    }
+
+    // The prompt contract: a run with nothing shortcut-worthy answers with the
+    // NO_UPDATE sentinel (clean runs are the common case — not a failure).
+    if (result.trim() === "NO_UPDATE") {
+      log.info(`--update-agent-prompt: no new learnings from this run; prompt "${promptName}" left unchanged`);
       return;
     }
 

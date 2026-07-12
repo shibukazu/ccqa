@@ -68,10 +68,40 @@ export const SessionFieldSchema = z
   .union([SessionNameSchema, z.array(SessionNameSchema).min(1)])
   .transform((v) => (Array.isArray(v) ? v : [v]));
 
-/** Top-level spec schema. `.strict()` rejects any unknown key. */
+/**
+ * A generation-target id: which plugin turns this spec into runnable tests
+ * (e.g. "agent-browser", "playwright", "runn"). The schema only enforces a
+ * safe slug — whether the id names a registered target is the registry's
+ * responsibility, so new targets don't require a schema change.
+ */
+export const TargetIdSchema = z
+  .string()
+  .min(1)
+  .regex(
+    /^[a-z0-9][a-z0-9._-]*$/i,
+    "target must be a slug (letters, digits, '.', '_', '-'; no path separators)",
+  );
+
+/** The built-in recorder-backed target. `mode:` / `session:` only apply to it. */
+export const AGENT_BROWSER_TARGET = "agent-browser";
+
+/**
+ * Top-level spec schema. `.strict()` rejects any unknown key.
+ *
+ * `mode:` and `session:` are agent-browser-only fields, enforced here when
+ * `target:` names another target. When `target:` is omitted the effective
+ * target comes from config (`defaultTarget`, falling back to agent-browser),
+ * which this schema can't see — so mode/session pass parsing and the
+ * post-resolution check is the target resolver's responsibility.
+ */
 export const TestSpecSchema = z
   .object({
     title: z.string().min(1),
+    /**
+     * Generation target for this spec. Omitted means "use the project
+     * config's `defaultTarget`" (agent-browser when that is absent too).
+     */
+    target: TargetIdSchema.optional(),
     relatedPaths: z.array(z.string().min(1)).optional(),
     mode: SpecModeSchema.optional(),
     /**
@@ -86,7 +116,19 @@ export const TestSpecSchema = z
     session: SessionFieldSchema.optional(),
     steps: z.array(StepSchema).min(1),
   })
-  .strict();
+  .strict()
+  .superRefine((spec, ctx) => {
+    if (spec.target === undefined || spec.target === AGENT_BROWSER_TARGET) return;
+    for (const key of ["mode", "session"] as const) {
+      if (spec[key] !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [key],
+          message: `\`${key}\` only applies to the agent-browser target — remove it or drop \`target: ${spec.target}\``,
+        });
+      }
+    }
+  });
 export type TestSpec = z.infer<typeof TestSpecSchema>;
 
 /** Default mode when `mode:` is absent. */

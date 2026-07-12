@@ -56,5 +56,8 @@ test-results/
 # but keep E2E fixture .ccqa dirs and the hub-docker example's demo spec
 !tests/e2e/fixtures/**/.ccqa/
 !tests/e2e/fixtures/**/.ccqa/**
-!examples/hub-docker/.ccqa/
-!examples/hub-docker/.ccqa/**
+
+# keep fixture pseudo-packages (fake node_modules consumed by the
+# reuse-first generation test — real deps never live under fixtures)
+!tests/e2e/fixtures/**/node_modules/
+!tests/e2e/fixtures/**/node_modules/**

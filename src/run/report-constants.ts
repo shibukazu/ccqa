@@ -12,3 +12,5 @@ export type ReportFormat = (typeof REPORT_FORMATS)[number];
 
 export const DEFAULT_REPORT_DIR = "ccqa-report";
 export const EVIDENCE_SUBDIR = "evidence";
+/** Per-spec run artifacts for external (runCommand) targets: `artifacts/<feature>__<spec>/`. */
+export const ARTIFACTS_SUBDIR = "artifacts";

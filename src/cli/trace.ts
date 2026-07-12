@@ -5,8 +5,7 @@ import {
   loadAllBlocks,
   loadPromptBundleFromHub,
   readSpecFile,
-  saveRoute,
-  saveTraceActions,
+  saveRecording,
   updateSpecRelatedPaths,
 } from "../store/index.ts";
 import type { HubContext } from "./hub-conn.ts";
@@ -19,16 +18,10 @@ import { validateActions, type ValidationMode } from "../runtime/replay-validate
 import { buildSpecEnvScrub, scrubEnvValues } from "../runtime/env-scrub.ts";
 import { formatUnstableDrop, scrubUnstableActions } from "../runtime/literal-scrub.ts";
 import { languageDirective } from "../prompts/language.ts";
-import { FIND_LOCATORS } from "../types.ts";
-import type {
-  Route,
-  RouteStep,
-  TraceAction,
-  TraceCommand,
-  AssertType,
-  FindLocator,
-  ParsedStatusLine,
-} from "../types.ts";
+import { parseAbActionLine, promoteMarkedAssert } from "../ir/from-agent-browser.ts";
+import { describeLocator, locatorToSelector } from "../ir/to-agent-browser.ts";
+import type { Locator, RecordedAction } from "../ir/types.ts";
+import type { ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
 /**
@@ -44,19 +37,26 @@ export interface StepChurn {
 }
 
 export interface RunTraceResult {
-  /** RouteStep list captured from ROUTE_STEP lines, in order. */
-  route: Route;
-  /** Number of TraceActions kept after scrub / dedup / validation. */
+  /** Overall run status, derived from the status-line protocol. */
+  status: "passed" | "failed";
+  /**
+   * Every STEP_START / STEP_DONE / ASSERTION_FAILED / STEP_SKIPPED /
+   * RUN_COMPLETED line captured from the trace, in order. The record
+   * agent-prompt refresh reconstructs its per-step narrative from these.
+   */
+  statusLines: ParsedStatusLine[];
+  /** Number of actions kept after scrub / dedup / validation. */
   actionsKept: number;
-  /** Total TraceActions emitted before scrub / dedup / validation. */
+  /** Total actions emitted before scrub / dedup / validation. */
   actionsRecorded: number;
   /**
    * The kept actions themselves (post scrub / dedup / validation), in order.
    * The record agent-prompt refresh needs the concrete commands + selectors
-   * that survived — the RouteStep prose alone doesn't carry them, so without
-   * this the learner can't name the canonical selector it's told to record.
+   * that survived — the status-line prose alone doesn't carry them, so
+   * without this the learner can't name the canonical selector it's told
+   * to record.
    */
-  actions: TraceAction[];
+  actions: RecordedAction[];
   /** Per-step churn (see {@link StepChurn}), keyed by stepId. */
   churnByStep: Map<string, StepChurn>;
 }
@@ -83,14 +83,14 @@ export async function runTrace(
   // or via Claude's `AB_ACTION|...` text emissions) gets its concrete
   // env-derived values replaced with the symbolic form. Without this,
   // `abAssertTextVisible` and similar text-channel actions land in
-  // actions.json with the literal trace-time value (e.g. a per-run id),
+  // ir.json with the literal trace-time value (e.g. a per-run id),
   // which then bakes into test.spec.ts and breaks `ccqa run` whenever the
   // env value changes.
   const envScrub = buildSpecEnvScrub(spec, expanded);
   const envScrubMap = envScrub.map;
   if (envScrub.unresolved.length > 0) {
     log.warn(
-      `spec references env var(s) with empty/unset values: ${envScrub.unresolved.join(", ")} — their literal trace-time values will be baked into actions.json`,
+      `spec references env var(s) with empty/unset values: ${envScrub.unresolved.join(", ")} — their literal trace-time values will be baked into ir.json`,
     );
   }
 
@@ -119,21 +119,26 @@ export async function runTrace(
   log.info("Running agent-browser session...");
   log.blank();
 
-  const routeSteps: RouteStep[] = [];
+  const statusLines: ParsedStatusLine[] = [];
   let overallStatus: "passed" | "failed" = "passed";
-  const traceActions: TraceAction[] = [];
-  // Tagged onto each recorded action so codegen can group by step even when
-  // a step opens no URL (e.g. a "fill the form" step sandwiched between an
-  // `open` step and a navigation).
-  let currentStepId: string | undefined;
+  const traceActions: RecordedAction[] = [];
+  // Tags each recorded action with its spec step so codegen can group by
+  // step even when a step opens no URL (e.g. a "fill the form" step
+  // sandwiched between a `navigate` step and a navigation).
+  const stepTracker = createStepTracker();
   // Only captures text from RELATED_PATHS_BEGIN onward so a long trace doesn't
   // accumulate every assistant message in memory just to extract one block.
   let relatedPathsBuffer: string | null = null;
 
-  const withStepId = (action: TraceAction | null): TraceAction | null => {
+  const withStepId = (action: RecordedAction | null, stepId: string | undefined): RecordedAction | null => {
     if (!action) return null;
-    return currentStepId ? { ...action, stepId: currentStepId } : action;
+    return stepId ? { ...action, stepId } : action;
   };
+
+  // How many actions the most recent command event pushed, so a failed
+  // command rolls back exactly its own contribution — a promoted
+  // `url_contains:` marker pushes two actions, an unparseable command none.
+  let lastCommandPushCount = 0;
 
   const { isError } = await invokeClaudeStreaming(
     {
@@ -141,12 +146,35 @@ export async function runTrace(
       systemPrompt,
       ...agentBrowserInvokeBase({ sessionName, runId: sessionName }),
       model,
-      onAbAction: (abAction: string) => {
-        const action = withStepId(parseAbAction(scrubEnvValues(abAction, envScrubMap)));
-        if (action) traceActions.push(action);
+      onAbAction: ({ abAction, stepId, assertMarker }) => {
+        const stepForCommand = stepTracker.fromCommand(stepId);
+        const line = abAction === undefined ? null : scrubEnvValues(abAction, envScrubMap);
+        let recorded: RecordedAction[] | null = null;
+        if (assertMarker !== undefined) {
+          recorded = promoteMarkedAssert(line, scrubEnvValues(assertMarker, envScrubMap));
+          if (recorded === null) {
+            log.warn(
+              `CCQA_ASSERT=${assertMarker} does not match a promotable command (wait --text / get count / url_contains:<substring>) — recording the command without an assert`,
+            );
+          }
+        }
+        if (recorded === null) {
+          const parsed = line === null ? null : parseAbActionLine(line);
+          recorded = parsed === null ? [] : [parsed];
+        }
+        let pushed = 0;
+        for (const action of recorded) {
+          const stamped = withStepId(action, stepForCommand);
+          if (stamped) {
+            traceActions.push(stamped);
+            pushed += 1;
+          }
+        }
+        lastCommandPushCount = pushed;
       },
       onAbActionFailed: () => {
-        traceActions.pop();
+        if (lastCommandPushCount > 0) traceActions.splice(-lastCommandPushCount);
+        lastCommandPushCount = 0;
       },
     },
     (msg: SDKMessage) => {
@@ -162,26 +190,26 @@ export async function runTrace(
           if (idx !== -1) relatedPathsBuffer = text.slice(idx) + "\n";
         }
 
-        // Walk lines in order so STEP_START updates currentStepId before any
-        // subsequent AB_ACTION/ROUTE_STEP on the same block are processed.
+        // Walk lines in order so STEP_START advances the step tracker before
+        // any subsequent AB_ACTION on the same block is processed.
         for (const line of text.split("\n")) {
           const trimmed = line.trim();
           const status = parseStatusLine(line);
           if (status) {
             if (status.type === "STEP_START" && status.stepId) {
-              currentStepId = status.stepId;
+              stepTracker.fromStepStartLine(status.stepId);
             }
+            if (status.type === "ASSERTION_FAILED") overallStatus = "failed";
+            if (status.type === "RUN_COMPLETED" && status.stepId === "failed") overallStatus = "failed";
+            statusLines.push(status);
             log.step(status.type, status.stepId, status.detail);
             continue;
           }
-          if (trimmed.startsWith("ROUTE_STEP|")) {
-            const routeStep = parseRouteStep(trimmed);
-            if (routeStep) {
-              routeSteps.push(routeStep);
-              if (routeStep.status === "FAILED") overallStatus = "failed";
-            }
-          } else if (trimmed.startsWith("AB_ACTION|snapshot|") || trimmed.startsWith("AB_ACTION|assert|")) {
-            const action = withStepId(parseAbAction(scrubEnvValues(trimmed, envScrubMap)));
+          if (trimmed.startsWith("AB_ACTION|snapshot|") || trimmed.startsWith("AB_ACTION|assert|")) {
+            const action = withStepId(
+              parseAbActionLine(scrubEnvValues(trimmed, envScrubMap)),
+              stepTracker.current(),
+            );
             if (action) traceActions.push(action);
           }
         }
@@ -195,17 +223,10 @@ export async function runTrace(
   const dedupedActions = dedupAndReport(scrubbedActions);
   const validatedActions = validateAndReport(dedupedActions, validationMode);
 
-  const timestamp = new Date().toISOString();
-  const route: Route = { specName, timestamp, status: overallStatus, steps: routeSteps };
-
-  const [routePath, actionsPath] = await Promise.all([
-    saveRoute(featureName, specName, route, opts.cwd),
-    saveTraceActions(featureName, specName, validatedActions, opts.cwd),
-  ]);
+  const recordingPath = await saveRecording(featureName, specName, validatedActions, opts.cwd);
 
   log.blank();
-  log.meta("route", routePath);
-  log.meta("saved", actionsPath);
+  log.meta("saved", recordingPath);
   log.meta("actions", validatedActions.length);
   log.meta("status", overallStatus.toUpperCase());
 
@@ -224,7 +245,8 @@ export async function runTrace(
   log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
 
   return {
-    route,
+    status: overallStatus,
+    statusLines,
     actionsKept: validatedActions.length,
     actionsRecorded: traceActions.length,
     actions: validatedActions,
@@ -239,7 +261,7 @@ export async function runTrace(
  * Spans scrub + dedup + validate, unlike `reportPerStepBreakdown` which only
  * covers the validation stage.
  */
-function buildChurnByStep(raw: TraceAction[], kept: TraceAction[]): Map<string, StepChurn> {
+function buildChurnByStep(raw: RecordedAction[], kept: RecordedAction[]): Map<string, StepChurn> {
   const recordedByStep = groupCountByStep(raw);
   const keptByStep = groupCountByStep(kept);
   const redundantByStep = countRedundantByStep(kept);
@@ -254,12 +276,18 @@ function buildChurnByStep(raw: TraceAction[], kept: TraceAction[]): Map<string, 
   return churn;
 }
 
-/** Input commands whose `.value` holds the typed text (the cross-command key). */
-const INPUT_COMMANDS = new Set<TraceCommand>(["fill", "type", "find_fill", "find_type"]);
+/** Input actions whose `.value` holds the typed text (the cross-command key). */
+const INPUT_ACTIONS = new Set<RecordedAction["action"]>(["fill", "type"]);
 
-/** How an action reaches its target — a CSS selector or a `find` locator. */
-function targetSignature(a: TraceAction): string {
-  return a.selector ?? `${a.findLocator ?? ""}:${a.findValue ?? ""}:${a.findName ?? ""}:${a.findIndex ?? ""}`;
+/**
+ * Stable string form of a locator (with its positional index) used to tell
+ * whether two actions reached their target the same way.
+ */
+function locatorSignature(locator: Locator | undefined, index: RecordedAction["index"]): string {
+  if (!locator) return "";
+  const name = locator.by === "role" ? locator.name ?? "" : "";
+  const exact = locator.by !== "css" && locator.exact ? "exact" : "";
+  return `${locator.by}:${locator.value}:${name}:${exact}:${index ?? ""}`;
 }
 
 /**
@@ -278,20 +306,20 @@ function isTrivialValue(v: string): boolean {
 /**
  * Per-step count of fields entered via 2+ different selectors that both
  * survived — the agent reached the same field two ways (e.g. `fill "[aria-…]"`
- * then `find_fill label=…` with the same value) and neither was dropped, so
+ * then `find label=…` with the same value) and neither was dropped, so
  * drop-churn misses it. Keyed on exact `value` equality with a triviality guard
  * to stay conservative; counts distinct values (not pairs) to avoid over-count.
  */
-export function countRedundantByStep(kept: TraceAction[]): Map<string, number> {
+export function countRedundantByStep(kept: RecordedAction[]): Map<string, number> {
   const perStep = new Map<string, Map<string, Set<string>>>();
   for (const a of kept) {
-    if (!INPUT_COMMANDS.has(a.command)) continue;
+    if (!INPUT_ACTIONS.has(a.action)) continue;
     const v = a.value;
     if (!v || isTrivialValue(v)) continue;
     const step = a.stepId ?? "<no step>";
     const byValue = perStep.get(step) ?? new Map<string, Set<string>>();
     const sigs = byValue.get(v) ?? new Set<string>();
-    sigs.add(targetSignature(a));
+    sigs.add(locatorSignature(a.locator, a.index));
     byValue.set(v, sigs);
     perStep.set(step, byValue);
   }
@@ -311,7 +339,7 @@ export function countRedundantByStep(kept: TraceAction[]): Map<string, number> {
  * pin the generated test to a single run. Reported the same way as
  * `validateAndReport` so users see one uniform "dropped" surface.
  */
-function scrubAndReport(actions: TraceAction[]): TraceAction[] {
+function scrubAndReport(actions: RecordedAction[]): RecordedAction[] {
   if (actions.length === 0) return actions;
   const { kept, dropped } = scrubUnstableActions(actions);
   if (dropped.length === 0) return kept;
@@ -326,22 +354,21 @@ function scrubAndReport(actions: TraceAction[]): TraceAction[] {
 
 /**
  * Drop *immediate* duplicate AB_ACTION emissions inside the same step.
- * Claude occasionally records the same `find_click` (identical command,
- * locator, value, fields) twice in a row when retrying a selector after a
- * snapshot — only the last attempt is "the canonical one". Collapsing the
- * dupes keeps actions.json from accumulating ghost-retries the LLM never
+ * Claude occasionally records the same semantic-locator click (identical
+ * action, locator, value, fields) twice in a row when retrying a selector
+ * after a snapshot — only the last attempt is "the canonical one". Collapsing
+ * the dupes keeps ir.json from accumulating ghost-retries the LLM never
  * meant to commit.
  *
  * The dedupe is intentionally conservative — adjacent + structurally
  * IDENTICAL only. We do NOT try to compress retries with different
- * selectors / locators (that would risk dropping a legitimate "click the
- * neighbouring button" sequence). The trace prompt now asks Claude not to
- * emit failed attempts in the first place, so this is the belt-and-braces
- * pass.
+ * locators (that would risk dropping a legitimate "click the neighbouring
+ * button" sequence). The trace prompt now asks Claude not to emit failed
+ * attempts in the first place, so this is the belt-and-braces pass.
  */
-function dedupAndReport(actions: TraceAction[]): TraceAction[] {
+function dedupAndReport(actions: RecordedAction[]): RecordedAction[] {
   if (actions.length === 0) return actions;
-  const kept: TraceAction[] = [];
+  const kept: RecordedAction[] = [];
   let dropped = 0;
   for (const action of actions) {
     const prev = kept[kept.length - 1];
@@ -358,24 +385,19 @@ function dedupAndReport(actions: TraceAction[]): TraceAction[] {
 
 /**
  * Two actions are an "adjacent duplicate" when they would generate the
- * exact same agent-browser invocation. We compare by command + every
+ * exact same agent-browser invocation. We compare by action + every
  * field that drives codegen output, sharing the same stepId (so we don't
  * silently merge two distinct steps that happen to start identically).
  */
-function isAdjacentDuplicate(a: TraceAction, b: TraceAction): boolean {
-  if (a.command !== b.command) return false;
+function isAdjacentDuplicate(a: RecordedAction, b: RecordedAction): boolean {
+  if (a.action !== b.action) return false;
   if ((a.stepId ?? "") !== (b.stepId ?? "")) return false;
   return (
-    (a.selector ?? "") === (b.selector ?? "") &&
+    locatorSignature(a.locator, a.index) === locatorSignature(b.locator, b.index) &&
     (a.value ?? "") === (b.value ?? "") &&
-    (a.target ?? "") === (b.target ?? "") &&
+    locatorSignature(a.target, undefined) === locatorSignature(b.target, undefined) &&
     (a.label ?? "") === (b.label ?? "") &&
-    (a.assertType ?? "") === (b.assertType ?? "") &&
-    (a.findLocator ?? "") === (b.findLocator ?? "") &&
-    (a.findValue ?? "") === (b.findValue ?? "") &&
-    (a.findName ?? "") === (b.findName ?? "") &&
-    (a.findIndex ?? -1) === (b.findIndex ?? -1) &&
-    (a.findExact ?? false) === (b.findExact ?? false) &&
+    (a.assert ?? "") === (b.assert ?? "") &&
     (a.files ?? []).join("|") === (b.files ?? []).join("|")
   );
 }
@@ -390,7 +412,7 @@ function isAdjacentDuplicate(a: TraceAction, b: TraceAction): boolean {
  * in their original order so codegen can still emit them (with a `// [warn]`
  * comment) and let the auto-fix loop decide what to do.
  */
-function validateAndReport(actions: TraceAction[], mode: ValidationMode): TraceAction[] {
+function validateAndReport(actions: RecordedAction[], mode: ValidationMode): RecordedAction[] {
   if (actions.length === 0) return actions;
   const sessionName = `${generateSessionName()}-validate`;
   log.blank();
@@ -411,8 +433,8 @@ function validateAndReport(actions: TraceAction[], mode: ValidationMode): TraceA
       log.meta("validated", `${kept.length}/${actions.length} kept`);
     } else {
       for (const u of unstable) {
-        const head = `${u.command}${u.selector ? " " + u.selector : ""}${u.findValue ? " " + u.findValue : ""}`;
-        log.warn(`replay-unstable: ${head} — ${u.replayReason ?? "(no reason)"} (kept in actions.json with warning)`);
+        const head = `${u.action}${u.locator ? " " + describeLocator(u.locator) : ""}`;
+        log.warn(`replay-unstable: ${head} — ${u.replayReason ?? "(no reason)"} (kept in ir.json with warning)`);
       }
       log.meta(
         "validated",
@@ -455,7 +477,7 @@ function validateAndReport(actions: TraceAction[], mode: ValidationMode): TraceA
       cascadeStepId = d.action.stepId;
       continue;
     }
-    log.warn(`dropped action #${d.index + 1} (${d.action.command}${d.action.selector ? " " + d.action.selector : ""}): ${d.reason}`);
+    log.warn(`dropped action #${d.index + 1} (${d.action.action}${d.action.locator ? " " + describeLocator(d.action.locator) : ""}): ${d.reason}`);
   }
   flushCascade();
   log.meta("validated", `${kept.length}/${actions.length} kept (${dropped.length} dropped)`);
@@ -469,12 +491,12 @@ function validateAndReport(actions: TraceAction[], mode: ValidationMode): TraceA
  * validator pushes original references — no shallow copies.
  */
 function mergeKeptAndUnstableInOriginalOrder(
-  originalActions: TraceAction[],
-  kept: TraceAction[],
-  unstable: TraceAction[],
-): TraceAction[] {
-  const allowed = new Set<TraceAction>([...kept, ...unstable]);
-  const merged: TraceAction[] = [];
+  originalActions: RecordedAction[],
+  kept: RecordedAction[],
+  unstable: RecordedAction[],
+): RecordedAction[] {
+  const allowed = new Set<RecordedAction>([...kept, ...unstable]);
+  const merged: RecordedAction[] = [];
   for (const a of originalActions) {
     if (allowed.has(a)) merged.push(a);
   }
@@ -486,15 +508,13 @@ function mergeKeptAndUnstableInOriginalOrder(
  * each action. Keep it under ~80 chars so it fits on a single terminal
  * row when paired with the `[info] N/M ` prefix.
  */
-function validationProgressLabel(action: TraceAction): string {
+function validationProgressLabel(action: RecordedAction): string {
   const step = action.stepId ? `${action.stepId} ` : "";
-  const detail = action.findLocator
-    ? `find ${action.findLocator} ${action.findValue ?? ""}`.trim()
-    : action.selector
-      ? `${action.command} ${action.selector}`
-      : action.value
-        ? `${action.command} ${action.value}`
-        : action.command;
+  const detail = action.locator
+    ? `${action.action} ${locatorToSelector(action.locator)}`
+    : action.value
+      ? `${action.action} ${action.value}`
+      : action.action;
   const trimmed = detail.length > 80 ? detail.slice(0, 77) + "..." : detail;
   return `${step}${trimmed}`;
 }
@@ -507,7 +527,7 @@ function validationProgressLabel(action: TraceAction): string {
  * is missing. Lost steps are also surfaced as a dedicated warning line so
  * they don't blend into the per-step breakdown noise.
  */
-function reportPerStepBreakdown(beforeValidation: TraceAction[], afterValidation: TraceAction[]): void {
+function reportPerStepBreakdown(beforeValidation: RecordedAction[], afterValidation: RecordedAction[]): void {
   const before = groupCountByStep(beforeValidation);
   const after = groupCountByStep(afterValidation);
   // Walk in the order step ids first appeared in the trace so output
@@ -535,13 +555,47 @@ function reportPerStepBreakdown(beforeValidation: TraceAction[], afterValidation
   }
 }
 
-function groupCountByStep(actions: TraceAction[]): Map<string, number> {
+function groupCountByStep(actions: RecordedAction[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const a of actions) {
     const id = a.stepId ?? "<no step>";
     counts.set(id, (counts.get(id) ?? 0) + 1);
   }
   return counts;
+}
+
+/**
+ * Tracks which spec step incoming actions belong to. Two channels feed it:
+ *
+ * - `fromCommand` — the `CCQA_STEP=<step-id>` env prefix the PreToolUse hook
+ *   parses off each agent-browser command. Authoritative: it travels on the
+ *   same channel as the command itself, so it can't desync from the actions.
+ * - `fromStepStartLine` — the `STEP_START|...` text protocol. Fallback only:
+ *   models often skip protocol text during long tool-call loops.
+ *
+ * A command-channel id also advances the current step so later text-channel
+ * lines (`AB_ACTION|assert|...`) attach to the right step even when
+ * STEP_START was never printed.
+ */
+export interface StepTracker {
+  current: () => string | undefined;
+  fromStepStartLine: (stepId: string) => void;
+  /** Returns the step to attach to the action recorded from this command. */
+  fromCommand: (stepId: string | undefined) => string | undefined;
+}
+
+export function createStepTracker(): StepTracker {
+  let currentStepId: string | undefined;
+  return {
+    current: () => currentStepId,
+    fromStepStartLine: (stepId) => {
+      currentStepId = stepId;
+    },
+    fromCommand: (stepId) => {
+      if (stepId) currentStepId = stepId;
+      return currentStepId;
+    },
+  };
 }
 
 export function parseStatusLine(text: string): ParsedStatusLine | null {
@@ -556,116 +610,4 @@ export function parseStatusLine(text: string): ParsedStatusLine | null {
     }
   }
   return null;
-}
-
-export function parseRouteStep(line: string): RouteStep | null {
-  const parts = line.split("|");
-  if (parts.length < 6) return null;
-
-  const stepId = (parts[1] ?? "").trim();
-  const title = parts[2] ?? "";
-  const action = (parts[3] ?? "").replace(/^ACTION:/, "").trim();
-  const observation = (parts[4] ?? "").replace(/^OBSERVATION:/, "").trim();
-  const statusRaw = (parts[5] ?? "").replace(/^STATUS:/, "").trim();
-
-  const status = (["PASSED", "FAILED", "SKIPPED"] as const).find((s) => s === statusRaw) ?? "FAILED";
-  return { ...(stepId ? { stepId } : {}), title, action, observation, status };
-}
-
-export function parseAbAction(line: string): TraceAction | null {
-  if (!line.startsWith("AB_ACTION|")) return null;
-  const parts = line.split("|");
-  const command = parts[1] as TraceCommand | undefined;
-
-  switch (command) {
-    case "cookies_clear":
-      return { command };
-    case "open":
-      return { command, value: parts[2] };
-    case "press":
-      return { command, value: parts[2] };
-    case "scroll":
-      return { command, direction: parts[2], pixels: parts[3] };
-    case "snapshot":
-      return { command, observation: parts[2] };
-    case "assert":
-      return {
-        command,
-        assertType: parts[2] as AssertType,
-        selector: parts[3] || undefined,
-        value: parts[4] || undefined,
-        observation: parts[5] || undefined,
-      };
-    case "click":
-    case "dblclick":
-    case "check":
-    case "uncheck":
-    case "hover":
-      return { command, selector: parts[2], label: parts[3] };
-    case "wait": {
-      const isTextWait = parts[2] === "--text";
-      const selector = isTextWait ? `text=${parts[3]}` : parts[2];
-      return { command, selector, label: isTextWait ? parts[4] : parts[3] };
-    }
-    case "fill":
-    case "type":
-    case "select":
-      return { command, selector: parts[2], value: parts[3], label: parts[4] };
-    case "drag":
-      return { command, selector: parts[2], target: parts[3], label: parts[4] };
-    case "upload": {
-      // AB_ACTION|upload|<sel>|<file1>[|<file2>...]
-      const selector = parts[2];
-      const files = parts.slice(3).filter((f) => f !== "");
-      if (!selector || files.length === 0) return null;
-      return { command, selector, files };
-    }
-    case "find_click":
-    case "find_dblclick":
-    case "find_hover":
-    case "find_focus":
-    case "find_check":
-    case "find_uncheck":
-      // AB_ACTION|find_<action>|<locator>|<value>|<extra>|<exact>|<label>
-      return parseFindAction(command, parts, false);
-    case "find_fill":
-    case "find_type":
-      // AB_ACTION|find_<action>|<locator>|<value>|<extra>|<exact>|<fillValue>|<label>
-      return parseFindAction(command, parts, true);
-    default:
-      return null;
-  }
-}
-
-/**
- * Common parser for the `find_*` family. `<extra>` carries `--name` for
- * `role`, the integer index for `nth`, and is empty otherwise. We accept a
- * literally empty `<extra>` (the LLM emits a placeholder `|` so the
- * positional layout stays stable across locators).
- */
-function parseFindAction(
-  command: TraceCommand,
-  parts: string[],
-  hasFillValue: boolean,
-): TraceAction | null {
-  const locator = parts[2] as FindLocator | undefined;
-  const findValue = parts[3];
-  const extra = parts[4] ?? "";
-  const exactToken = parts[5] ?? "";
-  if (!locator || !FIND_LOCATORS.includes(locator) || !findValue) return null;
-
-  const findExact = exactToken === "exact" ? true : undefined;
-  const findName = locator === "role" && extra ? extra : undefined;
-  const findIndex = locator === "nth" && extra ? Number.parseInt(extra, 10) : undefined;
-  if (locator === "nth" && (findIndex === undefined || Number.isNaN(findIndex))) return null;
-
-  return {
-    command,
-    findLocator: locator,
-    findValue,
-    ...(findExact !== undefined && { findExact }),
-    ...(findName !== undefined && { findName }),
-    ...(findIndex !== undefined && { findIndex }),
-    ...(hasFillValue ? { value: parts[6], label: parts[7] } : { label: parts[6] }),
-  };
 }

@@ -1,12 +1,12 @@
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { stringify as stringifyYaml } from "yaml";
 import { collectIncludedBlockNames } from "../spec/expand.ts";
 import { parseBlockSpec, parseTestSpec } from "../spec/parser.ts";
 import { isParamRequired } from "../spec/yaml-schema.ts";
-import type { BlockSpec, Route, TestSpec, TraceAction } from "../types.ts";
+import type { BlockSpec, RecordedAction, TestSpec } from "../types.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
-import type { PromptName } from "../prompts/prompt-names.ts";
+import type { GuidanceKind, PromptName } from "../prompts/prompt-names.ts";
 
 export interface AvailableBlock {
   name: string;
@@ -16,6 +16,7 @@ export interface AvailableBlock {
 
 const CCQA_DIR = ".ccqa";
 const SPEC_FILE = "spec.yaml";
+const RECORDING_FILE = "ir.json";
 const PERSPECTIVES_FILE = "perspectives.yaml";
 const PERSPECTIVES_MD_FILE = "perspectives.md";
 
@@ -214,25 +215,24 @@ function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
   return out as T;
 }
 
-export async function saveRoute(featureName: string, specName: string, route: Route, cwd?: string): Promise<string> {
-  const specDir = getSpecDir(featureName, specName, cwd);
-  await mkdir(specDir, { recursive: true });
-  const routePath = join(specDir, "route.md");
-  await writeFile(routePath, routeToMarkdown(route), "utf-8");
-  return routePath;
-}
+// Per-spec artifacts written by pre-IR ccqa versions, superseded by ir.json.
+// Removed on every save so a re-record leaves no stale files behind.
+const LEGACY_RECORDING_FILES = ["actions.json", "route.md"];
 
-export async function saveTraceActions(
+export async function saveRecording(
   featureName: string,
   specName: string,
-  actions: TraceAction[],
+  actions: RecordedAction[],
   cwd?: string,
 ): Promise<string> {
   const specDir = getSpecDir(featureName, specName, cwd);
   await mkdir(specDir, { recursive: true });
-  const actionsPath = join(specDir, "actions.json");
-  await writeFile(actionsPath, JSON.stringify(actions, null, 2), "utf-8");
-  return actionsPath;
+  const recordingPath = join(specDir, RECORDING_FILE);
+  await writeFile(recordingPath, JSON.stringify(actions, null, 2), "utf-8");
+  await Promise.all(
+    LEGACY_RECORDING_FILES.map((f) => unlink(join(specDir, f)).catch(() => {})),
+  );
+  return recordingPath;
 }
 
 // --- Blocks (reusable shared procedures) ---
@@ -250,8 +250,8 @@ export function getBlockDir(name: string, cwd?: string): string {
  * return the block name if the path points at the block's spec.yaml, else
  * null. Used by `drift --changed` to invalidate specs whose included blocks
  * were edited. (v0.4 inlines blocks into every spec's own trace, so the
- * block directory holds only spec.yaml — no per-block actions.json / route
- * lives here anymore.)
+ * block directory holds only spec.yaml — no per-block recording lives
+ * here anymore.)
  */
 export function parseBlockPath(path: string): string | null {
   const match = path.match(/(?:^|\/)\.ccqa\/blocks\/([^/]+)\/spec\.yaml$/);
@@ -315,13 +315,14 @@ export interface PromptBundle {
 }
 
 /**
- * Load the prompt bundle from the hub (guidance kind: "record" or "live").
+ * Load the prompt bundle from the hub for one guidance kind ("record" /
+ * "live" / an LLM-generation target such as "playwright" or "runn").
  * Best-effort: no hub client, a fetch failure, or both prompts absent all
  * resolve to null — a broken/missing hub prompt must never stop a run.
  */
 export async function loadPromptBundleFromHub(
   ctx: HubContext | null,
-  kind: "record" | "live",
+  kind: GuidanceKind,
 ): Promise<PromptBundle | null> {
   if (!ctx) return null;
   const userName: PromptName = `${kind}.user`;
@@ -378,16 +379,16 @@ function normalizePromptText(content: string | null): string | null {
 /**
  * Probe for orphaned files left over from earlier ccqa versions inside
  * `.ccqa/blocks/<name>/`. Both pre-v0.4 `test.spec.ts` (function-export
- * blocks) and the short-lived `actions.json` / `route.md` (recorded-block
- * variant) are dead in the new "blocks are pure spec templates" model and
- * should be deleted manually. Returns the absolute paths.
+ * blocks) and the short-lived `actions.json` (recorded-block variant) are
+ * dead in the new "blocks are pure spec templates" model and should be
+ * deleted manually. Returns the absolute paths.
  */
 export async function findStaleBlockArtifacts(cwd?: string): Promise<string[]> {
   const dir = getBlocksDir(cwd);
   const names = await readdir(dir).catch(() => [] as string[]);
   const stale = await Promise.all(
     names.flatMap((name) =>
-      ["test.spec.ts", "actions.json", "route.md"].map(async (f) => {
+      ["test.spec.ts", "actions.json"].map(async (f) => {
         const path = join(dir, name, f);
         const exists = await stat(path).then(() => true).catch(() => false);
         return exists ? path : null;
@@ -397,18 +398,18 @@ export async function findStaleBlockArtifacts(cwd?: string): Promise<string[]> {
   return stale.filter((p): p is string => p !== null);
 }
 
-// --- Trace Actions ---
+// --- Recordings (IR) ---
 
-export async function getTraceActions(
+export async function getRecording(
   featureName: string,
   specName: string,
   cwd?: string,
-): Promise<{ path: string; actions: TraceAction[] }> {
-  const path = join(getSpecDir(featureName, specName, cwd), "actions.json");
+): Promise<{ path: string; actions: RecordedAction[] }> {
+  const path = join(getSpecDir(featureName, specName, cwd), RECORDING_FILE);
   const content = await readFile(path, "utf-8").catch(() => {
-    throw new Error(`No trace actions found for spec: ${featureName}/${specName}. Run \`ccqa trace\` first.`);
+    throw new Error(`No recording found for spec: ${featureName}/${specName}. Run \`ccqa record\` first.`);
   });
-  return { path, actions: JSON.parse(content) as TraceAction[] };
+  return { path, actions: JSON.parse(content) as RecordedAction[] };
 }
 
 export async function saveTestScript(
@@ -541,27 +542,4 @@ export async function listFeatureTree(cwd?: string): Promise<FeatureTreeEntry[]>
       return { featureName, specs };
     }),
   );
-}
-
-
-export function routeToMarkdown(route: Route): string {
-  const lines: string[] = [
-    "---",
-    `specName: "${route.specName}"`,
-    `timestamp: "${route.timestamp}"`,
-    `status: "${route.status}"`,
-    "---",
-    "",
-  ];
-
-  for (const step of route.steps) {
-    lines.push(`## ${step.title}`);
-    lines.push(`- **action**: ${step.action}`);
-    lines.push(`- **observation**: ${step.observation}`);
-    lines.push(`- **status**: ${step.status}`);
-    if (step.reason) lines.push(`- **reason**: ${step.reason}`);
-    lines.push("");
-  }
-
-  return lines.join("\n");
 }

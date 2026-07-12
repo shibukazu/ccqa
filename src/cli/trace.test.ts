@@ -1,227 +1,26 @@
 import { describe, test, expect } from "vitest";
-import { parseAbAction, parseStatusLine, parseRouteStep, countRedundantByStep } from "./trace.ts";
-import type { TraceAction } from "../types.ts";
+import { createStepTracker, parseStatusLine, countRedundantByStep } from "./trace.ts";
+import type { RecordedAction } from "../types.ts";
 
-describe("parseAbAction", () => {
-  test("returns null for non-AB_ACTION lines", () => {
-    expect(parseAbAction("some text")).toBeNull();
-    expect(parseAbAction("")).toBeNull();
-    expect(parseAbAction("ROUTE_STEP|step-01|title")).toBeNull();
+describe("createStepTracker", () => {
+  test("CCQA_STEP prefix wins over the STEP_START text channel and advances it", () => {
+    const t = createStepTracker();
+    t.fromStepStartLine("step-01");
+    expect(t.fromCommand("step-02")).toBe("step-02");
+    // Later text-channel lines (AB_ACTION|assert|...) follow the prefix.
+    expect(t.current()).toBe("step-02");
   });
 
-  test("returns null for unknown commands", () => {
-    expect(parseAbAction("AB_ACTION|unknown|arg")).toBeNull();
-    expect(parseAbAction("AB_ACTION|navigate|http://example.com")).toBeNull();
+  test("falls back to the STEP_START text channel when a command has no prefix", () => {
+    const t = createStepTracker();
+    t.fromStepStartLine("step-01");
+    expect(t.fromCommand(undefined)).toBe("step-01");
   });
 
-  test("parses open", () => {
-    expect(parseAbAction("AB_ACTION|open|http://localhost:3000")).toEqual({
-      command: "open",
-      value: "http://localhost:3000",
-    });
-  });
-
-  test("parses press", () => {
-    expect(parseAbAction("AB_ACTION|press|Enter")).toEqual({
-      command: "press",
-      value: "Enter",
-    });
-  });
-
-  test("parses scroll", () => {
-    expect(parseAbAction("AB_ACTION|scroll|down|300")).toEqual({
-      command: "scroll",
-      direction: "down",
-      pixels: "300",
-    });
-  });
-
-  test("parses snapshot", () => {
-    expect(parseAbAction("AB_ACTION|snapshot|Login page loaded")).toEqual({
-      command: "snapshot",
-      observation: "Login page loaded",
-    });
-  });
-
-  test("parses click", () => {
-    expect(parseAbAction("AB_ACTION|click|[aria-label='Login']|Login")).toEqual({
-      command: "click",
-      selector: "[aria-label='Login']",
-      label: "Login",
-    });
-  });
-
-  test("parses dblclick", () => {
-    expect(parseAbAction("AB_ACTION|dblclick|[aria-label='Item']|Item")).toEqual({
-      command: "dblclick",
-      selector: "[aria-label='Item']",
-      label: "Item",
-    });
-  });
-
-  test("parses check", () => {
-    expect(parseAbAction("AB_ACTION|check|[aria-label='Agree']|Agree")).toEqual({
-      command: "check",
-      selector: "[aria-label='Agree']",
-      label: "Agree",
-    });
-  });
-
-  test("parses uncheck", () => {
-    expect(parseAbAction("AB_ACTION|uncheck|[aria-label='Agree']|Agree")).toEqual({
-      command: "uncheck",
-      selector: "[aria-label='Agree']",
-      label: "Agree",
-    });
-  });
-
-  test("parses hover", () => {
-    expect(parseAbAction("AB_ACTION|hover|[aria-label='Menu']|Menu")).toEqual({
-      command: "hover",
-      selector: "[aria-label='Menu']",
-      label: "Menu",
-    });
-  });
-
-  test("parses wait with selector", () => {
-    expect(parseAbAction("AB_ACTION|wait|[aria-label='Loading']|Loading")).toEqual({
-      command: "wait",
-      selector: "[aria-label='Loading']",
-      label: "Loading",
-    });
-  });
-
-  test("parses wait --text as text= selector", () => {
-    expect(parseAbAction("AB_ACTION|wait|--text|Done")).toEqual({
-      command: "wait",
-      selector: "text=Done",
-      label: undefined,
-    });
-  });
-
-  test("parses fill", () => {
-    expect(parseAbAction("AB_ACTION|fill|[aria-label='Email']|user@example.com|Email")).toEqual({
-      command: "fill",
-      selector: "[aria-label='Email']",
-      value: "user@example.com",
-      label: "Email",
-    });
-  });
-
-  test("parses type", () => {
-    expect(parseAbAction("AB_ACTION|type|[aria-label='Search']|query text|Search")).toEqual({
-      command: "type",
-      selector: "[aria-label='Search']",
-      value: "query text",
-      label: "Search",
-    });
-  });
-
-  test("parses select", () => {
-    expect(parseAbAction("AB_ACTION|select|[aria-label='Color']|red|Color")).toEqual({
-      command: "select",
-      selector: "[aria-label='Color']",
-      value: "red",
-      label: "Color",
-    });
-  });
-
-  test("parses drag", () => {
-    expect(parseAbAction("AB_ACTION|drag|[aria-label='Source']|[aria-label='Target']|Source")).toEqual({
-      command: "drag",
-      selector: "[aria-label='Source']",
-      target: "[aria-label='Target']",
-      label: "Source",
-    });
-  });
-
-  test("parses upload with one file", () => {
-    expect(parseAbAction("AB_ACTION|upload|[aria-label='Attach']|/fixtures/a.pdf")).toEqual({
-      command: "upload",
-      selector: "[aria-label='Attach']",
-      files: ["/fixtures/a.pdf"],
-    });
-  });
-
-  test("parses upload with multiple files", () => {
-    expect(
-      parseAbAction("AB_ACTION|upload|[type='file']|/tmp/a.png|/tmp/b.png|/tmp/c.png"),
-    ).toEqual({
-      command: "upload",
-      selector: "[type='file']",
-      files: ["/tmp/a.png", "/tmp/b.png", "/tmp/c.png"],
-    });
-  });
-
-  test("rejects upload missing selector or files", () => {
-    expect(parseAbAction("AB_ACTION|upload||/fixtures/a.pdf")).toBeNull();
-    expect(parseAbAction("AB_ACTION|upload|[type='file']")).toBeNull();
-  });
-
-  test("parses find_click with text locator", () => {
-    expect(parseAbAction("AB_ACTION|find_click|text|Sign In|||")).toEqual({
-      command: "find_click",
-      findLocator: "text",
-      findValue: "Sign In",
-      label: "",
-    });
-  });
-
-  test("parses find_click with text + --exact", () => {
-    expect(parseAbAction("AB_ACTION|find_click|text|OK||exact|")).toEqual({
-      command: "find_click",
-      findLocator: "text",
-      findValue: "OK",
-      findExact: true,
-      label: "",
-    });
-  });
-
-  test("parses find_click with role + --name", () => {
-    expect(parseAbAction("AB_ACTION|find_click|role|button|Submit||OK")).toEqual({
-      command: "find_click",
-      findLocator: "role",
-      findValue: "button",
-      findName: "Submit",
-      label: "OK",
-    });
-  });
-
-  test("parses find_click with last + inner selector", () => {
-    expect(parseAbAction("AB_ACTION|find_click|last|[aria-label='Reply']|||latest reply")).toEqual({
-      command: "find_click",
-      findLocator: "last",
-      findValue: "[aria-label='Reply']",
-      label: "latest reply",
-    });
-  });
-
-  test("parses find_click with nth + index in <extra>", () => {
-    expect(parseAbAction("AB_ACTION|find_click|nth|[aria-label='Reply']|2||3rd reply")).toEqual({
-      command: "find_click",
-      findLocator: "nth",
-      findValue: "[aria-label='Reply']",
-      findIndex: 2,
-      label: "3rd reply",
-    });
-  });
-
-  test("parses find_fill with input value after action", () => {
-    expect(parseAbAction("AB_ACTION|find_fill|label|Email|||user@example.com|Email field")).toEqual({
-      command: "find_fill",
-      findLocator: "label",
-      findValue: "Email",
-      value: "user@example.com",
-      label: "Email field",
-    });
-  });
-
-  test("rejects malformed find_click (unknown locator)", () => {
-    expect(parseAbAction("AB_ACTION|find_click|bogus|x|||")).toBeNull();
-  });
-
-  test("rejects find_click with nth but no valid index", () => {
-    expect(parseAbAction("AB_ACTION|find_click|nth|[aria-label='Reply']|||")).toBeNull();
+  test("returns undefined before either channel has reported a step", () => {
+    const t = createStepTracker();
+    expect(t.fromCommand(undefined)).toBeUndefined();
+    expect(t.current()).toBeUndefined();
   });
 });
 
@@ -269,7 +68,7 @@ describe("parseStatusLine", () => {
   test("returns null for non-matching lines", () => {
     expect(parseStatusLine("some random text")).toBeNull();
     expect(parseStatusLine("")).toBeNull();
-    expect(parseStatusLine("ROUTE_STEP|step-01|title|ACTION:did|OBS:saw|STATUS:PASSED")).toBeNull();
+    expect(parseStatusLine("AB_ACTION|click|[aria-label='X']|X")).toBeNull();
   });
 
   test("returns first matching line from multi-line text", () => {
@@ -282,79 +81,38 @@ describe("parseStatusLine", () => {
   });
 });
 
-describe("parseRouteStep", () => {
-  test("parses a complete ROUTE_STEP line", () => {
-    const line = "ROUTE_STEP|step-01|Login|ACTION:filled form and pressed Enter|OBSERVATION:redirected to /dashboard|STATUS:PASSED";
-    expect(parseRouteStep(line)).toEqual({
-      stepId: "step-01",
-      title: "Login",
-      action: "filled form and pressed Enter",
-      observation: "redirected to /dashboard",
-      status: "PASSED",
-    });
-  });
-
-  test("parses FAILED status", () => {
-    const line = "ROUTE_STEP|step-02|Check|ACTION:clicked button|OBSERVATION:nothing happened|STATUS:FAILED";
-    expect(parseRouteStep(line)?.status).toBe("FAILED");
-  });
-
-  test("parses SKIPPED status", () => {
-    const line = "ROUTE_STEP|step-03|Skip|ACTION:skipped|OBSERVATION:n/a|STATUS:SKIPPED";
-    expect(parseRouteStep(line)?.status).toBe("SKIPPED");
-  });
-
-  test("returns null when fewer than 6 parts", () => {
-    expect(parseRouteStep("ROUTE_STEP|step-01|title|ACTION:did")).toBeNull();
-    expect(parseRouteStep("")).toBeNull();
-  });
-
-  test("defaults to FAILED for unrecognized status", () => {
-    const line = "ROUTE_STEP|step-01|Title|ACTION:did|OBSERVATION:saw|STATUS:UNKNOWN";
-    expect(parseRouteStep(line)?.status).toBe("FAILED");
-  });
-
-  test("strips ACTION: and OBSERVATION: prefixes", () => {
-    const line = "ROUTE_STEP|step-01|Title|ACTION:my action|OBSERVATION:my observation|STATUS:PASSED";
-    const result = parseRouteStep(line);
-    expect(result?.action).toBe("my action");
-    expect(result?.observation).toBe("my observation");
-  });
-});
-
 describe("countRedundantByStep", () => {
-  const fill = (o: Partial<TraceAction>): TraceAction => ({ command: "fill", ...o });
+  const fill = (o: Partial<RecordedAction>): RecordedAction => ({ action: "fill", ...o });
 
-  test("same value via two different selectors on one step counts as 1 redundant", () => {
+  test("same value via two different locators on one step counts as 1 redundant", () => {
     const actions = [
-      fill({ stepId: "step-01", selector: "[aria-label='Email']", value: "${EMAIL}" }),
-      fill({ command: "find_fill", stepId: "step-01", findLocator: "label", findValue: "Email", value: "${EMAIL}" }),
+      fill({ stepId: "step-01", locator: { by: "css", value: "[aria-label='Email']" }, value: "${EMAIL}" }),
+      fill({ stepId: "step-01", locator: { by: "label", value: "Email" }, value: "${EMAIL}" }),
     ];
     expect(countRedundantByStep(actions).get("step-01")).toBe(1);
   });
 
   test("different values (email vs password) are not redundant", () => {
     const actions = [
-      fill({ stepId: "step-01", selector: "#email", value: "${EMAIL}" }),
-      fill({ stepId: "step-01", selector: "#password", value: "${PASSWORD}" }),
+      fill({ stepId: "step-01", locator: { by: "css", value: "#email" }, value: "${EMAIL}" }),
+      fill({ stepId: "step-01", locator: { by: "css", value: "#password" }, value: "${PASSWORD}" }),
     ];
     expect(countRedundantByStep(actions).has("step-01")).toBe(false);
   });
 
-  test("trivial values (bare numbers) never count, even via two selectors", () => {
+  test("trivial values (bare numbers) never count, even via two locators", () => {
     const actions = [
-      fill({ stepId: "step-01", selector: "#a", value: "100" }),
-      fill({ stepId: "step-01", selector: "#b", value: "100" }),
+      fill({ stepId: "step-01", locator: { by: "css", value: "#a" }, value: "100" }),
+      fill({ stepId: "step-01", locator: { by: "css", value: "#b" }, value: "100" }),
     ];
     expect(countRedundantByStep(actions).has("step-01")).toBe(false);
   });
 
-  test("same value via the same selector is not redundant (a legit re-fill)", () => {
+  test("same value via the same locator is not redundant (a legit re-fill)", () => {
     const actions = [
-      fill({ stepId: "step-01", selector: "#email", value: "${EMAIL}" }),
-      fill({ stepId: "step-01", selector: "#email", value: "${EMAIL}" }),
+      fill({ stepId: "step-01", locator: { by: "css", value: "#email" }, value: "${EMAIL}" }),
+      fill({ stepId: "step-01", locator: { by: "css", value: "#email" }, value: "${EMAIL}" }),
     ];
     expect(countRedundantByStep(actions).has("step-01")).toBe(false);
   });
 });
-

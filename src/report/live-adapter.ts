@@ -4,6 +4,7 @@ import * as log from "../cli/logger.ts";
 import { EVIDENCE_SUBDIR } from "../run/report-constants.ts";
 import { toPosix } from "../run/pipeline.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
+import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import type { LiveRunResult } from "../runtime/live-executor.ts";
 import type { LiveReportRun, LiveReportStep, ReportSpecResult } from "./schema.ts";
 
@@ -70,6 +71,7 @@ export async function liveRunToReportResult(args: {
     feature: featureName,
     spec: specName,
     title: tryParseTestSpec(specYaml)?.title ?? null,
+    target: AGENT_BROWSER_TARGET,
     status: result.status,
     testCounts: null,
     durationMs: result.durationMs,

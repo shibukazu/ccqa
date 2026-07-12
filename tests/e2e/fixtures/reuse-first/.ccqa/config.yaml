@@ -1,0 +1,13 @@
+defaultTarget: playwright
+targets:
+  playwright:
+    outDir: e2e/specs
+    resources:
+      - path: e2e/pages
+        description: page objects, one per screen
+      - path: e2e/steps
+        description: multi-screen operation helpers (login etc.)
+      - package: "@example/e2e-kit"
+        description: shared fixtures, custom selectors, and common constants
+    conventions:
+      guides: [docs/e2e-guidelines.md]

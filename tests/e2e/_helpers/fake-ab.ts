@@ -65,7 +65,13 @@ if (screenshotIdx !== -1) {
   }
 }
 const exitStr = process.env.CCQA_FAKE_AB_EXIT ?? "0";
-const stdoutLine = process.env.CCQA_FAKE_AB_STDOUT;
+// \`get count <selector>\` must print a number (assert/wait helpers parse it);
+// CCQA_FAKE_AB_COUNT overrides the generic stdout for those invocations so a
+// single fake can serve both \`get url\` (CCQA_FAKE_AB_STDOUT) and \`get count\`.
+const getIdx = argv.indexOf("get");
+const countLine =
+  getIdx !== -1 && argv[getIdx + 1] === "count" ? process.env.CCQA_FAKE_AB_COUNT : undefined;
+const stdoutLine = countLine ?? process.env.CCQA_FAKE_AB_STDOUT;
 if (stdoutLine) process.stdout.write(stdoutLine + "\\n");
 process.exit(Number(exitStr));
 `;

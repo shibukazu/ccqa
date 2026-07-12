@@ -80,3 +80,20 @@ describe("updateAgentPrompt", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("no usable output"));
   });
 });
+
+describe("updateAgentPrompt NO_UPDATE sentinel", () => {
+  test("leaves the prompt unchanged (info, not warn) when Claude answers NO_UPDATE", async () => {
+    vi.mocked(driftAuthAvailable).mockReturnValue({ ok: true });
+    const putPrompt = vi.fn(async () => {});
+    const hub = fakeHubClient({ getPrompt: async () => "old prompt", putPrompt });
+    vi.mocked(invokeClaudeStreaming).mockResolvedValue({ result: "NO_UPDATE\n", isError: false } as never);
+    const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
+
+    await updateAgentPrompt({ mode: "record", runSummary: "summary", hubContext: { hub, project: "demo" } });
+
+    expect(putPrompt).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(infoSpy).toHaveBeenCalledWith(expect.stringContaining("no new learnings"));
+  });
+});

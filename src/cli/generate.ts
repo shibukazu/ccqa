@@ -1,218 +1,152 @@
-import { readFile } from "node:fs/promises";
+import { Command } from "commander";
 import { createInterface } from "node:readline";
-import {
-  ensureCcqaDir,
-  getTestScript,
-  getTraceActions,
-  loadAllBlocks,
-  readSpecFile,
-  saveTestScript,
-} from "../store/index.ts";
+import { ensureCcqaDir, getRecording, parseSpecPath, readSpecFile } from "../store/index.ts";
+import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
-import { actionsToScript, type EmptyStepNotice } from "../codegen/actions-to-script.ts";
-import { cleanupActions as runActionCleanup } from "../codegen/cleanup.ts";
 import { parseTestSpec } from "../spec/parser.ts";
-import { expandSpec, type ExpandedActionStep } from "../spec/expand.ts";
-import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
-import { spawnVitestTeed } from "../runtime/spawn-vitest.ts";
-import { runAutoFixLoop, type FixMode, type RunVitestResult } from "../diagnose/loop.ts";
-import { closeSession } from "../diagnose/snapshot.ts";
-import type { TraceAction } from "../types.ts";
+import { loadProjectConfig, TargetConfigSchema } from "../config/project-config.ts";
+import { resolveTarget, resolveTargetOverride } from "../targets/registry.ts";
+import type { GenerateContext } from "../targets/types.ts";
+import type { FixMode } from "../diagnose/loop.ts";
+import type { RecordedAction } from "../types.ts";
+import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOption, DEFAULT_LANGUAGE } from "./options.ts";
+import { resolveCwd } from "./resolve-cwd.ts";
+import { resolveProject } from "./resolve-project.ts";
+import { resolveHubClient, type HubContext } from "./hub-conn.ts";
 import * as log from "./logger.ts";
 
+const AUTO_FIX_MODES = ["interactive", "auto", "skip"] as const;
+export type AutoFixMode = (typeof AUTO_FIX_MODES)[number];
+
+// Maps the user-facing `--auto-fix` 3-value flag to the internal `FixMode`:
+//   interactive → prompt y/N when the auto-fix isn't high-confidence
+//   auto        → never prompt; apply regardless of confidence (CI use)
+//   skip        → never prompt and never apply; only apply when confidence is high
+export function toFixMode(autoFix: AutoFixMode): FixMode {
+  switch (autoFix) {
+    case "auto":
+      return "auto";
+    case "skip":
+      return "non-interactive";
+    case "interactive":
+      return "interactive";
+  }
+}
+
+/** Shared `--auto-fix` parser for the record / generate commands. */
+export function parseAutoFixFlag(raw: string): AutoFixMode {
+  if ((AUTO_FIX_MODES as readonly string[]).includes(raw)) return raw as AutoFixMode;
+  throw new Error(`--auto-fix must be one of ${AUTO_FIX_MODES.join(" | ")}`);
+}
+
+export interface RunGenerateOptions {
+  maxRetries: number;
+  fixMode: FixMode;
+  force: boolean;
+  useSnapshot: boolean;
+  language: string;
+  model?: string;
+  /** Generate through this target instead of the spec's own (CLI `--target`). */
+  targetOverride?: string;
+  /** Project root holding `.ccqa/`; defaults to process.cwd(). */
+  cwd?: string;
+  hubContext?: HubContext | null;
+}
+
+/**
+ * The `generate` flow shared by `ccqa generate` and the codegen half of
+ * `ccqa record`: resolve the spec's target plugin, load its input (the
+ * recording, for input:"recording" targets), and dispatch to the plugin.
+ * This layer owns the CLI concerns — overwrite confirmation, logging,
+ * exit-code policy — while the plugin owns the generation pipeline.
+ */
 export async function runGenerate(
   featureName: string,
   specName: string,
-  maxRetries: number,
-  mode: FixMode,
-  force: boolean,
-  useSnapshot: boolean,
-  outputLanguage: string,
-  model: string | undefined,
+  opts: RunGenerateOptions,
 ): Promise<void> {
   log.header("generate", `${featureName}/${specName}`);
 
-  await ensureCcqaDir();
+  const cwd = opts.cwd ?? process.cwd();
+  await ensureCcqaDir(cwd);
 
-  // Refuse to overwrite an existing test.spec.ts unless --force.
-  // generate regenerates the script from actions.json, so any manual edits to
-  // test.spec.ts (e.g. patched selectors) are silently lost without this check.
+  // Concurrent generations of the same spec interleave recording / output /
+  // manifest writes with no defined winner — the second caller fails fast.
+  // Re-entrant under `ccqa record`, which holds the lock across trace +
+  // generate in the same process.
+  const releaseLock = await acquireSpecLock(featureName, specName, "generate", cwd);
+  try {
+    await runGenerateLocked(featureName, specName, opts, cwd);
+  } finally {
+    await releaseLock();
+  }
+}
+
+async function runGenerateLocked(
+  featureName: string,
+  specName: string,
+  opts: RunGenerateOptions,
+  cwd: string,
+): Promise<void> {
+  const specYaml = await readSpecFile(featureName, specName, cwd);
+  const spec = parseTestSpec(specYaml);
+  const config = await loadProjectConfig(cwd);
+  const target =
+    opts.targetOverride !== undefined
+      ? resolveTargetOverride(spec, opts.targetOverride)
+      : resolveTarget(spec, config);
+  log.meta("target", target.id + (opts.targetOverride !== undefined ? " (--target override)" : ""));
+
+  // Refuse to overwrite previously generated output unless --force. The
+  // target reports what would be clobbered (for agent-browser: test.spec.ts,
+  // whose manual edits — e.g. patched selectors — would be silently lost).
   // We always confirm interactively (regardless of --auto / --no-interactive),
   // because overwriting a hand-edited file is a different kind of decision
   // than auto-applying an auto-fix and warrants an explicit y/N. CI flows
   // should pass --force.
-  const existingScriptPath = await getTestScript(featureName, specName);
-  if (existingScriptPath && !force) {
-    const proceed = await confirmOverwrite(existingScriptPath);
+  const existingOutput = (await target.existingOutput?.({ featureName, specName }, cwd)) ?? null;
+  if (existingOutput && !opts.force) {
+    const proceed = await confirmOverwrite(existingOutput);
     if (!proceed) {
       log.info("aborted; pass --force to overwrite without prompting");
       return;
     }
   }
 
-  const { path: actionsPath, actions } = await getTraceActions(featureName, specName);
-
-  log.meta("trace", actionsPath);
-  log.meta("actions", actions.length);
-
-  const specContent = await readSpecFile(featureName, specName);
-  const spec = parseTestSpec(specContent);
-  const blocks = await loadAllBlocks();
-  const expanded = expandSpec(spec, { blocks });
+  let recording: RecordedAction[] | undefined;
+  if (target.input === "recording") {
+    const { path: recordingPath, actions } = await getRecording(featureName, specName, cwd);
+    log.meta("recording", recordingPath);
+    log.meta("actions", actions.length);
+    recording = actions;
+  }
 
   await warnStaleBlockArtifacts();
 
-  log.meta("steps", expanded.length);
-  log.meta("fix-mode", mode);
-  log.meta("language", outputLanguage);
-  log.blank();
+  const targetConfig = config.targets[target.id] ?? TargetConfigSchema.parse({});
+  const ctx: GenerateContext = {
+    spec,
+    specYaml,
+    featureName,
+    specName,
+    cwd,
+    recording,
+    resources: targetConfig.resources,
+    conventions: targetConfig.conventions,
+    targetConfig,
+    language: opts.language,
+    model: opts.model,
+    hub: opts.hubContext ?? null,
+    fix: { maxRetries: opts.maxRetries, mode: opts.fixMode, useSnapshot: opts.useSnapshot },
+  };
 
-  const cleanedActions = await cleanupActions(actions, model);
-  if (cleanedActions.length !== actions.length) {
-    log.meta("cleaned", cleanedActions.length);
-  }
+  const result = await target.generate(ctx);
 
-  const markers = buildStepMarkers(expanded, cleanedActions);
-  const emptySteps = findEmptySteps(expanded, cleanedActions);
-  if (emptySteps.length > 0) {
-    for (const e of emptySteps) {
-      log.warn(`step ${e.stepId} has no kept actions — generated test will skip it (notice comment inserted).`);
-    }
-  }
-  const script = actionsToScript({
-    actions: cleanedActions,
-    testName: spec.title,
-    stepMarkers: markers,
-    emptySteps,
-  });
-  const scriptPath = await saveTestScript(featureName, specName, script);
-  log.meta("saved", scriptPath);
-  log.blank();
-
-  // Pin the agent-browser session so we can re-attach for snapshot capture
-  // after a vitest failure. The generated script reads AGENT_BROWSER_SESSION
-  // via `||=`, so this value flows through unmodified. `--no-snapshot`
-  // disables both the pin and the post-failure snapshot, restoring the
-  // pre-snapshot behavior for debugging.
-  const agentBrowserSession = useSnapshot ? `ccqa-generate-${Date.now()}` : undefined;
-  const runVitestForSession = (path: string) => runVitest(path, agentBrowserSession);
-
-  // Wrap the run in try/finally so a wedged daemon from a previous attempt
-  // never persists across invocations. We close the session on entry too
-  // (in case a stale one shares the name from a crashed prior run) and
-  // again on exit (success, failure, or thrown). The helper is best-effort
-  // and never throws.
-  //
-  // Ctrl-C bypasses try/finally on Node by default, so we also wire a
-  // signal handler that fires close before we exit. SIGINT/SIGTERM both
-  // get the same treatment.
-  let signalHandler: (() => void) | null = null;
-  if (agentBrowserSession) {
-    await closeSession(agentBrowserSession);
-    signalHandler = () => {
-      void closeSession(agentBrowserSession).finally(() => process.exit(130));
-    };
-    process.once("SIGINT", signalHandler);
-    process.once("SIGTERM", signalHandler);
-  }
-  try {
-    const initialRun = await log.timedPhase("vitest run #1", () => runVitestForSession(scriptPath), "run");
-    if (initialRun.exitCode === 0) {
-      log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
-      return;
-    }
-
-    const passed = await runAutoFixLoop({
-      scriptPath,
-      initialRun,
-      specYaml: specContent,
-      actions: cleanedActions,
-      maxRetries,
-      mode,
-      runVitest: runVitestForSession,
-      agentBrowserSession,
-      outputLanguage,
-      model,
-    });
-
-    if (passed) {
-      log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
-      return;
-    }
-
+  if (!result.passed) {
     log.warn("auto-fix exhausted; test still failing");
     process.exit(1);
-  } finally {
-    if (signalHandler) {
-      process.off("SIGINT", signalHandler);
-      process.off("SIGTERM", signalHandler);
-    }
-    if (agentBrowserSession) await closeSession(agentBrowserSession);
   }
-}
-
-/**
- * Build the per-step markers consumed by `actionsToScript`. Each action's
- * `stepId` (assigned at trace time from the last `STEP_START|...` line)
- * groups contiguous actions; we emit one marker at the first action of
- * each contiguous run. Unknown step ids are skipped rather than mis-labelled.
- */
-function buildStepMarkers(
-  steps: ExpandedActionStep[],
-  actions: TraceAction[],
-): Array<{ actionIndex: number; stepId: string; source: string }> {
-  const stepById = new Map(steps.map((s) => [s.id, s]));
-  const markers: Array<{ actionIndex: number; stepId: string; source: string }> = [];
-  let lastEmittedStepId: string | null = null;
-  for (let i = 0; i < actions.length; i++) {
-    const id = actions[i]!.stepId;
-    if (!id || id === lastEmittedStepId) continue;
-    const step = stepById.get(id);
-    if (!step) continue;
-    markers.push({ actionIndex: i, stepId: step.id, source: step.source });
-    lastEmittedStepId = id;
-  }
-  return markers;
-}
-
-/**
- * Spec steps that lost every action by the time the trace finished its
- * cleanup + validation passes. `actionsToScript` uses these to splice a
- * visible `// [warn] step N was dropped` block into the generated script,
- * so the spec author can see at a glance that the recorded test stopped
- * exercising part of the spec.
- *
- * `insertAfterIndex = -1` means the lost step came before any kept
- * action; otherwise it's the cleanedActions index whose action precedes
- * the lost step in spec order. Spec order is canonical for the comment
- * placement so the warning lands near the steps that DID survive.
- */
-export function findEmptySteps(
-  steps: ExpandedActionStep[],
-  cleanedActions: TraceAction[],
-): EmptyStepNotice[] {
-  const presentStepIds = new Set<string>();
-  for (const a of cleanedActions) if (a.stepId) presentStepIds.add(a.stepId);
-
-  // Map every cleanedActions index back to its stepId so we know which
-  // surviving step a "lost" step should appear after in spec order.
-  const lastActionIndexByStep = new Map<string, number>();
-  for (let i = 0; i < cleanedActions.length; i++) {
-    const id = cleanedActions[i]!.stepId;
-    if (id) lastActionIndexByStep.set(id, i);
-  }
-
-  const notices: EmptyStepNotice[] = [];
-  let lastSeenSurvivorIndex = -1;
-  for (const step of steps) {
-    if (presentStepIds.has(step.id)) {
-      const idx = lastActionIndexByStep.get(step.id);
-      if (idx !== undefined) lastSeenSurvivorIndex = idx;
-      continue;
-    }
-    notices.push({ stepId: step.id, source: step.source, insertAfterIndex: lastSeenSurvivorIndex });
-  }
-  return notices;
+  log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
 }
 
 async function confirmOverwrite(path: string): Promise<boolean> {
@@ -226,7 +160,7 @@ async function confirmOverwrite(path: string): Promise<boolean> {
   try {
     process.stdout.write("\n");
     process.stdout.write(`[warn] ${path} already exists.\n`);
-    process.stdout.write(`[warn] generate will regenerate it from actions.json and any manual edits will be lost.\n`);
+    process.stdout.write(`[warn] generate will regenerate it and any manual edits will be lost.\n`);
     const answer = await new Promise<string>((res) => rl.question("Overwrite? [y/N] ", res));
     const norm = answer.trim().toLowerCase();
     return norm === "y" || norm === "yes";
@@ -235,105 +169,104 @@ async function confirmOverwrite(path: string): Promise<boolean> {
   }
 }
 
-async function runVitest(scriptPath: string, agentBrowserSession?: string): Promise<RunVitestResult> {
-  const { exitCode, stdout, stderr } = await spawnVitestTeed(
-    ["run", "--config", bundledVitestConfigPath(), scriptPath],
-    agentBrowserSession
-      ? { env: { ...process.env, AGENT_BROWSER_SESSION: agentBrowserSession } }
-      : {},
-  );
-  const currentScript = await readFile(scriptPath, "utf8");
-  return { exitCode, output: stdout + stderr, currentScript };
+interface GenerateCliOptions {
+  model?: string;
+  language?: string;
+  profile?: string;
+  target?: string;
+  autoFix?: AutoFixMode;
+  maxRetries?: string;
+  force?: boolean;
+  snapshot?: boolean;
+  cwd?: string;
+  hubUrl?: string;
+  hubToken?: string;
+  hubHeader?: string[];
+  project?: string;
 }
 
-async function cleanupActions(actions: TraceAction[], model?: string): Promise<TraceAction[]> {
-  const cleaned = await runActionCleanup(actions, model);
-  return cleaned === actions ? actions : reattachStepIds(cleaned, actions);
-}
+export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
+  new Command("generate")
+    .argument(
+      "<feature/spec>",
+      "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
+    )
+    .description(
+      "Generate test code from a spec via its target plugin. Recording-backed targets " +
+        "compile the existing ir.json (run `ccqa record` first); spec-input targets " +
+        "generate directly from the spec.",
+    )
+    .option(
+      "-m, --model <name>",
+      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+    )
+    .option(
+      "--target <id>",
+      "Generate through this target instead of the spec's own — e.g. emit a Playwright " +
+        "spec from an agent-browser recording. The spec's `target:` stays the default for `ccqa run`.",
+    )
+    .option(
+      "--auto-fix <mode>",
+      "Auto-fix behaviour during script generation: 'interactive' (default, prompt y/N), 'auto' (apply without prompt, for CI), 'skip' (never prompt, only apply high-confidence fixes).",
+      parseAutoFixFlag,
+      "interactive" as AutoFixMode,
+    )
+    .option("--max-retries <n>", "Maximum number of auto-fix retries", "3")
+    .option("--force", "Overwrite previously generated test code without warning")
+    .option(
+      "--no-snapshot",
+      "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
+    )
+    .option(
+      "--cwd <path>",
+      "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
+    )
+    .option(
+      "--project <name>",
+      "Project name for the hub. Defaults to the current directory's name.",
+    ),
+))).action(async (specPath: string, opts: GenerateCliOptions) => {
+  const { featureName, specName } = parseSpecPath(specPath);
+  const language = opts.language ?? DEFAULT_LANGUAGE;
 
-/**
- * The Claude cleanup pass returns a pruned array without the `stepId` field
- * (the prompt deliberately doesn't expose it — that would make the prompt
- * easier to misformat). Re-attach stepIds here by replaying the cleaned
- * stream against the original and matching the next compatible action.
- *
- * Algorithm: walk both arrays in lockstep. For each cleaned action, scan
- * forward in `original` (from the last-matched cursor) for the next entry
- * with the same `command` + `selector` + `value` + `assertType` shape, and
- * borrow its `stepId`. Cleaned actions Claude invented from thin air (rare,
- * and explicitly forbidden by the prompt) end up with no stepId — codegen
- * just won't emit a step marker for that index, which is the same outcome
- * as a wholly stepId-less actions.json.
- *
- * The matching is forward-only so that if cleanup keeps two identical fills
- * (e.g. typing the same value twice intentionally), they're paired to the
- * first and second occurrence in the original — not both to the first.
- */
-export function reattachStepIds(cleaned: TraceAction[], original: TraceAction[]): TraceAction[] {
-  let cursor = 0;
-  const out: TraceAction[] = [];
-  for (const c of cleaned) {
-    let matched: TraceAction | null = null;
-    for (let i = cursor; i < original.length; i++) {
-      if (sameShape(c, original[i]!)) {
-        matched = original[i]!;
-        cursor = i + 1;
-        break;
-      }
+  // The generated test replays under vitest and resolves the spec's ${VAR}
+  // references against process.env, so merge the profile (or default .env)
+  // first — same contract as `ccqa record`.
+  const cwd = resolveCwd(opts.cwd);
+  const project = opts.profile !== undefined ? resolveProject(opts) : undefined;
+  if (opts.profile !== undefined) {
+    await applyProfileFromOption({
+      profile: opts.profile,
+      project: project!,
+      cwd,
+      hubUrl: opts.hubUrl,
+      hubToken: opts.hubToken,
+      hubHeader: opts.hubHeader,
+    });
+  } else {
+    await applyProfileFromOption({ profile: undefined, project: "", cwd });
+  }
+
+  const hubClient = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken, hubHeader: opts.hubHeader });
+  const hubContext: HubContext | null = hubClient && project ? { hub: hubClient, project } : null;
+
+  try {
+    await runGenerate(featureName, specName, {
+      maxRetries: parseInt(opts.maxRetries ?? "3", 10),
+      fixMode: toFixMode(opts.autoFix ?? "interactive"),
+      force: opts.force ?? false,
+      useSnapshot: opts.snapshot !== false,
+      language,
+      model: opts.model,
+      targetOverride: opts.target,
+      cwd,
+      hubContext,
+    });
+  } catch (e) {
+    if (e instanceof SpecLockedError) {
+      log.error(e.message);
+      process.exit(2);
     }
-    out.push(matched ? mergeFromOriginal(c, matched) : c);
+    throw e;
   }
-  return out;
-}
-
-/**
- * Merge a cleaned action back with its original counterpart. Always borrows
- * `stepId` (the cleanup prompt deliberately doesn't surface it). For `find_*`
- * actions, *also* re-attach the find-locator cluster if the cleaned copy
- * dropped any of them — Claude occasionally omits these fields under the
- * cleanup prompt and we'd otherwise emit a structurally broken action that
- * codegen has to silently skip.
- */
-function mergeFromOriginal(cleaned: TraceAction, original: TraceAction): TraceAction {
-  const merged: TraceAction = { ...cleaned };
-  if (original.stepId && !merged.stepId) merged.stepId = original.stepId;
-  if (cleaned.command.startsWith("find_")) {
-    if (!merged.findLocator && original.findLocator) merged.findLocator = original.findLocator;
-    if (!merged.findValue && original.findValue) merged.findValue = original.findValue;
-    if (!merged.findName && original.findName) merged.findName = original.findName;
-    if (merged.findIndex === undefined && original.findIndex !== undefined) merged.findIndex = original.findIndex;
-    if (!merged.findExact && original.findExact) merged.findExact = original.findExact;
-  }
-  // The cleanup-pass LLM doesn't echo the lenient-mode `replayUnstable` /
-  // `replayReason` fields the validator stamped onto the action. Without
-  // restoring them here, codegen never sees the warning and the `// [warn]
-  // replay-unstable: ...` comment block ends up missing from test.spec.ts.
-  if (original.replayUnstable && !merged.replayUnstable) {
-    merged.replayUnstable = original.replayUnstable;
-    if (original.replayReason) merged.replayReason = original.replayReason;
-  }
-  return merged;
-}
-
-function sameShape(a: TraceAction, b: TraceAction): boolean {
-  if (a.command !== b.command) return false;
-  // find_* actions are identified by their locator + value. If both sides
-  // carry them, require an exact match — that's how we distinguish the
-  // intentionally-kept `find last [aria-label='Reply']` from the rejected
-  // earlier `find text "Reply"`. If the cleaned side dropped them (the LLM
-  // sometimes does — these fields aren't visible in older trained behaviour),
-  // fall through to a command-only match so reattachStepIds can still locate
-  // the original and `mergeFromOriginal` can restore the missing fields.
-  if (a.command.startsWith("find_") && a.findLocator && b.findLocator) {
-    return (
-      (a.findLocator ?? "") === (b.findLocator ?? "") &&
-      (a.findValue ?? "") === (b.findValue ?? "")
-    );
-  }
-  if (a.command.startsWith("find_")) return true;
-  return (
-    (a.selector ?? "") === (b.selector ?? "") &&
-    (a.value ?? "") === (b.value ?? "") &&
-    (a.assertType ?? "") === (b.assertType ?? "")
-  );
-}
+});

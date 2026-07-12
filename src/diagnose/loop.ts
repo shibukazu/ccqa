@@ -5,7 +5,7 @@ import { diagnose, type DiagnoseOutcome } from "./diagnose.ts";
 import { promptForChoice } from "./interactive.ts";
 import { captureSnapshot } from "./snapshot.ts";
 import type { Diagnosis, DiagnosisResult } from "./types.ts";
-import type { TraceAction } from "../types.ts";
+import type { RecordedAction } from "../types.ts";
 
 export type FixMode = "auto" | "non-interactive" | "interactive";
 
@@ -23,7 +23,7 @@ export interface AutoFixLoopInput {
   /** Spec YAML shown to the diagnose LLM for context. */
   specYaml: string;
   /** Recorded actions used as additional context. */
-  actions: TraceAction[];
+  actions: RecordedAction[];
   maxRetries: number;
   mode: FixMode;
   /** Re-run vitest after each applied fix; the loop hands back the new run result. */
@@ -112,7 +112,7 @@ export async function runAutoFixLoop(input: AutoFixLoopInput): Promise<boolean> 
 interface DiagnoseAndFixInput {
   script: string;
   specYaml: string;
-  actions: TraceAction[];
+  actions: RecordedAction[];
   failureLog: string;
   pageSnapshot?: string;
   mode: FixMode;

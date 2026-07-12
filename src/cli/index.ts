@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./run.ts";
 import { recordCommand } from "./record.ts";
+import { generateCommand } from "./generate.ts";
 import { draftCommand } from "./draft.ts";
 import { driftCommand } from "./drift.ts";
 import { initCommand } from "./init.ts";
@@ -34,11 +35,12 @@ program
   .version(version);
 
 // `init` is a one-shot bootstrap, listed first so it's discoverable.
-// Lifecycle order for the rest: draft → perspectives → record → run → drift
+// Lifecycle order for the rest: draft → perspectives → record → generate → run → drift
 program.addCommand(initCommand);
 program.addCommand(draftCommand);
 program.addCommand(perspectivesCommand);
 program.addCommand(recordCommand);
+program.addCommand(generateCommand);
 program.addCommand(runCommand);
 program.addCommand(driftCommand);
 program.addCommand(sessionCommand);

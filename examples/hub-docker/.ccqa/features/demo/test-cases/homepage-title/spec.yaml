@@ -1,6 +1,0 @@
-title: Demo app homepage shows its title
-mode: live
-
-steps:
-  - instruction: Open ${BASE_URL}/
-    expected: The page contains an element with id "title"

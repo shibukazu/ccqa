@@ -1,6 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundleFromHub, routeToMarkdown } from "./index.ts";
-import type { Route } from "../types.ts";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundleFromHub } from "./index.ts";
 import type { HubClient } from "../hub-client/index.ts";
 
 /** Minimal fake — only `getPrompt` is exercised by these tests. */
@@ -92,9 +91,9 @@ describe("parseBlockPath", () => {
     expect(parseBlockPath("apps/web/.ccqa/blocks/login/spec.yaml")).toBe("login");
   });
 
-  test("does not match block actions.json or route.md (v0.4 inlines blocks per spec)", () => {
+  test("does not match block recordings (v0.4 inlines blocks per spec)", () => {
     expect(parseBlockPath(".ccqa/blocks/login/actions.json")).toBeNull();
-    expect(parseBlockPath(".ccqa/blocks/login/route.md")).toBeNull();
+    expect(parseBlockPath(".ccqa/blocks/login/ir.json")).toBeNull();
   });
 
   test("does not match block test.spec.ts (no longer authoritative)", () => {
@@ -105,58 +104,6 @@ describe("parseBlockPath", () => {
     expect(parseBlockPath(".ccqa/features/x/test-cases/y/spec.yaml")).toBeNull();
     expect(parseBlockPath("src/cli/run.ts")).toBeNull();
     expect(parseBlockPath(".ccqa/blocks/login/extra.txt")).toBeNull();
-  });
-});
-
-describe("routeToMarkdown", () => {
-  const baseRoute: Route = {
-    specName: "create-and-complete",
-    timestamp: "2026-03-28T00:00:00.000Z",
-    status: "passed",
-    steps: [],
-  };
-
-  test("generates correct frontmatter", () => {
-    const md = routeToMarkdown(baseRoute);
-    expect(md).toContain('specName: "create-and-complete"');
-    expect(md).toContain('timestamp: "2026-03-28T00:00:00.000Z"');
-    expect(md).toContain('status: "passed"');
-  });
-
-  test("generates step section", () => {
-    const route: Route = {
-      ...baseRoute,
-      steps: [
-        { title: "Login", action: "filled form", observation: "redirected", status: "PASSED" },
-      ],
-    };
-    const md = routeToMarkdown(route);
-    expect(md).toContain("## Login");
-    expect(md).toContain("- **action**: filled form");
-    expect(md).toContain("- **observation**: redirected");
-    expect(md).toContain("- **status**: PASSED");
-  });
-
-  test("includes reason when present", () => {
-    const route: Route = {
-      ...baseRoute,
-      steps: [
-        { title: "Fail", action: "clicked", observation: "nothing", status: "FAILED", reason: "button disabled" },
-      ],
-    };
-    const md = routeToMarkdown(route);
-    expect(md).toContain("- **reason**: button disabled");
-  });
-
-  test("omits reason line when absent", () => {
-    const route: Route = {
-      ...baseRoute,
-      steps: [
-        { title: "Pass", action: "clicked", observation: "ok", status: "PASSED" },
-      ],
-    };
-    const md = routeToMarkdown(route);
-    expect(md).not.toContain("- **reason**");
   });
 });
 
@@ -186,5 +133,26 @@ describe("loadPromptBundleFromHub", () => {
       throw new Error("network error");
     });
     expect(await loadPromptBundleFromHub({ hub, project: "demo" }, "record")).toBeNull();
+  });
+});
+
+describe("saveRecording", () => {
+  test("writes ir.json and removes legacy actions.json / route.md", async () => {
+    const { mkdtemp, mkdir, writeFile, readFile, stat } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { saveRecording } = await import("./index.ts");
+
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-recording-"));
+    const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
+    await mkdir(specDir, { recursive: true });
+    await writeFile(join(specDir, "actions.json"), "[]", "utf8");
+    await writeFile(join(specDir, "route.md"), "# legacy", "utf8");
+
+    const path = await saveRecording("demo", "x", [{ action: "navigate", value: "https://example.test" }], cwd);
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toHaveLength(1);
+    await expect(stat(join(specDir, "actions.json"))).rejects.toThrow();
+    await expect(stat(join(specDir, "route.md"))).rejects.toThrow();
   });
 });

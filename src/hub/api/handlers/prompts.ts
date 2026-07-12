@@ -18,7 +18,7 @@ function requireProject(ctx: RouteContext): string {
 /**
  * Prompt names are a closed set (`PromptName`). Beyond the traversal check, the
  * name must be one we recognise — keeping the namespace fixed is what lets the
- * UI and triage-learning jobs rely on the known five.
+ * UI and triage-learning jobs rely on the known set.
  */
 function requirePromptName(ctx: RouteContext): PromptName {
   const name = requireSafeSegment(ctx.params.name!, "name");
