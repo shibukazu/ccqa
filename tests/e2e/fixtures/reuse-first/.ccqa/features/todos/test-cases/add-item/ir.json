@@ -1,0 +1,9 @@
+[
+  { "action": "navigate", "value": "${APP_URL}", "stepId": "step-01" },
+  { "action": "fill", "locator": { "by": "label", "value": "Email" }, "value": "${TEST_EMAIL}", "stepId": "step-02" },
+  { "action": "fill", "locator": { "by": "label", "value": "Password" }, "value": "${TEST_PASSWORD}", "stepId": "step-02" },
+  { "action": "click", "locator": { "by": "role", "value": "button", "name": "Sign in" }, "stepId": "step-02" },
+  { "action": "fill", "locator": { "by": "placeholder", "value": "What needs to be done?" }, "value": "buy milk", "stepId": "step-03" },
+  { "action": "press", "value": "Enter", "stepId": "step-03" },
+  { "action": "assert", "assert": "text_visible", "value": "buy milk", "stepId": "step-03" }
+]

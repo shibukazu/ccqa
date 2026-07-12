@@ -1,0 +1,9 @@
+title: add a todo item
+target: playwright
+steps:
+  - instruction: open the todo list page at ${APP_URL}
+    expected: the empty list is shown
+  - instruction: sign in with the test account
+    expected: the list header shows the account name
+  - instruction: add a todo named "buy milk"
+    expected: the list shows "buy milk"

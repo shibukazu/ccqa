@@ -101,6 +101,71 @@ describe("TestSpecSchema", () => {
       }),
     ).toThrow();
   });
+
+  it("accepts a target slug", () => {
+    const parsed = TestSpecSchema.parse({
+      title: "x",
+      target: "playwright",
+      steps: [{ instruction: "i", expected: "e" }],
+    });
+    expect(parsed.target).toBe("playwright");
+  });
+
+  it("rejects a target with a path separator", () => {
+    expect(() =>
+      TestSpecSchema.parse({
+        title: "x",
+        target: "../escape",
+        steps: [{ instruction: "i", expected: "e" }],
+      }),
+    ).toThrow(/slug/);
+  });
+
+  it("rejects mode when target is not agent-browser", () => {
+    expect(() =>
+      TestSpecSchema.parse({
+        title: "x",
+        target: "playwright",
+        mode: "live",
+        steps: [{ instruction: "i", expected: "e" }],
+      }),
+    ).toThrow(/mode.*agent-browser/);
+  });
+
+  it("rejects session when target is not agent-browser", () => {
+    expect(() =>
+      TestSpecSchema.parse({
+        title: "x",
+        target: "runn",
+        session: "admin",
+        steps: [{ instruction: "i", expected: "e" }],
+      }),
+    ).toThrow(/session.*agent-browser/);
+  });
+
+  it("accepts mode and session under an explicit agent-browser target", () => {
+    const parsed = TestSpecSchema.parse({
+      title: "x",
+      target: "agent-browser",
+      mode: "live",
+      session: "admin",
+      steps: [{ instruction: "i", expected: "e" }],
+    });
+    expect(parsed.mode).toBe("live");
+    expect(parsed.session).toEqual(["admin"]);
+  });
+
+  it("accepts mode and session when target is omitted", () => {
+    // Effective-target resolution (config defaultTarget) happens after
+    // parsing, so the schema can't reject these here.
+    const parsed = TestSpecSchema.parse({
+      title: "x",
+      mode: "live",
+      session: "admin",
+      steps: [{ instruction: "i", expected: "e" }],
+    });
+    expect(parsed.target).toBeUndefined();
+  });
 });
 
 describe("BlockSpecSchema", () => {

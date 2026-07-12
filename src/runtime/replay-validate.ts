@@ -1,6 +1,7 @@
 import { spawnAB, sleepSync } from "./spawn-ab.ts";
 import { resolveEnvRefs } from "./env-vars.ts";
-import type { TraceAction, TraceCommand } from "../types.ts";
+import { locatorToSelector, toAgentBrowserArgs } from "../ir/to-agent-browser.ts";
+import type { RecordedAction } from "../ir/types.ts";
 
 /**
  * Some actions can't be validated by a single `agent-browser` argv because
@@ -50,7 +51,7 @@ function runPollCheck(check: PollCheck, sessionName: string): { ok: boolean; rea
  * cheaply and lets us strip them out before codegen.
  *
  * The validation is intentionally non-LLM: it just rolls through the
- * commands sequentially with the same EAGAIN-retry logic the production
+ * actions sequentially with the same EAGAIN-retry logic the production
  * test runtime uses. Any action that exits non-zero is dropped from the
  * returned list (and reported by the caller, which owns the logging).
  *
@@ -60,20 +61,20 @@ function runPollCheck(check: PollCheck, sessionName: string): { ok: boolean; rea
  */
 export interface ValidationDrop {
   index: number;
-  action: TraceAction;
+  action: RecordedAction;
   reason: string;
 }
 
 export type ValidationMode =
   /**
-   * Default: failures are reported as `unstable` and kept in actions.json
+   * Default: failures are reported as `unstable` and kept in ir.json
    * with a `replayUnstable: true` flag. Codegen emits a warning comment
    * but still writes the line, so the auto-fix loop (vitest run #1)
    * decides what to do at runtime.
    */
   | "lenient"
   /**
-   * Legacy: failures are physically dropped from actions.json and the
+   * Legacy: failures are physically dropped from ir.json and the
    * generated test never sees them. Useful when the caller wants the
    * stricter "Claude said it passes, so the replay must too" semantics.
    */
@@ -81,12 +82,12 @@ export type ValidationMode =
 
 export interface ValidationResult {
   /** Actions that passed first-pass replay (or were rescued in pass 2). */
-  kept: TraceAction[];
+  kept: RecordedAction[];
   /**
    * Lenient mode: actions that failed replay but are still threaded through
-   * to actions.json with `replayUnstable: true` set. Strict mode: always empty.
+   * to ir.json with `replayUnstable: true` set. Strict mode: always empty.
    */
-  unstable: TraceAction[];
+  unstable: RecordedAction[];
   /**
    * Strict mode: actions removed from the output. Lenient mode: always empty.
    * Callers that previously relied on `dropped` for logging now also need to
@@ -107,12 +108,14 @@ const ASSERT_TIMEOUT_MS = 10_000;
 
 /**
  * Convert one recorded action into the `agent-browser` arg list that would
- * exercise it. Returns `null` for actions that should not be validated
- * (snapshot has no side effect; assert types whose codegen forms aren't
- * directly verifiable here fall through to the caller's `unverifiable`
- * fallback).
+ * exercise it. Interaction commands come from the shared
+ * `ir/to-agent-browser.ts` mapping with env refs resolved; `wait` / `assert`
+ * get validation-specific handling (poll checks, timeouts, unverifiable
+ * skips). Returns `null` for actions that should not be validated (snapshot
+ * has no side effect; assert types whose codegen forms aren't directly
+ * verifiable here fall through to the caller's `unverifiable` fallback).
  */
-export function actionToAbArgs(action: TraceAction, sessionName: string): string[] | PollCheck | null {
+export function actionToAbArgs(action: RecordedAction, sessionName: string): string[] | PollCheck | null {
   const base = ["--session", sessionName];
 
   // Resolve env refs in any value/selector positions so the validation
@@ -122,48 +125,19 @@ export function actionToAbArgs(action: TraceAction, sessionName: string): string
   // exactly what the generated script's template literals resolve too.
   const sub = (s: string | undefined): string => (s === undefined ? "" : resolveEnvRefs(s));
 
-  switch (action.command) {
-    case "cookies_clear":
-      return [...base, "cookies", "clear"];
-    case "open":
-      return [...base, "open", sub(action.value).replace(/^["']|["']$/g, "")];
-    case "click":
-      return [...base, "click", sub(action.selector)];
-    case "dblclick":
-      return [...base, "dblclick", sub(action.selector)];
-    case "fill":
-    case "type":
-      return [...base, "fill", sub(action.selector), sub(action.value)];
-    case "check":
-      return [...base, "check", sub(action.selector)];
-    case "uncheck":
-      return [...base, "uncheck", sub(action.selector)];
-    case "press":
-      return [...base, "press", sub(action.value)];
-    case "select":
-      return [...base, "select", sub(action.selector), sub(action.value)];
-    case "hover":
-      return [...base, "hover", sub(action.selector)];
-    case "scroll": {
-      const args = [action.direction ?? "down", ...(action.pixels ? [action.pixels] : [])];
-      return [...base, "scroll", ...args];
-    }
-    case "drag":
-      return [...base, "drag", sub(action.selector), sub(action.target)];
-    case "upload": {
-      // Replay validates by issuing the same `agent-browser upload` call the
-      // generated test will. Env refs in file paths resolve through `sub` so
-      // `${CCQA_FIXTURES_DIR}/file.pdf` hits the same disk path the test does.
-      // Missing fixtures surface as a non-zero exit and get dropped /
-      // replay-unstable-flagged like any other failing action.
-      const sel = sub(action.selector);
-      const files = (action.files ?? []).map((f) => sub(f));
-      if (!sel || files.length === 0) return null;
-      return [...base, "upload", sel, ...files];
-    }
+  switch (action.action) {
+    case "snapshot":
+      return null;
+    case "assert":
+      return assertToAbArgs(action, sub, sessionName);
     case "wait": {
-      const raw = sub(action.selector);
-      if (!raw) return null; // selector omitted entirely — treat as unverifiable rather than failing the drop cascade.
+      const loc = action.locator;
+      if (!loc) return null; // selector omitted entirely — treat as unverifiable rather than failing the drop cascade.
+      if (loc.by === "text") {
+        return [...base, "wait", "--text", sub(loc.value), "--timeout", String(SHORT_TIMEOUT_MS)];
+      }
+      const raw = sub(locatorToSelector(loc));
+      if (!raw) return null;
       if (/^\d+$/.test(raw)) return null; // numeric sleep — no-op in validation
       // Flag-form waits (`--load networkidle`, `--fn "..."`, `--url "..."`)
       // are readiness/observation conditions, not element-existence checks.
@@ -176,64 +150,25 @@ export function actionToAbArgs(action: TraceAction, sessionName: string): string
       // `wait <css-selector>` ignores --timeout and blocks the daemon; poll instead.
       return { kind: "poll-present", selector: raw, timeoutMs: SHORT_TIMEOUT_MS };
     }
-    case "snapshot":
-      return null;
-    case "assert":
-      return assertToAbArgs(action, sub, sessionName);
-    case "find_click":
-    case "find_dblclick":
-    case "find_hover":
-    case "find_focus":
-    case "find_check":
-    case "find_uncheck":
-      return buildFindArgs(action, undefined, sub, base);
-    case "find_fill":
-    case "find_type":
-      return buildFindArgs(action, sub(action.value), sub, base);
+    default: {
+      const tokens = toAgentBrowserArgs(action);
+      if (tokens === null) return null;
+      return [...base, ...tokens.map((t) => sub(t.text))];
+    }
   }
-}
-
-/**
- * Build the agent-browser argv for a recorded `find_*` action. Mirrors the
- * codegen shape in `actions-to-script.ts:buildFindArgs` but emits a plain
- * string array. Env refs in `findValue` / `findName` resolve through `sub`
- * so the validator hits the same DOM the generated test will.
- */
-function buildFindArgs(
-  action: TraceAction,
-  fillValue: string | undefined,
-  sub: (s: string | undefined) => string,
-  base: string[],
-): string[] | null {
-  const locator = action.findLocator;
-  if (!locator || !action.findValue) return null;
-  const innerAction = action.command.slice("find_".length).replace("type", "fill");
-  const out = [...base, "find", locator];
-  if (locator === "nth") out.push(String(action.findIndex ?? 0));
-  out.push(sub(action.findValue));
-  // agent-browser expects `<value> <action> [--name <n>] [--exact]` — flags
-  // MUST follow the action token. Putting --name before it produced
-  // "Unknown subaction: --name" on every find_role call we recorded.
-  out.push(innerAction);
-  if (fillValue !== undefined) out.push(fillValue);
-  // `--name` is role-only — drop it on every other locator even if a stray
-  // findName slipped into actions.json (agent-browser rejects it otherwise).
-  if (locator === "role" && action.findName) {
-    out.push("--name", sub(action.findName));
-  }
-  if (action.findExact) out.push("--exact");
-  return out;
 }
 
 function assertToAbArgs(
-  action: TraceAction,
+  action: RecordedAction,
   sub: (s: string | undefined) => string,
   sessionName: string,
 ): string[] | PollCheck | null {
   const base = ["--session", sessionName];
   const val = sub(action.value ?? action.observation);
-  const sel = sub(action.selector ?? action.observation);
-  switch (action.assertType) {
+  const sel = sub(
+    action.locator ? locatorToSelector(action.locator) : action.observation,
+  );
+  switch (action.assert) {
     case "text_visible":
       if (!val) return null;
       return [...base, "wait", "--text", val, "--timeout", String(ASSERT_TIMEOUT_MS)];
@@ -284,7 +219,7 @@ export interface ValidateOptions {
    * render a live progress line so a slow validation pass doesn't look
    * like a hang.
    */
-  onProgress?: (index: number, total: number, action: TraceAction) => void;
+  onProgress?: (index: number, total: number, action: RecordedAction) => void;
 }
 
 // Sentinel for actions that carry no stepId (older traces, or commands
@@ -308,7 +243,7 @@ interface ActionOutcome {
  * `wait <selector>`); everything else spawns the agent-browser argv. A single
  * hard-timeout (SIGTERM) retry covers the daemon's occasional under-load drop.
  */
-function runValidationAction(action: TraceAction, sessionName: string): ActionOutcome {
+function runValidationAction(action: RecordedAction, sessionName: string): ActionOutcome {
   const built = actionToAbArgs(action, sessionName);
   if (built === null) return { skipped: true, ok: false, reason: "" };
   if (isPollCheck(built)) {
@@ -330,19 +265,19 @@ function runValidationAction(action: TraceAction, sessionName: string): ActionOu
 }
 
 export function validateActions(
-  actions: TraceAction[],
+  actions: RecordedAction[],
   opts: ValidateOptions,
 ): ValidationResult {
-  const kept: TraceAction[] = [];
+  const kept: RecordedAction[] = [];
   const dropped: ValidationDrop[] = [];
 
   // Cascade design:
-  //   - A failed *state-mutating* action (click/fill/open/find_click/…)
-  //     poisons the rest of the page state, so any passive action (wait /
-  //     assert / snapshot) that follows can't be replayed meaningfully —
-  //     drop them as collateral, but ONLY until the next step boundary.
-  //     v0.4 used "until the next side-effecting command", which let one
-  //     bad action poison the entire trace.
+  //   - A failed *state-mutating* action (click/fill/navigate/…) poisons
+  //     the rest of the page state, so any passive action (wait / assert /
+  //     snapshot) that follows can't be replayed meaningfully — drop them
+  //     as collateral, but ONLY until the next step boundary. v0.4 used
+  //     "until the next side-effecting command", which let one bad action
+  //     poison the entire trace.
   //   - A failed *passive* action (assert/wait/snapshot) does NOT mutate
   //     state. Drop the offender itself, but let the next passive try —
   //     it might be observing something orthogonal.
@@ -358,7 +293,7 @@ export function validateActions(
     if (skipFromStepId !== null && skipFromStepId !== stepId) {
       skipFromStepId = null;
     }
-    if (skipFromStepId !== null && isPassiveCommand(action.command)) {
+    if (skipFromStepId !== null && isPassiveAction(action.action)) {
       dropped.push({ index: i, action, reason: "skipped after a preceding action failed" });
       continue;
     }
@@ -371,13 +306,13 @@ export function validateActions(
       kept.push(action);
       // A successful state-mutating action means the page is now in a
       // known-good state — let subsequent passives observe it.
-      if (skipFromStepId !== null && !isPassiveCommand(action.command)) {
+      if (skipFromStepId !== null && !isPassiveAction(action.action)) {
         skipFromStepId = null;
       }
       continue;
     }
     dropped.push({ index: i, action, reason: outcome.reason });
-    if (!isPassiveCommand(action.command)) {
+    if (!isPassiveAction(action.action)) {
       // Only state-mutating failures poison subsequent actions.
       skipFromStepId = stepId;
     }
@@ -394,8 +329,8 @@ export function validateActions(
  * codegen can warn about them while still emitting the line.
  */
 function splitByMode(
-  originalActions: TraceAction[],
-  result: { kept: TraceAction[]; dropped: ValidationDrop[]; rescuedSteps?: string[] },
+  originalActions: RecordedAction[],
+  result: { kept: RecordedAction[]; dropped: ValidationDrop[]; rescuedSteps?: string[] },
   mode: ValidationMode,
 ): ValidationResult {
   if (mode === "strict") {
@@ -403,8 +338,8 @@ function splitByMode(
   }
   const droppedByIndex = new Map(result.dropped.map((d) => [d.index, d]));
   const keptSet = new Set(result.kept);
-  const finalKept: TraceAction[] = [];
-  const unstable: TraceAction[] = [];
+  const finalKept: RecordedAction[] = [];
+  const unstable: RecordedAction[] = [];
   for (let i = 0; i < originalActions.length; i++) {
     const action = originalActions[i]!;
     if (keptSet.has(action)) {
@@ -414,7 +349,7 @@ function splitByMode(
     const drop = droppedByIndex.get(i);
     if (drop) {
       // Mark in place so the action retains the flag once it lands in
-      // actions.json. We don't deep-clone — every consumer downstream
+      // ir.json. We don't deep-clone — every consumer downstream
       // reads through the same reference and benefits from the tag.
       action.replayUnstable = true;
       action.replayReason = drop.reason;
@@ -448,14 +383,14 @@ function splitByMode(
  *     v0.4 "rest of trace" semantics and rescuing them would over-fire.
  */
 interface RescuePassResult {
-  kept: TraceAction[];
+  kept: RecordedAction[];
   dropped: ValidationDrop[];
   rescuedSteps?: string[];
 }
 
 function rescueLostSteps(
-  actions: TraceAction[],
-  kept: TraceAction[],
+  actions: RecordedAction[],
+  kept: RecordedAction[],
   dropped: ValidationDrop[],
   opts: ValidateOptions,
 ): RescuePassResult {
@@ -496,7 +431,7 @@ function rescueLostSteps(
   // `kept.includes(...)` uses object identity, which is fine because the
   // validator pushes original references — no shallow copies.
   const keptSet = new Set(kept);
-  const newKept: TraceAction[] = [];
+  const newKept: RecordedAction[] = [];
   for (let i = 0; i < actions.length; i++) {
     const action = actions[i]!;
     if (rescuedIndices.has(i) || keptSet.has(action)) newKept.push(action);
@@ -511,10 +446,10 @@ function looksLikeHardTimeout(result: { stderr: string }): boolean {
 }
 
 /**
- * Passive (read-only) commands whose only effect is observation. When a
+ * Passive (read-only) actions whose only effect is observation. When a
  * preceding action fails, dropping these too is the right move because
  * they were trying to observe state the failed action would have set up.
  */
-function isPassiveCommand(cmd: TraceCommand): boolean {
-  return cmd === "snapshot" || cmd === "wait" || cmd === "assert";
+function isPassiveAction(action: RecordedAction["action"]): boolean {
+  return action === "snapshot" || action === "wait" || action === "assert";
 }

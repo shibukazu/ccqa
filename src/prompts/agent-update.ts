@@ -72,7 +72,9 @@ ${body}
 - No narrative paragraphs. No preamble. No closing summary.
 - Keep the whole file under ~3 KB.
 - Output ONLY the new file contents. NO code fences. NO surrounding prose. NO markdown frontmatter.
-- If no step in the run summary was slow enough to be worth a shortcut, output the previous file unchanged.
+- If no step in the run summary was slow enough to be worth a shortcut AND the
+  previous file needs no edits, output exactly \`NO_UPDATE\` (that single word,
+  nothing else) — the caller then leaves the stored prompt untouched.
 `;
 }
 

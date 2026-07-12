@@ -13,7 +13,7 @@ import {
   tryReadSpecFile,
 } from "../store/index.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
-import type { TestSpec } from "../spec/yaml-schema.ts";
+import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
 import { expandSpec } from "../spec/expand.ts";
 import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
 import type { BlockSpec } from "../types.ts";
@@ -34,7 +34,7 @@ import {
 } from "../report/diff.ts";
 import { emitGithubAnnotations } from "../report/github-format.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
-import { fetchCustomPrompt } from "../prompts/custom-prompt.ts";
+import { fetchCustomPrompt, fetchTriageUserPrompt, hashTriageUserPrompt } from "../prompts/custom-prompt.ts";
 import type { AnalysisCustomPrompt } from "../prompts/custom-prompt.ts";
 import { ReportEvidenceSchema, type LiveReportStep, type ReportEvidence, type ReportSpecResult, type RunReportData } from "../report/schema.ts";
 import { resolveProfileEnv } from "../cli/options.ts";
@@ -43,6 +43,8 @@ import { HubApiError } from "../hub-client/index.ts";
 import { resolveProjectOrThrow, ProjectNameError } from "../cli/resolve-project.ts";
 import { resolveSpecsModes } from "../cli/spec-mode.ts";
 import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
+import { loadProjectConfig } from "../config/project-config.ts";
+import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
 import { detectBranch } from "../cli/git-branch.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
@@ -64,6 +66,8 @@ import {
   type ReportFormat,
 } from "./report-constants.ts";
 export { REPORT_FORMATS, DEFAULT_REPORT_DIR, EVIDENCE_SUBDIR, type ReportFormat };
+import { OUTPUT_TAIL_CAP, TailBuffer } from "./output-tail.ts";
+export { TailBuffer };
 
 // Passing --config to vitest prevents it from discovering the host's
 // vitest.config.ts and inheriting setupFiles/environment/aliases that were
@@ -227,7 +231,7 @@ export async function executeRun(
     );
   }
 
-  // Resolve the hub context for the analysis custom prompt (best-effort: an
+  // Resolve the hub context for the failure-analysis prompts (best-effort: an
   // unresolvable project or missing hub connection just means no custom
   // prompt, never a run-stopping error — unlike the profile resolution
   // above, which does throw RunUsageError). resolveHubContext re-resolves
@@ -246,7 +250,11 @@ export async function executeRun(
   } catch {
     hubCtx = null;
   }
-  const customPrompt: AnalysisCustomPrompt | null = await fetchCustomPrompt(hubCtx);
+  // Two failure-analysis prompt layers, both best-effort (null without a hub):
+  // the human-maintained `triage.user` guidance and the learned custom prompt.
+  const [customPrompt, triageUserPrompt]: [AnalysisCustomPrompt | null, string | null] =
+    await Promise.all([fetchCustomPrompt(hubCtx), fetchTriageUserPrompt(hubCtx)]);
+  const triageUserPromptHash = triageUserPrompt ? hashTriageUserPrompt(triageUserPrompt) : null;
 
   // No targets means "all specs"; resolveSpecTargets(undefined) enumerates them.
   // Multiple targets may overlap (e.g. a feature plus one of its specs), so dedupe.
@@ -270,22 +278,42 @@ export async function executeRun(
     return { exitCode: 0, report: null, reportDir: null };
   }
 
-  // Det specs run first under vitest, then live ones via Claude; results
-  // merge into a single report.json.
-  const withMode = await resolveSpecsModes(specs, cwd);
+  // Split specs by generation target: agent-browser specs keep the det/live
+  // paths below; external-target specs run through their plugin runner; specs
+  // that can't run at all become report rows (skipped / failed) instead of
+  // silently dropping out of the run.
+  let dispatch: TargetDispatch;
+  try {
+    dispatch = await groupSpecsByTarget(specs, await loadProjectConfig(cwd), cwd);
+  } catch (err) {
+    // A present-but-broken .ccqa/config.yaml is a usage error, like a bad flag.
+    throw new RunUsageError(errMessage(err));
+  }
+
+  // Agent-browser det specs run first under vitest, then external targets,
+  // then live ones via Claude; results merge into a single report.json.
+  const withMode = await resolveSpecsModes(dispatch.agentBrowser, cwd);
   const detSpecs = withMode.filter((s) => s.mode === "deterministic");
   const liveSpecs = withMode.filter((s) => s.mode === "live");
   log.meta(
     "modes",
     `${detSpecs.length} deterministic / ${liveSpecs.length} live`,
   );
+  if (dispatch.external.length > 0) {
+    log.meta(
+      "external",
+      dispatch.external.map((g) => `${g.targetId} ${g.specs.length}`).join(" / "),
+    );
+  }
 
-  // Warn when a mode-scoped flag is set but no spec of that mode will run,
-  // rather than silently ignoring it.
+  // Warn when a mode-scoped flag can't apply, rather than silently ignoring
+  // it. These flags only affect agent-browser specs of the given mode —
+  // external-target specs run via their own runCommand and never honor them.
   if (liveSpecs.length === 0) {
-    if (typeof opts.retry === "number" && opts.retry > 0) log.warn("--retry is ignored without any 'mode: live' spec");
-    if (opts.out) log.warn("--out is ignored without any 'mode: live' spec");
-    if (opts.updateAgentPrompt) log.warn("--update-agent-prompt is ignored without any 'mode: live' spec");
+    const why = "it only applies to agent-browser 'mode: live' specs, and this run has none";
+    if (typeof opts.retry === "number" && opts.retry > 0) log.warn(`--retry is ignored: ${why}`);
+    if (opts.out) log.warn(`--out is ignored: ${why}`);
+    if (opts.updateAgentPrompt) log.warn(`--update-agent-prompt is ignored: ${why}`);
   } else if (opts.out && liveSpecs.length > 1) {
     // A single --out dir can't hold multiple specs' artifacts without them
     // overwriting each other (worse under --concurrency), so it only applies
@@ -293,7 +321,9 @@ export async function executeRun(
     log.warn("--out is ignored when running multiple live specs");
   }
   if (detSpecs.length === 0 && opts.evidence === false) {
-    log.warn("--no-evidence is ignored without any 'mode: deterministic' spec");
+    log.warn(
+      "--no-evidence is ignored: it only applies to agent-browser 'mode: deterministic' specs, and this run has none",
+    );
   }
   log.blank();
 
@@ -332,7 +362,7 @@ export async function executeRun(
       hubSink = {
         onUpsert: async (row) => {
           try {
-            const evidence = await readEvidenceBase64(row, reportDir);
+            const evidence = await readRowFilesBase64(row, reportDir);
             await hubCtx.hub.patchRun(runId, { rows: [row], evidence });
           } catch (err) {
             log.warn(`hub: incremental push failed for ${row.feature}/${row.spec}: ${errMessage(err)}`);
@@ -364,6 +394,7 @@ export async function executeRun(
       diff: { ok: false, error: "diff not yet captured" },
       baseRef: null,
       customPromptVersion: customPrompt?.customPromptVersion ?? null,
+      triageUserPromptHash,
       opts,
     }),
     hubSink,
@@ -393,6 +424,19 @@ export async function executeRun(
     }
   });
 
+  // External-target specs run between the det and live phases. Rows (including
+  // the skipped / target-resolution-failure stubs) are upserted into the
+  // incremental report as they land, so an interrupt and --push-report treat
+  // them like live rows.
+  const externalRows = await runExternalSpecs(dispatch, {
+    cwd,
+    reportDir,
+    concurrency: opts.concurrency ?? 1,
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.language ? { language: opts.language } : {}),
+    report: incrementalReport,
+  });
+
   const liveOpts: RunLiveOptions = {
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
@@ -407,13 +451,17 @@ export async function executeRun(
     ...(opts.failureAnalysis === false ? { failureAnalysis: false } : {}),
     hubContext: hubCtx,
     customPrompt,
+    triageUserPrompt,
     ...(opts.teardown ? { teardown: opts.teardown } : {}),
     report: incrementalReport,
   };
   const live = await runLiveSpecs(liveSpecs, liveOpts);
 
   let overallExitCode: 0 | 1 = det.exitCode !== 0 ? 1 : 0;
-  if (live.failedCount > 0 && overallExitCode === 0) overallExitCode = 1;
+  if (live.failedCount > 0) overallExitCode = 1;
+  // Failed external rows (command exit != 0, missing manifest, unresolved
+  // target) fail the run; skipped rows don't.
+  if (externalRows.some((r) => r.status === "failed")) overallExitCode = 1;
 
   let report: RunReportData;
   {
@@ -423,13 +471,15 @@ export async function executeRun(
       cwd,
       reportDir,
       customPrompt,
+      triageUserPrompt,
     );
     report = await writeUnifiedReport({
       reportDir,
-      results: [...detReport.results, ...live.reportResults],
+      results: [...detReport.results, ...externalRows, ...live.reportResults],
       diff: detReport.diff,
       baseRef: detReport.baseRef,
       customPromptVersion: detReport.customPromptVersion,
+      triageUserPromptHash,
       opts,
     });
     // The authoritative report is on disk; a later teardown flush (normal exit
@@ -446,6 +496,7 @@ export async function executeRun(
         diff: detReport.diff,
         baseRef: detReport.baseRef,
         customPromptVersion: detReport.customPromptVersion,
+        triageUserPromptHash,
         opts,
       });
       try {
@@ -693,6 +744,7 @@ async function analyzeDeterministicSummaries(
   cwd: string,
   reportDir: string,
   customPrompt: AnalysisCustomPrompt | null,
+  triageUserPrompt: string | null,
 ): Promise<{ results: ReportSpecResult[]; diff: PrDiffResult; baseRef: string; customPromptVersion: string | null }> {
   // Both pieces of automated analysis cost Claude turns. Disabling the
   // root-cause classification (--no-failure-analysis) implicitly disables
@@ -777,6 +829,7 @@ async function analyzeDeterministicSummaries(
       feature: s.featureName,
       spec: s.specName,
       title: parsedSpec?.title ?? null,
+      target: AGENT_BROWSER_TARGET,
       testCounts: s.report
         ? {
             total: s.report.numTotalTests,
@@ -835,6 +888,7 @@ async function analyzeDeterministicSummaries(
           baseRef: diff.ok ? baseRef : null,
           driftIssues,
           ...(opts.language ? { outputLanguage: opts.language } : {}),
+          ...(triageUserPrompt ? { triageUserPrompt } : {}),
           ...(customPrompt ? { customPrompt } : {}),
         },
         { ...(opts.model ? { model: opts.model } : {}), cwd },
@@ -889,9 +943,10 @@ function buildReportEnvelope(args: {
   diff: PrDiffResult;
   baseRef: string | null;
   customPromptVersion: string | null;
+  triageUserPromptHash: string | null;
   opts: RunOptions;
 }): ReportEnvelope {
-  const { diff, baseRef, customPromptVersion, opts } = args;
+  const { diff, baseRef, customPromptVersion, triageUserPromptHash, opts } = args;
   return {
     schemaVersion: 1,
     kind: "run",
@@ -905,6 +960,9 @@ function buildReportEnvelope(args: {
     language: opts.language ?? null,
     promptVersion: ANALYSIS_PROMPT_VERSION,
     customPromptVersion,
+    // Omitted (not null) when inactive, so the envelope keeps its historical
+    // shape — see the schema comment on triageUserPromptHash.
+    ...(triageUserPromptHash !== null ? { triageUserPromptHash } : {}),
   };
 }
 
@@ -915,11 +973,12 @@ async function writeUnifiedReport(args: {
   diff: PrDiffResult;
   baseRef: string | null;
   customPromptVersion: string | null;
+  triageUserPromptHash: string | null;
   opts: RunOptions;
 }): Promise<RunReportData> {
-  const { reportDir, results, diff, baseRef, customPromptVersion, opts } = args;
+  const { reportDir, results, diff, baseRef, customPromptVersion, triageUserPromptHash, opts } = args;
   const data: RunReportData = {
-    ...buildReportEnvelope({ diff, baseRef, customPromptVersion, opts }),
+    ...buildReportEnvelope({ diff, baseRef, customPromptVersion, triageUserPromptHash, opts }),
     results,
   };
 
@@ -944,29 +1003,56 @@ function errMessage(err: unknown): string {
 }
 
 /**
- * Read a live row's evidence PNGs and return them as `{ reportDir-relative
- * posix path → base64 }` for a hub `PATCH`. The paths come straight off
- * `row.liveRun.steps[].beforePng/afterPng`, which `live-adapter.ts` already
- * rewrote to reportDir-relative posix — the same keys the hub stores them
- * under. A PNG that can't be read (evidence-capture miss) is skipped, not
- * fatal. Deterministic rows carry no `liveRun`, so this returns `{}` for them.
+ * Raw-byte budget for the files inlined in one incremental `PATCH`. Base64
+ * inflates by ~4/3 and the rows ride in the same body, so this keeps the
+ * request under the hub's default push cap (`serve --max-push-mb`, 32 MB).
+ * Artifacts over the budget are omitted from the *hub* push only (named in a
+ * warning); they stay in the local report dir and in `ccqa hub push` bundles.
  */
-async function readEvidenceBase64(
+const PATCH_FILES_RAW_BUDGET = 20 * 1024 * 1024;
+
+/**
+ * Read a row's file assets and return them as `{ reportDir-relative posix
+ * path → base64 }` for a hub `PATCH`: a live row's evidence PNGs
+ * (`liveRun.steps[].beforePng/afterPng`, already reportDir-relative posix via
+ * `live-adapter.ts`) plus an external row's `artifacts`. A file that can't be
+ * read (capture miss) is skipped, not fatal. Deterministic rows carry
+ * neither, so this returns `{}` for them.
+ */
+async function readRowFilesBase64(
   row: ReportSpecResult,
   reportDir: string,
 ): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
-  const steps = row.liveRun?.steps ?? [];
-  for (const step of steps) {
-    for (const relPath of [step.beforePng, step.afterPng]) {
-      if (!relPath || out[relPath] !== undefined) continue;
-      try {
-        const bytes = await readFile(join(reportDir, relPath));
-        out[relPath] = bytes.toString("base64");
-      } catch {
-        // best-effort: a missing PNG just isn't pushed with this patch.
-      }
+  let totalBytes = 0;
+  const omitted: string[] = [];
+  const add = async (relPath: string, sizeGuard: boolean): Promise<void> => {
+    if (out[relPath] !== undefined) return;
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(join(reportDir, relPath));
+    } catch {
+      return; // best-effort: a missing file just isn't pushed with this patch.
     }
+    if (sizeGuard && totalBytes + bytes.length > PATCH_FILES_RAW_BUDGET) {
+      omitted.push(relPath);
+      return;
+    }
+    out[relPath] = bytes.toString("base64");
+    totalBytes += bytes.length;
+  };
+  for (const step of row.liveRun?.steps ?? []) {
+    for (const relPath of [step.beforePng, step.afterPng]) {
+      if (relPath) await add(relPath, false);
+    }
+  }
+  for (const artifact of row.artifacts ?? []) await add(artifact.path, true);
+  if (omitted.length > 0) {
+    log.warn(
+      `hub: ${omitted.length} artifact(s) of ${row.feature}/${row.spec} omitted from the ` +
+        `incremental push (over the push size budget); they remain in the local report dir: ` +
+        omitted.join(", "),
+    );
   }
   return out;
 }
@@ -1119,33 +1205,6 @@ async function readScriptSafe(path: string): Promise<string> {
     return await readFile(path, "utf8");
   } catch {
     return "";
-  }
-}
-
-/** Cap on the per-spec output tail kept for the report / analysis prompt. */
-const OUTPUT_TAIL_CAP = 64 * 1024;
-
-/**
- * Keeps the LAST `cap` characters appended — vitest puts the failure summary
- * at the end of its output, so the tail is what's worth keeping on overflow.
- */
-export class TailBuffer {
-  private buf = "";
-  private readonly cap: number;
-
-  constructor(cap: number) {
-    this.cap = cap;
-  }
-
-  append(s: string): void {
-    this.buf += s;
-    // Trim lazily at 2x so each append isn't a slice.
-    if (this.buf.length > this.cap * 2) this.buf = this.buf.slice(-this.cap);
-  }
-
-  toString(): string {
-    if (this.buf.length <= this.cap) return this.buf;
-    return `[...output truncated...]\n${this.buf.slice(-this.cap)}`;
   }
 }
 

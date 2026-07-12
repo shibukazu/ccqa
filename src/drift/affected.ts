@@ -7,8 +7,21 @@ export const execFileP = promisify(execFile);
 export type ChangeStatus = "added" | "modified" | "deleted" | "renamed";
 
 export interface ChangedFile {
+  /**
+   * Path relative to the ccqa working directory for files inside it;
+   * repo-root relative for files outside it (see `outsideCwd`).
+   */
   path: string;
   status: ChangeStatus;
+  /**
+   * True for a change outside the ccqa working directory (monorepo sibling
+   * package). Kept with its repo-root-relative path so a spec can opt into
+   * cross-package dependencies by declaring a repo-root-relative glob (e.g.
+   * `packages/ui-kit/**`) — an app-relative glob like `src/**` can never
+   * match these. Excluded from block invalidation and new-file routing,
+   * which are working-directory concerns.
+   */
+  outsideCwd?: boolean;
 }
 
 /**
@@ -33,8 +46,10 @@ export function resolveBaseRef(explicit: string | undefined): string {
  * Paths are re-rooted to be relative to `cwd`, not the git repo root. In a
  * monorepo where `cwd` is a sub-package (e.g. `apps/foo`), git emits paths
  * relative to the repo root, but specs declare relatedPaths relative to
- * their own package. Changes outside `cwd` are dropped so an unrelated PR
- * can never accidentally scope a sub-package's specs in.
+ * their own package. Changes outside `cwd` are kept under their repo-root
+ * path and flagged `outsideCwd` — they only scope a spec in when the spec
+ * explicitly declares a repo-root-relative glob, so an unrelated PR can
+ * never accidentally match the app-relative globs.
  */
 export async function getChangedFiles(base: string, cwd: string): Promise<ChangedFile[]> {
   const [{ stdout: rootOut }, { stdout: diffOut }] = await Promise.all([
@@ -48,8 +63,9 @@ export async function getChangedFiles(base: string, cwd: string): Promise<Change
 }
 
 /**
- * Convert paths in `entries` from git-repo-root relative to `cwd` relative,
- * dropping anything outside `cwd`. Exported for unit tests.
+ * Convert paths in `entries` from git-repo-root relative to `cwd` relative.
+ * Entries outside `cwd` keep their repo-root path and are flagged
+ * `outsideCwd`. Exported for unit tests.
  */
 export function rerootChangedFiles(
   entries: ChangedFile[],
@@ -61,8 +77,11 @@ export function rerootChangedFiles(
   const out: ChangedFile[] = [];
   for (const e of entries) {
     const rel = relative(prefix, e.path);
-    if (rel.startsWith("..") || rel === "") continue;
-    out.push({ ...e, path: rel });
+    if (rel.startsWith("..") || rel === "") {
+      out.push({ ...e, outsideCwd: true });
+    } else {
+      out.push({ ...e, path: rel });
+    }
   }
   return out;
 }

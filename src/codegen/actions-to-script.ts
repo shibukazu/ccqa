@@ -1,15 +1,17 @@
 import { envRefsToJsExpression } from "../runtime/env-vars.ts";
-import type { TraceAction } from "../types.ts";
+import { locatorToSelector, toAgentBrowserArgs, type AbToken } from "../ir/to-agent-browser.ts";
+import type { RecordedAction } from "../ir/types.ts";
 
 /**
- * Convert recorded trace actions into a vitest-compatible test.spec.ts.
- * One spec produces one `test()` body. The first action in the trace is
- * itself an explicit `open`, recorded from the spec/block step that opens
+ * Convert a recording (IR) into a vitest-compatible test.spec.ts.
+ * One spec produces one `test()` body. The first action in the recording is
+ * itself an explicit `navigate`, recorded from the spec/block step that opens
  * the page.
  *
  * `agent-browser` is invoked via `child_process.spawnSync` with explicit
  * argument arrays to avoid shell quoting issues; the binary is resolved
- * via PATH (peer install).
+ * via PATH (peer install). The argv for each action comes from the shared
+ * `ir/to-agent-browser.ts` mapping.
  *
  * Env refs (`$VAR` / `${VAR}`) in user-supplied values (form fills, asserted
  * URLs, asserted texts, opened URLs) are emitted as `process.env.VAR ?? ""`
@@ -42,7 +44,7 @@ export interface EmptyStepNotice {
 }
 
 export interface ActionsToScriptInput {
-  actions: TraceAction[];
+  actions: RecordedAction[];
   /** Name shown in vitest output — typically the spec.yaml title. */
   testName: string;
   /**
@@ -98,25 +100,24 @@ export function actionsToScript(input: ActionsToScriptInput): string {
   return parts.join("\n");
 }
 
-/** Commands that interact with page elements and need the page to be loaded */
-const ELEMENT_COMMANDS = new Set<string>([
-  "click", "dblclick", "fill", "type", "check", "uncheck", "select", "hover", "drag", "upload",
-  "find_click", "find_dblclick", "find_fill", "find_type", "find_hover", "find_focus",
-  "find_check", "find_uncheck",
+/** Actions that interact with page elements and need the page to be loaded */
+const ELEMENT_ACTIONS = new Set<RecordedAction["action"]>([
+  "click", "dblclick", "fill", "type", "check", "uncheck", "select", "hover",
+  "focus", "drag", "upload",
 ]);
 
 function actionsToLines(
-  actions: TraceAction[],
+  actions: RecordedAction[],
   stepMarkers: StepMarker[],
   emptySteps: EmptyStepNotice[],
 ): string[] {
   const lines: string[] = [];
   let prevLine: string | null = null;
-  // True after an `open` until the next element interaction emits. We insert a
-  // settle `sleep` before that first interaction so the freshly-navigated page
-  // has time to render. Tracking it as a latch (rather than "prevCommand ===
-  // 'open'") means intervening snapshot comments / replay-unstable breadcrumbs
-  // don't swallow the sleep.
+  // True after a `navigate` until the next element interaction emits. We
+  // insert a settle `sleep` before that first interaction so the freshly-
+  // navigated page has time to render. Tracking it as a latch (rather than
+  // "prevAction === 'navigate'") means intervening snapshot comments /
+  // replay-unstable breadcrumbs don't swallow the sleep.
   let pendingOpenSettle = false;
   const markerByIndex = new Map(stepMarkers.map((m) => [m.actionIndex, m]));
   // Group empty-step notices by their splice-after index so multiple lost
@@ -164,8 +165,8 @@ function actionsToLines(
     // into a field this step. Leave a breadcrumb; the result-page assertions
     // (list row / detail) carry the real verification.
     if (
-      action.command === "assert" &&
-      action.assertType === "text_visible" &&
+      action.action === "assert" &&
+      action.assert === "text_visible" &&
       typeof action.value === "string" &&
       filledValuesThisStep.has(action.value)
     ) {
@@ -175,8 +176,8 @@ function actionsToLines(
     const line = actionToLine(action);
     if (line === null) continue;
     if (line === prevLine) continue;
-    if (action.command === "open") pendingOpenSettle = true;
-    if (pendingOpenSettle && ELEMENT_COMMANDS.has(action.command)) {
+    if (action.action === "navigate") pendingOpenSettle = true;
+    if (pendingOpenSettle && ELEMENT_ACTIONS.has(action.action)) {
       lines.push(`spawnSync("sleep", ["3"], { stdio: "inherit" });`);
       pendingOpenSettle = false;
     }
@@ -199,13 +200,10 @@ function actionsToLines(
 
 /**
  * The text value a fill-type action types into a field, or null for
- * non-fill actions. Both the plain `fill`/`type` (value in `value`) and the
- * `find_fill`/`find_type` (also `value`) shapes carry it in `action.value`.
+ * non-fill actions.
  */
-function fillValueOf(action: TraceAction): string | null {
-  const isFill =
-    action.command === "fill" || action.command === "type" ||
-    action.command === "find_fill" || action.command === "find_type";
+function fillValueOf(action: RecordedAction): string | null {
+  const isFill = action.action === "fill" || action.action === "type";
   return isFill && typeof action.value === "string" && action.value.length > 0
     ? action.value
     : null;
@@ -254,9 +252,16 @@ function isStateSelector(selector: string | undefined): boolean {
   return /:disabled\b|:enabled\b|\[\s*disabled[\s\]=]|\[\s*aria-disabled[\s\]=]/i.test(selector);
 }
 
-function actionToLine(action: TraceAction): string | null {
+/** The raw selector-string form of an action's locator, when it has one. */
+function plainSelectorOf(action: RecordedAction): string | undefined {
+  return action.locator && action.index === undefined
+    ? locatorToSelector(action.locator)
+    : undefined;
+}
+
+function actionToLine(action: RecordedAction): string | null {
   // Skip actions that use @ref selectors — they are session-specific and not replayable
-  if ("selector" in action && isRefSelector(action.selector)) return null;
+  if (isRefSelector(plainSelectorOf(action))) return null;
 
   // Drop over-assertions: an element_* assert whose selector the validator
   // could not even find (`get count` returned 0) is targeting an accessible
@@ -266,75 +271,22 @@ function actionToLine(action: TraceAction): string | null {
   // out` / cascade-skipped asserts (those may pass in a real run where prior
   // state built up correctly), and we never touch non-assert actions here.
   if (
-    action.command === "assert" &&
+    action.action === "assert" &&
     action.replayUnstable &&
     typeof action.replayReason === "string" &&
     action.replayReason.includes("selector not present")
   ) {
-    const sel = action.selector ?? action.observation ?? "(unknown)";
-    return `// [warn] replay-unstable: dropped over-assertion (${action.assertType ?? "assert"} ${sel}) — selector not present on replay`;
+    const sel = plainSelectorOf(action) ?? action.observation ?? "(unknown)";
+    return `// [warn] replay-unstable: dropped over-assertion (${action.assert ?? "assert"} ${sel}) — selector not present on replay`;
   }
 
-  switch (action.command) {
-    case "cookies_clear":
-      return `ab("cookies", "clear");`;
-
-    case "open": {
-      // Strip stray surrounding quotes that can appear when agent-browser is called with quoted URL
-      const url = (action.value ?? "").replace(/^["']|["']$/g, "");
-      return `ab("open", ${jExpr(url)});`;
-    }
-
+  switch (action.action) {
     case "snapshot":
       return action.observation ? `// ${action.observation}` : null;
 
-    case "click":
-      return `ab("click", ${j(action.selector!)});`;
-
-    case "dblclick":
-      return `ab("dblclick", ${j(action.selector!)});`;
-
-    case "fill":
-      return `ab("fill", ${j(action.selector!)}, ${jExpr(action.value!)});`;
-
-    case "type":
-      return `ab("fill", ${j(action.selector!)}, ${jExpr(action.value!)});`;
-
-    case "check":
-      return `ab("check", ${j(action.selector!)});`;
-
-    case "uncheck":
-      return `ab("uncheck", ${j(action.selector!)});`;
-
-    case "press":
-      return `ab("press", ${jExpr(action.value!)});`;
-
-    case "select":
-      return `ab("select", ${j(action.selector!)}, ${jExpr(action.value!)});`;
-
-    case "hover":
-      return `ab("hover", ${j(action.selector!)});`;
-
-    case "scroll": {
-      const args = [action.direction ?? "down", ...(action.pixels ? [action.pixels] : [])];
-      return `ab("scroll", ${args.map(j).join(", ")});`;
-    }
-
-    case "drag":
-      return `ab("drag", ${j(action.selector!)}, ${j(action.target!)});`;
-
-    case "upload": {
-      // File paths run through `jExpr` so `${FIXTURE_DIR}/sample.pdf` survives
-      // codegen as a template literal that resolves at test run time, the same
-      // shape fill values use.
-      const files = action.files ?? [];
-      if (!action.selector || files.length === 0) return null;
-      const args = [j(action.selector), ...files.map(jExpr)].join(", ");
-      return `abUpload(${args});`;
-    }
-
     case "wait": {
-      const sel = action.selector!;
+      const sel = plainSelectorOf(action);
+      if (!sel) return null;
       // Numeric waits represent sleep durations (from auto-fix)
       if (/^\d+$/.test(sel)) return `spawnSync("sleep", [${j(sel)}], { stdio: "inherit" });`;
       // Flag-form waits (`--load networkidle`, `--fn "..."`, `--url "..."`) are
@@ -350,32 +302,23 @@ function actionToLine(action: TraceAction): string | null {
       return `abWait(${jExpr(sel)});`;
     }
 
-    case "find_click":
-    case "find_dblclick":
-    case "find_hover":
-    case "find_focus":
-    case "find_check":
-    case "find_uncheck": {
-      const args = buildFindArgs(action, undefined);
-      return args === null ? droppedFindMarker(action) : `ab(${args.join(", ")});`;
-    }
-
-    case "find_fill":
-    case "find_type": {
-      // agent-browser's `find` only knows `fill` — `type` is a ccqa-side
-      // alias that maps to `fill` at codegen time.
-      const args = buildFindArgs(action, action.value ?? "");
-      return args === null ? droppedFindMarker(action) : `ab(${args.join(", ")});`;
+    case "upload": {
+      // File paths run through `jExpr` so `${FIXTURE_DIR}/sample.pdf` survives
+      // codegen as a template literal that resolves at test run time, the same
+      // shape fill values use.
+      const tokens = toAgentBrowserArgs(action);
+      if (tokens === null) return null;
+      return `abUpload(${tokens.slice(1).map(renderToken).join(", ")});`;
     }
 
     case "assert": {
-      // LLM may omit selector/value fields and put the text in observation instead
+      // LLM may omit locator/value fields and put the text in observation instead
       // Fall back to observation when the specific field is missing
       const val = action.value ?? action.observation;
-      const sel = action.selector ?? action.observation;
+      const sel = plainSelectorOf(action) ?? action.observation;
       const comment = action.observation ? `// Assert: ${action.observation}` : null;
       let assertLine: string | null = null;
-      switch (action.assertType) {
+      switch (action.assert) {
         case "text_visible":
           if (val) assertLine = `abAssertTextVisible(${jExpr(val)});`;
           break;
@@ -414,65 +357,38 @@ function actionToLine(action: TraceAction): string | null {
       return assertLine ?? comment;
     }
 
-    default:
-      return null;
+    default: {
+      // Everything else replays as a plain agent-browser invocation whose
+      // argv comes from the shared IR mapping (navigate, click/fill families,
+      // find forms, scroll, drag, cookies_clear, ...).
+      const tokens = toAgentBrowserArgs(action);
+      if (tokens === null) {
+        return ELEMENT_ACTIONS.has(action.action) ? droppedActionMarker(action) : null;
+      }
+      return `ab(${tokens.map(renderToken).join(", ")});`;
+    }
   }
 }
 
 /**
- * Build the argument list for `ab("find", ...)` codegen. Layout matches the
- * `agent-browser find <locator> <value> [--name <n>] [--exact] <action>
- * [fillValue]` invocation shape. `findValue` and `findName` go through
- * `jExpr` so `${ENV}` references survive into the generated test; the
- * positional CSS selector inside `first/last/nth` stays as a plain string
- * literal.
+ * Render one argv token into TS source: env-expandable tokens (fill values,
+ * URLs, find texts) become template literals via `jExpr`; everything else
+ * (command words, flags, raw CSS selectors) is a plain string literal.
  */
-function buildFindArgs(action: TraceAction, fillValue: string | undefined): string[] | null {
-  // Defensive: if a stray find_* action sneaked into actions.json without the
-  // required locator/value fields, refuse to codegen it. Otherwise we'd emit
-  // `ab("find", , , "click")` (a syntax error) into test.spec.ts.
-  const { findLocator, findValue } = action;
-  if (!findLocator || !findValue) return null;
-  const innerAction = action.command.slice("find_".length).replace("type", "fill");
-  const args = [JSON.stringify("find"), JSON.stringify(findLocator)];
-  if (findLocator === "nth") {
-    // `ab(...args: string[])` only accepts strings — emit the index as a
-    // quoted literal even though it's semantically numeric.
-    args.push(JSON.stringify(String(action.findIndex ?? 0)));
-    args.push(j(findValue));
-  } else if (findLocator === "first" || findLocator === "last") {
-    args.push(j(findValue));
-  } else {
-    args.push(jExpr(findValue));
-  }
-  // agent-browser expects `<value> <action> [--name <n>] [--exact]` —
-  // flags MUST follow the action token. Putting them before it produced
-  // "Unknown subaction: --name" on every find_role call in the trace.
-  args.push(JSON.stringify(innerAction));
-  if (fillValue !== undefined) {
-    args.push(jExpr(fillValue));
-  }
-  // `--name` is role-only. Defend against a stray findName slipping into
-  // actions.json from another locator — agent-browser rejects it.
-  if (findLocator === "role" && action.findName) {
-    args.push(JSON.stringify("--name"), jExpr(action.findName));
-  }
-  if (action.findExact) {
-    args.push(JSON.stringify("--exact"));
-  }
-  return args;
+function renderToken(token: AbToken): string {
+  return token.expandsEnv ? jExpr(token.text) : j(token.text);
 }
 
 /**
- * Emit a visible breadcrumb when a `find_*` action lacks the locator/value
- * fields that codegen needs. We can't generate a runnable `ab(...)` line, but
- * a silent skip would make the test pass while quietly dropping a step the
+ * Emit a visible breadcrumb when an element action lacks the locator fields
+ * that codegen needs. We can't generate a runnable `ab(...)` line, but a
+ * silent skip would make the test pass while quietly dropping a step the
  * spec author cared about. The marker is a TS comment so the file still
- * parses, but `grep -n "find_\\* dropped"` surfaces the issue in CI logs.
+ * parses, but `grep -n "action dropped"` surfaces the issue in CI logs.
  */
-function droppedFindMarker(action: TraceAction): string {
+function droppedActionMarker(action: RecordedAction): string {
   const ctx = action.stepId ? ` (stepId=${action.stepId})` : "";
-  return `// [warn] find_* dropped: ${action.command}${ctx} — actions.json is missing findLocator/findValue. Re-run \`ccqa trace\` to regenerate.`;
+  return `// [warn] action dropped: ${action.action}${ctx} — ir.json is missing its locator. Re-run \`ccqa record\` to regenerate.`;
 }
 
 /**
@@ -482,8 +398,8 @@ function droppedFindMarker(action: TraceAction): string {
  * intended check was discarded and can re-assert against a state-independent
  * selector if the state really matters.
  */
-function tautologicalStateAssertMarker(action: TraceAction, sel: string | undefined): string {
-  return `// [warn] dropped tautological assert (${action.assertType ?? "assert"} ${sel ?? "(unknown)"}) — selector matches by the asserted state; target the element by a state-independent selector instead`;
+function tautologicalStateAssertMarker(action: RecordedAction, sel: string | undefined): string {
+  return `// [warn] dropped tautological assert (${action.assert ?? "assert"} ${sel ?? "(unknown)"}) — selector matches by the asserted state; target the element by a state-independent selector instead`;
 }
 
 /** JSON.stringify — produces a quoted string literal safe for embedding in TS source. */

@@ -1,6 +1,6 @@
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { buildCleanupPrompt } from "../prompts/codegen.ts";
-import type { TraceAction } from "../types.ts";
+import type { RecordedAction } from "../types.ts";
 
 /**
  * Best-effort cleanup of a recorded action list. Hands the actions to
@@ -12,7 +12,7 @@ import type { TraceAction } from "../types.ts";
  * Callers that need to preserve stepIds across cleanup (only `ccqa generate`
  * today) must re-attach them after this returns.
  */
-export async function cleanupActions(actions: TraceAction[], model?: string): Promise<TraceAction[]> {
+export async function cleanupActions(actions: RecordedAction[], model?: string): Promise<RecordedAction[]> {
   try {
     const prompt = buildCleanupPrompt(actions);
     const { result, isError } = await invokeClaudeStreaming(
@@ -21,7 +21,7 @@ export async function cleanupActions(actions: TraceAction[], model?: string): Pr
     );
     if (isError || !result) return actions;
     const json = result.trim().replace(/^```(?:json)?\n?([\s\S]*?)\n?```$/, "$1").trim();
-    const parsed = JSON.parse(json) as TraceAction[];
+    const parsed = JSON.parse(json) as RecordedAction[];
     if (Array.isArray(parsed) && parsed.length > 0) return parsed;
   } catch {
     // Fall through

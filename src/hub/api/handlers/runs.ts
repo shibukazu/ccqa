@@ -147,6 +147,7 @@ const PatchRunRequestSchema = z.object({
       language: z.string().nullable().optional(),
       promptVersion: z.string().optional(),
       customPromptVersion: z.string().nullable().optional(),
+      triageUserPromptHash: z.string().optional(),
     })
     .partial()
     .optional(),
@@ -167,7 +168,9 @@ function mergeResults(existing: ReportSpecResult[], rows: ReportSpecResult[]): R
 function countSpecs(results: ReportSpecResult[]): { total: number; passed: number; failed: number } {
   const total = results.length;
   const failed = results.filter((r) => r.status === "failed").length;
-  return { total, passed: total - failed, failed };
+  // Count "passed" explicitly: skipped rows are neither passed nor failed.
+  const passed = results.filter((r) => r.status === "passed").length;
+  return { total, passed, failed };
 }
 
 /**
@@ -234,6 +237,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
         ...(reportMeta?.language !== undefined ? { language: reportMeta.language } : {}),
         ...(reportMeta?.promptVersion !== undefined ? { promptVersion: reportMeta.promptVersion } : {}),
         ...(reportMeta?.customPromptVersion !== undefined ? { customPromptVersion: reportMeta.customPromptVersion } : {}),
+        ...(reportMeta?.triageUserPromptHash !== undefined ? { triageUserPromptHash: reportMeta.triageUserPromptHash } : {}),
       };
       const merged = mergeResults(current?.results ?? [], rows);
       specs = countSpecs(merged);
@@ -316,10 +320,19 @@ export function createGetArtifactFileHandler(storage: HubStorage) {
   };
 }
 
+// Covers evidence PNGs plus the run-artifact kinds the UI renders inline
+// (see src/targets/run-artifacts.ts) — an image data URI with the wrong mime
+// won't render, and text served as octet-stream downloads instead of opening.
 function contentTypeFor(relPath: string): string {
-  if (relPath.endsWith(".png")) return "image/png";
-  if (relPath.endsWith(".json")) return "application/json; charset=utf-8";
-  if (relPath.endsWith(".html")) return "text/html; charset=utf-8";
+  const lower = relPath.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".json")) return "application/json; charset=utf-8";
+  if (lower.endsWith(".html")) return "text/html; charset=utf-8";
+  if (lower.endsWith(".xml")) return "application/xml; charset=utf-8";
+  if (/\.(txt|log|md|yaml|yml)$/.test(lower)) return "text/plain; charset=utf-8";
   return "application/octet-stream";
 }
 

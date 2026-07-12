@@ -6,7 +6,10 @@ import { createRequire } from "node:module";
 // lacks .resolve). import.meta.url survives the transform, so createRequire
 // based on it can still locate peer-installed packages.
 const require = createRequire(import.meta.url);
-const AB = require.resolve("agent-browser/bin/agent-browser.js");
+// CCQA_AB_BIN overrides the resolved entry point. Like CCQA_CLAUDE_MOCK_FILE
+// it exists for the e2e harness (which substitutes a stub binary without
+// touching this package's own node_modules); production never sets it.
+const AB = process.env["CCQA_AB_BIN"] ?? require.resolve("agent-browser/bin/agent-browser.js");
 
 export type Result = { status: number | null; stdout: string; stderr: string };
 

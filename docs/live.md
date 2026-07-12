@@ -24,14 +24,14 @@ ccqa run --retry 2 tasks/create-and-complete
 
 Constraints on selectors / `agent-browser` subcommands that apply during `ccqa record` (no `eval`, no `@ref`, no bare-tag positional `find`, no chained agent-browser calls) are **relaxed** for live specs — Claude can use any subcommand and any selector style because there is no replay contract to honour.
 
-## Per-project guidance (`.ccqa/prompts/live.user.md` + `live.agent.md`)
+## Per-project guidance (hub prompts `live.user` / `live.agent`)
 
-ccqa's live-mode system prompt is deliberately product-agnostic. Anything specific to **your** project — staging URLs, login flow quirks, rich-editor types, common access-denied wording — belongs in two sibling files (run `ccqa init` to scaffold both):
+ccqa's live-mode system prompt is deliberately product-agnostic. Anything specific to **your** project — staging URLs, login flow quirks, rich-editor types, common access-denied wording — belongs in a pair of prompts stored on the [hub](./hub.md), per project:
 
-- `.ccqa/prompts/live.user.md` — human-maintained stable guidance.
-- `.ccqa/prompts/live.agent.md` — auto-updated by `ccqa run --update-agent-prompt` from each run's summary. You can hand-edit it, but the next `--update-agent-prompt` run may rewrite the whole file; durable rules should live in `live.user.md`.
+- `live.user` — human-maintained stable guidance. Edit it in the hub UI's Prompts tab, or locally in `.ccqa/prompts/live.user.md` and upload with `ccqa hub prompt push live.user`.
+- `live.agent` — auto-updated on the hub by `ccqa run --update-agent-prompt` from each run's summary. You can push a hand-edited version, but the next `--update-agent-prompt` run may rewrite it; durable rules should live in `live.user`.
 
-Both files (when present) are read once per invocation and appended to the system prompt under "Project-specific guidance". The `ccqa record` (trace) side has the same split: `record.user.md` + `record.agent.md`, refreshed by `ccqa record --update-agent-prompt`.
+When hub credentials are configured, `ccqa run` fetches both prompts once per invocation and appends them to the system prompt (missing or unreachable prompts never stop a run — you just run without guidance). The `ccqa record` (trace) side has the same split: `record.user` + `record.agent`, refreshed by `ccqa record --update-agent-prompt`.
 
 Keep them short. A page or two of focused notes beats a long handbook — Claude has the spec's `expected` text to work from, these files are for the *non-obvious* product knowledge that isn't in any single spec. Examples of what's useful here:
 

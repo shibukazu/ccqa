@@ -15,7 +15,7 @@ export interface SpecEnvScrub {
  * mentioned in the spec OR in any of its expanded (block-inlined) steps.
  * Used at trace time to scrub recorded Claude-text outputs so a value the
  * spec author intentionally threaded through `process.env` is preserved as
- * `${VAR}` in `actions.json` rather than baked in as the concrete
+ * `${VAR}` in `ir.json` rather than baked in as the concrete
  * trace-time value.
  *
  * Why we walk `spec.steps` AND `expanded`:

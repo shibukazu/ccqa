@@ -93,9 +93,9 @@ tar.gz to the hub, which records it as an immutable `Run`. Flags:
   sits behind infra that gates on a header, e.g. `--hub-header "x-my-gate:secret"`.
 - `--cwd <path>` — directory the report dir is resolved against.
 
-`push` packs the report directory (report.json + evidence PNGs) and uploads
-it; the hub UI renders the results and serves each evidence image over its
-API. It exits 2 if `report.json` is missing or invalid in the
+`push` packs the report directory (report.json + evidence PNGs + the
+run-artifacts dir) and uploads it; the hub UI renders the results and serves
+each file over its API. It exits 2 if `report.json` is missing or invalid in the
 report directory, with a hint to run `ccqa run` first — note that
 `--report <dir>` passed to `hub push` must match wherever `ccqa run
 --report <dir>` (if used) wrote it. `push` only uploads a result, it never
@@ -140,8 +140,8 @@ need from the hub directly as they execute, whenever `--hub-url`/`--hub-token`
 - `--profile <name>` fetches every variable for that project/profile and
   applies them to the process environment before the run starts.
 - `--update-agent-prompt` reads and writes the `record.agent` / `live.agent`
-  prompt on the hub; the failure-analysis custom prompt is fetched the same
-  way.
+  prompt on the hub; the human-maintained `triage.user` guidance and the
+  learned failure-analysis custom prompt are fetched the same way.
 
 This is what lets a CI job hold exactly one secret, `CCQA_HUB_TOKEN` — no
 per-session file checked in, no separate secret per variable a spec needs,
@@ -209,7 +209,7 @@ different job/step or don't need incremental visibility.
 kind of result a team wants recorded on the hub, not just a passing one.
 `ccqa run`'s own failure analysis still needs `ANTHROPIC_API_KEY` /
 a logged-in Claude Code session, independent of the hub — see
-[Authentication in CI](./drift.md#authentication-in-ci). The hub does no
+[Failure triage](./running.md#failure-triage). The hub does no
 Claude-driven analysis of pushed reports (that already happened locally or in
 CI). The one exception is a [triage-learning](#triage-learning) job: if you
 want the hub to run those, give the hub process its own `ANTHROPIC_API_KEY` /
@@ -237,8 +237,12 @@ else is scoped to the selected project.
 - **Run detail** IS the report — there is no separate HTML file. It shows each
   spec's pass/fail, its evidence screenshots (with before/after frames for live
   runs), the failure analysis (predicted cause, confidence, and reasoning), and
-  the drift/assertion details. Evidence images are fetched through the artifacts
-  API with the token in a header (never in the URL). You can grade each failed
+  the drift/assertion details. External-target specs show their **run
+  artifacts** instead: images inline, small text/JSON files as fold-out
+  previews, everything else as a download link (see
+  [The run report](./running.md#the-run-report)).
+  Evidence images are fetched through the artifacts API with the token in a
+  header (never in the URL). You can grade each failed
   spec's **actual cause** right here — the grade is saved to the hub (not just
   your browser) and a confusion matrix of predicted-vs-actual updates live. Each
   run also shows which **profile** (environment) it executed against.
@@ -246,8 +250,9 @@ else is scoped to the selected project.
   selected project, per **profile** (chosen with the selector in this tab —
   profiles scope secrets only; prompts and runs are project-wide). Sensitive
   values stay hidden.
-- **Prompts** shows the project's custom instructions and the learned
-  failure-cause classification — project-wide, shared across profiles.
+- **Prompts** shows the project's custom instructions (record/live guidance
+  and the `triage.user` failure-classification guidance) and the learned
+  failure-cause calibration — project-wide, shared across profiles.
 - **Learning** turns your triage grades into a better analysis custom prompt. After
   grading failing specs on a run, a **Learn from these grades** button appears
   under the confusion matrix; it starts an asynchronous learning job that has
@@ -255,8 +260,9 @@ else is scoped to the selected project.
   status, and each job's page shows the analysis prompt **before and after**
   the learned custom prompt, side by side.
 
-The full report bundle (report.json + evidence PNGs) is available as a tarball
-download via the run detail's "Download artifacts" link.
+The full report bundle (report.json + evidence PNGs + run artifacts) is
+available as a tarball download via the run detail's "Download artifacts"
+link.
 
 ## Triage learning
 
@@ -274,6 +280,14 @@ stays up).
 
 The learned custom prompt is stored like any other prompt and fetched
 directly by the next `ccqa run`, so it picks it up automatically.
+
+Alongside the learned note, the human-maintained `triage.user` prompt holds
+standing, project-specific classification guidance (e.g. "wording changes on
+the settings screen count as SPEC_CHANGE"). Write it in the UI's Prompts tab,
+or locally in `.ccqa/prompts/triage.user.md` and upload it with `ccqa hub
+prompt push triage.user`. `ccqa run` fetches it with the custom prompt and
+injects it into the failure-analysis prompt ahead of the learned calibration
+note — human standing guidance first, learned calibration second.
 
 ## Security
 
@@ -308,5 +322,26 @@ plaintext fallback.
 
 ## Running the hub in a container
 
-See [`examples/hub-docker/`](../examples/hub-docker/) for a Docker Compose
-setup that runs the hub in a container.
+Instead of running `ccqa serve` by hand, the repository root ships a
+`Dockerfile` and `docker-compose.yaml` that build the hub from the current
+source tree and start it in one command:
+
+```bash
+cp .env.example .env               # then fill in the secrets:
+                                   #   CCQA_HUB_TOKEN:          openssl rand -hex 24
+                                   #   CCQA_HUB_ENCRYPTION_KEY: openssl rand -hex 32
+docker compose up -d
+```
+
+The hub listens on `http://localhost:8787` and persists runs, sessions, and
+variables in the `hub-data` named volume, so they survive container
+restarts. Point clients at it the usual way:
+
+```bash
+export CCQA_HUB_URL=http://localhost:8787
+export CCQA_HUB_TOKEN=<the token from .env>   # then `ccqa hub var set ...`,
+                                              # `ccqa run --push-report`, ...
+```
+
+`ANTHROPIC_API_KEY` in `.env` is optional — only hub-side triage-learning
+jobs need it.

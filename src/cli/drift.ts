@@ -242,12 +242,16 @@ async function filterByChanged(input: FilterByChangedInput): Promise<SpecTarget[
   }
   if (changed.length === 0) return [];
 
-  const newFiles = changed.filter((f) => f.status === "added");
-  const existingChanges = changed.filter((f) => f.status !== "added");
+  // Outside-cwd changes participate in glob matching only (a spec opts in
+  // with a repo-root-relative glob); the LLM new-file router and block
+  // invalidation are scoped to this working directory.
+  const newFiles = changed.filter((f) => f.status === "added" && !f.outsideCwd);
+  const existingChanges = changed.filter((f) => f.status !== "added" || f.outsideCwd);
 
   const affected = new Set<string>();
   const touchedBlockNames = new Set<string>();
   for (const f of changed) {
+    if (f.outsideCwd) continue;
     const blockName = parseBlockPath(f.path);
     if (blockName) touchedBlockNames.add(blockName);
   }

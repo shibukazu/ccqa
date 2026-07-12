@@ -66,8 +66,8 @@ export function createRunTeardown(): RunTeardown {
 /**
  * Install SIGINT/SIGTERM handlers that run {@link RunTeardown.run} then exit
  * with the conventional signal code, and return a disposer that removes them.
- * Mirrors the pattern in `src/cli/generate.ts`. A second signal while tearing
- * down hard-exits immediately rather than waiting.
+ * Mirrors the pattern in `src/targets/agent-browser/generate.ts`. A second
+ * signal while tearing down hard-exits immediately rather than waiting.
  */
 export function installTeardownSignalHandlers(teardown: RunTeardown): () => void {
   let handling = false;

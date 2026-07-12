@@ -299,8 +299,8 @@ async function deriveStatus(
   specName: string,
   mode: SpecMode,
 ): Promise<PerspectiveStatus> {
-  const actionsPath = join(getSpecDir(featureName, specName), "actions.json");
-  const traced = await stat(actionsPath).then(() => true).catch(() => false);
+  const recordingPath = join(getSpecDir(featureName, specName), "ir.json");
+  const traced = await stat(recordingPath).then(() => true).catch(() => false);
   const generated = (await getTestScript(featureName, specName)) !== null;
   return { mode, traced, generated };
 }

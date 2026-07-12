@@ -1,0 +1,8 @@
+title: Demo record spec
+steps:
+  - instruction: open about:blank
+    expected: page loads
+  - instruction: proceed to the next screen
+    expected: next screen is visible
+  - instruction: verify the result screen
+    expected: the result panel is shown

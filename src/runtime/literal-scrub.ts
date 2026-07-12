@@ -1,11 +1,11 @@
-import type { TraceAction } from "../types.ts";
+import type { RecordedAction } from "../ir/types.ts";
 
 /**
  * Post-trace scrub for "unstable literal" values that Claude may have baked
  * into recorded actions. These are values whose textual form changes every
  * run (clock readings, Unix-epoch timestamps, ISO datetimes from the page)
  * yet are NOT routed through `${ENV_VAR}` references, so `env-scrub` can't
- * symbolise them. Without this pass they end up in `actions.json`, then in
+ * symbolise them. Without this pass they end up in `ir.json`, then in
  * `test.spec.ts`, and the next run fails because the page no longer shows
  * the same literal.
  *
@@ -15,19 +15,19 @@ import type { TraceAction } from "../types.ts";
  * so the warning log makes it obvious which heuristic fired.
  */
 export interface UnstableLiteralHit {
-  field: "selector" | "value" | "label" | "target" | "observation" | "findValue" | "findName";
+  field: "locator.value" | "locator.name" | "target.value" | "value" | "label" | "observation";
   patternId: string;
   match: string;
 }
 
 export interface UnstableLiteralDrop {
   index: number;
-  action: TraceAction;
+  action: RecordedAction;
   hits: UnstableLiteralHit[];
 }
 
 export interface UnstableScrubResult {
-  kept: TraceAction[];
+  kept: RecordedAction[];
   dropped: UnstableLiteralDrop[];
 }
 
@@ -99,24 +99,21 @@ const UNSTABLE_PATTERNS: ReadonlyArray<UnstablePattern> = [
   },
 ];
 
-const SCANNABLE_FIELDS: ReadonlyArray<UnstableLiteralHit["field"]> = [
-  "selector",
-  "value",
-  "label",
-  "target",
-  "observation",
-  "findValue",
-  "findName",
-];
-
 /**
  * Inspect a single action and return every (field, pattern) pair that
  * fired. An empty array means the action is safe to keep.
  */
-export function detectUnstableLiterals(action: TraceAction): UnstableLiteralHit[] {
+export function detectUnstableLiterals(action: RecordedAction): UnstableLiteralHit[] {
+  const fields: Array<[UnstableLiteralHit["field"], string | undefined]> = [
+    ["locator.value", action.locator?.value],
+    ["locator.name", action.locator?.by === "role" ? action.locator.name : undefined],
+    ["target.value", action.target?.value],
+    ["value", action.value],
+    ["label", action.label],
+    ["observation", action.observation],
+  ];
   const hits: UnstableLiteralHit[] = [];
-  for (const field of SCANNABLE_FIELDS) {
-    const raw = action[field];
+  for (const [field, raw] of fields) {
     if (typeof raw !== "string" || raw.length === 0) continue;
     for (const p of UNSTABLE_PATTERNS) {
       const m = raw.match(p.pattern);
@@ -131,12 +128,12 @@ export function detectUnstableLiterals(action: TraceAction): UnstableLiteralHit[
  * `snapshot` action is treated specially: its `observation` field is just a
  * comment in the generated script, so we keep the action even if its
  * `observation` carries an unstable literal — the comment will be wrong but
- * the script will still run. All other commands get dropped on any hit
- * because their `selector` / `value` would otherwise drive an
- * unreproducible interaction.
+ * the script will still run. All other actions get dropped on any hit
+ * because their locator / `value` would otherwise drive an unreproducible
+ * interaction.
  */
-export function scrubUnstableActions(actions: TraceAction[]): UnstableScrubResult {
-  const kept: TraceAction[] = [];
+export function scrubUnstableActions(actions: RecordedAction[]): UnstableScrubResult {
+  const kept: RecordedAction[] = [];
   const dropped: UnstableLiteralDrop[] = [];
 
   for (let i = 0; i < actions.length; i++) {
@@ -146,7 +143,7 @@ export function scrubUnstableActions(actions: TraceAction[]): UnstableScrubResul
       kept.push(action);
       continue;
     }
-    if (action.command === "snapshot" && hits.every((h) => h.field === "observation")) {
+    if (action.action === "snapshot" && hits.every((h) => h.field === "observation")) {
       // Observation-only hit on a snapshot — cosmetic, keep the action.
       kept.push(action);
       continue;
@@ -166,6 +163,6 @@ export function formatUnstableDrop(drop: UnstableLiteralDrop): string {
   const { action, hits } = drop;
   const ids = [...new Set(hits.map((h) => h.patternId))].join(", ");
   const samples = hits.map((h) => `${h.field}="${h.match}"`).join(", ");
-  const tag = `${action.command}${action.assertType ? " " + action.assertType : ""}`;
+  const tag = `${action.action}${action.assert ? " " + action.assert : ""}`;
   return `${tag}: contains unstable literal (${ids}) — ${samples}`;
 }

@@ -1,10 +1,11 @@
 import { numberLines, outputLanguageBlock } from "../prompts/format.ts";
-import type { TraceAction } from "../types.ts";
+import { describeLocator } from "../ir/to-agent-browser.ts";
+import type { RecordedAction } from "../types.ts";
 
 export interface DiagnosePromptInput {
   script: string;
   specYaml: string;
-  actions: TraceAction[];
+  actions: RecordedAction[];
   failureLog: string;
   /** Optional: accessibility-tree dump from agent-browser captured right after the failure. */
   pageSnapshot?: string;
@@ -26,9 +27,10 @@ export function buildDiagnosePrompt(input: DiagnosePromptInput): string {
 
   const actionsSummary = actions
     .map((a, i) => {
-      const parts = [`${i + 1}. ${a.command}`];
-      if (a.assertType) parts.push(`assertType="${a.assertType}"`);
-      if (a.selector) parts.push(`selector="${a.selector}"`);
+      const parts = [`${i + 1}. ${a.action}`];
+      if (a.assert) parts.push(`assert="${a.assert}"`);
+      if (a.locator) parts.push(`locator="${describeLocator(a.locator)}"`);
+      if (a.index !== undefined) parts.push(`index=${a.index}`);
       if (a.value) parts.push(`value="${a.value}"`);
       if (a.observation) parts.push(`→ ${a.observation}`);
       return parts.join(" ");
@@ -131,7 +133,7 @@ Pick exactly ONE category. The output JSON must follow the shape for that catego
 ## Test Spec (spec.yaml)
 ${specYaml}
 
-## Recorded Actions (actions.json summary)
+## Recorded Actions (ir.json summary)
 ${actionsSummary}
 
 ## Test Script (with line numbers)

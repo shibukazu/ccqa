@@ -22,6 +22,7 @@ function sampleData(): RunReportData {
         feature: "tasks",
         spec: "create",
         title: null,
+        target: "agent-browser",
         status: "passed",
         testCounts: { total: 3, passed: 3, failed: 0 },
         durationMs: 1500,
@@ -39,6 +40,7 @@ function sampleData(): RunReportData {
         feature: "tasks",
         spec: "complete",
         title: "complete a task",
+        target: "playwright",
         status: "failed",
         testCounts: { total: 3, passed: 2, failed: 1 },
         durationMs: null,
@@ -78,6 +80,11 @@ function sampleData(): RunReportData {
             failureSummary: null,
           },
         ],
+        // External-target rows carry generic artifacts (optional field).
+        artifacts: [
+          { name: "output.log", path: "artifacts/tasks__complete/output.log", kind: "text", sizeBytes: 120 },
+          { name: "trace.zip", path: "artifacts/tasks__complete/trace.zip", kind: "binary", sizeBytes: 2048 },
+        ],
         liveRun: null,
       },
     ],
@@ -110,6 +117,13 @@ describe("RunReportDataSchema", () => {
   test("accepts kind: \"drift\"", () => {
     const data = { ...sampleData(), kind: "drift" as const };
     expect(RunReportDataSchema.parse(data).kind).toBe("drift");
+  });
+
+  test("artifacts stay optional (row 1 omits them) and reject an unknown kind", () => {
+    const data = sampleData();
+    expect(RunReportDataSchema.parse(data).results[0]!.artifacts).toBeUndefined();
+    (data.results[1]!.artifacts![0] as { kind: string }).kind = "video";
+    expect(RunReportDataSchema.safeParse(data).success).toBe(false);
   });
 });
 

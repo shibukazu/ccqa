@@ -28,7 +28,7 @@ describe("ccqa record --skip-trace — mocked Claude (codegen-only flow)", () =>
     }
   });
 
-  test("generates test.spec.ts from actions.json using a JSONL-replayed Claude", async () => {
+  test("generates test.spec.ts from ir.json using a JSONL-replayed Claude", async () => {
     project = await makeFakeProject("generate-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 

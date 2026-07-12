@@ -132,8 +132,8 @@ mid-run), a one-time startup sweep flips every such orphaned run to
 Each failing spec's classification pairs an AI **prediction** (read-only,
 sourced from the run's report) with a human-recorded **actual cause**
 (write-only from the client's perspective). See
-[`docs/report.md`](./report.md) for what TEST_DRIFT / SPEC_CHANGE /
-PRODUCT_BUG mean.
+[Failure triage](./running.md#failure-triage) for what TEST_DRIFT /
+SPEC_CHANGE / PRODUCT_BUG mean.
 
 ```
 GET /api/v1/runs/:id/triage
@@ -233,13 +233,15 @@ and any `GET` that returns a decrypted value, return `503` otherwise.
 
 ## Prompts
 
-Prompt assets (record/live guidance prompts and the analysis custom prompt), scoped
+Prompt assets (guidance prompts and the analysis custom prompt), scoped
 by **project only** — unlike sessions and variables, prompts are project-wide,
 not per-profile (the same guidance applies across every profile a project runs
 against). Prompts are **not encrypted** and require no
 `CCQA_HUB_ENCRYPTION_KEY` — they are plain text, not secrets. `name` must be
-one of the reserved prompt names — `record.user`, `record.agent`, `live.user`,
-`live.agent`, or `analysis-custom-prompt` — anything else is `400`.
+one of the reserved prompt names — a `<kind>.user` / `<kind>.agent` pair for
+`record`, `live`, `playwright`, and `runn`, plus `triage.user` (human-written
+failure-classification guidance) and `analysis-custom-prompt` — anything else
+is `400`.
 
 ```
 PUT /api/v1/projects/:project/prompts/:name

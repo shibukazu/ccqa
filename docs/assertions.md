@@ -24,7 +24,7 @@ Assertions are stability-aware: Claude skips timestamps, session IDs, and exact 
 import { test } from "vitest";
 import { ab, abWait, abAssertUrl, abAssertTextVisible, abAssertEnabled } from "ccqa/test-helpers";
 
-process.env.AGENT_BROWSER_SESSION = `ccqa-run-${Date.now()}`;
+process.env.AGENT_BROWSER_SESSION ||= `ccqa-run-${Date.now()}`;
 
 test("setup: login", () => {
   ab("cookies", "clear");

@@ -51,7 +51,7 @@ Every turn Claude grades the spec on four axes and reports issues:
 | Check | What it verifies |
 |---|---|
 | **Assertability** | Each step's `expected` references concrete, observable signals (visible text, URL pattern, element state) that actually exist in the code. Flags timestamps, exact counts, and session-specific values that won't be stable across runs. |
-| **Block references** | Every `include` step resolves to an existing block under `.ccqa/blocks/<name>/spec.yaml`, every `params` key matches a declared param of that block, and every required param is provided. See [Blocks](./blocks.md). |
+| **Block references** | Every `include` step resolves to an existing block under `.ccqa/blocks/<name>/spec.yaml`, every `params` key matches a declared param of that block, and every required param is provided. See [Blocks](./spec.md#blocks--reusable-step-templates). |
 | **Step granularity** | Steps aren't too coarse (multiple actions in one) or too fine (snapshot-only filler), and the order is logical. |
 | **Unimplemented checks** | Anything the spec describes that Claude couldn't find in the codebase — a hint that you may be specifying behavior that doesn't exist yet. |
 
