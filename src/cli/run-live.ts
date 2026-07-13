@@ -107,15 +107,11 @@ export async function runLiveSpecs(
   const failureAnalysisEnabled = opts.failureAnalysis !== false;
   const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
 
-  // Drift audit, failure-analysis auth, and the source diff are all
-  // spec-independent, so hoist them out of the per-spec worker and compute them
-  // once before the pool. Drift is a static spec↔code audit (it only needs the
-  // spec ids, not run results), so running it up front lets each worker classify
-  // its own failure inline with the drift context already in hand — which is
-  // what makes the incremental per-spec upsert possible.
-  const driftBySpec = driftAuditEnabled
-    ? await runDriftAudit(specs, opts, cwd)
-    : new Map<string, ReportSpecResult["driftIssues"]>();
+  // Failure-analysis auth and the source diff are spec-independent, so hoist
+  // them out of the per-spec worker and compute them once before the pool.
+  // The drift audit, by contrast, only matters for specs that actually fail,
+  // so it runs lazily inside each worker (see buildLiveReportRow) instead of
+  // up front for every spec — mirroring the deterministic path.
   const auth: DriftAuth = failureAnalysisEnabled ? driftAuthAvailable() : { ok: false, reason: "disabled" };
   if (failureAnalysisEnabled && !auth.ok) log.info(`failure analysis skipped (${auth.reason})`);
   const baseRef = resolveBaseRef(opts.base);
@@ -149,7 +145,7 @@ export async function runLiveSpecs(
       if (outcome.kind !== "run") return { outcome, row: null };
       const row = await buildLiveReportRow(
         outcome,
-        { driftBySpec, auth, diff, baseRef, reportDir, failureAnalysisEnabled },
+        { auth, diff, baseRef, reportDir, failureAnalysisEnabled, driftAuditEnabled },
         opts,
         cwd,
       );
@@ -177,25 +173,25 @@ export async function runLiveSpecs(
 }
 
 /**
- * Build one spec's report row: the live-run base row plus drift findings and
- * (for a failed spec) the failure-analysis fields. Runs inside the pool worker
- * so the row can be upserted incrementally the moment the spec finishes.
+ * Build one spec's report row: the live-run base row plus (for a failed spec)
+ * the drift audit and failure-analysis fields. Runs inside the pool worker so
+ * the row can be upserted incrementally the moment the spec finishes. The
+ * drift audit only runs for failed specs — passing specs get no driftIssues,
+ * matching the deterministic path.
  */
 async function buildLiveReportRow(
   r: Extract<SpecRunOutcome, { kind: "run" }>,
   ctx: {
-    driftBySpec: Map<string, ReportSpecResult["driftIssues"]>;
     auth: DriftAuth;
     diff: PrDiffResult;
     baseRef: string;
     reportDir: string;
     failureAnalysisEnabled: boolean;
+    driftAuditEnabled: boolean;
   },
   opts: RunLiveOptions,
   cwd: string,
 ): Promise<ReportSpecResult> {
-  const key = `${r.featureName}/${r.specName}`;
-  const driftForSpec = ctx.driftBySpec.get(key) ?? null;
   const base = await liveRunToReportResult({
     featureName: r.featureName,
     specName: r.specName,
@@ -203,6 +199,8 @@ async function buildLiveReportRow(
     result: r.result,
     reportDir: ctx.reportDir,
   });
+  const driftForSpec =
+    ctx.driftAuditEnabled && r.result.status === "failed" ? await runDriftAuditOne(r, opts, cwd) : null;
   const analysis =
     ctx.failureAnalysisEnabled && r.result.status === "failed"
       ? await analyzeOneLiveFailure(r, ctx.diff, ctx.baseRef, driftForSpec, ctx.auth, opts, cwd)
@@ -239,43 +237,32 @@ function analysisFieldsFor(
 }
 
 /**
- * Run `analyzeDrift` against every spec and return a
- * `featureName/specName → driftIssues` map. This is a static spec↔code audit,
- * so it takes the spec list directly and runs before execution — each worker
- * then has its spec's drift context in hand for the failure-analysis prompt.
- * Drift findings are advisory — they show in the report (report.json / hub UI)
- * but do not change the live-run exit code.
+ * Run `analyzeDrift` for one failed spec, used as evidence for its
+ * failure-analysis prompt and shown in its report row. Mirrors the
+ * deterministic path (src/run/pipeline.ts), which also scopes the audit to
+ * failed specs only. Drift findings are advisory — they never change the
+ * live-run exit code.
  */
-async function runDriftAudit(
-  specs: readonly { featureName: string; specName: string }[],
+async function runDriftAuditOne(
+  r: Extract<SpecRunOutcome, { kind: "run" }>,
   opts: RunLiveOptions,
   cwd: string,
-): Promise<Map<string, ReportSpecResult["driftIssues"]>> {
-  const targets = specs.map((s) => ({ featureName: s.featureName, specName: s.specName }));
-  const out = new Map<string, ReportSpecResult["driftIssues"]>();
-  if (targets.length === 0) return out;
-
-  log.blank();
-  log.info(`drift audit: ${targets.length} spec${targets.length > 1 ? "s" : ""}`);
+): Promise<ReportSpecResult["driftIssues"]> {
+  const key = `${r.featureName}/${r.specName}`;
+  log.info(`drift audit: ${key}`);
   const blocks = await loadAvailableBlocks(cwd);
-  const results = await analyzeDrift({
-    targets,
+  const [result] = await analyzeDrift({
+    targets: [{ featureName: r.featureName, specName: r.specName }],
     cwd,
     blocks,
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
-    onSpecStart: (t) => log.info(`  checking ${t.featureName}/${t.specName}`),
   });
-  for (const r of results) {
-    const key = `${r.target.featureName}/${r.target.specName}`;
-    if (r.ok) {
-      out.set(key, r.issues.length > 0 ? r.issues : null);
-    } else {
-      log.warn(`drift audit failed for ${key}: ${r.error}`);
-      out.set(key, null);
-    }
+  if (!result || !result.ok) {
+    log.warn(`drift audit failed for ${key}: ${result?.error ?? "no result"}`);
+    return null;
   }
-  return out;
+  return result.issues.length > 0 ? result.issues : null;
 }
 
 type SpecRunOutcome =
