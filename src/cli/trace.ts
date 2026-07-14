@@ -6,10 +6,8 @@ import {
   loadPromptBundleFromHub,
   readSpecFile,
   saveRecording,
-  updateSpecRelatedPaths,
 } from "../store/index.ts";
 import type { HubContext } from "./hub-conn.ts";
-import { normalizeRelatedPaths, parseRelatedPathsBlock } from "../drift/parse-related-paths.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
@@ -89,8 +87,16 @@ export async function runTrace(
   const envScrub = buildSpecEnvScrub(spec, expanded);
   const envScrubMap = envScrub.map;
   if (envScrub.unresolved.length > 0) {
+    // An unset ref can't be scrubbed, so it bakes in (see above). Surface that
+    // loudly and actionably rather than as a single passing note.
     log.warn(
-      `spec references env var(s) with empty/unset values: ${envScrub.unresolved.join(", ")} — their literal trace-time values will be baked into ir.json`,
+      `spec references env var(s) that are unset at record time: ${envScrub.unresolved.join(", ")}`,
+    );
+    log.warn(
+      "their concrete trace-time values (e.g. navigate URLs) will be baked into ir.json instead of kept as ${VAR}, so the recording won't switch across environments.",
+    );
+    log.hint(
+      "load these vars before recording — pass --profile <name> (hub) or define them in .env — then re-record.",
     );
   }
 
@@ -126,9 +132,6 @@ export async function runTrace(
   // step even when a step opens no URL (e.g. a "fill the form" step
   // sandwiched between a `navigate` step and a navigation).
   const stepTracker = createStepTracker();
-  // Only captures text from RELATED_PATHS_BEGIN onward so a long trace doesn't
-  // accumulate every assistant message in memory just to extract one block.
-  let relatedPathsBuffer: string | null = null;
 
   const withStepId = (action: RecordedAction | null, stepId: string | undefined): RecordedAction | null => {
     if (!action) return null;
@@ -182,17 +185,10 @@ export async function runTrace(
 
       for (const block of msg.message.content ?? []) {
         if (block.type !== "text" || !block.text) continue;
-        const text = block.text;
-        if (relatedPathsBuffer !== null) {
-          relatedPathsBuffer += text + "\n";
-        } else {
-          const idx = text.indexOf("RELATED_PATHS_BEGIN");
-          if (idx !== -1) relatedPathsBuffer = text.slice(idx) + "\n";
-        }
 
         // Walk lines in order so STEP_START advances the step tracker before
         // any subsequent AB_ACTION on the same block is processed.
-        for (const line of text.split("\n")) {
+        for (const line of block.text.split("\n")) {
           const trimmed = line.trim();
           const status = parseStatusLine(line);
           if (status) {
@@ -230,26 +226,8 @@ export async function runTrace(
   log.meta("actions", validatedActions.length);
   log.meta("status", overallStatus.toUpperCase());
 
-  const parsedRelatedPaths = relatedPathsBuffer !== null
-    ? parseRelatedPathsBlock(relatedPathsBuffer)
-    : null;
-  if (parsedRelatedPaths !== null) {
-    // Pin the entries to the bases the drift matcher expects (app-relative
-    // inside the working directory, repo-root-relative outside) — models
-    // sometimes emit repo-root or `../` forms that would never match.
-    const { paths: relatedPaths, warnings } = normalizeRelatedPaths(
-      parsedRelatedPaths,
-      await resolveCwdPrefix(opts.cwd),
-    );
-    for (const w of warnings) log.warn(w);
-    const written = await updateSpecRelatedPaths(featureName, specName, relatedPaths, opts.cwd);
-    if (written) {
-      log.meta("relatedPaths", `${relatedPaths.length} path(s) written to ${written}`);
-    }
-  } else {
-    log.warn("trace did not emit a RELATED_PATHS block; drift --changed cannot scope this spec");
-  }
-
+  // No relatedPaths handling here by design: they are authored in the spec (by
+  // `ccqa draft`) and human-managed, so re-recording leaves them untouched.
   log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
 
   return {
@@ -620,22 +598,3 @@ export function parseStatusLine(text: string): ParsedStatusLine | null {
   return null;
 }
 
-/**
- * The working directory's path relative to the git repo root ("" when they
- * coincide), used to pin relatedPaths bases. Null when git is unavailable —
- * normalization then skips prefix handling rather than guessing.
- */
-async function resolveCwdPrefix(cwd?: string): Promise<string | null> {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const { relative, resolve } = await import("node:path");
-  const dir = resolve(cwd ?? process.cwd());
-  try {
-    const { stdout } = await promisify(execFile)("git", ["rev-parse", "--show-toplevel"], {
-      cwd: dir,
-    });
-    return relative(stdout.trim(), dir);
-  } catch {
-    return null;
-  }
-}

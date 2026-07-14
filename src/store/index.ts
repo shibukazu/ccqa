@@ -1,10 +1,9 @@
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { stringify as stringifyYaml } from "yaml";
 import { collectIncludedBlockNames } from "../spec/expand.ts";
 import { parseBlockSpec, parseTestSpec } from "../spec/parser.ts";
 import { isParamRequired } from "../spec/yaml-schema.ts";
-import type { BlockSpec, RecordedAction, TestSpec } from "../types.ts";
+import type { BlockSpec, RecordedAction } from "../types.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
 import type { GuidanceKind, PromptName } from "../prompts/prompt-names.ts";
 
@@ -134,44 +133,6 @@ export async function removeLegacyPerspectivesFiles(cwd?: string): Promise<strin
     if (deleted) removed.push(path);
   }
   return removed;
-}
-
-/**
- * Replace (or insert) the `relatedPaths` key in the spec. Preserves every
- * other top-level field and the entire steps array. Returns the absolute
- * path that was written, or null if the spec file does not exist.
- */
-export async function updateSpecRelatedPaths(
-  featureName: string,
-  specName: string,
-  relatedPaths: string[],
-  cwd?: string,
-): Promise<string | null> {
-  const specPath = join(getSpecDir(featureName, specName, cwd), SPEC_FILE);
-  const existing = await readFile(specPath, "utf-8").catch(() => null);
-  if (existing === null) return null;
-
-  // Round-trip through our parser so we don't accidentally drop or reorder
-  // fields. parseTestSpec throws on invalid specs — by the time we get here
-  // the file has already been validated upstream (trace reads it before
-  // emitting RELATED_PATHS), so a re-parse should succeed.
-  const spec = parseTestSpec(existing, specPath);
-  const next: TestSpec = {
-    ...spec,
-    relatedPaths: relatedPaths.length > 0 ? relatedPaths : undefined,
-  };
-  // Drop undefined keys so `yaml` doesn't serialise `relatedPaths: null`.
-  const serialised = stringifyYaml(stripUndefined(next), { lineWidth: 0 });
-  await writeFile(specPath, serialised, "utf-8");
-  return specPath;
-}
-
-function stripUndefined<T extends Record<string, unknown>>(obj: T): T {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(obj)) {
-    if (v !== undefined) out[k] = v;
-  }
-  return out as T;
 }
 
 // Per-spec artifacts written by pre-IR ccqa versions, superseded by ir.json.
