@@ -27,7 +27,10 @@ import {
   DEFAULT_SESSION_PROFILE,
   mergeStorageStates,
   removeTempStateDir,
+  SESSION_VERIFY_URL_KEY,
+  verifySessionRestores,
   writeMergedTempState,
+  type SessionRestoreCheck,
   type StorageState,
 } from "../runtime/session-state.ts";
 import { runPool } from "../runtime/pool.ts";
@@ -286,18 +289,31 @@ type SessionResolution =
   | { ok: false; error: string; hint: string };
 
 /**
+ * Sessions whose restore has already been health-checked this process, keyed
+ * `<profile>/<name>`. A run of many specs restores the same session repeatedly;
+ * we only open a throwaway verify browser the first time.
+ */
+const verifiedSessions = new Set<string>();
+
+/**
  * Resolve `spec.session` names to a single state file to restore, fetching
  * each named session from the hub (`.ccqa/sessions/*.json` is no longer
  * read here). Every name must load as a valid agent-browser state (the spec
  * assumes it starts signed-in); a missing/malformed session fails with a
- * `ccqa session bootstrap` hint instead of running unauthenticated. Loaded
- * states are always merged (even a single one) and written to a fresh temp
- * file — callers must invoke the returned `cleanup()` once the run is done.
+ * `ccqa session bootstrap` hint instead of running unauthenticated.
+ *
+ * If a session carries an embedded verify URL (bootstrap saved it), the
+ * restore is health-checked before the run starts, so an expired/unusable
+ * session fails fast with a re-bootstrap hint instead of every step failing
+ * generically. Loaded states are always merged (even a single one) and written
+ * to a fresh temp file — callers must invoke the returned `cleanup()` once the
+ * run is done. `verify` is injectable for tests.
  */
 export async function resolveSessionState(
   names: readonly string[],
   hubCtx: HubContext | null,
   profile: string | undefined,
+  verify: (statePath: string, url: string) => SessionRestoreCheck = verifySessionRestores,
 ): Promise<SessionResolution> {
   if (names.length === 0 || hubCtx === null) {
     const list = names.join(", ");
@@ -309,6 +325,7 @@ export async function resolveSessionState(
   }
 
   const resolvedProfile = profile ?? DEFAULT_SESSION_PROFILE;
+  const profileFlag = profile ? ` --profile ${profile}` : "";
   const loaded: StorageState[] = [];
   const broken: string[] = [];
   for (const name of names) {
@@ -323,11 +340,36 @@ export async function resolveSessionState(
       broken.push(name);
       continue;
     }
+
+    const embedded = (state as Record<string, unknown>)[SESSION_VERIFY_URL_KEY];
+    if (typeof embedded === "string") {
+      const memoKey = `${resolvedProfile}/${name}`;
+      if (!verifiedSessions.has(memoKey)) {
+        // Health-check this session's restore before the run. mergeStorageStates
+        // rebuilds {cookies, origins}, so the embedded key is stripped and never
+        // reaches agent-browser.
+        const tmp = await writeMergedTempState(mergeStorageStates([state as StorageState]));
+        const check = verify(tmp, embedded);
+        await removeTempStateDir(tmp);
+        if (!check.restored) {
+          return {
+            ok: false,
+            error: `session '${name}' did not restore to a signed-in page — ${check.reason}`,
+            hint: `re-bootstrap it: ccqa session bootstrap ${name}${profileFlag}`,
+          };
+        }
+        verifiedSessions.add(memoKey);
+      }
+    } else {
+      log.warn(
+        `session '${name}' has no embedded verify URL (saved by an older ccqa) — skipping the pre-run restore check`,
+      );
+    }
+
     loaded.push(state as StorageState);
   }
 
   if (broken.length > 0) {
-    const profileFlag = profile ? ` --profile ${profile}` : "";
     return {
       ok: false,
       error: `session not usable on the hub: ${broken.join(", ")}`,

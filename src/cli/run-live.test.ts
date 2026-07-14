@@ -1,9 +1,10 @@
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { HubClient } from "../hub-client/index.ts";
 import type { HubContext } from "./hub-conn.ts";
+import { SESSION_VERIFY_URL_KEY, type SessionRestoreCheck } from "../runtime/session-state.ts";
 
 vi.mock("./preflight.ts", () => ({ preflightAgentBrowserCommand: vi.fn(async () => undefined) }));
 vi.mock("../drift/analyze.ts", () => ({ analyzeDrift: vi.fn() }));
@@ -110,6 +111,44 @@ describe("resolveSessionState", () => {
     const r = await resolveSessionState(["admin"], ctx, "stg");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.hint).toContain("ccqa session bootstrap admin --profile stg");
+  });
+
+  test("health-checks a session that carries an embedded verify URL", async () => {
+    const url = "https://app.example.com/home";
+    const ctx = hubCtx(async () => ({ ...VALID_STATE, [SESSION_VERIFY_URL_KEY]: url }));
+    const verify = vi.fn((_statePath: string, _url: string): SessionRestoreCheck => ({ restored: true }));
+    const r = await resolveSessionState(["hc-ok"], ctx, undefined, verify);
+    expect(r.ok).toBe(true);
+    expect(verify).toHaveBeenCalledTimes(1);
+    // Called with the temp state path and the embedded URL.
+    expect(verify.mock.calls[0]?.[1]).toBe(url);
+    // The embedded key is stripped from the merged temp state agent-browser loads.
+    if (r.ok) {
+      const merged = JSON.parse(await readFile(r.statePath, "utf8"));
+      expect(SESSION_VERIFY_URL_KEY in merged).toBe(false);
+      await r.cleanup();
+    }
+  });
+
+  test("fails with a re-bootstrap hint when the health check reports not-restored", async () => {
+    const ctx = hubCtx(async () => ({ ...VALID_STATE, [SESSION_VERIFY_URL_KEY]: "https://app.example.com/home" }));
+    const verify = vi.fn((): SessionRestoreCheck => ({ restored: false, reason: "landed on /signin" }));
+    const r = await resolveSessionState(["hc-bad"], ctx, "dev", verify);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toContain("hc-bad");
+      expect(r.error).toContain("landed on /signin");
+      expect(r.hint).toContain("ccqa session bootstrap hc-bad --profile dev");
+    }
+  });
+
+  test("skips the health check for an old session with no embedded verify URL", async () => {
+    const ctx = hubCtx(async () => VALID_STATE);
+    const verify = vi.fn((): SessionRestoreCheck => ({ restored: true }));
+    const r = await resolveSessionState(["hc-legacy"], ctx, undefined, verify);
+    expect(r.ok).toBe(true);
+    expect(verify).not.toHaveBeenCalled();
+    if (r.ok) await r.cleanup();
   });
 });
 

@@ -1,11 +1,13 @@
 import { mkdtemp, rm, writeFile, chmod, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "vitest";
 import {
   AgentBrowserUnavailableError,
   assertAgentBrowserAvailable,
   formatAgentBrowserUnavailableMessage,
+  resolveAgentBrowserBin,
+  resolveAgentBrowserBinDir,
 } from "./agent-browser-bin.ts";
 
 const tmpDirs: string[] = [];
@@ -55,6 +57,38 @@ describe("assertAgentBrowserAvailable", () => {
   test("returns the resolved bindir when the shim is valid", async () => {
     const shimDir = await makeShimDir();
     expect(assertAgentBrowserAvailable(() => shimDir)).toBe(shimDir);
+  });
+});
+
+describe("CCQA_AB_BIN override", () => {
+  const saved = process.env["CCQA_AB_BIN"];
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env["CCQA_AB_BIN"];
+    else process.env["CCQA_AB_BIN"] = saved;
+  });
+
+  test("bin and PATH dir resolve to the same binary (the daemon-split invariant)", async () => {
+    const shimDir = await makeShimDir();
+    process.env["CCQA_AB_BIN"] = join(shimDir, "agent-browser");
+    expect(resolveAgentBrowserBin()).toBe(join(shimDir, "agent-browser"));
+    expect(resolveAgentBrowserBinDir()).toBe(shimDir);
+    expect(dirname(resolveAgentBrowserBin())).toBe(resolveAgentBrowserBinDir());
+  });
+
+  test("assert validates the override file itself, so a non-shim name (e2e stub) passes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ccqa-stub-"));
+    tmpDirs.push(dir);
+    const stub = join(dir, "agent-browser.js");
+    await writeFile(stub, "// stub\n", "utf-8");
+    process.env["CCQA_AB_BIN"] = stub;
+    expect(assertAgentBrowserAvailable()).toBe(dir);
+  });
+
+  test("assert throws when the override points at a missing file", async () => {
+    const dir = await makeEmptyDir();
+    process.env["CCQA_AB_BIN"] = join(dir, "nope");
+    expect(() => assertAgentBrowserAvailable()).toThrowError(AgentBrowserUnavailableError);
   });
 });
 

@@ -7,6 +7,7 @@ import {
   mergeStorageStates,
   removeTempStateDir,
   sessionFilePath,
+  urlStayedAtTarget,
   writeMergedTempState,
   type StorageState,
 } from "./session-state.ts";
@@ -89,5 +90,27 @@ describe("removeTempStateDir", () => {
     const path = await writeMergedTempState(s);
     await removeTempStateDir(path);
     await expect(stat(dirname(path))).rejects.toThrow();
+  });
+});
+
+describe("urlStayedAtTarget", () => {
+  test("same origin, deeper path → true", () => {
+    expect(urlStayedAtTarget("https://app.example.com/client/x", "https://app.example.com/client/x/thread/y")).toBe(true);
+  });
+
+  test("same origin but redirected to a different path → false", () => {
+    expect(urlStayedAtTarget("https://app.example.com/client/x", "https://app.example.com/signin")).toBe(false);
+  });
+
+  test("different origin → false", () => {
+    expect(urlStayedAtTarget("https://app.example.com/x", "https://auth.example.com/x")).toBe(false);
+  });
+
+  test("trailing-slash difference is ignored", () => {
+    expect(urlStayedAtTarget("https://app.example.com/a/", "https://app.example.com/a")).toBe(true);
+  });
+
+  test("malformed url → false", () => {
+    expect(urlStayedAtTarget("not a url", "https://app.example.com/a")).toBe(false);
   });
 });

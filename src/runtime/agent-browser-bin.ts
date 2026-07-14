@@ -28,15 +28,8 @@ function findNodeModulesBin(start: string): string | null {
   }
 }
 
-/**
- * Resolves the directory containing the `agent-browser` shim that npm/pnpm
- * exposes on PATH for the peer-installed package. Used by `ccqa trace` to
- * prepend this directory to PATH so the Claude subprocess can invoke
- * `agent-browser ...` without requiring a global install.
- *
- * Returns null if agent-browser cannot be located.
- */
-export function resolveAgentBrowserBinDir(): string | null {
+/** The shim-directory walk shared by every resolution below (no env override). */
+function resolveShimDir(): string | null {
   // 1. The consumer project's node_modules/.bin (most common — pnpm/npm/yarn
   //    all create a shim here when agent-browser is installed as a peer).
   //    Walk up from process.cwd() to handle monorepos where the shim lives
@@ -59,6 +52,46 @@ export function resolveAgentBrowserBinDir(): string | null {
     // peer not installed at all
   }
   return null;
+}
+
+/**
+ * INVARIANT: every agent-browser invocation in one ccqa process — the host
+ * side (`spawnAB`: state load, replay probes, …) and the Claude subprocess
+ * (via the PATH prepended by `pathWithAgentBrowserShim`) — must resolve to
+ * the SAME binary. agent-browser runs one daemon per binary, and a state
+ * loaded into one daemon's session is invisible to a same-named session on
+ * another daemon, so a split resolution silently loses session restores.
+ * Both entry points below therefore share one resolution order:
+ * `CCQA_AB_BIN` (explicit override, e.g. the e2e harness or a dev build
+ * driving a consumer project's agent-browser) → the peer-installed shim
+ * (consumer project first, then ccqa's own tree).
+ */
+
+/**
+ * Resolves the executable `spawnAB` should invoke. Falls back to the package
+ * JS entry (resolvable whenever the peer dependency is installed) when no
+ * shim directory exists; throws only if agent-browser is missing entirely.
+ */
+export function resolveAgentBrowserBin(): string {
+  const override = process.env["CCQA_AB_BIN"];
+  if (override) return override;
+  const shimDir = resolveShimDir();
+  if (shimDir) return join(shimDir, "agent-browser");
+  return require.resolve("agent-browser/bin/agent-browser.js");
+}
+
+/**
+ * Resolves the directory containing the `agent-browser` shim that npm/pnpm
+ * exposes on PATH for the peer-installed package. Used by `ccqa trace` /
+ * `ccqa run` to prepend this directory to PATH so the Claude subprocess can
+ * invoke `agent-browser ...` without requiring a global install.
+ *
+ * Returns null if agent-browser cannot be located.
+ */
+export function resolveAgentBrowserBinDir(): string | null {
+  const override = process.env["CCQA_AB_BIN"];
+  if (override) return dirname(override);
+  return resolveShimDir();
 }
 
 /**
@@ -85,20 +118,26 @@ export function pathWithAgentBrowserShim(currentPath: string | undefined): strin
 export function assertAgentBrowserAvailable(
   resolver: () => string | null = resolveAgentBrowserBinDir,
 ): string {
-  const dir = resolver();
-  if (!dir) {
+  // An explicit override may point at any executable (the e2e stub is a bare
+  // `agent-browser.js`), so validate that exact file rather than assuming a
+  // shim named `agent-browser` sits next to it.
+  const override = process.env["CCQA_AB_BIN"];
+  const probe = override ?? (() => {
+    const dir = resolver();
+    return dir === null ? null : join(dir, "agent-browser");
+  })();
+  if (!probe) {
     throw new AgentBrowserUnavailableError();
   }
-  const shim = join(dir, "agent-browser");
   try {
-    const s = statSync(shim);
+    const s = statSync(probe);
     if (!s.isFile() && !s.isSymbolicLink()) {
       throw new AgentBrowserUnavailableError();
     }
   } catch {
     throw new AgentBrowserUnavailableError();
   }
-  return dir;
+  return dirname(probe);
 }
 
 export class AgentBrowserUnavailableError extends Error {
