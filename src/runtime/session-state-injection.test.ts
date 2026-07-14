@@ -34,15 +34,15 @@ describe("loadStateIntoSession", () => {
 });
 
 describe("verifySessionRestores", () => {
-  it("treats a password input on the verify page as 'not restored'", () => {
-    // open(blank) → state load → open(url) → wait → wait → get count → close
+  it("treats a redirect off the target URL as 'not restored'", () => {
+    // open(blank) → state load → open(url) → wait → wait → eval location.href → close
     mockedSpawnAB
       .mockReturnValueOnce(ok()) // open about:blank
       .mockReturnValueOnce(ok()) // state load
       .mockReturnValueOnce(ok()) // open verifyUrl
       .mockReturnValueOnce(ok()) // wait networkidle
       .mockReturnValueOnce(ok()) // wait 3000
-      .mockReturnValueOnce(ok("1")) // get count input[type=password] → 1
+      .mockReturnValueOnce(ok(JSON.stringify("https://app.example/signin"))) // eval → redirected
       .mockReturnValueOnce(ok()); // close
 
     const res = verifySessionRestores("/tmp/s.json", "https://app.example/home");
@@ -52,14 +52,14 @@ describe("verifySessionRestores", () => {
     expect(mockedSpawnAB.mock.calls.at(-1)![0]).toContain("close");
   });
 
-  it("passes when no password input is present after restore", () => {
+  it("passes when the final URL stayed at the target after restore", () => {
     mockedSpawnAB
       .mockReturnValueOnce(ok())
       .mockReturnValueOnce(ok())
       .mockReturnValueOnce(ok())
       .mockReturnValueOnce(ok())
       .mockReturnValueOnce(ok())
-      .mockReturnValueOnce(ok("0")) // no password inputs
+      .mockReturnValueOnce(ok(JSON.stringify("https://app.example/home/inbox"))) // stayed (deeper path)
       .mockReturnValueOnce(ok());
 
     const res = verifySessionRestores("/tmp/s.json", "https://app.example/home");

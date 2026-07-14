@@ -34,6 +34,15 @@ const SESSIONS_SUBDIR = ".ccqa/sessions";
 export const DEFAULT_SESSION_PROFILE = "default";
 
 /**
+ * Key under which `bootstrap` embeds the verify URL inside the uploaded
+ * storage-state JSON. The hub roundtrips it opaquely; `mergeStorageStates`
+ * rebuilds a `{cookies, origins}` object, so the key never reaches
+ * agent-browser (which would reject an unknown top-level field). `ccqa run`
+ * reads it to health-check the restore before executing steps.
+ */
+export const SESSION_VERIFY_URL_KEY = "__ccqaVerifyUrl";
+
+/**
  * Resolve a session name to its state file path:
  * `<cwd>/.ccqa/sessions/<profile>/<name>.json`. The name is a slug (validated
  * by SessionNameSchema), so it can't escape the sessions directory. Used by
@@ -173,20 +182,56 @@ export type SessionRestoreCheck =
   | { restored: true }
   | { restored: false; reason: string };
 
+/** Drop every trailing slash so `/a` and `/a/` compare equal. */
+function normalizePath(pathname: string): string {
+  return pathname.replace(/\/+$/, "");
+}
+
 /**
- * Prove a just-saved session actually restores to a signed-in page, in a fresh
- * throwaway agent-browser session, before it's trusted (e.g. uploaded to the
- * hub). Loads `statePath` into a clean session, navigates to `verifyUrl`, and
- * checks that a login form did NOT appear — the common failure mode where a
- * bootstrap was saved before the app finished signing in, so cookies restore
- * but the app still demands re-auth.
+ * Behaviour-based "signed in?" check with no product knowledge: after
+ * restoring a session, opening `requestedUrl` must settle on the SAME origin
+ * and WITHIN the requested path. An expired/absent auth redirects elsewhere —
+ * a sign-in route on the same origin, or a different origin entirely — so a
+ * final URL that left the requested origin+path means the restore failed.
  *
- * "Signed-in" is detected generically (no product strings): a password input
- * present means a login form is showing → not restored. This is a positive
- * gate on the save, not a runtime check. Best-effort: on infrastructure errors
- * (daemon won't start, navigation fails) it returns `restored: false` with the
- * error so the caller can surface it rather than silently trusting the save.
- * Always closes the throwaway session.
+ * This replaces the old "is a password input visible?" heuristic, which had
+ * false positives (multi-step / SSO / workspace-picker sign-in screens show no
+ * password field) and false negatives (a signed-in page can host a
+ * change-password form). Trailing slashes are insensitive; a malformed URL on
+ * either side returns false.
+ *
+ * Limitation: if `requestedUrl` is just an origin root, any same-origin page
+ * counts as "stayed" (`startsWith("")` is always true) — so callers should
+ * pass a deep, already-signed-in page URL. And an app that renders a login
+ * form IN PLACE at the same URL (no redirect) can't be caught this way; the
+ * escape hatch for that is a future explicit positive signal (e.g. a
+ * `--verify-text` the caller expects to see). See issue #109.
+ */
+export function urlStayedAtTarget(requestedUrl: string, finalUrl: string): boolean {
+  let requested: URL;
+  let final: URL;
+  try {
+    requested = new URL(requestedUrl);
+    final = new URL(finalUrl);
+  } catch {
+    return false;
+  }
+  if (requested.origin !== final.origin) return false;
+  return normalizePath(final.pathname).startsWith(normalizePath(requested.pathname));
+}
+
+/**
+ * Prove a saved session actually restores to a signed-in page, in a fresh
+ * throwaway agent-browser session. Loads `statePath` into a clean session,
+ * opens `verifyUrl`, and checks the browser STAYED at that URL's origin+path
+ * (see {@link urlStayedAtTarget}) — an expired/absent session redirects to a
+ * sign-in route or another origin instead. Used both as a save-time gate in
+ * `bootstrap` and as a pre-run health check in `ccqa run`.
+ *
+ * Best-effort: on infrastructure errors (daemon won't start, navigation
+ * fails) it returns `restored: false` with the error so the caller can
+ * surface it rather than silently trusting the session. Always closes the
+ * throwaway session.
  */
 export function verifySessionRestores(statePath: string, verifyUrl: string): SessionRestoreCheck {
   const verifySession = `ccqa-session-verify-${process.pid}-${trackedTempDirs.size}`;
@@ -199,20 +244,45 @@ export function verifySessionRestores(statePath: string, verifyUrl: string): Ses
       return { restored: false, reason: (nav.stderr || nav.stdout || `open exited ${nav.status}`).trim() };
     }
     // Let the app settle so an SPA that redirects to a sign-in screen has time
-    // to render it before we probe.
+    // to navigate there before we read the URL.
     spawnAB(["--session", verifySession, "wait", "--load", "networkidle"]);
     spawnAB(["--session", verifySession, "wait", "3000"]);
 
-    const probe = spawnAB(["--session", verifySession, "get", "count", "input[type=password]"]);
+    const probe = spawnAB(["--session", verifySession, "eval", "location.href"]);
     if (probe.status !== 0) {
       return { restored: false, reason: (probe.stderr || probe.stdout || `probe exited ${probe.status}`).trim() };
     }
-    const passwordInputs = Number.parseInt(probe.stdout.replace(/[^0-9]/g, ""), 10) || 0;
-    if (passwordInputs >= 1) {
-      return { restored: false, reason: "a sign-in form appeared — the app is not signed in after restore" };
+    const finalHref = unwrapEvalString(probe.stdout);
+    if (!urlStayedAtTarget(verifyUrl, finalHref)) {
+      // Report only origin+pathname — a redirect's query can carry sensitive data.
+      const where = safeOriginPath(finalHref);
+      return { restored: false, reason: `restore left the verify URL — landed on ${where}` };
     }
     return { restored: true };
   } finally {
     spawnAB(["--session", verifySession, "close"]);
+  }
+}
+
+/** Take the last non-empty line of `agent-browser eval` stdout and JSON-unquote it. */
+function unwrapEvalString(stdout: string): string {
+  const lines = stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+  const last = lines[lines.length - 1] ?? "";
+  try {
+    const parsed: unknown = JSON.parse(last);
+    if (typeof parsed === "string") return parsed;
+  } catch {
+    // not JSON — fall through
+  }
+  return last.replace(/^"|"$/g, "");
+}
+
+/** `origin + pathname` of a URL, or the raw string if it doesn't parse. */
+function safeOriginPath(href: string): string {
+  try {
+    const u = new URL(href);
+    return u.origin + u.pathname;
+  } catch {
+    return href;
   }
 }

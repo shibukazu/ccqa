@@ -1,20 +1,27 @@
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 
-import { DEFAULT_SESSION_PROFILE, loadStorageState, verifySessionRestores } from "../runtime/session-state.ts";
+import { resolveAgentBrowserBin } from "../runtime/agent-browser-bin.ts";
+import {
+  DEFAULT_SESSION_PROFILE,
+  loadStorageState,
+  SESSION_VERIFY_URL_KEY,
+  verifySessionRestores,
+} from "../runtime/session-state.ts";
 import { SessionNameSchema } from "../spec/yaml-schema.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { HubConnectionError, hubTokenOption, hubUrlOption, requireHubClient, type HubConnOptions } from "./hub-conn.ts";
 import * as log from "./logger.ts";
 
-const require = createRequire(import.meta.url);
-const AB = require.resolve("agent-browser/bin/agent-browser.js");
+// Same resolver the run/record paths use — see the INVARIANT in
+// agent-browser-bin.ts: one binary per process, or a state loaded into one
+// daemon is invisible to another.
+const AB = resolveAgentBrowserBin();
 
 /**
  * Run agent-browser attached to the user's terminal (no timeout, inherited
@@ -106,12 +113,12 @@ const bootstrapCommand = new Command("bootstrap")
 
       const state = await loadStorageState(tmpPath);
 
-      // Prove the saved state actually restores to a signed-in page before
-      // uploading it. Catches the common failure where the login wasn't fully
-      // complete at save time (cookies restore, but the app still shows a
-      // sign-in form) — which would otherwise only surface later in CI. Needs
-      // a URL to navigate; when `--url` was omitted we can't verify, so we
-      // skip the gate rather than block the save.
+      // With a --url we can prove the saved state restores to a signed-in page
+      // (it stays at that URL rather than redirecting to a sign-in route) and
+      // then embed the URL so `ccqa run` can re-run the same health check
+      // before executing steps. Without --url we can neither verify now nor
+      // health-check at run time, so we warn and upload the bare state.
+      let payload: unknown = state;
       if (opts.url) {
         log.info("verifying the saved session restores to a signed-in page…");
         const check = verifySessionRestores(tmpPath, opts.url);
@@ -124,9 +131,15 @@ const bootstrapCommand = new Command("bootstrap")
           process.exit(1);
         }
         log.info("restore verified — the session starts signed in.");
+        payload = { ...state, [SESSION_VERIFY_URL_KEY]: opts.url };
+      } else {
+        log.warn(
+          "no --url given — the session can't be verified now, and runs can't health-check it " +
+            "before executing steps; strongly consider re-running with --url <a signed-in page URL>.",
+        );
       }
 
-      await hub.putSession(project, opts.profile ?? DEFAULT_SESSION_PROFILE, name, state);
+      await hub.putSession(project, opts.profile ?? DEFAULT_SESSION_PROFILE, name, payload);
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }

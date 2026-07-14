@@ -1,15 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { createRequire } from "node:module";
+import { resolveAgentBrowserBin } from "./agent-browser-bin.ts";
 
-// Use createRequire instead of import.meta.resolve so this module works under
-// Vite/Vitest's SSR transform (which replaces import.meta with a shim that
-// lacks .resolve). import.meta.url survives the transform, so createRequire
-// based on it can still locate peer-installed packages.
-const require = createRequire(import.meta.url);
-// CCQA_AB_BIN overrides the resolved entry point. Like CCQA_CLAUDE_MOCK_FILE
-// it exists for the e2e harness (which substitutes a stub binary without
-// touching this package's own node_modules); production never sets it.
-const AB = process.env["CCQA_AB_BIN"] ?? require.resolve("agent-browser/bin/agent-browser.js");
+// Shared resolution with the PATH handed to the Claude subprocess — see the
+// INVARIANT note in agent-browser-bin.ts: host-side spawns and the model's
+// `agent-browser ...` commands must hit the same binary (one daemon per
+// binary), or a state loaded here is invisible to the session Claude drives.
+const AB = resolveAgentBrowserBin();
 
 export type Result = { status: number | null; stdout: string; stderr: string };
 
