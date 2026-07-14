@@ -39,8 +39,6 @@ export function buildTraceSystemPrompt(input: TraceSystemPromptInput): string {
     )
     .join("\n\n");
 
-  const relatedPathsBlock = buildRelatedPathsInstruction();
-
   return `You are an expert QA engineer executing a browser E2E test. Execute each step precisely and record every browser action as a structured log line.
 
 ## Session
@@ -310,6 +308,9 @@ CCQA_STEP=<step-id> CCQA_ASSERT=url_contains:/dashboard agent-browser --session 
 - A marked command that exits non-zero records nothing — fix the check and re-run it.
 - A marker that doesn't match its command (e.g. \`CCQA_ASSERT=1\` on a \`click\`) is ignored with a warning — never do that.
 - \`get count\` and \`get url\` exit 0 regardless of what they print. **Read the output**: if the printed count / URL contradicts the marker, the signal did NOT verify — treat it as a failed verification (emit \`ASSERTION_FAILED\` if the step cannot be confirmed another way).
+- **\`url_contains\` is opt-in, not a habit.** Emit it ONLY when a step's own \`expected\` explicitly asks about the URL or path. Do NOT add a \`url_contains\` to "prove" a login succeeded, a page loaded, or a navigation happened — confirm those with \`text_visible\` / \`element_visible\` on something the destination page renders. An unrequested URL assertion adds no coverage the visible-content assert doesn't already give, and is the single most common way an environment gets baked into a test.
+- **When you do assert a URL, the substring may come from ONE place only:** a \`\${VAR}\` URL that *this step's own instruction* opened, written as that \`\${VAR}\` followed by the literal tail after it. If the step opens \`\${APP_URL}/policies\`, assert \`\${APP_URL}/policies\` (or the tail \`/policies\`); the recorder resolves \`\${APP_URL}\` per environment. Never assert on a URL you merely *observed* — login redirects, identity-provider pages, and OAuth callbacks all live on a **different, environment-named origin** than the app, so any substring of them (host, origin, OR path) names the environment.
+- **A leading slash does NOT make a substring safe.** \`/auth-staging\`, \`/env-qa\`, \`/tenant-acme\` look like paths but are environment labels — the first segment of an identity-provider or tenant URL, not an application route. If a substring contains an environment name, a stage token (\`dev\`, \`stg\`, \`prod\`), a tenant/org name, or any fragment of a hostname, it is forbidden even with a leading slash. The only safe path substrings are stable *application* routes off the app's own origin (\`/dashboard\`, \`/policies/new\`), taken from a \`\${VAR}\` you opened — not from a redirect you watched.
 
 **Fallback text protocol** — ONLY for assert types the markers cannot express
 (\`element_enabled\`, \`element_disabled\`, \`element_checked\`,
@@ -420,7 +421,7 @@ RUN_COMPLETED|passed|<summary>
 RUN_COMPLETED|failed|<summary>
 \`\`\`
 
-${relatedPathsBlock}## Start
+## Start
 
 Begin by clearing cookies, then proceed straight to the first step's instruction.
 
@@ -439,44 +440,6 @@ AB_ACTION|cookies_clear
 Then emit \`STEP_START|step-01|...\` and execute the first step, prefixing
 every one of its agent-browser commands with \`CCQA_STEP=step-01\`. The first
 step is responsible for opening the initial URL.
-`;
-}
-
-
-function buildRelatedPathsInstruction(): string {
-  return `## Post-run: emit \`relatedPaths\` block
-
-After all steps are complete (regardless of pass/fail) and **before** \`RUN_COMPLETED\`, you MUST emit a single \`RELATED_PATHS\` block. The host (not you) writes these paths into the spec — your only job is to emit the block.
-
-\`relatedPaths\` is a list of glob patterns identifying the source files this spec depends on. CI uses them to decide whether a code change should trigger a drift check for this spec.
-
-**Do NOT modify any source files.** You have only \`Read\`, \`Grep\`, and \`Glob\` for source inspection. The block you emit is the only output the host uses to update the spec.
-
-**Inputs to consider:**
-- The URLs you opened (\`AB_ACTION|open|...\`)
-- The aria-labels, placeholders, and visible texts you clicked / filled / waited on
-- The component / page / route files that render those strings (find them with \`Grep\`/\`Read\`/\`Glob\`)
-
-**How to choose paths:**
-1. For each URL the test navigates to, locate the route/page file and include it (e.g. \`src/app/tasks/page.tsx\`, \`src/pages/tasks/index.tsx\`).
-2. For each unique aria-label / placeholder / visible text you interacted with, \`Grep\` the codebase, find the defining component, and include either the file or its parent feature directory.
-3. Prefer **directory globs** (e.g. \`src/features/tasks/**\`) over individual files when several related components live in the same area. Otherwise list specific files.
-4. Skip third-party files (\`node_modules/\`), build output (\`dist/\`, \`.next/\`), and generated code.
-5. Be conservative — false positives (extra paths) are fine; false negatives (missing paths) cause drift to be missed in CI. When unsure whether a path is relevant, include it.
-6. **Path base:** a path inside this working directory MUST be relative to it — the same base your \`Glob\`/\`Grep\` tools use (\`src/features/tasks/**\`, NOT the repo-root form \`apps/foo/src/features/tasks/**\`). For a file in a monorepo sibling package this spec genuinely depends on, use its **repo-root-relative** path (e.g. \`packages/ui-kit/src/FilePicker.tsx\`); never emit \`../\` forms.
-7. **Shared / design-system components:** include one only when the spec's checks depend on that component's specific behaviour (e.g. the flow exercises its file picker). Do NOT list generic primitives every screen uses (buttons, tags, dialogs, layout) — they would scope this spec into almost every UI change.
-
-**Output format (STRICT — one line per path, no leading dashes, no commentary inside the block):**
-
-\`\`\`
-RELATED_PATHS_BEGIN
-src/features/tasks/**
-src/app/tasks/page.tsx
-RELATED_PATHS_END
-\`\`\`
-
-Emit the block outside any other code block, on its own lines. If the test could not exercise the feature at all (e.g. blocked early), emit the block anyway with whatever paths you can identify; emit \`RELATED_PATHS_BEGIN\` immediately followed by \`RELATED_PATHS_END\` only if you genuinely could not identify any related file.
-
 `;
 }
 

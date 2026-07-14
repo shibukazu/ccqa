@@ -7,11 +7,6 @@ const baseSteps = [
 ];
 
 describe("buildTraceSystemPrompt", () => {
-  it("includes the RELATED_PATHS instruction", () => {
-    const out = buildTraceSystemPrompt({ title: "demo", steps: baseSteps });
-    expect(out).toContain("RELATED_PATHS_BEGIN");
-  });
-
   it("renders each step with its source tag (block name or 'spec') in the heading", () => {
     const out = buildTraceSystemPrompt({ title: "demo", steps: baseSteps });
     expect(out).toContain("### step-01 [login]");
