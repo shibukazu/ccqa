@@ -15,8 +15,10 @@ describe("ccqa run --mode=deterministic --report", () => {
     }
   });
 
-  test("failing spec: report is written with the failure and a skipped-analysis note; exit code stays vitest's", async () => {
+  test("failing spec: report is written with the failure and an analysis-off note; exit code stays vitest's", async () => {
     project = await makeFakeProject("failing-spec", { linkCcqa: true });
+    // No --failure-analysis: classification is opt-in, so the row records
+    // that it was off rather than attempting (and failing) an auth check.
     const result = await runCcqa(["run", "demo/boom", "--report"], {
       cwd: project.cwd,
       env: noAuthEnv(project.cwd),
@@ -24,14 +26,13 @@ describe("ccqa run --mode=deterministic --report", () => {
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).not.toBe(0);
-    expect(combined).toMatch(/failure analysis skipped/);
     expect(combined).toMatch(/run report \(json\) written to .*ccqa-report\/report\.json/);
 
     const json = await readFile(join(project.cwd, "ccqa-report", "report.json"), "utf8");
     const data = JSON.parse(json);
     const boom = data.results.find((r: { feature: string; spec: string }) => r.feature === "demo" && r.spec === "boom");
     expect(boom).toBeDefined();
-    expect(boom.analysisSkipped).toBeTruthy();
+    expect(boom.analysisSkipped).toMatch(/--failure-analysis not enabled/);
     expect(boom.failureLogExcerpt).toBeTruthy();
   });
 

@@ -71,8 +71,8 @@ As an alternative to the single-shot push above, a still-executing
 instead of waiting until it finishes:
 
 ```
-POST /api/v1/runs/open?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>
-  (same query params as POST /api/v1/runs, no body)
+POST /api/v1/runs/open?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&gitHead=<sha>
+  (same query params as POST /api/v1/runs plus optional gitHead, no body)
   → 201 Run   (status: "running")
 
 PATCH /api/v1/runs/:id

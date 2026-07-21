@@ -200,7 +200,17 @@ describe("runLiveSpecs drift audit gating", () => {
     const specA = { featureName: "feature-a", specName: "spec-pass" };
     const specB = { featureName: "feature-b", specName: "spec-fail" };
 
-    await runLiveSpecs([specA, specB], { out: outDir });
+    // Audit + analysis are opt-in: they only run when the pipeline resolved a
+    // --failure-analysis baseline and passed a provider down.
+    const diffProvider = {
+      forSpec: vi.fn(async () => ({
+        base: { ref: "origin/main", sha: "0".repeat(40), source: "explicit" as const },
+        patch: null,
+        nameStatus: null,
+        error: null,
+      })),
+    };
+    await runLiveSpecs([specA, specB], { out: outDir, diffProvider });
 
     expect(analyzeDrift).toHaveBeenCalledTimes(1);
     expect(analyzeDrift).toHaveBeenCalledWith(
@@ -208,5 +218,14 @@ describe("runLiveSpecs drift audit gating", () => {
         targets: [{ featureName: specB.featureName, specName: specB.specName }],
       }),
     );
+  });
+
+  test("no diffProvider (analysis not requested) leaves the audit off", async () => {
+    const specA = { featureName: "feature-a", specName: "spec-pass" };
+    const specB = { featureName: "feature-b", specName: "spec-fail" };
+
+    await runLiveSpecs([specA, specB], { out: outDir });
+
+    expect(analyzeDrift).not.toHaveBeenCalled();
   });
 });

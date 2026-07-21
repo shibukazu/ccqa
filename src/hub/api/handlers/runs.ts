@@ -104,14 +104,17 @@ export interface OpenRunHandlerConfig {
 }
 
 /**
- * POST /api/v1/runs/open?project=&branch=&profile=&kind= — start a "running"
- * run with no report yet. Unlike `POST /runs`, nothing is pushed up front:
- * the caller patches results in as they finish (`PATCH /runs/:id`), so an
- * interrupted run still leaves a partial report on the hub instead of none.
+ * POST /api/v1/runs/open?project=&branch=&profile=&kind=&gitHead= — start a
+ * "running" run with no report yet. Unlike `POST /runs`, nothing is pushed up
+ * front: the caller patches results in as they finish (`PATCH /runs/:id`), so
+ * an interrupted run still leaves a partial report on the hub instead of
+ * none. `gitHead` (optional) attributes the run to a commit from the start —
+ * without it an interrupted run would never learn its commit.
  */
 export function createOpenRunHandler(config: OpenRunHandlerConfig) {
   return async (ctx: RouteContext): Promise<void> => {
     const { project, branch, profile, kind } = parseRunScope(ctx);
+    const gitHead = ctx.url.searchParams.get("gitHead");
 
     const now = new Date().toISOString();
     const run: Run = {
@@ -123,7 +126,7 @@ export function createOpenRunHandler(config: OpenRunHandlerConfig) {
       kind,
       drift: null,
       specs: { total: 0, passed: 0, failed: 0 },
-      gitHead: null,
+      gitHead: gitHead || null,
       promptVersion: "",
       ciRunId: null,
       reportCreatedAt: now,

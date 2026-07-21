@@ -247,9 +247,30 @@ export const RunReportDataSchema = z.object({
   /** GITHUB_RUN_ID when running in Actions; null locally. Links the report back to its CI run. */
   runId: z.string().nullable(),
   git: z.object({
+    /**
+     * Full HEAD sha, recorded unconditionally (independent of whether a diff
+     * was captured). Null only when the run executed outside a git repo, or
+     * for report.json written before this guarantee existed.
+     */
     head: z.string().nullable(),
-    /** Resolved --drift-base ref; null when the diff could not be captured. */
+    /**
+     * The failure-analysis baseline ref (`--failure-analysis [base]`); null
+     * when analysis was not requested.
+     */
     base: z.string().nullable(),
+    /**
+     * `base` resolved to a full commit sha at run start — the reproducible
+     * form of the baseline (`origin/main` alone can't be re-resolved later).
+     * Optional so older report.json stays valid.
+     */
+    baseSha: z.string().nullable().optional(),
+    /**
+     * Which rule produced `base`: "explicit" (a value was passed) or
+     * "github-base-ref" (derived from a pull_request event). Lets accuracy
+     * numbers be stratified by baseline provenance. Optional for older
+     * report.json.
+     */
+    baseSource: z.enum(["explicit", "github-base-ref"]).nullable().optional(),
   }),
   model: z.string().nullable(),
   /**

@@ -420,11 +420,23 @@ describe("hub API server", () => {
       const run = await openRun();
       expect(run.status).toBe("running");
       expect(run.specs).toEqual({ total: 0, passed: 0, failed: 0 });
+      expect(run.gitHead).toBeNull();
 
       const getRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}`, authed());
       const fetched = await json(getRes);
       expect(fetched.status).toBe("running");
       expect(fetched.specs).toEqual({ total: 0, passed: 0, failed: 0 });
+    });
+
+    test("POST /runs/open records ?gitHead= so an interrupted run is still attributable", async () => {
+      const sha = "a".repeat(40);
+      const res = await fetch(
+        `${baseUrl}/api/v1/runs/open?project=demo&gitHead=${sha}`,
+        authed({ method: "POST" }),
+      );
+      expect(res.status).toBe(201);
+      const run = await json(res);
+      expect(run.gitHead).toBe(sha);
     });
 
     test("PATCH with one row (no done) updates the report and specs, and stays running", async () => {

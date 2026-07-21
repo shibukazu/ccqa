@@ -27,6 +27,10 @@ export interface ChangedFile {
 /**
  * Resolve the base ref to diff against for `ccqa drift --changed`.
  * Precedence: explicit override > GITHUB_BASE_REF > origin/main.
+ *
+ * Note: this is the `ccqa drift` rule. `ccqa run` resolves its baseline via
+ * `src/run/git-context.ts` instead, which has no origin/main fallback — see
+ * the rationale there.
  */
 export function resolveBaseRef(explicit: string | undefined): string {
   if (explicit && explicit.length > 0) return explicit;

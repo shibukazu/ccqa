@@ -79,8 +79,16 @@ export interface HubClient {
    * Open a `running` run to push results into incrementally. Returns the new
    * run's id. Non-retryable (a dropped response after the server committed
    * would leave a second open run); callers degrade to local-only on failure.
+   * `gitHead` stamps the run's commit at open time, so even a run that dies
+   * before its final reconcile patch is attributable to a commit.
    */
-  openRun(meta: { project: string; branch?: string; profile?: string; kind?: "run" | "drift" }): Promise<Run>;
+  openRun(meta: {
+    project: string;
+    branch?: string;
+    profile?: string;
+    kind?: "run" | "drift";
+    gitHead?: string;
+  }): Promise<Run>;
   /** Add finished spec rows (+ evidence) to a running run; `done` closes it. */
   patchRun(id: string, body: PatchRunRequest): Promise<Run>;
   listRuns(q?: { project?: string; branch?: string; status?: RunStatus; limit?: number }): Promise<Run[]>;
@@ -235,6 +243,7 @@ export function createHubClient(opts: HubClientOptions): HubClient {
       if (meta.branch) params.set("branch", meta.branch);
       if (meta.profile) params.set("profile", meta.profile);
       if (meta.kind) params.set("kind", meta.kind);
+      if (meta.gitHead) params.set("gitHead", meta.gitHead);
       return json(`/api/v1/runs/open?${params}`, { method: "POST" });
     },
     patchRun(id, body) {
