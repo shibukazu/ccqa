@@ -548,7 +548,7 @@ async function analyzeOneLiveFailure(
       ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),
       ...(opts.customPrompt ? { customPrompt: opts.customPrompt } : {}),
     },
-    { ...(opts.model ? { model: opts.model } : {}), cwd },
+    { ...(opts.model ? { model: opts.model } : {}), cwd, getFileDiff: specDiff.fileDiff },
   );
   const pct = Math.round(outcome.analysis.confidence * 100);
   const headline = outcome.analysis.headline.trim() || (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();

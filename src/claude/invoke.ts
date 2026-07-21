@@ -45,6 +45,14 @@ export interface ClaudeInvokeOptions {
    */
   disableThinking?: boolean;
   mcpConfigPath?: string;
+  /**
+   * In-process MCP servers (`createSdkMcpServer`) exposing caller-defined
+   * tools to this invocation. Tool names surface as
+   * `mcp__<serverName>__<toolName>` and must also be listed in
+   * `allowedTools`. Used by the failure analysis to serve per-file diff
+   * hunks on demand without granting shell access.
+   */
+  mcpServers?: Options["mcpServers"];
   maxTurns?: number;
   env?: Record<string, string>;
   /**
@@ -187,6 +195,7 @@ export async function invokeClaudeStreaming(
     allowedTools,
     disableBuiltinTools = false,
     disableThinking = false,
+    mcpServers,
     maxTurns,
     env,
     model,
@@ -231,6 +240,7 @@ export async function invokeClaudeStreaming(
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(cwd ? { cwd } : {}),
     ...(mergedEnv ? { env: mergedEnv } : {}),
+    ...(mcpServers ? { mcpServers } : {}),
     ...(disableBuiltinTools ? { tools: [] } : {}),
     ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
     hooks:

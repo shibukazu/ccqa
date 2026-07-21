@@ -138,6 +138,15 @@ to its `relatedPaths` globs (falling back to the full diff when nothing
 matches — "no related change" is itself a PRODUCT_BUG signal) and truncated
 to keep the prompt bounded.
 
+Scoping and truncation only bound the *seed* — what is pasted into the
+prompt up front. The classifier itself runs agentically with read-only
+tools (`Read` / `Grep` / `Glob` over the working tree, plus an in-process
+`changed_file_diff` tool that serves any changed file's diff hunk from the
+captured range on demand). The full list of changed files is always in the
+prompt, so a change outside the spec's `relatedPaths` is still visible and
+its hunk one tool call away — the full diff never has to ride in the
+context.
+
 **`--failure-analysis=last-green`.** Instead of one fixed ref, each failing
 spec is diffed against the commit where **that spec last passed** — the
 natural baseline for runs that have no PR to diff against (`push` /

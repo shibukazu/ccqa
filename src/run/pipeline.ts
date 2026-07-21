@@ -926,7 +926,11 @@ async function analyzeDeterministicSummaries(
           ...(triageUserPrompt ? { triageUserPrompt } : {}),
           ...(customPrompt ? { customPrompt } : {}),
         },
-        { ...(opts.model ? { model: opts.model } : {}), cwd },
+        {
+          ...(opts.model ? { model: opts.model } : {}),
+          cwd,
+          ...(specDiff ? { getFileDiff: specDiff.fileDiff } : {}),
+        },
       );
       analysis = outcome.analysis;
 

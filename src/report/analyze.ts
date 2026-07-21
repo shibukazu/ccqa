@@ -1,4 +1,7 @@
+import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
+import * as log from "../cli/logger.ts";
 import { clamp, extractJsonCandidates, isObject, truncate } from "../diagnose/diagnose.ts";
 import { buildFailureAnalysisPrompt, type FailureAnalysisPromptInput } from "./prompt.ts";
 import {
@@ -18,6 +21,47 @@ export interface FailureAnalysisOutcome {
   sdkError: boolean;
 }
 
+/** Fully-qualified name of the on-demand file-diff tool, as the model calls it. */
+export const CHANGED_FILE_DIFF_TOOL = "mcp__diff__changed_file_diff";
+
+/**
+ * In-process MCP server exposing one tool: the diff hunk of a named changed
+ * file. The inline patch in the prompt is only the relatedPaths-scoped seed;
+ * this is the pull side — the model fetches hunks for files outside that
+ * scope (or truncated inside it) only when it decides they matter, so the
+ * full diff never has to ride in the prompt. Read-only over data already
+ * captured in memory: no shell, no git access granted.
+ */
+function buildDiffMcpServer(getFileDiff: ((path: string) => string | null) | undefined) {
+  return createSdkMcpServer({
+    name: "diff",
+    version: "1.0.0",
+    tools: [
+      tool(
+        "changed_file_diff",
+        "Return the unified diff (base...HEAD) of one changed file from this run's diff range. Works for ANY file listed in 'Changed files (name-status)', including files outside the spec's relatedPaths scope whose hunks are not in the inline patch.",
+        { path: z.string().describe("File path exactly as it appears in the name-status list") },
+        async ({ path }) => {
+          const hunk = getFileDiff ? getFileDiff(path) : null;
+          if (hunk) log.info(`  diff tool: ${path}`);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  hunk ??
+                  (getFileDiff
+                    ? `No diff found for "${path}" in this run's diff range. Check the exact path in the name-status list (paths are relative to the working directory).`
+                    : "No diff context is available for this run."),
+              },
+            ],
+          };
+        },
+      ),
+    ],
+  });
+}
+
 /**
  * Classify one failing spec into TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG /
  * UNKNOWN. Same resilience contract as diagnose(): read-only tools, JSON-only
@@ -26,13 +70,14 @@ export interface FailureAnalysisOutcome {
  */
 export async function analyzeFailure(
   input: FailureAnalysisPromptInput,
-  options: { model?: string; cwd?: string } = {},
+  options: { model?: string; cwd?: string; getFileDiff?: (path: string) => string | null } = {},
 ): Promise<FailureAnalysisOutcome> {
   const prompt = buildFailureAnalysisPrompt(input);
   const { result: raw, isError } = await invokeClaudeStreaming(
     {
       prompt,
-      allowedTools: ["Read", "Grep", "Glob"],
+      allowedTools: ["Read", "Grep", "Glob", CHANGED_FILE_DIFF_TOOL],
+      mcpServers: { diff: buildDiffMcpServer(options.getFileDiff) },
       silenceBashLog: true,
       maxTurns: 12,
       ...(options.model ? { model: options.model } : {}),

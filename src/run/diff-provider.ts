@@ -33,9 +33,34 @@ export interface SpecDiff {
   nameStatus: string | null;
   /** Why the diff is unavailable, or null when it was captured. */
   error: string | null;
+  /**
+   * On-demand hunk lookup over the FULL (unscoped) captured diff, backing the
+   * classifier's `changed_file_diff` MCP tool: the inline `patch` is only the
+   * relatedPaths-scoped seed, and this is how changes outside that scope are
+   * pulled into context when (and only when) the model asks for them. Null
+   * when `path` has no changes in the diff range or the capture failed.
+   */
+  fileDiff: (path: string) => string | null;
 }
 
 export type SpecDiffResult = ({ ok: true } & SpecDiff) | { ok: false; skip: string };
+
+/**
+ * Cap on one on-demand file-diff response. Larger than the inline seed's
+ * per-file cap (the model explicitly asked for this file), but still bounded
+ * so a generated-file hunk can't blow the context — the truncation note
+ * points at Read for the file's full current state.
+ */
+export const FILE_DIFF_RESPONSE_CAP = 16 * 1024;
+
+/** Find `path`'s section in a split patch and cap it. Exported for tests. */
+export function lookupFileDiff(sections: PatchSection[], path: string): string | null {
+  const normalized = path.startsWith("./") ? path.slice(2) : path;
+  const section = sections.find((s) => s.path === normalized);
+  if (!section) return null;
+  if (section.body.length <= FILE_DIFF_RESPONSE_CAP) return section.body;
+  return `${section.body.slice(0, FILE_DIFF_RESPONSE_CAP)}\n[truncated: ${section.body.length - FILE_DIFF_RESPONSE_CAP} more chars — Read the file for its full current state]`;
+}
 
 /**
  * Resolves "what changed" for one failing spec.
@@ -110,12 +135,14 @@ export function createDiffProvider(args: {
       if (!resolved.ok) return resolved;
       const [captured, index] = await Promise.all([capture(resolved.base.sha), relatedPaths()]);
       const scope = index.get(`${spec.featureName}/${spec.specName}`) ?? null;
+      const sections = captured.sections;
       return {
         ok: true,
         base: resolved.base,
-        patch: captured.sections ? scopePatchForSpec(captured.sections, scope) : null,
+        patch: sections ? scopePatchForSpec(sections, scope) : null,
         nameStatus: captured.nameStatus,
         error: captured.error,
+        fileDiff: (path) => (sections ? lookupFileDiff(sections, path) : null),
       };
     },
   };
