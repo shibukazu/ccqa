@@ -448,10 +448,10 @@ export async function executeRun(
   );
   // On SIGINT/SIGTERM, flush whatever rows finished so an interrupt leaves a
   // valid partial report. Skipped once the run completes normally: the final
-  // writeUnifiedReport below is authoritative (it holds the deterministic rows
-  // and the real git metadata the provisional incremental envelope lacks), so
-  // re-flushing the incremental writer afterwards would clobber it — the
-  // teardown finalizer also runs on the normal exit path (run.ts).
+  // writeUnifiedReport below is authoritative (it holds the deterministic
+  // rows the incremental writer never sees), so re-flushing the incremental
+  // writer afterwards would clobber it — the teardown finalizer also runs on
+  // the normal exit path (run.ts).
   let completedNormally = false;
   opts.teardown?.onFinalize(async () => {
     // On the normal exit path the final writeUnifiedReport (below) is
@@ -1006,8 +1006,11 @@ function buildReportEnvelope(args: {
     git: {
       head: git.head,
       base: git.base?.ref ?? null,
-      baseSha: git.base?.sha ?? null,
-      baseSource: git.base?.source ?? null,
+      // Omitted (not null) when analysis is off, so the envelope keeps its
+      // historical shape — same contract as triageUserPromptHash below. In
+      // last-green mode `sha` is null (per-spec, see analysisBase) but the
+      // keys are present: analysis WAS requested.
+      ...(git.base ? { baseSha: git.base.sha, baseSource: git.base.source } : {}),
     },
     model: opts.model ?? null,
     language: opts.language ?? null,

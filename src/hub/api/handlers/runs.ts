@@ -187,6 +187,13 @@ function countSpecs(results: ReportSpecResult[]): { total: number; passed: numbe
  * accelerator for `--failure-analysis=last-green`, not part of the run
  * record. Runs without a branch or gitHead can't be placed in the ledger and
  * are skipped.
+ *
+ * Ordering caveat (known approximation): `at` is the run's reportCreatedAt —
+ * open time for incremental runs, report time for immutable pushes. When two
+ * runs on the same branch+profile overlap, "newest at wins" can pick either
+ * of the two genuinely-green commits, since the hub has no git ancestry to
+ * order them properly. Accepted: CI serializes per branch in practice, and a
+ * baseline can only ever point at a commit where the spec really passed.
  */
 async function updateLastGreenLedger(
   storage: HubStorage,
@@ -436,9 +443,9 @@ function parseRunScope(ctx: RouteContext): {
 
 /**
  * A branch is a free-form label (e.g. `feature/foo`), so `/` is allowed —
- * only length is bounded. Run records store it verbatim; the last-green
- * ledger percent-encodes it into a filename (see paths.ts), which the
- * length cap keeps within filesystem limits. null when the client didn't
+ * only length is bounded (a sanity cap; the last-green ledger separately
+ * hash-truncates long percent-encoded names into a safe filename, see
+ * paths.ts). Run records store it verbatim. null when the client didn't
  * send one. Exported for the last-green handler.
  */
 export function requireBranch(raw: string | null): string | null {

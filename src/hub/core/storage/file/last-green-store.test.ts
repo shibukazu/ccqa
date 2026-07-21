@@ -38,4 +38,17 @@ describe("file last-green store", () => {
     expect(await store.get("p", "default", "feat")).toEqual({});
     expect(await store.get("p", "default", "x")).toEqual({});
   });
+
+  test("a long multibyte branch name (3x percent-encode expansion) round-trips", async () => {
+    const store = createFileLastGreenStore(dir);
+    // 100 CJK chars → ~900 encoded chars, far past the 255-byte filename
+    // limit; the path builder must hash-truncate, and two branches sharing a
+    // long prefix must still map to distinct files.
+    const long = "機能".repeat(50);
+    const sibling = `${long}別`;
+    await store.merge("p", "default", long, { "f/s": { gitHead: "a", runId: "r", at: "t" } });
+    await store.merge("p", "default", sibling, { "f/s": { gitHead: "b", runId: "r2", at: "t" } });
+    expect((await store.get("p", "default", long))["f/s"]?.gitHead).toBe("a");
+    expect((await store.get("p", "default", sibling))["f/s"]?.gitHead).toBe("b");
+  });
 });
