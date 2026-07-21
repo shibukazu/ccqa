@@ -1,14 +1,8 @@
-import { getGitHead } from "../cli/git-branch.ts";
-import { execFileP } from "../drift/affected.ts";
+import { execFileP, normalizeGithubBaseRef } from "../drift/affected.ts";
+import { type BaseSource } from "../report/schema.ts";
 import { RunUsageError } from "./errors.ts";
 
-/**
- * Which rule produced the analysis baseline. Recorded in report.json so
- * accuracy measurements can be stratified by baseline quality — a
- * classification against a real PR base is not comparable to one against a
- * hand-picked ref or a per-spec last-green commit.
- */
-export type BaseSource = "explicit" | "github-base-ref" | "last-green";
+export type { BaseSource };
 
 /** The `--failure-analysis` value that selects per-spec hub-ledger baselines. */
 export const LAST_GREEN = "last-green";
@@ -100,7 +94,7 @@ export async function resolveAnalysisBase(
         `${flagName} without a base needs GITHUB_BASE_REF (a pull_request workflow); outside that context pass the base explicitly, e.g. ${flagName}=origin/main`,
       );
     }
-    ref = ghBase.startsWith("origin/") ? ghBase : `origin/${ghBase}`;
+    ref = normalizeGithubBaseRef(ghBase);
     source = "github-base-ref";
   }
 
@@ -115,18 +109,3 @@ export async function resolveAnalysisBase(
   return { ref, sha, source };
 }
 
-/**
- * Resolve the run's git coordinates. `head` never throws (outside a git repo
- * it degrades to null); `base` resolution throws RunUsageError as described
- * on {@link resolveAnalysisBase}.
- */
-export async function resolveGitContext(
-  failureAnalysis: string | boolean | undefined,
-  cwd: string,
-): Promise<GitContext> {
-  const head = await getGitHead(cwd);
-  const base = failureAnalysis
-    ? await resolveAnalysisBase(failureAnalysis === true ? true : failureAnalysis, "--failure-analysis", cwd)
-    : null;
-  return { head, base };
-}

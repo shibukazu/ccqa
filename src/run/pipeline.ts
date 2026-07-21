@@ -26,8 +26,8 @@ import { driftAuthAvailable } from "../drift/auth.ts";
 import type { SpecResult, SpecTarget } from "../drift/types.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import { createDiffProvider, type DiffProvider } from "./diff-provider.ts";
-import { LAST_GREEN, resolveGitContext, type GitContext } from "./git-context.ts";
-import { createLastGreenResolver, describeLedger, fetchLastGreenLedger } from "./last-green.ts";
+import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.ts";
+import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
 import { emitGithubAnnotations } from "../report/github-format.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { fetchCustomPrompt, fetchTriageUserPrompt, hashTriageUserPrompt } from "../prompts/custom-prompt.ts";
@@ -205,14 +205,20 @@ export async function executeRun(
   // the hub connection, so its ledger fetch happens below once hubCtx exists;
   // the fixed-ref modes fail fast right here.
   const wantsLastGreen = opts.failureAnalysis === LAST_GREEN;
-  const git: GitContext = wantsLastGreen
-    ? { head: await getGitHead(cwd), base: { ref: LAST_GREEN, sha: null, source: "last-green" } }
-    : await resolveGitContext(opts.failureAnalysis, cwd);
+  const [head, fixedBase] = await Promise.all([
+    getGitHead(cwd),
+    opts.failureAnalysis && !wantsLastGreen
+      ? resolveAnalysisBase(opts.failureAnalysis, "--failure-analysis", cwd)
+      : null,
+  ]);
+  const git: GitContext = {
+    head,
+    base: wantsLastGreen ? { ref: LAST_GREEN, sha: null, source: "last-green" } : fixedBase,
+  };
   let diffProvider: DiffProvider | null = null;
-  if (!wantsLastGreen && git.base) {
-    const base = { ...git.base, sha: git.base.sha! };
-    diffProvider = createDiffProvider({ resolveBase: async () => ({ ok: true, base }), cwd });
-    log.meta("analysis-base", `${base.ref} (${base.sha.slice(0, 12)}, ${base.source})`);
+  if (fixedBase) {
+    diffProvider = createDiffProvider({ resolveBase: async () => ({ ok: true, base: fixedBase }), cwd });
+    log.meta("analysis-base", `${fixedBase.ref} (${fixedBase.sha.slice(0, 12)}, ${fixedBase.source})`);
   }
 
   // Merge the profile (fetched from the hub) or the default .env (when no
@@ -275,24 +281,28 @@ export async function executeRun(
   // fail-fast contract of the fixed-ref modes above. Requiring a hub here is
   // deliberate: the flag opted into hub-backed baselines, so a missing
   // connection is a usage error, not a degrade-to-no-analysis.
-  if (wantsLastGreen) {
-    if (hubCtx == null) {
-      throw new RunUsageError(
-        `--failure-analysis=${LAST_GREEN} requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
-      );
-    }
-    const ledger = await fetchLastGreenLedger(hubCtx, opts.profile, cwd);
-    describeLedger(ledger);
-    diffProvider = createDiffProvider({
-      resolveBase: createLastGreenResolver(ledger.entries, cwd),
-      cwd,
-    });
+  if (wantsLastGreen && hubCtx == null) {
+    throw new RunUsageError(
+      `--failure-analysis=${LAST_GREEN} requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
+    );
   }
+  const ledgerHub = wantsLastGreen ? hubCtx : null;
 
   // Two failure-analysis prompt layers, both best-effort (null without a hub):
   // the human-maintained `triage.user` guidance and the learned custom prompt.
-  const [customPrompt, triageUserPrompt]: [AnalysisCustomPrompt | null, string | null] =
-    await Promise.all([fetchCustomPrompt(hubCtx), fetchTriageUserPrompt(hubCtx)]);
+  // The last-green ledger (when requested) joins the same batch — all three
+  // are independent hub round trips.
+  const [customPrompt, triageUserPrompt, ledgerEntries] = await Promise.all([
+    fetchCustomPrompt(hubCtx),
+    fetchTriageUserPrompt(hubCtx),
+    ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.profile, cwd) : null,
+  ]);
+  if (ledgerEntries) {
+    diffProvider = createDiffProvider({
+      resolveBase: createLastGreenResolver(ledgerEntries, cwd),
+      cwd,
+    });
+  }
   const triageUserPromptHash = triageUserPrompt ? hashTriageUserPrompt(triageUserPrompt) : null;
 
   // No targets means "all specs"; resolveSpecTargets(undefined) enumerates them.
@@ -900,9 +910,11 @@ async function analyzeDeterministicSummaries(
 
     let analysis: ReportSpecResult["analysis"] = null;
     let analysisSkipped: string | null = null;
-    if (!failureAnalysisEnabled) {
+    // failureAnalysisEnabled === (specDiffResult != null), so chaining on the
+    // result narrows it for the analyze branch below.
+    if (!specDiffResult) {
       analysisSkipped = "skipped: --failure-analysis not enabled";
-    } else if (specDiffResult && !specDiffResult.ok) {
+    } else if (!specDiffResult.ok) {
       // No usable baseline for THIS spec (last-green: never green yet, or
       // its commit isn't fetched) — withhold the classification honestly.
       analysisSkipped = specDiffResult.skip;
@@ -919,8 +931,8 @@ async function analyzeDeterministicSummaries(
           specYaml,
           failureLog,
           diffPatch: diffExcerpt,
-          changedFiles: specDiff?.nameStatus ?? null,
-          baseRef: specDiff?.base.ref ?? null,
+          changedFiles: specDiffResult.nameStatus,
+          baseRef: specDiffResult.base.ref,
           driftIssues,
           ...(opts.language ? { outputLanguage: opts.language } : {}),
           ...(triageUserPrompt ? { triageUserPrompt } : {}),
@@ -929,7 +941,7 @@ async function analyzeDeterministicSummaries(
         {
           ...(opts.model ? { model: opts.model } : {}),
           cwd,
-          ...(specDiff ? { getFileDiff: specDiff.fileDiff } : {}),
+          getFileDiff: specDiffResult.fileDiff,
         },
       );
       analysis = outcome.analysis;

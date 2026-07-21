@@ -144,7 +144,7 @@ export async function runLiveSpecs(
       if (outcome.kind !== "run") return { outcome, row: null };
       const row = await buildLiveReportRow(
         outcome,
-        { auth, diffProvider, reportDir, failureAnalysisEnabled, driftAuditEnabled },
+        { auth, diffProvider, reportDir, driftAuditEnabled },
         opts,
         cwd,
       );
@@ -184,7 +184,6 @@ async function buildLiveReportRow(
     auth: DriftAuth;
     diffProvider: DiffProvider | null;
     reportDir: string;
-    failureAnalysisEnabled: boolean;
     driftAuditEnabled: boolean;
   },
   opts: RunLiveOptions,
@@ -206,19 +205,20 @@ async function buildLiveReportRow(
   return {
     ...base,
     driftIssues: driftForSpec,
-    ...analysisFieldsFor(analysis, r.result.status, ctx.failureAnalysisEnabled),
+    ...analysisFieldsFor(analysis, r.result.status),
   };
 }
 
 /**
  * Merge analysis-related fields into the report row. The unattempted-failure
  * branch exists so the report distinguishes "we tried and gave up" (auth /
- * spec.yaml missing) from "we deliberately did not run the classifier".
+ * spec.yaml missing) from "we deliberately did not run the classifier" —
+ * `a` is undefined for a failed spec exactly when analysis was not requested
+ * (no diffProvider), so no separate flag is needed.
  */
 function analysisFieldsFor(
   a: LiveFailureAnalysis | undefined,
   status: "passed" | "failed",
-  failureAnalysisEnabled: boolean,
 ): Partial<ReportSpecResult> {
   if (a) {
     return {
@@ -229,7 +229,7 @@ function analysisFieldsFor(
       ...(a.analysisBase ? { analysisBase: a.analysisBase } : {}),
     };
   }
-  if (!failureAnalysisEnabled && status === "failed") {
+  if (status === "failed") {
     return { analysisSkipped: "skipped: --failure-analysis not enabled" };
   }
   return {};

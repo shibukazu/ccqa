@@ -25,6 +25,16 @@ export interface ChangedFile {
 }
 
 /**
+ * GITHUB_BASE_REF holds a bare branch name (e.g. "main"); the local checkout
+ * only has it as a remote-tracking ref, so prefix `origin/` unless already
+ * qualified. Shared by `ccqa drift`'s resolveBaseRef and `ccqa run`'s
+ * resolveAnalysisBase so the rule can't drift between them.
+ */
+export function normalizeGithubBaseRef(ref: string): string {
+  return ref.startsWith("origin/") ? ref : `origin/${ref}`;
+}
+
+/**
  * Resolve the base ref to diff against for `ccqa drift --changed`.
  * Precedence: explicit override > GITHUB_BASE_REF > origin/main.
  *
@@ -35,9 +45,7 @@ export interface ChangedFile {
 export function resolveBaseRef(explicit: string | undefined): string {
   if (explicit && explicit.length > 0) return explicit;
   const ghBase = process.env["GITHUB_BASE_REF"];
-  if (ghBase && ghBase.length > 0) {
-    return ghBase.startsWith("origin/") ? ghBase : `origin/${ghBase}`;
-  }
+  if (ghBase && ghBase.length > 0) return normalizeGithubBaseRef(ghBase);
   return "origin/main";
 }
 
@@ -148,7 +156,8 @@ export function matchesGlob(path: string, pattern: string): boolean {
   return compileGlob(pattern).test(stripLeadingDotSlash(path));
 }
 
-function stripLeadingDotSlash(s: string): string {
+/** Normalize a leading `./` away so diff paths and relatedPaths globs compare. */
+export function stripLeadingDotSlash(s: string): string {
   return s.startsWith("./") ? s.slice(2) : s;
 }
 

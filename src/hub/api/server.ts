@@ -77,6 +77,13 @@ export function createHubServer(config: HubServerConfig): Server {
   // process (this one never resumes a patch stream) — mark it failed so it
   // doesn't sit unpatchable-but-not-terminal forever. One run's failure to
   // flip must not block the others.
+  //
+  // Known, deliberate gap: this third terminal-transition path skips the
+  // last-green ledger update the push/patch handlers perform. Rows already
+  // patched into a swept run may contain passed specs whose baseline
+  // therefore doesn't advance — safe (baselines only stay older, never move
+  // wrongly) and rare (requires the producer to die without its teardown
+  // patch), so reading report.json back here isn't worth it.
   config.storage.runs
     .list({ status: "running" })
     .then((runs) =>

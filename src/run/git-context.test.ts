@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { execFileP } from "../drift/affected.ts";
 import { RunUsageError } from "./errors.ts";
-import { resolveAnalysisBase, resolveGitContext } from "./git-context.ts";
+import { resolveAnalysisBase } from "./git-context.ts";
 
 let repo: string;
 let headSha: string;
@@ -55,21 +55,11 @@ describe("resolveAnalysisBase", () => {
       /fetch-depth/,
     );
   });
-});
 
-describe("resolveGitContext", () => {
-  test("head is recorded even when analysis is not requested", async () => {
-    const ctx = await resolveGitContext(undefined, repo);
-    expect(ctx).toEqual({ head: headSha, base: null });
-  });
-
-  test("head degrades to null outside a git repo", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "ccqa-not-a-repo-"));
-    try {
-      const ctx = await resolveGitContext(undefined, dir);
-      expect(ctx.head).toBeNull();
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
+  test("'last-green' is rejected here — it is resolved via the hub, not as a git ref", async () => {
+    delete process.env["GITHUB_BASE_REF"];
+    await expect(resolveAnalysisBase("last-green", "--changed", repo)).rejects.toThrow(
+      RunUsageError,
+    );
   });
 });

@@ -1,16 +1,12 @@
+import { stripLeadingDotSlash } from "../drift/affected.ts";
 import {
   capturePrDiff,
   type PatchSection,
   scopePatchForSpec,
   splitPatchByFile,
 } from "../report/diff.ts";
-import { listFeatureTree } from "../store/index.ts";
+import { listFeatureTree, specKey, type SpecRef } from "../store/index.ts";
 import type { AnalysisBase } from "./git-context.ts";
-
-export interface SpecKey {
-  featureName: string;
-  specName: string;
-}
 
 /**
  * Per-spec baseline resolution. `ok: false` means this spec has no usable
@@ -19,6 +15,8 @@ export interface SpecKey {
  * analysisSkipped instead of classifying.
  */
 export type SpecBaseResolution = { ok: true; base: AnalysisBase } | { ok: false; skip: string };
+
+export type { SpecRef };
 
 /** The source-change context handed to one spec's failure analysis. */
 export interface SpecDiff {
@@ -55,7 +53,7 @@ export const FILE_DIFF_RESPONSE_CAP = 16 * 1024;
 
 /** Find `path`'s section in a split patch and cap it. Exported for tests. */
 export function lookupFileDiff(sections: PatchSection[], path: string): string | null {
-  const normalized = path.startsWith("./") ? path.slice(2) : path;
+  const normalized = stripLeadingDotSlash(path);
   const section = sections.find((s) => s.path === normalized);
   if (!section) return null;
   if (section.body.length <= FILE_DIFF_RESPONSE_CAP) return section.body;
@@ -79,7 +77,7 @@ export function lookupFileDiff(sections: PatchSection[], path: string): string |
  * baseline commit cost one `git diff`.
  */
 export interface DiffProvider {
-  forSpec(spec: SpecKey): Promise<SpecDiffResult>;
+  forSpec(spec: SpecRef): Promise<SpecDiffResult>;
 }
 
 interface CapturedDiff {
@@ -89,7 +87,7 @@ interface CapturedDiff {
 }
 
 export function createDiffProvider(args: {
-  resolveBase: (spec: SpecKey) => Promise<SpecBaseResolution>;
+  resolveBase: (spec: SpecRef) => Promise<SpecBaseResolution>;
   cwd: string;
 }): DiffProvider {
   const { resolveBase, cwd } = args;
@@ -122,7 +120,7 @@ export function createDiffProvider(args: {
       (tree) =>
         new Map(
           tree.flatMap((f) =>
-            f.specs.map((s) => [`${f.featureName}/${s.specName}`, s.relatedPaths ?? null] as const),
+            f.specs.map((s) => [specKey({ featureName: f.featureName, specName: s.specName }), s.relatedPaths ?? null] as const),
           ),
         ),
     );
@@ -134,7 +132,7 @@ export function createDiffProvider(args: {
       const resolved = await resolveBase(spec);
       if (!resolved.ok) return resolved;
       const [captured, index] = await Promise.all([capture(resolved.base.sha), relatedPaths()]);
-      const scope = index.get(`${spec.featureName}/${spec.specName}`) ?? null;
+      const scope = index.get(specKey(spec)) ?? null;
       const sections = captured.sections;
       return {
         ok: true,

@@ -147,12 +147,6 @@ export const LastGreenEntrySchema = z.object({
 });
 export type LastGreenEntry = z.infer<typeof LastGreenEntrySchema>;
 
-/** Response of `GET /projects/:project/last-green` — entries keyed by "feature/spec". */
-export const LastGreenResponseSchema = z.object({
-  entries: z.record(z.string(), LastGreenEntrySchema),
-});
-export type LastGreenResponse = z.infer<typeof LastGreenResponseSchema>;
-
 /**
  * A triage-learning job. Grading failing specs in the hub UI produces the
  * "actual cause" labels this reads; the job turns them into an improved

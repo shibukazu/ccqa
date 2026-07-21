@@ -3,16 +3,10 @@ import type { HubContext } from "../cli/hub-conn.ts";
 import { detectBranch } from "../cli/git-branch.ts";
 import { execFileP } from "../drift/affected.ts";
 import * as log from "../cli/logger.ts";
+import { specKey } from "../store/index.ts";
 import { LAST_GREEN, resolveCommitSha } from "./git-context.ts";
 import { RunUsageError } from "./errors.ts";
-import type { SpecBaseResolution, SpecKey } from "./diff-provider.ts";
-
-export interface LastGreenLedger {
-  /** "feature/spec" → where that spec last passed. Branch bucket overlaid on the default branch's. */
-  entries: Record<string, LastGreenEntry>;
-  branch: string;
-  fallbackBranch: string;
-}
+import type { SpecBaseResolution, SpecRef } from "./diff-provider.ts";
 
 /**
  * The repo's default branch name (e.g. "main"), from origin's HEAD ref.
@@ -30,30 +24,38 @@ async function detectDefaultBranch(cwd: string): Promise<string> {
 }
 
 /**
- * Fetch the last-green ledger for this run — one hub round trip. Fails fast
- * (RunUsageError) when the hub can't serve it: `--failure-analysis=last-green`
- * explicitly opted into hub-backed baselines, so a broken hub connection is a
- * usage error, never a silent no-baseline run.
+ * Fetch the last-green ledger for this run — one hub round trip, logged as
+ * the run's analysis-base meta line. Fails fast (RunUsageError) when the hub
+ * can't serve it: `--failure-analysis=last-green` explicitly opted into
+ * hub-backed baselines, so a broken hub connection is a usage error, never a
+ * silent no-baseline run.
  */
 export async function fetchLastGreenLedger(
   hubCtx: HubContext,
   profile: string | undefined,
   cwd: string,
-): Promise<LastGreenLedger> {
-  const fallbackBranch = await detectDefaultBranch(cwd);
-  const branch = (await detectBranch(cwd)) ?? fallbackBranch;
+): Promise<Record<string, LastGreenEntry>> {
+  const [fallbackBranch, detectedBranch] = await Promise.all([
+    detectDefaultBranch(cwd),
+    detectBranch(cwd),
+  ]);
+  const branch = detectedBranch ?? fallbackBranch;
+  let entries: Record<string, LastGreenEntry>;
   try {
-    const entries = await hubCtx.hub.getLastGreen(hubCtx.project, {
+    entries = await hubCtx.hub.getLastGreen(hubCtx.project, {
       branch,
       fallbackBranch,
       ...(profile ? { profile } : {}),
     });
-    return { entries, branch, fallbackBranch };
   } catch (err) {
     throw new RunUsageError(
       `--failure-analysis=${LAST_GREEN}: could not fetch the last-green ledger from the hub: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
+  const n = Object.keys(entries).length;
+  const scope = branch === fallbackBranch ? branch : `${branch} → ${fallbackBranch}`;
+  log.meta("analysis-base", `${LAST_GREEN} (${n} spec baseline${n === 1 ? "" : "s"}, branch ${scope})`);
+  return entries;
 }
 
 /**
@@ -66,7 +68,7 @@ export async function fetchLastGreenLedger(
 export function createLastGreenResolver(
   entries: Record<string, LastGreenEntry>,
   cwd: string,
-): (spec: SpecKey) => Promise<SpecBaseResolution> {
+): (spec: SpecRef) => Promise<SpecBaseResolution> {
   const shaChecks = new Map<string, Promise<string | null>>();
   const checkSha = (sha: string): Promise<string | null> => {
     const cached = shaChecks.get(sha);
@@ -77,7 +79,7 @@ export function createLastGreenResolver(
   };
 
   return async (spec) => {
-    const entry = entries[`${spec.featureName}/${spec.specName}`];
+    const entry = entries[specKey(spec)];
     if (!entry) {
       return {
         ok: false,
@@ -93,14 +95,4 @@ export function createLastGreenResolver(
     }
     return { ok: true, base: { ref: LAST_GREEN, sha, source: "last-green" } };
   };
-}
-
-/** One-line run-start summary of the ledger scope, for the CLI meta log. */
-export function describeLedger(ledger: LastGreenLedger): void {
-  const n = Object.keys(ledger.entries).length;
-  const scope =
-    ledger.branch === ledger.fallbackBranch
-      ? ledger.branch
-      : `${ledger.branch} → ${ledger.fallbackBranch}`;
-  log.meta("analysis-base", `${LAST_GREEN} (${n} spec baseline${n === 1 ? "" : "s"}, branch ${scope})`);
 }

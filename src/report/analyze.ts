@@ -3,7 +3,11 @@ import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import * as log from "../cli/logger.ts";
 import { clamp, extractJsonCandidates, isObject, truncate } from "../diagnose/diagnose.ts";
-import { buildFailureAnalysisPrompt, type FailureAnalysisPromptInput } from "./prompt.ts";
+import {
+  buildFailureAnalysisPrompt,
+  CHANGED_FILE_DIFF_TOOL,
+  type FailureAnalysisPromptInput,
+} from "./prompt.ts";
 import {
   PREDICTED_LABELS,
   SUB_DIAGNOSES,
@@ -21,18 +25,17 @@ export interface FailureAnalysisOutcome {
   sdkError: boolean;
 }
 
-/** Fully-qualified name of the on-demand file-diff tool, as the model calls it. */
-export const CHANGED_FILE_DIFF_TOOL = "mcp__diff__changed_file_diff";
-
 /**
  * In-process MCP server exposing one tool: the diff hunk of a named changed
  * file. The inline patch in the prompt is only the relatedPaths-scoped seed;
  * this is the pull side — the model fetches hunks for files outside that
  * scope (or truncated inside it) only when it decides they matter, so the
  * full diff never has to ride in the prompt. Read-only over data already
- * captured in memory: no shell, no git access granted.
+ * captured in memory: no shell, no git access granted. The server/tool
+ * names must compose to CHANGED_FILE_DIFF_TOOL (prompt.ts), which is how
+ * the prompt tells the model to call it.
  */
-function buildDiffMcpServer(getFileDiff: ((path: string) => string | null) | undefined) {
+function buildDiffMcpServer(getFileDiff: (path: string) => string | null) {
   return createSdkMcpServer({
     name: "diff",
     version: "1.0.0",
@@ -42,7 +45,7 @@ function buildDiffMcpServer(getFileDiff: ((path: string) => string | null) | und
         "Return the unified diff (base...HEAD) of one changed file from this run's diff range. Works for ANY file listed in 'Changed files (name-status)', including files outside the spec's relatedPaths scope whose hunks are not in the inline patch.",
         { path: z.string().describe("File path exactly as it appears in the name-status list") },
         async ({ path }) => {
-          const hunk = getFileDiff ? getFileDiff(path) : null;
+          const hunk = getFileDiff(path);
           if (hunk) log.info(`  diff tool: ${path}`);
           return {
             content: [
@@ -50,9 +53,7 @@ function buildDiffMcpServer(getFileDiff: ((path: string) => string | null) | und
                 type: "text" as const,
                 text:
                   hunk ??
-                  (getFileDiff
-                    ? `No diff found for "${path}" in this run's diff range. Check the exact path in the name-status list (paths are relative to the working directory).`
-                    : "No diff context is available for this run."),
+                  `No diff found for "${path}" in this run's diff range. Check the exact path in the name-status list (paths are relative to the working directory).`,
               },
             ],
           };
@@ -70,7 +71,7 @@ function buildDiffMcpServer(getFileDiff: ((path: string) => string | null) | und
  */
 export async function analyzeFailure(
   input: FailureAnalysisPromptInput,
-  options: { model?: string; cwd?: string; getFileDiff?: (path: string) => string | null } = {},
+  options: { model?: string; cwd?: string; getFileDiff: (path: string) => string | null },
 ): Promise<FailureAnalysisOutcome> {
   const prompt = buildFailureAnalysisPrompt(input);
   const { result: raw, isError } = await invokeClaudeStreaming(

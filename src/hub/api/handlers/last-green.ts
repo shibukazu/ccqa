@@ -2,6 +2,7 @@ import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
 import { HttpError, sendJson } from "../respond.ts";
 import { requireSafeSegment } from "../validate.ts";
+import { requireBranch } from "./runs.ts";
 
 /**
  * GET /api/v1/projects/:project/last-green?profile=&branch=&fallbackBranch=
@@ -17,15 +18,16 @@ export function createGetLastGreenHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const project = requireSafeSegment(ctx.params.project!, "project");
     const profile = requireSafeSegment(ctx.url.searchParams.get("profile") ?? "default", "profile");
-    const branch = ctx.url.searchParams.get("branch");
+    const branch = requireBranch(ctx.url.searchParams.get("branch"));
     if (!branch) throw new HttpError(400, "missing_param", "branch query parameter is required");
-    const fallbackBranch = ctx.url.searchParams.get("fallbackBranch");
+    const fallbackBranch = requireBranch(ctx.url.searchParams.get("fallbackBranch"));
 
-    const primary = await storage.lastGreen.get(project, profile, branch);
-    const fallback =
+    const [primary, fallback] = await Promise.all([
+      storage.lastGreen.get(project, profile, branch),
       fallbackBranch && fallbackBranch !== branch
-        ? await storage.lastGreen.get(project, profile, fallbackBranch)
-        : {};
+        ? storage.lastGreen.get(project, profile, fallbackBranch)
+        : Promise.resolve({}),
+    ]);
     sendJson(ctx.res, 200, { entries: { ...fallback, ...primary } });
   };
 }

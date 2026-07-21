@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { type Run, type RunStatus } from "../../contract/schema.ts";
-import { RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
+import { GitEnvelopeSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
@@ -146,15 +146,9 @@ const PatchRunRequestSchema = z.object({
   finalStatus: z.enum(["passed", "failed"]).optional(),
   reportMeta: z
     .object({
-      git: z
-        .object({
-          head: z.string().nullable(),
-          base: z.string().nullable(),
-          baseSha: z.string().nullable(),
-          baseSource: z.enum(["explicit", "github-base-ref", "last-green"]).nullable(),
-        })
-        .partial()
-        .optional(),
+      // Derived from the report envelope's git schema so a new field can't be
+      // silently stripped here (which would 400 the final `done` patch).
+      git: GitEnvelopeSchema.partial().optional(),
       model: z.string().nullable().optional(),
       language: z.string().nullable().optional(),
       promptVersion: z.string().optional(),
@@ -441,11 +435,13 @@ function parseRunScope(ctx: RouteContext): {
 }
 
 /**
- * A branch is a free-form label (e.g. `feature/foo`), stored verbatim and
- * never used to build a filesystem path, so `/` is allowed — only length is
- * bounded. null when the client didn't send one.
+ * A branch is a free-form label (e.g. `feature/foo`), so `/` is allowed —
+ * only length is bounded. Run records store it verbatim; the last-green
+ * ledger percent-encodes it into a filename (see paths.ts), which the
+ * length cap keeps within filesystem limits. null when the client didn't
+ * send one. Exported for the last-green handler.
  */
-function requireBranch(raw: string | null): string | null {
+export function requireBranch(raw: string | null): string | null {
   if (raw === null || raw === "") return null;
   if (raw.length > 256) throw new HttpError(400, "invalid_param", "branch is too long (max 256 chars)");
   return raw;
