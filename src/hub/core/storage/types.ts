@@ -1,4 +1,4 @@
-import type { LearningJob, Run, RunStatus } from "../../contract/schema.ts";
+import type { LastGreenEntry, LearningJob, Run, RunStatus } from "../../contract/schema.ts";
 
 /**
  * Everything the hub persists, behind one interface. `createHubStorage`
@@ -21,6 +21,24 @@ export interface HubStorage {
   prompts: PromptStore;
   perspectives: PerspectivesStore;
   jobs: JobStore;
+  lastGreen: LastGreenStore;
+}
+
+/**
+ * The last-green ledger: per (project, profile, branch), a map of
+ * "feature/spec" → the run head where that spec last passed. Branch-scoped so
+ * a green on a PR branch never becomes the baseline for the default branch —
+ * readers overlay their branch's bucket onto the default branch's bucket.
+ */
+export interface LastGreenStore {
+  get(project: string, profile: string, branch: string): Promise<Record<string, LastGreenEntry>>;
+  /** Upsert `entries`; per key, an entry only advances (newer `at` wins). */
+  merge(
+    project: string,
+    profile: string,
+    branch: string,
+    entries: Record<string, LastGreenEntry>,
+  ): Promise<void>;
 }
 
 export interface RunStore {

@@ -91,6 +91,7 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
       // its report is always fetchable.
       await config.storage.artifacts.putDir(run.id, dir);
       await config.storage.runs.create(run);
+      await updateLastGreenLedger(config.storage, run, report.results);
 
       sendJson(ctx.res, 201, run);
     } finally {
@@ -145,7 +146,15 @@ const PatchRunRequestSchema = z.object({
   finalStatus: z.enum(["passed", "failed"]).optional(),
   reportMeta: z
     .object({
-      git: z.object({ head: z.string().nullable(), base: z.string().nullable() }).partial().optional(),
+      git: z
+        .object({
+          head: z.string().nullable(),
+          base: z.string().nullable(),
+          baseSha: z.string().nullable(),
+          baseSource: z.enum(["explicit", "github-base-ref", "last-green"]).nullable(),
+        })
+        .partial()
+        .optional(),
       model: z.string().nullable().optional(),
       language: z.string().nullable().optional(),
       promptVersion: z.string().optional(),
@@ -174,6 +183,36 @@ function countSpecs(results: ReportSpecResult[]): { total: number; passed: numbe
   // Count "passed" explicitly: skipped rows are neither passed nor failed.
   const passed = results.filter((r) => r.status === "passed").length;
   return { total, passed, failed };
+}
+
+/**
+ * Advance the last-green ledger for every passed spec of a terminal
+ * `kind: "run"` run. Spec-level, not run-level: a run with one chronically
+ * failing spec still moves the baseline of every spec that did pass.
+ * Best-effort — a ledger failure must not fail the push; the ledger is an
+ * accelerator for `--failure-analysis=last-green`, not part of the run
+ * record. Runs without a branch or gitHead can't be placed in the ledger and
+ * are skipped.
+ */
+async function updateLastGreenLedger(
+  storage: HubStorage,
+  run: Run,
+  results: ReportSpecResult[],
+): Promise<void> {
+  const { gitHead, branch } = run;
+  if (run.kind !== "run" || !gitHead || !branch) return;
+  const passed = results.filter((r) => r.status === "passed");
+  if (passed.length === 0) return;
+  const entries = Object.fromEntries(
+    passed.map((r) => [`${r.feature}/${r.spec}`, { gitHead, runId: run.id, at: run.reportCreatedAt }]),
+  );
+  try {
+    await storage.lastGreen.merge(run.project, run.profile ?? "default", branch, entries);
+  } catch (err) {
+    console.error(
+      `hub: last-green ledger update failed for run "${run.id}": ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**
@@ -212,9 +251,11 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
     }
     const { rows, evidence, done, finalStatus, reportMeta } = parsed.data;
 
-    // `mutate` runs inside the storage layer; capture the recomputed specs via
-    // closure so they're available afterward to update the Run record.
+    // `mutate` runs inside the storage layer; capture the recomputed specs and
+    // the merged results via closure so they're available afterward to update
+    // the Run record and (on `done`) the last-green ledger.
     let specs = run.specs;
+    let mergedResults: ReportSpecResult[] = [];
     await config.storage.artifacts.updateJsonFile<RunReportData>(id, "report.json", (current) => {
       // The per-spec patches created report.json early with provisional
       // metadata (git=null, model=null — the diff isn't known until failure
@@ -235,7 +276,16 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
       };
       const envelope: ReportEnvelope = {
         ...base,
-        ...(reportMeta?.git ? { git: { head: reportMeta.git.head ?? base.git.head, base: reportMeta.git.base ?? base.git.base } } : {}),
+        ...(reportMeta?.git
+          ? {
+              git: {
+                head: reportMeta.git.head ?? base.git.head,
+                base: reportMeta.git.base ?? base.git.base,
+                baseSha: reportMeta.git.baseSha ?? base.git.baseSha ?? null,
+                baseSource: reportMeta.git.baseSource ?? base.git.baseSource ?? null,
+              },
+            }
+          : {}),
         ...(reportMeta?.model !== undefined ? { model: reportMeta.model } : {}),
         ...(reportMeta?.language !== undefined ? { language: reportMeta.language } : {}),
         ...(reportMeta?.promptVersion !== undefined ? { promptVersion: reportMeta.promptVersion } : {}),
@@ -244,6 +294,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
       };
       const merged = mergeResults(current?.results ?? [], rows);
       specs = countSpecs(merged);
+      mergedResults = merged;
       return { ...envelope, results: merged };
     });
 
@@ -262,6 +313,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
         }
       : { specs };
     const updated = await config.storage.runs.update(id, patch);
+    if (done) await updateLastGreenLedger(config.storage, updated, mergedResults);
 
     sendJson(ctx.res, 200, updated);
   };

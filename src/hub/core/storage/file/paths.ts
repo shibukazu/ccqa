@@ -98,3 +98,11 @@ export function perspectivesKindDir(root: string): string {
 export function perspectivesPath(root: string, project: string): string {
   return join(perspectivesKindDir(root), `${project}.json`);
 }
+
+// Last-green ledger: last-green/<project>/<profile>/<branch>.json. Unlike
+// project/profile (validated as bare names at the API layer), a branch name
+// is free-form git — it can contain '/', '..', etc. — so it is
+// percent-encoded into a single flat filename.
+export function lastGreenPath(root: string, project: string, profile: string, branch: string): string {
+  return join(root, "last-green", project, profile, `${encodeURIComponent(branch)}.json`);
+}

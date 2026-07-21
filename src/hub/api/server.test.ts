@@ -500,11 +500,15 @@ describe("hub API server", () => {
         rows: [],
         done: true,
         finalStatus: "passed",
-        reportMeta: { git: { head: "abc123", base: "main" }, model: "opus", promptVersion: "7" },
+        reportMeta: {
+          git: { head: "abc123", base: "main", baseSha: "def456", baseSource: "explicit" },
+          model: "opus",
+          promptVersion: "7",
+        },
       });
       const reportRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}/report`, authed());
       const report = await json(reportRes);
-      expect(report.git).toEqual({ head: "abc123", base: "main" });
+      expect(report.git).toEqual({ head: "abc123", base: "main", baseSha: "def456", baseSource: "explicit" });
       expect(report.model).toBe("opus");
       expect(report.promptVersion).toBe("7");
       expect(report.results).toHaveLength(1);
@@ -584,6 +588,67 @@ describe("hub API server", () => {
         restarted.closeAllConnections();
         await new Promise<void>((r) => restarted.close(() => r()));
       }
+    });
+  });
+
+  describe("last-green ledger", () => {
+    async function openAndFinish(args: {
+      branch: string;
+      gitHead: string;
+      rows: ReportSpecResult[];
+    }): Promise<void> {
+      const openRes = await fetch(
+        `${baseUrl}/api/v1/runs/open?project=lg&branch=${encodeURIComponent(args.branch)}&gitHead=${args.gitHead}`,
+        authed({ method: "POST" }),
+      );
+      expect(openRes.status).toBe(201);
+      const run = await json(openRes);
+      const patchRes = await fetch(`${baseUrl}/api/v1/runs/${run.id}`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: args.rows, done: true }),
+      }));
+      expect(patchRes.status).toBe(200);
+    }
+
+    function getLedger(q: string): Promise<{ entries: Record<string, { gitHead: string }> }> {
+      return fetch(`${baseUrl}/api/v1/projects/lg/last-green?${q}`, authed()).then(json);
+    }
+
+    test("a finalized run advances passed specs only; branch overlays fallbackBranch", async () => {
+      const mainSha = "b".repeat(40);
+      await openAndFinish({
+        branch: "main",
+        gitHead: mainSha,
+        rows: [
+          makeRow({ feature: "f", spec: "green", status: "passed" }),
+          makeRow({ feature: "f", spec: "red", status: "failed" }),
+        ],
+      });
+
+      const onMain = await getLedger("branch=main");
+      expect(onMain.entries["f/green"]?.gitHead).toBe(mainSha);
+      expect(onMain.entries["f/red"]).toBeUndefined();
+
+      // A PR branch overlays its own green onto main's baselines.
+      const prSha = "c".repeat(40);
+      await openAndFinish({
+        branch: "feat/x",
+        gitHead: prSha,
+        rows: [makeRow({ feature: "f", spec: "red", status: "passed" })],
+      });
+      const onPr = await getLedger(`branch=${encodeURIComponent("feat/x")}&fallbackBranch=main`);
+      expect(onPr.entries["f/green"]?.gitHead).toBe(mainSha); // inherited from main
+      expect(onPr.entries["f/red"]?.gitHead).toBe(prSha); // own green wins
+
+      // ...but the PR branch's green never leaks INTO main's bucket.
+      const mainAgain = await getLedger("branch=main");
+      expect(mainAgain.entries["f/red"]).toBeUndefined();
+    });
+
+    test("branch query parameter is required", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/projects/lg/last-green`, authed());
+      expect(res.status).toBe(400);
     });
   });
 

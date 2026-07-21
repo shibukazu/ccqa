@@ -204,6 +204,7 @@ describe("runLiveSpecs drift audit gating", () => {
     // --failure-analysis baseline and passed a provider down.
     const diffProvider = {
       forSpec: vi.fn(async () => ({
+        ok: true as const,
         base: { ref: "origin/main", sha: "0".repeat(40), source: "explicit" as const },
         patch: null,
         nameStatus: null,

@@ -1,6 +1,7 @@
 import type { HubStorage } from "../types.ts";
 import { createFileArtifactStore } from "./artifact-store.ts";
 import { createFileJobStore } from "./job-store.ts";
+import { createFileLastGreenStore } from "./last-green-store.ts";
 import { createFilePerspectivesStore } from "./perspectives-store.ts";
 import { createFilePromptStore } from "./prompt-store.ts";
 import { createFileRunStore } from "./run-store.ts";
@@ -18,5 +19,6 @@ export function createFileHubStorage(dataDir: string): HubStorage {
     prompts: createFilePromptStore(dataDir),
     perspectives: createFilePerspectivesStore(dataDir),
     jobs: createFileJobStore(dataDir),
+    lastGreen: createFileLastGreenStore(dataDir),
   };
 }

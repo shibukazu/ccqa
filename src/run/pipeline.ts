@@ -26,7 +26,8 @@ import { driftAuthAvailable } from "../drift/auth.ts";
 import type { SpecResult, SpecTarget } from "../drift/types.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import { createDiffProvider, type DiffProvider } from "./diff-provider.ts";
-import { resolveGitContext, type GitContext } from "./git-context.ts";
+import { LAST_GREEN, resolveGitContext, type GitContext } from "./git-context.ts";
+import { createLastGreenResolver, describeLedger, fetchLastGreenLedger } from "./last-green.ts";
 import { emitGithubAnnotations } from "../report/github-format.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { fetchCustomPrompt, fetchTriageUserPrompt, hashTriageUserPrompt } from "../prompts/custom-prompt.ts";
@@ -41,7 +42,7 @@ import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
-import { detectBranch } from "../cli/git-branch.ts";
+import { detectBranch, getGitHead } from "../cli/git-branch.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import * as log from "../cli/logger.ts";
@@ -200,11 +201,18 @@ export async function executeRun(
   // the report unconditionally, and an unresolvable --failure-analysis
   // baseline must fail here — a fast usage error — not after minutes of spec
   // execution. `base` stays null when analysis wasn't requested, which is
-  // what downstream reads as "classification off".
-  const git = await resolveGitContext(opts.failureAnalysis, cwd);
-  const diffProvider = git.base ? createDiffProvider({ base: git.base, cwd }) : null;
-  if (git.base) {
-    log.meta("analysis-base", `${git.base.ref} (${git.base.sha.slice(0, 12)}, ${git.base.source})`);
+  // what downstream reads as "classification off". The last-green mode needs
+  // the hub connection, so its ledger fetch happens below once hubCtx exists;
+  // the fixed-ref modes fail fast right here.
+  const wantsLastGreen = opts.failureAnalysis === LAST_GREEN;
+  const git: GitContext = wantsLastGreen
+    ? { head: await getGitHead(cwd), base: { ref: LAST_GREEN, sha: null, source: "last-green" } }
+    : await resolveGitContext(opts.failureAnalysis, cwd);
+  let diffProvider: DiffProvider | null = null;
+  if (!wantsLastGreen && git.base) {
+    const base = { ...git.base, sha: git.base.sha! };
+    diffProvider = createDiffProvider({ resolveBase: async () => ({ ok: true, base }), cwd });
+    log.meta("analysis-base", `${base.ref} (${base.sha.slice(0, 12)}, ${base.source})`);
   }
 
   // Merge the profile (fetched from the hub) or the default .env (when no
@@ -261,6 +269,26 @@ export async function executeRun(
   } catch {
     hubCtx = null;
   }
+
+  // last-green baselines live on the hub, so the ledger fetch has to wait for
+  // hubCtx — but it still happens before any spec executes, keeping the
+  // fail-fast contract of the fixed-ref modes above. Requiring a hub here is
+  // deliberate: the flag opted into hub-backed baselines, so a missing
+  // connection is a usage error, not a degrade-to-no-analysis.
+  if (wantsLastGreen) {
+    if (hubCtx == null) {
+      throw new RunUsageError(
+        `--failure-analysis=${LAST_GREEN} requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
+      );
+    }
+    const ledger = await fetchLastGreenLedger(hubCtx, opts.profile, cwd);
+    describeLedger(ledger);
+    diffProvider = createDiffProvider({
+      resolveBase: createLastGreenResolver(ledger.entries, cwd),
+      cwd,
+    });
+  }
+
   // Two failure-analysis prompt layers, both best-effort (null without a hub):
   // the human-maintained `triage.user` guidance and the learned custom prompt.
   const [customPrompt, triageUserPrompt]: [AnalysisCustomPrompt | null, string | null] =
@@ -855,9 +883,10 @@ async function analyzeDeterministicSummaries(
       continue;
     }
 
-    const specDiff = diffProvider
+    const specDiffResult = diffProvider
       ? await diffProvider.forSpec({ featureName: s.featureName, specName: s.specName })
       : null;
+    const specDiff = specDiffResult?.ok ? specDiffResult : null;
     if (specDiff?.error && !warnedDiffUnavailable) {
       warnedDiffUnavailable = true;
       log.info(`failure analysis: source diff unavailable (${specDiff.error}) — analyzing without diff context`);
@@ -873,6 +902,10 @@ async function analyzeDeterministicSummaries(
     let analysisSkipped: string | null = null;
     if (!failureAnalysisEnabled) {
       analysisSkipped = "skipped: --failure-analysis not enabled";
+    } else if (specDiffResult && !specDiffResult.ok) {
+      // No usable baseline for THIS spec (last-green: never green yet, or
+      // its commit isn't fetched) — withhold the classification honestly.
+      analysisSkipped = specDiffResult.skip;
     } else if (!auth.ok) {
       analysisSkipped = auth.reason;
     } else if (specYaml === null) {
@@ -923,6 +956,7 @@ async function analyzeDeterministicSummaries(
       status: "failed",
       analysis,
       analysisSkipped,
+      ...(specDiff ? { analysisBase: { ref: specDiff.base.ref, sha: specDiff.base.sha } } : {}),
       driftIssues,
       failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
       diffExcerpt,

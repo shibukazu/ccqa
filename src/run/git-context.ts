@@ -6,9 +6,12 @@ import { RunUsageError } from "./errors.ts";
  * Which rule produced the analysis baseline. Recorded in report.json so
  * accuracy measurements can be stratified by baseline quality — a
  * classification against a real PR base is not comparable to one against a
- * hand-picked ref.
+ * hand-picked ref or a per-spec last-green commit.
  */
-export type BaseSource = "explicit" | "github-base-ref";
+export type BaseSource = "explicit" | "github-base-ref" | "last-green";
+
+/** The `--failure-analysis` value that selects per-spec hub-ledger baselines. */
+export const LAST_GREEN = "last-green";
 
 /** A resolved, verified-to-exist analysis baseline. */
 export interface AnalysisBase {
@@ -38,7 +41,11 @@ export interface AnalysisBase {
 export interface GitContext {
   /** Full HEAD sha. Null only when `cwd` is not a git repo. */
   head: string | null;
-  base: AnalysisBase | null;
+  /**
+   * `sha` is null exactly in last-green mode: there is no single run-level
+   * base commit — each analyzed spec carries its own in `analysisBase`.
+   */
+  base: { ref: string; sha: string | null; source: BaseSource } | null;
 }
 
 /** Resolve `ref` to a full commit sha, or null when it does not exist locally. */
@@ -76,6 +83,13 @@ export async function resolveAnalysisBase(
 ): Promise<AnalysisBase> {
   let ref: string;
   let source: BaseSource;
+  if (flagValue === LAST_GREEN) {
+    // The pipeline resolves last-green itself (it needs the hub ledger);
+    // reaching here means a flag that doesn't support it (e.g. --changed).
+    throw new RunUsageError(
+      `${flagName}=${LAST_GREEN} is not supported — last-green baselines are per-spec and only apply to --failure-analysis`,
+    );
+  }
   if (typeof flagValue === "string") {
     ref = flagValue;
     source = "explicit";

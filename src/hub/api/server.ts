@@ -20,6 +20,7 @@ import {
   createPutVariableHandler,
 } from "./handlers/secrets.ts";
 import { createListProfilesHandler, createListProjectsHandler } from "./handlers/projects.ts";
+import { createGetLastGreenHandler } from "./handlers/last-green.ts";
 import {
   createDeletePromptHandler,
   createGetPromptHandler,
@@ -184,6 +185,7 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   // project is a required path segment (unlike runs' optional ?project= filter).
   router.get("/api/v1/projects", createListProjectsHandler(storage));
   router.get("/api/v1/projects/:project/profiles", createListProfilesHandler(storage));
+  router.get("/api/v1/projects/:project/last-green", createGetLastGreenHandler(storage));
 
   const sessionConfig = { store: storage.sessions, encryptionKey: config.encryptionKey };
   router.put("/api/v1/projects/:project/sessions/:profile/:name", createPutSessionHandler(sessionConfig));

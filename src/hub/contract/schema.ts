@@ -131,6 +131,29 @@ export const HubErrorSchema = z.object({
 export type HubError = z.infer<typeof HubErrorSchema>;
 
 /**
+ * One spec's "last time it passed" record in the last-green ledger. The hub
+ * updates the ledger whenever a `kind: "run"` run reaches a terminal state:
+ * every spec that passed gets its entry advanced to that run's `gitHead`
+ * (newest `at` wins, so out-of-order finalizes can't move a baseline
+ * backwards). `ccqa run --failure-analysis=last-green` reads it to diff each
+ * failing spec against the commit where that spec was last green.
+ */
+export const LastGreenEntrySchema = z.object({
+  /** Full head sha of the run in which this spec last passed. */
+  gitHead: z.string(),
+  runId: z.string(),
+  /** The run's reportCreatedAt — the ordering key for ledger updates. */
+  at: z.string(),
+});
+export type LastGreenEntry = z.infer<typeof LastGreenEntrySchema>;
+
+/** Response of `GET /projects/:project/last-green` — entries keyed by "feature/spec". */
+export const LastGreenResponseSchema = z.object({
+  entries: z.record(z.string(), LastGreenEntrySchema),
+});
+export type LastGreenResponse = z.infer<typeof LastGreenResponseSchema>;
+
+/**
  * A triage-learning job. Grading failing specs in the hub UI produces the
  * "actual cause" labels this reads; the job turns them into an improved
  * analysis custom prompt (the one compute the hub does — it runs Claude to write a

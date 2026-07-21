@@ -138,6 +138,21 @@ to its `relatedPaths` globs (falling back to the full diff when nothing
 matches — "no related change" is itself a PRODUCT_BUG signal) and truncated
 to keep the prompt bounded.
 
+**`--failure-analysis=last-green`.** Instead of one fixed ref, each failing
+spec is diffed against the commit where **that spec last passed** — the
+natural baseline for runs that have no PR to diff against (`push` /
+`workflow_dispatch` / scheduled). Baselines come from the hub's last-green
+ledger, updated automatically whenever a pushed or incrementally-streamed
+run finalizes: every spec that passed advances its own entry to the run's
+head commit, so one chronically failing spec never blocks the others'
+baselines. The ledger is branch-scoped — a PR branch overlays its own
+greens onto the default branch's — and requires a hub connection plus
+pushed runs (`--push-report` or `ccqa hub push`) to fill. A spec with no
+recorded green yet, or whose baseline commit is missing from a shallow
+checkout, has its classification skipped with the reason in its report row;
+the rest of the run proceeds. Each analyzed row records its own baseline in
+`analysisBase`.
+
 **Authentication.** The analysis needs `ANTHROPIC_API_KEY` (CI) or a local
 Claude Code login. With neither, the report is still written — only the
 analysis is skipped, with the reason recorded per spec.
@@ -239,9 +254,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # --failure-analysis without a value takes its baseline from
       # GITHUB_BASE_REF, so this shape works on pull_request events. On a
-      # workflow_dispatch / push workflow, pass the base explicitly (e.g.
-      # --failure-analysis=origin/main) or drop the flag to skip
-      # classification.
+      # workflow_dispatch / push workflow, use --failure-analysis=last-green
+      # (each spec diffs against the commit where it last passed, from the
+      # hub's ledger) or pass a ref explicitly.
       - run: pnpm exec ccqa run --project demo --profile staging --push-report --failure-analysis
       - uses: actions/upload-artifact@v4
         if: always()

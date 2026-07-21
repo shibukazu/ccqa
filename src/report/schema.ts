@@ -216,6 +216,13 @@ export const ReportSpecResultSchema = z.object({
   analysis: FailureAnalysisSchema.nullable(),
   /** Human-readable reason when a failed spec was NOT analyzed (no auth, no spec.yaml, ...). */
   analysisSkipped: z.string().nullable(),
+  /**
+   * The baseline THIS spec's diff was taken against. Matches the envelope's
+   * git.base for fixed baselines; under `--failure-analysis=last-green` each
+   * spec has its own (the commit where it last passed). Optional so older
+   * report.json stays valid; absent when no diff context was resolved.
+   */
+  analysisBase: z.object({ ref: z.string(), sha: z.string() }).nullable().optional(),
   /** Existing spec↔code drift audit findings (analyzeDrift), shown as supporting context. */
   driftIssues: z.array(DraftIssueSchema).nullable(),
   failureLogExcerpt: z.string().nullable(),
@@ -265,12 +272,14 @@ export const RunReportDataSchema = z.object({
      */
     baseSha: z.string().nullable().optional(),
     /**
-     * Which rule produced `base`: "explicit" (a value was passed) or
-     * "github-base-ref" (derived from a pull_request event). Lets accuracy
+     * Which rule produced `base`: "explicit" (a value was passed),
+     * "github-base-ref" (derived from a pull_request event), or "last-green"
+     * (per-spec baselines from the hub ledger — `baseSha` is then null and
+     * each analyzed row carries its own `analysisBase`). Lets accuracy
      * numbers be stratified by baseline provenance. Optional for older
      * report.json.
      */
-    baseSource: z.enum(["explicit", "github-base-ref"]).nullable().optional(),
+    baseSource: z.enum(["explicit", "github-base-ref", "last-green"]).nullable().optional(),
   }),
   model: z.string().nullable(),
   /**

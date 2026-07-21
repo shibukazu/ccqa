@@ -1,4 +1,5 @@
 import type {
+  LastGreenEntry,
   PutActualCauseRequest,
   Run,
   RunStatus,
@@ -107,6 +108,16 @@ export interface HubClient {
 
   /** Every project the hub knows (from runs and stored secrets). */
   listProjects(): Promise<string[]>;
+
+  /**
+   * The last-green ledger for one project/profile: "feature/spec" → the run
+   * head where that spec last passed. `branch` entries overlay
+   * `fallbackBranch` (typically the default branch) entries server-side.
+   */
+  getLastGreen(
+    project: string,
+    q: { profile?: string; branch: string; fallbackBranch?: string },
+  ): Promise<Record<string, LastGreenEntry>>;
 
   putSession(project: string, profile: string, name: string, storageState: unknown): Promise<void>;
   getSession(project: string, profile: string, name: string): Promise<unknown>;
@@ -289,6 +300,18 @@ export function createHubClient(opts: HubClientOptions): HubClient {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(labels),
       });
+    },
+
+    async getLastGreen(project, q) {
+      const params = queryString({
+        branch: q.branch,
+        ...(q.profile ? { profile: q.profile } : {}),
+        ...(q.fallbackBranch ? { fallbackBranch: q.fallbackBranch } : {}),
+      });
+      const { entries } = await json<{ entries: Record<string, LastGreenEntry> }>(
+        `/api/v1/projects/${encodeURIComponent(project)}/last-green?${params}`,
+      );
+      return entries;
     },
 
     async listProjects() {

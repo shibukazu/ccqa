@@ -226,6 +226,7 @@ function analysisFieldsFor(
       analysisSkipped: a.analysisSkipped,
       failureLogExcerpt: a.failureLogExcerpt,
       diffExcerpt: a.diffExcerpt,
+      ...(a.analysisBase ? { analysisBase: a.analysisBase } : {}),
     };
   }
   if (!failureAnalysisEnabled && status === "failed") {
@@ -491,6 +492,8 @@ type LiveFailureAnalysis = {
   analysisSkipped: string | null;
   failureLogExcerpt: string | null;
   diffExcerpt: string | null;
+  /** The baseline this spec's diff was taken against; absent when no diff was resolved. */
+  analysisBase?: { ref: string; sha: string };
 };
 
 /**
@@ -525,6 +528,11 @@ async function analyzeOneLiveFailure(
     };
   }
   const specDiff = await diffProvider.forSpec({ featureName: r.featureName, specName: r.specName });
+  if (!specDiff.ok) {
+    // No usable baseline for THIS spec (last-green: never green yet, or its
+    // commit isn't fetched) — withhold the classification honestly.
+    return { analysis: null, analysisSkipped: specDiff.skip, failureLogExcerpt: excerpt, diffExcerpt: null };
+  }
   if (specDiff.error) {
     log.info(`failure analysis: source diff unavailable (${specDiff.error}) — analyzing without diff context`);
   }
@@ -550,6 +558,7 @@ async function analyzeOneLiveFailure(
     analysisSkipped: null,
     failureLogExcerpt: excerpt,
     diffExcerpt: specDiff.patch,
+    analysisBase: { ref: specDiff.base.ref, sha: specDiff.base.sha },
   };
 }
 

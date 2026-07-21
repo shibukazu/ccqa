@@ -50,7 +50,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option(
       "--failure-analysis [base]",
-      "Classify each failure (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) against the source diff since [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --failure-analysis=origin/main). Off by default — no Claude calls without it.",
+      "Classify each failure (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) against the source diff since [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --failure-analysis=origin/main), or pass 'last-green' to diff each spec against the commit where it last passed (per-spec baselines from the hub; requires a hub connection). Off by default — no Claude calls without it.",
     )
     .option(
       "--no-drift-audit",
