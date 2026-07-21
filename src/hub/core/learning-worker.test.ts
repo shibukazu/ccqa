@@ -58,6 +58,7 @@ function makeJob(overrides: Partial<LearningJob> = {}): LearningJob {
 const okResult = (result: string): InvokeClaudeStreamingResult => ({
   result,
   isError: false,
+  errorDetail: null,
   cost: {
     totalCostUsd: null,
     durationMs: null,

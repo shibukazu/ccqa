@@ -237,6 +237,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     // the commands feed prompt learning.
     const commandParts: string[] = [];
     let isError = false;
+    let errorDetail: string | null = null;
     let cost: LiveStepCost = emptyStepCost();
     try {
       const result = await invokeClaudeStreaming(
@@ -260,6 +261,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
         },
       );
       isError = result.isError;
+      errorDetail = result.errorDetail;
       cost = {
         totalCostUsd: result.cost.totalCostUsd,
         durationApiMs: result.cost.durationApiMs,
@@ -272,9 +274,8 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       };
     } catch (err) {
       isError = true;
-      transcriptParts.push(
-        `[ccqa] invokeClaudeStreaming threw: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      errorDetail = err instanceof Error ? err.message : String(err);
+      transcriptParts.push(`[ccqa] invokeClaudeStreaming threw: ${errorDetail}`);
     }
     const transcript = transcriptParts.join("\n");
 
@@ -289,6 +290,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     const { status, reasoning } = judgeStepOutcome({
       step,
       isError,
+      errorDetail,
       judged: findLastStepResult(transcript),
     });
 
@@ -380,6 +382,8 @@ function sumStepCosts(steps: LiveStepResult[]): LiveRunCost {
 interface JudgeInput {
   step: ExpandedActionStep;
   isError: boolean;
+  /** Why the invocation failed, when known; see `InvokeClaudeStreamingResult`. */
+  errorDetail: string | null;
   judged: ReturnType<typeof findLastStepResult>;
 }
 
@@ -389,16 +393,19 @@ interface JudgeInput {
  * Kept as a pure helper so the executor loop stays readable and the
  * branches are individually testable.
  */
-function judgeStepOutcome({ step, isError, judged }: JudgeInput): {
+export function judgeStepOutcome({ step, isError, errorDetail, judged }: JudgeInput): {
   status: "passed" | "failed";
   reasoning: string;
 } {
   if (isError) {
+    // Name the cause when the SDK gave one (missing native binary, bad
+    // credentials); "returned an error" on its own is not actionable.
+    const detail = errorDetail ? `: ${errorDetail}` : "";
     return {
       status: "failed",
       reasoning: judged?.reasoning
-        ? `agent error; last reasoning: ${judged.reasoning}`
-        : "Claude invocation returned an error",
+        ? `agent error${detail}; last reasoning: ${judged.reasoning}`
+        : `Claude invocation returned an error${detail}`,
     };
   }
   if (!judged) {

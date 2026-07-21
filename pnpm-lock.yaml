@@ -39,6 +39,31 @@ importers:
       vitest:
         specifier: ^4.1.2
         version: 4.1.4(@types/node@22.19.17)(vite@8.0.9(@types/node@22.19.17)(yaml@2.9.0))
+    optionalDependencies:
+      '@anthropic-ai/claude-agent-sdk-darwin-arm64':
+        specifier: ^0.3.215
+        version: 0.3.215
+      '@anthropic-ai/claude-agent-sdk-darwin-x64':
+        specifier: ^0.3.215
+        version: 0.3.215
+      '@anthropic-ai/claude-agent-sdk-linux-arm64':
+        specifier: ^0.3.215
+        version: 0.3.215
+      '@anthropic-ai/claude-agent-sdk-linux-arm64-musl':
+        specifier: ^0.3.215
+        version: 0.3.215
+      '@anthropic-ai/claude-agent-sdk-linux-x64':
+        specifier: ^0.3.215
+        version: 0.3.215
+      '@anthropic-ai/claude-agent-sdk-linux-x64-musl':
+        specifier: ^0.3.215
+        version: 0.3.215
+      '@anthropic-ai/claude-agent-sdk-win32-arm64':
+        specifier: ^0.3.215
+        version: 0.3.215
+      '@anthropic-ai/claude-agent-sdk-win32-x64':
+        specifier: ^0.3.215
+        version: 0.3.215
 
 packages:
 

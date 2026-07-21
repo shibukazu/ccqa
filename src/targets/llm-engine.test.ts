@@ -62,6 +62,7 @@ function fakeInvoke(results: string[]): { invoke: InvokeFn; prompts: string[] } 
     return {
       result,
       isError: false,
+      errorDetail: null,
       cost: {
         totalCostUsd: null,
         durationMs: null,

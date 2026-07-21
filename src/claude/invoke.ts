@@ -3,6 +3,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, Options, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import * as log from "../cli/logger.ts";
 import { FIND_ACTIONS, FIND_LOCATORS } from "../ir/from-agent-browser.ts";
+import { missingNativeBinaryMessage, missingNativeBinaryPackage } from "./native-binary.ts";
 
 /**
  * One intercepted agent-browser command, as reported to `onAbAction`.
@@ -151,7 +152,29 @@ export interface ClaudeInvocationCost {
 export interface InvokeClaudeStreamingResult {
   result: string;
   isError: boolean;
+  /**
+   * Why the invocation failed, when `isError` is true; `null` otherwise.
+   *
+   * `result` is empty on failure, so without this the cause — an SDK error
+   * subtype, or a thrown error such as a missing native binary — never reaches
+   * the caller's log.
+   */
+  errorDetail: string | null;
   cost: ClaudeInvocationCost;
+}
+
+let nativeBinaryWarned = false;
+
+/**
+ * Warn once per process when the SDK's per-platform native binary is missing:
+ * every Claude call is about to fail, and the opaque per-step errors alone are
+ * expensive to trace back to a lockfile that dropped an optional dependency.
+ */
+function warnOnceIfNativeBinaryMissing(): void {
+  if (nativeBinaryWarned) return;
+  nativeBinaryWarned = true;
+  const missing = missingNativeBinaryPackage();
+  if (missing) log.warn(missingNativeBinaryMessage(missing));
 }
 
 export async function invokeClaudeStreaming(
@@ -339,8 +362,11 @@ export async function invokeClaudeStreaming(
         : undefined,
   };
 
+  warnOnceIfNativeBinaryMissing();
+
   let result = "";
   let isError = false;
+  let errorDetail: string | null = null;
   let cost: ClaudeInvocationCost = {
     totalCostUsd: null,
     durationMs: null,
@@ -374,19 +400,27 @@ export async function invokeClaudeStreaming(
       }
 
       if (msg.type === "result") {
-        result = msg.subtype === "success" ? msg.result : "";
         isError = msg.is_error ?? false;
+        if (msg.subtype === "success") {
+          result = msg.result;
+        } else {
+          // Error results carry no text, only a subtype ("error_max_turns",
+          // "error_during_execution", ...) — terse, but all the SDK gives here.
+          result = "";
+          errorDetail = `SDK reported ${msg.subtype}`;
+        }
         cost = extractInvocationCost(msg);
       }
     }
   } catch (err) {
     isError = true;
+    errorDetail = err instanceof Error ? err.message : String(err);
     if (!result) {
-      result = err instanceof Error ? err.message : String(err);
+      result = errorDetail;
     }
   }
 
-  return { result, isError, cost };
+  return { result, isError, errorDetail, cost };
 }
 
 /**
