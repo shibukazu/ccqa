@@ -543,6 +543,8 @@ async function analyzeOneLiveFailure(
       diffPatch: specDiff.patch,
       changedFiles: specDiff.nameStatus,
       baseRef: specDiff.base.ref,
+      baseSource: specDiff.base.source,
+      range: specDiff.range,
       driftIssues: driftForSpec,
       ...(opts.language ? { outputLanguage: opts.language } : {}),
       ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),

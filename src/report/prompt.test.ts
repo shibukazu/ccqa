@@ -41,3 +41,49 @@ describe("buildFailureAnalysisPrompt guidance injection", () => {
     expect(prompt).toContain("Treat copy changes on the settings screen as SPEC_CHANGE.");
   });
 });
+
+describe("buildFailureAnalysisPrompt baseline-aware guidance (v6)", () => {
+  const WITH_DIFF: FailureAnalysisPromptInput = {
+    ...BASE_INPUT,
+    diffPatch: "diff --git a/src/a.ts b/src/a.ts\n+x",
+    changedFiles: "M\tsrc/a.ts",
+    baseRef: "last-green",
+  };
+
+  test("last-green flips the no-in-range-cause lean to UNKNOWN and states the window", () => {
+    const prompt = buildFailureAnalysisPrompt({ ...WITH_DIFF, baseSource: "last-green" });
+    expect(prompt).toContain("commit where THIS spec last passed");
+    expect(prompt).toContain("Do NOT default to PRODUCT_BUG here");
+    expect(prompt).not.toContain("lean PRODUCT_BUG");
+  });
+
+  test("fixed-ref baselines keep the PR-base framing", () => {
+    const prompt = buildFailureAnalysisPrompt({
+      ...WITH_DIFF,
+      baseRef: "origin/main",
+      baseSource: "github-base-ref",
+    });
+    expect(prompt).toContain("NOT guaranteed to have passed there");
+    expect(prompt).toContain("lean PRODUCT_BUG");
+  });
+
+  test("range renders in the diff header and the wide-range caution", () => {
+    const prompt = buildFailureAnalysisPrompt({
+      ...WITH_DIFF,
+      baseSource: "last-green",
+      range: { commitCount: 12, days: 5 },
+    });
+    expect(prompt).toContain("spans 12 commits over 5 days");
+  });
+
+  test("captured-but-no-related-hunks renders the empty-patch state, not the no-diff state", () => {
+    const prompt = buildFailureAnalysisPrompt({
+      ...WITH_DIFF,
+      diffPatch: "",
+      baseSource: "last-green",
+    });
+    expect(prompt).toContain("No changed file matches this spec's relatedPaths");
+    expect(prompt).toContain("M\tsrc/a.ts");
+    expect(prompt).not.toContain("No diff context is available");
+  });
+});

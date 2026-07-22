@@ -209,6 +209,7 @@ describe("runLiveSpecs drift audit gating", () => {
         patch: null,
         nameStatus: null,
         error: null,
+        range: null,
         fileDiff: () => null,
       })),
     };

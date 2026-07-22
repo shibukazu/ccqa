@@ -1,4 +1,4 @@
-import { stripLeadingDotSlash } from "../drift/affected.ts";
+import { execFileP, stripLeadingDotSlash } from "../drift/affected.ts";
 import {
   capturePrDiff,
   type PatchSection,
@@ -31,6 +31,12 @@ export interface SpecDiff {
   nameStatus: string | null;
   /** Why the diff is unavailable, or null when it was captured. */
   error: string | null;
+  /**
+   * How wide the base..HEAD range is — commits reachable from HEAD but not
+   * the base, and calendar days between the base commit and HEAD. Feeds the
+   * prompt's wide-baseline guidance. Null when the lookup failed.
+   */
+  range: { commitCount: number; days: number } | null;
   /**
    * On-demand hunk lookup over the FULL (unscoped) captured diff, backing the
    * classifier's `changed_file_diff` MCP tool: the inline `patch` is only the
@@ -84,6 +90,31 @@ interface CapturedDiff {
   sections: PatchSection[] | null;
   nameStatus: string | null;
   error: string | null;
+  range: { commitCount: number; days: number } | null;
+}
+
+/**
+ * Best-effort width of the base..HEAD range. Two-dot rev-list matches what
+ * the three-dot diff shows: commits on the HEAD side since the merge base.
+ */
+async function measureRange(
+  sha: string,
+  cwd: string,
+): Promise<{ commitCount: number; days: number } | null> {
+  try {
+    const [{ stdout: count }, { stdout: baseTime }, { stdout: headTime }] = await Promise.all([
+      execFileP("git", ["rev-list", "--count", `${sha}..HEAD`], { cwd }),
+      execFileP("git", ["log", "-1", "--format=%ct", sha], { cwd }),
+      execFileP("git", ["log", "-1", "--format=%ct", "HEAD"], { cwd }),
+    ]);
+    const seconds = Number(headTime.trim()) - Number(baseTime.trim());
+    return {
+      commitCount: Number(count.trim()),
+      days: Math.max(0, Math.round(seconds / 86_400)),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export function createDiffProvider(args: {
@@ -101,13 +132,14 @@ export function createDiffProvider(args: {
     const cached = captures.get(sha);
     if (cached) return cached;
     const pending = (async (): Promise<CapturedDiff> => {
-      const result = await capturePrDiff(sha, cwd);
-      if (!result.ok) return { sections: null, nameStatus: null, error: result.error };
+      const [result, range] = await Promise.all([capturePrDiff(sha, cwd), measureRange(sha, cwd)]);
+      if (!result.ok) return { sections: null, nameStatus: null, error: result.error, range };
       const { patch, nameStatus } = result.diff;
       return {
         sections: patch.length > 0 ? splitPatchByFile(patch) : [],
         nameStatus,
         error: null,
+        range,
       };
     })();
     captures.set(sha, pending);
@@ -140,6 +172,7 @@ export function createDiffProvider(args: {
         patch: sections ? scopePatchForSpec(sections, scope) : null,
         nameStatus: captured.nameStatus,
         error: captured.error,
+        range: captured.range,
         fileDiff: (path) => (sections ? lookupFileDiff(sections, path) : null),
       };
     },
