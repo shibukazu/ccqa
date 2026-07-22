@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { type Run, type RunStatus } from "../../contract/schema.ts";
-import { RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
+import { GitEnvelopeSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
@@ -91,6 +91,7 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
       // its report is always fetchable.
       await config.storage.artifacts.putDir(run.id, dir);
       await config.storage.runs.create(run);
+      await updateLastGreenLedger(config.storage, run, report.results);
 
       sendJson(ctx.res, 201, run);
     } finally {
@@ -104,14 +105,17 @@ export interface OpenRunHandlerConfig {
 }
 
 /**
- * POST /api/v1/runs/open?project=&branch=&profile=&kind= — start a "running"
- * run with no report yet. Unlike `POST /runs`, nothing is pushed up front:
- * the caller patches results in as they finish (`PATCH /runs/:id`), so an
- * interrupted run still leaves a partial report on the hub instead of none.
+ * POST /api/v1/runs/open?project=&branch=&profile=&kind=&gitHead= — start a
+ * "running" run with no report yet. Unlike `POST /runs`, nothing is pushed up
+ * front: the caller patches results in as they finish (`PATCH /runs/:id`), so
+ * an interrupted run still leaves a partial report on the hub instead of
+ * none. `gitHead` (optional) attributes the run to a commit from the start —
+ * without it an interrupted run would never learn its commit.
  */
 export function createOpenRunHandler(config: OpenRunHandlerConfig) {
   return async (ctx: RouteContext): Promise<void> => {
     const { project, branch, profile, kind } = parseRunScope(ctx);
+    const gitHead = ctx.url.searchParams.get("gitHead");
 
     const now = new Date().toISOString();
     const run: Run = {
@@ -123,7 +127,7 @@ export function createOpenRunHandler(config: OpenRunHandlerConfig) {
       kind,
       drift: null,
       specs: { total: 0, passed: 0, failed: 0 },
-      gitHead: null,
+      gitHead: gitHead || null,
       promptVersion: "",
       ciRunId: null,
       reportCreatedAt: now,
@@ -142,7 +146,9 @@ const PatchRunRequestSchema = z.object({
   finalStatus: z.enum(["passed", "failed"]).optional(),
   reportMeta: z
     .object({
-      git: z.object({ head: z.string().nullable(), base: z.string().nullable() }).partial().optional(),
+      // Derived from the report envelope's git schema so a new field can't be
+      // silently stripped here (which would 400 the final `done` patch).
+      git: GitEnvelopeSchema.partial().optional(),
       model: z.string().nullable().optional(),
       language: z.string().nullable().optional(),
       promptVersion: z.string().optional(),
@@ -171,6 +177,43 @@ function countSpecs(results: ReportSpecResult[]): { total: number; passed: numbe
   // Count "passed" explicitly: skipped rows are neither passed nor failed.
   const passed = results.filter((r) => r.status === "passed").length;
   return { total, passed, failed };
+}
+
+/**
+ * Advance the last-green ledger for every passed spec of a terminal
+ * `kind: "run"` run. Spec-level, not run-level: a run with one chronically
+ * failing spec still moves the baseline of every spec that did pass.
+ * Best-effort — a ledger failure must not fail the push; the ledger is an
+ * accelerator for `--failure-analysis=last-green`, not part of the run
+ * record. Runs without a branch or gitHead can't be placed in the ledger and
+ * are skipped.
+ *
+ * Ordering caveat (known approximation): `at` is the run's reportCreatedAt —
+ * open time for incremental runs, report time for immutable pushes. When two
+ * runs on the same branch+profile overlap, "newest at wins" can pick either
+ * of the two genuinely-green commits, since the hub has no git ancestry to
+ * order them properly. Accepted: CI serializes per branch in practice, and a
+ * baseline can only ever point at a commit where the spec really passed.
+ */
+async function updateLastGreenLedger(
+  storage: HubStorage,
+  run: Run,
+  results: ReportSpecResult[],
+): Promise<void> {
+  const { gitHead, branch } = run;
+  if (run.kind !== "run" || !gitHead || !branch) return;
+  const passed = results.filter((r) => r.status === "passed");
+  if (passed.length === 0) return;
+  const entries = Object.fromEntries(
+    passed.map((r) => [`${r.feature}/${r.spec}`, { gitHead, runId: run.id, at: run.reportCreatedAt }]),
+  );
+  try {
+    await storage.lastGreen.merge(run.project, run.profile ?? "default", branch, entries);
+  } catch (err) {
+    console.error(
+      `hub: last-green ledger update failed for run "${run.id}": ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**
@@ -209,9 +252,11 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
     }
     const { rows, evidence, done, finalStatus, reportMeta } = parsed.data;
 
-    // `mutate` runs inside the storage layer; capture the recomputed specs via
-    // closure so they're available afterward to update the Run record.
+    // `mutate` runs inside the storage layer; capture the recomputed specs and
+    // the merged results via closure so they're available afterward to update
+    // the Run record and (on `done`) the last-green ledger.
     let specs = run.specs;
+    let mergedResults: ReportSpecResult[] = [];
     await config.storage.artifacts.updateJsonFile<RunReportData>(id, "report.json", (current) => {
       // The per-spec patches created report.json early with provisional
       // metadata (git=null, model=null — the diff isn't known until failure
@@ -232,7 +277,16 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
       };
       const envelope: ReportEnvelope = {
         ...base,
-        ...(reportMeta?.git ? { git: { head: reportMeta.git.head ?? base.git.head, base: reportMeta.git.base ?? base.git.base } } : {}),
+        ...(reportMeta?.git
+          ? {
+              git: {
+                head: reportMeta.git.head ?? base.git.head,
+                base: reportMeta.git.base ?? base.git.base,
+                baseSha: reportMeta.git.baseSha ?? base.git.baseSha ?? null,
+                baseSource: reportMeta.git.baseSource ?? base.git.baseSource ?? null,
+              },
+            }
+          : {}),
         ...(reportMeta?.model !== undefined ? { model: reportMeta.model } : {}),
         ...(reportMeta?.language !== undefined ? { language: reportMeta.language } : {}),
         ...(reportMeta?.promptVersion !== undefined ? { promptVersion: reportMeta.promptVersion } : {}),
@@ -241,6 +295,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
       };
       const merged = mergeResults(current?.results ?? [], rows);
       specs = countSpecs(merged);
+      mergedResults = merged;
       return { ...envelope, results: merged };
     });
 
@@ -259,6 +314,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
         }
       : { specs };
     const updated = await config.storage.runs.update(id, patch);
+    if (done) await updateLastGreenLedger(config.storage, updated, mergedResults);
 
     sendJson(ctx.res, 200, updated);
   };
@@ -386,11 +442,13 @@ function parseRunScope(ctx: RouteContext): {
 }
 
 /**
- * A branch is a free-form label (e.g. `feature/foo`), stored verbatim and
- * never used to build a filesystem path, so `/` is allowed — only length is
- * bounded. null when the client didn't send one.
+ * A branch is a free-form label (e.g. `feature/foo`), so `/` is allowed —
+ * only length is bounded (a sanity cap; the last-green ledger separately
+ * hash-truncates long percent-encoded names into a safe filename, see
+ * paths.ts). Run records store it verbatim. null when the client didn't
+ * send one. Exported for the last-green handler.
  */
-function requireBranch(raw: string | null): string | null {
+export function requireBranch(raw: string | null): string | null {
   if (raw === null || raw === "") return null;
   if (raw.length > 256) throw new HttpError(400, "invalid_param", "branch is too long (max 256 chars)");
   return raw;

@@ -1,17 +1,18 @@
 import {
   getChangedFiles,
   isPathAffectedBy,
-  resolveBaseRef,
   type ChangedFile,
 } from "../drift/affected.ts";
 import { RunUsageError } from "../run/errors.ts";
+import { resolveAnalysisBase } from "../run/git-context.ts";
 import { listFeatureTree, parseBlockPath, type SpecRef } from "../store/index.ts";
 import * as log from "./logger.ts";
 
 /**
- * Filter specs to those affected by the git diff against the resolved base
- * ref. Powers `ccqa run --changed`; mirrors `ccqa drift --changed` minus the
- * LLM new-file router (kept off here for predictable CI cost).
+ * Filter specs to those affected by the git diff against the `--changed
+ * [base]` baseline. Powers `ccqa run --changed`; mirrors `ccqa drift
+ * --changed` minus the LLM new-file router (kept off here for predictable CI
+ * cost).
  *
  * A spec is "affected" when it has no `relatedPaths` (conservatively
  * included), any changed file matches one of its `relatedPaths` globs, or it
@@ -19,19 +20,21 @@ import * as log from "./logger.ts";
  */
 export async function collectChangedSpecs(
   specs: readonly SpecRef[],
-  opts: { cwd: string; base?: string },
+  opts: { cwd: string; base: string | true },
 ): Promise<SpecRef[]> {
   const { cwd, base } = opts;
-  const baseRef = resolveBaseRef(base);
+  const resolved = await resolveAnalysisBase(base, "--changed", cwd);
 
   let changed: ChangedFile[];
   try {
-    changed = await getChangedFiles(baseRef, cwd);
+    changed = await getChangedFiles(resolved.sha, cwd);
   } catch (e) {
-    throw new RunUsageError(`failed to run 'git diff' against ${baseRef}: ${(e as Error).message}`);
+    throw new RunUsageError(
+      `failed to run 'git diff' against ${resolved.ref}: ${(e as Error).message}`,
+    );
   }
 
-  log.meta("changed-base", baseRef);
+  log.meta("changed-base", `${resolved.ref} (${resolved.sha.slice(0, 12)})`);
   log.meta("changed-files", changed.length);
   return filterAffectedSpecs(specs, changed, cwd);
 }

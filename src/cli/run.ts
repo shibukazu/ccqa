@@ -45,20 +45,16 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Incrementally push the run report to the hub as the run progresses (open → patch per spec → finalize). Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN). Without it, hub credentials are used only to fetch variables/sessions/prompts, not to push.",
     )
     .option(
-      "--changed",
-      "Restrict execution to specs whose relatedPaths intersect the git diff against --base (or, in CI, $GITHUB_BASE_REF, else origin/main). Cannot be combined with an explicit spec id.",
+      "--changed [base]",
+      "Restrict execution to specs whose relatedPaths intersect the git diff against [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --changed=origin/main). Cannot be combined with an explicit spec id.",
     )
     .option(
-      "--no-failure-analysis",
-      "Skip the per-failure root-cause classification (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG). --report only.",
+      "--failure-analysis [base]",
+      "Classify each failure (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) against the source diff since [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --failure-analysis=origin/main), or pass 'last-green' to diff each spec against the commit where it last passed (per-spec baselines from the hub; requires a hub connection). Off by default — no Claude calls without it.",
     )
     .option(
       "--no-drift-audit",
-      "Skip the spec↔code drift audit shown in the report. --report only.",
-    )
-    .option(
-      "--base <ref>",
-      "Base ref the source diff is taken against for failure analysis (default: GITHUB_BASE_REF, then origin/main).",
+      "With --failure-analysis: skip the spec↔code drift audit shown in the report.",
     )
     .option(
       "--cwd <path>",

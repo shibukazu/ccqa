@@ -15,8 +15,21 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * v4: `script`/`failureLog` became optional and an alternate
  * `liveTranscriptExcerpt` source was added so the same classifier could
  * analyze live-spec (`mode: live`) failures alongside deterministic ones.
+ *
+ * v5: the classifier gained the `mcp__diff__changed_file_diff` tool — the
+ * inline patch is only the relatedPaths-scoped seed, and hunks of any other
+ * changed file are pulled on demand — and the tools section documents it.
  */
-export const ANALYSIS_PROMPT_VERSION = "4";
+export const ANALYSIS_PROMPT_VERSION = "5";
+
+/**
+ * Fully-qualified name of the on-demand file-diff tool, as the model calls
+ * it. Lives here (not analyze.ts) because the prompt text below references
+ * it — one source of truth. The name is the SDK's `mcp__<server>__<tool>`
+ * composition of the server ("diff") and tool ("changed_file_diff") that
+ * analyze.ts registers; changing either side must keep the two in sync.
+ */
+export const CHANGED_FILE_DIFF_TOOL = "mcp__diff__changed_file_diff";
 
 export interface FailureAnalysisPromptInput {
   /**
@@ -145,6 +158,8 @@ You can call \`Grep\`, \`Glob\`, and \`Read\` against the current repository (po
 - confirm a suspected selector rename (grep for \`aria-label=\`, \`placeholder=\`, \`data-testid\`, i18n strings),
 - read the changed files in full when the truncated patch is not enough,
 - check whether the element/flow the spec describes still exists in the source.
+
+You can also call \`${CHANGED_FILE_DIFF_TOOL}\` with a file path to fetch that file's diff hunk for this run's base...HEAD range. The inline patch below is scoped to this spec's relatedPaths — files OUTSIDE that scope still appear in "Changed files (name-status)" but their hunks are not inlined. Before blaming (or ruling out) such a file, fetch its diff with this tool; Read only shows you its post-change state, not what changed.
 
 You have **up to 12 tool turns**. Do NOT write, edit, run shell commands, or hit the network.
 

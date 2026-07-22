@@ -57,9 +57,10 @@ contract.
 each step's `expected` — for fragile, timing-heavy UIs where a fixed
 recording would break.
 
-Either way, every failing spec gets a root-cause call (TEST_DRIFT /
-SPEC_CHANGE / PRODUCT_BUG) you can grade on the hub — and the hub learns
-from your grades.
+Either way, opting in with `ccqa run --failure-analysis [base]` gives every
+failing spec a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG)
+against the source diff since `[base]`, gradable on the hub — and the hub
+learns from your grades.
 
 ## Install
 

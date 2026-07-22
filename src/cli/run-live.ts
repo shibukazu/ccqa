@@ -6,8 +6,7 @@ import { preflightAgentBrowserCommand } from "./preflight.ts";
 
 import { analyzeDrift } from "../drift/analyze.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
-import { resolveBaseRef } from "../drift/affected.ts";
-import { capturePrDiff, type PrDiffResult } from "../report/diff.ts";
+import type { DiffProvider } from "../run/diff-provider.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import { buildLiveTranscriptExcerpt } from "../report/live-transcript-excerpt.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
@@ -53,8 +52,12 @@ export interface RunLiveOptions {
   reportDir?: string;
   retry?: number;
   driftAudit?: boolean;
-  failureAnalysis?: boolean;
-  base?: string;
+  /**
+   * Per-spec source-diff resolver, present exactly when `--failure-analysis`
+   * was requested (the pipeline resolves the baseline up front). Null/absent
+   * disables both the failure classification and the drift audit.
+   */
+  diffProvider?: DiffProvider | null;
   cwd?: string;
   concurrency?: number;
   /** Active `--profile` name; selects the sessions bucket for `spec.session`. */
@@ -102,29 +105,22 @@ export async function runLiveSpecs(
   }
   const userPromptSuffix = userPromptBundle?.text ?? null;
 
-  // Both pieces of automated analysis cost Claude turns. They run by default
-  // (a report is always written); disabling the failure analysis implicitly
-  // disables the drift audit too (the audit is rendered as supporting evidence
-  // under the classification). --no-drift-audit remains independent for
-  // "classify but skip the audit".
-  const failureAnalysisEnabled = opts.failureAnalysis !== false;
+  // Both pieces of automated analysis cost Claude turns; they only run when
+  // the pipeline resolved a `--failure-analysis` baseline (diffProvider set).
+  // Disabling the failure analysis implicitly disables the drift audit too
+  // (the audit is rendered as supporting evidence under the classification).
+  // --no-drift-audit remains independent for "classify but skip the audit".
+  const diffProvider = opts.diffProvider ?? null;
+  const failureAnalysisEnabled = diffProvider != null;
   const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
 
-  // Failure-analysis auth and the source diff are spec-independent, so hoist
-  // them out of the per-spec worker and compute them once before the pool.
-  // The drift audit, by contrast, only matters for specs that actually fail,
-  // so it runs lazily inside each worker (see buildLiveReportRow) instead of
-  // up front for every spec — mirroring the deterministic path.
+  // Failure-analysis auth is spec-independent, so hoist it out of the
+  // per-spec worker. The diff and the drift audit only matter for specs that
+  // actually fail, so they run lazily inside each worker (see
+  // buildLiveReportRow) — the provider memoizes the capture, so N failing
+  // specs sharing a baseline still cost one `git diff`.
   const auth: DriftAuth = failureAnalysisEnabled ? driftAuthAvailable() : { ok: false, reason: "disabled" };
   if (failureAnalysisEnabled && !auth.ok) log.info(`failure analysis skipped (${auth.reason})`);
-  const baseRef = resolveBaseRef(opts.base);
-  let diff: PrDiffResult = { ok: false, error: "diff not captured" };
-  if (failureAnalysisEnabled && auth.ok) {
-    diff = await capturePrDiff(baseRef, cwd);
-    if (!diff.ok) {
-      log.info(`failure analysis: source diff unavailable (${diff.error}) — analyzing without diff context`);
-    }
-  }
 
   const reportDir = opts.reportDir ?? ".";
 
@@ -148,7 +144,7 @@ export async function runLiveSpecs(
       if (outcome.kind !== "run") return { outcome, row: null };
       const row = await buildLiveReportRow(
         outcome,
-        { auth, diff, baseRef, reportDir, failureAnalysisEnabled, driftAuditEnabled },
+        { auth, diffProvider, reportDir, driftAuditEnabled },
         opts,
         cwd,
       );
@@ -186,10 +182,8 @@ async function buildLiveReportRow(
   r: Extract<SpecRunOutcome, { kind: "run" }>,
   ctx: {
     auth: DriftAuth;
-    diff: PrDiffResult;
-    baseRef: string;
+    diffProvider: DiffProvider | null;
     reportDir: string;
-    failureAnalysisEnabled: boolean;
     driftAuditEnabled: boolean;
   },
   opts: RunLiveOptions,
@@ -205,25 +199,26 @@ async function buildLiveReportRow(
   const driftForSpec =
     ctx.driftAuditEnabled && r.result.status === "failed" ? await runDriftAuditOne(r, opts, cwd) : null;
   const analysis =
-    ctx.failureAnalysisEnabled && r.result.status === "failed"
-      ? await analyzeOneLiveFailure(r, ctx.diff, ctx.baseRef, driftForSpec, ctx.auth, opts, cwd)
+    ctx.diffProvider && r.result.status === "failed"
+      ? await analyzeOneLiveFailure(r, ctx.diffProvider, driftForSpec, ctx.auth, opts, cwd)
       : undefined;
   return {
     ...base,
     driftIssues: driftForSpec,
-    ...analysisFieldsFor(analysis, r.result.status, ctx.failureAnalysisEnabled),
+    ...analysisFieldsFor(analysis, r.result.status),
   };
 }
 
 /**
  * Merge analysis-related fields into the report row. The unattempted-failure
  * branch exists so the report distinguishes "we tried and gave up" (auth /
- * spec.yaml missing) from "we deliberately did not run the classifier".
+ * spec.yaml missing) from "we deliberately did not run the classifier" —
+ * `a` is undefined for a failed spec exactly when analysis was not requested
+ * (no diffProvider), so no separate flag is needed.
  */
 function analysisFieldsFor(
   a: LiveFailureAnalysis | undefined,
   status: "passed" | "failed",
-  failureAnalysisEnabled: boolean,
 ): Partial<ReportSpecResult> {
   if (a) {
     return {
@@ -231,10 +226,11 @@ function analysisFieldsFor(
       analysisSkipped: a.analysisSkipped,
       failureLogExcerpt: a.failureLogExcerpt,
       diffExcerpt: a.diffExcerpt,
+      ...(a.analysisBase ? { analysisBase: a.analysisBase } : {}),
     };
   }
-  if (!failureAnalysisEnabled && status === "failed") {
-    return { analysisSkipped: "skipped by --no-failure-analysis" };
+  if (status === "failed") {
+    return { analysisSkipped: "skipped: --failure-analysis not enabled" };
   }
   return {};
 }
@@ -496,19 +492,22 @@ type LiveFailureAnalysis = {
   analysisSkipped: string | null;
   failureLogExcerpt: string | null;
   diffExcerpt: string | null;
+  /** The baseline this spec's diff was taken against; absent when no diff was resolved. */
+  analysisBase?: { ref: string; sha: string };
 };
 
 /**
  * Classify one failed live run via `analyzeFailure` — same prompt as the
  * deterministic path (Issue #47), fed the live transcript instead of the
- * vitest log. `auth`, `diff`, and `baseRef` are hoisted once by the caller and
- * shared across specs. Auth-unavailable / no-failed-step degrade to
- * `analysisSkipped` rather than throwing.
+ * vitest log. `auth` is hoisted once by the caller; the diff comes from the
+ * shared provider, already scoped to this spec's relatedPaths and truncated
+ * (the live path used to feed the whole unscoped patch — in a monorepo that
+ * ballooned the prompt with unrelated changes). Auth-unavailable /
+ * no-failed-step degrade to `analysisSkipped` rather than throwing.
  */
 async function analyzeOneLiveFailure(
   r: Extract<SpecRunOutcome, { kind: "run" }>,
-  diff: PrDiffResult,
-  baseRef: string,
+  diffProvider: DiffProvider,
   driftForSpec: ReportSpecResult["driftIssues"],
   auth: DriftAuth,
   opts: RunLiveOptions,
@@ -528,19 +527,28 @@ async function analyzeOneLiveFailure(
       diffExcerpt: null,
     };
   }
+  const specDiff = await diffProvider.forSpec({ featureName: r.featureName, specName: r.specName });
+  if (!specDiff.ok) {
+    // No usable baseline for THIS spec (last-green: never green yet, or its
+    // commit isn't fetched) — withhold the classification honestly.
+    return { analysis: null, analysisSkipped: specDiff.skip, failureLogExcerpt: excerpt, diffExcerpt: null };
+  }
+  if (specDiff.error) {
+    log.info(`failure analysis: source diff unavailable (${specDiff.error}) — analyzing without diff context`);
+  }
   const outcome = await analyzeFailure(
     {
       liveTranscriptExcerpt: excerpt,
       specYaml: r.specYaml,
-      diffPatch: diff.ok ? diff.diff.patch : null,
-      changedFiles: diff.ok ? diff.diff.nameStatus : null,
-      baseRef: diff.ok ? baseRef : null,
+      diffPatch: specDiff.patch,
+      changedFiles: specDiff.nameStatus,
+      baseRef: specDiff.base.ref,
       driftIssues: driftForSpec,
       ...(opts.language ? { outputLanguage: opts.language } : {}),
       ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),
       ...(opts.customPrompt ? { customPrompt: opts.customPrompt } : {}),
     },
-    { ...(opts.model ? { model: opts.model } : {}), cwd },
+    { ...(opts.model ? { model: opts.model } : {}), cwd, getFileDiff: specDiff.fileDiff },
   );
   const pct = Math.round(outcome.analysis.confidence * 100);
   const headline = outcome.analysis.headline.trim() || (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();
@@ -549,7 +557,8 @@ async function analyzeOneLiveFailure(
     analysis: outcome.analysis,
     analysisSkipped: null,
     failureLogExcerpt: excerpt,
-    diffExcerpt: diff.ok ? diff.diff.patch : null,
+    diffExcerpt: specDiff.patch,
+    analysisBase: { ref: specDiff.base.ref, sha: specDiff.base.sha },
   };
 }
 

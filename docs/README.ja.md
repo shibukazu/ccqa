@@ -54,8 +54,10 @@ spec の実行様式は 2 つです:
 各 step の `expected` を判定します — 固定の記録では壊れてしまう、
 タイミング依存のフラジャイルな UI 向け。
 
-どちらの様式でも、失敗した spec には原因分類（TEST_DRIFT / SPEC_CHANGE /
-PRODUCT_BUG）が付き、hub 上で採点できます — hub は採点から学習します。
+どちらの様式でも、`ccqa run --failure-analysis [base]` でオプトインすると、
+失敗した spec に `[base]` 以降のソース差分を根拠とした原因分類
+（TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG）が付き、hub 上で採点できます —
+hub は採点から学習します。
 
 ## インストール
 

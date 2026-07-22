@@ -216,6 +216,13 @@ export const ReportSpecResultSchema = z.object({
   analysis: FailureAnalysisSchema.nullable(),
   /** Human-readable reason when a failed spec was NOT analyzed (no auth, no spec.yaml, ...). */
   analysisSkipped: z.string().nullable(),
+  /**
+   * The baseline THIS spec's diff was taken against. Matches the envelope's
+   * git.base for fixed baselines; under `--failure-analysis=last-green` each
+   * spec has its own (the commit where it last passed). Optional so older
+   * report.json stays valid; absent when no diff context was resolved.
+   */
+  analysisBase: z.object({ ref: z.string(), sha: z.string() }).nullable().optional(),
   /** Existing spec↔code drift audit findings (analyzeDrift), shown as supporting context. */
   driftIssues: z.array(DraftIssueSchema).nullable(),
   failureLogExcerpt: z.string().nullable(),
@@ -239,6 +246,41 @@ export const ReportSpecResultSchema = z.object({
 });
 export type ReportSpecResult = z.infer<typeof ReportSpecResultSchema>;
 
+/**
+ * Which rule produced the analysis baseline: "explicit" (a value was
+ * passed), "github-base-ref" (derived from a pull_request event), or
+ * "last-green" (per-spec baselines from the hub ledger — `baseSha` is then
+ * null and each analyzed row carries its own `analysisBase`). Lets accuracy
+ * numbers be stratified by baseline provenance. Single source of truth —
+ * `src/run/git-context.ts`'s `BaseSource` type and the hub's PATCH schema
+ * both derive from this.
+ */
+export const BaseSourceSchema = z.enum(["explicit", "github-base-ref", "last-green"]);
+export type BaseSource = z.infer<typeof BaseSourceSchema>;
+
+/** The report envelope's git block; also referenced by the hub's PATCH reportMeta schema. */
+export const GitEnvelopeSchema = z.object({
+  /**
+   * Full HEAD sha, recorded unconditionally (independent of whether a diff
+   * was captured). Null only when the run executed outside a git repo, or
+   * for report.json written before this guarantee existed.
+   */
+  head: z.string().nullable(),
+  /**
+   * The failure-analysis baseline ref (`--failure-analysis [base]`); null
+   * when analysis was not requested.
+   */
+  base: z.string().nullable(),
+  /**
+   * `base` resolved to a full commit sha at run start — the reproducible
+   * form of the baseline (`origin/main` alone can't be re-resolved later).
+   * Optional so older report.json stays valid.
+   */
+  baseSha: z.string().nullable().optional(),
+  /** See {@link BaseSourceSchema}. Optional for older report.json. */
+  baseSource: BaseSourceSchema.nullable().optional(),
+});
+
 export const RunReportDataSchema = z.object({
   schemaVersion: z.literal(1),
   /** "run" = ccqa run/live execution result; "drift" = ccqa drift --push. */
@@ -246,11 +288,7 @@ export const RunReportDataSchema = z.object({
   createdAt: z.string(),
   /** GITHUB_RUN_ID when running in Actions; null locally. Links the report back to its CI run. */
   runId: z.string().nullable(),
-  git: z.object({
-    head: z.string().nullable(),
-    /** Resolved --drift-base ref; null when the diff could not be captured. */
-    base: z.string().nullable(),
-  }),
+  git: GitEnvelopeSchema,
   model: z.string().nullable(),
   /**
    * BCP-47 tag the report's UI chrome should be rendered in. The model-driven

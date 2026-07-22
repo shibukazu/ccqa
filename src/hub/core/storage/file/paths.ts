@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { SecretScope } from "../types.ts";
 
@@ -97,4 +98,20 @@ export function perspectivesKindDir(root: string): string {
 
 export function perspectivesPath(root: string, project: string): string {
   return join(perspectivesKindDir(root), `${project}.json`);
+}
+
+// Last-green ledger: last-green/<project>/<profile>/<branch>.json. Unlike
+// project/profile (validated as bare names at the API layer), a branch name
+// is free-form git — it can contain '/', '..', etc. — so it is
+// percent-encoded into a single flat filename. Encoding can expand 3x (every
+// escaped byte becomes %XX; a fully-CJK branch triples), so past 200 chars
+// the name switches to a truncated-prefix + content-hash form to stay under
+// the ~255-byte filename limit — deterministic, so reads and writes agree.
+export function lastGreenPath(root: string, project: string, profile: string, branch: string): string {
+  const encoded = encodeURIComponent(branch);
+  const name =
+    encoded.length <= 200
+      ? encoded
+      : `${encoded.slice(0, 64)}-${createHash("sha256").update(branch).digest("hex").slice(0, 32)}`;
+  return join(root, "last-green", project, profile, `${name}.json`);
 }

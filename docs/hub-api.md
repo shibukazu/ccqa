@@ -71,8 +71,8 @@ As an alternative to the single-shot push above, a still-executing
 instead of waiting until it finishes:
 
 ```
-POST /api/v1/runs/open?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>
-  (same query params as POST /api/v1/runs, no body)
+POST /api/v1/runs/open?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&gitHead=<sha>
+  (same query params as POST /api/v1/runs plus optional gitHead, no body)
   → 201 Run   (status: "running")
 
 PATCH /api/v1/runs/:id
@@ -174,7 +174,21 @@ GET /api/v1/projects
 GET /api/v1/projects/:project/profiles
   → 200 { profiles: string[] }   (distinct profiles across the project's sessions + variables;
                                    "default" always included. Prompts/runs are not profile-scoped.)
+
+GET /api/v1/projects/:project/last-green?profile=<name>&branch=<branch>&fallbackBranch=<branch>
+  → 200 { entries: { "<feature>/<spec>": { gitHead, runId, at } } }
 ```
+
+`last-green` serves the per-spec baseline ledger behind
+`ccqa run --failure-analysis=last-green`: for each spec, the head sha of the
+run in which it last passed. The hub advances the ledger whenever a
+`kind: "run"` run reaches a terminal state — every passed spec's entry moves
+to that run's `gitHead` (newest `at` wins). Entries are scoped by
+project/profile/**branch**; the response overlays the `branch` bucket onto
+the optional `fallbackBranch` bucket (typically the default branch), so a PR
+branch inherits the default branch's baselines while its own greens take
+precedence — and a PR-branch green never contaminates the default branch's
+bucket. `profile` defaults to `"default"`; `branch` is required.
 
 ## Sessions
 

@@ -22,16 +22,12 @@ import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
-import { resolveBaseRef } from "../drift/affected.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
 import type { SpecResult, SpecTarget } from "../drift/types.ts";
 import { analyzeFailure } from "../report/analyze.ts";
-import {
-  capturePrDiff,
-  scopePatchForSpec,
-  splitPatchByFile,
-  type PrDiffResult,
-} from "../report/diff.ts";
+import { createDiffProvider, type DiffProvider } from "./diff-provider.ts";
+import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.ts";
+import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
 import { emitGithubAnnotations } from "../report/github-format.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { fetchCustomPrompt, fetchTriageUserPrompt, hashTriageUserPrompt } from "../prompts/custom-prompt.ts";
@@ -46,7 +42,7 @@ import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
-import { detectBranch } from "../cli/git-branch.ts";
+import { detectBranch, getGitHead } from "../cli/git-branch.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import * as log from "../cli/logger.ts";
@@ -120,18 +116,23 @@ export type SpecRunSummary = {
 
 export interface RunOptions {
   report?: string | boolean;
-  base?: string;
   cwd?: string;
   profile?: string;
   model?: string;
   language?: string;
   format?: ReportFormat;
-  failureAnalysis?: boolean;
+  /**
+   * Opt-in failure classification: absent/false = off, `true` = baseline from
+   * GITHUB_BASE_REF, a string = explicit base ref. See `--failure-analysis
+   * [base]` and resolveAnalysisBase.
+   */
+  failureAnalysis?: boolean | string;
   driftAudit?: boolean;
   evidence?: boolean;
   retry?: number;
   out?: string;
-  changed?: boolean;
+  /** Same value shape as `failureAnalysis`: `true` = GITHUB_BASE_REF, string = explicit base. */
+  changed?: boolean | string;
   updateAgentPrompt?: boolean;
   concurrency?: number;
   hubUrl?: string;
@@ -196,6 +197,30 @@ export async function executeRun(
 
   const cwd = opts.cwd ?? process.cwd();
 
+  // Resolve git coordinates before anything else runs: `head` is recorded in
+  // the report unconditionally, and an unresolvable --failure-analysis
+  // baseline must fail here — a fast usage error — not after minutes of spec
+  // execution. `base` stays null when analysis wasn't requested, which is
+  // what downstream reads as "classification off". The last-green mode needs
+  // the hub connection, so its ledger fetch happens below once hubCtx exists;
+  // the fixed-ref modes fail fast right here.
+  const wantsLastGreen = opts.failureAnalysis === LAST_GREEN;
+  const [head, fixedBase] = await Promise.all([
+    getGitHead(cwd),
+    opts.failureAnalysis && !wantsLastGreen
+      ? resolveAnalysisBase(opts.failureAnalysis, "--failure-analysis", cwd)
+      : null,
+  ]);
+  const git: GitContext = {
+    head,
+    base: wantsLastGreen ? { ref: LAST_GREEN, sha: null, source: "last-green" } : fixedBase,
+  };
+  let diffProvider: DiffProvider | null = null;
+  if (fixedBase) {
+    diffProvider = createDiffProvider({ resolveBase: async () => ({ ok: true, base: fixedBase }), cwd });
+    log.meta("analysis-base", `${fixedBase.ref} (${fixedBase.sha.slice(0, 12)}, ${fixedBase.source})`);
+  }
+
   // Merge the profile (fetched from the hub) or the default .env (when no
   // --profile) into process.env before any spec work — every `${VAR}` path
   // (vitest replay, live agent-browser) bottoms out at process.env, so this
@@ -250,10 +275,34 @@ export async function executeRun(
   } catch {
     hubCtx = null;
   }
+
+  // last-green baselines live on the hub, so the ledger fetch has to wait for
+  // hubCtx — but it still happens before any spec executes, keeping the
+  // fail-fast contract of the fixed-ref modes above. Requiring a hub here is
+  // deliberate: the flag opted into hub-backed baselines, so a missing
+  // connection is a usage error, not a degrade-to-no-analysis.
+  if (wantsLastGreen && hubCtx == null) {
+    throw new RunUsageError(
+      `--failure-analysis=${LAST_GREEN} requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
+    );
+  }
+  const ledgerHub = wantsLastGreen ? hubCtx : null;
+
   // Two failure-analysis prompt layers, both best-effort (null without a hub):
   // the human-maintained `triage.user` guidance and the learned custom prompt.
-  const [customPrompt, triageUserPrompt]: [AnalysisCustomPrompt | null, string | null] =
-    await Promise.all([fetchCustomPrompt(hubCtx), fetchTriageUserPrompt(hubCtx)]);
+  // The last-green ledger (when requested) joins the same batch — all three
+  // are independent hub round trips.
+  const [customPrompt, triageUserPrompt, ledgerEntries] = await Promise.all([
+    fetchCustomPrompt(hubCtx),
+    fetchTriageUserPrompt(hubCtx),
+    ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.profile, cwd) : null,
+  ]);
+  if (ledgerEntries) {
+    diffProvider = createDiffProvider({
+      resolveBase: createLastGreenResolver(ledgerEntries, cwd),
+      cwd,
+    });
+  }
   const triageUserPromptHash = triageUserPrompt ? hashTriageUserPrompt(triageUserPrompt) : null;
 
   // No targets means "all specs"; resolveSpecTargets(undefined) enumerates them.
@@ -266,7 +315,7 @@ export async function executeRun(
 
   if (opts.changed) {
     const before = specs.length;
-    specs = await collectChangedSpecs(specs, { cwd, base: opts.base });
+    specs = await collectChangedSpecs(specs, { cwd, base: opts.changed });
     log.meta(
       "changed-scoped",
       `${specs.length} of ${before} spec${before === 1 ? "" : "s"}`,
@@ -354,6 +403,7 @@ export async function executeRun(
         project: hubCtx.project,
         ...(branch ? { branch } : {}),
         ...(opts.profile ? { profile: opts.profile } : {}),
+        ...(git.head ? { gitHead: git.head } : {}),
         kind: "run",
       });
       hubRunId = opened.id;
@@ -375,12 +425,10 @@ export async function executeRun(
   }
 
   // Incremental report: each live spec upserts its row and flushes report.json,
-  // so an interrupt leaves a valid partial report instead of nothing. The
-  // envelope here is provisional — the source diff (git head/base) isn't
-  // captured until the failure analysis below, so the live writer runs with
-  // git=null; the authoritative git metadata is stamped by the final
-  // writeUnifiedReport, which rewrites the whole file. An interrupt before that
-  // leaves correct per-spec results with null git metadata — acceptable.
+  // so an interrupt leaves a valid partial report instead of nothing. The git
+  // coordinates were resolved up front, so even an interrupted partial report
+  // carries the real head/base — the final writeUnifiedReport rewrites the
+  // whole file with the same envelope.
   //
   // Scope note: only *live* rows are upserted incrementally. Deterministic rows
   // are built later (analyzeDeterministicSummaries) and only reach the report /
@@ -391,8 +439,7 @@ export async function executeRun(
   const incrementalReport = createIncrementalReport(
     reportDir,
     buildReportEnvelope({
-      diff: { ok: false, error: "diff not yet captured" },
-      baseRef: null,
+      git,
       customPromptVersion: customPrompt?.customPromptVersion ?? null,
       triageUserPromptHash,
       opts,
@@ -401,10 +448,10 @@ export async function executeRun(
   );
   // On SIGINT/SIGTERM, flush whatever rows finished so an interrupt leaves a
   // valid partial report. Skipped once the run completes normally: the final
-  // writeUnifiedReport below is authoritative (it holds the deterministic rows
-  // and the real git metadata the provisional incremental envelope lacks), so
-  // re-flushing the incremental writer afterwards would clobber it — the
-  // teardown finalizer also runs on the normal exit path (run.ts).
+  // writeUnifiedReport below is authoritative (it holds the deterministic
+  // rows the incremental writer never sees), so re-flushing the incremental
+  // writer afterwards would clobber it — the teardown finalizer also runs on
+  // the normal exit path (run.ts).
   let completedNormally = false;
   opts.teardown?.onFinalize(async () => {
     // On the normal exit path the final writeUnifiedReport (below) is
@@ -442,13 +489,12 @@ export async function executeRun(
     ...(opts.language ? { language: opts.language } : {}),
     ...(opts.out && liveSpecs.length === 1 ? { out: opts.out } : {}),
     cwd,
-    ...(opts.base ? { base: opts.base } : {}),
     reportDir,
     ...(typeof opts.retry === "number" ? { retry: opts.retry } : {}),
     concurrency: opts.concurrency ?? 1,
     ...(opts.profile ? { profile: opts.profile } : {}),
     ...(opts.driftAudit !== false ? { driftAudit: true } : {}),
-    ...(opts.failureAnalysis === false ? { failureAnalysis: false } : {}),
+    diffProvider,
     hubContext: hubCtx,
     customPrompt,
     triageUserPrompt,
@@ -472,12 +518,12 @@ export async function executeRun(
       reportDir,
       customPrompt,
       triageUserPrompt,
+      diffProvider,
     );
     report = await writeUnifiedReport({
       reportDir,
       results: [...detReport.results, ...externalRows, ...live.reportResults],
-      diff: detReport.diff,
-      baseRef: detReport.baseRef,
+      git,
       customPromptVersion: detReport.customPromptVersion,
       triageUserPromptHash,
       opts,
@@ -493,8 +539,7 @@ export async function executeRun(
     if (hubRunId) {
       const finalStatus = overallExitCode === 0 ? "passed" : "failed";
       const reportMeta = buildReportEnvelope({
-        diff: detReport.diff,
-        baseRef: detReport.baseRef,
+        git,
         customPromptVersion: detReport.customPromptVersion,
         triageUserPromptHash,
         opts,
@@ -745,30 +790,21 @@ async function analyzeDeterministicSummaries(
   reportDir: string,
   customPrompt: AnalysisCustomPrompt | null,
   triageUserPrompt: string | null,
-): Promise<{ results: ReportSpecResult[]; diff: PrDiffResult; baseRef: string; customPromptVersion: string | null }> {
-  // Both pieces of automated analysis cost Claude turns. Disabling the
-  // root-cause classification (--no-failure-analysis) implicitly disables
-  // the drift audit too, since the audit is rendered as supporting
-  // evidence under the classification — keeping the audit on without the
-  // classification would burn cost without a place to display the result.
-  // --no-drift-audit remains an independent opt-out for when the user
-  // wants the classification but not the audit.
-  const failureAnalysisEnabled = opts.failureAnalysis !== false;
+  diffProvider: DiffProvider | null,
+): Promise<{ results: ReportSpecResult[]; customPromptVersion: string | null }> {
+  // Failure classification is opt-in (`--failure-analysis [base]`): a null
+  // diffProvider means no baseline was requested, so neither the
+  // classification nor the drift audit runs — both cost Claude turns, and the
+  // audit is rendered as supporting evidence under the classification, so it
+  // has no home without it. --no-drift-audit remains an independent opt-out
+  // for "classify but skip the audit".
+  const failureAnalysisEnabled = diffProvider != null;
   const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
 
-  const auth = failureAnalysisEnabled || driftAuditEnabled ? driftAuthAvailable() : { ok: false as const, reason: "skipped by flags" };
+  const auth = failureAnalysisEnabled ? driftAuthAvailable() : { ok: false as const, reason: "skipped by flags" };
   const failed = summaries.filter(failedSpec);
   if (failureAnalysisEnabled && !auth.ok && failed.length > 0) {
     log.info(`failure analysis skipped (${auth.reason})`);
-  }
-
-  const baseRef = resolveBaseRef(opts.base);
-  let diff: PrDiffResult = { ok: false, error: "diff not captured (no failures)" };
-  if (failed.length > 0) {
-    diff = await capturePrDiff(baseRef, cwd);
-    if (!diff.ok) {
-      log.info(`drift-report: source diff unavailable (${diff.error}) — analyzing without diff context`);
-    }
   }
 
   // The feature tree only feeds relatedPaths/includedBlocks lookups for
@@ -808,14 +844,12 @@ async function analyzeDeterministicSummaries(
     }
   }
 
-  const patchSections =
-    diff.ok && diff.diff.patch.length > 0 ? splitPatchByFile(diff.diff.patch) : null;
-
   // Load blocks once (shared across all specs) so evidence captions can show
   // the step's `expected` text from spec.yaml, including block-inlined steps.
   const allBlocks = await loadAllBlocks(cwd);
 
   let printedHeader = false;
+  let warnedDiffUnavailable = false;
   const results: ReportSpecResult[] = [];
   for (const s of summaries) {
     const assertions = collectAssertions(s);
@@ -859,8 +893,15 @@ async function analyzeDeterministicSummaries(
       continue;
     }
 
-    const relatedPaths = findSpecInfo(s)?.relatedPaths ?? null;
-    const diffExcerpt = patchSections ? scopePatchForSpec(patchSections, relatedPaths) : null;
+    const specDiffResult = diffProvider
+      ? await diffProvider.forSpec({ featureName: s.featureName, specName: s.specName })
+      : null;
+    const specDiff = specDiffResult?.ok ? specDiffResult : null;
+    if (specDiff?.error && !warnedDiffUnavailable) {
+      warnedDiffUnavailable = true;
+      log.info(`failure analysis: source diff unavailable (${specDiff.error}) — analyzing without diff context`);
+    }
+    const diffExcerpt = specDiff?.patch ?? null;
     const driftResult = driftResults.find(
       (r) => r.target.featureName === s.featureName && r.target.specName === s.specName,
     );
@@ -869,8 +910,14 @@ async function analyzeDeterministicSummaries(
 
     let analysis: ReportSpecResult["analysis"] = null;
     let analysisSkipped: string | null = null;
-    if (!failureAnalysisEnabled) {
-      analysisSkipped = "skipped by --no-failure-analysis";
+    // failureAnalysisEnabled === (specDiffResult != null), so chaining on the
+    // result narrows it for the analyze branch below.
+    if (!specDiffResult) {
+      analysisSkipped = "skipped: --failure-analysis not enabled";
+    } else if (!specDiffResult.ok) {
+      // No usable baseline for THIS spec (last-green: never green yet, or
+      // its commit isn't fetched) — withhold the classification honestly.
+      analysisSkipped = specDiffResult.skip;
     } else if (!auth.ok) {
       analysisSkipped = auth.reason;
     } else if (specYaml === null) {
@@ -884,14 +931,18 @@ async function analyzeDeterministicSummaries(
           specYaml,
           failureLog,
           diffPatch: diffExcerpt,
-          changedFiles: diff.ok ? diff.diff.nameStatus : null,
-          baseRef: diff.ok ? baseRef : null,
+          changedFiles: specDiffResult.nameStatus,
+          baseRef: specDiffResult.base.ref,
           driftIssues,
           ...(opts.language ? { outputLanguage: opts.language } : {}),
           ...(triageUserPrompt ? { triageUserPrompt } : {}),
           ...(customPrompt ? { customPrompt } : {}),
         },
-        { ...(opts.model ? { model: opts.model } : {}), cwd },
+        {
+          ...(opts.model ? { model: opts.model } : {}),
+          cwd,
+          getFileDiff: specDiffResult.fileDiff,
+        },
       );
       analysis = outcome.analysis;
 
@@ -921,6 +972,7 @@ async function analyzeDeterministicSummaries(
       status: "failed",
       analysis,
       analysisSkipped,
+      ...(specDiff ? { analysisBase: { ref: specDiff.base.ref, sha: specDiff.base.sha } } : {}),
       driftIssues,
       failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
       diffExcerpt,
@@ -929,7 +981,7 @@ async function analyzeDeterministicSummaries(
     });
   }
 
-  return { results, diff, baseRef, customPromptVersion: customPrompt?.customPromptVersion ?? null };
+  return { results, customPromptVersion: customPrompt?.customPromptVersion ?? null };
 }
 
 /**
@@ -940,21 +992,25 @@ async function analyzeDeterministicSummaries(
  * final report.json stays byte-identical (existing e2e goldens compare it).
  */
 function buildReportEnvelope(args: {
-  diff: PrDiffResult;
-  baseRef: string | null;
+  git: GitContext;
   customPromptVersion: string | null;
   triageUserPromptHash: string | null;
   opts: RunOptions;
 }): ReportEnvelope {
-  const { diff, baseRef, customPromptVersion, triageUserPromptHash, opts } = args;
+  const { git, customPromptVersion, triageUserPromptHash, opts } = args;
   return {
     schemaVersion: 1,
     kind: "run",
     createdAt: new Date().toISOString(),
     runId: process.env["GITHUB_RUN_ID"] ?? null,
     git: {
-      head: diff.ok ? diff.diff.head : null,
-      base: diff.ok ? baseRef : null,
+      head: git.head,
+      base: git.base?.ref ?? null,
+      // Omitted (not null) when analysis is off, so the envelope keeps its
+      // historical shape — same contract as triageUserPromptHash below. In
+      // last-green mode `sha` is null (per-spec, see analysisBase) but the
+      // keys are present: analysis WAS requested.
+      ...(git.base ? { baseSha: git.base.sha, baseSource: git.base.source } : {}),
     },
     model: opts.model ?? null,
     language: opts.language ?? null,
@@ -970,15 +1026,14 @@ function buildReportEnvelope(args: {
 async function writeUnifiedReport(args: {
   reportDir: string;
   results: ReportSpecResult[];
-  diff: PrDiffResult;
-  baseRef: string | null;
+  git: GitContext;
   customPromptVersion: string | null;
   triageUserPromptHash: string | null;
   opts: RunOptions;
 }): Promise<RunReportData> {
-  const { reportDir, results, diff, baseRef, customPromptVersion, triageUserPromptHash, opts } = args;
+  const { reportDir, results, git, customPromptVersion, triageUserPromptHash, opts } = args;
   const data: RunReportData = {
-    ...buildReportEnvelope({ diff, baseRef, customPromptVersion, triageUserPromptHash, opts }),
+    ...buildReportEnvelope({ git, customPromptVersion, triageUserPromptHash, opts }),
     results,
   };
 

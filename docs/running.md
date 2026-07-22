@@ -32,16 +32,19 @@ Key flags (see `ccqa run --help` for the rest):
   the run executes (opt-in; needs hub credentials).
 - `--profile <name>` — apply the hub-stored variables for this profile
   before resolving `${VAR}` references (below).
-- `--changed` / `--base <ref>` — restrict execution to specs whose
-  `relatedPaths` intersect the git diff (below). `--changed` cannot be
-  combined with explicit targets.
+- `--changed [base]` — restrict execution to specs whose `relatedPaths`
+  intersect the git diff against `[base]` (below). Without a value the base
+  comes from `GITHUB_BASE_REF` (pull_request CI); elsewhere pass it
+  explicitly (e.g. `--changed=origin/main`). Cannot be combined with
+  explicit targets.
 - `--concurrency <n>` — run up to N specs in parallel **within each phase**
   (never across phases). Default 1.
 - `--no-evidence` — skip the step-boundary screenshots of deterministic
   specs.
-- `--no-failure-analysis` / `--no-drift-audit` — the former skips failure
-  classification (and its drift audit, since drift is the classification's
-  evidence); the latter keeps classification but skips just the audit.
+- `--failure-analysis [base]` — classify each failure against the source
+  diff since `[base]` (same base rules as `--changed`). Off by default: no
+  Claude calls without it. `--no-drift-audit` keeps the classification but
+  skips its supporting drift audit.
 - `--format <fmt>` — `text` (default), `json` (print report.json), `github`
   (GitHub Actions annotations).
 - `--retry <n>` — live specs only: retry each failing step up to N times.
@@ -112,8 +115,8 @@ Per spec, the report contains:
 
 ## Failure triage
 
-Each failing spec gets a **root-cause call** made by Claude with the PR diff
-as context:
+With `--failure-analysis [base]`, each failing spec gets a **root-cause
+call** made by Claude with the source diff since the baseline as context:
 
 - `TEST_DRIFT` — what the spec verifies is unchanged; only the test code
   drifted from the source (selector rename, timing, over-assertion).
@@ -125,12 +128,39 @@ as context:
 Alongside the label come a confidence score, a sub-diagnosis, evidence, and
 reasoning. The analysis classifies; it never modifies anything.
 
-**Diff context.** The base ref resolves as `--base <ref>`, then
-`GITHUB_BASE_REF` (set on `pull_request` events), then `origin/main`. For
-each failing spec the diff is scoped to its `relatedPaths` globs (falling
-back to the full diff when nothing matches — "no related change" is itself
-a PRODUCT_BUG signal) and truncated to keep the prompt bounded. Outside a
-git checkout the analysis still runs, with lower expected confidence.
+**Diff context.** The baseline is the flag's value (`--failure-analysis
+<ref>`); without a value it comes from `GITHUB_BASE_REF` (set on
+`pull_request` events). There is no silent fallback: a baseline that cannot
+be resolved to a local commit — including a shallow CI checkout that never
+fetched it — is a startup usage error, so the classification never runs
+against an accidental empty diff. For each failing spec the diff is scoped
+to its `relatedPaths` globs (falling back to the full diff when nothing
+matches — "no related change" is itself a PRODUCT_BUG signal) and truncated
+to keep the prompt bounded.
+
+Scoping and truncation only bound the *seed* — what is pasted into the
+prompt up front. The classifier itself runs agentically with read-only
+tools (`Read` / `Grep` / `Glob` over the working tree, plus an in-process
+`changed_file_diff` tool that serves any changed file's diff hunk from the
+captured range on demand). The full list of changed files is always in the
+prompt, so a change outside the spec's `relatedPaths` is still visible and
+its hunk one tool call away — the full diff never has to ride in the
+context.
+
+**`--failure-analysis=last-green`.** Instead of one fixed ref, each failing
+spec is diffed against the commit where **that spec last passed** — the
+natural baseline for runs that have no PR to diff against (`push` /
+`workflow_dispatch` / scheduled). Baselines come from the hub's last-green
+ledger, updated automatically whenever a pushed or incrementally-streamed
+run finalizes: every spec that passed advances its own entry to the run's
+head commit, so one chronically failing spec never blocks the others'
+baselines. The ledger is branch-scoped — a PR branch overlays its own
+greens onto the default branch's — and requires a hub connection plus
+pushed runs (`--push-report` or `ccqa hub push`) to fill. A spec with no
+recorded green yet, or whose baseline commit is missing from a shallow
+checkout, has its classification skipped with the reason in its report row;
+the rest of the run proceeds. Each analyzed row records its own baseline in
+`analysisBase`.
 
 **Authentication.** The analysis needs `ANTHROPIC_API_KEY` (CI) or a local
 Claude Code login. With neither, the report is still written — only the
@@ -186,8 +216,10 @@ changing the exit code (still driven by `--severity`).
 
 When `--changed` is set (on `ccqa drift` or `ccqa run`):
 
-1. ccqa runs `git diff --name-status <base>...HEAD` (base = `--base`, else
-   `$GITHUB_BASE_REF`, else `origin/main`).
+1. ccqa runs `git diff --name-status <base>...HEAD`. On `ccqa run` the base
+   is `--changed`'s value, else `$GITHUB_BASE_REF` — never a silent
+   fallback (an unresolvable base is a usage error). On `ccqa drift` it is
+   `--base`, else `$GITHUB_BASE_REF`, else `origin/main`.
 2. Changed files are intersected with each spec's `relatedPaths` globs; a
    spec is in scope if any change matches.
 3. For files **added** in the PR, a single lightweight Claude call maps each
@@ -229,7 +261,12 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa run --project demo --profile staging --push-report
+      # --failure-analysis without a value takes its baseline from
+      # GITHUB_BASE_REF, so this shape works on pull_request events. On a
+      # workflow_dispatch / push workflow, use --failure-analysis=last-green
+      # (each spec diffs against the commit where it last passed, from the
+      # hub's ledger) or pass a ref explicitly.
+      - run: pnpm exec ccqa run --project demo --profile staging --push-report --failure-analysis
       - uses: actions/upload-artifact@v4
         if: always()
         with:

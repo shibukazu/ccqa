@@ -1,4 +1,5 @@
 import type {
+  LastGreenEntry,
   PutActualCauseRequest,
   Run,
   RunStatus,
@@ -79,8 +80,16 @@ export interface HubClient {
    * Open a `running` run to push results into incrementally. Returns the new
    * run's id. Non-retryable (a dropped response after the server committed
    * would leave a second open run); callers degrade to local-only on failure.
+   * `gitHead` stamps the run's commit at open time, so even a run that dies
+   * before its final reconcile patch is attributable to a commit.
    */
-  openRun(meta: { project: string; branch?: string; profile?: string; kind?: "run" | "drift" }): Promise<Run>;
+  openRun(meta: {
+    project: string;
+    branch?: string;
+    profile?: string;
+    kind?: "run" | "drift";
+    gitHead?: string;
+  }): Promise<Run>;
   /** Add finished spec rows (+ evidence) to a running run; `done` closes it. */
   patchRun(id: string, body: PatchRunRequest): Promise<Run>;
   listRuns(q?: { project?: string; branch?: string; status?: RunStatus; limit?: number }): Promise<Run[]>;
@@ -99,6 +108,16 @@ export interface HubClient {
 
   /** Every project the hub knows (from runs and stored secrets). */
   listProjects(): Promise<string[]>;
+
+  /**
+   * The last-green ledger for one project/profile: "feature/spec" → the run
+   * head where that spec last passed. `branch` entries overlay
+   * `fallbackBranch` (typically the default branch) entries server-side.
+   */
+  getLastGreen(
+    project: string,
+    q: { profile?: string; branch: string; fallbackBranch?: string },
+  ): Promise<Record<string, LastGreenEntry>>;
 
   putSession(project: string, profile: string, name: string, storageState: unknown): Promise<void>;
   getSession(project: string, profile: string, name: string): Promise<unknown>;
@@ -235,6 +254,7 @@ export function createHubClient(opts: HubClientOptions): HubClient {
       if (meta.branch) params.set("branch", meta.branch);
       if (meta.profile) params.set("profile", meta.profile);
       if (meta.kind) params.set("kind", meta.kind);
+      if (meta.gitHead) params.set("gitHead", meta.gitHead);
       return json(`/api/v1/runs/open?${params}`, { method: "POST" });
     },
     patchRun(id, body) {
@@ -280,6 +300,18 @@ export function createHubClient(opts: HubClientOptions): HubClient {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(labels),
       });
+    },
+
+    async getLastGreen(project, q) {
+      const params = queryString({
+        branch: q.branch,
+        ...(q.profile ? { profile: q.profile } : {}),
+        ...(q.fallbackBranch ? { fallbackBranch: q.fallbackBranch } : {}),
+      });
+      const { entries } = await json<{ entries: Record<string, LastGreenEntry> }>(
+        `/api/v1/projects/${encodeURIComponent(project)}/last-green?${params}`,
+      );
+      return entries;
     },
 
     async listProjects() {
