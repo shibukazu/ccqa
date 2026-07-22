@@ -524,7 +524,6 @@ const CSS = `
   .badge-det { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   /* which generation target ran the spec (agent-browser / playwright / runn) */
   .badge-target { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-family: var(--mono); background: var(--surface-3); color: var(--muted); border: 1px solid var(--border); }
-  .badge.drift-warn .d { background: var(--amber); }
   .badge-drift { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
   .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); }
   /* Below .chip in source order so these override its background/border/color
@@ -577,10 +576,8 @@ const CSS = `
   .analysis-kv .k { font-size: 11px; font-weight: 600; color: var(--muted); padding-top: 3px; white-space: nowrap; }
   .analysis-kv .v { color: var(--fg-dim); line-height: 1.55; }
   .analysis-kv .v.headline { color: var(--fg); font-weight: 600; }
-  .ev-item { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
-  .ev-item:last-child { border-bottom: 0; }
-  .ev-item .ev-file { font-size: 12px; color: var(--fg-dim); }
-  .ev-item .ev-detail { color: var(--muted); margin-top: 2px; line-height: 1.5; }
+  /* Model-evidence rows reuse the drift-row list shape; only the file ref needs its own style. */
+  .ev-file { font-size: 12px; color: var(--fg-dim); }
   .analysis-reasoning { font-size: 13px; color: var(--fg-dim); white-space: pre-wrap; line-height: 1.6; }
   .analysis-inline-reason { font-size: 13px; color: var(--fg-dim); line-height: 1.55; }
   /* Tier3 accordion (real header bar + rotating chevron, replaces the tiny ▸) */
@@ -789,7 +786,6 @@ const CSS = `
   .ro-tag { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
     color: var(--muted-2); background: var(--surface-3); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; margin-left: 4px; }
 
-  .card.triage-card { padding: 0; }
   .learn-cta { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-top: 1px solid var(--border); background: var(--surface-2); border-radius: 0 0 var(--radius-md) var(--radius-md); }
   .learn-cta-text { flex: 1; min-width: 0; }
   .learn-cta-text .t { font-size: 13.5px; font-weight: 600; color: var(--fg); }
@@ -924,7 +920,7 @@ const CLIENT_JS = `
       "meta.branch": "Branch", "meta.specs": "Specs", "meta.prompt": "Prompt",
       "meta.created": "Created", "meta.passed": "passed", "meta.profile": "Profile",
       "meta.drift": "Drift",
-      "diag.cause": "Cause", "diag.fix": "Fix", "diag.evidence": "Evidence",
+      "diag.cause": "Cause", "diag.fix": "Fix",
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
       "acc.assertions": "Assertions", "acc.drift": "Drift audit",
       "acc.artifacts": "Artifacts",
@@ -1013,7 +1009,7 @@ const CLIENT_JS = `
       "meta.branch": "ブランチ", "meta.specs": "スペック", "meta.prompt": "プロンプト",
       "meta.created": "作成", "meta.passed": "合格", "meta.profile": "プロファイル",
       "meta.drift": "ドリフト",
-      "diag.cause": "原因", "diag.fix": "対処", "diag.evidence": "根拠",
+      "diag.cause": "原因", "diag.fix": "対処",
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
       "acc.assertions": "アサーション", "acc.drift": "ドリフト監査",
       "acc.artifacts": "成果物",
@@ -1666,9 +1662,15 @@ const CLIENT_JS = `
     var count = 0;
     var items = r.analysis && r.analysis.evidence ? r.analysis.evidence : [];
     items.forEach(function (e) {
-      var row = el("div", "ev-item");
-      if (e.file) row.appendChild(el("code", "ev-file", e.file));
-      row.appendChild(el("div", "ev-detail", e.detail));
+      // Same list shape as the drift findings below, so the merged 根拠 list
+      // reads as one.
+      var row = el("div", "drift-row");
+      if (e.file) {
+        var head = el("div", "drift-head");
+        head.appendChild(el("code", "ev-file", e.file));
+        row.appendChild(head);
+      }
+      row.appendChild(el("div", "drift-msg", e.detail));
       wrap.appendChild(row);
       count++;
     });
@@ -2027,7 +2029,7 @@ const CLIENT_JS = `
       // "why did this fail and was the call right" story.
       var box = analysisSection(runId, r);
       var ev = analysisEvidenceSection(r);
-      if (ev.count > 0) box.appendChild(detailsBlock(t("diag.evidence"), ev.count, ev.node));
+      if (ev.count > 0) box.appendChild(detailsBlock(t("acc.evidence"), ev.count, ev.node));
       // Reasoning: fold it as an accordion, but only when it carries real
       // content. A one-char/empty reasoning behind a disclosure reads as broken
       // (the old "▸ r"), so drop it entirely below the threshold.
