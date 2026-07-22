@@ -181,21 +181,25 @@ const HTML_BODY = `
         <div class="rd-head" id="rd-head"></div>
 
         <!-- Triage first: grading + learning is the most important action, so it
-             sits above the spec list rather than being buried below it. -->
+             sits above the spec list rather than being buried below it. One
+             card holds the whole grading story: the graded counter (header),
+             the confusion matrix (or its empty state), and the learn CTA as
+             the card footer — grades are the learning job's input, so the
+             cause→effect reads top to bottom in a single surface. -->
         <div class="triage-head" id="triage-head">
           <h3 style="font-size:14px" data-i18n="detail.triage">Triage</h3>
           <span class="triage-summary" id="triage-summary"></span>
         </div>
-        <div class="card" id="matrix-card"></div>
-        <p class="muted" id="triage-progress" style="font-size:12.5px;margin-top:8px"></p>
-
-        <div class="learn-cta" id="learn-cta" hidden>
-          <div class="learn-cta-text">
-            <div class="t" data-i18n="learn.cta.title">Learn from these grades</div>
-            <div class="d" data-i18n="learn.cta.desc">Turn the graded cases into a custom prompt that calibrates future failure classification.</div>
-          </div>
-          <div class="learn-cta-actions">
-            <button class="btn primary sm" id="learn-run" data-i18n="learn.cta.run">Learn</button>
+        <div class="card triage-card" id="triage-card">
+          <div id="matrix-card"></div>
+          <div class="learn-cta" id="learn-cta" hidden>
+            <div class="learn-cta-text">
+              <div class="t" data-i18n="learn.cta.title">Learn from these grades</div>
+              <div class="d" data-i18n="learn.cta.desc">Turn the graded cases into a custom prompt that calibrates future failure classification.</div>
+            </div>
+            <div class="learn-cta-actions">
+              <button class="btn primary sm" id="learn-run" data-i18n="learn.cta.run">Learn</button>
+            </div>
           </div>
         </div>
 
@@ -520,7 +524,6 @@ const CSS = `
   .badge-det { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   /* which generation target ran the spec (agent-browser / playwright / runn) */
   .badge-target { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-family: var(--mono); background: var(--surface-3); color: var(--muted); border: 1px solid var(--border); }
-  .badge.drift-warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
   .badge.drift-warn .d { background: var(--amber); }
   .badge-drift { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
   .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); }
@@ -564,11 +567,20 @@ const CSS = `
   .spec-card-head .spacer { flex: 1; }
   .spec-card-body { padding: 0 20px 16px; }
   /* Tier2 verdict block */
-  .analysis-box { display: flex; flex-direction: column; gap: 12px; padding-bottom: 4px; }
+  /* The diagnosis card: a bordered sub-surface so the model's verdict + the
+     grading zone read as one unit, distinct from the execution details
+     (steps/assertions) below it. */
+  .analysis-box { display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); padding: 14px 16px; }
+  .analysis-box .acc > summary:hover { background: var(--surface-3); }
   .analysis-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .analysis-headline { font-size: 14px; font-weight: 600; color: var(--fg); line-height: 1.5; }
-  .analysis-rec { font-size: 13px; color: var(--fg-dim); background: var(--surface-2); border: 1px solid var(--border); border-left: 2px solid var(--muted); border-radius: var(--radius-sm); padding: 10px 12px; line-height: 1.55; }
-  .analysis-rec .rec-k { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+  .analysis-kv { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; font-size: 13.5px; }
+  .analysis-kv .k { font-size: 11px; font-weight: 600; color: var(--muted); padding-top: 3px; white-space: nowrap; }
+  .analysis-kv .v { color: var(--fg-dim); line-height: 1.55; }
+  .analysis-kv .v.headline { color: var(--fg); font-weight: 600; }
+  .ev-item { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .ev-item:last-child { border-bottom: 0; }
+  .ev-item .ev-file { font-size: 12px; color: var(--fg-dim); }
+  .ev-item .ev-detail { color: var(--muted); margin-top: 2px; line-height: 1.5; }
   .analysis-reasoning { font-size: 13px; color: var(--fg-dim); white-space: pre-wrap; line-height: 1.6; }
   .analysis-inline-reason { font-size: 13px; color: var(--fg-dim); line-height: 1.55; }
   /* Tier3 accordion (real header bar + rotating chevron, replaces the tiny ▸) */
@@ -634,11 +646,12 @@ const CSS = `
 
   /* triage grading — an explicit question + a segmented single-select, framed
      as an action ("tell us the real cause"), not a data readout. */
-  .grade { margin-top: 4px; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); }
+  /* Embedded at the bottom of the diagnosis card: a divider separates the
+     human's grading zone from the model's output above it, without breaking
+     the two out of the shared context. */
+  .grade { margin-top: 2px; padding: 12px 0 0; border-top: 1px solid var(--border); }
   .grade-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
   .grade-q { font-size: 13px; font-weight: 600; color: var(--fg); }
-  .grade-pred { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; font-size: 12px; color: var(--muted); }
-  .grade-pred .grade-arrow { color: var(--muted-2); }
   .grade-bottom { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .grade-seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-md); overflow: hidden; background: var(--surface); }
   .grade-seg .seg { height: 34px; padding: 0 14px; border: 0; background: transparent; color: var(--muted); font-size: 13px; font-weight: 500; border-right: 1px solid var(--border); display: inline-flex; align-items: center; gap: 5px; }
@@ -776,7 +789,8 @@ const CSS = `
   .ro-tag { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
     color: var(--muted-2); background: var(--surface-3); border: 1px solid var(--border); border-radius: 999px; padding: 1px 8px; margin-left: 4px; }
 
-  .learn-cta { display: flex; align-items: center; gap: 16px; margin-top: 18px; padding: 16px 18px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); }
+  .card.triage-card { padding: 0; }
+  .learn-cta { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-top: 1px solid var(--border); background: var(--surface-2); border-radius: 0 0 var(--radius-md) var(--radius-md); }
   .learn-cta-text { flex: 1; min-width: 0; }
   .learn-cta-text .t { font-size: 13.5px; font-weight: 600; color: var(--fg); }
   .learn-cta-text .d { font-size: 12px; color: var(--muted); margin-top: 3px; }
@@ -910,26 +924,25 @@ const CLIENT_JS = `
       "meta.branch": "Branch", "meta.specs": "Specs", "meta.prompt": "Prompt",
       "meta.created": "Created", "meta.passed": "passed", "meta.profile": "Profile",
       "meta.drift": "Drift",
-      "rec.title": "Recommendation",
+      "diag.cause": "Cause", "diag.fix": "Fix", "diag.evidence": "Evidence",
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
       "acc.assertions": "Assertions", "acc.drift": "Drift audit",
       "acc.artifacts": "Artifacts",
       "art.open": "Open", "art.loadFailed": "could not load (it may have been omitted from the push)",
       "acc.assertions.hint": "Test cases from the recorded spec run",
       "spec.kind.live": "Live", "spec.kind.det": "Deterministic",
-      "spec.driftWarn": "Spec drift", "det.steps": "Steps",
+      "det.steps": "Steps",
       "kind.run": "Test run", "kind.drift": "Drift audit",
       "drift.summary.issues": "Issues", "drift.summary.errors": "Errors",
       "drift.summary.warnings": "Warnings", "drift.summary.specsWithIssues": "Specs with issues",
       "drift.clean": "No drift issues",
-      "grade.question": "What was the real cause?", "grade.predicted": "predicted",
+      "grade.question": "What was the real cause?",
       "grade.ungraded": "ungraded", "grade.matches": "saved · matches",
       "grade.corrected": "saved · corrected", "grade.saving": "saving…",
       "grade.error": "couldn't save — retry",
-      "matrix.empty": "No graded cases yet. Grade a failed spec above to populate the confusion matrix.",
+      "matrix.empty": "No grades yet. Pick the real cause on a failed spec's diagnosis card below and it is tallied here.",
       "matrix.predicted": "predicted \\\\ actual", "matrix.accuracy": "Accuracy",
       "matrix.accSuffix": "of graded cases match the prediction", "matrix.graded": "graded",
-      "matrix.progress": "Recorded actual cause: {n} / {total} failing specs",
       "learn.cta.title": "Learn from these grades",
       "learn.cta.desc": "Learn from what you graded so ccqa classifies failure causes the same way next time.",
       "learn.cta.run": "Learn",
@@ -1000,26 +1013,25 @@ const CLIENT_JS = `
       "meta.branch": "ブランチ", "meta.specs": "スペック", "meta.prompt": "プロンプト",
       "meta.created": "作成", "meta.passed": "合格", "meta.profile": "プロファイル",
       "meta.drift": "ドリフト",
-      "rec.title": "推奨対応",
+      "diag.cause": "原因", "diag.fix": "対処", "diag.evidence": "根拠",
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
       "acc.assertions": "アサーション", "acc.drift": "ドリフト監査",
       "acc.artifacts": "成果物",
       "art.open": "開く", "art.loadFailed": "読み込めませんでした（push時に省略された可能性があります）",
       "acc.assertions.hint": "記録したスペック実行のテストケース",
       "spec.kind.live": "ライブ", "spec.kind.det": "決定的",
-      "spec.driftWarn": "仕様ドリフト", "det.steps": "ステップ",
+      "det.steps": "ステップ",
       "kind.run": "テスト実行", "kind.drift": "ドリフト監査",
       "drift.summary.issues": "問題数", "drift.summary.errors": "エラー",
       "drift.summary.warnings": "警告", "drift.summary.specsWithIssues": "問題のあるスペック",
       "drift.clean": "ドリフトの問題なし",
-      "grade.question": "実際の原因は何でしたか？", "grade.predicted": "予測",
+      "grade.question": "実際の原因は何でしたか？",
       "grade.ungraded": "未評価", "grade.matches": "保存済み · 一致",
       "grade.corrected": "保存済み · 修正", "grade.saving": "保存中…",
       "grade.error": "保存に失敗 — 再試行",
-      "matrix.empty": "まだ評価がありません。上の失敗スペックを評価すると混同行列に反映されます。",
+      "matrix.empty": "まだ採点がありません。下の失敗スペックの診断カードで実際の原因を選ぶと、ここに集計されます。",
       "matrix.predicted": "予測 \\\\ 実際", "matrix.accuracy": "正解率",
       "matrix.accSuffix": "件の採点が予測と一致", "matrix.graded": "採点済み",
-      "matrix.progress": "実際の原因を記録: {total} 件中 {n} 件の失敗スペック",
       "learn.cta.title": "この採点から学習",
       "learn.cta.desc": "採点した内容をもとに、ccqaが次回から同じように失敗の原因を分類できるよう学習します。",
       "learn.cta.run": "学習",
@@ -1619,25 +1631,53 @@ const CLIENT_JS = `
 
   // ── run detail: spec cards ──────────────────────────────────────────
 
-  // Tier2 verdict block: label + confidence, headline, and the recommendation
-  // callout. Reasoning is NOT here — renderSpecCard places it as a Tier3
-  // accordion (or inline when it's too short to be worth folding).
+  // The diagnosis card: one surface for everything about a failure's cause.
+  // Verdict (label + confidence), then the cause→fix pair as labelled rows —
+  // headline and recommendation are one causal unit, so they read as one.
+  // subDiagnosis is deliberately NOT shown: it is a machine vocabulary for
+  // accuracy stratification and learning, not for humans. The caller appends
+  // the evidence/reasoning accordions and the grading zone into this box.
   function analysisSection(runId, r) {
     var wrap = el("div", "analysis-box");
     var a = r.analysis;
     var head = el("div", "analysis-head");
     head.appendChild(labelChip(a.label));
     head.appendChild(el("span", "conf", Math.round(a.confidence * 100) + "%"));
-    if (a.subDiagnosis && a.subDiagnosis !== "NONE") head.appendChild(el("span", "muted", a.subDiagnosis));
     wrap.appendChild(head);
-    if (a.headline) wrap.appendChild(el("div", "analysis-headline", a.headline));
-    if (a.recommendation) {
-      var rec = el("div", "analysis-rec");
-      rec.appendChild(el("span", "rec-k", t("rec.title")));
-      rec.appendChild(document.createTextNode(a.recommendation));
-      wrap.appendChild(rec);
+    var kv = el("div", "analysis-kv");
+    if (a.headline) {
+      kv.appendChild(el("div", "k", t("diag.cause")));
+      kv.appendChild(el("div", "v headline", a.headline));
     }
+    if (a.recommendation) {
+      kv.appendChild(el("div", "k", t("diag.fix")));
+      kv.appendChild(el("div", "v", a.recommendation));
+    }
+    if (kv.childNodes.length > 0) wrap.appendChild(kv);
     return wrap;
+  }
+
+  // 根拠: the model's evidence items (file + what it proves) merged with the
+  // drift-audit findings. The audit is an input hint TO the classifier, so
+  // its findings belong here as supporting evidence — not as a sibling
+  // section that reads like an independent feature.
+  function analysisEvidenceSection(r) {
+    var wrap = el("div");
+    var count = 0;
+    var items = r.analysis && r.analysis.evidence ? r.analysis.evidence : [];
+    items.forEach(function (e) {
+      var row = el("div", "ev-item");
+      if (e.file) row.appendChild(el("code", "ev-file", e.file));
+      row.appendChild(el("div", "ev-detail", e.detail));
+      wrap.appendChild(row);
+      count++;
+    });
+    if (r.driftIssues && r.driftIssues.length > 0) {
+      wrap.appendChild(el("div", "section-label", t("acc.drift")));
+      wrap.appendChild(driftSection(r.driftIssues));
+      count += r.driftIssues.length;
+    }
+    return { node: wrap, count: count };
   }
 
   function evidenceSection(runId, evidence) {
@@ -1883,13 +1923,10 @@ const CLIENT_JS = `
 
     var wrap = el("div", "grade");
 
+    // No "predicted →" chip here: the control lives inside the diagnosis
+    // card, directly under the prediction it grades — repeating it is noise.
     var top = el("div", "grade-top");
     top.appendChild(el("span", "grade-q", t("grade.question")));
-    var pred = el("span", "grade-pred");
-    pred.appendChild(document.createTextNode(t("grade.predicted")));
-    pred.appendChild(el("span", "grade-arrow", "→"));
-    pred.appendChild(labelChip(predicted));
-    top.appendChild(pred);
     wrap.appendChild(top);
 
     var bottom = el("div", "grade-bottom");
@@ -1973,13 +2010,6 @@ const CLIENT_JS = `
     else if (r.liveRun) head.appendChild(el("span", "badge-live", t("spec.kind.live")));
     else if (!external) head.appendChild(el("span", "badge-det", t("spec.kind.det")));
     head.appendChild(statusBadge(r.status));
-    var hasDriftError = r.driftIssues && r.driftIssues.some(function (d) { return d.severity === "ERROR"; });
-    if (hasDriftError) {
-      var w = el("span", "badge drift-warn");
-      w.appendChild(el("span", "d"));
-      w.appendChild(document.createTextNode(" " + t("spec.driftWarn")));
-      head.appendChild(w);
-    }
     card.appendChild(head);
 
     var body = el("div", "spec-card-body");
@@ -1990,17 +2020,23 @@ const CLIENT_JS = `
       any = true;
     }
 
-    if (r.status === "failed" && r.analysis) {
-      // Tier2: the verdict block (analysis) + the grading action, always shown.
-      body.appendChild(analysisSection(runId, r));
-      body.appendChild(triageGradeControl(runId, r, triageState));
-      // Reasoning: fold it as a Tier3 accordion, but only when it carries real
+    var hasAnalysis = r.status === "failed" && r.analysis;
+    if (hasAnalysis) {
+      // The diagnosis card: verdict + cause/fix, then evidence and reasoning
+      // as accordions, then the grading zone — one surface for the whole
+      // "why did this fail and was the call right" story.
+      var box = analysisSection(runId, r);
+      var ev = analysisEvidenceSection(r);
+      if (ev.count > 0) box.appendChild(detailsBlock(t("diag.evidence"), ev.count, ev.node));
+      // Reasoning: fold it as an accordion, but only when it carries real
       // content. A one-char/empty reasoning behind a disclosure reads as broken
       // (the old "▸ r"), so drop it entirely below the threshold.
       var reasoning = r.analysis.reasoning ? String(r.analysis.reasoning).trim() : "";
       if (reasoning.length > 2) {
-        body.appendChild(detailsBlock(t("acc.reasoning"), null, el("div", "analysis-reasoning", reasoning)));
+        box.appendChild(detailsBlock(t("acc.reasoning"), null, el("div", "analysis-reasoning", reasoning)));
       }
+      box.appendChild(triageGradeControl(runId, r, triageState));
+      body.appendChild(box);
       any = true;
     } else if (r.status === "failed" && r.analysisSkipped) {
       body.appendChild(el("div", "muted", "Analysis skipped: " + r.analysisSkipped));
@@ -2032,7 +2068,10 @@ const CLIENT_JS = `
       any = true;
     }
 
-    if (r.driftIssues && r.driftIssues.length > 0) {
+    // Drift findings render standalone only when they aren't already folded
+    // into the diagnosis card's evidence: drift-kind runs (the audit IS the
+    // content) and failed rows whose analysis was skipped.
+    if (!hasAnalysis && r.driftIssues && r.driftIssues.length > 0) {
       body.appendChild(detailsBlock(t("acc.drift"), r.driftIssues.length, driftSection(r.driftIssues)));
       any = true;
     }
@@ -2067,12 +2106,9 @@ const CLIENT_JS = `
     var cases = Object.keys(triageState.byKey).map(function (k) { return triageState.byKey[k]; })
       .filter(function (c) { return c.predicted && c.actual; });
 
-    // Recompute the progress line here so it stays in sync after each grade,
-    // not just on initial load.
+    // The "graded m / n" counter in the header is the single progress
+    // readout — recomputed here so it stays in sync after each grade.
     var total = typeof triageState.total === "number" ? triageState.total : Object.keys(triageState.byKey).length;
-    document.getElementById("triage-progress").textContent =
-      t("matrix.progress").replace("{n}", cases.length).replace("{total}", total);
-
     var summary = document.getElementById("triage-summary");
 
     if (cases.length === 0) {
@@ -2143,7 +2179,12 @@ const CLIENT_JS = `
       renderMatrix(triageState);
       onLoaded(triageState);
     }).catch(function (err) {
-      document.getElementById("triage-progress").textContent = "Error loading triage: " + err.message;
+      // Surface the load failure inside the triage card so it isn't silent.
+      var card = document.getElementById("matrix-card");
+      clear(card);
+      var wrap = el("div", "matrix-wrap");
+      wrap.appendChild(el("div", "muted", "Error loading triage: " + err.message));
+      card.appendChild(wrap);
       onLoaded({ byKey: {} });
     });
   }
@@ -2169,7 +2210,6 @@ const CLIENT_JS = `
     clear(document.getElementById("rd-head"));
     clear(document.getElementById("matrix-card"));
     document.getElementById("detail-spec-count").textContent = "";
-    document.getElementById("triage-progress").textContent = "";
     document.getElementById("triage-summary").textContent = "";
 
     apiFetch("/api/v1/runs/" + encodeURIComponent(runId)).then(function (run) {
@@ -2183,8 +2223,7 @@ const CLIENT_JS = `
       // as the other, and neither escapes its own catch.
       var isDrift = report.kind === "drift";
       document.getElementById("triage-head").hidden = isDrift;
-      document.getElementById("matrix-card").hidden = isDrift;
-      document.getElementById("triage-progress").hidden = isDrift;
+      document.getElementById("triage-card").hidden = isDrift;
       renderSpecCards(runId, report.results, { byKey: {} }, isDrift);
       if (isDrift) return; // drift runs have no triage: skip loadTriage entirely
       loadTriage(runId, function (triageState) {
