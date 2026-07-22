@@ -43,8 +43,9 @@ Key flags (see `ccqa run --help` for the rest):
   specs.
 - `--failure-analysis [base]` — classify each failure against the source
   diff since `[base]` (same base rules as `--changed`). Off by default: no
-  Claude calls without it. `--no-drift-audit` keeps the classification but
-  skips its supporting drift audit.
+  Claude calls without it. The spec↔code drift audit always runs with it —
+  its findings are an input to the classification (and standalone via
+  `ccqa drift`); there is no separate audit flag.
 - `--format <fmt>` — `text` (default), `json` (print report.json), `github`
   (GitHub Actions annotations).
 - `--retry <n>` — live specs only: retry each failing step up to N times.
