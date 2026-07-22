@@ -86,8 +86,14 @@ export function splitPatchByFile(patch: string): PatchSection[] {
 /**
  * Scope a full patch down to the files a spec depends on, then truncate so
  * the analysis prompt stays bounded. `relatedPaths` null/empty means the
- * spec is unscoped — keep the whole patch (still truncated). Callers scoping
- * the same patch for many specs can pass pre-split sections instead.
+ * spec is unscoped — keep the whole patch (still truncated). When
+ * relatedPaths are declared but nothing in the diff matches, the result is
+ * the empty string: "no related change" is itself a signal the prompt
+ * renders explicitly, and the model can inspect any unmatched file's hunk
+ * via the on-demand diff tool — inlining the full unrelated diff (the old
+ * fallback) just burned the prompt budget, especially under wide last-green
+ * baselines. Callers scoping the same patch for many specs can pass
+ * pre-split sections instead.
  */
 export function scopePatchForSpec(
   patch: string | PatchSection[],
@@ -99,11 +105,7 @@ export function scopePatchForSpec(
 
   let sections = typeof patch === "string" ? splitPatchByFile(patch) : patch;
   if (relatedPaths && relatedPaths.length > 0) {
-    const scoped = sections.filter((s) => isPathAffectedBy(s.path, relatedPaths));
-    // When nothing in the diff matches the spec's relatedPaths, fall back to
-    // the full diff: "no related change" is itself a strong PRODUCT_BUG
-    // signal, but the model should see the actual changes to say so.
-    if (scoped.length > 0) sections = scoped;
+    sections = sections.filter((s) => isPathAffectedBy(s.path, relatedPaths));
   }
 
   const parts: string[] = [];

@@ -933,6 +933,8 @@ async function analyzeDeterministicSummaries(
           diffPatch: diffExcerpt,
           changedFiles: specDiffResult.nameStatus,
           baseRef: specDiffResult.base.ref,
+          baseSource: specDiffResult.base.source,
+          range: specDiffResult.range,
           driftIssues,
           ...(opts.language ? { outputLanguage: opts.language } : {}),
           ...(triageUserPrompt ? { triageUserPrompt } : {}),

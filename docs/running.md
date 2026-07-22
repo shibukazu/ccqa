@@ -134,9 +134,15 @@ reasoning. The analysis classifies; it never modifies anything.
 be resolved to a local commit — including a shallow CI checkout that never
 fetched it — is a startup usage error, so the classification never runs
 against an accidental empty diff. For each failing spec the diff is scoped
-to its `relatedPaths` globs (falling back to the full diff when nothing
-matches — "no related change" is itself a PRODUCT_BUG signal) and truncated
-to keep the prompt bounded.
+to its `relatedPaths` globs and truncated to keep the prompt bounded; when
+nothing matches, no hunks are inlined — the prompt states that explicitly
+(the full changed-file list is always present, and any file's hunk is one
+tool call away). The prompt also adapts its decision guidance to the
+baseline: under `last-green` the range strictly covers the
+passing→failing window, so a failure that no in-range change explains
+leans UNKNOWN (external cause) rather than PRODUCT_BUG, and the range's
+width (commits/days) is stated so wide baselines get a higher evidence
+bar.
 
 Scoping and truncation only bound the *seed* — what is pasted into the
 prompt up front. The classifier itself runs agentically with read-only

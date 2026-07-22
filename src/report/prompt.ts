@@ -4,6 +4,7 @@ import {
   buildCustomPromptBlock,
   buildTriageUserPromptBlock,
 } from "../prompts/custom-prompt.ts";
+import type { BaseSource } from "./schema.ts";
 import type { DraftIssue } from "../types.ts";
 import { DRAFT_CATEGORY_LABEL } from "../types.ts";
 
@@ -19,8 +20,16 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * v5: the classifier gained the `mcp__diff__changed_file_diff` tool — the
  * inline patch is only the relatedPaths-scoped seed, and hunks of any other
  * changed file are pulled on demand — and the tools section documents it.
+ *
+ * v6: baseline-aware decision guidance. Under a last-green baseline the
+ * range strictly covers the passing→failing window, so "no in-range cause"
+ * flips from a PRODUCT_BUG lean to an UNKNOWN (external cause) lean, and
+ * PRODUCT_BUG becomes a positive claim (cite the in-range change). The
+ * prompt also states the range's width (commits/days) and no longer inlines
+ * the full unrelated diff when nothing matches relatedPaths — the
+ * name-status list plus the on-demand tool replace that fallback.
  */
-export const ANALYSIS_PROMPT_VERSION = "5";
+export const ANALYSIS_PROMPT_VERSION = "6";
 
 /**
  * Fully-qualified name of the on-demand file-diff tool, as the model calls
@@ -52,12 +61,31 @@ export interface FailureAnalysisPromptInput {
    */
   liveTranscriptExcerpt?: string;
   specYaml: string;
-  /** Unified diff base...HEAD, already scoped to the spec's relatedPaths and truncated. */
+  /**
+   * Unified diff base...HEAD, already scoped to the spec's relatedPaths and
+   * truncated. Null = no diff was captured; empty string = captured, but no
+   * changed file matched the spec's relatedPaths (the name-status list still
+   * shows everything, and hunks are fetchable via the on-demand tool).
+   */
   diffPatch: string | null;
   /** `git diff --name-status` output for the same range. */
   changedFiles: string | null;
   /** The resolved base ref the diff was taken against (for the model's framing only). */
   baseRef: string | null;
+  /**
+   * Which rule produced the baseline. "last-green" means the base is the
+   * commit where THIS spec last passed — the range strictly covers the
+   * passing→failing window, which flips the "diff doesn't explain it"
+   * guidance from PRODUCT_BUG toward UNKNOWN. Fixed refs (explicit /
+   * github-base-ref) keep the PR-diff framing. Omitted/null renders the
+   * fixed-ref guidance.
+   */
+  baseSource?: BaseSource | null;
+  /**
+   * How wide the base...HEAD range is. Wide ranges mix many unrelated
+   * changes, so the guidance raises the evidence bar. Null when unknown.
+   */
+  range?: { commitCount: number; days: number } | null;
   /** Findings from the spec↔code drift audit (analyzeDrift), when it ran. */
   driftIssues: DraftIssue[] | null;
   /** BCP-47 tag or "auto" (no directive). Identifiers/labels stay verbatim regardless. */
@@ -87,11 +115,14 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     diffPatch,
     changedFiles,
     baseRef,
+    baseSource = null,
+    range = null,
     driftIssues,
     outputLanguage = "auto",
     triageUserPrompt,
     customPrompt,
   } = input;
+  const lastGreen = baseSource === "last-green";
 
   // Both render "" when absent, so the prompt is unchanged from before.
   const triageUserPromptBlock = buildTriageUserPromptBlock(triageUserPrompt);
@@ -109,8 +140,31 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
   // section; downgrades the call to UNKNOWN with low confidence.
   const executionBlock = buildExecutionEvidenceBlock(script, failureLog, liveTranscriptExcerpt);
 
-  const diffBlock = diffPatch
-    ? `## Source changes since ${baseRef ?? "base"} (git diff, may be truncated)
+  // Human framing of the baseline: "since this spec last passed" is what a
+  // last-green base means, and the model should reason in those terms.
+  const baseLabel = lastGreen
+    ? `this spec's last passing commit${baseRef && baseRef !== "last-green" ? ` (${baseRef})` : ""}`
+    : (baseRef ?? "base");
+  const rangeNote = range
+    ? ` — spans ${range.commitCount} commit${range.commitCount === 1 ? "" : "s"} over ${range.days} day${range.days === 1 ? "" : "s"}`
+    : "";
+
+  let diffBlock: string;
+  if (diffPatch === null) {
+    diffBlock = `## Source changes
+
+No diff context is available (the base ref could not be resolved, or there are no changes). Classify from the failure log, the spec, and what you can read in the repository — and be correspondingly more conservative: prefer UNKNOWN over a confident SPEC_CHANGE/PRODUCT_BUG call without diff evidence.
+`;
+  } else if (diffPatch.length === 0) {
+    diffBlock = `## Source changes since ${baseLabel}${rangeNote}
+
+### Changed files (name-status)
+${changedFiles && changedFiles.length > 0 ? changedFiles : "(no changes in range)"}
+
+No changed file matches this spec's relatedPaths, so no hunks are inlined. "No related change" is a real signal — but before concluding, scan the name-status list for anything that could plausibly reach this spec and fetch its hunk with \`${CHANGED_FILE_DIFF_TOOL}\`.
+`;
+  } else {
+    diffBlock = `## Source changes since ${baseLabel}${rangeNote} (git diff, scoped to this spec's relatedPaths, may be truncated)
 
 ### Changed files (name-status)
 ${changedFiles ?? "(unavailable)"}
@@ -119,11 +173,8 @@ ${changedFiles ?? "(unavailable)"}
 \`\`\`diff
 ${diffPatch}
 \`\`\`
-`
-    : `## Source changes
-
-No diff context is available (the base ref could not be resolved, or there are no changes). Classify from the failure log, the spec, and what you can read in the repository — and be correspondingly more conservative: prefer UNKNOWN over a confident SPEC_CHANGE/PRODUCT_BUG call without diff evidence.
 `;
+  }
 
   const driftBlock =
     driftIssues && driftIssues.length > 0
@@ -140,7 +191,7 @@ ${driftIssues
 `
       : "";
 
-  return `You are analyzing a failing E2E regression test right after a source change landed. Your job is a root-cause CALL, not a fix: decide which of three categories explains the failure, using the source diff as your primary context.
+  return `You are analyzing a failing E2E regression test against the source changes since a known-good baseline. Your job is a root-cause CALL, not a fix: decide which of three categories explains the failure, using the source diff as your primary context.
 
 ${languageBlock}## The three categories
 
@@ -165,10 +216,25 @@ You have **up to 12 tool turns**. Do NOT write, edit, run shell commands, or hit
 
 ## Decision guidance
 
+${
+  lastGreen
+    ? `The baseline is the commit where THIS spec last passed, so the range strictly covers the window in which it broke: the cause is either inside these changes or outside the code entirely (flaky timing, environment, an external service, test data). The range may mix several unrelated merges — most of the diff is noise; what matters is the specific change you can tie to the failing step.`
+    : `The baseline is a fixed ref (typically the PR base): the spec is NOT guaranteed to have passed there, so the range is not guaranteed to contain the cause.`
+}
+
 - Diff touches only attributes/identifiers the test selects on (labels, testids, class names, timing) while the user-visible flow is intact → TEST_DRIFT.
 - Diff intentionally removes/reworks the UI or flow that a spec step verifies (component deleted, page restructured, copy redefined, feature flag flipped) → SPEC_CHANGE.
 - Diff UNINTENTIONALLY breaks behavior the spec still intends — e.g. a refactor that drops a side effect, an inverted condition, a regression hiding inside a cleanup commit — → PRODUCT_BUG, citing the diff hunk as evidence. A product bug is often introduced BY the diff; what separates it from SPEC_CHANGE is intent: does the change read as a deliberate redesign of what the spec verifies, or as collateral damage?
-- Diff is unrelated to the failing step (or there is no relevant diff) and the test was passing before → lean PRODUCT_BUG; first rule out timing/data flakiness and infrastructure errors (daemon not running, network down, missing credentials) — those read as UNKNOWN with low confidence, not PRODUCT_BUG.
+${
+  lastGreen
+    ? `- No change in the range explains the failing step (after checking the inline patch, the name-status list, and any hunks you fetched) → the cause is outside the code: answer UNKNOWN with low confidence and name the suspected external cause (flaky timing, environment, external service, test data). Do NOT default to PRODUCT_BUG here — under this baseline a product regression must be tied to an in-range change.`
+    : `- Diff is unrelated to the failing step (or there is no relevant diff) and the test was passing before → lean PRODUCT_BUG; first rule out timing/data flakiness and infrastructure errors (daemon not running, network down, missing credentials) — those read as UNKNOWN with low confidence, not PRODUCT_BUG.`
+}${
+  range
+    ? `
+- This range spans ${range.commitCount} commit${range.commitCount === 1 ? "" : "s"} over ${range.days} day${range.days === 1 ? "" : "s"}. The wider the range, the more unrelated changes are mixed in: SPEC_CHANGE and TEST_DRIFT still require citing the specific hunk — do not infer intent from the bulk of a large diff, and lower confidence when the evidence is spread thin.`
+    : ""
+}
 - The drift audit findings (when present) flag spec↔code mismatches; an ERROR there usually supports TEST_DRIFT or SPEC_CHANGE over PRODUCT_BUG.
 
 ## Sub-diagnosis vocabulary
@@ -208,7 +274,7 @@ Your **final** assistant message must start with \`{\` and end with \`}\` — a 
 - 0.4-0.7: plausible but another category could explain it
 - < 0.4: answer UNKNOWN instead of guessing
 
-Evidence rules: TEST_DRIFT and SPEC_CHANGE require at least one concrete \`file\` reference (diff hunk or file:line you actually read). PRODUCT_BUG should explain why the diff does NOT account for the failure.
+Evidence rules: TEST_DRIFT and SPEC_CHANGE require at least one concrete \`file\` reference (diff hunk or file:line you actually read). PRODUCT_BUG should cite the in-range change that unintentionally broke the behavior when one exists; ${lastGreen ? "under this last-green baseline, if no in-range change explains the failure, that is UNKNOWN (external cause), not PRODUCT_BUG" : "when no such change exists, explain why the diff does NOT account for the failure"}.
 
 ## Test Spec (spec.yaml)
 ${specYaml}

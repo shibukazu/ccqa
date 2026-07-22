@@ -55,10 +55,9 @@ describe("scopePatchForSpec", () => {
     expect(out).toContain("billing/invoice.tsx");
   });
 
-  test("falls back to the full patch when nothing matches (PRODUCT_BUG signal needs the real diff)", () => {
+  test("returns the empty string when nothing matches — the prompt renders that state and hunks stay fetchable on demand", () => {
     const out = scopePatchForSpec(patch, ["src/features/payments/**"]);
-    expect(out).toContain("tasks/list.tsx");
-    expect(out).toContain("billing/invoice.tsx");
+    expect(out).toBe("");
   });
 
   test("truncates a single oversized file section with a marker", () => {
