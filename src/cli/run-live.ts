@@ -51,7 +51,6 @@ export interface RunLiveOptions {
   out?: string;
   reportDir?: string;
   retry?: number;
-  driftAudit?: boolean;
   /**
    * Per-spec source-diff resolver, present exactly when `--failure-analysis`
    * was requested (the pipeline resolves the baseline up front). Null/absent
@@ -107,12 +106,10 @@ export async function runLiveSpecs(
 
   // Both pieces of automated analysis cost Claude turns; they only run when
   // the pipeline resolved a `--failure-analysis` baseline (diffProvider set).
-  // Disabling the failure analysis implicitly disables the drift audit too
-  // (the audit is rendered as supporting evidence under the classification).
-  // --no-drift-audit remains independent for "classify but skip the audit".
+  // The drift audit is an input to the classification (its findings feed the
+  // prompt), so the two are one unit: analysis on means audit on.
   const diffProvider = opts.diffProvider ?? null;
   const failureAnalysisEnabled = diffProvider != null;
-  const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
 
   // Failure-analysis auth is spec-independent, so hoist it out of the
   // per-spec worker. The diff and the drift audit only matter for specs that
@@ -144,7 +141,7 @@ export async function runLiveSpecs(
       if (outcome.kind !== "run") return { outcome, row: null };
       const row = await buildLiveReportRow(
         outcome,
-        { auth, diffProvider, reportDir, driftAuditEnabled },
+        { auth, diffProvider, reportDir },
         opts,
         cwd,
       );
@@ -184,7 +181,6 @@ async function buildLiveReportRow(
     auth: DriftAuth;
     diffProvider: DiffProvider | null;
     reportDir: string;
-    driftAuditEnabled: boolean;
   },
   opts: RunLiveOptions,
   cwd: string,
@@ -197,7 +193,7 @@ async function buildLiveReportRow(
     reportDir: ctx.reportDir,
   });
   const driftForSpec =
-    ctx.driftAuditEnabled && r.result.status === "failed" ? await runDriftAuditOne(r, opts, cwd) : null;
+    ctx.diffProvider && r.result.status === "failed" ? await runDriftAuditOne(r, opts, cwd) : null;
   const analysis =
     ctx.diffProvider && r.result.status === "failed"
       ? await analyzeOneLiveFailure(r, ctx.diffProvider, driftForSpec, ctx.auth, opts, cwd)
