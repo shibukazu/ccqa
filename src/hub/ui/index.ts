@@ -181,11 +181,11 @@ const HTML_BODY = `
         <div class="rd-head" id="rd-head"></div>
 
         <!-- Triage first: grading + learning is the most important action, so it
-             sits above the spec list rather than being buried below it. One
-             card holds the whole grading story: the graded counter (header),
-             the confusion matrix (or its empty state), and the learn CTA as
-             the card footer — grades are the learning job's input, so the
-             cause→effect reads top to bottom in a single surface. -->
+             sits above the spec list rather than being buried below it. The
+             heading row carries the graded counter; one card below it holds
+             the confusion matrix (or its empty state) with the learn CTA as
+             the card footer — grades are the learning job's input, so
+             grade → tally → learn reads top to bottom. -->
         <div class="triage-head" id="triage-head">
           <h3 style="font-size:14px" data-i18n="detail.triage">Triage</h3>
           <span class="triage-summary" id="triage-summary"></span>
@@ -1913,12 +1913,12 @@ const CLIENT_JS = `
     return det;
   }
 
-  // The grading action: an explicit question ("What was the real cause?") with
-  // the model's guess as muted context, a segmented single-select over the
-  // failure labels, and a status chip (ungraded / saved·matches / saved·
-  // corrected). One tap grades it. Optimistic PUT with rollback; on success it
-  // refreshes the confusion matrix. The English label value is what's sent and
-  // stored; the segment just shows its localized name.
+  // The grading action: an explicit question ("What was the real cause?"), a
+  // segmented single-select over the failure labels, and a status chip
+  // (ungraded / saved·matches / saved·corrected). One tap grades it.
+  // Optimistic PUT with rollback; on success it refreshes the confusion
+  // matrix. The English label value is what's sent and stored; the segment
+  // just shows its localized name.
   function triageGradeControl(runId, r, triageState) {
     var key = r.feature + "/" + r.spec;
     var predicted = r.analysis ? r.analysis.label : "UNKNOWN";

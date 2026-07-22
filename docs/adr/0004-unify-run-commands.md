@@ -28,6 +28,7 @@ Specifically:
 - `--report [dir]` is one flag. When set, the HTML report is always written; failure analysis and drift audit run by default. `--no-failure-analysis` opts out of the root-cause classification (and implicitly skips the drift audit, since the audit is rendered as evidence under the classification — without the classification the cost has nowhere to land). `--no-drift-audit` keeps the classification but skips the audit.
   *(Superseded in 1.4–1.6: classification became opt-in via `--failure-analysis [base]` — `--no-failure-analysis` and `--base` are gone — and `--no-drift-audit` was removed; the audit is an input to the classification and always runs with it. See `docs/running.md`.)*
 - `--base <ref>` and `--cwd <path>` are shared between `run` and `drift` (and `record` for `--cwd`).
+  *(Superseded in 1.4: `run` no longer has `--base` — the baseline is the value of `--failure-analysis [base]` / `--changed [base]`. `drift` keeps `--base`.)*
 - `--auto-fix <interactive|auto|skip>` replaces the `--auto` + `--no-interactive` 2-flag matrix on `record`.
 - `--changed` on `run` restricts execution to specs whose `relatedPaths` intersect the git diff, scoped to whatever `--base` resolves to.
 - `FailureAnalysisPromptInput` is generalised: deterministic runs pass `script` + `failureLog`, live runs pass an `ndTranscriptExcerpt` built from the failing step's log file. `ANALYSIS_PROMPT_VERSION` bumps 3 → 4 so old labels do not get mixed with new ones in accuracy measurements.
