@@ -127,7 +127,6 @@ export interface RunOptions {
    * [base]` and resolveAnalysisBase.
    */
   failureAnalysis?: boolean | string;
-  driftAudit?: boolean;
   evidence?: boolean;
   retry?: number;
   out?: string;
@@ -493,7 +492,6 @@ export async function executeRun(
     ...(typeof opts.retry === "number" ? { retry: opts.retry } : {}),
     concurrency: opts.concurrency ?? 1,
     ...(opts.profile ? { profile: opts.profile } : {}),
-    ...(opts.driftAudit !== false ? { driftAudit: true } : {}),
     diffProvider,
     hubContext: hubCtx,
     customPrompt,
@@ -795,11 +793,9 @@ async function analyzeDeterministicSummaries(
   // Failure classification is opt-in (`--failure-analysis [base]`): a null
   // diffProvider means no baseline was requested, so neither the
   // classification nor the drift audit runs — both cost Claude turns, and the
-  // audit is rendered as supporting evidence under the classification, so it
-  // has no home without it. --no-drift-audit remains an independent opt-out
-  // for "classify but skip the audit".
+  // audit is an input to the classification (its findings feed the prompt),
+  // so the two are one unit: opting into analysis always runs the audit.
   const failureAnalysisEnabled = diffProvider != null;
-  const driftAuditEnabled = failureAnalysisEnabled && opts.driftAudit !== false;
 
   const auth = failureAnalysisEnabled ? driftAuthAvailable() : { ok: false as const, reason: "skipped by flags" };
   const failed = summaries.filter(failedSpec);
@@ -818,7 +814,7 @@ async function analyzeDeterministicSummaries(
 
   // Drift audit runs first so its findings can feed the failure-analysis prompt.
   let driftResults: SpecResult[] = [];
-  if (driftAuditEnabled && auth.ok && failed.length > 0) {
+  if (failureAnalysisEnabled && auth.ok && failed.length > 0) {
     const targets = failed
       .map((s): SpecTarget | null => {
         const spec = findSpecInfo(s);

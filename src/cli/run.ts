@@ -53,10 +53,6 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Classify each failure (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) against the source diff since [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --failure-analysis=origin/main), or pass 'last-green' to diff each spec against the commit where it last passed (per-spec baselines from the hub; requires a hub connection). Off by default — no Claude calls without it.",
     )
     .option(
-      "--no-drift-audit",
-      "With --failure-analysis: skip the spec↔code drift audit shown in the report.",
-    )
-    .option(
       "--cwd <path>",
       "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
     )
