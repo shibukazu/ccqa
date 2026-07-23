@@ -5,7 +5,8 @@ import { analyzeDrift } from "../drift/analyze.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import type { SpecResult } from "../drift/types.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
-import type { AnalysisCustomPrompt } from "../prompts/custom-prompt.ts";
+import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
+import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import { loadAvailableBlocks, specKey, type SpecRef } from "../store/index.ts";
 import { specArtifactsDir } from "../targets/run-artifacts.ts";
 import { loadGeneratedManifest } from "../targets/llm-engine.ts";
@@ -53,6 +54,11 @@ export interface FailureAnalysisDeps {
   reportDir: string;
   model?: string;
   language?: string;
+  /**
+   * The project's stored analysis custom prompt (may carry per-target overlays).
+   * Resolved per spec by its target at analyze time — never injected whole — so
+   * one target's calibration can't contaminate another's classification.
+   */
   customPrompt: AnalysisCustomPrompt | null;
   triageUserPrompt: string | null;
 }
@@ -69,6 +75,8 @@ export interface SpecFailureInput {
   failureLog: string;
   /** Null when the spec file is gone; the classification is then withheld. */
   specYaml: string | null;
+  /** This spec's generation target — selects the custom-prompt overlay to apply. */
+  target: string;
   driftIssues: DraftIssue[] | null;
   /**
    * cwd-relative directory holding this spec's run artifacts, when it has one
@@ -85,6 +93,8 @@ export interface SpecFailureFields {
   analysisSkipped: string | null;
   diffExcerpt: string | null;
   analysisBase?: { ref: string; sha: string };
+  /** The overlay version actually applied to this row; absent when none was injected. */
+  customPromptVersion?: string;
 }
 
 export interface FailureAnalysisPass {
@@ -113,6 +123,11 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
           `failure analysis: source diff unavailable (${specDiff.error}) — analyzing without diff context`,
         );
       }
+      // Pick the overlay for THIS spec's target (its byTarget entry, else the
+      // un-scoped fallback). Resolved here, not once per run, so a mixed-target
+      // run injects the right calibration per row.
+      const customPrompt = resolveCustomPromptForTarget(deps.customPrompt, input.target);
+
       // The diff fields are recorded even when the classification below is
       // withheld: they are evidence a reviewer still wants on the row.
       const fields: SpecFailureFields = {
@@ -146,7 +161,7 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
           ...(input.artifactsDir ? { artifactsDir: input.artifactsDir } : {}),
           ...(deps.language ? { outputLanguage: deps.language } : {}),
           ...(deps.triageUserPrompt ? { triageUserPrompt: deps.triageUserPrompt } : {}),
-          ...(deps.customPrompt ? { customPrompt: deps.customPrompt } : {}),
+          ...(customPrompt ? { customPrompt } : {}),
         },
         {
           ...(deps.model ? { model: deps.model } : {}),
@@ -160,7 +175,11 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
         log.emitRaw(`\n${C.cyan}${C.bold}──────── failure analysis ────────${C.reset}\n`);
       }
       printAnalysis(featureName, specName, outcome.analysis);
-      return { ...fields, analysis: outcome.analysis };
+      return {
+        ...fields,
+        analysis: outcome.analysis,
+        ...(customPrompt ? { customPromptVersion: customPrompt.customPromptVersion } : {}),
+      };
     },
   };
 }
@@ -290,9 +309,13 @@ export async function analyzeExternalRows(
       readScript: () => readGeneratedTestSources(ref, deps.cwd),
       failureLog: row.failureLogExcerpt ?? "",
       specYaml: row.specYaml,
+      target: row.target ?? AGENT_BROWSER_TARGET,
       driftIssues,
       artifactsDir: readableArtifactsDir(ref, deps),
     });
+    // `fields` only carries customPromptVersion when an overlay was applied
+    // (optional, never present-with-undefined), so the plain spread is enough —
+    // same as analysisBase above.
     out.push({ ...row, ...fields, driftIssues });
   }
   return out;

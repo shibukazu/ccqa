@@ -48,6 +48,15 @@ describe("locatorToPlaywright", () => {
     );
   });
 
+  it("expands env refs in css locator values (regression: used to bake the literal ref)", () => {
+    // A `${VAR}` in a css/selector-engine string must become a process.env
+    // template literal — same as every semantic strategy — so a deletion-verify
+    // assert doesn't target a selector that can never match.
+    expect(locatorToPlaywright({ by: "css", value: "text=ccqa-item-${CCQA_RUN_ID}" })).toBe(
+      'page.locator(`text=ccqa-item-${process.env.CCQA_RUN_ID ?? ""}`)',
+    );
+  });
+
   it("renders positional picks as first/last/nth", () => {
     const css = { by: "css", value: "li.item" } as const;
     expect(locatorToPlaywright(css, "first")).toBe(`page.locator("li.item").first()`);

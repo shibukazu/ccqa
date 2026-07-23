@@ -21,7 +21,8 @@ import {
 } from "../store/index.ts";
 import type { HubContext } from "./hub-conn.ts";
 import { isStorageStateShape } from "./hub.ts";
-import type { AnalysisCustomPrompt } from "../prompts/custom-prompt.ts";
+import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
+import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import {
   DEFAULT_SESSION_PROFILE,
@@ -224,6 +225,7 @@ function analysisFieldsFor(
       failureLogExcerpt: a.failureLogExcerpt,
       diffExcerpt: a.diffExcerpt,
       ...(a.analysisBase ? { analysisBase: a.analysisBase } : {}),
+      ...(a.customPromptVersion ? { customPromptVersion: a.customPromptVersion } : {}),
     };
   }
   if (status === "failed") {
@@ -491,6 +493,8 @@ type LiveFailureAnalysis = {
   diffExcerpt: string | null;
   /** The baseline this spec's diff was taken against; absent when no diff was resolved. */
   analysisBase?: { ref: string; sha: string };
+  /** The overlay version actually applied to this row; absent when none was injected. */
+  customPromptVersion?: string;
 };
 
 /**
@@ -533,6 +537,8 @@ async function analyzeOneLiveFailure(
   if (specDiff.error) {
     log.info(`failure analysis: source diff unavailable (${specDiff.error}) — analyzing without diff context`);
   }
+  // Live specs are always the agent-browser target, so select that overlay.
+  const customPrompt = resolveCustomPromptForTarget(opts.customPrompt, AGENT_BROWSER_TARGET);
   const outcome = await analyzeFailure(
     {
       liveTranscriptExcerpt: excerpt,
@@ -545,7 +551,7 @@ async function analyzeOneLiveFailure(
       driftIssues: driftForSpec,
       ...(opts.language ? { outputLanguage: opts.language } : {}),
       ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),
-      ...(opts.customPrompt ? { customPrompt: opts.customPrompt } : {}),
+      ...(customPrompt ? { customPrompt } : {}),
     },
     { ...(opts.model ? { model: opts.model } : {}), cwd, getFileDiff: specDiff.fileDiff },
   );
@@ -558,6 +564,7 @@ async function analyzeOneLiveFailure(
     failureLogExcerpt: excerpt,
     diffExcerpt: specDiff.patch,
     analysisBase: { ref: specDiff.base.ref, sha: specDiff.base.sha },
+    ...(customPrompt ? { customPromptVersion: customPrompt.customPromptVersion } : {}),
   };
 }
 

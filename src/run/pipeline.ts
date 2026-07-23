@@ -43,6 +43,7 @@ import { loadProjectConfig } from "../config/project-config.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
 import { detectBranch, getGitHead } from "../cli/git-branch.ts";
+import { githubRunId, githubRunUrl } from "./github-run.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import { C } from "../cli/colors.ts";
@@ -416,11 +417,15 @@ export async function executeRun(
   if (hubCtx != null && opts.pushReport) {
     try {
       const branch = await detectBranch(cwd);
+      const ciRunId = githubRunId();
+      const runUrl = githubRunUrl();
       const opened = await hubCtx.hub.openRun({
         project: hubCtx.project,
         ...(branch ? { branch } : {}),
         ...(opts.profile ? { profile: opts.profile } : {}),
         ...(git.head ? { gitHead: git.head } : {}),
+        ...(ciRunId ? { ciRunId } : {}),
+        ...(runUrl ? { runUrl } : {}),
         kind: "run",
       });
       hubRunId = opened.id;
@@ -894,6 +899,7 @@ async function analyzeDeterministicSummaries(
       readScript: () => readScriptSafe(s.scriptFile),
       failureLog,
       specYaml,
+      target: AGENT_BROWSER_TARGET,
       driftIssues,
     });
 
@@ -908,6 +914,7 @@ async function analyzeDeterministicSummaries(
       analysis: fields.analysis,
       analysisSkipped: fields.analysisSkipped,
       ...(fields.analysisBase ? { analysisBase: fields.analysisBase } : {}),
+      ...(fields.customPromptVersion ? { customPromptVersion: fields.customPromptVersion } : {}),
       driftIssues,
       failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
       diffExcerpt: fields.diffExcerpt,
@@ -933,11 +940,15 @@ function buildReportEnvelope(args: {
   opts: RunOptions;
 }): ReportEnvelope {
   const { git, customPromptVersion, triageUserPromptHash, opts } = args;
+  const runUrl = githubRunUrl();
   return {
     schemaVersion: 1,
     kind: "run",
     createdAt: new Date().toISOString(),
-    runId: process.env["GITHUB_RUN_ID"] ?? null,
+    runId: githubRunId(),
+    // Omitted (not null) outside CI so report.json stays byte-identical to
+    // before this field — same convention as triageUserPromptHash below.
+    ...(runUrl !== null ? { runUrl } : {}),
     git: {
       head: git.head,
       base: git.base?.ref ?? null,

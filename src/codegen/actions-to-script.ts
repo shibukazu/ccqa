@@ -14,10 +14,12 @@ import type { RecordedAction } from "../ir/types.ts";
  * `ir/to-agent-browser.ts` mapping.
  *
  * Env refs (`$VAR` / `${VAR}`) in user-supplied values (form fills, asserted
- * URLs, asserted texts, opened URLs) are emitted as `process.env.VAR ?? ""`
- * template literals so the test never bakes a secret into the script.
- * Selectors do not go through this transform — they're treated as literal
- * strings (a stray `$` in a selector is escaped verbatim).
+ * URLs, asserted texts, opened URLs, and CSS/selector-engine strings) are
+ * emitted as `process.env.VAR ?? ""` template literals so the test never bakes
+ * a secret into the script — and, for selectors, so a `${RUN_ID}`-style ref
+ * resolves to the live value at run time instead of matching nothing. A `$`
+ * that doesn't form a well-formed ref (e.g. the `$=` "ends-with" operator) is
+ * preserved verbatim.
  */
 
 export interface StepMarker {
@@ -326,10 +328,10 @@ function actionToLine(action: RecordedAction): string | null {
           if (val) assertLine = `abAssertNotVisible(${jExpr("text=" + val)}, 180_000);`;
           break;
         case "element_visible":
-          if (sel) assertLine = `abAssertVisible(${j(sel)});`;
+          if (sel) assertLine = `abAssertVisible(${jExpr(sel)});`;
           break;
         case "element_not_visible":
-          if (sel) assertLine = `abAssertNotVisible(${j(sel)});`;
+          if (sel) assertLine = `abAssertNotVisible(${jExpr(sel)});`;
           break;
         case "url_contains":
           if (val) assertLine = `abAssertUrl(${jExpr(val)});`;
@@ -339,18 +341,18 @@ function actionToLine(action: RecordedAction): string | null {
           // (`:enabled`, `[disabled]`, …) verifies nothing — drop with a breadcrumb.
           if (isStateSelector(sel)) return tautologicalStateAssertMarker(action, sel);
           // is enabled is unreliable with text= and [aria-label=] selectors that may not exist in DOM
-          if (sel && !sel.startsWith("text=") && !sel.startsWith("[aria-label=")) assertLine = `abAssertEnabled(${j(sel)});`;
+          if (sel && !sel.startsWith("text=") && !sel.startsWith("[aria-label=")) assertLine = `abAssertEnabled(${jExpr(sel)});`;
           break;
         case "element_disabled":
           if (isStateSelector(sel)) return tautologicalStateAssertMarker(action, sel);
           // is enabled is unreliable with text= and [aria-label=] selectors that may not exist in DOM
-          if (sel && !sel.startsWith("text=") && !sel.startsWith("[aria-label=")) assertLine = `abAssertDisabled(${j(sel)});`;
+          if (sel && !sel.startsWith("text=") && !sel.startsWith("[aria-label=")) assertLine = `abAssertDisabled(${jExpr(sel)});`;
           break;
         case "element_checked":
-          if (sel) assertLine = `abAssertChecked(${j(sel)});`;
+          if (sel) assertLine = `abAssertChecked(${jExpr(sel)});`;
           break;
         case "element_unchecked":
-          if (sel) assertLine = `abAssertUnchecked(${j(sel)});`;
+          if (sel) assertLine = `abAssertUnchecked(${jExpr(sel)});`;
           break;
       }
       if (comment && assertLine) return `${comment}\n  ${assertLine}`;
@@ -372,8 +374,9 @@ function actionToLine(action: RecordedAction): string | null {
 
 /**
  * Render one argv token into TS source: env-expandable tokens (fill values,
- * URLs, find texts) become template literals via `jExpr`; everything else
- * (command words, flags, raw CSS selectors) is a plain string literal.
+ * URLs, find texts, CSS/selector-engine strings) become template literals via
+ * `jExpr` when they carry a `${VAR}` / `$VAR` ref; command words and flags are
+ * plain string literals.
  */
 function renderToken(token: AbToken): string {
   return token.expandsEnv ? jExpr(token.text) : j(token.text);
@@ -410,6 +413,6 @@ const j = (s: string) => JSON.stringify(s);
  * emits them as `${process.env.VAR ?? ""}` template-literal substitutions
  * instead of baking the literal `$VAR` string into the script. Used for
  * values that came from a spec or block param: form fills, opened URLs,
- * assertion texts/URLs.
+ * assertion texts/URLs, and selector strings carrying a `${RUN_ID}`-style ref.
  */
 const jExpr = (s: string) => envRefsToJsExpression(s);
