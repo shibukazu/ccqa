@@ -46,6 +46,14 @@ ${HTML_BODY}
 </html>`;
 }
 
+// Every screen's "Refresh" button, from one builder so they are identical:
+// same icon, same i18n label. data-i18n sits on the inner <span> (not the
+// button) so applyStaticI18n's textContent swap replaces the label without
+// dropping the icon.
+function refreshButton(id: string): string {
+  return `<button class="btn ghost sm" id="${id}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg> <span data-i18n="common.refresh">Refresh</span></button>`;
+}
+
 // Static page chrome (appbar/sidebar/views/sheet). All dynamic content is
 // populated by CLIENT_JS via createElement/textContent — this string never
 // carries API- or user-derived data.
@@ -108,9 +116,7 @@ const HTML_BODY = `
       <div class="page-bar">
         <h1 data-i18n="projects.title">Projects</h1>
         <div class="spacer"></div>
-        <button class="btn ghost sm" id="projects-refresh">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg> Refresh
-        </button>
+        ${refreshButton("projects-refresh")}
         <button class="btn primary sm" id="projects-new">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg> <span data-i18n="projects.new">New project</span>
         </button>
@@ -126,9 +132,7 @@ const HTML_BODY = `
       <div class="page-bar">
         <h1 data-i18n="runs.title">Runs</h1>
         <div class="spacer"></div>
-        <button class="btn ghost sm" id="runs-refresh">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg> Refresh
-        </button>
+        ${refreshButton("runs-refresh")}
       </div>
       <div class="content">
         <div class="card" id="runs-card">
@@ -149,7 +153,7 @@ const HTML_BODY = `
         <h1 data-i18n="perspectives.title">Perspectives</h1>
         <span class="updated" id="persp-updated"></span>
         <div class="spacer"></div>
-        <button class="btn ghost sm" id="persp-refresh" data-i18n="common.refresh">Refresh</button>
+        ${refreshButton("persp-refresh")}
       </div>
       <div class="content">
         <p id="persp-status" class="empty-note" hidden></p>
@@ -219,7 +223,7 @@ const HTML_BODY = `
       <div class="page-bar">
         <h1 data-i18n="learning.title">Learning</h1>
         <div class="spacer"></div>
-        <button class="btn ghost sm" id="jobs-refresh" data-i18n="common.refresh">Refresh</button>
+        ${refreshButton("jobs-refresh")}
       </div>
       <div class="content">
         <p id="jobs-status" class="empty-note" hidden></p>
@@ -242,7 +246,7 @@ const HTML_BODY = `
           <div class="proj-menu" id="sec-profile-menu" role="menu" hidden></div>
         </div>
         <div class="spacer"></div>
-        <button class="btn ghost sm" id="sec-load" data-i18n="common.refresh">Refresh</button>
+        ${refreshButton("sec-load")}
       </div>
       <div class="content">
         <div class="scope-note">
@@ -267,7 +271,7 @@ const HTML_BODY = `
       <div class="page-bar">
         <h1 data-i18n="prompts.title">Prompts</h1>
         <div class="spacer"></div>
-        <button class="btn ghost sm" id="pr-load" data-i18n="common.refresh">Refresh</button>
+        ${refreshButton("pr-load")}
       </div>
       <div class="content">
         <p id="prompts-status" class="empty-note" hidden></p>
@@ -509,6 +513,8 @@ const CSS = `
   .subline { margin-top: 3px; }
   .ci-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-family: var(--mono); color: var(--muted); background: var(--surface-3); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
   .ci-badge.local { color: var(--muted-2); }
+  a.ci-badge { text-decoration: none; }
+  a.ci-badge:hover { color: var(--fg); border-color: var(--fg-dim); }
 
   .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 7px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; border: 1px solid transparent; }
   .badge .d { width: 6px; height: 6px; border-radius: 50%; }
@@ -985,6 +991,7 @@ const CLIENT_JS = `
       "prompt.runnAgent.hint": "Notes ccqa keeps for itself while generating runn runbooks, refined automatically. Read-only — ccqa regenerates it.",
       "prompt.triageUser.hint": "Rules you write for how failure causes are classified — e.g. which kinds of changes count as a spec change on this project. Applied on every failure analysis.",
       "prompt.customPrompt.hint": "Learned from your triage grades to make ccqa classify failure causes the way you do. Read-only — a learning job creates it.",
+      "prompt.customPrompt.fallback": "Un-scoped (fallback)",
       "prompt.readonly": "read-only",
       "prompt.notSet": "Not set. Type guidance and Save to store it on the hub.",
       "prompt.notSetRo": "Not set yet — ccqa fills this in as it runs.",
@@ -1002,7 +1009,7 @@ const CLIENT_JS = `
       "jobs.failed": "The learning job failed.", "jobs.newCustomPrompt": "New custom prompt:", "jobs.empty": "No learning jobs yet. Grade failing specs on a run, then Learn."
     },
     ja: {
-      "nav.projects": "プロジェクト", "nav.runs": "実行", "nav.perspectives": "Perspectives", "nav.secrets": "シークレット",
+      "nav.projects": "プロジェクト", "nav.runs": "実行", "nav.perspectives": "テスト観点", "nav.secrets": "シークレット",
       "nav.prompts": "プロンプト", "nav.learning": "学習",
       "app.project": "プロジェクト", "app.profile": "プロファイル", "app.disconnect": "切断", "app.noProject": "プロジェクト未選択",
       "app.newProfile": "新規プロファイル",
@@ -1045,15 +1052,15 @@ const CLIENT_JS = `
       "learn.cta.desc": "採点した内容をもとに、ccqaが次回から同じように失敗の原因を分類できるよう学習します。",
       "learn.cta.run": "学習",
       "secrets.title": "シークレット", "prompts.title": "プロンプト", "learning.title": "学習",
-      "perspectives.title": "Perspectives",
+      "perspectives.title": "テスト観点",
       "perspectives.search": "ケースを検索…",
       "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
       "perspectives.filter.live": "ライブ", "perspectives.filter.norec": "未recordのみ",
       "perspectives.col.case": "ケース", "perspectives.col.mode": "モード", "perspectives.col.status": "状態",
       "perspectives.noHit": "該当するケースがありません。",
       "perspectives.updated": "最終更新:",
-      "perspectives.empty": "まだperspectivesがありません。ccqa perspectives を実行するか、recordすると自動作成されます。",
-      "perspectives.loadFailed": "perspectivesの読み込みに失敗しました",
+      "perspectives.empty": "まだテスト観点がありません。ccqa perspectives を実行するか、recordすると自動作成されます。",
+      "perspectives.loadFailed": "テスト観点の読み込みに失敗しました",
       "perspectives.mode.deterministic": "決定的", "perspectives.mode.live": "ライブ",
       "perspectives.status.runnable": "実行可能", "perspectives.status.notRecorded": "未record",
       "perspectives.metric.features": "機能", "perspectives.metric.cases": "テストケース",
@@ -1082,6 +1089,7 @@ const CLIENT_JS = `
       "prompt.runnAgent.hint": "runnランブック生成中にccqaが自分用に書き留め、自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
       "prompt.triageUser.hint": "失敗原因を分類するときのルールを自分で書きます（例: どの変更をこのプロジェクトで仕様変更として扱うか）。失敗分析のたびに適用されます。",
       "prompt.customPrompt.hint": "あなたの採点から学習し、ccqaがあなたと同じように失敗の原因を分類できるようにします。読み取り専用 — 学習ジョブが生成します。",
+      "prompt.customPrompt.fallback": "共通（フォールバック）",
       "prompt.readonly": "読み取り専用",
       "prompt.notSet": "未設定。指示を入力して保存するとハブに保存されます。",
       "prompt.notSetRo": "未設定 — ccqaが実行しながら自動で書き込みます。",
@@ -1289,9 +1297,21 @@ const CLIENT_JS = `
   }
 
   function ciBadge(run) {
-    return run.ciRunId
-      ? el("span", "ci-badge", "Actions #" + run.ciRunId)
-      : el("span", "ci-badge local", "local run");
+    if (!run.ciRunId) return el("span", "ci-badge local", "local run");
+    var text = "Actions #" + run.ciRunId;
+    // A link to the GitHub Actions run when the URL was recorded; same chip
+    // style otherwise (plain text).
+    if (run.runUrl) {
+      var a = el("a", "ci-badge", text);
+      a.href = run.runUrl;
+      a.target = "_blank";
+      a.rel = "noopener";
+      // The runs-list row is itself clickable (opens the run); opening the CI
+      // link must not also navigate the row.
+      a.addEventListener("click", function (e) { e.stopPropagation(); });
+      return a;
+    }
+    return el("span", "ci-badge", text);
   }
 
   function labelChip(label) {
@@ -3015,13 +3035,29 @@ const CLIENT_JS = `
   }
 
   // The custom prompt body is JSON (schemaVersion/basePromptVersion/customPromptVersion/
-  // generatedAt/guidance); the textarea only ever shows the learned guidance
-  // text, never the raw JSON. A parse failure falls back to the raw text so a
-  // malformed custom prompt still shows something instead of leaving the UI stuck.
+  // generatedAt/guidance, plus an optional per-target byTarget map); the textarea
+  // only ever shows the learned guidance text, never the raw JSON. When byTarget
+  // is present, the slot shows the un-scoped fallback (when it has guidance) plus
+  // each per-target overlay under a short header, so it reflects the whole learned
+  // set. A parse failure falls back to the raw text so a malformed custom prompt
+  // still shows something instead of leaving the UI stuck.
   function customPromptDisplayText(text) {
     if (text == null) return "";
+    var NL = "\\n";
     try {
       var parsed = JSON.parse(text);
+      var byTarget = parsed && parsed.byTarget;
+      if (byTarget && typeof byTarget === "object") {
+        var parts = [];
+        var top = typeof parsed.guidance === "string" ? parsed.guidance.trim() : "";
+        if (top) parts.push("[" + t("prompt.customPrompt.fallback") + "]" + NL + top);
+        Object.keys(byTarget).sort().forEach(function (tg) {
+          var entry = byTarget[tg];
+          var g = entry && typeof entry.guidance === "string" ? entry.guidance.trim() : "";
+          if (g) parts.push("[" + tg + "]" + NL + g);
+        });
+        if (parts.length) return parts.join(NL + NL);
+      }
       return typeof parsed.guidance === "string" ? parsed.guidance : text;
     } catch (e) {
       // A malformed custom prompt shouldn't blank the panel; show the raw body but

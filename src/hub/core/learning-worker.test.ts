@@ -134,4 +134,42 @@ describe("createLearningWorker", () => {
     const worker = createLearningWorker({ storage: empty, invoke: vi.fn(), authCheck: () => ({ ok: true }) });
     await expect(worker(makeJob())).rejects.toThrow(/no graded triage cases/);
   });
+
+  test("groups graded cases by target — one overlay per target, no-target feeds the fallback", async () => {
+    // beforeEach already seeded run-1 with a no-target record (headline "button
+    // not found"). Add one playwright and one agent-browser case.
+    await storage.triage.putActualCause("run-1", makeRecord({
+      feature: "checkout", spec: "pay", target: "playwright",
+      predicted: { label: "TEST_DRIFT", confidence: 0.8, headline: "pw-headline" },
+    }));
+    await storage.triage.putActualCause("run-1", makeRecord({
+      feature: "login", spec: "sso", target: "agent-browser",
+      predicted: { label: "SPEC_CHANGE", confidence: 0.8, headline: "ab-headline" },
+    }));
+
+    const invoke = vi.fn(async () => okResult("learned note"));
+    const worker = createLearningWorker({ storage, invoke, authCheck: () => ({ ok: true }) });
+    await storage.jobs.create(makeJob());
+    await worker(makeJob());
+
+    // One Claude call per group: fallback + agent-browser + playwright.
+    expect(invoke).toHaveBeenCalledTimes(3);
+
+    const stored = await storage.prompts.get("demo", "analysis-custom-prompt");
+    const cp = AnalysisCustomPromptSchema.parse(JSON.parse(new TextDecoder().decode(stored!.blob)));
+    // A per-target overlay for each target, versioned with the target name.
+    expect(Object.keys(cp.byTarget ?? {}).sort()).toEqual(["agent-browser", "playwright"]);
+    expect(cp.byTarget?.["playwright"]?.customPromptVersion).toContain("playwright");
+    // The no-target case feeds the un-scoped fallback (top-level guidance).
+    expect(cp.guidance).toBe("learned note");
+    expect(cp.customPromptVersion).toContain("-c1"); // one no-target case
+
+    // Isolation: the playwright group's prompt carries only its own case — no
+    // agent-browser or fallback evidence leaks into another target's learning.
+    const prompts = (invoke.mock.calls as unknown as Array<[{ prompt: string }]>).map((c) => c[0].prompt);
+    const pwPrompt = prompts.find((p) => p.includes("pw-headline"));
+    expect(pwPrompt).toBeDefined();
+    expect(pwPrompt).not.toContain("ab-headline");
+    expect(pwPrompt).not.toContain("button not found");
+  });
 });

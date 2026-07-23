@@ -18,9 +18,11 @@ export interface AbToken {
   text: string;
   /**
    * True for tokens carrying user-supplied values (fill text, URLs, find
-   * texts, accessible names, file paths) whose `${VAR}` / `$VAR` refs must
-   * resolve at test run time. False for command words, flags, and raw CSS
-   * selectors, which are always literal.
+   * texts, accessible names, file paths, and CSS/selector-engine strings)
+   * whose `${VAR}` / `$VAR` refs must resolve at test run time. False for
+   * command words and flags, which are always literal. A `$` in a selector
+   * that doesn't form a well-formed ref (e.g. the `$=` "ends-with" operator)
+   * is preserved verbatim by the renderer.
    */
   expandsEnv: boolean;
 }
@@ -66,16 +68,16 @@ export function toAgentBrowserArgs(action: RecordedAction): AbToken[] | null {
       return [lit("scroll"), lit(action.direction ?? "down"), ...(action.pixels ? [lit(action.pixels)] : [])];
     case "select": {
       if (!action.locator) return null;
-      return [lit("select"), lit(locatorToSelector(action.locator)), val(action.value ?? "")];
+      return [lit("select"), val(locatorToSelector(action.locator)), val(action.value ?? "")];
     }
     case "drag": {
       if (!action.locator || !action.target) return null;
-      return [lit("drag"), lit(locatorToSelector(action.locator)), lit(locatorToSelector(action.target))];
+      return [lit("drag"), val(locatorToSelector(action.locator)), val(locatorToSelector(action.target))];
     }
     case "upload": {
       const files = action.files ?? [];
       if (!action.locator || files.length === 0) return null;
-      return [lit("upload"), lit(locatorToSelector(action.locator)), ...files.map(val)];
+      return [lit("upload"), val(locatorToSelector(action.locator)), ...files.map(val)];
     }
     case "wait": {
       const loc = action.locator;
@@ -115,7 +117,7 @@ function interactionToArgs(action: RecordedAction): AbToken[] | null {
   // `focus` exists only under `find`, so it always takes the find form.
   const needsFind = loc.by !== "css" || action.index !== undefined || action.action === "focus";
   if (!needsFind) {
-    const args = [lit(abAction), lit(loc.value)];
+    const args = [lit(abAction), val(loc.value)];
     if (takesInput) args.push(val(action.value ?? ""));
     return args;
   }
@@ -124,14 +126,15 @@ function interactionToArgs(action: RecordedAction): AbToken[] | null {
   const out = [lit("find")];
   if (action.index !== undefined) {
     // Positional pick: the locator must be a raw CSS selector (the inner
-    // selector of `find first/last/nth`), emitted literally.
+    // selector of `find first/last/nth`), rendered through the env-ref-aware
+    // path so a `${VAR}` ref inside it resolves at run time.
     if (loc.by !== "css") return null;
     if (action.index === "first" || action.index === "last") {
       out.push(lit(action.index));
     } else {
       out.push(lit("nth"), lit(String(action.index)));
     }
-    out.push(lit(loc.value));
+    out.push(val(loc.value));
   } else {
     if (loc.by === "css") return null; // bare css has no find form
     out.push(lit(loc.by), val(loc.value));

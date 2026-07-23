@@ -3,7 +3,13 @@ import { invokeClaudeStreaming } from "../../claude/invoke.ts";
 import type { FailureLabel } from "../../report/schema.ts";
 import { ANALYSIS_PROMPT_VERSION, buildFailureAnalysisPrompt } from "../../report/prompt.ts";
 import { LEARNING_SYSTEM_PROMPT, buildLearningUserPrompt } from "../../prompts/custom-prompt-learning.ts";
-import { type AnalysisCustomPrompt, AnalysisCustomPromptSchema, type GradedCase } from "../../prompts/custom-prompt.ts";
+import {
+  type AnalysisCustomPrompt,
+  type AnalysisCustomPromptOverlay,
+  AnalysisCustomPromptSchema,
+  type GradedCase,
+  overlayAsPrompt,
+} from "../../prompts/custom-prompt.ts";
 import type { LearningJob } from "../contract/schema.ts";
 import type { HubStorage } from "./storage/types.ts";
 
@@ -57,45 +63,12 @@ function evidenceSignalFor(headline: string, note: string | undefined): string {
 export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJob) => Promise<void> {
   const { storage, invoke = invokeClaudeStreaming, authCheck = driftAuthAvailable } = deps;
 
-  return async function runLearningJob(job: LearningJob): Promise<void> {
-    // Learning always needs Claude. Check auth per-job (not at boot) so a hub
-    // with no credentials still starts — only running a learning job fails,
-    // with a clear reason.
-    const auth = authCheck();
-    if (!auth.ok) {
-      throw new Error(`triage learning needs Claude auth on the hub: ${auth.reason}`);
-    }
-
-    const runLimit = job.input.runLimit > 0 ? job.input.runLimit : DEFAULT_RUN_LIMIT;
-
-    // Gather every graded case across recent runs, straight from the triage
-    // store (each record already carries the model's prediction and the human
-    // label). Only labelled cases count; UNKNOWN isn't a gradeable cause.
-    const runs = await storage.runs.list({ project: job.project, limit: runLimit });
-    const cases: GradedCase[] = [];
-    for (const run of runs) {
-      const records = await storage.triage.list(run.id);
-      for (const r of records) {
-        const actual = r.actualCause as FailureLabel;
-        cases.push({
-          predicted: r.predicted.label,
-          actualCause: actual,
-          evidenceSignal: evidenceSignalFor(r.predicted.headline, r.note),
-          matches: r.predicted.label === actual,
-        });
-      }
-    }
-
-    if (cases.length === 0) {
-      throw new Error("no graded triage cases for this project — grade some failing specs first");
-    }
-
-    // Record the resolved inputs now, so a later failure still reports the
-    // real case count instead of the create-time 0.
-    await storage.jobs.update(job.id, { input: { runLimit, casesConsidered: cases.length } });
-
-    // Have Claude write the calibration note. If it returns nothing usable,
-    // fail — don't silently store an empty custom prompt.
+  /**
+   * One Claude call turning a batch of graded cases into a calibration note.
+   * Returns null when nothing usable came back so the caller can drop that
+   * group's overlay without failing the whole job.
+   */
+  const learnGuidance = async (cases: GradedCase[]): Promise<string | null> => {
     const { result, isError } = await invoke(
       {
         prompt: buildLearningUserPrompt(cases.slice(0, LEARNING_MAX_CASES)),
@@ -109,25 +82,108 @@ export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJo
       () => {},
     );
     const guidance = result?.trim();
-    if (isError || !guidance) {
+    return isError || !guidance ? null : guidance;
+  };
+
+  return async function runLearningJob(job: LearningJob): Promise<void> {
+    // Learning always needs Claude. Check auth per-job (not at boot) so a hub
+    // with no credentials still starts — only running a learning job fails,
+    // with a clear reason.
+    const auth = authCheck();
+    if (!auth.ok) {
+      throw new Error(`triage learning needs Claude auth on the hub: ${auth.reason}`);
+    }
+
+    const runLimit = job.input.runLimit > 0 ? job.input.runLimit : DEFAULT_RUN_LIMIT;
+
+    // Gather every graded case across recent runs, straight from the triage
+    // store (each record already carries the model's prediction, the human
+    // label, and — when known — the row's generation target). Only labelled
+    // cases count; UNKNOWN isn't a gradeable cause.
+    const runs = await storage.runs.list({ project: job.project, limit: runLimit });
+    const cases: GradedCase[] = [];
+    for (const run of runs) {
+      const records = await storage.triage.list(run.id);
+      for (const r of records) {
+        const actual = r.actualCause as FailureLabel;
+        cases.push({
+          predicted: r.predicted.label,
+          actualCause: actual,
+          evidenceSignal: evidenceSignalFor(r.predicted.headline, r.note),
+          matches: r.predicted.label === actual,
+          ...(r.target ? { target: r.target } : {}),
+        });
+      }
+    }
+
+    if (cases.length === 0) {
+      throw new Error("no graded triage cases for this project — grade some failing specs first");
+    }
+
+    // Record the resolved inputs now, so a later failure still reports the
+    // real case count instead of the create-time 0.
+    await storage.jobs.update(job.id, { input: { runLimit, casesConsidered: cases.length } });
+
+    // Split by target so one target's calibration never leaks into another.
+    // Cases with no recorded target (old grades) feed the un-scoped fallback
+    // note — used for any target without its own overlay — not every target.
+    const fallbackCases: GradedCase[] = [];
+    const targetCases = new Map<string, GradedCase[]>();
+    for (const c of cases) {
+      if (!c.target) {
+        fallbackCases.push(c);
+        continue;
+      }
+      const list = targetCases.get(c.target) ?? [];
+      list.push(c);
+      targetCases.set(c.target, list);
+    }
+
+    // One Claude call per group (fallback + one per target). The groups are
+    // disjoint and independent, so run them concurrently — a serial loop would
+    // multiply job wall time by the target count on the single-worker queue. A
+    // group whose call returns nothing usable is dropped (no overlay for it),
+    // not fatal — only an entirely empty result fails the job, keeping the
+    // "never store an empty custom prompt" contract.
+    const generatedAt = new Date().toISOString();
+    const sortedTargets = [...targetCases.keys()].sort((a, b) => a.localeCompare(b));
+    const [fallbackGuidance, ...targetGuidances] = await Promise.all([
+      fallbackCases.length > 0 ? learnGuidance(fallbackCases) : Promise.resolve(null),
+      ...sortedTargets.map((target) => learnGuidance(targetCases.get(target)!)),
+    ]);
+
+    // Fold into byTarget in sorted-target order so the stored key order is
+    // deterministic regardless of which call settled first.
+    const byTarget: Record<string, AnalysisCustomPromptOverlay> = {};
+    sortedTargets.forEach((target, i) => {
+      const guidance = targetGuidances[i];
+      if (guidance) {
+        byTarget[target] = { customPromptVersion: `${generatedAt}-${target}-c${targetCases.get(target)!.length}`, generatedAt, guidance };
+      }
+    });
+
+    if (!fallbackGuidance && Object.keys(byTarget).length === 0) {
       throw new Error("triage learning: Claude returned no usable calibration note");
     }
 
     // The custom prompt in place before this job — the "before" side of the preview.
     const prevCustomPrompt = await loadStoredCustomPrompt(storage, job.project);
 
-    const generatedAt = new Date().toISOString();
     const customPrompt: AnalysisCustomPrompt = {
       schemaVersion: 1,
       basePromptVersion: ANALYSIS_PROMPT_VERSION,
-      customPromptVersion: `${generatedAt}-c${cases.length}`,
+      customPromptVersion: `${generatedAt}-c${fallbackCases.length}`,
       generatedAt,
-      guidance,
+      guidance: fallbackGuidance ?? "",
+      ...(Object.keys(byTarget).length > 0 ? { byTarget } : {}),
     };
     AnalysisCustomPromptSchema.parse(customPrompt); // self-check before storing
 
-    const beforePrompt = buildFailureAnalysisPrompt({ ...PROMPT_PREVIEW_FIXTURE, customPrompt: prevCustomPrompt });
-    const afterPrompt = buildFailureAnalysisPrompt({ ...PROMPT_PREVIEW_FIXTURE, customPrompt });
+    // The preview shows a representative overlay (the fallback if it has
+    // guidance, else the first target's) so it reflects what the job learned
+    // even when every case was target-scoped.
+    const beforePrompt = buildFailureAnalysisPrompt({ ...PROMPT_PREVIEW_FIXTURE, customPrompt: representativeOverlay(prevCustomPrompt) });
+    const afterPrompt = buildFailureAnalysisPrompt({ ...PROMPT_PREVIEW_FIXTURE, customPrompt: representativeOverlay(customPrompt) });
 
     await storage.prompts.put(job.project, "analysis-custom-prompt", new TextEncoder().encode(JSON.stringify(customPrompt)), {
       customPromptVersion: customPrompt.customPromptVersion,
@@ -140,6 +196,20 @@ export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJo
       result: { customPromptVersion: customPrompt.customPromptVersion, beforePrompt, afterPrompt },
     });
   };
+}
+
+/**
+ * A single representative overlay for the before/after prompt preview: the
+ * un-scoped fallback when it has guidance, else the first target overlay by
+ * name, else null. Only the preview uses this — the stored blob keeps every
+ * overlay; run-time injection picks per target (resolveCustomPromptForTarget).
+ */
+function representativeOverlay(cp: AnalysisCustomPrompt | null): AnalysisCustomPrompt | null {
+  if (!cp) return null;
+  if (cp.guidance.trim()) return overlayAsPrompt(cp, cp);
+  const firstTarget = cp.byTarget ? Object.keys(cp.byTarget).sort()[0] : undefined;
+  const overlay = firstTarget ? cp.byTarget?.[firstTarget] : undefined;
+  return overlay ? overlayAsPrompt(cp, overlay) : null;
 }
 
 /** Read the currently-stored custom prompt, or null when there is none / it's unreadable. */

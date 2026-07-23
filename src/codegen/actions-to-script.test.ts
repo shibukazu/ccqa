@@ -222,12 +222,42 @@ describe("actionsToScript", () => {
       expect(script).toContain('ab("fill", "x", "plain literal")');
     });
 
-    it("does not transform selectors (a $ in a selector is treated literally)", () => {
+    it("expands ${VAR} in a css selector on an element_not_visible assert (deletion-verify bug)", () => {
+      // The reported bug: the css selector's `${VAR}` baked in verbatim, so the
+      // selector matched nothing and the deletion assert passed unconditionally.
       const actions: RecordedAction[] = [
-        { action: "click", locator: css("[data-id='$weird']") },
+        { action: "assert", assert: "element_not_visible", locator: css("text=ccqa-item-${CCQA_RUN_ID}") },
       ];
       const script = actionsToScript({ actions, testName: "demo" });
-      expect(script).toContain('ab("click", "[data-id=\'$weird\']")');
+      expect(script).toContain('abAssertNotVisible(`text=ccqa-item-${process.env.CCQA_RUN_ID ?? ""}`);');
+      expect(script).not.toMatch(/ccqa-item-\$\{CCQA_RUN_ID\}/);
+    });
+
+    it("expands ${VAR} in a css selector on an interaction (click)", () => {
+      const actions: RecordedAction[] = [
+        { action: "click", locator: css("[data-row='item-${CCQA_RUN_ID}']") },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("click", `[data-row=\'item-${process.env.CCQA_RUN_ID ?? ""}\']`)');
+    });
+
+    it("escapes backticks in a css selector carrying an env ref (no template-literal breakout)", () => {
+      const actions: RecordedAction[] = [
+        { action: "assert", assert: "element_not_visible", locator: css("text=`x` ${CCQA_RUN_ID}") },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      // The ref expands and the literal backticks are escaped so they can't
+      // close the emitted template literal early.
+      expect(script).toContain('${process.env.CCQA_RUN_ID ?? ""}');
+      expect(script).toContain("\\`x\\`");
+    });
+
+    it("keeps a CSS `$=` ends-with operator literal (not a well-formed env ref)", () => {
+      const actions: RecordedAction[] = [
+        { action: "click", locator: css("[href$='.pdf']") },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("click", "[href$=\'.pdf\']")');
     });
 
     it("expands env refs in `wait` text locators (regression: used to emit a plain string)", () => {

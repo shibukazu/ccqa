@@ -30,12 +30,13 @@ async function json(res: Response): Promise<any> {
  * `RunReportDataSchema` plus a stub `index.html`, packed as a tar.gz — the
  * exact shape `POST /api/v1/runs` expects.
  */
-function makeReportTarGz(opts: { status?: "passed" | "failed" } = {}): Uint8Array {
+function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; runUrl?: string } = {}): Uint8Array {
   const report: RunReportData = {
     schemaVersion: 1,
     kind: "run",
     createdAt: new Date().toISOString(),
-    runId: null,
+    runId: opts.runId ?? null,
+    ...(opts.runUrl ? { runUrl: opts.runUrl } : {}),
     git: { head: null, base: null },
     model: null,
     language: null,
@@ -285,6 +286,23 @@ describe("hub API server", () => {
       expect(run.specs).toEqual({ total: 1, passed: 1, failed: 0 });
     });
 
+    test("POST derives ciRunId + runUrl from the report so the UI can link to the CI run", async () => {
+      const tarGz = makeReportTarGz({
+        status: "passed",
+        runId: "998877",
+        runUrl: "https://github.com/acme/webapp/actions/runs/998877",
+      });
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=demo`, authed({
+        method: "POST",
+        headers: { "Content-Type": "application/gzip" },
+        body: tarGz,
+      }));
+      expect(res.status).toBe(201);
+      const run = await json(res);
+      expect(run.ciRunId).toBe("998877");
+      expect(run.runUrl).toBe("https://github.com/acme/webapp/actions/runs/998877");
+    });
+
     test("POST without ?project returns 400", async () => {
       const res = await fetch(`${baseUrl}/api/v1/runs`, authed({
         method: "POST",
@@ -437,6 +455,18 @@ describe("hub API server", () => {
       expect(res.status).toBe(201);
       const run = await json(res);
       expect(run.gitHead).toBe(sha);
+    });
+
+    test("POST /runs/open records ?ciRunId=/?runUrl= so an incremental CI run links back", async () => {
+      const runUrl = "https://github.com/acme/webapp/actions/runs/424242";
+      const res = await fetch(
+        `${baseUrl}/api/v1/runs/open?project=demo&ciRunId=424242&runUrl=${encodeURIComponent(runUrl)}`,
+        authed({ method: "POST" }),
+      );
+      expect(res.status).toBe(201);
+      const run = await json(res);
+      expect(run.ciRunId).toBe("424242");
+      expect(run.runUrl).toBe(runUrl);
     });
 
     test("PATCH with one row (no done) updates the report and specs, and stays running", async () => {

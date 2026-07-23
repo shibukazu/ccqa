@@ -110,6 +110,9 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
  * Render a locator (plus positional pick) as a Playwright locator expression.
  * Semantic strategies map 1:1 onto the getBy* family; `by: "css"` keeps its
  * raw selector-engine string (locator() accepts `text=...` forms verbatim).
+ * Every locator value — css included — goes through `jExpr`, so a `${VAR}` /
+ * `$VAR` ref in a recorded selector expands to a `process.env` template
+ * literal instead of baking the literal ref text into the selector.
  */
 export function locatorToPlaywright(locator: Locator, index?: LocatorIndex): string {
   let expr: string;
@@ -142,7 +145,7 @@ export function locatorToPlaywright(locator: Locator, index?: LocatorIndex): str
       expr = `page.getByTestId(${jExpr(locator.value)})`;
       break;
     case "css":
-      expr = `page.locator(${j(locator.value)})`;
+      expr = `page.locator(${jExpr(locator.value)})`;
       break;
   }
   if (index === "first") return `${expr}.first()`;

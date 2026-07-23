@@ -83,6 +83,7 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
         gitHead: report.git.head,
         promptVersion: report.promptVersion,
         ciRunId: report.runId,
+        runUrl: report.runUrl ?? null,
         reportCreatedAt: report.createdAt,
         createdAt: new Date().toISOString(),
       };
@@ -116,6 +117,10 @@ export function createOpenRunHandler(config: OpenRunHandlerConfig) {
   return async (ctx: RouteContext): Promise<void> => {
     const { project, branch, profile, kind } = parseRunScope(ctx);
     const gitHead = ctx.url.searchParams.get("gitHead");
+    // Attributed from the start (like gitHead) so an incremental run that dies
+    // before its final reconcile patch still links back to its CI run.
+    const ciRunId = ctx.url.searchParams.get("ciRunId");
+    const runUrl = ctx.url.searchParams.get("runUrl");
 
     const now = new Date().toISOString();
     const run: Run = {
@@ -129,7 +134,8 @@ export function createOpenRunHandler(config: OpenRunHandlerConfig) {
       specs: { total: 0, passed: 0, failed: 0 },
       gitHead: gitHead || null,
       promptVersion: "",
-      ciRunId: null,
+      ciRunId: ciRunId || null,
+      runUrl: runUrl || null,
       reportCreatedAt: now,
       createdAt: now,
     };
@@ -153,6 +159,7 @@ const PatchRunRequestSchema = z.object({
       language: z.string().nullable().optional(),
       promptVersion: z.string().optional(),
       customPromptVersion: z.string().nullable().optional(),
+      runUrl: z.string().nullable().optional(),
       triageUserPromptHash: z.string().optional(),
     })
     .partial()
@@ -291,6 +298,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
         ...(reportMeta?.language !== undefined ? { language: reportMeta.language } : {}),
         ...(reportMeta?.promptVersion !== undefined ? { promptVersion: reportMeta.promptVersion } : {}),
         ...(reportMeta?.customPromptVersion !== undefined ? { customPromptVersion: reportMeta.customPromptVersion } : {}),
+        ...(reportMeta?.runUrl !== undefined ? { runUrl: reportMeta.runUrl } : {}),
         ...(reportMeta?.triageUserPromptHash !== undefined ? { triageUserPromptHash: reportMeta.triageUserPromptHash } : {}),
       };
       const merged = mergeResults(current?.results ?? [], rows);

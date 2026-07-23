@@ -89,6 +89,10 @@ export interface HubClient {
     profile?: string;
     kind?: "run" | "drift";
     gitHead?: string;
+    /** CI run id (GITHUB_RUN_ID) and its run URL, stamped at open time so an
+     *  interrupted incremental run still links back to its CI run. */
+    ciRunId?: string;
+    runUrl?: string;
   }): Promise<Run>;
   /** Add finished spec rows (+ evidence) to a running run; `done` closes it. */
   patchRun(id: string, body: PatchRunRequest): Promise<Run>;
@@ -255,6 +259,8 @@ export function createHubClient(opts: HubClientOptions): HubClient {
       if (meta.profile) params.set("profile", meta.profile);
       if (meta.kind) params.set("kind", meta.kind);
       if (meta.gitHead) params.set("gitHead", meta.gitHead);
+      if (meta.ciRunId) params.set("ciRunId", meta.ciRunId);
+      if (meta.runUrl) params.set("runUrl", meta.runUrl);
       return json(`/api/v1/runs/open?${params}`, { method: "POST" });
     },
     patchRun(id, body) {

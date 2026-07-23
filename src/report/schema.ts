@@ -235,6 +235,14 @@ export const ReportSpecResultSchema = z.object({
   /** Human-readable reason when a failed spec was NOT analyzed (no auth, no spec.yaml, ...). */
   analysisSkipped: z.string().nullable(),
   /**
+   * The analysis-custom-prompt overlay version actually applied to THIS row's
+   * failure analysis. Per-row (not just per-run) because per-target overlays
+   * mean different specs of one run can use different overlays; the envelope's
+   * `customPromptVersion` records only the un-scoped fallback. Optional (omitted
+   * when no overlay was injected) so older report.json stays valid byte-for-byte.
+   */
+  customPromptVersion: z.string().optional(),
+  /**
    * The baseline THIS spec's diff was taken against. Matches the envelope's
    * git.base for fixed baselines; under `--failure-analysis=last-green` each
    * spec has its own (the commit where it last passed). Optional so older
@@ -314,6 +322,12 @@ export const RunReportDataSchema = z.object({
   createdAt: z.string(),
   /** GITHUB_RUN_ID when running in Actions; null locally. Links the report back to its CI run. */
   runId: z.string().nullable(),
+  /**
+   * The GitHub Actions run URL (GITHUB_SERVER_URL/REPOSITORY/RUN_ID). Present
+   * only when running in Actions; omitted (not null) locally so report.json
+   * written outside CI stays byte-for-byte identical to before this field.
+   */
+  runUrl: z.string().nullable().optional(),
   git: GitEnvelopeSchema,
   model: z.string().nullable(),
   /**

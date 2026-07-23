@@ -53,6 +53,12 @@ export const RunSchema = z.object({
   promptVersion: z.string(),
   /** The CI run id from the report (e.g. GITHUB_RUN_ID); null when run locally. */
   ciRunId: z.string().nullable(),
+  /**
+   * URL of the CI run (the GitHub Actions run page), so the UI can link the
+   * `Actions #<id>` chip to it. Optional so runs stored before this field, and
+   * runs pushed outside CI, stay valid.
+   */
+  runUrl: z.string().nullable().optional(),
   /** When the report was produced (the actual test run time). */
   reportCreatedAt: z.string(),
   /** When the hub accepted the push (list ordering key). */

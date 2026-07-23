@@ -21,6 +21,19 @@ import { FailureLabelSchema } from "../report/schema.ts";
  * into ccqa itself.
  */
 
+/**
+ * One per-target overlay: the same learned-note fields as the top-level, minus
+ * `basePromptVersion` (shared across the whole document — the base analysis
+ * prompt is target-agnostic).
+ */
+export const AnalysisCustomPromptOverlaySchema = z.object({
+  /** This overlay's own version — the per-target stratification key. */
+  customPromptVersion: z.string(),
+  generatedAt: z.string(),
+  guidance: z.string(),
+});
+export type AnalysisCustomPromptOverlay = z.infer<typeof AnalysisCustomPromptOverlaySchema>;
+
 export const AnalysisCustomPromptSchema = z.object({
   schemaVersion: z.literal(1),
   /** ANALYSIS_PROMPT_VERSION this custom prompt was built against. */
@@ -28,10 +41,59 @@ export const AnalysisCustomPromptSchema = z.object({
   /** Custom prompt's own version — the stratification key for accuracy tracking. */
   customPromptVersion: z.string(),
   generatedAt: z.string(),
-  /** Claude-written calibration note distilled from graded triage cases. */
+  /**
+   * Claude-written calibration note. When `byTarget` is present, this is the
+   * un-scoped FALLBACK note (learned from graded cases that carried no target),
+   * used for any target without its own overlay. May be empty when every graded
+   * case had a target — an empty note injects nothing (buildCustomPromptBlock).
+   */
   guidance: z.string(),
+  /**
+   * Per-target overlays keyed by generation target ("agent-browser",
+   * "playwright", ...). A run's failure analysis uses the entry matching the
+   * spec's target and falls back to the top-level note otherwise. Optional so
+   * blobs written before per-target scoping stay valid — they're all fallback.
+   */
+  byTarget: z.record(z.string(), AnalysisCustomPromptOverlaySchema).optional(),
 });
 export type AnalysisCustomPrompt = z.infer<typeof AnalysisCustomPromptSchema>;
+
+/**
+ * Lift one overlay into a standalone single-target `AnalysisCustomPrompt`: the
+ * overlay's own note fields plus the document-wide `schemaVersion` /
+ * `basePromptVersion`, and never a `byTarget` map. Passing the document itself
+ * as the overlay yields the un-scoped top-level note as a clean single prompt.
+ */
+export function overlayAsPrompt(
+  base: Pick<AnalysisCustomPrompt, "schemaVersion" | "basePromptVersion">,
+  overlay: AnalysisCustomPromptOverlay,
+): AnalysisCustomPrompt {
+  return {
+    schemaVersion: base.schemaVersion,
+    basePromptVersion: base.basePromptVersion,
+    customPromptVersion: overlay.customPromptVersion,
+    generatedAt: overlay.generatedAt,
+    guidance: overlay.guidance,
+  };
+}
+
+/**
+ * The effective single overlay for one target: its `byTarget` entry when it has
+ * usable guidance, else the un-scoped top-level note when THAT has guidance,
+ * else null. The returned value is a plain single-target `AnalysisCustomPrompt`
+ * (no `byTarget`), so every downstream consumer — the prompt block and the
+ * recorded `customPromptVersion` — sees exactly what was injected for the row.
+ */
+export function resolveCustomPromptForTarget(
+  cp: AnalysisCustomPrompt | null | undefined,
+  target: string,
+): AnalysisCustomPrompt | null {
+  if (!cp) return null;
+  const scoped = cp.byTarget?.[target];
+  if (scoped && scoped.guidance.trim()) return overlayAsPrompt(cp, scoped);
+  if (cp.guidance.trim()) return overlayAsPrompt(cp, cp);
+  return null;
+}
 
 /**
  * Render the custom prompt as a prompt section, or "" when there's nothing to add.
@@ -59,6 +121,13 @@ export interface GradedCase {
   actualCause: z.infer<typeof FailureLabelSchema>;
   evidenceSignal: string;
   matches: boolean;
+  /**
+   * Generation target of the graded row ("agent-browser", "playwright", ...),
+   * or undefined for grades recorded before the target was tracked. The
+   * learning job groups by this so one target's calibration never contaminates
+   * another; undefined cases feed the un-scoped fallback note, not every target.
+   */
+  target?: string;
 }
 
 /**
