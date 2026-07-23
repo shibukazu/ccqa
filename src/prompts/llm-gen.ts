@@ -34,6 +34,13 @@ export interface LlmGenPromptInput {
   relatedPaths: string[];
   /** Mechanical-emit draft (playwright): the recorded ground truth. */
   draft?: { path: string; contents: string };
+  /**
+   * An extra "do not remove this from the draft" rule the target contributes
+   * (e.g. Playwright's step-evidence calls). Only added when the target
+   * supplies it, so non-draft / non-capturing targets get no bogus rule. The
+   * target owns the exact call/symbol text so prompt, emitter, and gate agree.
+   */
+  draftInvariant?: string;
   resources: PromptResource[];
   conventionSections: PromptConventionSection[];
   /** Hub prompt bundle (project guidance + agent learnings), pre-concatenated. */
@@ -46,10 +53,13 @@ export interface LlmGenPromptInput {
 }
 
 /**
- * The reuse-first contract — the four rules that make generated tests build
- * on the consumer repo's existing assets instead of re-implementing them.
+ * The reuse-first contract — the rules that make generated tests build on the
+ * consumer repo's existing assets instead of re-implementing them. `draft*`
+ * rules apply only when a mechanical draft is present; `draftInvariant`, when
+ * supplied by the target, adds one more "do not drop this from the draft" rule
+ * (e.g. Playwright's step-evidence calls).
  */
-export function reuseFirstContract(hasDraft: boolean): string {
+export function reuseFirstContract(hasDraft: boolean, draftInvariant?: string): string {
   const rules = [
     `1. **Reuse first.** Before writing any code, search the declared resources ` +
       `(path resources with Glob/Grep/Read; package resources under their resolved roots) ` +
@@ -72,6 +82,7 @@ export function reuseFirstContract(hasDraft: boolean): string {
         `no reordering, dropping, or weakening. You may rewrite locators when the ` +
         `conventions or the sources under \`relatedPaths\` justify a better one.`,
     );
+    if (draftInvariant) rules.push(`5. ${draftInvariant}`);
   }
   return `## Reuse contract\n\n${rules.join("\n")}`;
 }
@@ -143,7 +154,7 @@ export function buildLlmGenPrompt(input: LlmGenPromptInput): string {
     sections.push(`## Project prompt guidance\n\n${input.promptBundle}`);
   }
 
-  sections.push(reuseFirstContract(input.draft !== undefined));
+  sections.push(reuseFirstContract(input.draft !== undefined, input.draftInvariant));
   sections.push(outputContract(input.outDir, input.extraWriteRoots));
 
   return sections.join("\n\n") + languageDirective(input.language);

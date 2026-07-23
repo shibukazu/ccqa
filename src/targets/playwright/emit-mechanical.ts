@@ -9,7 +9,9 @@ import type { StepMarker } from "../../codegen/actions-to-script.ts";
  * as-is when no resources are configured).
  *
  * Follows the agent-browser emitter's conventions: `// step: <id> [<source>]`
- * comments at step boundaries, `// [warn] replay-unstable: ...` breadcrumbs,
+ * comments at step boundaries, a screenshot capture call on each side of a
+ * step (the Playwright counterpart of `abStepEvidence`, see
+ * `ccqa/step-evidence`), `// [warn] replay-unstable: ...` breadcrumbs,
  * observation-only snapshots as comments, and env refs (`$VAR` / `${VAR}`)
  * in user-supplied values emitted as `process.env.VAR ?? ""` template
  * literals so secrets never bake into the script.
@@ -22,17 +24,57 @@ export interface PlaywrightEmitInput {
   stepMarkers?: StepMarker[];
 }
 
+/** Module the emitted step-boundary capture calls import from. */
+export const STEP_EVIDENCE_MODULE = "ccqa/step-evidence";
+
+/** Capture call emitted when a step is entered / closed. Exported for the coverage gate. */
+export const STEP_EVIDENCE_BEFORE = "ccqaStepBefore";
+export const STEP_EVIDENCE_AFTER = "ccqaStepAfter";
+
+/** The exact boundary call for one step, as emitted and as the gate greps for it. */
+export function stepEvidenceCall(
+  fn: typeof STEP_EVIDENCE_BEFORE | typeof STEP_EVIDENCE_AFTER,
+  marker: Pick<StepMarker, "stepId" | "source">,
+): string {
+  return `await ${fn}(page, ${j(marker.stepId)}, ${j(marker.source)});`;
+}
+
+/**
+ * The "preserve the step-evidence calls" rule the library-rewrite prompt must
+ * carry, built from the same symbol/module constants the emitter injects and
+ * the coverage gate greps for — so prompt, emitter, and gate share one truth.
+ * A target that captures no step evidence simply doesn't pass this to the
+ * engine, and the prompt then omits the rule entirely.
+ */
+export function stepEvidencePreserveRule(): string {
+  return (
+    `**Keep the \`${STEP_EVIDENCE_MODULE}\` calls.** The draft's ` +
+    `\`await ${STEP_EVIDENCE_BEFORE}(page, ...)\` / \`await ${STEP_EVIDENCE_AFTER}(page, ...)\` lines are ` +
+    `load-bearing: ccqa run reads the per-step screenshots they capture. Keep both calls for every ` +
+    `step, in place around that step's actions, with their exact \`(page, "<stepId>", "<source>")\` ` +
+    `arguments — and keep the import. If you move a step's actions into a page-object method, leave ` +
+    `these two calls in the test body around the call to that method; do NOT move them inside the ` +
+    `page object. Never wrap a step in a closure to hold them.`
+  );
+}
+
 export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   const { actions, testName, stepMarkers = [] } = input;
   const markerByIndex = new Map(stepMarkers.map((m) => [m.actionIndex, m]));
 
   const lines: string[] = [];
   let prevLine: string | null = null;
+  // Mirrors the agent-browser emitter: the open step's closing capture is
+  // flushed just before the next step's comment, and once more after the loop.
+  let openMarker: StepMarker | null = null;
   for (let i = 0; i < actions.length; i++) {
     const marker = markerByIndex.get(i);
     if (marker) {
+      if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
       if (lines.length > 0) lines.push("");
       lines.push(`// step: ${marker.stepId} [${marker.source}]`);
+      lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker));
+      openMarker = marker;
     }
     const action = actions[i]!;
     const line = actionToLine(action);
@@ -44,10 +86,18 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     lines.push(line);
     prevLine = line;
   }
+  if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
 
   const body = lines.map((l) => (l === "" ? "" : `  ${l}`)).join("\n");
   return [
     `import { test, expect } from "@playwright/test";`,
+    // Only imported when there are boundaries to capture, so a marker-less
+    // draft doesn't ship an unused import into the consumer's lint run.
+    ...(stepMarkers.length > 0
+      ? [
+          `import { ${STEP_EVIDENCE_BEFORE}, ${STEP_EVIDENCE_AFTER} } from ${j(STEP_EVIDENCE_MODULE)};`,
+        ]
+      : []),
     "",
     `test(${j(testName)}, async ({ page }) => {`,
     body,

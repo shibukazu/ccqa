@@ -2,7 +2,7 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
 import { HubApiError } from "../hub-client/index.ts";
 import type { HubContext } from "./hub-conn.ts";
-import type { PromptName } from "../prompts/prompt-names.ts";
+import type { GuidanceKind, PromptName } from "../prompts/prompt-names.ts";
 import {
   buildAgentUpdateSystemPrompt,
   buildAgentUpdateUserPrompt,
@@ -10,7 +10,8 @@ import {
 import * as log from "./logger.ts";
 
 export interface UpdateAgentPromptArgs {
-  mode: "live" | "record";
+  /** Which guidance pair to refresh — `<kind>.agent`. */
+  kind: GuidanceKind;
   /** Multi-line summary of the run, fed to the prompt as context. */
   runSummary: string;
   hubContext: HubContext | null;
@@ -19,7 +20,7 @@ export interface UpdateAgentPromptArgs {
 }
 
 /**
- * Refresh the `<mode>.agent` prompt stored on the hub from the latest run.
+ * Refresh the `<kind>.agent` prompt stored on the hub from the latest run.
  *
  * Reads the existing prompt (if any) and a caller-supplied run summary, sends
  * both to Claude, and writes the response back to the hub. Degrades
@@ -27,7 +28,7 @@ export interface UpdateAgentPromptArgs {
  * so the run exit code is unaffected by this opt-in side step.
  */
 export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<void> {
-  const { mode, runSummary, hubContext, model, language } = args;
+  const { kind, runSummary, hubContext, model, language } = args;
 
   const auth = driftAuthAvailable();
   if (!auth.ok) {
@@ -41,12 +42,12 @@ export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<vo
     return;
   }
   const { hub, project } = hubContext;
-  const promptName = `${mode}.agent` as PromptName;
+  const promptName = `${kind}.agent` as PromptName;
 
   try {
     const currentAgentMd = await hub.getPrompt(project, promptName);
     const promptInput = {
-      mode,
+      kind,
       currentAgentMd,
       runSummary,
       ...(language ? { language } : {}),

@@ -6,7 +6,8 @@ import {
   type PerspectiveSpec,
 } from "../types.ts";
 import { tryReadSpecFile, type SpecRef } from "../store/index.ts";
-import { deriveStatus, readSpecMeta, requestSummaries } from "./perspectives.ts";
+import { deriveStatus, readSpecMeta, resolveSpecTarget, requestSummaries } from "./perspectives.ts";
+import { loadProjectConfig } from "../config/project-config.ts";
 import type { HubContext } from "./hub-conn.ts";
 import * as log from "./logger.ts";
 
@@ -59,8 +60,13 @@ async function doSync(ctx: HubContext, opts: SyncSpecPerspectivesOptions): Promi
     doc = parsed.data;
   }
 
-  const meta = await readSpecMeta(featureName, specName);
-  const status = await deriveStatus(featureName, specName, meta.mode);
+  const meta = readSpecMeta(specName, specYaml);
+  // Resolve the target so a runCommand spec gets the same target-aware status
+  // the full `ccqa perspectives` build writes — otherwise `--check` would flag
+  // this row as drift. Config is best-effort (broken config → agent-browser).
+  const config = await loadProjectConfig(process.cwd()).catch(() => null);
+  const plugin = resolveSpecTarget(specYaml, config);
+  const status = await deriveStatus(featureName, specName, meta.mode, plugin);
   const relatedPaths = extractRelatedPaths(specYaml);
   const previous = findSpec(doc, featureName, specName);
 

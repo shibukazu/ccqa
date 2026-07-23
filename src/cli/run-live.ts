@@ -7,6 +7,7 @@ import { preflightAgentBrowserCommand } from "./preflight.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
 import type { DiffProvider } from "../run/diff-provider.ts";
+import { ANALYSIS_DISABLED } from "../run/failure-analysis.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import { buildLiveTranscriptExcerpt } from "../report/live-transcript-excerpt.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
@@ -226,7 +227,7 @@ function analysisFieldsFor(
     };
   }
   if (status === "failed") {
-    return { analysisSkipped: "skipped: --failure-analysis not enabled" };
+    return { analysisSkipped: ANALYSIS_DISABLED };
   }
   return {};
 }

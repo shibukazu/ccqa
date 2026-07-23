@@ -54,10 +54,10 @@ spec の実行様式は 2 つです:
 各 step の `expected` を判定します — 固定の記録では壊れてしまう、
 タイミング依存のフラジャイルな UI 向け。
 
-どちらの様式でも、`ccqa run --failure-analysis [base]` でオプトインすると、
-失敗した spec に `[base]` 以降のソース差分を根拠とした原因分類
-（TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG）が付き、hub 上で採点できます —
-hub は採点から学習します。
+どちらの様式でも、そして `target:` が何であっても、
+`ccqa run --failure-analysis [base]` でオプトインすると、失敗した spec に
+`[base]` 以降のソース差分を根拠とした原因分類（TEST_DRIFT / SPEC_CHANGE /
+PRODUCT_BUG）が付き、hub 上で採点できます — hub は採点から学習します。
 
 ## インストール
 
@@ -67,7 +67,11 @@ pnpm add -D ccqa vitest agent-browser
 
 Node.js **20+** が必要です。
 [agent-browser](https://github.com/vercel-labs/agent-browser) と
-[vitest](https://vitest.dev) は peer dependency です。
+[vitest](https://vitest.dev) は**デフォルトの agent-browser ターゲット**の
+peer dependency です（記録したテストの実行に使われます）。外部ターゲット
+（`playwright` / `runn`）だけを使うプロジェクトは `ccqa` とそのツールだけで
+足ります（例: `pnpm add -D ccqa @playwright/test`）。ccqa はターゲットの
+`runCommand` 経由で実行します。
 
 ## クイックスタート
 

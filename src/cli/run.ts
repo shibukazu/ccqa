@@ -31,9 +31,9 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Specs to run, space-separated: each '<feature>/<spec>', '<feature>', or omit for all. Duplicates are de-duped.",
     )
     .description(
-      "Run specs. Each spec's execution mode comes from its spec.yaml `mode:` field " +
-        "(default deterministic; set `mode: live` to have Claude drive agent-browser live per step). " +
-        "Deterministic specs replay the recorded test.spec.ts under vitest. " +
+      "Run specs, on any target. Agent-browser specs replay the recorded test.spec.ts under vitest " +
+        "(default), or, with spec.yaml `mode: live`, have Claude drive agent-browser live per step. " +
+        "External-target specs (playwright, runn) run through the target's configured `runCommand`. " +
         "A structured report (report.json + evidence) is always written; use --push-report to also stream it to a hub.",
     )
     .option(
@@ -95,7 +95,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option(
       "--concurrency <n>",
-      "Run up to N specs in parallel within each mode (deterministic / live). Default 1 (sequential). Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
+      "Run up to N specs in parallel within each phase (deterministic / external-target / live), never across phases. Default 1 (sequential). Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
       parseConcurrency,
       1,
     )

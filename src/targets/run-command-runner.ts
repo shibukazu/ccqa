@@ -1,15 +1,24 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir, readFile, rename, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { z } from "zod";
-import { getSpecDir, tryReadSpecFile, type SpecRef } from "../store/index.ts";
+import { getSpecDir, loadAllBlocks, tryReadSpecFile, type SpecRef } from "../store/index.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
+import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
+import type { TestSpec } from "../spec/yaml-schema.ts";
+import type { BlockSpec } from "../types.ts";
 import { runPool } from "../runtime/pool.ts";
 import { OUTPUT_TAIL_CAP, TailBuffer } from "../run/output-tail.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
+import {
+  buildStepDescriptions,
+  loadEvidenceForSpec,
+  specEvidenceDir,
+} from "../report/evidence.ts";
 import type { ReportArtifact, ReportSpecResult } from "../report/schema.ts";
 import {
   ARTIFACTS_DIR_ENV,
@@ -49,13 +58,51 @@ function shellQuote(s: string): string {
 export const runCommandRunner: TestRunner = {
   async run(specs: SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]> {
     const concurrency = Math.max(1, opts.concurrency);
+    // Blocks are only needed for step-evidence captions, and only when the
+    // target captures evidence — load them once for the whole group, not once
+    // per spec.
+    const blocks: Map<string, BlockSpec> = opts.stepEvidence.supported
+      ? await loadAllBlocks(opts.cwd)
+      : new Map();
     // Mirrors the deterministic path: above 1 worker each spec buffers its
     // output (log.withBuffer) and flushes one labelled block on completion.
-    return runPool(specs, concurrency, (spec) =>
-      log.withBuffer(`${spec.featureName}/${spec.specName}`, concurrency > 1, () =>
-        runOneSpec(spec, opts),
-      ),
-    );
+    // runPool preserves input order, so the returned rows drive report.json's
+    // stable spec order; onSpecComplete is the separate, as-it-finishes channel
+    // used only for incremental hub push / interrupt safety.
+    //
+    // A worker must NEVER throw. runPool rejects the whole pool on the first
+    // worker throw while sibling workers keep running detached — and since each
+    // worker upserts its row via onSpecComplete, a straggler finishing after
+    // the reject would race (and clobber) the final report write. So convert an
+    // unexpected throw — from runOneSpec or from the onSpecComplete push — into
+    // this spec's own failed row instead of letting it escape.
+    return runPool(specs, concurrency, async (spec) => {
+      const key = `${spec.featureName}/${spec.specName}`;
+      let row: ReportSpecResult;
+      try {
+        row = await log.withBuffer(key, concurrency > 1, () => runOneSpec(spec, opts, blocks));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(`${key}: runner error: ${message}`);
+        row = {
+          ...emptySpecRow({ feature: spec.featureName, spec: spec.specName, title: null, status: "failed" }),
+          target: opts.targetId,
+          analysisSkipped: "spec did not execute (runner error)",
+          failureLogExcerpt: `runner error for ${key}: ${message}`,
+        };
+      }
+      // Hand the row over the moment it exists — an interrupt mid-group must
+      // not cost the specs that already finished. Best-effort and guarded so a
+      // push failure can't reject the worker (which would reintroduce the
+      // straggler race). Outside the buffered scope so a hub-push warning isn't
+      // swallowed into the spec's log block.
+      try {
+        await opts.onSpecComplete(row);
+      } catch (err) {
+        log.warn(`${key}: could not report row incrementally: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return row;
+    });
   },
 };
 
@@ -82,25 +129,51 @@ export const GeneratedManifestSchema = z.object({
 });
 export type GeneratedManifest = z.infer<typeof GeneratedManifestSchema>;
 
-const ANALYSIS_SKIPPED_EXTERNAL = "failure analysis is not run for external-target specs";
+/**
+ * Hex sha256 of a manifest file's content — the one hash both the generation
+ * side (writes `files[].sha256`) and the run side (checks it, see
+ * `warnDriftedFiles`) must compute identically. A string is hashed as UTF-8,
+ * matching how the file is written to disk.
+ */
+export function manifestSha256(data: string | Buffer): string {
+  return createHash("sha256").update(data).digest("hex");
+}
 
-async function runOneSpec(ref: SpecRef, opts: RunnerOptions): Promise<ReportSpecResult> {
+async function runOneSpec(
+  ref: SpecRef,
+  opts: RunnerOptions,
+  blocks: Map<string, BlockSpec>,
+): Promise<ReportSpecResult> {
   const { featureName, specName } = ref;
   const specYaml = await tryReadSpecFile(featureName, specName, opts.cwd);
-  const title = tryParseTestSpec(specYaml)?.title ?? null;
+  const parsedSpec = tryParseTestSpec(specYaml);
+  const title = parsedSpec?.title ?? null;
   const failedRow = (detail: string): ReportSpecResult => ({
     ...emptySpecRow({ feature: featureName, spec: specName, title, status: "failed" }),
     target: opts.targetId,
-    analysisSkipped: ANALYSIS_SKIPPED_EXTERNAL,
     failureLogExcerpt: detail,
     specYaml,
+  });
+  /**
+   * A failure from *before* the test ever ran (nothing generated, nothing
+   * spawnable). Classifying these would feed the model an empty script and a
+   * log that says "run `ccqa generate` first", and the junk label it returns
+   * would land in the confusion matrix and the project's learned prompt — so
+   * the row states the real reason instead and the classifier skips it.
+   */
+  const didNotExecute = (detail: string, why: string): ReportSpecResult => ({
+    ...failedRow(detail),
+    analysisSkipped: `spec did not execute (${why})`,
   });
 
   const runCommand = opts.targetConfig.runCommand;
   if (runCommand === undefined) {
     // The pipeline only dispatches here when runCommand is set; report a row
     // (not a throw) anyway so a future caller can't crash the whole pool.
-    return failedRow(`target "${opts.targetId}" has no runCommand configured in .ccqa/config.yaml`);
+    return didNotExecute(
+      `target "${opts.targetId}" has no runCommand configured in .ccqa/config.yaml`,
+      "the target has no runCommand",
+    );
   }
 
   log.run(`${featureName}/${specName}`);
@@ -111,15 +184,22 @@ async function runOneSpec(ref: SpecRef, opts: RunnerOptions): Promise<ReportSpec
       ? `no generated tests for this spec (${manifest.error}) — run 'ccqa generate ${featureName}/${specName}' first`
       : `${manifest.error} — re-run 'ccqa generate ${featureName}/${specName}'`;
     log.error(detail);
-    return failedRow(detail);
+    return didNotExecute(detail, "no generated tests");
   }
 
   const testFiles = manifest.manifest.files.filter((f) => f.kind === "test").map((f) => f.path);
   if (testFiles.length === 0) {
     const detail = `${GENERATED_MANIFEST_FILE} lists no test files — re-run 'ccqa generate ${featureName}/${specName}'`;
     log.error(detail);
-    return failedRow(detail);
+    return didNotExecute(detail, "no generated tests");
   }
+
+  // Generated files aren't meant to be hand-edited; warn (never fail) when one
+  // drifts from the sha256 the manifest recorded, so a stale/edited test is
+  // visible in the log instead of silently running. Advisory and read-only, so
+  // it runs alongside the command (no data dependency) and is awaited before
+  // the row is built.
+  const driftWarn = warnDriftedFiles(ref, manifest.manifest, opts.cwd);
 
   // Per-spec artifacts dir, recreated per run so files from a previous run
   // can't leak into this row. `{artifactsDir}` expands to it, and the child
@@ -127,6 +207,18 @@ async function runOneSpec(ref: SpecRef, opts: RunnerOptions): Promise<ReportSpec
   const artifactsDir = specArtifactsDir(opts.reportDir, featureName, specName);
   await rm(artifactsDir, { recursive: true, force: true });
   await mkdir(artifactsDir, { recursive: true });
+
+  // Step screenshots go to the same per-spec directory the deterministic path
+  // uses, so one loader serves both. Only targets whose generated tests call
+  // `ccqa/step-evidence` get it — for the rest the var stays unset and the
+  // capture helper (or its absence) is a no-op.
+  const evidenceDir = opts.stepEvidence.supported
+    ? specEvidenceDir(opts.reportDir, featureName, specName)
+    : null;
+  if (evidenceDir) {
+    await rm(evidenceDir, { recursive: true, force: true });
+    await mkdir(evidenceDir, { recursive: true });
+  }
 
   const command = substituteArtifactsDir(
     substituteRunCommandFiles(runCommand, testFiles),
@@ -141,11 +233,13 @@ async function runOneSpec(ref: SpecRef, opts: RunnerOptions): Promise<ReportSpec
     outcome = await runShellCommand(command, {
       cwd: opts.cwd,
       artifactsDir,
+      evidenceDir,
       logPath: join(artifactsDir, OUTPUT_LOG_FILE),
     });
   } catch (err) {
-    return failedRow(
+    return didNotExecute(
       `could not spawn runCommand: ${err instanceof Error ? err.message : String(err)}`,
+      "the runCommand could not be spawned",
     );
   }
   const durationMs = Date.now() - started;
@@ -169,6 +263,8 @@ async function runOneSpec(ref: SpecRef, opts: RunnerOptions): Promise<ReportSpec
     );
   }
   const artifactFields = artifacts && artifacts.length > 0 ? { artifacts } : {};
+  const evidenceFields = await loadStepEvidence(opts, evidenceDir, parsedSpec, blocks);
+  await driftWarn; // ensure the advisory warning lands inside this spec's log block
 
   if (outcome.exitCode === 0) {
     return {
@@ -176,6 +272,7 @@ async function runOneSpec(ref: SpecRef, opts: RunnerOptions): Promise<ReportSpec
       target: opts.targetId,
       durationMs,
       ...artifactFields,
+      ...evidenceFields,
     };
   }
   const detail = [
@@ -184,13 +281,70 @@ async function runOneSpec(ref: SpecRef, opts: RunnerOptions): Promise<ReportSpec
   ]
     .filter((p): p is string => p !== null)
     .join("\n");
-  return { ...failedRow(detail), durationMs, ...artifactFields };
+  return { ...failedRow(detail), durationMs, ...artifactFields, ...evidenceFields };
+}
+
+/**
+ * The row's step screenshots, or — when there are none — the reason, so the
+ * report never shows an empty evidence section without explanation. A
+ * supported target that produced nothing almost always means the generated
+ * test lost its capture calls (a library-rewrite pass dropping them is the
+ * known hazard), which is worth saying out loud.
+ */
+async function loadStepEvidence(
+  opts: RunnerOptions,
+  evidenceDir: string | null,
+  spec: TestSpec | null,
+  blocks: Map<string, BlockSpec>,
+): Promise<Pick<ReportSpecResult, "evidence" | "evidenceUnavailable">> {
+  if (!opts.stepEvidence.supported) {
+    return { evidence: null, evidenceUnavailable: opts.stepEvidence.reason };
+  }
+  const descriptions = buildStepDescriptions(spec, blocks);
+  const evidence = await loadEvidenceForSpec(evidenceDir, opts.reportDir, descriptions);
+  if (evidence) return { evidence };
+  return {
+    evidence: null,
+    evidenceUnavailable:
+      "no step screenshots were captured — the generated test may be missing its " +
+      "ccqa/step-evidence calls; re-run `ccqa generate` for this spec",
+  };
+}
+
+/**
+ * Warn (never fail) when a generated file's current sha256 differs from the
+ * one `generated.json` recorded — the generated tree is not meant to be
+ * hand-edited, so a mismatch means the running test no longer matches what
+ * `ccqa generate` produced. Best-effort: an unreadable file (already handled
+ * downstream as a run failure) is skipped here.
+ */
+async function warnDriftedFiles(ref: SpecRef, manifest: GeneratedManifest, cwd: string): Promise<void> {
+  const drifted: string[] = [];
+  await Promise.all(
+    manifest.files.map(async (f) => {
+      const bytes = await readFile(resolve(cwd, f.path)).catch(() => null);
+      if (bytes === null) return;
+      if (manifestSha256(bytes) !== f.sha256) drifted.push(f.path);
+    }),
+  );
+  if (drifted.length > 0) {
+    log.warn(
+      `${ref.featureName}/${ref.specName}: generated file(s) changed since 'ccqa generate' ` +
+        `(${drifted.join(", ")}) — edits to generated code are overwritten on the next generate; ` +
+        `put lasting changes in the spec or the target's resources`,
+    );
+  }
 }
 
 type ManifestReadResult =
   | { ok: true; manifest: GeneratedManifest }
   | { ok: false; missing: boolean; error: string };
 
+/**
+ * Read a spec's `generated.json` with the runner's richer error detail (used
+ * for its "run `ccqa generate` first" messages). Other consumers that only
+ * need the parsed manifest use `loadGeneratedManifest` (llm-engine.ts).
+ */
 async function readGeneratedManifest(ref: SpecRef, cwd: string): Promise<ManifestReadResult> {
   const path = join(getSpecDir(ref.featureName, ref.specName, cwd), GENERATED_MANIFEST_FILE);
   let raw: string;
@@ -225,7 +379,7 @@ type ShellOutcome = { exitCode: number; tail: string };
  */
 async function runShellCommand(
   command: string,
-  opts: { cwd: string; artifactsDir: string; logPath: string },
+  opts: { cwd: string; artifactsDir: string; evidenceDir: string | null; logPath: string },
 ): Promise<ShellOutcome> {
   const child = spawn(command, {
     cwd: opts.cwd,
@@ -233,7 +387,12 @@ async function runShellCommand(
     // Fresh CCQA_RUN_ID per spec, same contract as the vitest runner: specs
     // that embed `${CCQA_RUN_ID}` in created-content names must not collide
     // across specs or with a prior run.
-    env: { ...process.env, [ARTIFACTS_DIR_ENV]: opts.artifactsDir, CCQA_RUN_ID: buildRunId() },
+    env: {
+      ...process.env,
+      [ARTIFACTS_DIR_ENV]: opts.artifactsDir,
+      CCQA_RUN_ID: buildRunId(),
+      ...(opts.evidenceDir ? { [EVIDENCE_DIR_ENV]: opts.evidenceDir } : {}),
+    },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const tail = new TailBuffer(OUTPUT_TAIL_CAP);

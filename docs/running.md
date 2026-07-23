@@ -41,11 +41,11 @@ Key flags (see `ccqa run --help` for the rest):
   (never across phases). Default 1.
 - `--no-evidence` — skip the step-boundary screenshots of deterministic
   specs.
-- `--failure-analysis [base]` — classify each failure against the source
-  diff since `[base]` (same base rules as `--changed`). Off by default: no
-  Claude calls without it. The spec↔code drift audit always runs with it —
-  its findings are an input to the classification (and standalone via
-  `ccqa drift`); there is no separate audit flag.
+- `--failure-analysis [base]` — classify each failure, on any target,
+  against the source diff since `[base]` (same base rules as `--changed`).
+  Off by default: no Claude calls without it. The spec↔code drift audit
+  always runs with it — its findings are an input to the classification
+  (and standalone via `ccqa drift`); there is no separate audit flag.
 - `--format <fmt>` — `text` (default), `json` (print report.json), `github`
   (GitHub Actions annotations).
 - `--retry <n>` — live specs only: retry each failing step up to N times.
@@ -99,11 +99,15 @@ test counts, screenshots, artifacts, and failure analysis.
 
 Per spec, the report contains:
 
-- **Evidence** — for deterministic specs, one PNG per `spec.yaml` step plus
-  a JSON sidecar (URL/title/status), captured by default (`--no-evidence`
-  to skip); for live specs, before/after PNGs per step. Files land in
-  `<report-dir>/evidence/<feature>/<spec>/` and are referenced from
-  `report.json`.
+- **Evidence** — per-step screenshots with a JSON sidecar (URL/title/status),
+  under `<report-dir>/evidence/<feature>/<spec>/` and referenced from
+  `report.json`. Agent-browser deterministic specs capture one boundary PNG
+  per step (by default; `--no-evidence` to skip); agent-browser live specs and
+  Playwright specs capture a before/after pair per step. A target with no
+  screen to shoot (an API runbook) records why instead. Playwright capture
+  needs nothing from you — ccqa injects the calls into the generated test and
+  points it at the evidence dir at run time (see
+  [Generation targets](./targets.md#step-screenshots-for-external-targets)).
 - **Artifacts** — for external-target specs, the command's full
   stdout+stderr as `output.log` (captured on pass and fail) plus every file
   the command wrote into its `{artifactsDir}`
@@ -128,6 +132,13 @@ call** made by Claude with the source diff since the baseline as context:
 
 Alongside the label come a confidence score, a sub-diagnosis, evidence, and
 reasoning. The analysis classifies; it never modifies anything.
+
+**Any target.** The classification and the drift audit are target-agnostic.
+A spec run by an external `runCommand` is analyzed from its generated test
+files, the command's exit code and output tail, and its `spec.yaml` — the
+same shape a vitest replay is analyzed from, and live specs supply their
+Claude transcript instead. Report rows and the CI log block look identical
+whichever target the spec uses.
 
 **Diff context.** The baseline is the flag's value (`--failure-analysis
 <ref>`); without a value it comes from `GITHUB_BASE_REF` (set on

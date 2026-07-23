@@ -68,6 +68,8 @@ export type Run = z.infer<typeof RunSchema>;
 export const TriageCaseSchema = z.object({
   feature: z.string(),
   spec: z.string(),
+  /** Generation target of the graded row; lets the UI filter the matrix by target. Optional for pre-existing data. */
+  target: z.string().optional(),
   predicted: z.object({
     label: PredictedLabelSchema,
     confidence: z.number(),

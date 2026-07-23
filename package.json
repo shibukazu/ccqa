@@ -19,6 +19,10 @@
       "types": "./dist/runtime/test-helpers.d.mts",
       "import": "./dist/runtime/test-helpers.mjs"
     },
+    "./step-evidence": {
+      "types": "./dist/runtime/step-evidence.d.mts",
+      "import": "./dist/runtime/step-evidence.mjs"
+    },
     "./hub-client": {
       "types": "./dist/hub-client/index.d.mts",
       "import": "./dist/hub-client/index.mjs"

@@ -1,8 +1,7 @@
 import { cp, mkdir } from "node:fs/promises";
 import { basename, join, posix as posixPath, resolve } from "node:path";
 import * as log from "../cli/logger.ts";
-import { EVIDENCE_SUBDIR } from "../run/report-constants.ts";
-import { toPosix } from "../run/pipeline.ts";
+import { specEvidenceDir, toPosix } from "./evidence.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import type { LiveRunResult } from "../runtime/live-executor.ts";
@@ -36,7 +35,7 @@ export async function liveRunToReportResult(args: {
   const { featureName, specName, specYaml, result, reportDir } = args;
   // One evidence dir per spec: create it once up front rather than letting
   // every step's copy call `mkdir(..., { recursive: true })` redundantly.
-  const evidenceDir = join(reportDir, EVIDENCE_SUBDIR, featureName, specName);
+  const evidenceDir = specEvidenceDir(reportDir, featureName, specName);
   await mkdir(evidenceDir, { recursive: true });
   const steps: LiveReportStep[] = await Promise.all(
     result.steps.map(async (s) => {

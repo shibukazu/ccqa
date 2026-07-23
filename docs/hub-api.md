@@ -140,6 +140,7 @@ GET /api/v1/runs/:id/triage
   → 200 {
       runId, promptVersion,
       cases: [{ feature, spec,
+                target?,                 // generation target of the graded row (e.g. "playwright"); omitted for agent-browser
                 predicted: { label, confidence, subDiagnosis?, headline },
                 actual: { cause, note?, recordedAt } | null }],
       recorded: number, total: number   // progress readout

@@ -18,6 +18,12 @@ import {
   tryReadSpecFile,
   type FeatureTreeEntry,
 } from "../store/index.ts";
+import { tryParseTestSpec } from "../spec/parser.ts";
+import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
+import { loadProjectConfig, type ProjectConfig } from "../config/project-config.ts";
+import { resolveTarget } from "../targets/registry.ts";
+import { loadGeneratedManifest } from "../targets/llm-engine.ts";
+import type { TargetPlugin } from "../targets/types.ts";
 import {
   PerspectivesSchema,
   type PerspectiveFeature,
@@ -143,7 +149,8 @@ export function comparePerspectivesSkeleton(
       if (
         remoteSpec.status.mode !== spec.status.mode ||
         remoteSpec.status.traced !== spec.status.traced ||
-        remoteSpec.status.generated !== spec.status.generated
+        remoteSpec.status.generated !== spec.status.generated ||
+        remoteSpec.status.target !== spec.status.target
       ) {
         fields.push(
           `status (local: ${formatStatus(spec.status)}, hub: ${formatStatus(remoteSpec.status)})`,
@@ -163,7 +170,8 @@ export function comparePerspectivesSkeleton(
 }
 
 function formatStatus(status: PerspectiveStatus): string {
-  return `${status.mode}/traced=${status.traced}/generated=${status.generated}`;
+  const target = status.target ? `/target=${status.target}` : "";
+  return `${status.mode}/traced=${status.traced}/generated=${status.generated}${target}`;
 }
 
 /** Order-sensitive equality; an absent list and an empty list are the same thing. */
@@ -282,17 +290,24 @@ async function cleanupLegacyLocalFiles(): Promise<void> {
  * Specs whose spec.yaml is missing or unparsable are skipped.
  */
 export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<PerspectiveFeature[]> {
+  // Config resolves each spec's target once for the whole sweep; a broken
+  // config is not a reason to fail the inventory, so fall back to the schema
+  // default (agent-browser) if it can't be loaded.
+  const config = await loadProjectConfig(process.cwd()).catch(() => null);
   const features = await Promise.all(
     tree.map(async (feature): Promise<PerspectiveFeature> => {
       const specs = await Promise.all(
         feature.specs
           .filter((s) => s.hasSpecFile)
           .map(async (s): Promise<PerspectiveSpec> => {
-            const spec = await readSpecMeta(feature.featureName, s.specName);
-            const status = await deriveStatus(feature.featureName, s.specName, spec.mode);
+            // One read of spec.yaml feeds both the title/mode and the target.
+            const specYaml = await tryReadSpecFile(feature.featureName, s.specName);
+            const meta = readSpecMeta(s.specName, specYaml);
+            const plugin = resolveSpecTarget(specYaml, config);
+            const status = await deriveStatus(feature.featureName, s.specName, meta.mode, plugin);
             const entry: PerspectiveSpec = {
               specName: s.specName,
-              title: spec.title,
+              title: meta.title,
               summary: "",
               status,
             };
@@ -401,14 +416,11 @@ export function noteKey(featureName: string, specName: string): string {
 
 // --- I/O helpers (kept thin so the pure functions above stay testable) ---
 
-export async function readSpecMeta(
-  featureName: string,
-  specName: string,
-): Promise<{ title: string; mode: SpecMode }> {
-  const raw = await tryReadSpecFile(featureName, specName);
-  if (raw === null) return { title: specName, mode: DEFAULT_SPEC_MODE };
+/** Lenient title/mode read from an already-loaded spec.yaml (null → defaults). */
+export function readSpecMeta(specName: string, specYaml: string | null): { title: string; mode: SpecMode } {
+  if (specYaml === null) return { title: specName, mode: DEFAULT_SPEC_MODE };
   try {
-    const parsed = parseYaml(raw) as { title?: unknown; mode?: unknown };
+    const parsed = parseYaml(specYaml) as { title?: unknown; mode?: unknown };
     const title = typeof parsed.title === "string" && parsed.title.length > 0
       ? parsed.title
       : specName;
@@ -420,15 +432,54 @@ export async function readSpecMeta(
   }
 }
 
+/**
+ * Resolve a spec's generation target for coverage derivation, from its
+ * already-read spec.yaml. Best-effort: an unparseable spec or a target that
+ * can't be resolved (unknown id, agent-browser-only field misuse) falls back
+ * to agent-browser (null), so the inventory never fails over one bad spec.
+ */
+export function resolveSpecTarget(
+  specYaml: string | null,
+  config: ProjectConfig | null,
+): TargetPlugin | null {
+  if (config === null || specYaml === null) return null;
+  const spec = tryParseTestSpec(specYaml);
+  if (!spec) return null;
+  try {
+    return resolveTarget(spec, config);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Coverage facts for one spec, interpreted through its target (see
+ * `PerspectiveStatusSchema`). `plugin` null means the default agent-browser
+ * target (also the fallback for a spec whose target couldn't be resolved) —
+ * every caller must resolve it (via `resolveSpecTarget`) and pass it, so the
+ * write path and the `--check` comparison agree on the target dimension.
+ */
 export async function deriveStatus(
   featureName: string,
   specName: string,
   mode: SpecMode,
+  plugin: TargetPlugin | null,
 ): Promise<PerspectiveStatus> {
+  const isAgentBrowser = plugin === null || plugin.id === AGENT_BROWSER_TARGET;
   const recordingPath = join(getSpecDir(featureName, specName), "ir.json");
-  const traced = await stat(recordingPath).then(() => true).catch(() => false);
-  const generated = (await getTestScript(featureName, specName)) !== null;
-  return { mode, traced, generated };
+  const hasRecording = await stat(recordingPath).then(() => true).catch(() => false);
+
+  if (isAgentBrowser) {
+    const generated = (await getTestScript(featureName, specName)) !== null;
+    return { mode, traced: hasRecording, generated };
+  }
+
+  // External target: "generated" is its own manifest, not test.spec.ts.
+  // A spec-input target (runn) has no record phase, so tracing is not a gap.
+  const generated =
+    (await loadGeneratedManifest({ featureName, specName }, process.cwd())) !== null;
+  const traced = plugin.input === "recording" ? hasRecording : true;
+  return { mode, traced, generated, target: plugin.id };
 }
 
 async function loadSpecBodies(skeleton: PerspectiveFeature[]): Promise<PerspectiveSpecForPrompt[]> {

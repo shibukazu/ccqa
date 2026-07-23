@@ -253,6 +253,14 @@ describe("HubStorage (file backend)", () => {
       expect(await storage.triage.list("run-1")).toEqual([record()]);
     });
 
+    test("round-trips the optional target field (per-target matrix), without breaking pre-target records", async () => {
+      await storage.triage.putActualCause("run-1", record({ feature: "a", spec: "x", target: "playwright" }));
+      await storage.triage.putActualCause("run-1", record({ feature: "b", spec: "y" })); // no target
+      const byKey = new Map((await storage.triage.list("run-1")).map((r) => [`${r.feature}/${r.spec}`, r]));
+      expect(byKey.get("a/x")?.target).toBe("playwright");
+      expect(byKey.get("b/y")?.target).toBeUndefined();
+    });
+
     test("putActualCause for the same case upserts rather than duplicates", async () => {
       await storage.triage.putActualCause("run-1", record({ actualCause: "TEST_DRIFT" }));
       await storage.triage.putActualCause("run-1", record({ actualCause: "PRODUCT_BUG" }));

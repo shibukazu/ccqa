@@ -25,6 +25,10 @@ export const runnTarget: TargetPlugin = {
   generate: (ctx) => generateRunnRunbook(ctx),
   existingOutput: existingOutputFromManifest,
   runner: runCommandRunner,
+  // runn drives an API scenario — there is no browser to screenshot, so the
+  // report records this reason instead of showing an empty evidence section.
+  stepEvidence: { supported: false, reason: "runn runs API scenarios, which have no screen to capture" },
+  guidanceKind: RUNN_TARGET,
 };
 
 /** Exported with the engine's invoke seam so unit tests can stub Claude. */

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import { FAILURE_SOURCE, FAILURE_STEP_ID } from "./evidence-constants.ts";
+import { EVIDENCE_DIR_ENV, FAILURE_SOURCE, FAILURE_STEP_ID, sanitizeStepId } from "./evidence-constants.ts";
 import { sleepSync, spawnAB, type Result } from "./spawn-ab.ts";
 
 // `ab open` returns as soon as the navigation is dispatched, but the
@@ -47,7 +47,7 @@ export function __setCurrentStep(stepId: string, source: string): void {
 
 function captureFailureEvidence(summary: string): void {
   if (currentStep) {
-    const safe = currentStep.stepId.replace(/[^A-Za-z0-9_.-]/g, "_");
+    const safe = sanitizeStepId(currentStep.stepId);
     captureEvidence({
       stepId: currentStep.stepId,
       source: currentStep.source,
@@ -239,7 +239,7 @@ export function abAssertUnchecked(selector: string): void {
  * flip a passing spec to red.
  */
 export function abStepEvidence(stepId: string, source: string): void {
-  const safe = stepId.replace(/[^A-Za-z0-9_.-]/g, "_");
+  const safe = sanitizeStepId(stepId);
   captureEvidence({ stepId, source, pngFile: `${safe}.png` });
   // The step closed without throwing, so the next fail() (if any) belongs to
   // the NEXT step's `__setCurrentStep` — not to this one.
@@ -262,7 +262,7 @@ interface CaptureOpts {
  * expression must itself stringify the payload — hence the double JSON.parse.
  */
 function captureEvidence(opts: CaptureOpts): void {
-  const dir = process.env["CCQA_EVIDENCE_DIR"];
+  const dir = process.env[EVIDENCE_DIR_ENV];
   if (!dir) return;
   const { stepId, source, pngFile, failureSummary, silent } = opts;
   const pngPath = join(dir, pngFile);

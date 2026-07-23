@@ -214,6 +214,38 @@ describe("emitPlaywrightDraft — actions", () => {
     expect(script).toContain("// the list shows one item");
   });
 
+  it("wraps each step in before/after step-evidence calls, flat (no closure)", () => {
+    const script = emitPlaywrightDraft({
+      actions: [
+        { action: "navigate", value: "https://example.test/", stepId: "step-01" },
+        { action: "click", locator: { by: "text", value: "Submit" }, stepId: "step-02" },
+      ],
+      testName: "t",
+      stepMarkers: [
+        { actionIndex: 0, stepId: "step-01", source: "spec" },
+        { actionIndex: 1, stepId: "step-02", source: "spec" },
+      ],
+    });
+    // The module is imported and both boundaries fire per step.
+    expect(script).toContain(`import { ccqaStepBefore, ccqaStepAfter } from "ccqa/step-evidence";`);
+    expect(script).toContain(`await ccqaStepBefore(page, "step-01", "spec");`);
+    // step-01 closes just before step-02 opens, and step-02 closes at the end.
+    expect(script).toContain(`await ccqaStepAfter(page, "step-01", "spec");`);
+    expect(script).toContain(`await ccqaStepBefore(page, "step-02", "spec");`);
+    expect(script).toContain(`await ccqaStepAfter(page, "step-02", "spec");`);
+    // Flat calls, never a wrapper closure a page-object rewrite would fight.
+    expect(script).not.toContain("ccqaStep(");
+    expect(script).not.toContain("async () =>");
+    // Exactly one after-call per step (open→next-open flush + end flush, deduped).
+    expect(script.match(/ccqaStepAfter\(page, "step-01"/g)).toHaveLength(1);
+  });
+
+  it("omits the step-evidence import when there are no step markers", () => {
+    const script = emit([{ action: "navigate", value: "https://example.test/" }]);
+    expect(script).not.toContain("ccqa/step-evidence");
+    expect(script).not.toContain("ccqaStep");
+  });
+
   it("emits replay-unstable warnings and dropped-action markers", () => {
     const script = emit([
       {

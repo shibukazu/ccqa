@@ -31,7 +31,7 @@ const program = new Command();
 
 program
   .name("ccqa")
-  .description("E2E test CLI using Claude Code + agent-browser")
+  .description("E2E test CLI powered by Claude Code — agent-browser by default, or Playwright / runn targets")
   .version(version);
 
 // `init` is a one-shot bootstrap, listed first so it's discoverable.
