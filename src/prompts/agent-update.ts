@@ -1,12 +1,15 @@
 import { outputLanguageBlock } from "./format.ts";
+import type { GuidanceKind } from "./prompt-names.ts";
 
 /**
- * Build the prompts used by `ccqa run --update-agent-prompt` and
- * `ccqa record --update-agent-prompt` to refresh `.ccqa/prompts/<mode>.agent.md`
- * after a run finishes.
+ * Build the prompts used by `--update-agent-prompt` to refresh
+ * `.ccqa/prompts/<kind>.agent.md` after a run:
+ *   - `ccqa run` (live) → `live.agent`
+ *   - `ccqa record` (trace) → `record.agent`
+ *   - `ccqa generate` (an LLM-generating target) → `playwright.agent` / `runn.agent`
  *
  * The agent prompt file is the auto-updated half of the prompt bundle (the
- * other half, `<mode>.user.md`, is human-maintained). We ask Claude to read
+ * other half, `<kind>.user.md`, is human-maintained). We ask Claude to read
  * the previous version of the file alongside a summary of what just happened
  * in the run, then produce a fresh full replacement.
  *
@@ -15,16 +18,20 @@ import { outputLanguageBlock } from "./format.ts";
  * that applies to any test is explicitly out of scope — it doesn't shave a
  * concrete step and only dilutes the playbook.
  *
- * The two modes differ in how the shortcut is keyed. `live` learns **cross-spec
- * rules** keyed on the *kind* of screen / operation (a rule learned on one
- * spec's login should speed up every spec's login), so it must never anchor to
- * a spec-local step id or a per-run snapshot ref. `record` learns per-spec
- * canonical selectors so its next trace records cleanly, and step-id / concrete
- * selector anchoring is correct there.
+ * Every kind learns **cross-spec** rules keyed on the *kind* of screen /
+ * operation / resource (a rule learned on one spec's login should help every
+ * spec's login), never on a spec-local step id or a per-run snapshot ref. What
+ * differs is the concrete knowledge each records: `live` records winning
+ * agent-browser command sequences (stable identities, snapshot refs masked);
+ * `record` records the canonical selectors that survived validation (kept
+ * verbatim, since record's selectors are stable across runs); the generation
+ * kinds (`playwright` / `runn`) record what made a generation pass its
+ * runCommand verification (imports, layout conventions, the fix a failure
+ * needed). See the per-kind body builders below.
  */
 /**
  * Generic advice that reads as a lesson but shaves no concrete step — it is
- * already in the base prompt, so both mode bodies ban it verbatim.
+ * already in the base prompt, so every kind's body bans it verbatim.
  */
 const FILLER_BLOCKLIST = `### Never write these (generic filler — already in the base prompt)
 
@@ -34,8 +41,8 @@ const FILLER_BLOCKLIST = `### Never write these (generic filler — already in t
 - "be flexible and explore the DOM as needed"`;
 
 export interface BuildAgentUpdatePromptInput {
-  mode: "live" | "record";
-  /** Current contents of `.ccqa/prompts/<mode>.agent.md`, or null when missing. */
+  kind: GuidanceKind;
+  /** Current contents of `.ccqa/prompts/<kind>.agent.md`, or null when missing. */
   currentAgentMd: string | null;
   /** Multi-line summary of the run, built by the caller. */
   runSummary: string;
@@ -43,29 +50,90 @@ export interface BuildAgentUpdatePromptInput {
   language?: string;
 }
 
+/**
+ * All the per-kind variance of the update prompt in one place: a new guidance
+ * kind is a single compile-checked entry (`Record<GuidanceKind, …>`), not a
+ * scatter of ternaries. `body` builds the kind-specific middle section from the
+ * two file labels.
+ */
+interface KindDescriptor {
+  /** Human-readable description of what this kind's runs are. */
+  label: string;
+  /** Where this kind's `.agent.md` is appended into ccqa's system prompt. */
+  appendedTo: string;
+  /** The verbatim-token list handed to outputLanguageBlock (kept out of translation). */
+  verbatimTokens: string;
+  body: (agentMdLabel: string, userMdLabel: string) => string;
+}
+
+const RUNTIME_VERBATIM =
+  "headings, agent-browser subcommand names, stable selector tokens (CSS/text=/role=/aria-label=/placeholder=), URLs";
+const GENERATION_VERBATIM =
+  "headings, file paths, import specifiers, symbol names, config keys, code identifiers";
+
+const KIND: Record<GuidanceKind, KindDescriptor> = {
+  live: {
+    label: "live (Claude drives every step at run time)",
+    appendedTo: "every step of every `mode: live` spec",
+    verbatimTokens: RUNTIME_VERBATIM,
+    body: liveBodySections,
+  },
+  record: {
+    label: "record (Claude records browser actions for vitest replay)",
+    appendedTo: "every trace run of `ccqa record`",
+    verbatimTokens: RUNTIME_VERBATIM,
+    body: recordBodySections,
+  },
+  playwright: {
+    label: "playwright generation (Claude compiles a recording into a @playwright/test spec, reusing the repo's page objects/helpers)",
+    appendedTo: "every `ccqa generate` pass for the playwright target",
+    verbatimTokens: GENERATION_VERBATIM,
+    body: (a, u) =>
+      generationBodySections(
+        {
+          kind: "playwright",
+          artifact: "a @playwright/test spec",
+          reuseExample: "a page object / step helper the mechanical draft should call instead of inlining raw locators",
+        },
+        a,
+        u,
+      ),
+  },
+  runn: {
+    label: "runn generation (Claude writes a runn API runbook from the spec)",
+    appendedTo: "every `ccqa generate` pass for the runn target",
+    verbatimTokens: GENERATION_VERBATIM,
+    body: (a, u) =>
+      generationBodySections(
+        {
+          kind: "runn",
+          artifact: "a runn runbook",
+          reuseExample: "a shared runbook / variable file the generated runbook should `include`/reference instead of duplicating steps",
+        },
+        a,
+        u,
+      ),
+  },
+};
+
 export function buildAgentUpdateSystemPrompt(input: BuildAgentUpdatePromptInput): string {
-  const isLive = input.mode === "live";
-  const modeLabel = isLive
-    ? "live (Claude drives every step at run time)"
-    : "record (Claude records browser actions for vitest replay)";
-  const userMdLabel = `${input.mode}.user.md`;
-  const agentMdLabel = `${input.mode}.agent.md`;
-  const appendedTo = isLive
-    ? "every step of every `mode: live` spec"
-    : "every trace run of `ccqa record`";
+  const { kind } = input;
+  const userMdLabel = `${kind}.user.md`;
+  const agentMdLabel = `${kind}.agent.md`;
+  const descriptor = KIND[kind];
   const languageBlock = outputLanguageBlock(
     input.language ?? "auto",
     "the prose part of each bullet (the 'what to skip' note)",
-    "headings, agent-browser subcommand names, stable selector tokens (CSS/text=/role=/aria-label=/placeholder=), URLs",
+    descriptor.verbatimTokens,
   );
 
-  const body = isLive ? liveBodySections(agentMdLabel, userMdLabel) : recordBodySections(agentMdLabel, userMdLabel);
+  const body = descriptor.body(agentMdLabel, userMdLabel);
 
-  return `You maintain the auto-learned fast-path playbook for ccqa's ${modeLabel} runs.
+  return `You maintain the auto-learned fast-path playbook for ccqa's ${descriptor.label} runs.
 
 ${languageBlock}## What you are updating
 
-\`.ccqa/prompts/${agentMdLabel}\` is appended to ccqa's system prompt for ${appendedTo}. It is a **fast-path playbook**, NOT a list of general lessons.
+\`.ccqa/prompts/${agentMdLabel}\` is appended to ccqa's system prompt for ${descriptor.appendedTo}. It is a **fast-path playbook**, NOT a list of general lessons.
 
 ${body}
 - Emit the COMPLETE replacement contents of \`${agentMdLabel}\`.
@@ -167,8 +235,55 @@ Group recipes under \`### <screen class or operation pattern>\` subheaders (e.g.
 `;
 }
 
+/**
+ * `<target>.agent` body for the LLM-generating targets (playwright, runn). The
+ * learned playbook records what makes a generation pass its runCommand
+ * verification on the first try in *this* repository: which existing page
+ * objects / helpers / fixtures to import, the layout conventions the target
+ * outputs into, and the recurring fix a verify failure needed. Keyed on the
+ * kind of screen / API / helper, never on one spec.
+ */
+function generationBodySections(
+  spec: { kind: "playwright" | "runn"; artifact: string; reuseExample: string },
+  agentMdLabel: string,
+  userMdLabel: string,
+): string {
+  const { kind, artifact, reuseExample } = spec;
+  return `Your goal: make **future ${kind} generations across all specs** pass their runCommand verification on the first attempt, with fewer fix rounds. Distill each generation that needed a fix — or that had to discover a repo convention — into a **reusable recipe keyed on the kind of screen / operation / resource**, not on which spec produced it.
+
+The sibling file \`${userMdLabel}\` carries human-maintained project guidance (which resources exist, output layout, house style). Do not repeat anything already covered there.
+
+## This file is project-private — write concrete repo details, keyed on the screen/resource
+
+The exact things that made generation succeed here are what you SHOULD record — this playbook is project-private, not public: the real import path of ${reuseExample}, the directory the target's tests live in, the config key or CLI flag the runCommand needs, the shape of an assertion the verification expects. But key each recipe on the **screen class / operation kind / resource**, never on a spec or step id.
+
+- **NEVER title a section with a spec or feature name.** Titles are screen classes / operation kinds / resource areas (\`### Login flow\`, \`### List + detail navigation\`, \`### Auth fixture\`) so the recipe applies to any spec that hits them.
+- **NEVER invent a path/import you did not see used.** Only record a resource path, symbol, or config key that this run actually imported/needed and that verification accepted.
+
+## What to write (and what NOT to)
+
+- Only write a recipe when this generation **needed a fix pass**, **had to discover a non-obvious repo convention**, or **failed verification for a reason a future run can pre-empt**. A generation that compiled and passed on the first try with no surprises teaches nothing — skip it.
+- Every bullet uses this **three-slot shape**:
+
+  \`- when <trigger: screen class / operation kind / resource>: <do X — import/emit/configure this> — avoids <the fix round / failure this run hit>\`
+
+  If you cannot fill the \`when\` slot with anything but a spec/step id, or the \`avoids\` slot with a failure seen *this run*, the bullet is filler — drop it.
+- Merge, don't fork: when this run's screen class / resource matches a section already in the previous file, merge the new detail into it rather than adding a spec-specific one.
+- Carry forward still-valid recipes. Drop any pre-existing bullet this run contradicts (e.g. a helper that was renamed or removed).
+
+${FILLER_BLOCKLIST}
+
+A bullet is filler if it is **true of any repository** ("import shared helpers when they exist") rather than naming the concrete asset/convention/config of THIS repo that a future generation would otherwise rediscover or get wrong. Every recipe records ${artifact}-specific knowledge that shaves a real fix round.
+
+## Output format
+
+Group recipes under \`### <screen class / operation / resource>\` subheaders. Each recipe is one three-slot bullet.
+
+`;
+}
+
 export function buildAgentUpdateUserPrompt(input: BuildAgentUpdatePromptInput): string {
-  const agentMdLabel = `${input.mode}.agent.md`;
+  const agentMdLabel = `${input.kind}.agent.md`;
   const previous = input.currentAgentMd && input.currentAgentMd.trim().length > 0
     ? input.currentAgentMd
     : "(no existing file — this will create one)";

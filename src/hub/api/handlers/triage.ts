@@ -38,10 +38,11 @@ export function createPutActualCauseHandler(storage: HubStorage) {
     const record = buildTriageRecord(feature!, spec!, result.analysis, report.promptVersion, {
       cause: parsed.data.cause,
       note: parsed.data.note,
+      target: result.target,
     });
     await storage.triage.putActualCause(runId!, record);
 
-    sendJson(ctx.res, 200, toTriageCase(feature!, spec!, result.analysis, record));
+    sendJson(ctx.res, 200, toTriageCase(feature!, spec!, result.analysis, result.target, record));
   };
 }
 
@@ -74,6 +75,7 @@ export function createImportActualCausesHandler(storage: HubStorage) {
       const record = buildTriageRecord(entry.feature, entry.spec, result.analysis, parsed.data.promptVersion, {
         cause: entry.label,
         note: entry.note,
+        target: result.target,
       });
       await storage.triage.putActualCause(runId, record);
       imported++;
@@ -97,7 +99,9 @@ function buildRunTriage(runId: string, report: RunReportData | null, records: Tr
   for (const result of report.results) {
     if (!result.analysis) continue;
     const record = recordByKey.get(`${result.feature}/${result.spec}`);
-    cases.push(toTriageCase(result.feature, result.spec, result.analysis, record));
+    // The report row is the authoritative target; a record written before the
+    // field existed falls back to it too.
+    cases.push(toTriageCase(result.feature, result.spec, result.analysis, result.target, record));
   }
   return {
     runId,
@@ -113,7 +117,7 @@ function buildTriageRecord(
   spec: string,
   analysis: FailureAnalysis,
   promptVersion: string,
-  actual: { cause: FailureLabel; note?: string },
+  actual: { cause: FailureLabel; note?: string; target?: string },
 ): TriageRecord {
   return {
     feature,
@@ -126,6 +130,7 @@ function buildTriageRecord(
     },
     actualCause: actual.cause,
     ...(actual.note ? { note: actual.note } : {}),
+    ...(actual.target ? { target: actual.target } : {}),
     promptVersion,
     recordedAt: new Date().toISOString(),
   };
@@ -135,11 +140,17 @@ function toTriageCase(
   feature: string,
   spec: string,
   analysis: FailureAnalysis,
+  target: string | undefined,
   record: TriageRecord | undefined,
 ): TriageCase {
+  // Prefer the current report row's target; fall back to the stored grade's
+  // recorded target for a row that lacks one (e.g. the report was replaced by a
+  // push that didn't set `target`, but an earlier grade recorded it).
+  const resolvedTarget = target ?? record?.target;
   return {
     feature,
     spec,
+    ...(resolvedTarget ? { target: resolvedTarget } : {}),
     predicted: {
       label: analysis.label,
       confidence: analysis.confidence,

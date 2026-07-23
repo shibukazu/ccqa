@@ -6,7 +6,7 @@ import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { loadProjectConfig, TargetConfigSchema } from "../config/project-config.ts";
 import { resolveTarget, resolveTargetOverride } from "../targets/registry.ts";
-import type { GenerateContext } from "../targets/types.ts";
+import type { GenerateContext, GenerateResult, TargetPlugin } from "../targets/types.ts";
 import type { FixMode } from "../diagnose/loop.ts";
 import type { RecordedAction } from "../types.ts";
 import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOption, DEFAULT_LANGUAGE } from "./options.ts";
@@ -14,15 +14,21 @@ import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { resolveHubClient, type HubContext } from "./hub-conn.ts";
 import { syncSpecPerspectives } from "./perspectives-sync.ts";
+import { updateAgentPrompt } from "./update-agent-prompt.ts";
+import { buildGenerateRunSummary } from "./build-generate-run-summary.ts";
 import * as log from "./logger.ts";
 
 const AUTO_FIX_MODES = ["interactive", "auto", "skip"] as const;
 export type AutoFixMode = (typeof AUTO_FIX_MODES)[number];
 
-// Maps the user-facing `--auto-fix` 3-value flag to the internal `FixMode`:
-//   interactive → prompt y/N when the auto-fix isn't high-confidence
-//   auto        → never prompt; apply regardless of confidence (CI use)
-//   skip        → never prompt and never apply; only apply when confidence is high
+// Maps the user-facing `--auto-fix` 3-value flag to the internal `FixMode`.
+// The two target families read the modes slightly differently:
+//   interactive → agent-browser: prompt y/N when the auto-fix isn't
+//                 high-confidence; external targets: show the fix diff and
+//                 prompt y/N (declines on non-TTY).
+//   auto        → never prompt; apply every fix (CI use).
+//   skip        → agent-browser: apply only high-confidence fixes without
+//                 prompting; external targets: run no fix pass at all.
 export function toFixMode(autoFix: AutoFixMode): FixMode {
   switch (autoFix) {
     case "auto":
@@ -52,6 +58,8 @@ export interface RunGenerateOptions {
   /** Project root holding `.ccqa/`; defaults to process.cwd(). */
   cwd?: string;
   hubContext?: HubContext | null;
+  /** Refresh the target's `<target>.agent` learning prompt from this run. */
+  updateAgentPrompt?: boolean;
 }
 
 /**
@@ -83,6 +91,20 @@ export async function runGenerate(
   }
 }
 
+/**
+ * Resolve a spec's target, mapping a resolution failure (unknown target id,
+ * agent-browser-only fields on another target) to a usage error + exit 2
+ * instead of an unhandled throw. Shared by `ccqa generate` and `ccqa record`.
+ */
+export function resolveTargetOrExit(resolve: () => TargetPlugin): TargetPlugin {
+  try {
+    return resolve();
+  } catch (e) {
+    log.error(e instanceof Error ? e.message : String(e));
+    process.exit(2);
+  }
+}
+
 async function runGenerateLocked(
   featureName: string,
   specName: string,
@@ -92,10 +114,11 @@ async function runGenerateLocked(
   const specYaml = await readSpecFile(featureName, specName, cwd);
   const spec = parseTestSpec(specYaml);
   const config = await loadProjectConfig(cwd);
-  const target =
+  const target = resolveTargetOrExit(() =>
     opts.targetOverride !== undefined
       ? resolveTargetOverride(spec, opts.targetOverride)
-      : resolveTarget(spec, config);
+      : resolveTarget(spec, config),
+  );
   log.meta("target", target.id + (opts.targetOverride !== undefined ? " (--target override)" : ""));
 
   // Refuse to overwrite previously generated output unless --force. The
@@ -143,11 +166,53 @@ async function runGenerateLocked(
 
   const result = await target.generate(ctx);
 
+  // Learn from this generation before the exit-code check: even a failed
+  // generation carries a useful signal (the fix it couldn't land), and a
+  // non-zero exit below would otherwise skip it.
+  if (opts.updateAgentPrompt) {
+    await runGenerateAgentPromptUpdate(target, featureName, specName, result, opts, cwd);
+  }
+
   if (!result.passed) {
     log.warn("auto-fix exhausted; test still failing");
     process.exit(1);
   }
   log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
+}
+
+/**
+ * `ccqa generate --update-agent-prompt`: refresh the target's learned
+ * `<target>.agent` playbook from this generation. Only targets that declare a
+ * `guidanceKind` (the LLM-generating ones: playwright, runn) have such a
+ * prompt — agent-browser's codegen is mechanical, so point at `ccqa record
+ * --update-agent-prompt` for its tracer instead.
+ */
+async function runGenerateAgentPromptUpdate(
+  target: TargetPlugin,
+  featureName: string,
+  specName: string,
+  result: GenerateResult,
+  opts: RunGenerateOptions,
+  cwd: string,
+): Promise<void> {
+  if (target.guidanceKind === undefined) {
+    log.warn(
+      `--update-agent-prompt has no effect on the "${target.id}" target — it has no learned ` +
+        `generation prompt (only LLM-generating targets like playwright/runn do)`,
+    );
+    return;
+  }
+  log.blank();
+  await updateAgentPrompt({
+    kind: target.guidanceKind,
+    // The summary relativizes written-file paths against the project root, not
+    // process.cwd() — under `--cwd <subpackage>` those differ, and a learned
+    // playbook keyed on `../..`-style paths would be useless.
+    runSummary: buildGenerateRunSummary(target.id, featureName, specName, result, cwd),
+    hubContext: opts.hubContext ?? null,
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.language ? { language: opts.language } : {}),
+  });
 }
 
 async function confirmOverwrite(path: string): Promise<boolean> {
@@ -179,6 +244,7 @@ interface GenerateCliOptions {
   maxRetries?: string;
   force?: boolean;
   snapshot?: boolean;
+  updateAgentPrompt?: boolean;
   cwd?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -208,7 +274,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option(
       "--auto-fix <mode>",
-      "Auto-fix behaviour during script generation: 'interactive' (default, prompt y/N), 'auto' (apply without prompt, for CI), 'skip' (never prompt, only apply high-confidence fixes).",
+      "Auto-fix behaviour during script generation: 'interactive' (default, prompt y/N; declines on non-TTY), 'auto' (apply without prompt, for CI), 'skip' (agent-browser: apply only high-confidence fixes; external targets like playwright/runn: no fix pass at all).",
       parseAutoFixFlag,
       "interactive" as AutoFixMode,
     )
@@ -217,6 +283,10 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     .option(
       "--no-snapshot",
       "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
+    )
+    .option(
+      "--update-agent-prompt",
+      "After generation, ask Claude to refresh the target's \"<target>.agent\" learning prompt on the hub from a summary of the run. LLM-generating targets (playwright, runn) only; requires a hub connection.",
     )
     .option(
       "--cwd <path>",
@@ -265,6 +335,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
       targetOverride: opts.target,
       cwd,
       hubContext,
+      updateAgentPrompt: opts.updateAgentPrompt ?? false,
     });
   } catch (e) {
     if (e instanceof SpecLockedError) {

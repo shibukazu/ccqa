@@ -1,7 +1,15 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+// The interactive fix gate confirms via draft.ts's `prompt`; stub it so tests
+// can answer y/N without stdin. printUnifiedDiff stays real (harmless output).
+vi.mock("../cli/draft.ts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../cli/draft.ts")>();
+  return { ...actual, prompt: vi.fn(async () => "n") };
+});
+const { prompt: mockedPrompt } = await import("../cli/draft.ts");
 import {
   existingOutputFromManifest,
   finalizePreparedFiles,
@@ -342,6 +350,91 @@ describe("generateWithLlmEngine", () => {
     expect(await readFile(resolve(cwd, "e2e/todos/add-item.spec.ts"), "utf8")).toBe(
       "// generated test\n",
     );
+  });
+
+  it("--auto-fix skip (non-interactive) runs verification once and never requests a fix", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput()]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({
+        fix: { maxRetries: 3, mode: "non-interactive", useSnapshot: false },
+        targetConfig: TargetConfigSchema.parse({ outDir: "e2e", runCommand: "false" }),
+      }),
+      target: "playwright",
+      taskInstructions: "Generate the test.",
+      invoke,
+    });
+    expect(result.passed).toBe(false);
+    // Only the initial generation — the fix pass is disabled, so no second call.
+    expect(prompts).toHaveLength(1);
+  });
+
+  it("interactive fix mode shows the diff and does not write the fix when declined at the prompt", async () => {
+    await makeProject();
+    // Force a TTY so the interactive prompt path runs (not the non-TTY decline).
+    const prevTty = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    try {
+      vi.mocked(mockedPrompt).mockResolvedValueOnce("n");
+      const fixed = JSON.stringify({
+        files: [{ path: "e2e/fixed.marker", contents: "ok", kind: "support" }],
+        summary: "fixed",
+      });
+      const { invoke, prompts } = fakeInvoke([okOutput(), fixed]);
+      const result = await generateWithLlmEngine({
+        ctx: makeContext({
+          fix: { maxRetries: 1, mode: "interactive", useSnapshot: false },
+          targetConfig: TargetConfigSchema.parse({
+            outDir: "e2e",
+            runCommand: "test -f e2e/fixed.marker # {files}",
+          }),
+        }),
+        target: "playwright",
+        taskInstructions: "Generate the test.",
+        invoke,
+      });
+      // The fix was proposed (LLM called) but declined, so the marker never
+      // lands and verification stays red.
+      expect(result.passed).toBe(false);
+      expect(prompts).toHaveLength(2);
+      expect(vi.mocked(mockedPrompt)).toHaveBeenCalled();
+      await expect(stat(resolve(cwd, "e2e/fixed.marker"))).rejects.toThrow();
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { value: prevTty, configurable: true });
+    }
+  });
+
+  it("interactive fix declines without prompting (hanging) on non-TTY stdin", async () => {
+    await makeProject();
+    vi.mocked(mockedPrompt).mockClear();
+    // Ensure no TTY — the guard must decline rather than call prompt (which
+    // would hang forever on piped/CI stdin).
+    const prevTty = process.stdin.isTTY;
+    Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
+    try {
+      const fixed = JSON.stringify({
+        files: [{ path: "e2e/fixed.marker", contents: "ok", kind: "support" }],
+        summary: "fixed",
+      });
+      const { invoke } = fakeInvoke([okOutput(), fixed]);
+      const result = await generateWithLlmEngine({
+        ctx: makeContext({
+          fix: { maxRetries: 1, mode: "interactive", useSnapshot: false },
+          targetConfig: TargetConfigSchema.parse({
+            outDir: "e2e",
+            runCommand: "test -f e2e/fixed.marker # {files}",
+          }),
+        }),
+        target: "playwright",
+        taskInstructions: "Generate the test.",
+        invoke,
+      });
+      expect(result.passed).toBe(false);
+      expect(vi.mocked(mockedPrompt)).not.toHaveBeenCalled();
+      await expect(stat(resolve(cwd, "e2e/fixed.marker"))).rejects.toThrow();
+    } finally {
+      Object.defineProperty(process.stdin, "isTTY", { value: prevTty, configurable: true });
+    }
   });
 
   it("degrades an unusable fix reply to a failed attempt instead of aborting the generate", async () => {

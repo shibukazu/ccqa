@@ -4,7 +4,7 @@ import { buildAgentUpdateSystemPrompt } from "./agent-update.ts";
 describe("buildAgentUpdateSystemPrompt", () => {
   test("live mode learns cross-spec rules: forbids step-id and snapshot-ref anchoring, bans generic filler", () => {
     const prompt = buildAgentUpdateSystemPrompt({
-      mode: "live",
+      kind: "live",
       currentAgentMd: null,
       runSummary: "(no live runs executed)",
     });
@@ -24,7 +24,7 @@ describe("buildAgentUpdateSystemPrompt", () => {
 
   test("record mode learns cross-spec too: screen-class anchor, no spec/step-id headings, but selectors verbatim", () => {
     const prompt = buildAgentUpdateSystemPrompt({
-      mode: "record",
+      kind: "record",
       currentAgentMd: null,
       runSummary: "(no live runs executed)",
     });
@@ -41,9 +41,23 @@ describe("buildAgentUpdateSystemPrompt", () => {
     expect(prompt).toContain("Prioritize the steps with the most dropped attempts");
   });
 
+  test("generation kinds learn to pass verification: cross-spec, keyed on screen/resource, per-target framing", () => {
+    const pw = buildAgentUpdateSystemPrompt({ kind: "playwright", currentAgentMd: null, runSummary: "x" });
+    const runn = buildAgentUpdateSystemPrompt({ kind: "runn", currentAgentMd: null, runSummary: "x" });
+
+    expect(pw).toContain("future playwright generations across all specs");
+    expect(pw).toContain("pass their runCommand verification");
+    expect(pw).toContain("NEVER title a section with a spec or feature name");
+    // The playwright reuse example vs runn's include example distinguishes them.
+    expect(pw).toContain("page object");
+    expect(runn).toContain("future runn generations across all specs");
+    expect(runn).toContain("runbook");
+    expect(pw).not.toContain("future runn generations across all specs");
+  });
+
   test("live and record modes state different optimization goals", () => {
-    const liveGoal = buildAgentUpdateSystemPrompt({ mode: "live", currentAgentMd: null, runSummary: "x" });
-    const recordGoal = buildAgentUpdateSystemPrompt({ mode: "record", currentAgentMd: null, runSummary: "x" });
+    const liveGoal = buildAgentUpdateSystemPrompt({ kind: "live", currentAgentMd: null, runSummary: "x" });
+    const recordGoal = buildAgentUpdateSystemPrompt({ kind: "record", currentAgentMd: null, runSummary: "x" });
 
     // Both cross-spec, but each names its own surface.
     expect(liveGoal).toContain("future live executions across all specs");

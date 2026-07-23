@@ -1,38 +1,38 @@
-import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { posix as posixPath } from "node:path";
 import type { Readable } from "node:stream";
 import {
   getTestScript,
   listAllSpecsWithSpecFile,
-  listFeatureTree,
   loadAllBlocks,
-  loadAvailableBlocks,
   resolveSpecTargets,
+  specKey,
   tryReadSpecFile,
 } from "../store/index.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
 import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
-import { expandSpec } from "../spec/expand.ts";
-import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
-import type { BlockSpec } from "../types.ts";
 import { bundledVitestConfigPath } from "../runtime/bundled-config.ts";
 import { spawnVitestStreaming } from "../runtime/spawn-vitest.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
-import { analyzeDrift } from "../drift/analyze.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
-import type { SpecResult, SpecTarget } from "../drift/types.ts";
-import { analyzeFailure } from "../report/analyze.ts";
+import {
+  analyzeExternalRows,
+  beginFailureAnalysis,
+  needsAnalysis,
+  type FailureAnalysisDeps,
+  type FailureAnalysisRun,
+} from "./failure-analysis.ts";
 import { createDiffProvider, type DiffProvider } from "./diff-provider.ts";
 import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.ts";
 import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
 import { emitGithubAnnotations } from "../report/github-format.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { fetchCustomPrompt, fetchTriageUserPrompt, hashTriageUserPrompt } from "../prompts/custom-prompt.ts";
-import type { AnalysisCustomPrompt } from "../prompts/custom-prompt.ts";
-import { ReportEvidenceSchema, type LiveReportStep, type ReportEvidence, type ReportSpecResult, type RunReportData } from "../report/schema.ts";
+import { buildStepDescriptions, loadEvidenceForSpec, specEvidenceDir } from "../report/evidence.ts";
+import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
+import type { LiveReportStep, ReportSpecResult, RunReportData } from "../report/schema.ts";
 import { resolveProfileEnv } from "../cli/options.ts";
 import { resolveHubContext, HubConnectionError, type HubContext } from "../cli/hub-conn.ts";
 import { HubApiError } from "../hub-client/index.ts";
@@ -45,6 +45,7 @@ import { createIncrementalReport, type ReportEnvelope, type ReportSink } from ".
 import { detectBranch, getGitHead } from "../cli/git-branch.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
+import { C } from "../cli/colors.ts";
 import * as log from "../cli/logger.ts";
 import { RunUsageError } from "./errors.ts";
 import type { RunTeardown } from "../cli/run-teardown.ts";
@@ -304,6 +305,28 @@ export async function executeRun(
   }
   const triageUserPromptHash = triageUserPrompt ? hashTriageUserPrompt(triageUserPrompt) : null;
 
+  // Resolve report dir against `cwd` (not process.cwd()) so JSON and evidence
+  // PNGs share a directory even when --cwd points at a subpackage. A report is
+  // always written now; --report only picks where. Resolved up front so the
+  // analysis deps below can carry it (they locate a spec's run artifacts).
+  const reportDir = resolveReportDir(opts.report, cwd);
+
+  // Everything the failure analysis needs, resolved once and shared by every
+  // execution path that classifies (deterministic + external targets; the live
+  // path builds its own from RunLiveOptions). The Claude-credential probe can
+  // hit the macOS Keychain, so it happens here rather than per phase — and only
+  // when a baseline was requested, since that is what turns analysis on.
+  const analysisDeps: FailureAnalysisDeps = {
+    diffProvider,
+    auth: diffProvider ? driftAuthAvailable() : { ok: false, reason: "skipped by flags" },
+    cwd,
+    reportDir,
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.language ? { language: opts.language } : {}),
+    customPrompt,
+    triageUserPrompt,
+  };
+
   // No targets means "all specs"; resolveSpecTargets(undefined) enumerates them.
   // Multiple targets may overlap (e.g. a feature plus one of its specs), so dedupe.
   const enumerateAll = () => listAllSpecsWithSpecFile(cwd);
@@ -375,11 +398,6 @@ export async function executeRun(
   }
   log.blank();
 
-  // Resolve report dir against `cwd` (not process.cwd()) so JSON and evidence
-  // PNGs share a directory even when --cwd points at a subpackage. A report is
-  // always written now; --report only picks where.
-  const reportDir = resolveReportDir(opts.report, cwd);
-
   const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDir);
 
   // Incremental hub push: when --push-report is set and a hub is configured,
@@ -423,18 +441,18 @@ export async function executeRun(
     }
   }
 
-  // Incremental report: each live spec upserts its row and flushes report.json,
-  // so an interrupt leaves a valid partial report instead of nothing. The git
-  // coordinates were resolved up front, so even an interrupted partial report
-  // carries the real head/base — the final writeUnifiedReport rewrites the
-  // whole file with the same envelope.
+  // Incremental report: external-target and live specs upsert their rows and
+  // flush report.json as they finish, so an interrupt leaves a valid partial
+  // report instead of nothing. The git coordinates were resolved up front, so
+  // even an interrupted partial report carries the real head/base — the final
+  // writeUnifiedReport rewrites the whole file with the same envelope.
   //
-  // Scope note: only *live* rows are upserted incrementally. Deterministic rows
-  // are built later (analyzeDeterministicSummaries) and only reach the report /
-  // hub via the final write + reconcile patch, so an interrupt during the live
-  // phase omits already-finished det specs from the partial report. Det specs
-  // are fast and run first, so this window is small; full det incrementalism is
-  // deferred.
+  // Scope note: only the external and live phases upsert incrementally.
+  // Deterministic rows are built later (analyzeDeterministicSummaries) and only
+  // reach the report / hub via the final write + seal patch, so an interrupt
+  // before that point omits already-finished det specs from the partial report.
+  // Det specs are fast and run first, so this window is small; full det
+  // incrementalism is deferred.
   const incrementalReport = createIncrementalReport(
     reportDir,
     buildReportEnvelope({
@@ -472,8 +490,9 @@ export async function executeRun(
 
   // External-target specs run between the det and live phases. Rows (including
   // the skipped / target-resolution-failure stubs) are upserted into the
-  // incremental report as they land, so an interrupt and --push-report treat
-  // them like live rows.
+  // incremental report as each spec finishes, so an interrupt and
+  // --push-report treat them like live rows. Their failure analysis happens
+  // in the tail phase below, with the deterministic one.
   const externalRows = await runExternalSpecs(dispatch, {
     cwd,
     reportDir,
@@ -507,22 +526,36 @@ export async function executeRun(
   // target) fail the run; skipped rows don't.
   if (externalRows.some((r) => r.status === "failed")) overallExitCode = 1;
 
+  const customPromptVersion = customPrompt?.customPromptVersion ?? null;
   let report: RunReportData;
   {
-    const detReport = await analyzeDeterministicSummaries(
+    // One analysis phase for the whole run, opened once every spec has
+    // executed: the audit batches across execution paths and the classifier's
+    // banner is printed once, in one place. The live path classifies inline
+    // (its evidence is the transcript it just produced), so its rows arrive
+    // analyzed and only det + external rows pass through here.
+    const detFailed = det.summaries.filter(failedSpec);
+    const analysisRun = await beginFailureAnalysis(
+      [
+        ...detFailed.map((s) => ({ featureName: s.featureName, specName: s.specName })),
+        ...externalRows
+          .filter(needsAnalysis)
+          .map((r) => ({ featureName: r.feature, specName: r.spec })),
+      ],
+      analysisDeps,
+    );
+    const detResults = await analyzeDeterministicSummaries(
       det.summaries,
-      opts,
       cwd,
       reportDir,
-      customPrompt,
-      triageUserPrompt,
-      diffProvider,
+      analysisRun,
     );
+    const analyzedExternalRows = await analyzeExternalRows(externalRows, analysisRun);
     report = await writeUnifiedReport({
       reportDir,
-      results: [...detReport.results, ...externalRows, ...live.reportResults],
+      results: [...detResults, ...analyzedExternalRows, ...live.reportResults],
       git,
-      customPromptVersion: detReport.customPromptVersion,
+      customPromptVersion,
       triageUserPromptHash,
       opts,
     });
@@ -538,13 +571,22 @@ export async function executeRun(
       const finalStatus = overallExitCode === 0 ? "passed" : "failed";
       const reportMeta = buildReportEnvelope({
         git,
-        customPromptVersion: detReport.customPromptVersion,
+        customPromptVersion,
         triageUserPromptHash,
         opts,
       });
+      // Deterministic rows are the only ones that never passed through the
+      // mid-run sink (external/live rows already pushed their files with their
+      // own patches), so their evidence PNGs must ride along on this seal PATCH
+      // or the hub UI's det step frames 404. Collect files only for rows that
+      // weren't streamed, under one shared byte budget.
+      const streamedKeys = new Set(incrementalReport.rows().map((r) => `${r.feature}/${r.spec}`));
+      const sealRows = report.results.filter((r) => !streamedKeys.has(`${r.feature}/${r.spec}`));
+      const evidence = await readRowsFilesBase64(sealRows, reportDir);
       try {
         await hubCtx!.hub.patchRun(hubRunId, {
           rows: report.results,
+          evidence,
           done: true,
           finalStatus,
           reportMeta,
@@ -561,7 +603,7 @@ export async function executeRun(
   if (opts.updateAgentPrompt && liveSpecs.length > 0) {
     log.blank();
     await updateAgentPrompt({
-      mode: "live",
+      kind: "live",
       runSummary: buildLiveRunSummary(live.reportResults),
       hubContext: hubCtx,
       ...(opts.model ? { model: opts.model } : {}),
@@ -665,13 +707,21 @@ async function runDeterministicSpecs(
   // A report is always written, so keep the vitest output tail unless failure
   // analysis (its only consumer, via failureLogExcerpt) is turned off.
   const captureOutput = opts.failureAnalysis !== false;
-  // Evidence lives under the report dir for the standalone CI artifact.
-  const evidenceRoot = opts.evidence !== false ? join(reportDirAbs, EVIDENCE_SUBDIR) : null;
+  // Evidence lives under the report dir for the standalone CI artifact; the
+  // per-spec dir is composed via specEvidenceDir at capture time.
+  const captureEvidence = opts.evidence !== false;
   // Parallel vitest streams interleave illegibly, so above 1 worker each spec
   // buffers its narration + vitest output (via log.withBuffer) and flushes one
   // labelled block on completion. At 1 worker output streams live, as before.
   const concurrency = Math.max(1, opts.concurrency ?? 1);
-  const ctx: DeterministicSpecContext = { cwd, tmpDir, vitestConfig, captureOutput, evidenceRoot };
+  const ctx: DeterministicSpecContext = {
+    cwd,
+    tmpDir,
+    vitestConfig,
+    captureOutput,
+    reportDir: reportDirAbs,
+    captureEvidence,
+  };
 
   try {
     const settled = await runPool(specs, concurrency, (spec, i) =>
@@ -694,7 +744,8 @@ interface DeterministicSpecContext {
   tmpDir: string;
   vitestConfig: string;
   captureOutput: boolean;
-  evidenceRoot: string | null;
+  reportDir: string;
+  captureEvidence: boolean;
 }
 
 /**
@@ -726,13 +777,13 @@ async function runOneDeterministicSpec(
   log.blank();
 
   const reportFile = join(ctx.tmpDir, `report-${index}.json`);
-  const evidenceDir = ctx.evidenceRoot ? join(ctx.evidenceRoot, featureName, specName) : null;
+  const evidenceDir = ctx.captureEvidence ? specEvidenceDir(ctx.reportDir, featureName, specName) : null;
   if (evidenceDir) {
     await rm(evidenceDir, { recursive: true, force: true });
     await mkdir(evidenceDir, { recursive: true });
   }
   const specEnv: NodeJS.ProcessEnv = { ...process.env, CCQA_RUN_ID: runId };
-  if (evidenceDir) specEnv.CCQA_EVIDENCE_DIR = evidenceDir;
+  if (evidenceDir) specEnv[EVIDENCE_DIR_ENV] = evidenceDir;
   const proc = spawnVitestStreaming(
     [
       "run",
@@ -777,75 +828,21 @@ export function failedSpec(s: SpecRunSummary): boolean {
 }
 
 /**
- * Build ReportSpecResult[] for a set of vitest summaries. Runs drift audit +
- * failure analysis when `--report` is on; degrades (no throw) when Claude
- * auth or git diff aren't available. Caller writes the HTML / JSON.
+ * Build ReportSpecResult[] for a set of vitest summaries, running the drift
+ * audit + failure analysis for the failed ones (see failure-analysis.ts, which
+ * external-target specs share). Degrades — never throws — when Claude auth or
+ * the git diff aren't available. Caller writes report.json.
  */
 async function analyzeDeterministicSummaries(
   summaries: readonly SpecRunSummary[],
-  opts: RunOptions,
   cwd: string,
   reportDir: string,
-  customPrompt: AnalysisCustomPrompt | null,
-  triageUserPrompt: string | null,
-  diffProvider: DiffProvider | null,
-): Promise<{ results: ReportSpecResult[]; customPromptVersion: string | null }> {
-  // Failure classification is opt-in (`--failure-analysis [base]`): a null
-  // diffProvider means no baseline was requested, so neither the
-  // classification nor the drift audit runs — both cost Claude turns, and the
-  // audit is an input to the classification (its findings feed the prompt),
-  // so the two are one unit: opting into analysis always runs the audit.
-  const failureAnalysisEnabled = diffProvider != null;
-
-  const auth = failureAnalysisEnabled ? driftAuthAvailable() : { ok: false as const, reason: "skipped by flags" };
-  const failed = summaries.filter(failedSpec);
-  if (failureAnalysisEnabled && !auth.ok && failed.length > 0) {
-    log.info(`failure analysis skipped (${auth.reason})`);
-  }
-
-  // The feature tree only feeds relatedPaths/includedBlocks lookups for
-  // failed specs — skip the directory walk entirely on a green run.
-  const tree = failed.length > 0 ? await listFeatureTree(cwd) : [];
-  const specInfoByKey = new Map(
-    tree.flatMap((f) => f.specs.map((sp) => [`${f.featureName}/${sp.specName}`, sp] as const)),
-  );
-  const findSpecInfo = (s: SpecRunSummary) =>
-    specInfoByKey.get(`${s.featureName}/${s.specName}`) ?? null;
-
-  // Drift audit runs first so its findings can feed the failure-analysis prompt.
-  let driftResults: SpecResult[] = [];
-  if (failureAnalysisEnabled && auth.ok && failed.length > 0) {
-    const targets = failed
-      .map((s): SpecTarget | null => {
-        const spec = findSpecInfo(s);
-        if (!spec) return null;
-        const t: SpecTarget = { featureName: s.featureName, specName: s.specName };
-        if (spec.relatedPaths) t.relatedPaths = spec.relatedPaths;
-        if (spec.includedBlocks) t.includedBlocks = spec.includedBlocks;
-        return t;
-      })
-      .filter((t): t is SpecTarget => t !== null);
-
-    if (targets.length > 0) {
-      const blocks = await loadAvailableBlocks(cwd);
-      driftResults = await analyzeDrift({
-        targets,
-        cwd,
-        blocks,
-        concurrency: Math.min(3, targets.length),
-        ...(opts.model ? { model: opts.model } : {}),
-        ...(opts.language ? { language: opts.language } : {}),
-        onSpecStart: (t) => log.info(`drift audit: ${t.featureName}/${t.specName}`),
-      });
-    }
-  }
-
+  { pass, driftByKey }: FailureAnalysisRun,
+): Promise<ReportSpecResult[]> {
   // Load blocks once (shared across all specs) so evidence captions can show
   // the step's `expected` text from spec.yaml, including block-inlined steps.
   const allBlocks = await loadAllBlocks(cwd);
 
-  let printedHeader = false;
-  let warnedDiffUnavailable = false;
   const results: ReportSpecResult[] = [];
   for (const s of summaries) {
     const assertions = collectAssertions(s);
@@ -854,7 +851,7 @@ async function analyzeDeterministicSummaries(
     const specYaml = await tryReadSpecFile(s.featureName, s.specName, cwd);
     const parsedSpec = tryParseTestSpec(specYaml);
     const stepDescriptions = buildStepDescriptions(parsedSpec, allBlocks);
-    const evidence = await loadEvidenceForSpec(s, reportDir, stepDescriptions);
+    const evidence = await loadEvidenceForSpec(s.evidenceDir, reportDir, stepDescriptions);
     const base = {
       feature: s.featureName,
       spec: s.specName,
@@ -889,97 +886,37 @@ async function analyzeDeterministicSummaries(
       continue;
     }
 
-    const specDiffResult = diffProvider
-      ? await diffProvider.forSpec({ featureName: s.featureName, specName: s.specName })
-      : null;
-    const specDiff = specDiffResult?.ok ? specDiffResult : null;
-    if (specDiff?.error && !warnedDiffUnavailable) {
-      warnedDiffUnavailable = true;
-      log.info(`failure analysis: source diff unavailable (${specDiff.error}) — analyzing without diff context`);
-    }
-    const diffExcerpt = specDiff?.patch ?? null;
-    const driftResult = driftResults.find(
-      (r) => r.target.featureName === s.featureName && r.target.specName === s.specName,
-    );
-    const driftIssues = driftResult?.ok ? driftResult.issues : null;
+    const driftIssues = driftByKey.get(specKey({ featureName: s.featureName, specName: s.specName })) ?? null;
     const failureLog = buildFailureLog(s);
+    const fields = await pass.analyze({
+      featureName: s.featureName,
+      specName: s.specName,
+      readScript: () => readScriptSafe(s.scriptFile),
+      failureLog,
+      specYaml,
+      driftIssues,
+    });
 
-    let analysis: ReportSpecResult["analysis"] = null;
-    let analysisSkipped: string | null = null;
-    // failureAnalysisEnabled === (specDiffResult != null), so chaining on the
-    // result narrows it for the analyze branch below.
-    if (!specDiffResult) {
-      analysisSkipped = "skipped: --failure-analysis not enabled";
-    } else if (!specDiffResult.ok) {
-      // No usable baseline for THIS spec (last-green: never green yet, or
-      // its commit isn't fetched) — withhold the classification honestly.
-      analysisSkipped = specDiffResult.skip;
-    } else if (!auth.ok) {
-      analysisSkipped = auth.reason;
-    } else if (specYaml === null) {
-      analysisSkipped = "no spec.yaml found for this spec";
-    } else {
-      const script = await readScriptSafe(s.scriptFile);
-      log.info(`failure analysis: ${s.featureName}/${s.specName}`);
-      const outcome = await analyzeFailure(
-        {
-          script,
-          specYaml,
-          failureLog,
-          diffPatch: diffExcerpt,
-          changedFiles: specDiffResult.nameStatus,
-          baseRef: specDiffResult.base.ref,
-          baseSource: specDiffResult.base.source,
-          range: specDiffResult.range,
-          driftIssues,
-          ...(opts.language ? { outputLanguage: opts.language } : {}),
-          ...(triageUserPrompt ? { triageUserPrompt } : {}),
-          ...(customPrompt ? { customPrompt } : {}),
-        },
-        {
-          ...(opts.model ? { model: opts.model } : {}),
-          cwd,
-          getFileDiff: specDiffResult.fileDiff,
-        },
-      );
-      analysis = outcome.analysis;
-
-      if (!printedHeader) {
-        log.emitRaw(
-          `\n${C.cyan}${C.bold}──────── failure analysis ────────${C.reset}\n`,
-        );
-        printedHeader = true;
-      }
-      const pct = Math.round(outcome.analysis.confidence * 100);
-      const oneLine =
-        outcome.analysis.headline.trim() ||
-        (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();
-      log.emitRaw(
-        `${C.red}✖${C.reset} ${C.bold}${s.featureName}/${s.specName}${C.reset} → ` +
-          `${C.bold}${outcome.analysis.label}${C.reset} (${pct}%)` +
-          `${oneLine ? ` ${C.dim}${oneLine}${C.reset}` : ""}\n`,
-      );
-      const recommendation = outcome.analysis.recommendation.trim();
-      if (recommendation) {
-        log.emitRaw(`  ${C.dim}→ ${recommendation}${C.reset}\n`);
-      }
-    }
-
+    // Spell out the failed-row keys in the historical order (analysis,
+    // analysisSkipped, analysisBase?, driftIssues, failureLogExcerpt,
+    // diffExcerpt, specYaml, liveRun) rather than spreading `fields` — a
+    // spread would reorder `diffExcerpt` and change report.json byte-for-byte,
+    // which the e2e goldens and cross-version diffs care about.
     results.push({
       ...base,
       status: "failed",
-      analysis,
-      analysisSkipped,
-      ...(specDiff ? { analysisBase: { ref: specDiff.base.ref, sha: specDiff.base.sha } } : {}),
+      analysis: fields.analysis,
+      analysisSkipped: fields.analysisSkipped,
+      ...(fields.analysisBase ? { analysisBase: fields.analysisBase } : {}),
       driftIssues,
       failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
-      diffExcerpt,
+      diffExcerpt: fields.diffExcerpt,
       specYaml,
       liveRun: null,
     });
   }
 
-  return { results, customPromptVersion: customPrompt?.customPromptVersion ?? null };
+  return results;
 }
 
 /**
@@ -1064,154 +1001,96 @@ function errMessage(err: unknown): string {
  */
 const PATCH_FILES_RAW_BUDGET = 20 * 1024 * 1024;
 
+/** Accumulator threaded across rows so a multi-row push shares one byte budget. */
+interface RowFilesAcc {
+  out: Record<string, string>;
+  totalBytes: number;
+  omitted: string[];
+}
+
 /**
- * Read a row's file assets and return them as `{ reportDir-relative posix
- * path → base64 }` for a hub `PATCH`: a live row's evidence PNGs
- * (`liveRun.steps[].beforePng/afterPng`, already reportDir-relative posix via
- * `live-adapter.ts`) plus an external row's `artifacts`. A file that can't be
- * read (capture miss) is skipped, not fatal. Deterministic rows carry
- * neither, so this returns `{}` for them.
+ * Add one row's file assets to `acc` as `{ reportDir-relative posix path →
+ * base64 }`. Every kind of screenshot a row can carry has to be collected here,
+ * or `--push-report` — the way CI publishes — silently ships a report whose
+ * images 404 on the hub: a live row's per-step PNGs
+ * (`liveRun.steps[].beforePng/afterPng`), a script-driven row's step evidence
+ * (`evidence[].pngPath` / `beforePngPath`, written by agent-browser replays and
+ * by external targets' `ccqa/step-evidence` calls alike), and an external row's
+ * `artifacts`. A file that can't be read (capture miss) is skipped, not fatal.
+ *
+ * Order matters under the byte budget: step evidence is the report's primary
+ * visual, so it is offered before the generic artifacts — a multi-megabyte
+ * Playwright trace must not crowd out the screenshots.
  */
-async function readRowFilesBase64(
+async function accumulateRowFiles(
   row: ReportSpecResult,
   reportDir: string,
-): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
-  let totalBytes = 0;
-  const omitted: string[] = [];
+  acc: RowFilesAcc,
+): Promise<void> {
   const add = async (relPath: string, sizeGuard: boolean): Promise<void> => {
-    if (out[relPath] !== undefined) return;
+    if (acc.out[relPath] !== undefined) return;
     let bytes: Buffer;
     try {
       bytes = await readFile(join(reportDir, relPath));
     } catch {
       return; // best-effort: a missing file just isn't pushed with this patch.
     }
-    if (sizeGuard && totalBytes + bytes.length > PATCH_FILES_RAW_BUDGET) {
-      omitted.push(relPath);
+    if (sizeGuard && acc.totalBytes + bytes.length > PATCH_FILES_RAW_BUDGET) {
+      acc.omitted.push(relPath);
       return;
     }
-    out[relPath] = bytes.toString("base64");
-    totalBytes += bytes.length;
+    acc.out[relPath] = bytes.toString("base64");
+    acc.totalBytes += bytes.length;
   };
   for (const step of row.liveRun?.steps ?? []) {
     for (const relPath of [step.beforePng, step.afterPng]) {
       if (relPath) await add(relPath, false);
     }
   }
+  for (const e of row.evidence ?? []) {
+    for (const relPath of [e.beforePngPath, e.pngPath]) {
+      if (relPath) await add(relPath, true);
+    }
+  }
   for (const artifact of row.artifacts ?? []) await add(artifact.path, true);
-  if (omitted.length > 0) {
+}
+
+/** One row's file assets for a mid-run per-row `PATCH` (the incremental sink). */
+export async function readRowFilesBase64(
+  row: ReportSpecResult,
+  reportDir: string,
+): Promise<Record<string, string>> {
+  const acc: RowFilesAcc = { out: {}, totalBytes: 0, omitted: [] };
+  await accumulateRowFiles(row, reportDir, acc);
+  if (acc.omitted.length > 0) {
     log.warn(
-      `hub: ${omitted.length} artifact(s) of ${row.feature}/${row.spec} omitted from the ` +
+      `hub: ${acc.omitted.length} file(s) of ${row.feature}/${row.spec} omitted from the ` +
         `incremental push (over the push size budget); they remain in the local report dir: ` +
-        omitted.join(", "),
+        acc.omitted.join(", "),
     );
   }
-  return out;
+  return acc.out;
 }
 
 /**
- * Read abStepEvidence() meta files and rewrite PNG paths to posix relpaths
- * (relative to the report dir) that report.json references and the hub UI
- * resolves. Missing/malformed files are silently dropped so an evidence-capture
- * failure doesn't surface as a different failure mode.
+ * File assets for several rows under one shared byte budget, for the finalizing
+ * seal `PATCH`. Deterministic rows never go through the mid-run sink (they are
+ * built only at the end), so this is the ONLY chance to upload their evidence
+ * PNGs — without it the hub UI's det step frames 404.
  */
-async function loadEvidenceForSpec(
-  s: SpecRunSummary,
+export async function readRowsFilesBase64(
+  rows: readonly ReportSpecResult[],
   reportDir: string,
-  descriptionByStepId: Map<string, string>,
-): Promise<ReportEvidence[] | null> {
-  const evidenceDir = s.evidenceDir;
-  if (!evidenceDir) return null;
-  let entries: string[];
-  try {
-    entries = await readdir(evidenceDir);
-  } catch {
-    return null;
+): Promise<Record<string, string>> {
+  const acc: RowFilesAcc = { out: {}, totalBytes: 0, omitted: [] };
+  for (const row of rows) await accumulateRowFiles(row, reportDir, acc);
+  if (acc.omitted.length > 0) {
+    log.warn(
+      `hub: ${acc.omitted.length} file(s) omitted from the finalizing push (over the push size ` +
+        `budget); they remain in the local report dir: ${acc.omitted.join(", ")}`,
+    );
   }
-  const reportRoot = resolve(reportDir);
-  const jsonFiles = entries.filter((n) => n.endsWith(".json"));
-  const metas = (
-    await Promise.all(
-      jsonFiles.map((name) =>
-        readEvidenceMeta(join(evidenceDir, name), evidenceDir, reportRoot, descriptionByStepId),
-      ),
-    )
-  ).filter((m): m is ReportEvidence => m !== null);
-  metas.sort((a, b) => {
-    // Failure capture sinks to the end so per-step screenshots stay chronological.
-    if (a.stepId === FAILURE_STEP_ID) return 1;
-    if (b.stepId === FAILURE_STEP_ID) return -1;
-    return a.stepId.localeCompare(b.stepId);
-  });
-  return metas.length > 0 ? metas : null;
-}
-
-async function readEvidenceMeta(
-  metaPath: string,
-  evidenceDir: string,
-  reportRoot: string,
-  descriptionByStepId: Map<string, string>,
-): Promise<ReportEvidence | null> {
-  let raw: string;
-  try {
-    raw = await readFile(metaPath, "utf8");
-  } catch {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) return null;
-  const pngFile = (parsed as { pngFile?: unknown }).pngFile;
-  if (typeof pngFile !== "string") return null;
-  const absPng = join(evidenceDir, pngFile);
-  const pngPath = posixPath.relative(toPosix(reportRoot), toPosix(absPng));
-  const stepId = (parsed as { stepId?: unknown }).stepId;
-  const failureSummary = (parsed as { failureSummary?: unknown }).failureSummary;
-  const hasFailure = typeof failureSummary === "string" && failureSummary.length > 0;
-  // Description comes from spec.yaml's `expected`; failure detail lives in
-  // `failureSummary` as its own field so the renderer can stack them.
-  let description: string | null = null;
-  if (typeof stepId === "string") {
-    description = descriptionByStepId.get(stepId) ?? null;
-  }
-  // Fallback failure capture (legacy scripts without __setCurrentStep) has no
-  // spec entry — surface failureSummary as description so it isn't blank.
-  if (!description && hasFailure) description = failureSummary as string;
-  const candidate = {
-    ...(parsed as Record<string, unknown>),
-    pngPath,
-    description,
-    status: hasFailure ? "failed" : "passed",
-    failureSummary: hasFailure ? failureSummary : null,
-  };
-  const result = ReportEvidenceSchema.safeParse(candidate);
-  return result.success ? result.data : null;
-}
-
-/**
- * Build `step id → expected` so the report can caption each evidence
- * screenshot. Returns empty map on expansion failure (evidence still surfaces).
- */
-function buildStepDescriptions(
-  spec: TestSpec | null,
-  blocks: Map<string, BlockSpec>,
-): Map<string, string> {
-  if (!spec) return new Map();
-  try {
-    const expanded = expandSpec(spec, { blocks });
-    return new Map(expanded.map((s) => [s.id, s.expected.trim()]));
-  } catch {
-    return new Map();
-  }
-}
-
-export function toPosix(p: string): string {
-  return p.split(/[\\/]/).join("/");
+  return acc.out;
 }
 
 function collectAssertions(s: SpecRunSummary): ReportSpecResult["assertions"] {
@@ -1269,18 +1148,6 @@ async function readReport(path: string): Promise<VitestJsonReport | null> {
     return null;
   }
 }
-
-const useColor = process.stdout.isTTY && process.env.NO_COLOR == null;
-const C = {
-  reset: useColor ? "\x1b[0m" : "",
-  bold: useColor ? "\x1b[1m" : "",
-  dim: useColor ? "\x1b[2m" : "",
-  green: useColor ? "\x1b[32m" : "",
-  red: useColor ? "\x1b[31m" : "",
-  yellow: useColor ? "\x1b[33m" : "",
-  cyan: useColor ? "\x1b[36m" : "",
-  gray: useColor ? "\x1b[90m" : "",
-};
 
 function printSummary(summaries: SpecRunSummary[]): void {
   log.emitRaw(

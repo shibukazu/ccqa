@@ -160,6 +160,38 @@ is named in a warning, never silently cut. The examples above use
 `--output {artifactsDir}` (Playwright: failure traces land in the report)
 and `--capture {artifactsDir}` (runn: run captures land in the report).
 
+A failing `runCommand` spec is triaged like any other: with
+`ccqa run --failure-analysis [base]` it gets the same root-cause call and
+spec↔code drift audit as an agent-browser spec, built from its generated
+test files, the command's output tail, and its `spec.yaml` — see
+[Failure triage](./running.md#failure-triage). When the command left a
+Playwright `error-context.md` (an accessibility snapshot at the point of
+failure) in the artifacts dir, the classifier reads it for extra context.
+
+## Step screenshots for external targets
+
+Playwright specs capture the same per-step **before/after screenshots** an
+agent-browser run produces, rendered identically in the hub. You configure
+nothing: ccqa's emitter injects `ccqa/step-evidence` calls at each spec-step
+boundary of the generated test, and `ccqa run` points the test at the
+report's evidence directory through `CCQA_EVIDENCE_DIR`. The calls no-op when
+that variable is unset, so running the generated test yourself writes no stray
+files.
+
+`ccqa/step-evidence` ships with ccqa — the consumer installs nothing, and ccqa
+gains no Playwright dependency (the page is typed structurally). Capture is
+best-effort: a failed screenshot is logged and skipped, never a test failure.
+After generation, ccqa checks that every step kept its two capture calls and
+warns per step if a library-rewrite pass dropped them (the report would
+otherwise miss that step's screenshots) — re-run `ccqa generate` if you see
+that warning.
+
+This is orthogonal to `--trace`: keep `trace` in your `playwright.config.ts`
+(or the `runCommand`, e.g. `--trace retain-on-failure --output {artifactsDir}`)
+for the full time-travel trace, which rides along as a run **artifact**. ccqa
+handles the step screenshots; Playwright still owns the trace. Targets with no
+browser (`runn`) capture no screenshots and say so in the report.
+
 ## Per-target guidance prompts
 
 Like `record` and `live`, each LLM-generating target has a hub-stored

@@ -1,5 +1,6 @@
 import { FAILURE_LABELS, PREDICTED_LABELS } from "../../report/schema.ts";
 import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
+import { GUIDANCE_KINDS } from "../../prompts/prompt-names.ts";
 
 /**
  * The hub's bundled WebUI: a single static HTML page with vanilla JS, in a
@@ -666,6 +667,7 @@ const CSS = `
   .grade-status.err { color: var(--fail); background: var(--fail-bg); border-color: var(--fail-border); border-style: solid; }
 
   .matrix-wrap { padding: 18px 20px; overflow-x: auto; }
+  .matrix-target-filter { margin-bottom: 14px; }
   .matrix-table { border-collapse: collapse; font-size: 12.5px; }
   .matrix-table th, .matrix-table td { border: 1px solid var(--border); padding: 9px 16px; text-align: center; font-variant-numeric: tabular-nums; }
   .matrix-table thead th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -887,6 +889,7 @@ const CLIENT_JS = `
   // only (a human never records UNKNOWN as the ground-truth cause).
   var PREDICTED_LABELS = ${JSON.stringify(PREDICTED_LABELS)};
   var AGENT_BROWSER_TARGET = ${JSON.stringify(AGENT_BROWSER_TARGET)};
+  var GUIDANCE_KINDS = ${JSON.stringify(GUIDANCE_KINDS)};
   var state = { token: "", project: "", profile: "default", detailRunId: "", jobPollToken: 0 };
   var knownProfiles = [];
   var TOKEN_KEY = "ccqa-hub-token";
@@ -928,6 +931,7 @@ const CLIENT_JS = `
       "acc.assertions.hint": "Test cases from the recorded spec run",
       "spec.kind.live": "Live", "spec.kind.det": "Deterministic",
       "det.steps": "Steps",
+      "det.noEvidence": "No step screenshots:",
       "kind.run": "Test run", "kind.drift": "Drift audit",
       "drift.summary.issues": "Issues", "drift.summary.errors": "Errors",
       "drift.summary.warnings": "Warnings", "drift.summary.specsWithIssues": "Specs with issues",
@@ -939,6 +943,7 @@ const CLIENT_JS = `
       "matrix.empty": "No grades yet. Pick the real cause on a failed spec's diagnosis card below and it is tallied here.",
       "matrix.predicted": "predicted \\\\ actual", "matrix.accuracy": "Accuracy",
       "matrix.accSuffix": "of graded cases match the prediction", "matrix.graded": "graded",
+      "matrix.target.all": "All targets",
       "learn.cta.title": "Learn from these grades",
       "learn.cta.desc": "Learn from what you graded so ccqa classifies failure causes the same way next time.",
       "learn.cta.run": "Learn",
@@ -966,12 +971,18 @@ const CLIENT_JS = `
       "perspectives.note.error": "Could not save — retry",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
+      "prompt.card.playwright": "Playwright test generation",
+      "prompt.card.runn": "runn runbook generation",
       "prompt.card.customPrompt": "Failure-cause classification",
       "prompt.sub.user": "Your instructions", "prompt.sub.agent": "Learned by ccqa",
       "prompt.recordUser.hint": "Rules you write for how a test is recorded — what to click, what to ignore. Applied whenever you record a new test.",
       "prompt.recordAgent.hint": "Notes ccqa keeps for itself while recording, refined automatically as it runs. Read-only — ccqa regenerates it.",
       "prompt.liveUser.hint": "Rules you write for how the AI drives the browser to run a test on its own. Applied on every live run.",
       "prompt.liveAgent.hint": "Notes ccqa keeps for itself while running tests live, refined automatically as it runs. Read-only — ccqa regenerates it.",
+      "prompt.playwrightUser.hint": "Rules you write for how a Playwright test is generated — which page objects/helpers to reuse, where tests live. Applied when a playwright-target spec is generated.",
+      "prompt.playwrightAgent.hint": "Notes ccqa keeps for itself while generating Playwright tests, refined automatically. Read-only — ccqa regenerates it.",
+      "prompt.runnUser.hint": "Rules you write for how a runn runbook is generated — endpoint conventions, shared runbooks to include. Applied when a runn-target spec is generated.",
+      "prompt.runnAgent.hint": "Notes ccqa keeps for itself while generating runn runbooks, refined automatically. Read-only — ccqa regenerates it.",
       "prompt.triageUser.hint": "Rules you write for how failure causes are classified — e.g. which kinds of changes count as a spec change on this project. Applied on every failure analysis.",
       "prompt.customPrompt.hint": "Learned from your triage grades to make ccqa classify failure causes the way you do. Read-only — a learning job creates it.",
       "prompt.readonly": "read-only",
@@ -1017,6 +1028,7 @@ const CLIENT_JS = `
       "acc.assertions.hint": "記録したスペック実行のテストケース",
       "spec.kind.live": "ライブ", "spec.kind.det": "決定的",
       "det.steps": "ステップ",
+      "det.noEvidence": "ステップのスクリーンショットなし:",
       "kind.run": "テスト実行", "kind.drift": "ドリフト監査",
       "drift.summary.issues": "問題数", "drift.summary.errors": "エラー",
       "drift.summary.warnings": "警告", "drift.summary.specsWithIssues": "問題のあるスペック",
@@ -1028,6 +1040,7 @@ const CLIENT_JS = `
       "matrix.empty": "まだ採点がありません。下の失敗スペックの診断カードで実際の原因を選ぶと、ここに集計されます。",
       "matrix.predicted": "予測 \\\\ 実際", "matrix.accuracy": "正解率",
       "matrix.accSuffix": "件の採点が予測と一致", "matrix.graded": "採点済み",
+      "matrix.target.all": "すべてのターゲット",
       "learn.cta.title": "この採点から学習",
       "learn.cta.desc": "採点した内容をもとに、ccqaが次回から同じように失敗の原因を分類できるよう学習します。",
       "learn.cta.run": "学習",
@@ -1055,12 +1068,18 @@ const CLIENT_JS = `
       "perspectives.note.error": "保存に失敗しました — 再試行してください",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
+      "prompt.card.playwright": "Playwrightテスト生成",
+      "prompt.card.runn": "runnランブック生成",
       "prompt.card.customPrompt": "失敗原因の分類",
       "prompt.sub.user": "あなたの指示", "prompt.sub.agent": "ccqaの学習",
       "prompt.recordUser.hint": "テストを記録するときのルールを自分で書きます（何をクリックするか、何を無視するか）。新しいテストを記録するたびに適用されます。",
       "prompt.recordAgent.hint": "記録中にccqaが自分用に書き留め、実行のたびに自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
       "prompt.liveUser.hint": "AIがその場でブラウザを操作してテストを実行するときのルールを自分で書きます。ライブ実行のたびに適用されます。",
       "prompt.liveAgent.hint": "ライブ実行中にccqaが自分用に書き留め、実行のたびに自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
+      "prompt.playwrightUser.hint": "Playwrightテストを生成するときのルールを自分で書きます（再利用するページオブジェクト/ヘルパー、テストの置き場所）。playwrightターゲットの生成時に適用されます。",
+      "prompt.playwrightAgent.hint": "Playwrightテスト生成中にccqaが自分用に書き留め、自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
+      "prompt.runnUser.hint": "runnランブックを生成するときのルールを自分で書きます（エンドポイントの規約、includeする共有ランブック）。runnターゲットの生成時に適用されます。",
+      "prompt.runnAgent.hint": "runnランブック生成中にccqaが自分用に書き留め、自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
       "prompt.triageUser.hint": "失敗原因を分類するときのルールを自分で書きます（例: どの変更をこのプロジェクトで仕様変更として扱うか）。失敗分析のたびに適用されます。",
       "prompt.customPrompt.hint": "あなたの採点から学習し、ccqaがあなたと同じように失敗の原因を分類できるようにします。読み取り専用 — 学習ジョブが生成します。",
       "prompt.readonly": "読み取り専用",
@@ -1835,16 +1854,20 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  // Deterministic-spec evidence rendered as the same step-card list as live
-  // runs, since report.json already carries one evidence entry per step.
+  // Script-driven step evidence (agent-browser replays and external targets
+  // alike) rendered as the same step-card list as live runs — report.json
+  // carries one evidence entry per step. A target that captures both boundaries
+  // (Playwright) gets before/after frames like the live section; agent-browser
+  // shoots one, so only the after frame renders.
   function detStepsSection(runId, evidence) {
     var wrap = el("div");
     evidence.forEach(function (e, i) {
       var built = stepCard(e.status, "#" + (i + 1), e.stepId, e.description, e.title);
       if (e.failureSummary) built.card.appendChild(el("div", "cap", e.failureSummary));
-      if (e.pngPath) {
+      if (e.beforePngPath || e.pngPath) {
         var frames = el("div", "step-frames");
-        frames.appendChild(frameEl(runId, e.pngPath, e.stepId));
+        if (e.beforePngPath) frames.appendChild(frameEl(runId, e.beforePngPath, "before"));
+        if (e.pngPath) frames.appendChild(frameEl(runId, e.pngPath, e.beforePngPath ? "after" : e.stepId));
         built.card.appendChild(frames);
       }
       wrap.appendChild(built.card);
@@ -2053,6 +2076,12 @@ const CLIENT_JS = `
     } else if (r.evidence && r.evidence.length > 0) {
       body.appendChild(detailsBlock(t("acc.evidence"), r.evidence.length, evidenceSection(runId, r.evidence)));
       any = true;
+    } else if (!r.liveRun && r.evidenceUnavailable) {
+      // No step screenshots, but say why rather than showing nothing (a target
+      // that can't capture them, or a generated test that lost its calls).
+      body.appendChild(el("div", "section-label", t("det.steps")));
+      body.appendChild(el("div", "muted", t("det.noEvidence") + " " + r.evidenceUnavailable));
+      any = true;
     }
 
     if (r.liveRun && r.liveRun.steps && r.liveRun.steps.length > 0) {
@@ -2101,11 +2130,15 @@ const CLIENT_JS = `
     });
   }
 
+  // Bucket a case's target, defaulting an unset one to the built-in target so
+  // pre-target grades still land under a real segment.
+  function caseTarget(c) { return c.target || AGENT_BROWSER_TARGET; }
+
   function renderMatrix(triageState) {
     var card = document.getElementById("matrix-card");
     clear(card);
     var wrap = el("div", "matrix-wrap");
-    var cases = Object.keys(triageState.byKey).map(function (k) { return triageState.byKey[k]; })
+    var graded = Object.keys(triageState.byKey).map(function (k) { return triageState.byKey[k]; })
       .filter(function (c) { return c.predicted && c.actual; });
 
     // The "graded m / n" counter in the header is the single progress
@@ -2113,12 +2146,29 @@ const CLIENT_JS = `
     var total = typeof triageState.total === "number" ? triageState.total : Object.keys(triageState.byKey).length;
     var summary = document.getElementById("triage-summary");
 
-    if (cases.length === 0) {
+    if (graded.length === 0) {
       if (summary) summary.textContent = t("matrix.graded") + " 0 / " + total;
       wrap.appendChild(el("div", "muted", t("matrix.empty")));
       card.appendChild(wrap);
       return;
     }
+
+    // Per-target filter: only surfaced when more than one target has grades, so
+    // single-target projects see no extra control. "All" is the default.
+    var targets = [];
+    graded.forEach(function (c) {
+      var tg = caseTarget(c);
+      if (targets.indexOf(tg) === -1) targets.push(tg);
+    });
+    targets.sort();
+    var filter = triageState.targetFilter || "all";
+    if (targets.indexOf(filter) === -1) filter = "all";
+    if (targets.length > 1) {
+      wrap.appendChild(targetFilterControl(triageState, targets, filter));
+    }
+    var cases = filter === "all"
+      ? graded
+      : graded.filter(function (c) { return caseTarget(c) === filter; });
 
     var matrix = {};
     PREDICTED_LABELS.forEach(function (p) {
@@ -2164,13 +2214,44 @@ const CLIENT_JS = `
     accEl.appendChild(document.createTextNode(" — " + correct + " / " + cases.length + " " + t("matrix.accSuffix")));
     wrap.appendChild(accEl);
 
-    if (summary) summary.textContent = t("matrix.graded") + " " + cases.length + " / " + total + " · " + accuracy + "%";
+    // Header must not mix populations: when a target filter is active, the
+    // count, denominator, and accuracy all describe that target only.
+    var headerGraded = graded.length;
+    var headerTotal = total;
+    if (filter !== "all") {
+      headerGraded = cases.length;
+      headerTotal = Object.keys(triageState.byKey).reduce(function (n, k) {
+        return caseTarget(triageState.byKey[k]) === filter ? n + 1 : n;
+      }, 0);
+    }
+    if (summary) summary.textContent = t("matrix.graded") + " " + headerGraded + " / " + headerTotal + " · " + accuracy + "%";
 
     card.appendChild(wrap);
 
     // The learn CTA only makes sense once there's at least one graded case.
     var cta = document.getElementById("learn-cta");
-    if (cta) cta.hidden = cases.length === 0;
+    if (cta) cta.hidden = graded.length === 0;
+  }
+
+  // Segmented "All targets / <target> …" control above the matrix. Selecting a
+  // segment re-renders the matrix for that target only. Reuses the shared
+  // seg-toggle look (aria-pressed marks the active segment).
+  function targetFilterControl(triageState, targets, active) {
+    var seg = el("div", "seg-toggle matrix-target-filter");
+    var opts = [{ id: "all", label: t("matrix.target.all") }].concat(
+      targets.map(function (tg) { return { id: tg, label: tg }; }),
+    );
+    opts.forEach(function (opt) {
+      var b = el("button", "seg", opt.label);
+      b.type = "button";
+      b.setAttribute("aria-pressed", opt.id === active ? "true" : "false");
+      b.onclick = function () {
+        triageState.targetFilter = opt.id;
+        renderMatrix(triageState);
+      };
+      seg.appendChild(b);
+    });
+    return seg;
   }
 
   function loadTriage(runId, onLoaded) {
@@ -2476,26 +2557,27 @@ const CLIENT_JS = `
   }
 
   // ── prompts ────────────────────────────────────────────────────────────
-  // Reserved prompt names (mirror src/prompts/prompt-names.ts), grouped into 3
-  // cards. Each ".user" slot is editable; the ".agent" slots and the custom prompt
-  // are ccqa-generated and read-only. Each slot names its sub-label (Your
-  // instructions / Learned by ccqa) and a "when to use" hint. The triage card
-  // pairs the editable triage.user guidance with the learned custom prompt.
+  // Prompt cards (names mirror src/prompts/prompt-names.ts). Each ".user" slot
+  // is editable; the ".agent" slots and the custom prompt are ccqa-generated
+  // and read-only. Each slot names its sub-label (Your instructions / Learned
+  // by ccqa) and a "when to use" hint.
   var CUSTOM_PROMPT_NAME = "analysis-custom-prompt";
-  var PROMPT_CARDS = [
-    { titleKey: "prompt.card.record", slots: [
-      { name: "record.user", subKey: "prompt.sub.user", hintKey: "prompt.recordUser.hint", agent: false },
-      { name: "record.agent", subKey: "prompt.sub.agent", hintKey: "prompt.recordAgent.hint", agent: true },
-    ] },
-    { titleKey: "prompt.card.live", slots: [
-      { name: "live.user", subKey: "prompt.sub.user", hintKey: "prompt.liveUser.hint", agent: false },
-      { name: "live.agent", subKey: "prompt.sub.agent", hintKey: "prompt.liveAgent.hint", agent: true },
-    ] },
+  // The guidance cards are uniform — an editable <kind>.user slot plus a
+  // read-only <kind>.agent slot — so derive them from GUIDANCE_KINDS rather
+  // than hand-listing each; a new target's card then follows from adding its
+  // i18n prose keys (prompt.card.<kind>, prompt.<kind>User/Agent.hint). The
+  // triage/custom-prompt card is shaped differently and stays explicit.
+  var PROMPT_CARDS = GUIDANCE_KINDS.map(function (kind) {
+    return { titleKey: "prompt.card." + kind, slots: [
+      { name: kind + ".user", subKey: "prompt.sub.user", hintKey: "prompt." + kind + "User.hint", agent: false },
+      { name: kind + ".agent", subKey: "prompt.sub.agent", hintKey: "prompt." + kind + "Agent.hint", agent: true },
+    ] };
+  }).concat([
     { titleKey: "prompt.card.customPrompt", slots: [
       { name: "triage.user", subKey: "prompt.sub.user", hintKey: "prompt.triageUser.hint", agent: false },
       { name: CUSTOM_PROMPT_NAME, subKey: "prompt.sub.agent", hintKey: "prompt.customPrompt.hint", agent: true },
     ] },
-  ];
+  ]);
   // Flat list of every slot, for loadPrompts to fill via its _ta handle.
   var GUIDANCE_SLOTS = PROMPT_CARDS.reduce(function (acc, card) { return acc.concat(card.slots); }, []);
 

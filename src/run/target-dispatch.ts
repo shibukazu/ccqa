@@ -7,7 +7,7 @@ import {
   type TargetConfig,
 } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
-import type { TargetPlugin, TestRunner } from "../targets/types.ts";
+import type { StepEvidenceSupport, TargetPlugin, TestRunner } from "../targets/types.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
 import type { IncrementalReport } from "./incremental-report.ts";
@@ -31,6 +31,8 @@ export interface ExternalTargetGroup {
   targetId: string;
   runner: TestRunner;
   targetConfig: TargetConfig;
+  /** Resolved from the plugin — absent on the plugin means "no step screenshots". */
+  stepEvidence: StepEvidenceSupport;
   specs: DispatchedSpec[];
 }
 
@@ -118,6 +120,10 @@ export async function groupSpecsByTarget(
         targetId: plugin.id,
         runner: plugin.runner,
         targetConfig,
+        stepEvidence: plugin.stepEvidence ?? {
+          supported: false,
+          reason: `the "${plugin.id}" target does not capture step screenshots`,
+        },
         specs: [],
       };
       group.specs.push(entry);
@@ -141,10 +147,12 @@ export interface ExternalRunContext {
 /**
  * Execute the non-agent-browser share of a run: first the rows for specs that
  * can't run (unresolved target → failed, generate-only target → skipped),
- * then each external target group through its runner. Rows are upserted into
- * the incremental report so an interrupt / --push-report sees them, and are
- * also returned for the final batch write. A crashing runner marks its own
- * specs failed instead of aborting the run.
+ * then each external target group through its runner. Every row is upserted
+ * into the incremental report the moment it exists — the runner reports each
+ * spec through `onSpecComplete` as it finishes — so an interrupt keeps what
+ * already ran and `--push-report` streams spec by spec. Rows are also
+ * returned for the tail phase (failure analysis) and the final batch write. A
+ * crashing runner marks its own specs failed instead of aborting the run.
  */
 export async function runExternalSpecs(
   dispatch: TargetDispatch,
@@ -179,6 +187,14 @@ export async function runExternalSpecs(
       "target",
       `${group.targetId} (${group.specs.length} spec${group.specs.length === 1 ? "" : "s"} via runCommand)`,
     );
+    // Rows the runner already streamed (and upserted). The built-in
+    // runCommandRunner never throws after streaming a row (its worker converts
+    // any throw into that spec's failed row), so for it this catch only fires
+    // on a throw *before* any spec ran and `streamed` is empty. Tracking it
+    // still defends the generic TestRunner contract: if some other runner
+    // streamed rows and then threw, the crash stubs below must not clobber the
+    // rows it already upserted.
+    const streamed: ReportSpecResult[] = [];
     let groupRows: ReportSpecResult[];
     try {
       groupRows = await group.runner.run(group.specs, {
@@ -189,18 +205,27 @@ export async function runExternalSpecs(
         ...(ctx.language ? { language: ctx.language } : {}),
         targetId: group.targetId,
         targetConfig: group.targetConfig,
+        stepEvidence: group.stepEvidence,
+        onSpecComplete: async (row) => {
+          streamed.push(row);
+          await ctx.report.upsert(row);
+        },
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error(`target ${group.targetId}: runner crashed: ${message}`);
-      groupRows = group.specs.map((s) => ({
-        ...emptySpecRow({ feature: s.featureName, spec: s.specName, title: s.title, status: "failed" }),
-        target: group.targetId,
-        analysisSkipped: "spec did not execute (runner crashed)",
-        failureLogExcerpt: `runner for target "${group.targetId}" crashed: ${message}`,
-      }));
+      const done = new Set(streamed.map((r) => `${r.feature}/${r.spec}`));
+      const crashRows = group.specs
+        .filter((s) => !done.has(`${s.featureName}/${s.specName}`))
+        .map((s) => ({
+          ...emptySpecRow({ feature: s.featureName, spec: s.specName, title: s.title, status: "failed" }),
+          target: group.targetId,
+          analysisSkipped: "spec did not execute (runner crashed)",
+          failureLogExcerpt: `runner for target "${group.targetId}" crashed: ${message}`,
+        }));
+      for (const row of crashRows) await ctx.report.upsert(row);
+      groupRows = [...streamed, ...crashRows];
     }
-    for (const row of groupRows) await ctx.report.upsert(row);
     rows.push(...groupRows);
   }
 

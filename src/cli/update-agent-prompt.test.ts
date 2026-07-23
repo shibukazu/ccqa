@@ -36,7 +36,7 @@ describe("updateAgentPrompt", () => {
     const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
     const hub = fakeHubClient({});
 
-    await updateAgentPrompt({ mode: "live", runSummary: "summary", hubContext: { hub, project: "demo" } });
+    await updateAgentPrompt({ kind: "live", runSummary: "summary", hubContext: { hub, project: "demo" } });
 
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("no ANTHROPIC_API_KEY"));
   });
@@ -44,7 +44,7 @@ describe("updateAgentPrompt", () => {
   test("skips (warn only) when there's no hub connection", async () => {
     const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
 
-    await updateAgentPrompt({ mode: "record", runSummary: "summary", hubContext: null });
+    await updateAgentPrompt({ kind: "record", runSummary: "summary", hubContext: null });
 
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("hub connection required"));
   });
@@ -54,7 +54,7 @@ describe("updateAgentPrompt", () => {
     const hub = fakeHubClient({ getPrompt: async () => "old prompt", putPrompt });
     vi.mocked(invokeClaudeStreaming).mockResolvedValue({ result: "new prompt body", isError: false } as never);
 
-    await updateAgentPrompt({ mode: "live", runSummary: "summary", hubContext: { hub, project: "demo" } });
+    await updateAgentPrompt({ kind: "live", runSummary: "summary", hubContext: { hub, project: "demo" } });
 
     expect(putPrompt).toHaveBeenCalledWith("demo", "live.agent", "new prompt body\n");
   });
@@ -63,7 +63,7 @@ describe("updateAgentPrompt", () => {
     const hub = fakeHubClient({ getPrompt: async () => { throw new HubApiError(503, "no_key", "no encryption key"); } });
     const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
 
-    await updateAgentPrompt({ mode: "record", runSummary: "summary", hubContext: { hub, project: "demo" } });
+    await updateAgentPrompt({ kind: "record", runSummary: "summary", hubContext: { hub, project: "demo" } });
 
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("hub request failed"));
   });
@@ -74,7 +74,7 @@ describe("updateAgentPrompt", () => {
     vi.mocked(invokeClaudeStreaming).mockResolvedValue({ result: "", isError: false } as never);
     const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
 
-    await updateAgentPrompt({ mode: "live", runSummary: "summary", hubContext: { hub, project: "demo" } });
+    await updateAgentPrompt({ kind: "live", runSummary: "summary", hubContext: { hub, project: "demo" } });
 
     expect(putPrompt).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("no usable output"));
@@ -90,7 +90,7 @@ describe("updateAgentPrompt NO_UPDATE sentinel", () => {
     const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
     const infoSpy = vi.spyOn(log, "info").mockImplementation(() => {});
 
-    await updateAgentPrompt({ mode: "record", runSummary: "summary", hubContext: { hub, project: "demo" } });
+    await updateAgentPrompt({ kind: "record", runSummary: "summary", hubContext: { hub, project: "demo" } });
 
     expect(putPrompt).not.toHaveBeenCalled();
     expect(warnSpy).not.toHaveBeenCalled();

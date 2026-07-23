@@ -40,13 +40,19 @@ function manifest(files: Array<{ path: string; kind: "test" | "support" }>): unk
   };
 }
 
-function runnerOpts(runCommand?: string): RunnerOptions {
+function runnerOpts(
+  runCommand?: string,
+  extra: Partial<RunnerOptions> = {},
+): RunnerOptions {
   return {
     cwd,
     reportDir: join(cwd, "report"),
     concurrency: 1,
     targetId: "ext-run",
     targetConfig: TargetConfigSchema.parse(runCommand !== undefined ? { runCommand } : {}),
+    stepEvidence: { supported: false, reason: "test target" },
+    onSpecComplete: async () => {},
+    ...extra,
   };
 }
 
@@ -58,6 +64,11 @@ describe("runCommandRunner", () => {
     expect(row!.title).toBe("Sample flow");
     expect(row!.failureLogExcerpt).toContain("no generated tests");
     expect(row!.failureLogExcerpt).toContain("ccqa generate demo/x");
+    // A pre-execution failure is marked "did not execute" so the classifier
+    // skips it — an empty script + "run ccqa generate" log is not a real
+    // failure to triage, and a junk label would pollute the learning corpus.
+    expect(row!.analysisSkipped).toContain("spec did not execute");
+    expect(row!.analysisSkipped).toContain("no generated tests");
   });
 
   it("expands {files} to the test files (support files excluded) and passes on exit 0", async () => {
@@ -86,6 +97,8 @@ describe("runCommandRunner", () => {
     expect(row!.failureLogExcerpt).toContain("exit 3");
     expect(row!.failureLogExcerpt).toContain("boom detail");
     expect(row!.specYaml).toContain("Sample flow");
+    // The runner never decides about analysis; the pipeline classifies the row.
+    expect(row!.analysisSkipped).toBeNull();
     // Even a failed run keeps its full output as an artifact.
     expect(row!.artifacts).toEqual([
       expect.objectContaining({ name: "output.log", kind: "text" }),
@@ -157,5 +170,73 @@ describe("runCommandRunner", () => {
     const [row] = await runCommandRunner.run([REF], runnerOpts("echo {files}"));
     expect(row!.status).toBe("failed");
     expect(row!.failureLogExcerpt).toContain("lists no test files");
+  });
+
+  it("reports each spec through onSpecComplete as it finishes", async () => {
+    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    const streamed: string[] = [];
+    const [row] = await runCommandRunner.run(
+      [REF],
+      runnerOpts(`node -e "process.exit(0)"`, {
+        onSpecComplete: async (r) => {
+          streamed.push(`${r.feature}/${r.spec}`);
+        },
+      }),
+    );
+    expect(row!.status).toBe("passed");
+    expect(streamed).toEqual(["demo/x"]);
+  });
+
+  it("never rejects the pool when onSpecComplete throws (would race the final report write)", async () => {
+    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    // A throwing incremental push (e.g. a hub PATCH failure) must not escape the
+    // worker — otherwise runPool rejects and sibling workers keep running
+    // detached, clobbering the authoritative final report.
+    const rows = await runCommandRunner.run(
+      [REF],
+      runnerOpts(`node -e "process.exit(0)"`, {
+        onSpecComplete: () => Promise.reject(new Error("hub push exploded")),
+      }),
+    );
+    expect(rows.map((r) => `${r.feature}/${r.spec}:${r.status}`)).toEqual(["demo/x:passed"]);
+  });
+
+  it("loads step evidence + injects CCQA_EVIDENCE_DIR when the target supports it", async () => {
+    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    // Simulate a generated test's ccqa/step-evidence calls: write the <id>.png
+    // + <id>.json pair into CCQA_EVIDENCE_DIR the runner points us at.
+    const script =
+      "const fs=require('fs');const dir=process.env.CCQA_EVIDENCE_DIR;" +
+      "fs.writeFileSync(dir+'/step-01.png','png');" +
+      "fs.writeFileSync(dir+'/step-01.json',JSON.stringify({stepId:'step-01',source:'spec',pngFile:'step-01.png',url:null,title:null,capturedAt:null}));";
+    const [row] = await runCommandRunner.run(
+      [REF],
+      runnerOpts(`node -e "${script}"`, { stepEvidence: { supported: true } }),
+    );
+    expect(row!.status).toBe("passed");
+    expect(row!.evidence).toEqual([expect.objectContaining({ stepId: "step-01", pngPath: expect.stringContaining("step-01.png") })]);
+    expect(row!.evidenceUnavailable).toBeUndefined();
+  });
+
+  it("records evidenceUnavailable when a supported target captured nothing", async () => {
+    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    const [row] = await runCommandRunner.run(
+      [REF],
+      runnerOpts(`node -e "process.exit(0)"`, { stepEvidence: { supported: true } }),
+    );
+    expect(row!.evidence).toBeNull();
+    expect(row!.evidenceUnavailable).toContain("ccqa/step-evidence");
+  });
+
+  it("records the target's reason as evidenceUnavailable when it can't capture", async () => {
+    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    const [row] = await runCommandRunner.run(
+      [REF],
+      runnerOpts(`node -e "process.exit(0)"`, {
+        stepEvidence: { supported: false, reason: "no screen to capture" },
+      }),
+    );
+    expect(row!.evidence).toBeNull();
+    expect(row!.evidenceUnavailable).toBe("no screen to capture");
   });
 });

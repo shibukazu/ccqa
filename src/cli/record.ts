@@ -5,7 +5,7 @@ import { parseTestSpec } from "../spec/parser.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
 import { runTrace, type RunTraceResult } from "./trace.ts";
-import { parseAutoFixFlag, runGenerate, toFixMode, type AutoFixMode } from "./generate.ts";
+import { parseAutoFixFlag, resolveTargetOrExit, runGenerate, toFixMode, type AutoFixMode } from "./generate.ts";
 import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOption, DEFAULT_LANGUAGE } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
@@ -44,9 +44,10 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
     )
     .description(
-      "Record a deterministic test from a spec: run agent-browser to collect actions (trace), " +
-        "then generate test.spec.ts with auto-fix retries (generate). " +
-        "After recording, `ccqa run <feature/spec>` replays it under vitest (deterministic specs only — live specs do not need recording).",
+      "Record a test from a spec: run agent-browser to collect actions (trace), then compile them " +
+        "into runnable code via the spec's target (generate) — a vitest test.spec.ts for agent-browser, " +
+        "a @playwright/test spec for the playwright target. Recording-backed targets only; spec-input " +
+        "targets like runn have no trace step (use `ccqa generate`), and agent-browser live specs need no recording.",
     )
     .option(
       "-m, --model <name>",
@@ -63,7 +64,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option(
       "--auto-fix <mode>",
-      "Auto-fix behaviour during script generation: 'interactive' (default, prompt y/N), 'auto' (apply without prompt, for CI), 'skip' (never prompt, only apply high-confidence fixes).",
+      "Auto-fix behaviour during script generation: 'interactive' (default, prompt y/N; declines on non-TTY), 'auto' (apply without prompt, for CI), 'skip' (agent-browser: apply only high-confidence fixes; external targets like playwright/runn: no fix pass at all).",
       parseAutoFixFlag,
       "interactive" as AutoFixMode,
     )
@@ -102,7 +103,8 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
   // no record phase at all, so fail fast — before any profile or browser
   // work — and point at `ccqa generate` instead.
   const spec = parseTestSpec(await readSpecFile(featureName, specName, cwdForProfile));
-  const target = resolveTarget(spec, await loadProjectConfig(cwdForProfile));
+  const config = await loadProjectConfig(cwdForProfile);
+  const target = resolveTargetOrExit(() => resolveTarget(spec, config));
   if (target.input === "spec") {
     log.error(
       `target "${target.id}" does not use a browser recording — run 'ccqa generate ${featureName}/${specName}' instead`,
@@ -183,7 +185,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     } else {
       log.blank();
       await updateAgentPrompt({
-        mode: "record",
+        kind: "record",
         runSummary: buildRecordRunSummary(featureName, specName, traceResult),
         hubContext,
         ...(opts.model ? { model: opts.model } : {}),

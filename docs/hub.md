@@ -236,12 +236,16 @@ else is scoped to the selected project.
   `ccqa run` execution, with its branch, pass/fail status, spec counts, and a link
   to the GitHub Actions run when it came from CI.
 - **Run detail** IS the report — there is no separate HTML file. It shows each
-  spec's pass/fail, its evidence screenshots (with before/after frames for live
-  runs), the failure analysis (predicted cause, confidence, and reasoning), and
-  the drift/assertion details. External-target specs show their **run
-  artifacts** instead: images inline, small text/JSON files as fold-out
-  previews, everything else as a download link (see
-  [The run report](./running.md#the-run-report)).
+  spec's pass/fail, its per-step evidence screenshots (with before/after frames
+  for live and Playwright runs, one boundary shot for agent-browser replays),
+  the failure analysis (predicted cause, confidence, and reasoning), and the
+  drift/assertion details — the same shape whatever the spec's `target:`.
+  External-target specs additionally list their **run artifacts** (the command's
+  `output.log`, plus traces or captures it wrote): images inline, small
+  text/JSON files as fold-out previews, everything else as a download link (see
+  [The run report](./running.md#the-run-report)). A target that cannot capture
+  screenshots (an API runbook has no screen) says so in place of the step
+  section instead of showing nothing.
   Evidence images are fetched through the artifacts API with the token in a
   header (never in the URL). You can grade each failed
   spec's **actual cause** right here — the grade is saved to the hub (not just

@@ -96,6 +96,13 @@ export interface TriageRecord {
   predicted: { label: string; confidence: number; subDiagnosis?: string; headline: string };
   actualCause: string;
   note?: string;
+  /**
+   * Generation target of the graded row ("agent-browser", "playwright", ...).
+   * Lets the confusion matrix be read per target and keeps the target with the
+   * case metadata a future per-target overlay split would key on. Optional so
+   * records written before this field stay valid.
+   */
+  target?: string;
   promptVersion: string;
   recordedAt: string;
 }

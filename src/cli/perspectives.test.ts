@@ -61,25 +61,27 @@ describe("PerspectivesSchema", () => {
     expect(parsed.features[0]?.specs[0]?.note).toBe("owned by QA team");
   });
 
-  test("rejects a severity-like unknown key (the boundary we care about)", () => {
-    expect(() =>
-      PerspectivesSchema.parse({
-        features: [
-          {
-            featureName: "f",
-            specs: [
-              {
-                specName: "s",
-                title: "t",
-                summary: "",
-                status: { mode: "deterministic", traced: false, generated: false },
-                severity: "high",
-              },
-            ],
-          },
-        ],
-      }),
-    ).toThrow();
+  test("strips a severity-like unknown key rather than rejecting the whole document", () => {
+    // The schema strips unknown keys (forward-compat for shared hub docs read
+    // by older CLIs), so a stray `severity` is dropped — the boundary "severity
+    // never enters the stored document" holds, without bricking the reader.
+    const parsed = PerspectivesSchema.parse({
+      features: [
+        {
+          featureName: "f",
+          specs: [
+            {
+              specName: "s",
+              title: "t",
+              summary: "",
+              status: { mode: "deterministic", traced: false, generated: false },
+              severity: "high",
+            },
+          ],
+        },
+      ],
+    });
+    expect(parsed.features[0]?.specs[0]).not.toHaveProperty("severity");
   });
 });
 
@@ -414,6 +416,28 @@ describe("comparePerspectivesSkeleton (--check)", () => {
     expect(issues[0]).toContain("title");
     expect(issues[0]).toContain("relatedPaths");
     expect(issues[0]).toContain("generated=false");
+  });
+
+  test("flags a target change (agent-browser hub entry vs an external-target local spec)", () => {
+    const issues = comparePerspectivesSkeleton(
+      [
+        {
+          featureName: "tasks",
+          specs: [
+            {
+              specName: "search-tasks",
+              title: "項目を検索できる",
+              summary: "",
+              relatedPaths: ["src/features/tasks/**"],
+              status: { mode: "deterministic", traced: true, generated: true, target: "playwright" },
+            },
+          ],
+        },
+      ],
+      hubDoc(), // hub entry has no `target` (agent-browser)
+    );
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("target=playwright");
   });
 
   test("treats an absent relatedPaths and an empty list as equal", () => {

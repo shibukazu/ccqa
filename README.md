@@ -57,10 +57,10 @@ contract.
 each step's `expected` — for fragile, timing-heavy UIs where a fixed
 recording would break.
 
-Either way, opting in with `ccqa run --failure-analysis [base]` gives every
-failing spec a root-cause call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG)
-against the source diff since `[base]`, gradable on the hub — and the hub
-learns from your grades.
+Either way — and whatever the `target:` — opting in with
+`ccqa run --failure-analysis [base]` gives every failing spec a root-cause
+call (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) against the source diff since
+`[base]`, gradable on the hub — and the hub learns from your grades.
 
 ## Install
 
@@ -70,7 +70,11 @@ pnpm add -D ccqa vitest agent-browser
 
 Requires Node.js **20+**.
 [agent-browser](https://github.com/vercel-labs/agent-browser) and
-[vitest](https://vitest.dev) are peer dependencies.
+[vitest](https://vitest.dev) are peer dependencies of the **default
+agent-browser target** — they run its recorded tests. A project that only uses
+an external target (`playwright`, `runn`) needs just `ccqa` plus that tool
+(e.g. `pnpm add -D ccqa @playwright/test`); ccqa executes it through the
+target's `runCommand`.
 
 ## Quick start
 

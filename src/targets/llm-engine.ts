@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
@@ -14,9 +13,11 @@ import {
   type PromptResource,
 } from "../prompts/llm-gen.ts";
 import { isWithin, loadConventions, resolveResources, type ResolvedResource } from "./resources.ts";
+import { printUnifiedDiff, prompt } from "../cli/draft.ts";
 import {
   GENERATED_MANIFEST_FILE,
   GeneratedManifestSchema,
+  manifestSha256,
   substituteRunCommandFiles,
   type GeneratedManifest,
 } from "./run-command-runner.ts";
@@ -232,7 +233,7 @@ async function saveGeneratedManifest(
     files: [...state.entries()].map(([path, f]) => ({
       path,
       kind: f.kind,
-      sha256: createHash("sha256").update(f.contents, "utf8").digest("hex"),
+      sha256: manifestSha256(f.contents),
     })),
   };
   // Contract with the run side (`GeneratedManifestSchema`) — see run-command-runner.ts.
@@ -295,6 +296,8 @@ export interface LlmEngineRequest {
   taskInstructions: string;
   /** Mechanical draft treated as recorded ground truth (playwright). */
   draft?: { path: string; contents: string };
+  /** Extra "don't drop this from the draft" rule the target owns (see LlmGenPromptInput.draftInvariant). */
+  draftInvariant?: string;
   /** Per-file validation before writing (e.g. YAML parse for runn); returns an error message to reject. */
   validateFile?: (file: LlmGeneratedFile) => string | null;
   /** Test seam — defaults to `invokeClaudeStreaming`. */
@@ -346,6 +349,7 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
     steps,
     relatedPaths: ctx.spec.relatedPaths ?? [],
     draft: req.draft,
+    ...(req.draftInvariant ? { draftInvariant: req.draftInvariant } : {}),
     resources: resources.map(toPromptResource),
     conventionSections: conventions.sections,
     promptBundle: bundle?.text,
@@ -457,9 +461,19 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
 
 /**
  * The runCommand verification loop: run, and on failure hand the output tail
- * plus the current files to Claude for a corrected set, `fix.maxRetries`
- * times. Exhaustion keeps the files on disk and reports `passed: false`.
- * Targets without a runCommand are generate-only here and pass trivially.
+ * plus the current files to Claude for a corrected set. `fix.mode` mirrors the
+ * agent-browser target's fix UX (which only ever prompts inside its own fix
+ * loop, never for the first write):
+ *
+ *   - `auto` — apply every fix rewrite automatically, up to `fix.maxRetries`.
+ *   - `interactive` (default) — show each fix pass's per-file diff and ask
+ *     y/N before writing it; declining stops the loop with the current files.
+ *   - `non-interactive` (`--auto-fix skip`) — never attempt a fix; the first
+ *     verify decides pass/fail.
+ *
+ * Exhaustion (or a declined / skipped fix) keeps the files on disk and reports
+ * `passed: false`. Targets without a runCommand are generate-only here and
+ * pass trivially.
  */
 async function runVerificationLoop(
   p: FinalizeParams,
@@ -468,7 +482,20 @@ async function runVerificationLoop(
 ): Promise<boolean> {
   const runCommand = p.ctx.targetConfig.runCommand;
   if (!runCommand) return true;
-  const maxRetries = p.ctx.fix.maxRetries;
+  // `--auto-fix skip` disables the fix pass entirely: run verification once and
+  // report the result, never rewriting the generated files.
+  const maxRetries = p.ctx.fix.mode === "non-interactive" ? 0 : p.ctx.fix.maxRetries;
+
+  // `useSnapshot` pins an agent-browser session so that target can re-attach
+  // for a post-failure page snapshot; a runCommand target has no such session
+  // (its fix prompt is fed the command's output tail), so `--no-snapshot` is
+  // inapplicable here. Say so once rather than ignoring it silently.
+  if (!p.ctx.fix.useSnapshot) {
+    log.warn(
+      `--no-snapshot has no effect on the ${p.target} target — it captures no browser snapshot; ` +
+        `the fix loop uses the command's output instead`,
+    );
+  }
 
   for (let attempt = 0; ; attempt++) {
     const testFiles = [...state.entries()]
@@ -557,9 +584,46 @@ async function runVerificationLoop(
       log.info(`fix pass reported no file changes — re-running verification (${output.summary || "no reason given"})`);
       continue;
     }
+    // Interactive mode: the fix pass rewrites files in the consumer's tree
+    // (possibly outside `.ccqa/` when outDir is set), so show what changes and
+    // ask before writing. Declining keeps the current files and ends the loop.
+    if (p.ctx.fix.mode === "interactive" && !(await confirmFixWrite(output.files, p.ctx.cwd))) {
+      log.info("fix not applied (declined) — keeping current files");
+      return false;
+    }
     await writeGeneratedFiles(p.ctx.cwd, output.files, state);
     await saveGeneratedManifest(ref, p.ctx.cwd, p.target, state);
   }
+}
+
+/**
+ * Show the per-file diff a fix pass would apply (current on-disk content vs the
+ * proposed content; a not-yet-existing file shows as all-added) and ask y/N.
+ * The confirmation covers the whole set — one prompt, not one per file.
+ */
+async function confirmFixWrite(files: LlmGeneratedFile[], cwd: string): Promise<boolean> {
+  // Without a TTY (CI, piped stdin) readline's question never settles, so an
+  // interactive fix would hang forever. Decline instead — same stance as
+  // generate.ts's confirmOverwrite. Auto-applying here would reintroduce the
+  // unreviewed-write problem the interactive gate exists to prevent.
+  if (!process.stdin.isTTY) {
+    log.warn(
+      "interactive fix requested but stdin is not a TTY; declining the fix. " +
+        "Pass `--auto-fix auto` to apply fixes without prompting (CI), or `--auto-fix skip` to disable the fix pass.",
+    );
+    return false;
+  }
+  log.blank();
+  log.info("--- proposed fix (files to be written) ---");
+  for (const file of files) {
+    const abs = resolve(cwd, file.path);
+    const before = await readFile(abs, "utf8").catch(() => "");
+    log.info(`• ${file.path}${before === "" ? " (new file)" : ""}`);
+    printUnifiedDiff(before, file.contents);
+    log.blank();
+  }
+  const answer = await prompt("Apply this fix? [y/N] ");
+  return /^y/i.test(answer);
 }
 
 interface InvokeForFilesParams {

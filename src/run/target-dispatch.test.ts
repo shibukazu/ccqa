@@ -2,11 +2,22 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
+import {
+  groupSpecsByTarget,
+  runExternalSpecs,
+  type ExternalTargetGroup,
+  type TargetDispatch,
+} from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope } from "./incremental-report.ts";
 import { resolveTargetFrom } from "../targets/registry.ts";
 import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
-import type { GenerateResult, RunnerOptions, TargetPlugin, TestRunner } from "../targets/types.ts";
+import type {
+  GenerateResult,
+  RunnerOptions,
+  StepEvidenceSupport,
+  TargetPlugin,
+  TestRunner,
+} from "../targets/types.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
 import { ProjectConfigSchema, type ProjectConfig } from "../config/project-config.ts";
 import type { TestSpec } from "../spec/yaml-schema.ts";
@@ -153,6 +164,38 @@ function emptyDispatch(): TargetDispatch {
   return { agentBrowser: [], external: [], skipped: [], unresolved: [] };
 }
 
+const NO_EVIDENCE: StepEvidenceSupport = { supported: false, reason: "test target" };
+
+/** A group with the boilerplate config filled in, for the runExternalSpecs cases. */
+function group(runner: TestRunner, specs: ExternalTargetGroup["specs"]): ExternalTargetGroup {
+  return {
+    targetId: "ext-run",
+    runner,
+    targetConfig: { runCommand: "echo {files}", resources: [], conventions: { guides: [], examples: [] } },
+    stepEvidence: NO_EVIDENCE,
+    specs,
+  };
+}
+
+/**
+ * A runner that maps each spec to a row and reports it through `onSpecComplete`
+ * as the real runCommand runner does — the seam runExternalSpecs relies on for
+ * per-spec streaming.
+ */
+function streamingRunner(rowFor: (spec: SpecRef) => ReportSpecResult): TestRunner {
+  return {
+    run: async (specs, opts) => {
+      const rows: ReportSpecResult[] = [];
+      for (const s of specs) {
+        const row = rowFor(s);
+        rows.push(row);
+        await opts.onSpecComplete(row);
+      }
+      return rows;
+    },
+  };
+}
+
 async function readReportJson(reportDir: string): Promise<RunReportData> {
   return JSON.parse(await readFile(join(reportDir, "report.json"), "utf8")) as RunReportData;
 }
@@ -194,29 +237,21 @@ describe("runExternalSpecs", () => {
     ]);
   });
 
-  it("runs each group through its runner with targetId/targetConfig and merges the rows", async () => {
+  it("runs each group through its runner with targetId/targetConfig/stepEvidence and merges the rows", async () => {
     const reportDir = join(cwd, "report");
     const seen: Array<{ specs: SpecRef[]; opts: RunnerOptions }> = [];
-    const runner: TestRunner = {
+    const runner = streamingRunner((s) =>
+      emptySpecRow({ feature: s.featureName, spec: s.specName, title: null, status: "passed" }),
+    );
+    const wrapped: TestRunner = {
       run: (specs, opts) => {
         seen.push({ specs, opts });
-        return Promise.resolve(
-          specs.map((s) =>
-            emptySpecRow({ feature: s.featureName, spec: s.specName, title: null, status: "passed" }),
-          ),
-        );
+        return runner.run(specs, opts);
       },
     };
     const dispatch: TargetDispatch = {
       ...emptyDispatch(),
-      external: [
-        {
-          targetId: "ext-run",
-          runner,
-          targetConfig: { runCommand: "echo {files}", resources: [], conventions: { guides: [], examples: [] } },
-          specs: [{ featureName: "demo", specName: "x", title: "X" }],
-        },
-      ],
+      external: [{ ...group(wrapped, [{ featureName: "demo", specName: "x", title: "X" }]), stepEvidence: { supported: true } }],
     };
     const rows = await runExternalSpecs(dispatch, {
       cwd,
@@ -229,41 +264,52 @@ describe("runExternalSpecs", () => {
     expect(seen[0]!.opts.targetId).toBe("ext-run");
     expect(seen[0]!.opts.targetConfig.runCommand).toBe("echo {files}");
     expect(seen[0]!.opts.concurrency).toBe(2);
+    expect(seen[0]!.opts.stepEvidence).toEqual({ supported: true });
     expect(rows.map((r) => `${r.spec}:${r.status}`)).toEqual(["x:passed"]);
     const onDisk = await readReportJson(reportDir);
     expect(onDisk.results).toHaveLength(1);
   });
 
-  it("converts a crashing runner into failed rows for its specs", async () => {
+  it("upserts each spec's row as the runner reports it (interrupt-safe streaming)", async () => {
     const reportDir = join(cwd, "report");
+    const pushed: ReportSpecResult[] = [];
+    const report = createIncrementalReport(reportDir, ENVELOPE, {
+      onUpsert: (row) => {
+        pushed.push(row);
+      },
+    });
+    // The second spec throws AFTER the first has already been reported — the
+    // partial report must keep the first row rather than losing the group.
     const runner: TestRunner = {
-      run: () => Promise.reject(new Error("runner exploded")),
+      run: async (specs, opts) => {
+        await opts.onSpecComplete(
+          emptySpecRow({ feature: "demo", spec: "x", title: null, status: "passed" }),
+        );
+        throw new Error("runner exploded");
+      },
     };
     const dispatch: TargetDispatch = {
       ...emptyDispatch(),
       external: [
-        {
-          targetId: "ext-run",
-          runner,
-          targetConfig: { resources: [], conventions: { guides: [], examples: [] } },
-          specs: [
-            { featureName: "demo", specName: "x", title: null },
-            { featureName: "demo", specName: "y", title: null },
-          ],
-        },
+        group(runner, [
+          { featureName: "demo", specName: "x", title: null },
+          { featureName: "demo", specName: "y", title: null },
+        ]),
       ],
     };
-    const rows = await runExternalSpecs(dispatch, {
-      cwd,
-      reportDir,
-      concurrency: 1,
-      report: createIncrementalReport(reportDir, ENVELOPE),
-    });
-    expect(rows.map((r) => r.status)).toEqual(["failed", "failed"]);
-    expect(rows[0]!.failureLogExcerpt).toContain("runner exploded");
+    const rows = await runExternalSpecs(dispatch, { cwd, reportDir, concurrency: 1, report });
+
+    // x streamed through and survives; y (never reported) becomes a crash row.
+    expect(rows.map((r) => `${r.spec}:${r.status}`)).toEqual(["x:passed", "y:failed"]);
+    expect(rows.find((r) => r.spec === "y")!.failureLogExcerpt).toContain("runner exploded");
+    expect(rows.find((r) => r.spec === "y")!.analysisSkipped).toContain("runner crashed");
+    // Both the pushed-row stream and the on-disk report hold x and y.
+    expect(pushed.map((r) => `${r.spec}:${r.status}`)).toEqual(["x:passed", "y:failed"]);
+    const onDisk = await readReportJson(reportDir);
+    expect(onDisk.results.map((r) => r.spec).sort()).toEqual(["x", "y"]);
   });
 
-  it("upserts external rows through the sink so --push-report sees each row", async () => {
+  it("upserts skipped rows through the sink so --push-report sees each row", async () => {
     const reportDir = join(cwd, "report");
     const pushed: ReportSpecResult[] = [];
     const report = createIncrementalReport(reportDir, ENVELOPE, {

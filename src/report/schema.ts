@@ -70,15 +70,23 @@ export const ReportAssertionSchema = z.object({
 export type ReportAssertion = z.infer<typeof ReportAssertionSchema>;
 
 /**
- * Step-boundary evidence captured at runtime by abStepEvidence() for the
- * deterministic test path (`ccqa run --drift-report`). The path fields are
- * relative to the report directory so consumers (the hub UI, CI tooling) can
- * resolve the PNGs without duplicating their (potentially large) bytes inline.
+ * Step-boundary evidence captured at runtime by the script-driven test paths:
+ * `abStepEvidence()` for agent-browser replays, `ccqa/step-evidence` for
+ * external targets' generated tests. The path fields are relative to the
+ * report directory so consumers (the hub UI, CI tooling) can resolve the PNGs
+ * without duplicating their (potentially large) bytes inline.
  */
 export const ReportEvidenceSchema = z.object({
   stepId: z.string(),
   source: z.string(),
+  /** The step's closing (or, for a step that never completed, only) screenshot. */
   pngPath: z.string(),
+  /**
+   * Screenshot taken when the step was entered, for producers that shoot both
+   * boundaries. Optional/nullable: agent-browser captures one shot per step,
+   * and reports written before this field existed stay valid.
+   */
+  beforePngPath: z.string().nullable().optional(),
   url: z.string().nullable(),
   title: z.string().nullable(),
   capturedAt: z.string().nullable(),
@@ -208,7 +216,17 @@ export const ReportSpecResultSchema = z.object({
   testCounts: z
     .object({ total: z.number(), passed: z.number(), failed: z.number() })
     .nullable(),
-  /** Sum of assertion durations, when the vitest JSON report is available. */
+  /**
+   * How long the spec took — but the clock differs by execution path, so do
+   * NOT compare it across targets:
+   *   - agent-browser deterministic: the SUM of the vitest assertion durations
+   *     (not wall time; excludes fixture/setup between assertions).
+   *   - external (runCommand) target: the whole command's wall-clock time
+   *     (process spawn to exit — includes the tool's own startup).
+   *   - agent-browser live: the run's wall-clock time, mirroring
+   *     `liveRun.durationMs`.
+   * Null when no timing was available.
+   */
   durationMs: z.number().nullable(),
   /** Per-test rows from the vitest JSON report (Playwright-style step list). */
   assertions: z.array(ReportAssertionSchema).nullable(),
@@ -228,8 +246,16 @@ export const ReportSpecResultSchema = z.object({
   failureLogExcerpt: z.string().nullable(),
   diffExcerpt: z.string().nullable(),
   specYaml: z.string().nullable(),
-  /** Step-boundary screenshots for the deterministic (`ccqa run`) path, in capture order. */
+  /** Step-boundary screenshots for the script-driven (`ccqa run`) paths, in capture order. */
   evidence: z.array(ReportEvidenceSchema).nullable(),
+  /**
+   * Why this row has no step screenshots — a target that cannot produce them
+   * (an API runbook has no browser), or a generated test that lost its capture
+   * calls. Lets the report say so instead of rendering an empty section.
+   * Optional (not nullable — producers set a string or omit it) so older
+   * report.json stays valid byte-for-byte.
+   */
+  evidenceUnavailable: z.string().optional(),
   /**
    * Generic run artifacts for external (runCommand) target specs: the
    * command's `output.log` plus whatever it wrote into `{artifactsDir}`.

@@ -28,8 +28,13 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * prompt also states the range's width (commits/days) and no longer inlines
  * the full unrelated diff when nothing matches relatedPaths — the
  * name-status list plus the on-demand tool replace that fallback.
+ *
+ * v7: external-target support. The classifier now analyzes runCommand-target
+ * failures too, so it may be pointed at the spec's run-artifacts directory to
+ * read the runner's own failure context (e.g. a Playwright
+ * `error-context.md`) when the target produced one.
  */
-export const ANALYSIS_PROMPT_VERSION = "6";
+export const ANALYSIS_PROMPT_VERSION = "7";
 
 /**
  * Fully-qualified name of the on-demand file-diff tool, as the model calls
@@ -42,14 +47,16 @@ export const CHANGED_FILE_DIFF_TOOL = "mcp__diff__changed_file_diff";
 
 export interface FailureAnalysisPromptInput {
   /**
-   * Generated vitest script for the deterministic execution path. Optional:
-   * live-mode runs do not produce a script, and pass
-   * `liveTranscriptExcerpt` instead.
+   * Generated test source for the script-driven execution paths: the vitest
+   * replay (agent-browser target) or an external target's generated test
+   * (Playwright's `.spec.ts`, ...). Optional: live-mode runs produce no
+   * script and pass `liveTranscriptExcerpt` instead.
    */
   script?: string;
   /**
-   * vitest stdout/stderr excerpt for the deterministic path. Optional for
-   * the same reason as `script`.
+   * Failure output for the script-driven paths: vitest stdout/stderr for the
+   * agent-browser replay, the runCommand's exit code + output tail for an
+   * external target. Optional for the same reason as `script`.
    */
   failureLog?: string;
   /**
@@ -57,7 +64,7 @@ export interface FailureAnalysisPromptInput {
    * the final failed step's reasoning + truncated assistant log, plus a
    * one-line summary of every preceding step. See
    * `src/report/live-transcript-excerpt.ts:buildLiveTranscriptExcerpt`.
-   * Optional: deterministic runs leave this null.
+   * Optional: only the live path sets this.
    */
   liveTranscriptExcerpt?: string;
   specYaml: string;
@@ -88,6 +95,14 @@ export interface FailureAnalysisPromptInput {
   range?: { commitCount: number; days: number } | null;
   /** Findings from the spec↔code drift audit (analyzeDrift), when it ran. */
   driftIssues: DraftIssue[] | null;
+  /**
+   * cwd-relative directory holding this spec's run artifacts, when it has one
+   * the classifier's read-only tools can reach (external targets only). Named
+   * in the prompt so the model can read the runner's own failure context — a
+   * Playwright `error-context.md` accessibility snapshot, a trace — that the
+   * log tail alone doesn't carry. Omitted for paths with no such directory.
+   */
+  artifactsDir?: string | null;
   /** BCP-47 tag or "auto" (no directive). Identifiers/labels stay verbatim regardless. */
   outputLanguage?: string;
   /**
@@ -118,6 +133,7 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     baseSource = null,
     range = null,
     driftIssues,
+    artifactsDir = null,
     outputLanguage = "auto",
     triageUserPrompt,
     customPrompt,
@@ -211,7 +227,11 @@ You can call \`Grep\`, \`Glob\`, and \`Read\` against the current repository (po
 - check whether the element/flow the spec describes still exists in the source.
 
 You can also call \`${CHANGED_FILE_DIFF_TOOL}\` with a file path to fetch that file's diff hunk for this run's base...HEAD range. The inline patch below is scoped to this spec's relatedPaths — files OUTSIDE that scope still appear in "Changed files (name-status)" but their hunks are not inlined. Before blaming (or ruling out) such a file, fetch its diff with this tool; Read only shows you its post-change state, not what changed.
-
+${
+  artifactsDir
+    ? `\nThe test runner wrote this run's artifacts under \`${artifactsDir}\` (relative to the working directory). Read them for failure context the log tail above may not carry — e.g. a Playwright \`error-context.md\` holds the page's accessibility snapshot at the moment of failure, which often shows directly whether the awaited element was present. Do NOT open image/trace binaries.\n`
+    : ""
+}
 You have **up to 12 tool turns**. Do NOT write, edit, run shell commands, or hit the network.
 
 ## Decision guidance

@@ -5,6 +5,8 @@ import { defineConfig } from "tsdown";
 // ccqa has two public surfaces:
 //   1. the `ccqa` CLI binary (bin/ccqa.ts)   → dist/bin/ccqa.mjs
 //   2. the `ccqa/test-helpers` subpath export → dist/runtime/test-helpers.mjs + .d.mts
+//      and its sibling `ccqa/step-evidence`, which generated tests for
+//      external targets import for step-boundary screenshots
 // plus the vitest config used at runtime by `ccqa run --config <this>`
 // emitted as dist/runtime/vitest.config.mjs (not bundled in).
 //
@@ -16,6 +18,7 @@ export default defineConfig({
   entry: {
     "bin/ccqa": "./bin/ccqa.ts",
     "runtime/test-helpers": "./src/runtime/test-helpers.ts",
+    "runtime/step-evidence": "./src/runtime/step-evidence.ts",
     "runtime/vitest.config": "./src/runtime/vitest.config.ts",
     "hub-client/index": "./src/hub-client/index.ts",
   },

@@ -20,5 +20,6 @@ export const initCommand = new Command("init")
     log.blank();
     log.hint("set CCQA_HUB_URL / CCQA_HUB_TOKEN to connect to a ccqa hub");
     log.hint("edit guidance prompts in the hub UI's Prompts tab");
-    log.hint("run `ccqa record <feature>/<spec>` to start recording");
+    log.hint("recording-backed targets: `ccqa record <feature>/<spec>` to trace + generate");
+    log.hint("spec-input targets (e.g. runn): `ccqa generate <feature>/<spec>` — no recording step");
   });

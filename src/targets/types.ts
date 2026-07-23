@@ -4,6 +4,7 @@ import type { Conventions, ResourceRef, TargetConfig } from "../config/project-c
 import type { HubContext } from "../cli/hub-conn.ts";
 import type { FixMode } from "../diagnose/loop.ts";
 import type { SpecRef } from "../store/index.ts";
+import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 
 /**
@@ -51,7 +52,28 @@ export interface TargetPlugin {
    * the shared `runCommandRunner` (src/targets/run-command-runner.ts).
    */
   runner?: TestRunner;
+  /**
+   * Whether this target's generated tests capture per-step screenshots (the
+   * `ccqa/step-evidence` calls its emitter injects). Absent means they don't:
+   * `ccqa run` then leaves `CCQA_EVIDENCE_DIR` unset for the target and puts
+   * `reason` on every row, so the report can say why there are no screenshots
+   * instead of rendering an empty section.
+   *
+   * Only consulted for external (runner-driven) targets — the built-in
+   * agent-browser paths capture their evidence themselves.
+   */
+  stepEvidence?: StepEvidenceSupport;
+  /**
+   * The guidance-prompt kind this target learns under (`<kind>.user` /
+   * `<kind>.agent`). Set only by LLM-generating targets (playwright, runn):
+   * `ccqa generate --update-agent-prompt` refreshes `<guidanceKind>.agent`
+   * from the run. Absent means the target has no learned generation prompt
+   * (agent-browser's codegen is mechanical); the CLI then declines the flag.
+   */
+  guidanceKind?: GuidanceKind;
 }
+
+export type StepEvidenceSupport = { supported: true } | { supported: false; reason: string };
 
 /**
  * Knobs for the target's own verify/fix loop, straight from the CLI flags.
@@ -136,6 +158,19 @@ export interface RunnerOptions {
   targetId: string;
   /** The target's resolved config block — runCommand runners read `runCommand` here. */
   targetConfig: TargetConfig;
+  /**
+   * Resolved from the plugin's `stepEvidence` (absent ⇒ unsupported). Runners
+   * point the child at a per-spec `CCQA_EVIDENCE_DIR` only when supported.
+   */
+  stepEvidence: StepEvidenceSupport;
+  /**
+   * Called with each spec's row the moment it finishes, before the runner
+   * returns. This is what makes an external run interrupt-safe and streams it
+   * to a hub under `--push-report`: a runner that batches its rows until the
+   * end loses every one of them to a CI cancel. Rows are still returned from
+   * `run()` for the final report, so the callback is purely incremental.
+   */
+  onSpecComplete: (row: ReportSpecResult) => Promise<void>;
 }
 
 /**

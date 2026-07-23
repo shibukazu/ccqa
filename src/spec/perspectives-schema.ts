@@ -8,20 +8,27 @@ import { SpecModeSchema } from "./yaml-schema.ts";
  *
  * It intentionally does NOT carry severity / importance / priority. Deciding
  * "how badly does it hurt the customer if this breaks" is a human + PdM
- * decision, not something ccqa should author or silently overwrite. Keeping
- * those columns out of the schema (and `.strict()` rejecting them) makes the
- * boundary explicit: perspectives is a factual stock-take, severity lives
- * wherever the team decides on it.
+ * decision, not something ccqa should author or silently overwrite. Those
+ * columns are simply absent from the schema: perspectives is a factual
+ * stock-take, severity lives wherever the team decides on it.
  *
  * It also does NOT attempt code-vs-test gap analysis (listing untested
  * areas). A flat dump of "things in code with no test" is noise without
  * prioritisation; that is a separate, later concern.
+ *
+ * **Forward-compat: these document schemas STRIP unknown keys, never reject.**
+ * The perspectives document is shared on the hub and read by whatever CLI
+ * versions a team runs. A `.strict()` reject would brick every older reader
+ * the moment a newer CLI adds an additive field (the `status.target` field
+ * added in this change already caused one such break for ≤1.6 readers — see
+ * the PR notes). Stripping means an old reader silently ignores a field it
+ * doesn't know rather than hard-failing the whole document.
  */
 
 /**
  * Mechanically-derived facts about the spec's recording state, transcribed by
- * the CLI from spec.yaml + on-disk artifacts (ir.json / test.spec.ts).
- * Never written by Claude — these must not drift.
+ * the CLI from spec.yaml + on-disk artifacts. Never written by Claude — these
+ * must not drift.
  *
  * `mode` mirrors spec.yaml's `mode:` field (defaulting to `deterministic`).
  * Its meaning shapes how `traced` / `generated` should be interpreted:
@@ -33,14 +40,32 @@ import { SpecModeSchema } from "./yaml-schema.ts";
  *  - `mode: live` — the live runner skips codegen entirely, so `traced` and
  *    `generated` carry no completeness meaning here. Reports should not flag
  *    `generated: false` as incomplete for live specs.
+ *
+ * `traced` / `generated` are interpreted through the spec's generation
+ * `target`, which is why the resolved id is carried here:
+ *
+ *  - agent-browser (the default; `target` omitted for byte-compatible docs):
+ *    `traced` = an `ir.json` recording exists, `generated` = a `test.spec.ts`
+ *    exists.
+ *  - a recording-input external target (e.g. `playwright`): same `traced`
+ *    (record still produces `ir.json`), but `generated` = the target's
+ *    `generated.json` manifest exists.
+ *  - a spec-input external target (e.g. `runn`): there is no record phase, so
+ *    `traced` is always true (nothing to trace is not a coverage gap), and
+ *    `generated` again means the `generated.json` manifest exists.
+ *
+ * `target` is set only for non-agent-browser specs, so an all-default project
+ * produces exactly the pre-existing document shape.
  */
 export const PerspectiveStatusSchema = z
   .object({
     mode: SpecModeSchema,
     traced: z.boolean(),
     generated: z.boolean(),
+    /** Resolved generation-target id; omitted for the default agent-browser target. */
+    target: z.string().min(1).optional(),
   })
-  .strict();
+  .strip();
 export type PerspectiveStatus = z.infer<typeof PerspectiveStatusSchema>;
 
 /**
@@ -73,7 +98,7 @@ export const PerspectiveSpecSchema = z
     status: PerspectiveStatusSchema,
     note: z.string().optional(),
   })
-  .strict();
+  .strip();
 export type PerspectiveSpec = z.infer<typeof PerspectiveSpecSchema>;
 
 export const PerspectiveFeatureSchema = z
@@ -81,14 +106,14 @@ export const PerspectiveFeatureSchema = z
     featureName: z.string().min(1),
     specs: z.array(PerspectiveSpecSchema),
   })
-  .strict();
+  .strip();
 export type PerspectiveFeature = z.infer<typeof PerspectiveFeatureSchema>;
 
-/** Top-level perspectives schema. `.strict()` rejects any unknown key. */
+/** Top-level perspectives schema. Unknown keys are stripped, not rejected (see header). */
 export const PerspectivesSchema = z
   .object({
     generatedAt: z.string().optional(),
     features: z.array(PerspectiveFeatureSchema),
   })
-  .strict();
+  .strip();
 export type Perspectives = z.infer<typeof PerspectivesSchema>;
