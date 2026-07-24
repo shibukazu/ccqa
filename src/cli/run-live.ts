@@ -528,13 +528,15 @@ async function analyzeOneLiveFailure(
       diffExcerpt: null,
     };
   }
-  const specDiff = await diffProvider.forSpec({ featureName: r.featureName, specName: r.specName });
-  if (!specDiff.ok) {
-    // No usable baseline for THIS spec (last-green: never green yet, or its
-    // commit isn't fetched) — withhold the classification honestly.
-    return { analysis: null, analysisSkipped: specDiff.skip, failureLogExcerpt: excerpt, diffExcerpt: null };
-  }
-  if (specDiff.error) {
+  const specDiffResult = await diffProvider.forSpec({ featureName: r.featureName, specName: r.specName });
+  // No usable baseline for THIS spec (last-green: never green yet, or its
+  // commit isn't fetched) — still classify, from the transcript plus
+  // current-repository inspection (the prompt's no-baseline mode).
+  const specDiff = specDiffResult.ok ? specDiffResult : null;
+  const baselineMissing = specDiffResult.ok ? null : specDiffResult.skip;
+  if (baselineMissing) {
+    log.info(`failure analysis: no baseline (${baselineMissing}) — classifying from current source`);
+  } else if (specDiff?.error) {
     log.info(`failure analysis: source diff unavailable (${specDiff.error}) — analyzing without diff context`);
   }
   // Live specs are always the agent-browser target, so select that overlay.
@@ -543,17 +545,18 @@ async function analyzeOneLiveFailure(
     {
       liveTranscriptExcerpt: excerpt,
       specYaml: r.specYaml,
-      diffPatch: specDiff.patch,
-      changedFiles: specDiff.nameStatus,
-      baseRef: specDiff.base.ref,
-      baseSource: specDiff.base.source,
-      range: specDiff.range,
+      diffPatch: specDiff?.patch ?? null,
+      changedFiles: specDiff?.nameStatus ?? null,
+      baseRef: specDiff?.base.ref ?? null,
+      baseSource: specDiff?.base.source ?? null,
+      range: specDiff?.range ?? null,
+      ...(baselineMissing ? { baselineMissing } : {}),
       driftIssues: driftForSpec,
       ...(opts.language ? { outputLanguage: opts.language } : {}),
       ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),
       ...(customPrompt ? { customPrompt } : {}),
     },
-    { ...(opts.model ? { model: opts.model } : {}), cwd, getFileDiff: specDiff.fileDiff },
+    { ...(opts.model ? { model: opts.model } : {}), cwd, getFileDiff: specDiff?.fileDiff ?? (() => null) },
   );
   const pct = Math.round(outcome.analysis.confidence * 100);
   const headline = outcome.analysis.headline.trim() || (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();
@@ -562,8 +565,8 @@ async function analyzeOneLiveFailure(
     analysis: outcome.analysis,
     analysisSkipped: null,
     failureLogExcerpt: excerpt,
-    diffExcerpt: specDiff.patch,
-    analysisBase: { ref: specDiff.base.ref, sha: specDiff.base.sha },
+    diffExcerpt: specDiff?.patch ?? null,
+    ...(specDiff ? { analysisBase: { ref: specDiff.base.ref, sha: specDiff.base.sha } } : {}),
     ...(customPrompt ? { customPromptVersion: customPrompt.customPromptVersion } : {}),
   };
 }

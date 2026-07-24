@@ -33,8 +33,15 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * failures too, so it may be pointed at the spec's run-artifacts directory to
  * read the runner's own failure context (e.g. a Playwright
  * `error-context.md`) when the target produced one.
+ *
+ * v8: no-baseline mode. A spec with no usable baseline (last-green: never
+ * green yet) used to be skipped outright, leaving a first failure with zero
+ * root-cause information. It is now classified from the failure evidence
+ * plus current-repository inspection (Read/Grep/Glob), with diff-dependent
+ * guidance replaced by current-state guidance and a lower confidence
+ * ceiling.
  */
-export const ANALYSIS_PROMPT_VERSION = "7";
+export const ANALYSIS_PROMPT_VERSION = "8";
 
 /**
  * Fully-qualified name of the on-demand file-diff tool, as the model calls
@@ -93,6 +100,14 @@ export interface FailureAnalysisPromptInput {
    * changes, so the guidance raises the evidence bar. Null when unknown.
    */
   range?: { commitCount: number; days: number } | null;
+  /**
+   * Why no baseline exists for this spec (e.g. never green in the last-green
+   * ledger), when that is the case. Switches the prompt into no-baseline
+   * mode: there is no diff at all, so the range/diff guidance is replaced by
+   * current-repository-state guidance. `diffPatch`, `changedFiles`,
+   * `baseRef`, `baseSource` and `range` must all be null when this is set.
+   */
+  baselineMissing?: string | null;
   /** Findings from the spec↔code drift audit (analyzeDrift), when it ran. */
   driftIssues: DraftIssue[] | null;
   /**
@@ -137,6 +152,7 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     outputLanguage = "auto",
     triageUserPrompt,
     customPrompt,
+    baselineMissing = null,
   } = input;
   const lastGreen = baseSource === "last-green";
 
@@ -166,7 +182,14 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     : "";
 
   let diffBlock: string;
-  if (diffPatch === null) {
+  if (baselineMissing) {
+    diffBlock = `## Source changes
+
+No baseline exists for this spec (${baselineMissing}), so there is no source diff. Work from the current repository state instead:
+- Grep for the exact selector / text / aria-label the failing step targets. Absent or renamed while the user-visible flow the spec describes still exists → the test is stale. The flow itself no longer implemented → the spec is stale.
+- Without a change window you cannot attribute the failure to a specific change — do not claim a change "introduced" it. State what the current source shows.
+`;
+  } else if (diffPatch === null) {
     diffBlock = `## Source changes
 
 No diff context is available (the base ref could not be resolved, or there are no changes). Classify from the failure log, the spec, and what you can read in the repository — and be correspondingly more conservative: prefer UNKNOWN over a confident SPEC_CHANGE/PRODUCT_BUG call without diff evidence.
@@ -207,14 +230,18 @@ ${driftIssues
 `
       : "";
 
-  return `You are analyzing a failing E2E regression test against the source changes since a known-good baseline. Your job is a root-cause CALL, not a fix: decide which of three categories explains the failure, using the source diff as your primary context.
+  return `${
+    baselineMissing
+      ? `You are analyzing a failing E2E regression test. No known-good baseline exists for this spec yet, so there is no source diff: your primary context is the failure evidence plus the CURRENT state of the repository, which you can inspect with the read-only tools. Your job is a root-cause CALL, not a fix: decide which of three categories explains the failure.`
+      : `You are analyzing a failing E2E regression test against the source changes since a known-good baseline. Your job is a root-cause CALL, not a fix: decide which of three categories explains the failure, using the source diff as your primary context.`
+  }
 
 ${languageBlock}## The three categories
 
 The question that separates them: **is the behavior the spec describes still what the product intends?**
 
 1. TEST_DRIFT — what the spec verifies is unchanged; only the test code drifted from the source. Typical: a selector/aria-label/placeholder rename, a timing change, an over-tight assertion. The diff shows a change that is invisible to the user's intent but visible to the test.
-2. SPEC_CHANGE — the thing being verified itself changed: the UI flow, the layout, the feature's intended behavior. The diff deliberately changes what the spec asserts. You MUST cite the diff hunk (file + what changed) as evidence for this label.
+2. SPEC_CHANGE — the thing being verified itself changed: the UI flow, the layout, the feature's intended behavior. ${baselineMissing ? "The current source deliberately implements something other than what the spec asserts. You MUST cite the source file you read as evidence for this label." : "The diff deliberately changes what the spec asserts. You MUST cite the diff hunk (file + what changed) as evidence for this label."}
 3. PRODUCT_BUG — neither of the above: the failure is not explained by the diff nor by test staleness. The product regressed.
 
 If the evidence is too weak to choose, answer UNKNOWN — a wrong confident call is worse than an honest UNKNOWN, because humans grade these predictions to measure accuracy.
@@ -226,7 +253,11 @@ You can call \`Grep\`, \`Glob\`, and \`Read\` against the current repository (po
 - read the changed files in full when the truncated patch is not enough,
 - check whether the element/flow the spec describes still exists in the source.
 
-You can also call \`${CHANGED_FILE_DIFF_TOOL}\` with a file path to fetch that file's diff hunk for this run's base...HEAD range. The inline patch below is scoped to this spec's relatedPaths — files OUTSIDE that scope still appear in "Changed files (name-status)" but their hunks are not inlined. Before blaming (or ruling out) such a file, fetch its diff with this tool; Read only shows you its post-change state, not what changed.
+${
+  baselineMissing
+    ? `There is no diff range for this run, so the \`${CHANGED_FILE_DIFF_TOOL}\` tool has nothing to return — every conclusion must come from the current source state plus the failure evidence.`
+    : `You can also call \`${CHANGED_FILE_DIFF_TOOL}\` with a file path to fetch that file's diff hunk for this run's base...HEAD range. The inline patch below is scoped to this spec's relatedPaths — files OUTSIDE that scope still appear in "Changed files (name-status)" but their hunks are not inlined. Before blaming (or ruling out) such a file, fetch its diff with this tool; Read only shows you its post-change state, not what changed.`
+}
 ${
   artifactsDir
     ? `\nThe test runner wrote this run's artifacts under \`${artifactsDir}\` (relative to the working directory). Read them for failure context the log tail above may not carry — e.g. a Playwright \`error-context.md\` holds the page's accessibility snapshot at the moment of failure, which often shows directly whether the awaited element was present. Do NOT open image/trace binaries.\n`
@@ -237,10 +268,18 @@ You have **up to 12 tool turns**. Do NOT write, edit, run shell commands, or hit
 ## Decision guidance
 
 ${
-  lastGreen
-    ? `The baseline is the commit where THIS spec last passed, so the range strictly covers the window in which it broke: the cause is either inside these changes or outside the code entirely (flaky timing, environment, an external service, test data). The range may mix several unrelated merges — most of the diff is noise; what matters is the specific change you can tie to the failing step.`
-    : `The baseline is a fixed ref (typically the PR base): the spec is NOT guaranteed to have passed there, so the range is not guaranteed to contain the cause.`
-}
+  baselineMissing
+    ? `There is no baseline, so there is no "what changed" evidence at all. Classify from the failure signature checked against the current source:
+
+- The selector / text / attribute the failing step targets is absent or renamed in the current source, while the user-visible flow the spec describes still exists → TEST_DRIFT (cite the file:line where the renamed/replacement element lives).
+- The flow or feature the spec describes is no longer implemented — page gone, component removed, copy redefined, feature reworked → SPEC_CHANGE (cite the file you read that shows the new shape).
+- The flow exists and the test's selectors still match the source, but the observed behavior is wrong (error response, missing side effect, wrong data) → lean PRODUCT_BUG; FIRST rule out environment/data/timing causes (daemon not running, network down, missing credentials, stale test data) — those read as UNKNOWN with low confidence, not PRODUCT_BUG.
+- Without diff evidence, treat 0.7 as a practical confidence ceiling unless the current source alone is conclusive (e.g. the targeted selector is verifiably gone).`
+    : `${
+        lastGreen
+          ? `The baseline is the commit where THIS spec last passed, so the range strictly covers the window in which it broke: the cause is either inside these changes or outside the code entirely (flaky timing, environment, an external service, test data). The range may mix several unrelated merges — most of the diff is noise; what matters is the specific change you can tie to the failing step.`
+          : `The baseline is a fixed ref (typically the PR base): the spec is NOT guaranteed to have passed there, so the range is not guaranteed to contain the cause.`
+      }
 
 - Diff touches only attributes/identifiers the test selects on (labels, testids, class names, timing) while the user-visible flow is intact → TEST_DRIFT.
 - Diff intentionally removes/reworks the UI or flow that a spec step verifies (component deleted, page restructured, copy redefined, feature flag flipped) → SPEC_CHANGE.
@@ -250,10 +289,11 @@ ${
     ? `- No change in the range explains the failing step (after checking the inline patch, the name-status list, and any hunks you fetched) → the cause is outside the code: answer UNKNOWN with low confidence and name the suspected external cause (flaky timing, environment, external service, test data). Do NOT default to PRODUCT_BUG here — under this baseline a product regression must be tied to an in-range change.`
     : `- Diff is unrelated to the failing step (or there is no relevant diff) and the test was passing before → lean PRODUCT_BUG; first rule out timing/data flakiness and infrastructure errors (daemon not running, network down, missing credentials) — those read as UNKNOWN with low confidence, not PRODUCT_BUG.`
 }${
-  range
-    ? `
+        range
+          ? `
 - This range spans ${range.commitCount} commit${range.commitCount === 1 ? "" : "s"} over ${range.days} day${range.days === 1 ? "" : "s"}. The wider the range, the more unrelated changes are mixed in: SPEC_CHANGE and TEST_DRIFT still require citing the specific hunk — do not infer intent from the bulk of a large diff, and lower confidence when the evidence is spread thin.`
-    : ""
+          : ""
+      }`
 }
 - The drift audit findings (when present) flag spec↔code mismatches; an ERROR there usually supports TEST_DRIFT or SPEC_CHANGE over PRODUCT_BUG.
 
@@ -294,7 +334,11 @@ Your **final** assistant message must start with \`{\` and end with \`}\` — a 
 - 0.4-0.7: plausible but another category could explain it
 - < 0.4: answer UNKNOWN instead of guessing
 
-Evidence rules: TEST_DRIFT and SPEC_CHANGE require at least one concrete \`file\` reference (diff hunk or file:line you actually read). PRODUCT_BUG should cite the in-range change that unintentionally broke the behavior when one exists; ${lastGreen ? "under this last-green baseline, if no in-range change explains the failure, that is UNKNOWN (external cause), not PRODUCT_BUG" : "when no such change exists, explain why the diff does NOT account for the failure"}.
+Evidence rules: TEST_DRIFT and SPEC_CHANGE require at least one concrete \`file\` reference (diff hunk or file:line you actually read). ${
+    baselineMissing
+      ? "With no baseline there is no in-range change to cite: PRODUCT_BUG must instead explain why current-state inspection rules out test staleness and spec change."
+      : `PRODUCT_BUG should cite the in-range change that unintentionally broke the behavior when one exists; ${lastGreen ? "under this last-green baseline, if no in-range change explains the failure, that is UNKNOWN (external cause), not PRODUCT_BUG" : "when no such change exists, explain why the diff does NOT account for the failure"}.`
+  }
 
 ## Test Spec (spec.yaml)
 ${specYaml}

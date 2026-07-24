@@ -146,17 +146,25 @@ describe("analyzeExternalRows", () => {
     expect(promptInput.artifactsDir).toBe("report/artifacts/demo__x");
   });
 
-  it("withholds the classification when this spec has no baseline", async () => {
+  it("classifies without a baseline: no diff evidence, no analysisBase on the row", async () => {
+    await writeGeneratedTest();
     vi.mocked(analyzeDrift).mockResolvedValue([
       { target: { featureName: "demo", specName: "x" }, ok: true, issues: [] },
     ]);
+    vi.mocked(analyzeFailure).mockResolvedValue({ analysis: ANALYSIS, raw: "", sdkError: false });
     const [row] = await analyze(
       [failedRow("x")],
       deps({ diffProvider: diffProviderReturning({ ok: false, skip: "no recorded green yet" }) }),
     );
-    expect(row!.analysisSkipped).toBe("no recorded green yet");
-    expect(row!.analysis).toBeNull();
-    expect(vi.mocked(analyzeFailure)).not.toHaveBeenCalled();
+    expect(row!.analysisSkipped).toBeNull();
+    expect(row!.analysis?.label).toBe("TEST_DRIFT");
+    expect(row!.analysisBase).toBeUndefined();
+    expect(row!.diffExcerpt).toBeNull();
+
+    const promptInput = vi.mocked(analyzeFailure).mock.calls[0]![0];
+    expect(promptInput.baselineMissing).toBe("no recorded green yet");
+    expect(promptInput.diffPatch).toBeNull();
+    expect(promptInput.baseRef).toBeNull();
   });
 
   it("records the disabled reason and makes no Claude calls without --failure-analysis", async () => {
