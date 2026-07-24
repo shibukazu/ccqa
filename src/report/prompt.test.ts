@@ -87,3 +87,28 @@ describe("buildFailureAnalysisPrompt baseline-aware guidance (v6)", () => {
     expect(prompt).not.toContain("No diff context is available");
   });
 });
+
+describe("buildFailureAnalysisPrompt no-baseline mode (v8)", () => {
+  const NO_BASELINE: FailureAnalysisPromptInput = {
+    ...BASE_INPUT,
+    baselineMissing: "no last-green baseline for this spec on the hub yet",
+  };
+
+  test("replaces the diff framing with current-source guidance and states the reason", () => {
+    const prompt = buildFailureAnalysisPrompt(NO_BASELINE);
+    expect(prompt).toContain("No known-good baseline exists for this spec yet");
+    expect(prompt).toContain("no last-green baseline for this spec on the hub yet");
+    expect(prompt).toContain("Classify from the failure signature checked against the current source");
+    expect(prompt).toContain("practical confidence ceiling");
+    // Diff-range machinery must not leak in: no diff tool usage guidance, no range framing.
+    expect(prompt).not.toContain("base...HEAD range. The inline patch");
+    expect(prompt).not.toContain("commit where THIS spec last passed");
+    expect(prompt).not.toContain("No diff context is available");
+  });
+
+  test("without baselineMissing the prompt is unchanged (backward compatibility)", () => {
+    expect(buildFailureAnalysisPrompt(BASE_INPUT)).toBe(
+      buildFailureAnalysisPrompt({ ...BASE_INPUT, baselineMissing: null }),
+    );
+  });
+});

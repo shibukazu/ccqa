@@ -138,25 +138,30 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
       };
 
       if (!specDiffResult) return { ...fields, analysisSkipped: ANALYSIS_DISABLED };
-      // No usable baseline for THIS spec (last-green: never green yet, or its
-      // commit isn't fetched) — withhold the classification honestly.
-      if (!specDiffResult.ok) return { ...fields, analysisSkipped: specDiffResult.skip };
       if (!deps.auth.ok) return { ...fields, analysisSkipped: deps.auth.reason };
       if (input.specYaml === null) {
         return { ...fields, analysisSkipped: "no spec.yaml found for this spec" };
       }
+      // No usable baseline for THIS spec (last-green: never green yet, or its
+      // commit isn't fetched) — still classify, from the failure evidence plus
+      // current-repository inspection; the prompt switches to its no-baseline
+      // guidance and the row carries no analysisBase.
+      const baselineMissing = specDiffResult.ok ? null : specDiffResult.skip;
 
-      log.info(`failure analysis: ${featureName}/${specName}`);
+      log.info(
+        `failure analysis: ${featureName}/${specName}${baselineMissing ? " (no baseline — classifying from current source)" : ""}`,
+      );
       const outcome = await analyzeFailure(
         {
           script: await input.readScript(),
           specYaml: input.specYaml,
           failureLog: input.failureLog,
-          diffPatch: specDiffResult.patch,
-          changedFiles: specDiffResult.nameStatus,
-          baseRef: specDiffResult.base.ref,
-          baseSource: specDiffResult.base.source,
-          range: specDiffResult.range,
+          diffPatch: specDiff?.patch ?? null,
+          changedFiles: specDiff?.nameStatus ?? null,
+          baseRef: specDiff?.base.ref ?? null,
+          baseSource: specDiff?.base.source ?? null,
+          range: specDiff?.range ?? null,
+          ...(baselineMissing ? { baselineMissing } : {}),
           driftIssues: input.driftIssues,
           ...(input.artifactsDir ? { artifactsDir: input.artifactsDir } : {}),
           ...(deps.language ? { outputLanguage: deps.language } : {}),
@@ -166,7 +171,7 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
         {
           ...(deps.model ? { model: deps.model } : {}),
           cwd: deps.cwd,
-          getFileDiff: specDiffResult.fileDiff,
+          getFileDiff: specDiff?.fileDiff ?? (() => null),
         },
       );
 
