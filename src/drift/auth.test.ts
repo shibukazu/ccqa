@@ -8,6 +8,8 @@ import { driftAuthAvailable } from "./auth.ts";
 const ORIGINAL_KEY = process.env["ANTHROPIC_API_KEY"];
 const ORIGINAL_HOME = process.env["HOME"];
 const ORIGINAL_PATH = process.env["PATH"];
+const ORIGINAL_BEDROCK = process.env["CLAUDE_CODE_USE_BEDROCK"];
+const ORIGINAL_VERTEX = process.env["CLAUDE_CODE_USE_VERTEX"];
 
 // On darwin the probe also consults the Keychain via the `security` binary
 // (resolved through PATH). Prepend a stub that always exits 1 so these tests
@@ -22,6 +24,8 @@ function stubSecurityBinary(exitCode: 0 | 1): void {
 
 beforeEach(() => {
   stubSecurityBinary(1);
+  delete process.env["CLAUDE_CODE_USE_BEDROCK"];
+  delete process.env["CLAUDE_CODE_USE_VERTEX"];
 });
 
 afterEach(() => {
@@ -31,6 +35,10 @@ afterEach(() => {
   else process.env["HOME"] = ORIGINAL_HOME;
   if (ORIGINAL_PATH === undefined) delete process.env["PATH"];
   else process.env["PATH"] = ORIGINAL_PATH;
+  if (ORIGINAL_BEDROCK === undefined) delete process.env["CLAUDE_CODE_USE_BEDROCK"];
+  else process.env["CLAUDE_CODE_USE_BEDROCK"] = ORIGINAL_BEDROCK;
+  if (ORIGINAL_VERTEX === undefined) delete process.env["CLAUDE_CODE_USE_VERTEX"];
+  else process.env["CLAUDE_CODE_USE_VERTEX"] = ORIGINAL_VERTEX;
 });
 
 describe("driftAuthAvailable", () => {
@@ -58,6 +66,28 @@ describe("driftAuthAvailable", () => {
   test("empty ANTHROPIC_API_KEY does not count as set", () => {
     process.env["ANTHROPIC_API_KEY"] = "";
     process.env["HOME"] = mkdtempSync(join(tmpdir(), "ccqa-auth-"));
+    expect(driftAuthAvailable().ok).toBe(false);
+  });
+
+  test("returns ok when CLAUDE_CODE_USE_BEDROCK is enabled", () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    process.env["HOME"] = mkdtempSync(join(tmpdir(), "ccqa-auth-"));
+    process.env["CLAUDE_CODE_USE_BEDROCK"] = "1";
+    expect(driftAuthAvailable()).toEqual({ ok: true });
+  });
+
+  test("returns ok when CLAUDE_CODE_USE_VERTEX is enabled", () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    process.env["HOME"] = mkdtempSync(join(tmpdir(), "ccqa-auth-"));
+    process.env["CLAUDE_CODE_USE_VERTEX"] = "true";
+    expect(driftAuthAvailable()).toEqual({ ok: true });
+  });
+
+  test("explicitly disabled cloud-provider toggles do not count", () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    process.env["HOME"] = mkdtempSync(join(tmpdir(), "ccqa-auth-"));
+    process.env["CLAUDE_CODE_USE_BEDROCK"] = "0";
+    process.env["CLAUDE_CODE_USE_VERTEX"] = "false";
     expect(driftAuthAvailable().ok).toBe(false);
   });
 
