@@ -264,6 +264,64 @@ export function verifySessionRestores(statePath: string, verifyUrl: string): Ses
   }
 }
 
+export type LiveSessionHealth = { healthy: true } | { healthy: false; reason: string };
+
+/**
+ * Non-destructive mid-run health probe of an already-running live session.
+ * Reads the current page URL (`eval location.href` — the same read
+ * {@link verifySessionRestores} makes, and it does NOT navigate, so it never
+ * clobbers the page the model is working on) and detects only the unambiguous
+ * signals that agent-browser's daemon was replaced/wedged mid-run:
+ *
+ *   - the probe exits non-zero — the daemon is wedged or was replaced
+ *     (`spawnAB`'s hard timeout bounds a hung daemon, so this returns rather
+ *     than hanging the run);
+ *   - the page is blank/absent (`about:blank`, empty, `chrome://…`) — a
+ *     restarted daemon comes up with no page and no in-memory auth-state.
+ *
+ * Deliberately NOT flagged: a non-blank page that left the verify URL's origin.
+ * That can't be told apart from a spec legitimately roaming to another origin
+ * mid-flow (e.g. Slack → a separate admin app it logs into at runtime), and a
+ * false "unhealthy" would re-inject the saved state and wipe auth the spec
+ * acquired live — breaking a spec that was fine. Missing a same-origin-ish
+ * sign-in wall just leaves that step failing as before (no regression), so the
+ * asymmetry favours only firing on a provably dead daemon. `verifyUrl` is still
+ * required (it's the re-anchor target for recovery) but no longer compared here.
+ */
+export function checkLiveSessionHealth(sessionName: string): LiveSessionHealth {
+  const probe = spawnAB(["--session", sessionName, "eval", "location.href"]);
+  if (probe.status !== 0) {
+    return { healthy: false, reason: (probe.stderr || probe.stdout || `probe exited ${probe.status}`).trim() };
+  }
+  const href = unwrapEvalString(probe.stdout);
+  if (!href || href === "about:blank" || href.startsWith("chrome://") || href.startsWith("chrome-error://")) {
+    return { healthy: false, reason: `blank/absent page (${href || "empty"})` };
+  }
+  return { healthy: true };
+}
+
+/**
+ * Recover a live session whose daemon was replaced mid-run (detected by
+ * {@link checkLiveSessionHealth}). The restart drops the in-memory auth-state
+ * injected at run start, so the session fell to a sign-in wall. Re-boot +
+ * re-attach the saved state ({@link loadStateIntoSession} is idempotent —
+ * `state load` is load-only, never writes back) and then navigate to
+ * `verifyUrl`, a known signed-in page, so the retrying model has an
+ * authenticated anchor to continue from instead of a login screen. Returns the
+ * injection result; the trailing `open` is best-effort (a failed nav still
+ * leaves the state attached for the model's own next navigation).
+ */
+export function recoverLiveSession(
+  sessionName: string,
+  statePath: string,
+  verifyUrl: string,
+): StateInjectionResult {
+  const injected = loadStateIntoSession(sessionName, statePath);
+  if (!injected.ok) return injected;
+  spawnAB(["--session", sessionName, "open", verifyUrl]);
+  return { ok: true };
+}
+
 /** Take the last non-empty line of `agent-browser eval` stdout and JSON-unquote it. */
 function unwrapEvalString(stdout: string): string {
   const lines = stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
