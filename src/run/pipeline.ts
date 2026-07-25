@@ -25,8 +25,15 @@ import {
   type FailureAnalysisRun,
 } from "./failure-analysis.ts";
 import { createDiffProvider, type DiffProvider } from "./diff-provider.ts";
-import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.ts";
+import { LAST_GREEN, LAST_RUN, resolveAnalysisBase, type GitContext } from "./git-context.ts";
 import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
+import { tryDeployHeadSha } from "./deploy-head.ts";
+import { formatDryRunLines } from "./dry-run.ts";
+import {
+  fetchRerunReport,
+  requireRerunProfile,
+  selectSpecsNeedingRerun,
+} from "./rerun-selection.ts";
 import { emitGithubAnnotations } from "../report/github-format.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { fetchCustomPrompt, fetchTriageUserPrompt, hashTriageUserPrompt } from "../prompts/custom-prompt.ts";
@@ -48,7 +55,7 @@ import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import { C } from "../cli/colors.ts";
 import * as log from "../cli/logger.ts";
-import { RunUsageError } from "./errors.ts";
+import { errMessage, RunUsageError } from "./errors.ts";
 import type { RunTeardown } from "../cli/run-teardown.ts";
 
 export { RunUsageError } from "./errors.ts";
@@ -132,8 +139,16 @@ export interface RunOptions {
   evidence?: boolean;
   retry?: number;
   out?: string;
-  /** Same value shape as `failureAnalysis`: `true` = GITHUB_BASE_REF, string = explicit base. */
+  /**
+   * Same value shape as `failureAnalysis` (`true` = GITHUB_BASE_REF, string =
+   * explicit base), plus the keyword `last-run`, which selects from the hub's
+   * re-run verdicts and does no git work at all.
+   */
   changed?: boolean | string;
+  /** With `--changed=last-run`: also select specs whose re-run need is unknown / that never ran. */
+  includeUnknown?: boolean;
+  /** Print the selected specs and stop — no execution, no report, no hub writes. */
+  dryRun?: boolean;
   updateAgentPrompt?: boolean;
   concurrency?: number;
   hubUrl?: string;
@@ -195,6 +210,19 @@ export async function executeRun(
   if (opts.changed && targets.length > 0) {
     throw new RunUsageError("--changed and an explicit spec target cannot be combined");
   }
+  // `--changed=last-run` reads per-profile verdicts off the hub instead of a
+  // git diff, so its two inputs (a profile, and further down a hub connection)
+  // are checked before anything else runs.
+  const rerunProfile = opts.changed === LAST_RUN ? requireRerunProfile(opts.profile) : null;
+  if (opts.includeUnknown && rerunProfile === null) {
+    log.warn(`--include-unknown is ignored: it only applies to --changed=${LAST_RUN}`);
+  }
+  // A dry run answers "which specs would run?" and stops. It never resolves a
+  // `${VAR}`, classifies a failure or writes a report, so every input that
+  // exists only to serve execution — the profile environment, the analysis
+  // baseline and its prompts — is skipped, leaving the selection read as the
+  // one hub round trip it makes.
+  const forExecution = opts.dryRun !== true;
 
   const cwd = opts.cwd ?? process.cwd();
 
@@ -208,7 +236,7 @@ export async function executeRun(
   const wantsLastGreen = opts.failureAnalysis === LAST_GREEN;
   const [head, fixedBase] = await Promise.all([
     getGitHead(cwd),
-    opts.failureAnalysis && !wantsLastGreen
+    forExecution && opts.failureAnalysis && !wantsLastGreen
       ? resolveAnalysisBase(opts.failureAnalysis, "--failure-analysis", cwd)
       : null,
   ]);
@@ -229,41 +257,38 @@ export async function executeRun(
   // (bad flag / hub misconfiguration), not a run failure, so it maps to
   // RunUsageError like the other early-exit checks. Project resolution is
   // only needed to scope the hub lookup, so it's skipped entirely when no
-  // --profile is given. The resolved name is kept (not recomputed) below to
-  // also scope the best-effort custom-prompt hub lookup.
-  let projectForProfile: string | undefined;
-  try {
-    if (opts.profile !== undefined) {
-      projectForProfile = resolveProjectOrThrow(opts.project, cwd);
-      await resolveProfileEnv({
-        profile: opts.profile,
-        project: projectForProfile,
-        cwd,
-        hubUrl: opts.hubUrl,
-        hubToken: opts.hubToken,
-        hubHeader: opts.hubHeader,
-      });
-    } else {
-      await resolveProfileEnv({ profile: undefined, project: "", cwd });
+  // --profile is given, and the whole block is skipped on a dry run, which
+  // executes nothing and so resolves no `${VAR}`.
+  if (forExecution) {
+    try {
+      if (opts.profile !== undefined) {
+        await resolveProfileEnv({
+          profile: opts.profile,
+          project: resolveProjectOrThrow(opts.project, cwd),
+          cwd,
+          hubUrl: opts.hubUrl,
+          hubToken: opts.hubToken,
+          hubHeader: opts.hubHeader,
+        });
+      } else {
+        await resolveProfileEnv({ profile: undefined, project: "", cwd });
+      }
+    } catch (err) {
+      if (err instanceof RunUsageError) throw err;
+      if (err instanceof ProjectNameError) throw new RunUsageError(err.message);
+      if (err instanceof HubConnectionError || err instanceof HubApiError) {
+        throw new RunUsageError(err.message);
+      }
+      throw new RunUsageError(`failed to load profile "${opts.profile}": ${errMessage(err)}`);
     }
-  } catch (err) {
-    if (err instanceof RunUsageError) throw err;
-    if (err instanceof ProjectNameError) throw new RunUsageError(err.message);
-    if (err instanceof HubConnectionError || err instanceof HubApiError) {
-      throw new RunUsageError(err.message);
-    }
-    throw new RunUsageError(
-      `failed to load profile "${opts.profile}": ${err instanceof Error ? err.message : String(err)}`,
-    );
   }
 
   // Resolve the hub context for the failure-analysis prompts (best-effort: an
   // unresolvable project or missing hub connection just means no custom
   // prompt, never a run-stopping error — unlike the profile resolution
-  // above, which does throw RunUsageError). resolveHubContext re-resolves
-  // the project internally rather than reusing projectForProfile — this
-  // mirrors the pre-refactor code, which already resolved the project twice
-  // (once for the profile, once here).
+  // above, which does throw RunUsageError). The project is resolved again here
+  // rather than being threaded down from the profile block — that block is
+  // skipped entirely without --profile, and on a dry run.
   let hubCtx: HubContext | null = null;
   try {
     hubCtx = resolveHubContext({
@@ -288,16 +313,34 @@ export async function executeRun(
     );
   }
   const ledgerHub = wantsLastGreen ? hubCtx : null;
+  // Same contract as last-green: the flag opted into a hub-held baseline, so a
+  // missing connection is a usage error, not a degrade-to-run-everything.
+  // A real run reaches this having already required a hub for `--profile`;
+  // a dry run skips that, so this is where it finds out.
+  if (rerunProfile !== null && hubCtx == null) {
+    throw new RunUsageError(
+      `--changed=${LAST_RUN} requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
+    );
+  }
 
   // Two failure-analysis prompt layers, both best-effort (null without a hub):
   // the human-maintained `triage.user` guidance and the learned custom prompt.
-  // The last-green ledger (when requested) joins the same batch — all three
-  // are independent hub round trips.
-  const [customPrompt, triageUserPrompt, ledgerEntries] = await Promise.all([
-    fetchCustomPrompt(hubCtx),
-    fetchTriageUserPrompt(hubCtx),
-    ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.profile, cwd) : null,
+  // The last-green ledger, the re-run verdicts and the deploy head (when
+  // applicable) join the same batch — all are independent hub round trips.
+  const [customPrompt, triageUserPrompt, ledgerEntries, rerunReport, fetchedDeployHead] = await Promise.all([
+    forExecution ? fetchCustomPrompt(hubCtx) : null,
+    forExecution ? fetchTriageUserPrompt(hubCtx) : null,
+    forExecution && ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.profile, cwd) : null,
+    rerunProfile !== null && hubCtx ? fetchRerunReport(hubCtx, rerunProfile) : null,
+    // Skipped when the re-run report is being fetched: that response already
+    // carries the profile's deploy head, so asking twice would be a second
+    // round trip for one value — and two reads that a deploy between them
+    // could make disagree.
+    forExecution && hubCtx && opts.profile && rerunProfile === null
+      ? tryDeployHeadSha(hubCtx, opts.profile)
+      : null,
   ]);
+  const deployedSha = rerunReport?.deployHead.sha ?? fetchedDeployHead;
   if (ledgerEntries) {
     diffProvider = createDiffProvider({
       resolveBase: createLastGreenResolver(ledgerEntries, cwd),
@@ -338,11 +381,34 @@ export async function executeRun(
 
   if (opts.changed) {
     const before = specs.length;
-    specs = await collectChangedSpecs(specs, { cwd, base: opts.changed });
+    let unanswerable = 0;
+    if (rerunReport) {
+      const selection = selectSpecsNeedingRerun(specs, rerunReport, {
+        includeUnknown: opts.includeUnknown === true,
+      });
+      specs = selection.selected;
+      unanswerable = selection.excludedUnanswerable;
+      log.meta(
+        "rerun-base",
+        `deploy ${rerunReport.deployHead.sha.slice(0, 12)} (profile ${rerunReport.profile})`,
+      );
+      log.meta("rerun-states", selection.summary);
+    } else {
+      specs = await collectChangedSpecs(specs, { cwd, base: opts.changed });
+    }
     log.meta(
       "changed-scoped",
       `${specs.length} of ${before} spec${before === 1 ? "" : "s"}`,
     );
+    // Selecting nothing is a real answer only when every spec was answered.
+    // Say so when it wasn't, or a project whose specs have never run reads
+    // "0 to run, exit 0" as "all good".
+    if (specs.length === 0 && unanswerable > 0) {
+      log.hint(
+        `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
+          `a re-run; pass --include-unknown to run them anyway`,
+      );
+    }
   }
 
   if (specs.length === 0) {
@@ -399,6 +465,16 @@ export async function executeRun(
   }
   log.blank();
 
+  // Everything above this point is selection and local inspection; nothing has
+  // been executed and nothing has been written yet, which is exactly where a
+  // dry run stops.
+  if (opts.dryRun) {
+    for (const line of formatDryRunLines(withMode, dispatch)) log.emitRaw(line + "\n");
+    log.blank();
+    log.info("dry run: nothing was executed and no report was written");
+    return { exitCode: 0, report: null, reportDir: null };
+  }
+
   const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDir);
 
   // Incremental hub push: when --push-report is set and a hub is configured,
@@ -424,6 +500,10 @@ export async function executeRun(
         ...(branch ? { branch } : {}),
         ...(opts.profile ? { profile: opts.profile } : {}),
         ...(git.head ? { gitHead: git.head } : {}),
+        // Captured before the first spec. Left to itself the hub stamps its
+        // deploy-log head when this call lands — after the deterministic
+        // phase — so a deploy during that phase would become the baseline.
+        ...(deployedSha ? { deployedSha } : {}),
         ...(ciRunId ? { ciRunId } : {}),
         ...(runUrl ? { runUrl } : {}),
         kind: "run",
@@ -464,6 +544,7 @@ export async function executeRun(
       git,
       customPromptVersion: customPrompt?.customPromptVersion ?? null,
       triageUserPromptHash,
+      deployedSha,
       opts,
     }),
     hubSink,
@@ -562,6 +643,7 @@ export async function executeRun(
       git,
       customPromptVersion,
       triageUserPromptHash,
+      deployedSha,
       opts,
     });
     // The authoritative report is on disk; a later teardown flush (normal exit
@@ -578,6 +660,7 @@ export async function executeRun(
         git,
         customPromptVersion,
         triageUserPromptHash,
+        deployedSha,
         opts,
       });
       // Deterministic rows are the only ones that never passed through the
@@ -937,9 +1020,10 @@ function buildReportEnvelope(args: {
   git: GitContext;
   customPromptVersion: string | null;
   triageUserPromptHash: string | null;
+  deployedSha: string | null;
   opts: RunOptions;
 }): ReportEnvelope {
-  const { git, customPromptVersion, triageUserPromptHash, opts } = args;
+  const { git, customPromptVersion, triageUserPromptHash, deployedSha, opts } = args;
   const runUrl = githubRunUrl();
   return {
     schemaVersion: 1,
@@ -965,6 +1049,9 @@ function buildReportEnvelope(args: {
     // Omitted (not null) when inactive, so the envelope keeps its historical
     // shape — see the schema comment on triageUserPromptHash.
     ...(triageUserPromptHash !== null ? { triageUserPromptHash } : {}),
+    // Same omission rule. Read back by `ccqa hub push` to assert the baseline
+    // the run actually exercised — see tryDeployHeadSha.
+    ...(deployedSha !== null ? { deployedSha } : {}),
   };
 }
 
@@ -975,11 +1062,12 @@ async function writeUnifiedReport(args: {
   git: GitContext;
   customPromptVersion: string | null;
   triageUserPromptHash: string | null;
+  deployedSha: string | null;
   opts: RunOptions;
 }): Promise<RunReportData> {
-  const { reportDir, results, git, customPromptVersion, triageUserPromptHash, opts } = args;
+  const { reportDir, results, git, customPromptVersion, triageUserPromptHash, deployedSha, opts } = args;
   const data: RunReportData = {
-    ...buildReportEnvelope({ git, customPromptVersion, triageUserPromptHash, opts }),
+    ...buildReportEnvelope({ git, customPromptVersion, triageUserPromptHash, deployedSha, opts }),
     results,
   };
 
@@ -997,10 +1085,6 @@ async function writeUnifiedReport(args: {
   }
 
   return data;
-}
-
-function errMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /**

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
@@ -110,6 +110,22 @@ describe("ccqa run", () => {
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(2);
     expect(combined).toMatch(/--changed and an explicit spec target cannot be combined/);
+  });
+
+  test("--dry-run lists the selection and writes no report", async () => {
+    project = await makeFakeProject("multi-spec", { linkCcqa: true });
+    const result = await runCcqa(["run", "--dry-run"], {
+      cwd: project.cwd,
+      env: noColorEnv(),
+    });
+    const combined = stripAnsi(result.stdout + result.stderr);
+    expect(result.exitCode, combined).toBe(0);
+    expect(combined).toMatch(/alpha\/one\s+deterministic/);
+    expect(combined).toMatch(/beta\/two\s+deterministic/);
+    expect(combined).toMatch(/nothing was executed/);
+    // The whole point of the flag: eyeball the selection before paying for it.
+    expect(combined).not.toMatch(/ccqa summary/);
+    await expect(stat(join(project.cwd, "ccqa-report", "report.json"))).rejects.toThrow();
   });
 
   test("rejects a non-positive --concurrency with exit 2", async () => {

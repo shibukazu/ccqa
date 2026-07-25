@@ -1,6 +1,10 @@
 import type {
+  DeployEntry,
+  DeployLogResponse,
   LastGreenEntry,
   PutActualCauseRequest,
+  RecordDeployRequest,
+  RerunReport,
   Run,
   RunStatus,
   RunTriage,
@@ -71,10 +75,23 @@ export interface HubPromptMeta {
 }
 
 export interface HubClient {
-  /** Push a report directory (as a tar.gz) for an already-finished `ccqa run`. */
+  /**
+   * Push a report directory (as a tar.gz) for an already-finished `ccqa run`.
+   *
+   * `deployedSha` asserts the commit the environment was running *when the run
+   * started*. Without it the hub falls back to its deploy-log head, which by
+   * push time is the head after the run — a deploy that landed mid-run would
+   * then read as that run's baseline.
+   */
   pushRun(
     archive: Uint8Array,
-    meta: { project: string; branch?: string; profile?: string; kind?: "run" | "drift" },
+    meta: {
+      project: string;
+      branch?: string;
+      profile?: string;
+      kind?: "run" | "drift";
+      deployedSha?: string;
+    },
   ): Promise<Run>;
   /**
    * Open a `running` run to push results into incrementally. Returns the new
@@ -82,6 +99,10 @@ export interface HubClient {
    * would leave a second open run); callers degrade to local-only on failure.
    * `gitHead` stamps the run's commit at open time, so even a run that dies
    * before its final reconcile patch is attributable to a commit.
+   *
+   * `deployedSha` does the same for the environment's commit. The hub would
+   * otherwise read its own deploy-log head here, and the open happens after
+   * the deterministic phase, not before the first spec.
    */
   openRun(meta: {
     project: string;
@@ -89,6 +110,7 @@ export interface HubClient {
     profile?: string;
     kind?: "run" | "drift";
     gitHead?: string;
+    deployedSha?: string;
     /** CI run id (GITHUB_RUN_ID) and its run URL, stamped at open time so an
      *  interrupted incremental run still links back to its CI run. */
     ciRunId?: string;
@@ -122,6 +144,18 @@ export interface HubClient {
     project: string,
     q: { profile?: string; branch: string; fallbackBranch?: string },
   ): Promise<Record<string, LastGreenEntry>>;
+
+  /**
+   * Per spec of one project/profile: is its last result still trustworthy?
+   * Answers `ccqa run --changed=last-run`. 404 when the project has no
+   * perspectives document — there is then no `relatedPaths` to match a deploy
+   * against, which the caller must report rather than read as "nothing to run".
+   */
+  getRerun(project: string, q: { profile: string }): Promise<RerunReport>;
+  /** Tell the hub what a deploy shipped (`ccqa hub deploy record`). */
+  recordDeploy(project: string, profile: string, body: RecordDeployRequest): Promise<DeployEntry>;
+  /** The profile's retained deploy log, oldest first; `limit` keeps the newest N. */
+  getDeployLog(project: string, q: { profile: string; limit?: number }): Promise<DeployLogResponse>;
 
   putSession(project: string, profile: string, name: string, storageState: unknown): Promise<void>;
   getSession(project: string, profile: string, name: string): Promise<unknown>;
@@ -247,6 +281,7 @@ export function createHubClient(opts: HubClientOptions): HubClient {
       if (meta.branch) params.set("branch", meta.branch);
       if (meta.profile) params.set("profile", meta.profile);
       if (meta.kind) params.set("kind", meta.kind);
+      if (meta.deployedSha) params.set("deployedSha", meta.deployedSha);
       return json(`/api/v1/runs?${params}`, {
         method: "POST",
         headers: { "Content-Type": "application/gzip" },
@@ -259,6 +294,7 @@ export function createHubClient(opts: HubClientOptions): HubClient {
       if (meta.profile) params.set("profile", meta.profile);
       if (meta.kind) params.set("kind", meta.kind);
       if (meta.gitHead) params.set("gitHead", meta.gitHead);
+      if (meta.deployedSha) params.set("deployedSha", meta.deployedSha);
       if (meta.ciRunId) params.set("ciRunId", meta.ciRunId);
       if (meta.runUrl) params.set("runUrl", meta.runUrl);
       return json(`/api/v1/runs/open?${params}`, { method: "POST" });
@@ -318,6 +354,20 @@ export function createHubClient(opts: HubClientOptions): HubClient {
         `/api/v1/projects/${encodeURIComponent(project)}/last-green?${params}`,
       );
       return entries;
+    },
+
+    getRerun(project, q) {
+      return json(`/api/v1/projects/${encodeURIComponent(project)}/rerun?${queryString({ profile: q.profile })}`);
+    },
+    recordDeploy(project, profile, body) {
+      return json(`${deploysPath(project)}?${queryString({ profile })}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    },
+    getDeployLog(project, q) {
+      return json(`${deploysPath(project)}?${queryString({ profile: q.profile, limit: q.limit })}`);
     },
 
     async listProjects() {
@@ -410,6 +460,11 @@ function scopePath(project: string, kind: "sessions" | "variables", profile: str
 /** Prompts are project-scoped (not per-profile): `/api/v1/projects/<project>/prompts`. */
 function promptsPath(project: string): string {
   return `/api/v1/projects/${encodeURIComponent(project)}/prompts`;
+}
+
+/** The deploy log is per project, selected by a `?profile=` query param: `/api/v1/projects/<project>/deploys`. */
+function deploysPath(project: string): string {
+  return `/api/v1/projects/${encodeURIComponent(project)}/deploys`;
 }
 
 /** Perspectives are one document per project: `/api/v1/projects/<project>/perspectives`. */

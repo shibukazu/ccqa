@@ -13,6 +13,9 @@ import type { SecretScope } from "../types.ts";
  *   variables/<project>/<profile>/<name>.meta.json
  *   triage/<runId>.json                         (TriageRecord[])
  *   jobs/<id>/job.json                          (LearningJob record, mutated as it runs)
+ *   last-green/<project>/<profile>/<branch>.json (SpecLedger: green/run/red buckets)
+ *   deploys/<project>/<profile>/log.json         (DeployLog, ring-buffered)
+ *   deploys/<project>/<profile>/touch.json       (SpecTouchIndex derived from the log)
  *
  * IDs and names are validated by their callers (run ids are server-minted
  * UUIDs; project/profile/name come from validated request params) before
@@ -100,18 +103,40 @@ export function perspectivesPath(root: string, project: string): string {
   return join(perspectivesKindDir(root), `${project}.json`);
 }
 
-// Last-green ledger: last-green/<project>/<profile>/<branch>.json. Unlike
-// project/profile (validated as bare names at the API layer), a branch name
-// is free-form git — it can contain '/', '..', etc. — so it is
+// Spec ledger: last-green/<project>/<profile>/<branch>.json. The directory
+// keeps its original name so existing hub data stays readable now that the
+// document carries three buckets rather than only the green one.
+export function ledgerProfileDir(root: string, project: string, profile: string): string {
+  return join(root, "last-green", project, profile);
+}
+
+// Unlike project/profile (validated as bare names at the API layer), a branch
+// name is free-form git — it can contain '/', '..', etc. — so it is
 // percent-encoded into a single flat filename. Encoding can expand 3x (every
 // escaped byte becomes %XX; a fully-CJK branch triples), so past 200 chars
 // the name switches to a truncated-prefix + content-hash form to stay under
 // the ~255-byte filename limit — deterministic, so reads and writes agree.
-export function lastGreenPath(root: string, project: string, profile: string, branch: string): string {
+export function ledgerPath(root: string, project: string, profile: string, branch: string): string {
   const encoded = encodeURIComponent(branch);
   const name =
     encoded.length <= 200
       ? encoded
       : `${encoded.slice(0, 64)}-${createHash("sha256").update(branch).digest("hex").slice(0, 32)}`;
-  return join(root, "last-green", project, profile, `${name}.json`);
+  return join(ledgerProfileDir(root, project, profile), `${name}.json`);
+}
+
+// Deploy log and its derived touch index, per (project, profile) — profile is
+// mandatory because two environments sit at different commits, so "needs
+// re-run" has no profile-free answer. Branch plays no part: a deploy is a
+// property of the environment, not of a branch.
+function deployScopeDir(root: string, project: string, profile: string): string {
+  return join(root, "deploys", project, profile);
+}
+
+export function deployLogPath(root: string, project: string, profile: string): string {
+  return join(deployScopeDir(root, project, profile), "log.json");
+}
+
+export function deployTouchIndexPath(root: string, project: string, profile: string): string {
+  return join(deployScopeDir(root, project, profile), "touch.json");
 }

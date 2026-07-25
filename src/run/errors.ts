@@ -13,3 +13,8 @@ export class RunUsageError extends Error {
     this.name = "RunUsageError";
   }
 }
+
+/** An error's message, whatever was thrown. Shared so the run modules report failures alike. */
+export function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}

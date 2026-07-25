@@ -63,6 +63,21 @@ export const RunSchema = z.object({
   reportCreatedAt: z.string(),
   /** When the hub accepted the push (list ordering key). */
   createdAt: z.string(),
+  /**
+   * The commit the target environment was running when this run executed —
+   * the baseline "needs re-run" compares against (ADR-0010). Null when the
+   * profile has no deploy log and the client didn't say. Absent on runs
+   * stored before this field existed.
+   */
+  deployedSha: z.string().nullable().optional(),
+  /** Where `deployedSha` came from: the hub's own deploy log, or the client asserting it. */
+  deployedShaSource: z.enum(["hub-deploy-log", "client"]).nullable().optional(),
+  /**
+   * True when the deploy-log head moved between opening and finalizing this
+   * run: the run straddled a deploy, so which commit it actually exercised is
+   * not knowable. Re-run selection reports `unknown` rather than guessing.
+   */
+  deployedShaAmbiguous: z.boolean().optional(),
 });
 export type Run = z.infer<typeof RunSchema>;
 
@@ -154,6 +169,228 @@ export const LastGreenEntrySchema = z.object({
   at: z.string(),
 });
 export type LastGreenEntry = z.infer<typeof LastGreenEntrySchema>;
+
+/**
+ * One spec's record of a single run, as stored in a ledger bucket. Identical
+ * to `LastGreenEntry` plus the commit the environment was running at the time
+ * — without it a bucket entry can be ordered in wall-clock time but not
+ * *positioned* against the deploy log, which is the only ordering re-run
+ * selection may use (ADR-0010).
+ */
+export const SpecLedgerEntrySchema = LastGreenEntrySchema.extend({
+  /** The run's `deployedSha`; absent on entries written before ADR-0010. */
+  deployedSha: z.string().nullable().optional(),
+  /** The run's `deployedShaAmbiguous`, denormalized so a verdict needs no run lookup. */
+  deployedShaAmbiguous: z.boolean().optional(),
+});
+export type SpecLedgerEntry = z.infer<typeof SpecLedgerEntrySchema>;
+
+/**
+ * The per-(project, profile, branch) spec ledger: three buckets over the same
+ * "feature/spec" keys, all advanced by the same terminal-run trigger.
+ *
+ * - `green` — the spec's last pass. Served as `entries` by `GET /last-green`.
+ * - `run` — the spec's last *execution* of any non-skipped result. This, not
+ *   `green`, is the baseline for "needs re-run": a red spec's information is
+ *   already current, so re-running it teaches nothing until related code moves.
+ * - `red` — the spec's last failure, so the view can show outcome and re-run
+ *   need as the orthogonal axes they are.
+ *
+ * A skipped row did not execute and advances no bucket.
+ */
+export const SpecLedgerSchema = z.object({
+  green: z.record(z.string(), SpecLedgerEntrySchema).default({}),
+  run: z.record(z.string(), SpecLedgerEntrySchema).default({}),
+  red: z.record(z.string(), SpecLedgerEntrySchema).default({}),
+});
+export type SpecLedger = z.infer<typeof SpecLedgerSchema>;
+
+/** One deploy, as the consumer's deploy job reported it (ADR-0010). */
+export const DeployEntrySchema = z.object({
+  /** Monotonic position in the profile's log — the only ordering re-run selection compares. */
+  index: z.number().int().nonnegative(),
+  sha: z.string(),
+  /** The commit this deploy replaced; null when the job didn't say. */
+  previousSha: z.string().nullable(),
+  at: z.string(),
+  /** The ref that was deployed (e.g. a branch or tag), for display only. */
+  ref: z.string().optional(),
+  /** URL of the deploy job, so the view can link back to it. */
+  runUrl: z.string().optional(),
+  /**
+   * Paths this deploy changed, from a two-dot diff. Null means the job didn't
+   * report them; either way the entry is then treated as touching everything.
+   */
+  changedPaths: z.array(z.string()).nullable(),
+  /** True when `changedPaths` was cut to a bound and no longer lists every change. */
+  truncated: z.boolean().default(false),
+  /** True when `previousSha` did not chain onto the log head, so history is missing before this entry. */
+  gapBefore: z.boolean().default(false),
+});
+export type DeployEntry = z.infer<typeof DeployEntrySchema>;
+
+/**
+ * A profile's retained deploy log. `nextIndex` is kept separately from
+ * `entries` because the ring buffer drops old entries: positions must keep
+ * increasing across an eviction or a stored baseline would silently re-match
+ * a different deploy.
+ */
+export const DeployLogSchema = z.object({
+  nextIndex: z.number().int().nonnegative().default(0),
+  entries: z.array(DeployEntrySchema).default([]),
+});
+export type DeployLog = z.infer<typeof DeployLogSchema>;
+
+/** A deploy as reported, before the log assigns its position and applies its bounds. */
+export type DeployInput = Omit<DeployEntry, "index" | "gapBefore" | "truncated">;
+
+/**
+ * One spec's entry in the derived touch index: the newest deploy known to have
+ * touched it, folded in at write time from the deploy's full `changedPaths` so
+ * that list can be dropped afterwards rather than retained per deploy.
+ *
+ * Folded against the `relatedPaths` in force when the deploy landed, so it can
+ * disagree with a match against a spec's current `relatedPaths`. It is
+ * therefore only consulted where the retained log cannot answer (a truncated
+ * entry), never in place of matching the current paths.
+ */
+export const SpecTouchSchema = z.object({
+  /** A `DeployEntry.index`, comparable against a baseline's position across an eviction. */
+  lastTouchedIndex: z.number().int().nonnegative(),
+  /**
+   * Which deploy the fold matched, as it read it. The verdict is decided on
+   * `lastTouchedIndex` alone, and what the view *names* is read back out of the
+   * log entry at that index — so a deploy is never shown out of this derived
+   * copy when the log no longer backs it.
+   */
+  lastTouchedSha: z.string(),
+  lastTouchedAt: z.string(),
+  /** A bounded sample (`MAX_TOUCHED_BY`) of what matched. Empty when the deploy reported no paths. */
+  matchedPaths: z.array(z.string()),
+});
+export type SpecTouch = z.infer<typeof SpecTouchSchema>;
+
+/** The derived touch index for one profile: "feature/spec" → its newest known touch. */
+export const SpecTouchIndexSchema = z.record(z.string(), SpecTouchSchema);
+export type SpecTouchIndex = z.infer<typeof SpecTouchIndexSchema>;
+
+/**
+ * Whether a spec's last result is still trustworthy. Deliberately named for
+ * the action rather than for a freshness adjective: "needs re-run" (mechanical,
+ * no model call) is a different question from drift (does the spec still
+ * describe the product), and the two must not be conflated — see ADR-0010.
+ */
+export const RerunStateSchema = z.enum(["needed", "notNeeded", "unknown", "neverRun", "notEvaluated"]);
+export type RerunState = z.infer<typeof RerunStateSchema>;
+
+/**
+ * Why a spec is `unknown`. Always carried, so the view can name the missing
+ * input ("no deploy log for this profile") instead of shrugging. `unknown` is
+ * never rendered as "not needed".
+ */
+export const RerunUnknownReasonSchema = z.enum([
+  /** The spec declares no `relatedPaths`, so no deploy can be matched against it. */
+  "noRelatedPaths",
+  /** Nothing has ever been recorded in this profile's deploy log. */
+  "noDeployLog",
+  /** The spec's last run predates deploy-sha stamping, or ran with no deploy log. */
+  "unknownDeployedSha",
+  /** The last run straddled a deploy, so which commit it exercised is not knowable. */
+  "ambiguousDeployedSha",
+  /** The last run's deployed sha is older than the retained log, so its position is lost. */
+  "deployedShaNotInLog",
+  /** A deploy in range did not chain onto its predecessor, so deploys are missing from the range. */
+  "gapInRange",
+  /** A deploy in range reported no paths, or more than the log retains, so its contents are not knowable. */
+  "truncatedInRange",
+]);
+export type RerunUnknownReason = z.infer<typeof RerunUnknownReasonSchema>;
+
+/** Where a deploy sits in a profile's log, as the view names it. */
+export const DeployRefSchema = z.object({
+  index: z.number().int().nonnegative(),
+  sha: z.string(),
+  at: z.string(),
+});
+export type DeployRef = z.infer<typeof DeployRefSchema>;
+
+/**
+ * One spec's re-run verdict plus the three ledger coordinates the view shows
+ * alongside it. The coordinates are always present (null when the spec has no
+ * such entry); `reason`, `touchedBy` and `touchedByDeploy` appear only in the
+ * states named below.
+ */
+export const SpecRerunSchema = z.object({
+  state: RerunStateSchema,
+  /** Set only when `state === "unknown"`. */
+  reason: RerunUnknownReasonSchema.optional(),
+  lastRun: SpecLedgerEntrySchema.nullable(),
+  lastGreen: SpecLedgerEntrySchema.nullable(),
+  lastRed: SpecLedgerEntrySchema.nullable(),
+  /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `state === "needed"`. */
+  touchedBy: z.array(z.string()).optional(),
+  /**
+   * The deploy that made this spec `needed`: the newest entry *within the
+   * verdict's range* whose changes matched it. Distinct from the report's
+   * `deployHead`, which is only the point the judgement was made at.
+   *
+   * ADDITIVE and optional, so a report from an older hub — and a client older
+   * than this field — is unaffected. Null when the entry that proves the touch
+   * is no longer retained in the log: the verdict still stands on the touch
+   * index's position, but the deploy cannot be named without overstating.
+   */
+  touchedByDeploy: DeployRefSchema.nullable().optional(),
+});
+export type SpecRerun = z.infer<typeof SpecRerunSchema>;
+
+/** Body of `GET /projects/:project/rerun?profile=`: one verdict per spec in the perspectives document. */
+export const RerunReportSchema = z.object({
+  project: z.string(),
+  profile: z.string(),
+  /** The profile's newest deploy, or null when nothing has been recorded. */
+  deployHead: DeployRefSchema.nullable(),
+  specs: z.record(z.string(), SpecRerunSchema),
+});
+export type RerunReport = z.infer<typeof RerunReportSchema>;
+
+/** Body of `POST /projects/:project/deploys?profile=` — what the deploy job shipped. */
+export const RecordDeployRequestSchema = z.object({
+  sha: z.string().min(1),
+  /**
+   * The commit being replaced. Supply it: without it the hub cannot verify the
+   * log is contiguous and records a gap, which makes affected specs `unknown`.
+   */
+  previousSha: z.string().min(1).nullable().optional(),
+  /**
+   * Changed paths from a **two-dot** diff (`git diff --name-only A B`). A
+   * three-dot diff resolves the merge base and reports nothing on a rollback,
+   * which would make the rollback invisible. Omit to declare the deploy as
+   * touching everything.
+   */
+  changedPaths: z.array(z.string()).nullable().optional(),
+  ref: z.string().optional(),
+  runUrl: z.string().optional(),
+});
+export type RecordDeployRequest = z.infer<typeof RecordDeployRequestSchema>;
+
+/** Body of `GET /projects/:project/deploys?profile=` — newest last, as stored. */
+export const DeployLogResponseSchema = z.object({
+  entries: z.array(DeployEntrySchema),
+  nextIndex: z.number().int().nonnegative(),
+});
+export type DeployLogResponse = z.infer<typeof DeployLogResponseSchema>;
+
+/**
+ * Body of `GET /projects/:project/last-green`. `entries` keeps its original
+ * meaning — the green bucket — because older CLIs read it as such; the other
+ * two buckets are siblings.
+ */
+export const LedgerResponseSchema = z.object({
+  entries: z.record(z.string(), SpecLedgerEntrySchema),
+  lastRun: z.record(z.string(), SpecLedgerEntrySchema).default({}),
+  lastRed: z.record(z.string(), SpecLedgerEntrySchema).default({}),
+});
+export type LedgerResponse = z.infer<typeof LedgerResponseSchema>;
 
 /**
  * A triage-learning job. Grading failing specs in the hub UI produces the

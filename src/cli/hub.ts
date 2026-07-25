@@ -12,6 +12,10 @@ import {
 import { SessionNameSchema } from "../spec/yaml-schema.ts";
 import { isPromptName, PROMPT_NAMES, type PromptName, resolvePromptLocalPath } from "../prompts/prompt-names.ts";
 import { DEFAULT_REPORT_DIR } from "../run/report-constants.ts";
+import { githubRunUrl } from "../run/github-run.ts";
+import { deployHeadSha } from "../run/deploy-head.ts";
+import { errMessage } from "../run/errors.ts";
+import { capDeployPaths, changedPathsBetween } from "./deploy-paths.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { hubTokenOption, hubUrlOption, resolveHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
@@ -337,6 +341,99 @@ const promptCommand = new Command("prompt")
   .addCommand(promptLs)
   .addCommand(promptRm);
 
+// ── deploys ─────────────────────────────────────────────────────────────
+
+interface DeployRecordOptions extends HubConnOptions {
+  project?: string;
+  profile: string;
+  cwd?: string;
+  sha: string;
+  previous?: string;
+  ref?: string;
+}
+
+const deployRecord = new Command("record")
+  .description(
+    "Tell the hub what a deploy shipped, so it can answer which specs need a re-run " +
+      "(`ccqa run --changed=last-run`). Run this from the deploy job, after the deploy succeeds. " +
+      "The changed paths are computed locally with a two-dot `git diff <previous> <sha>`; " +
+      "a job that has only curl and git can POST the same body directly (see docs/hub.md).",
+  )
+  .requiredOption(
+    "--profile <name>",
+    "Environment this deploy landed in (e.g. 'stg'). Required: dev and stg sit at different commits, so the deploy log is per-profile.",
+  )
+  .requiredOption("--sha <sha>", "Commit that was deployed.")
+  .option(
+    "--previous <sha>",
+    "Commit this deploy replaced. Defaults to the profile's current deploy-log head on the hub. With neither, the deploy is recorded as touching everything.",
+  )
+  .option("--ref <ref>", "Ref that was deployed (branch or tag). Recorded for display only.")
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .option("--project <name>", "Project whose deploy log this entry joins. Defaults to the current directory's name.")
+  .option("--cwd <path>", "Directory the git diff and the default --project name are resolved against.")
+  .action(withHubErrors(async (opts: DeployRecordOptions) => {
+    const cwd = resolveCwd(opts.cwd);
+    const project = resolveProject(opts);
+    const hub = connect(opts);
+
+    // Without an explicit predecessor, the hub's own head is the only honest
+    // answer to "what did this replace" — ccqa never guesses a baseline. When
+    // there is no head yet (the first ever deploy), there is nothing to diff
+    // against, and `changedPaths: null` tells the hub to treat the entry as
+    // touching everything rather than as an empty change set.
+    const previous = opts.previous ?? (await deployHeadSha(hub, project, opts.profile));
+    const runUrl = githubRunUrl();
+    const changedPaths = previous === null ? null : await diffOrTouchEverything(previous, opts.sha, cwd);
+
+    const entry = await hub.recordDeploy(project, opts.profile, {
+      sha: opts.sha,
+      previousSha: previous,
+      changedPaths,
+      ...(opts.ref ? { ref: opts.ref } : {}),
+      // Same source `ccqa run` uses, so a deploy recorded from Actions links
+      // back to its job with no extra flag.
+      ...(runUrl ? { runUrl } : {}),
+    });
+
+    log.header("hub deploy record", entry.sha.slice(0, 12));
+    log.meta("project", project);
+    log.meta("profile", opts.profile);
+    log.meta("previous", previous ? previous.slice(0, 12) : "(none — treated as touching everything)");
+    log.meta("changed paths", changedPaths === null ? "(not reported)" : String(changedPaths.length));
+    if (entry.truncated) log.meta("truncated", "yes — the hub treats this deploy as touching everything");
+    if (entry.gapBefore) {
+      log.warn(
+        "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it report 'unknown' rather than 'not needed'",
+      );
+    }
+    log.info(`recorded deploy #${entry.index}`);
+  }));
+
+/**
+ * The two-dot diff, or `null` when git can't produce one (a shallow checkout
+ * that never fetched `previous`, a rolled-back sha that isn't local). `null`
+ * makes the hub treat the deploy as touching everything: fail-open and
+ * self-limiting — everything re-runs once, then it settles — whereas silently
+ * sending an empty list would claim the deploy changed nothing.
+ */
+async function diffOrTouchEverything(previous: string, sha: string, cwd: string): Promise<string[] | null> {
+  try {
+    return capDeployPaths(await changedPathsBetween(previous, sha, cwd));
+  } catch (err) {
+    log.warn(
+      `could not diff ${previous.slice(0, 12)}..${sha.slice(0, 12)} (${errMessage(err)}); ` +
+        "recording the deploy as touching everything",
+    );
+    return null;
+  }
+}
+
+const deployCommand = new Command("deploy")
+  .description("Report deploys to the hub, the input behind `ccqa run --changed=last-run`.")
+  .addCommand(deployRecord);
+
 // ── push ──────────────────────────────────────────────────────────────────
 
 const pushCommand = new Command("push")
@@ -364,10 +461,16 @@ const pushCommand = new Command("push")
       log.hint("run `ccqa run --report` first, then push its report directory");
       process.exit(2);
     }
-    if (!RunReportDataSchema.safeParse(report).success) {
+    const parsed = RunReportDataSchema.safeParse(report);
+    if (!parsed.success) {
       log.error(`report.json in ${reportDir} is not a valid ccqa report`);
       process.exit(2);
     }
+    // The commit the environment was running when the run *started*, captured
+    // by `ccqa run`. Asserting it closes the window where a deploy landing
+    // mid-run would otherwise be recorded as this run's baseline — the hub's
+    // own fallback is its deploy-log head at push time, which is after the run.
+    const deployedSha = parsed.data.deployedSha;
 
     // The pushed tarball carries report.json + the evidence PNGs + the run
     // artifacts dir; the hub UI fetches each file through the artifacts API
@@ -380,6 +483,7 @@ const pushCommand = new Command("push")
       project,
       ...(branch ? { branch } : {}),
       ...(opts.profile ? { profile: opts.profile } : {}),
+      ...(deployedSha ? { deployedSha } : {}),
     });
 
     log.header("hub push", run.id);
@@ -397,6 +501,7 @@ export const hubCommand = new Command("hub")
       "See docs/hub.md.",
   )
   .addCommand(pushCommand)
+  .addCommand(deployCommand)
   .addCommand(sessionCommand)
   .addCommand(varCommand)
   .addCommand(promptCommand);
