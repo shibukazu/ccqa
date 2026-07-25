@@ -7,6 +7,14 @@ export type { BaseSource };
 /** The `--failure-analysis` value that selects per-spec hub-ledger baselines. */
 export const LAST_GREEN = "last-green";
 
+/**
+ * The `--changed` value that selects specs from the hub's re-run verdicts
+ * (`rerun-selection.ts` acts on it). Kept here beside `LAST_GREEN` so the two
+ * "not a git ref" keywords, and the rules that reject each on the flag it does
+ * not belong to, sit in one place.
+ */
+export const LAST_RUN = "last-run";
+
 /** A resolved, verified-to-exist analysis baseline. */
 export interface AnalysisBase {
   /** The base ref expression as given/derived (e.g. "origin/main"). */
@@ -82,6 +90,14 @@ export async function resolveAnalysisBase(
     // reaching here means a flag that doesn't support it (e.g. --changed).
     throw new RunUsageError(
       `${flagName}=${LAST_GREEN} is not supported — last-green baselines are per-spec and only apply to --failure-analysis`,
+    );
+  }
+  if (flagValue === LAST_RUN) {
+    // Same shape, the other way round: the pipeline handles last-run for
+    // --changed, so reaching here is a flag that doesn't support it. Without
+    // this it would be taken for a git ref named "last-run".
+    throw new RunUsageError(
+      `${flagName}=${LAST_RUN} is not supported — last-run selects which specs to run and only applies to --changed`,
     );
   }
   if (typeof flagValue === "string") {

@@ -356,6 +356,15 @@ export const RunReportDataSchema = z.object({
    * envelope byte-identical to before this field existed.
    */
   triageUserPromptHash: z.string().optional(),
+  /**
+   * The commit the target environment was running when this run *started*,
+   * read from the hub's deploy log for `--profile` (ADR-0010). `ccqa hub push`
+   * forwards it as `?deployedSha=` so a deploy landing mid-run can't be
+   * mistaken for the run's baseline. Absent (not null) when there was no hub,
+   * no profile or no deploy log, which keeps report.json byte-identical to
+   * before this field existed.
+   */
+  deployedSha: z.string().optional(),
   results: z.array(ReportSpecResultSchema),
 });
 export type RunReportData = z.infer<typeof RunReportDataSchema>;

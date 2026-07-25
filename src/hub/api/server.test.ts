@@ -641,9 +641,32 @@ describe("hub API server", () => {
       expect(patchRes.status).toBe(200);
     }
 
-    function getLedger(q: string): Promise<{ entries: Record<string, { gitHead: string }> }> {
+    function getLedger(q: string): Promise<{
+      entries: Record<string, { gitHead: string }>;
+      lastRun: Record<string, { gitHead: string }>;
+      lastRed: Record<string, { gitHead: string }>;
+    }> {
       return fetch(`${baseUrl}/api/v1/projects/lg/last-green?${q}`, authed()).then(json);
     }
+
+    test("`run` covers every executed spec, `red` the failures; a skipped row advances nothing", async () => {
+      const sha = "d".repeat(40);
+      await openAndFinish({
+        branch: "buckets",
+        gitHead: sha,
+        rows: [
+          makeRow({ feature: "f", spec: "green", status: "passed" }),
+          makeRow({ feature: "f", spec: "red", status: "failed" }),
+          makeRow({ feature: "f", spec: "skipped", status: "skipped" }),
+        ],
+      });
+
+      const ledger = await getLedger("branch=buckets");
+      expect(Object.keys(ledger.entries)).toEqual(["f/green"]);
+      expect(Object.keys(ledger.lastRun).sort()).toEqual(["f/green", "f/red"]);
+      expect(Object.keys(ledger.lastRed)).toEqual(["f/red"]);
+      expect(ledger.lastRun["f/red"]?.gitHead).toBe(sha);
+    });
 
     test("a finalized run advances passed specs only; branch overlays fallbackBranch", async () => {
       const mainSha = "b".repeat(40);
@@ -679,6 +702,151 @@ describe("hub API server", () => {
     test("branch query parameter is required", async () => {
       const res = await fetch(`${baseUrl}/api/v1/projects/lg/last-green`, authed());
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe("deploy log and re-run selection", () => {
+    const PROJECT = "rr";
+
+    function specEntry(specName: string, relatedPaths?: string[]) {
+      return {
+        specName,
+        title: specName,
+        summary: "",
+        ...(relatedPaths ? { relatedPaths } : {}),
+        status: { mode: "deterministic", traced: true, generated: true },
+      };
+    }
+
+    async function putPerspectives(): Promise<void> {
+      const res = await fetch(`${baseUrl}/api/v1/projects/${PROJECT}/perspectives`, authed({
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          features: [
+            {
+              featureName: "f",
+              specs: [specEntry("a", ["src/a/**"]), specEntry("b", ["src/b/**"]), specEntry("unscoped")],
+            },
+          ],
+        }),
+      }));
+      expect(res.status).toBe(204);
+    }
+
+    async function recordDeploy(body: Record<string, unknown>): Promise<any> {
+      const res = await fetch(`${baseUrl}/api/v1/projects/${PROJECT}/deploys`, authed({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+      expect(res.status).toBe(201);
+      return json(res);
+    }
+
+    async function openRun(): Promise<any> {
+      const res = await fetch(
+        `${baseUrl}/api/v1/runs/open?project=${PROJECT}&branch=main&gitHead=${"e".repeat(40)}`,
+        authed({ method: "POST" }),
+      );
+      expect(res.status).toBe(201);
+      return json(res);
+    }
+
+    async function finishRun(id: string, rows: ReportSpecResult[]): Promise<any> {
+      const res = await fetch(`${baseUrl}/api/v1/runs/${id}`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows, done: true }),
+      }));
+      expect(res.status).toBe(200);
+      return json(res);
+    }
+
+    function getRerun(): Promise<any> {
+      return fetch(`${baseUrl}/api/v1/projects/${PROJECT}/rerun`, authed()).then(json);
+    }
+
+    /** The shared starting point: one deploy, and a run of spec `f/b` that observed it. */
+    async function baselineRun(): Promise<void> {
+      await putPerspectives();
+      await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
+      const opened = await openRun();
+      await finishRun(opened.id, [makeRow({ feature: "f", spec: "b", status: "passed" })]);
+    }
+
+    test("a deploy touching a spec's relatedPaths turns that spec — and only that spec — needed", async () => {
+      await putPerspectives();
+      await recordDeploy({ sha: "d1", previousSha: null, changedPaths: ["src/a/x.ts"] });
+
+      const opened = await openRun();
+      expect(opened.deployedSha).toBe("d1");
+      expect(opened.deployedShaSource).toBe("hub-deploy-log");
+      await finishRun(opened.id, [
+        makeRow({ feature: "f", spec: "a", status: "passed" }),
+        makeRow({ feature: "f", spec: "b", status: "passed" }),
+        makeRow({ feature: "f", spec: "unscoped", status: "passed" }),
+      ]);
+
+      const settled = await getRerun();
+      expect(settled.deployHead).toMatchObject({ index: 0, sha: "d1" });
+      expect(settled.specs["f/a"].state).toBe("notNeeded");
+      expect(settled.specs["f/b"].state).toBe("notNeeded");
+      // No relatedPaths means the question cannot be answered, ever.
+      expect(settled.specs["f/unscoped"]).toMatchObject({ state: "unknown", reason: "noRelatedPaths" });
+
+      await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/a/y.ts", "docs/z.md"] });
+      const after = await getRerun();
+      expect(after.specs["f/a"]).toMatchObject({ state: "needed", touchedBy: ["src/a/y.ts"] });
+      expect(after.specs["f/b"].state).toBe("notNeeded");
+      expect(after.specs["f/a"].lastGreen.gitHead).toBe("e".repeat(40));
+    });
+
+    test("a deploy that does not chain onto the head leaves affected specs unknown, not notNeeded", async () => {
+      await baselineRun();
+      const broken = await recordDeploy({ sha: "d9", previousSha: "never-seen", changedPaths: [] });
+      expect(broken.gapBefore).toBe(true);
+      expect((await getRerun()).specs["f/b"]).toMatchObject({ state: "unknown", reason: "gapInRange" });
+    });
+
+    test("a deploy that reported no paths is treated as touching everything", async () => {
+      await baselineRun();
+      await recordDeploy({ sha: "d2", previousSha: "d1" });
+      expect((await getRerun()).specs["f/b"].state).toBe("needed");
+    });
+
+    test("a run that straddles a deploy is unknown rather than credited with either commit", async () => {
+      await putPerspectives();
+      await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
+      const opened = await openRun();
+      await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["docs/z.md"] });
+      const finished = await finishRun(opened.id, [makeRow({ feature: "f", spec: "b", status: "passed" })]);
+
+      expect(finished.deployedShaAmbiguous).toBe(true);
+      expect((await getRerun()).specs["f/b"]).toMatchObject({
+        state: "unknown",
+        reason: "ambiguousDeployedSha",
+      });
+    });
+
+    test("specs that have never run report neverRun; a profile with no data at all reports notEvaluated", async () => {
+      await putPerspectives();
+      const untouched = await getRerun();
+      expect(untouched.specs["f/a"].state).toBe("notEvaluated");
+      expect(untouched.deployHead).toBeNull();
+
+      await recordDeploy({ sha: "d1", previousSha: null, changedPaths: ["src/a/x.ts"] });
+      const opened = await openRun();
+      await finishRun(opened.id, [makeRow({ feature: "f", spec: "a", status: "passed" })]);
+
+      const partial = await getRerun();
+      expect(partial.specs["f/a"].state).toBe("notNeeded");
+      expect(partial.specs["f/b"].state).toBe("neverRun");
+    });
+
+    test("re-run selection 404s when the project has no perspectives document", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/projects/no-doc/rerun`, authed());
+      expect(res.status).toBe(404);
     });
   });
 

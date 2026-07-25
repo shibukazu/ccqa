@@ -1,4 +1,13 @@
-import type { LastGreenEntry, LearningJob, Run, RunStatus } from "../../contract/schema.ts";
+import type {
+  DeployEntry,
+  DeployInput,
+  DeployLog,
+  LearningJob,
+  Run,
+  RunStatus,
+  SpecLedger,
+  SpecTouchIndex,
+} from "../../contract/schema.ts";
 
 /**
  * Everything the hub persists, behind one interface. `createHubStorage`
@@ -21,23 +30,46 @@ export interface HubStorage {
   prompts: PromptStore;
   perspectives: PerspectivesStore;
   jobs: JobStore;
-  lastGreen: LastGreenStore;
+  ledger: SpecLedgerStore;
+  deploys: DeployStore;
 }
 
 /**
- * The last-green ledger: per (project, profile, branch), a map of
- * "feature/spec" → the run head where that spec last passed. Branch-scoped so
- * a green on a PR branch never becomes the baseline for the default branch —
- * readers overlay their branch's bucket onto the default branch's bucket.
+ * The spec ledger: per (project, profile, branch), three maps of
+ * "feature/spec" → the run that last left the spec green / ran it at all /
+ * left it red. Branch-scoped so a green on a PR branch never becomes the
+ * baseline for the default branch — readers overlay their branch's document
+ * onto the default branch's.
  */
-export interface LastGreenStore {
-  get(project: string, profile: string, branch: string): Promise<Record<string, LastGreenEntry>>;
-  /** Upsert `entries`; per key, an entry only advances (newer `at` wins). */
-  merge(
+export interface SpecLedgerStore {
+  get(project: string, profile: string, branch: string): Promise<SpecLedger>;
+  /**
+   * Every branch's document for one (project, profile), merged newest-`at`
+   * wins per key. Re-run selection is scoped (project, profile, spec) with no
+   * branch: a run exercises the deployed environment whatever branch its code
+   * came from, so all of them count.
+   */
+  getMerged(project: string, profile: string): Promise<SpecLedger>;
+  /** Upsert the given buckets; per bucket and key, an entry only advances (newer `at` wins). */
+  merge(project: string, profile: string, branch: string, ledger: SpecLedger): Promise<void>;
+}
+
+/**
+ * The per-(project, profile) deploy log the consumer's deploy job pushes into,
+ * plus the touch index derived from it (ADR-0010).
+ */
+export interface DeployStore {
+  /** Append one deploy, assigning its position and flagging a gap when it doesn't chain onto the head. */
+  append(project: string, profile: string, input: DeployInput): Promise<DeployEntry>;
+  getLog(project: string, profile: string): Promise<DeployLog>;
+  /** The newest entry, or null when nothing has been recorded for this profile. */
+  head(project: string, profile: string): Promise<DeployEntry | null>;
+  getTouchIndex(project: string, profile: string): Promise<SpecTouchIndex>;
+  /** Serialized read-modify-write, so two concurrent deploys can't clobber each other's folds. */
+  updateTouchIndex(
     project: string,
     profile: string,
-    branch: string,
-    entries: Record<string, LastGreenEntry>,
+    mutate: (current: SpecTouchIndex) => SpecTouchIndex,
   ): Promise<void>;
 }
 

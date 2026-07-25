@@ -159,15 +159,26 @@ const HTML_BODY = `
         <p id="persp-status" class="empty-note" hidden></p>
         <div id="persp-body" hidden>
           <div class="ov" id="persp-ov"></div>
+          <div class="note info persp-note" id="persp-rerun-note" hidden></div>
           <div class="toolbar">
             <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="persp-q" type="search" data-i18n-ph="perspectives.search" aria-label="Search cases"></label>
             <button class="fchip" data-f="all" aria-pressed="true" type="button" data-i18n="perspectives.filter.all">All</button>
             <button class="fchip" data-f="deterministic" aria-pressed="false" type="button" data-i18n="perspectives.filter.deterministic">Deterministic</button>
             <button class="fchip" data-f="live" aria-pressed="false" type="button" data-i18n="perspectives.filter.live">Live</button>
             <button class="fchip" data-f="norec" aria-pressed="false" type="button" data-i18n="perspectives.filter.norec">Not recorded only</button>
+            <button class="fchip" id="persp-chip-rerun" data-f="rerun" aria-pressed="false" type="button" data-i18n="perspectives.filter.rerun" hidden>Needs re-run only</button>
+            <div class="spacer"></div>
+            <span class="muted persp-head" id="persp-deploy-head" hidden></span>
+            <div class="sw-wrap" id="persp-profile-wrap">
+              <button class="sw-btn" id="persp-profile-switch" type="button" aria-haspopup="menu" aria-expanded="false">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                <span class="k" data-i18n="app.profile">profile</span> <span class="v" id="persp-profile-current">default</span> <span class="chev">▾</span>
+              </button>
+              <div class="proj-menu right" id="persp-profile-menu" role="menu" hidden></div>
+            </div>
           </div>
           <div class="tblcard"><div class="table-wrap"><table>
-            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th data-i18n="perspectives.col.status">Status</th><th></th></tr></thead>
+            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th data-i18n="perspectives.col.status">Status</th><th id="persp-th-result" data-i18n="perspectives.col.lastResult" hidden>Last result</th><th id="persp-th-rerun" data-i18n="perspectives.col.rerun" hidden>Needs re-run</th><th></th></tr></thead>
             <tbody id="persp-tbody"></tbody>
           </table></div></div>
           <p class="empty-note" id="persp-no-hit" hidden data-i18n="perspectives.noHit">No matching cases.</p>
@@ -843,6 +854,29 @@ const CSS = `
   .badge.norec { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
   .badge.norec .d { background: var(--amber); }
 
+  /* "Needs re-run" (ADR-0010). Four distinct looks on purpose: rr-unknown must
+     never be mistaken for rr-notneeded, so it takes the info hue rather than a
+     dimmed green, and every badge is paired with a .cellsub saying what the
+     verdict rests on. */
+  .badge.rr-needed { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+  .badge.rr-needed .d { background: var(--amber); }
+  .badge.rr-notneeded { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
+  .badge.rr-notneeded .d { background: var(--pass); }
+  .badge.rr-unknown { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
+  .badge.rr-unknown .d { background: var(--info); }
+  .badge.rr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
+  .badge.rr-none .d { background: var(--muted); }
+  .cellsub { display: block; margin-top: 3px; max-width: 260px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+  .cellsub a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--border-strong); }
+  .cellsub a:hover { color: var(--fg); }
+  .persp-note { margin-bottom: 12px; }
+  .persp-head { font-size: 12px; white-space: nowrap; }
+  /* The Perspectives toolbar carries search + five chips + the profile
+     selector, so it wraps instead of overflowing on a narrow window. */
+  #view-perspectives .toolbar { flex-wrap: wrap; }
+  .proj-menu.right { left: auto; right: 0; }
+  .d-note { margin-top: 12px; max-width: 860px; }
+
   .tblcard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
   /* Feature section rows must read as headings, not as just another data row —
      larger, darker, extra padding, and a strong top rule marking the break. */
@@ -958,6 +992,8 @@ const CLIENT_JS = `
       "perspectives.search": "Search cases…",
       "perspectives.filter.all": "All", "perspectives.filter.deterministic": "Deterministic",
       "perspectives.filter.live": "Live", "perspectives.filter.norec": "Not recorded only",
+      "perspectives.filter.rerun": "Needs re-run only",
+      "perspectives.col.lastResult": "Last result", "perspectives.col.rerun": "Needs re-run",
       "perspectives.col.case": "Case", "perspectives.col.mode": "Mode", "perspectives.col.status": "Status",
       "perspectives.noHit": "No matching cases.",
       "perspectives.updated": "Last updated:",
@@ -975,6 +1011,47 @@ const CLIENT_JS = `
       "perspectives.note.placeholder": "Notes about this case…",
       "perspectives.note.saved": "Saved",
       "perspectives.note.error": "Could not save — retry",
+      "perspectives.d.lastGreen": "Last passed", "perspectives.d.lastRed": "Last failed",
+      "perspectives.d.rerun": "Needs re-run", "perspectives.d.touchedBy": "Changed by deploy",
+      "perspectives.result.never": "never run",
+      "perspectives.result.openRun": "Open this run in the hub",
+      "perspectives.result.ci": "CI",
+      "perspectives.rerun.state.needed": "Re-run needed",
+      "perspectives.rerun.state.notNeeded": "Not needed",
+      "perspectives.rerun.state.unknown": "Unknown",
+      "perspectives.rerun.state.neverRun": "Never run",
+      "perspectives.rerun.state.notEvaluated": "Not evaluated",
+      "perspectives.rerun.vsDeploy": "judged against deploy",
+      "perspectives.rerun.noDeployHead": "no deploy recorded for this profile",
+      "perspectives.rerun.notNeededDetail": "No deploy since this case last ran touched its related code.",
+      "perspectives.rerun.touchedCount": "{n} deployed path(s) matched its related code",
+      "perspectives.rerun.touchedUnknown": "a deploy since the last run touched its related code",
+      "perspectives.rerun.touchedByHint": "Deployed paths that matched this case's related code:",
+      "perspectives.rerun.neverGreen": "never passed on this profile",
+      "perspectives.rerun.neverRed": "never failed on this profile",
+      "perspectives.rerun.neverRunHint": "no result recorded for this profile yet",
+      "perspectives.rerun.notEvaluatedHint": "no run and no deploy has ever been recorded for this profile",
+      "perspectives.rerun.why.noRelatedPaths": "no related code declared",
+      "perspectives.rerun.why.noDeployLog": "no deploy log for this profile",
+      "perspectives.rerun.why.unknownDeployedSha": "the last run's deployed commit is unknown",
+      "perspectives.rerun.why.ambiguousDeployedSha": "a deploy landed while the last run was executing",
+      "perspectives.rerun.why.deployedShaNotInLog": "the last run's commit predates the retained deploy log",
+      "perspectives.rerun.why.gapInRange": "deploys are missing from the range",
+      "perspectives.rerun.why.truncatedInRange": "a deploy in range did not report what it changed",
+      "perspectives.rerun.why.unrecognized": "this hub reported a reason this UI does not recognise",
+      "perspectives.rerun.fix.noRelatedPaths": "This case declares no related code, so no deploy can be matched against it. Add relatedPaths to its spec.yaml.",
+      "perspectives.rerun.fix.noDeployLog": "Nothing has been recorded in this profile's deploy log. Wire ccqa hub deploy record into the deploy job for this environment so ccqa knows what shipped.",
+      "perspectives.rerun.fix.unknownDeployedSha": "The last run did not record which commit the environment was running, so it cannot be positioned in the deploy log. Runs record it once this profile has a deploy log.",
+      "perspectives.rerun.fix.ambiguousDeployedSha": "A deploy landed while the last run was executing, so which commit it exercised is not knowable. Re-run this case to get a clean baseline.",
+      "perspectives.rerun.fix.deployedShaNotInLog": "The last run's deployed commit is older than the retained deploy log, so its position is lost. Re-run this case to re-anchor it.",
+      "perspectives.rerun.fix.gapInRange": "A deploy in range did not chain onto its predecessor, so deploys are missing from the range. Have the deploy job report the commit it replaced.",
+      "perspectives.rerun.fix.truncatedInRange": "A deploy in range did not report what it changed, so its contents are not knowable. Have the deploy job send the changed paths of a two-dot diff.",
+      "perspectives.rerun.fix.unrecognized": "This hub reported a reason this UI does not recognise. Upgrade the UI to see what it means.",
+      "perspectives.rerun.unsupported": "This hub does not report which cases need a re-run. Upgrade the hub to enable it.",
+      "perspectives.rerun.loadFailed": "Loading re-run data failed",
+      "perspectives.rerun.noDeployLogBanner": "No deploy has been recorded for profile {profile}, so no case can be judged. Wire ccqa hub deploy record into the deploy job for this environment.",
+      "perspectives.rerun.deployHead": "deploy head",
+      "perspectives.dq.unmatched": "{n} of this case's related-code patterns matched no file when perspectives were generated — a not-needed verdict may rest on paths that no longer exist.",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.playwright": "Playwright test generation",
@@ -1056,6 +1133,8 @@ const CLIENT_JS = `
       "perspectives.search": "ケースを検索…",
       "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
       "perspectives.filter.live": "ライブ", "perspectives.filter.norec": "未recordのみ",
+      "perspectives.filter.rerun": "要再実行のみ",
+      "perspectives.col.lastResult": "前回結果", "perspectives.col.rerun": "再実行の要否",
       "perspectives.col.case": "ケース", "perspectives.col.mode": "モード", "perspectives.col.status": "状態",
       "perspectives.noHit": "該当するケースがありません。",
       "perspectives.updated": "最終更新:",
@@ -1073,6 +1152,47 @@ const CLIENT_JS = `
       "perspectives.note.placeholder": "このケースについてのメモ…",
       "perspectives.note.saved": "保存しました",
       "perspectives.note.error": "保存に失敗しました — 再試行してください",
+      "perspectives.d.lastGreen": "最終合格", "perspectives.d.lastRed": "最終失敗",
+      "perspectives.d.rerun": "再実行の要否", "perspectives.d.touchedBy": "デプロイでの変更",
+      "perspectives.result.never": "未実行",
+      "perspectives.result.openRun": "ハブでこの実行を開く",
+      "perspectives.result.ci": "CI",
+      "perspectives.rerun.state.needed": "要再実行",
+      "perspectives.rerun.state.notNeeded": "不要",
+      "perspectives.rerun.state.unknown": "不明",
+      "perspectives.rerun.state.neverRun": "未実行",
+      "perspectives.rerun.state.notEvaluated": "未評価",
+      "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
+      "perspectives.rerun.noDeployHead": "このプロファイルにはデプロイの記録がありません",
+      "perspectives.rerun.notNeededDetail": "前回実行以降のデプロイは、このケースの関連コードに触れていません。",
+      "perspectives.rerun.touchedCount": "関連コードに一致したデプロイ差分 {n} 件",
+      "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイが関連コードを変更しています",
+      "perspectives.rerun.touchedByHint": "このケースの関連コードに一致したデプロイ差分:",
+      "perspectives.rerun.neverGreen": "このプロファイルでは一度も合格していません",
+      "perspectives.rerun.neverRed": "このプロファイルでは一度も失敗していません",
+      "perspectives.rerun.neverRunHint": "このプロファイルでの実行記録がまだありません",
+      "perspectives.rerun.notEvaluatedHint": "このプロファイルには実行もデプロイも記録がありません",
+      "perspectives.rerun.why.noRelatedPaths": "関連コードが未宣言です",
+      "perspectives.rerun.why.noDeployLog": "このプロファイルのデプロイ記録がありません",
+      "perspectives.rerun.why.unknownDeployedSha": "前回実行時にデプロイされていたcommitが不明です",
+      "perspectives.rerun.why.ambiguousDeployedSha": "前回実行の途中でデプロイが発生しました",
+      "perspectives.rerun.why.deployedShaNotInLog": "前回実行のcommitが保持中のデプロイログより古いです",
+      "perspectives.rerun.why.gapInRange": "対象範囲のデプロイ記録が欠けています",
+      "perspectives.rerun.why.truncatedInRange": "対象範囲に変更内容を報告していないデプロイがあります",
+      "perspectives.rerun.why.unrecognized": "このUIが認識できない理由がハブから返されました",
+      "perspectives.rerun.fix.noRelatedPaths": "このケースは関連コードを宣言していないため、デプロイと突き合わせられません。spec.yaml に relatedPaths を追加してください。",
+      "perspectives.rerun.fix.noDeployLog": "このプロファイルのデプロイログに記録がありません。何がデプロイされたかをccqaに伝えるため、この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
+      "perspectives.rerun.fix.unknownDeployedSha": "前回実行は環境で動いていたcommitを記録していないため、デプロイログ上の位置を決められません。このプロファイルにデプロイログができれば、以降の実行では記録されます。",
+      "perspectives.rerun.fix.ambiguousDeployedSha": "前回実行の途中でデプロイが発生したため、どのcommitを検証したのか確定できません。基準を取り直すには再実行してください。",
+      "perspectives.rerun.fix.deployedShaNotInLog": "前回実行のデプロイcommitが保持中のデプロイログより古く、位置を特定できません。再実行して基準を取り直してください。",
+      "perspectives.rerun.fix.gapInRange": "対象範囲のデプロイが直前のデプロイと連結しておらず、記録が欠けています。デプロイジョブから置き換え前のcommitも送ってください。",
+      "perspectives.rerun.fix.truncatedInRange": "対象範囲に変更内容を報告していないデプロイがあり、何が変わったのか確定できません。デプロイジョブから two-dot diff の変更パスを送ってください。",
+      "perspectives.rerun.fix.unrecognized": "このUIが認識できない理由がハブから返されました。内容を表示するにはUIを更新してください。",
+      "perspectives.rerun.unsupported": "このハブは再実行の要否を返しません。利用するにはハブを更新してください。",
+      "perspectives.rerun.loadFailed": "再実行の要否の読み込みに失敗しました",
+      "perspectives.rerun.noDeployLogBanner": "プロファイル {profile} にデプロイの記録がないため、どのケースも判定できません。この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
+      "perspectives.rerun.deployHead": "最新デプロイ",
+      "perspectives.dq.unmatched": "このケースの関連コードのうち {n} 件のパターンが、テスト観点の生成時にどのファイルにも一致しませんでした。不要という判定が、すでに存在しないパスに基づいている可能性があります。",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.playwright": "Playwrightテスト生成",
@@ -1289,6 +1409,10 @@ const CLIENT_JS = `
     return days + "d ago";
   }
 
+  function shortSha(sha) {
+    return sha ? String(sha).slice(0, 7) : "";
+  }
+
   function statusBadge(status) {
     var span = el("span", "badge " + status);
     span.appendChild(el("span", "d"));
@@ -1343,6 +1467,41 @@ const CLIENT_JS = `
     var svg = svgIcon();
     svg.appendChild(svgPath("M12 5v14M5 12h14"));
     return svg;
+  }
+
+  // Round caps so the "i"/"!" dot (a zero-length segment) actually paints as a
+  // filled dot instead of vanishing under a butt cap at small sizes.
+  function svgRounded() {
+    var svg = svgIcon();
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    return svg;
+  }
+
+  // The two note glyphs, matching the inline SVGs the static .note markup uses.
+  function svgInfo() {
+    var svg = svgRounded();
+    var c = document.createElementNS(SVG_NS, "circle");
+    c.setAttribute("cx", "12"); c.setAttribute("cy", "12"); c.setAttribute("r", "10");
+    svg.appendChild(c);
+    svg.appendChild(svgPath("M12 16v-4M12 8h.01"));
+    return svg;
+  }
+  function svgWarn() {
+    var svg = svgRounded();
+    svg.appendChild(svgPath("M12 9v4M12 17h.01"));
+    svg.appendChild(svgPath("M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"));
+    return svg;
+  }
+
+  // Fill an element as a .note box (the static ones live in HTML_BODY). kind is
+  // "info" or "warn"; the text is always textContent, never innerHTML.
+  function fillNote(box, kind, text, extraClass) {
+    clear(box);
+    box.className = "note " + kind + (extraClass ? " " + extraClass : "");
+    box.appendChild(kind === "warn" ? svgWarn() : svgInfo());
+    box.appendChild(el("span", null, text));
+    return box;
   }
 
   // ── view routing ────────────────────────────────────────────────────
@@ -2658,16 +2817,7 @@ const CLIENT_JS = `
     var span = el("span", "info");
     span.tabIndex = 0;
     span.setAttribute("role", "note");
-    var svg = svgIcon();
-    // Round caps so the "i" dot (a zero-length segment) actually paints as a
-    // filled dot instead of vanishing under a butt cap at small sizes.
-    svg.setAttribute("stroke-linecap", "round");
-    svg.setAttribute("stroke-linejoin", "round");
-    var c = document.createElementNS(SVG_NS, "circle");
-    c.setAttribute("cx", "12"); c.setAttribute("cy", "12"); c.setAttribute("r", "10");
-    svg.appendChild(c);
-    svg.appendChild(svgPath("M12 16v-4M12 8h.01"));
-    span.appendChild(svg);
+    span.appendChild(svgInfo());
     span.appendChild(el("span", "tip", hintText));
     return span;
   }
@@ -2741,7 +2891,16 @@ const CLIENT_JS = `
   // whole document is fetched once per view-open and filtered/rendered
   // client-side — small enough that there is no pagination.
 
-  var perspState = { doc: null, q: "", f: "all" };
+  // "rerun" is the RerunReport for the currently selected profile, or null when
+  // this hub can't answer (older hub, or the fetch failed) — in which case the
+  // two re-run columns are dropped rather than filled with blanks.
+  // "rerunSupported" is tri-state: null until the first answer, then whether
+  // this hub answers at all. Chip visibility follows it rather than the report,
+  // so switching profile doesn't drop the filter while the next one loads.
+  var perspState = {
+    doc: null, q: "", f: "all",
+    rerun: null, rerunSupported: null, runUrls: {}, rerunProfiles: []
+  };
 
   function perspectivesPath() {
     return "/api/v1/projects/" + encodeURIComponent(state.project) + "/perspectives";
@@ -2756,6 +2915,226 @@ const CLIENT_JS = `
       if (!res.ok) throw new Error(res.status + " " + res.statusText);
       return res.json();
     }, function () { throw new Error("Network unreachable — check the hub URL and your connection"); });
+  }
+
+  // ── perspectives: needs re-run (ADR-0010) ─────────────────────────────
+  // "Is this case's last result still trustworthy?" — mechanical, no model
+  // call, and a different question from drift ("does the case still describe
+  // the product"). The two vocabularies stay apart on purpose: this column
+  // never says stale or fresh, and never borrows drift's wording.
+  //
+  // The verdict is per (project, profile): two environments sit at different
+  // commits, so it has no profile-free answer — hence the profile selector in
+  // this tab's toolbar.
+
+  function rerunPath() {
+    return "/api/v1/projects/" + encodeURIComponent(state.project) +
+      "/rerun?profile=" + encodeURIComponent(state.profile);
+  }
+
+  // Resolves { report } or { note } and never rejects: a hub that predates
+  // this endpoint costs the two extra columns, not the whole tab. A 404 here
+  // can only mean "no such route" — the endpoint's own 404 is "the project has
+  // no perspectives document", and this runs only after that document loaded.
+  function fetchRerun() {
+    return fetch(rerunPath(), { headers: { Authorization: "Bearer " + state.token } }).then(function (res) {
+      if (res.status === 404) return { note: t("perspectives.rerun.unsupported"), kind: "info" };
+      if (!res.ok) return { note: t("perspectives.rerun.loadFailed") + ": " + res.status + " " + res.statusText, kind: "warn" };
+      return res.json().then(function (report) { return { report: report }; }, function () {
+        return { note: t("perspectives.rerun.loadFailed"), kind: "warn" };
+      });
+    }, function () {
+      return { note: t("perspectives.rerun.loadFailed"), kind: "warn" };
+    });
+  }
+
+  // The ledger records a runId but no link, and the profile list the Secrets
+  // tab keeps is the wrong set here (a profile that only has variables has no
+  // runs and no deploys to judge). One runs page answers both: runId -> CI URL,
+  // and the profiles a run was actually recorded under. A run pushed without a
+  // profile lands in "default", exactly as the ledger stores it.
+  function fetchRunIndex() {
+    return apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project) + "&limit=200")
+      .then(function (data) {
+        var urls = {};
+        var profiles = [];
+        ((data && data.runs) || []).forEach(function (r) {
+          if (r.runUrl) urls[r.id] = r.runUrl;
+          var p = r.profile || "default";
+          if (profiles.indexOf(p) === -1) profiles.push(p);
+        });
+        return { urls: urls, profiles: profiles.sort() };
+      })
+      .catch(function () { return { urls: {}, profiles: [] }; });
+  }
+
+  // Profiles worth offering in this tab's selector: only those a run has been
+  // recorded under. The current one is always included so the menu can show
+  // what is selected even before any run exists.
+  function perspProfileNames() {
+    var names = perspState.rerunProfiles.slice();
+    if (names.indexOf(state.profile) === -1) names.push(state.profile);
+    return names.sort();
+  }
+
+  function perspSpecKey(feature, spec) {
+    return feature.featureName + "/" + spec.specName;
+  }
+
+  function rerunFor(feature, spec) {
+    var report = perspState.rerun;
+    return report && report.specs ? (report.specs[perspSpecKey(feature, spec)] || null) : null;
+  }
+
+  // A reason a newer hub added but this UI has no wording for must still say
+  // something honest instead of printing a raw i18n key (t() returns the key
+  // when it has no entry).
+  function rerunReasonText(prefix, reason) {
+    var text = t(prefix + reason);
+    return text === prefix + reason ? t(prefix + "unrecognized") : text;
+  }
+
+  // The justification a verdict must always carry. "long" picks the actionable
+  // phrasing for the detail row; the short form fits a table cell. Nothing here
+  // may collapse to a bare "up to date" — notNeeded names the deploy it was
+  // judged against, and unknown names the missing input.
+  function rerunWhy(rr, long) {
+    var head = perspState.rerun && perspState.rerun.deployHead;
+    if (rr.state === "needed") {
+      if (!rr.touchedBy || !rr.touchedBy.length) return t("perspectives.rerun.touchedUnknown");
+      return long
+        ? t("perspectives.rerun.touchedByHint")
+        : t("perspectives.rerun.touchedCount").replace("{n}", String(rr.touchedBy.length));
+    }
+    if (rr.state === "notNeeded") {
+      if (!head) return t("perspectives.rerun.noDeployHead");
+      var against = t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
+      return long ? t("perspectives.rerun.notNeededDetail") + " " + against : against;
+    }
+    if (rr.state === "unknown") {
+      return rerunReasonText(long ? "perspectives.rerun.fix." : "perspectives.rerun.why.", rr.reason || "");
+    }
+    if (rr.state === "neverRun") return t("perspectives.rerun.neverRunHint");
+    if (rr.state === "notEvaluated") return t("perspectives.rerun.notEvaluatedHint");
+    return "";
+  }
+
+  var RERUN_BADGE_CLASS = {
+    needed: "rr-needed", notNeeded: "rr-notneeded", unknown: "rr-unknown",
+    neverRun: "rr-none", notEvaluated: "rr-none"
+  };
+
+  // NB: the parameter is not named "state" — that would shadow the app-wide
+  // state object this scope closes over.
+  function rerunBadge(rerunState) {
+    var span = el("span", "badge " + (RERUN_BADGE_CLASS[rerunState] || "rr-none"));
+    span.appendChild(el("span", "d"));
+    span.appendChild(document.createTextNode(" " + t("perspectives.rerun.state." + rerunState)));
+    return span;
+  }
+
+  // One ledger entry as "<short sha> · <when>", linking to the hub's run detail
+  // and, when that run recorded one, to the CI run. Clicks must not bubble: the
+  // table row itself toggles the detail panel.
+  function ledgerLine(entry) {
+    var wrap = el("span");
+    var link = el("a", null, shortSha(entry.gitHead) || String(entry.runId).slice(0, 8));
+    link.href = "#/runs/" + encodeURIComponent(entry.runId);
+    link.title = t("perspectives.result.openRun");
+    link.addEventListener("click", function (e) { e.stopPropagation(); });
+    wrap.appendChild(link);
+    wrap.appendChild(document.createTextNode(" · " + relTime(entry.at)));
+    var ciUrl = perspState.runUrls[entry.runId];
+    if (ciUrl) {
+      wrap.appendChild(document.createTextNode(" · "));
+      var ci = el("a", null, t("perspectives.result.ci"));
+      ci.href = ciUrl;
+      ci.target = "_blank";
+      ci.rel = "noopener";
+      ci.addEventListener("click", function (e) { e.stopPropagation(); });
+      wrap.appendChild(ci);
+    }
+    return wrap;
+  }
+
+  // The last recorded outcome, as { status, entry }. The ledger advances "run"
+  // on every non-skipped result and "green"/"red" on the matching one, so the
+  // last run is whichever of those two carries the same runId.
+  //
+  // A ledger written before the "run" bucket existed carries greens only, and
+  // migrates that way — so with no "run" entry, fall back to the newer of
+  // green/red. Both are real results; ignoring them would print "never run"
+  // for a case whose last-passed coordinate is right there in the detail row.
+  function lastResult(rr) {
+    if (!rr) return null;
+    if (rr.lastRun) {
+      // "" when neither bucket carries this runId: the run is recorded but its
+      // outcome is not, so the cell shows the coordinate without a verdict.
+      var status = "";
+      if (rr.lastGreen && rr.lastGreen.runId === rr.lastRun.runId) status = "passed";
+      else if (rr.lastRed && rr.lastRed.runId === rr.lastRun.runId) status = "failed";
+      return { status: status, entry: rr.lastRun };
+    }
+    if (rr.lastGreen && rr.lastRed) {
+      return rr.lastGreen.at >= rr.lastRed.at
+        ? { status: "passed", entry: rr.lastGreen }
+        : { status: "failed", entry: rr.lastRed };
+    }
+    if (rr.lastGreen) return { status: "passed", entry: rr.lastGreen };
+    if (rr.lastRed) return { status: "failed", entry: rr.lastRed };
+    return null;
+  }
+
+  function perspResultCell(rr) {
+    var td = el("td");
+    // No verdict at all: this case is in the document but not in the report
+    // (added since it was computed). Not the same statement as "never run".
+    if (!rr) {
+      td.appendChild(el("span", "muted", "—"));
+      return td;
+    }
+    var last = lastResult(rr);
+    if (!last) {
+      td.appendChild(el("span", "muted", t("perspectives.result.never")));
+      return td;
+    }
+    td.appendChild(last.status ? statusBadge(last.status) : el("span", "muted", "—"));
+    var sub = el("span", "cellsub");
+    sub.appendChild(ledgerLine(last.entry));
+    td.appendChild(sub);
+    return td;
+  }
+
+  function perspRerunCell(rr) {
+    var td = el("td");
+    if (!rr) {
+      td.appendChild(el("span", "muted", "—"));
+      return td;
+    }
+    td.appendChild(rerunBadge(rr.state));
+    var why = rerunWhy(rr, false);
+    if (why) td.appendChild(el("span", "cellsub", why));
+    return td;
+  }
+
+  // A list of paths/globs as inline <code> chips.
+  function pathCodes(paths) {
+    var wrap = el("span");
+    paths.forEach(function (p, i) {
+      if (i > 0) wrap.appendChild(document.createTextNode(" "));
+      wrap.appendChild(el("code", null, p));
+    });
+    return wrap;
+  }
+
+  // How many of this case's related-code patterns matched no file when the
+  // document was written. ADDITIVE field: a document from a CLI older than
+  // ADR-0010 simply has no measurement, which is not the same as a measured
+  // zero — so anything that is not a real count reads as "not measured" and
+  // shows nothing, rather than as a clean bill of health.
+  function unmatchedRelatedPathCount(spec) {
+    var raw = spec.relatedPathsUnmatched;
+    return typeof raw === "number" && isFinite(raw) && raw >= 0 ? raw : null;
   }
 
   // The execution mode lives inside the mechanically-derived status object
@@ -2842,10 +3221,16 @@ const CLIENT_JS = `
     host.appendChild(covwrap);
   }
 
-  function perspMatches(spec) {
+  function perspMatches(feature, spec) {
     if (perspState.f === "deterministic" && perspMode(spec) !== "deterministic") return false;
     if (perspState.f === "live" && perspMode(spec) !== "live") return false;
     if (perspState.f === "norec" && perspRunnable(spec)) return false;
+    if (perspState.f === "rerun") {
+      var rr = rerunFor(feature, spec);
+      // Only "needed": "unknown" is not a weaker "probably needed", and
+      // folding it in here would be exactly the overstatement ADR-0010 forbids.
+      if (!rr || rr.state !== "needed") return false;
+    }
     if (perspState.q) {
       var hay = (spec.title + " " + (spec.summary || "") + " " + spec.specName).toLowerCase();
       if (hay.indexOf(perspState.q) === -1) return false;
@@ -2876,14 +3261,38 @@ const CLIENT_JS = `
     var specCode = el("code", null, spec.specName);
     row("perspectives.d.spec", specCode);
     if (spec.relatedPaths && spec.relatedPaths.length) {
-      var pathsWrap = el("span");
-      spec.relatedPaths.forEach(function (p, i) {
-        if (i > 0) pathsWrap.appendChild(document.createTextNode(" "));
-        pathsWrap.appendChild(el("code", null, p));
-      });
-      row("perspectives.d.relatedPaths", pathsWrap);
+      row("perspectives.d.relatedPaths", pathCodes(spec.relatedPaths));
+    }
+
+    // Result and re-run need are orthogonal axes (ADR-0010), so both ledger
+    // coordinates are shown with an explicit "never" — a blank row would read
+    // as missing data rather than as "this has never happened".
+    var rr = rerunFor(feature, spec);
+    if (rr) {
+      var verdict = el("span");
+      verdict.appendChild(rerunBadge(rr.state));
+      var why = rerunWhy(rr, true);
+      if (why) verdict.appendChild(el("span", "cellsub", why));
+      row("perspectives.d.rerun", verdict);
+      if (rr.state === "needed" && rr.touchedBy && rr.touchedBy.length) {
+        row("perspectives.d.touchedBy", pathCodes(rr.touchedBy));
+      }
+      row("perspectives.d.lastGreen", rr.lastGreen
+        ? ledgerLine(rr.lastGreen)
+        : el("span", "muted", t("perspectives.rerun.neverGreen")));
+      row("perspectives.d.lastRed", rr.lastRed
+        ? ledgerLine(rr.lastRed)
+        : el("span", "muted", t("perspectives.rerun.neverRed")));
     }
     frag.appendChild(dl);
+
+    // Too-narrow relatedPaths produce a confident "not needed" — the dangerous
+    // direction — so an unmatched pattern is flagged next to the verdict.
+    var unmatched = unmatchedRelatedPathCount(spec);
+    if (unmatched) {
+      frag.appendChild(fillNote(el("div"), "warn",
+        t("perspectives.dq.unmatched").replace("{n}", String(unmatched)), "d-note"));
+    }
 
     var notebox = el("div", "notebox");
     notebox.appendChild(el("div", "nlabel", t("perspectives.note.label")));
@@ -2924,15 +3333,21 @@ const CLIENT_JS = `
   function renderPerspTable(doc) {
     var tbody = document.getElementById("persp-tbody");
     clear(tbody);
+    // Hiding the two <th>s (rather than emitting empty cells) leaves the table
+    // exactly as it was on a hub that cannot answer the re-run question.
+    var showRerun = perspState.rerun != null;
+    document.getElementById("persp-th-result").hidden = !showRerun;
+    document.getElementById("persp-th-rerun").hidden = !showRerun;
+    var cols = showRerun ? 6 : 4;
     var hits = 0;
     doc.features.forEach(function (feature) {
-      var specs = feature.specs.filter(perspMatches);
+      var specs = feature.specs.filter(function (s) { return perspMatches(feature, s); });
       if (!specs.length) return;
       hits += specs.length;
 
       var grpRow = el("tr", "grp");
       var grpTd = el("td");
-      grpTd.colSpan = 4;
+      grpTd.colSpan = cols;
       grpTd.appendChild(document.createTextNode(feature.featureName));
       grpTd.appendChild(el("span", "gcount", specs.length + " " + t("perspectives.metric.cases").toLowerCase()));
       grpRow.appendChild(grpTd);
@@ -2956,13 +3371,19 @@ const CLIENT_JS = `
         statusTd.appendChild(perspStatusBadge(spec));
         row.appendChild(statusTd);
 
+        if (showRerun) {
+          var rr = rerunFor(feature, spec);
+          row.appendChild(perspResultCell(rr));
+          row.appendChild(perspRerunCell(rr));
+        }
+
         var chevTd = el("td", "c-chev");
         chevTd.appendChild(el("span", "chev-i", "\\u25b6"));
         row.appendChild(chevTd);
 
         var detailRow = el("tr", "detail");
         var detailTd = el("td");
-        detailTd.colSpan = 4;
+        detailTd.colSpan = cols;
         detailRow.appendChild(detailTd);
         var built = false;
 
@@ -2992,8 +3413,37 @@ const CLIENT_JS = `
   function renderPerspectives() {
     var doc = perspState.doc;
     if (!doc) return;
+    syncPerspChips();
     renderPerspOverview(doc);
     renderPerspTable(doc);
+  }
+
+  // The needs-re-run chip only exists while the hub answers the question;
+  // otherwise it would filter everything away. Drop back to "all" if it was
+  // the active filter when the answer came back "not supported".
+  function syncPerspChips() {
+    var chip = document.getElementById("persp-chip-rerun");
+    chip.hidden = perspState.rerunSupported !== true;
+    if (perspState.rerunSupported === false && perspState.f === "rerun") perspState.f = "all";
+    document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-f") === perspState.f));
+    });
+  }
+
+  function setPerspRerunNote(text, kind) {
+    var box = document.getElementById("persp-rerun-note");
+    box.hidden = !text;
+    if (!text) { clear(box); return; }
+    fillNote(box, kind || "info", text, "persp-note");
+  }
+
+  function setPerspDeployHead(report) {
+    var span = document.getElementById("persp-deploy-head");
+    var head = report && report.deployHead;
+    span.hidden = !head;
+    span.textContent = head
+      ? t("perspectives.rerun.deployHead") + " " + shortSha(head.sha) + " · " + relTime(head.at)
+      : "";
   }
 
   function setPerspUpdated(doc) {
@@ -3011,13 +3461,26 @@ const CLIENT_JS = `
     setPerspStatus("");
     document.getElementById("persp-body").hidden = true;
     setPerspUpdated(null);
+    setPerspRerunNote("");
+    setPerspDeployHead(null);
+    perspState.rerun = null;
+    perspState.rerunSupported = null;
+    syncPerspChips();
     fetchPerspectives()
       .then(function (doc) {
         perspState.doc = doc;
         if (!doc) { setPerspStatus(t("perspectives.empty")); return; }
         setPerspUpdated(doc);
         document.getElementById("persp-body").hidden = false;
+        // The inventory renders first: re-run data is additive to it, and a
+        // slow or absent /rerun must never hold up the table.
         renderPerspectives();
+        // Scoped to its own failure message: a fault here costs the two extra
+        // columns, and reporting it as "loading perspectives failed" would
+        // point at the inventory that in fact loaded fine.
+        return loadRerun().catch(function (err) {
+          setPerspRerunNote(t("perspectives.rerun.loadFailed") + ": " + err.message, "warn");
+        });
       })
       .catch(function (err) {
         perspState.doc = null;
@@ -3025,12 +3488,48 @@ const CLIENT_JS = `
       });
   }
 
+  function rerunScope() {
+    return state.project + "/" + state.profile;
+  }
+
+  function loadRerun() {
+    var scope = rerunScope();
+    return Promise.all([fetchRerun(), fetchRunIndex()]).then(function (results) {
+      // A second profile pick can land while this one is still in flight; the
+      // older response must not overwrite the newer scope's verdicts.
+      if (scope !== rerunScope()) return;
+      var rerun = results[0];
+      perspState.runUrls = results[1].urls;
+      perspState.rerunProfiles = results[1].profiles;
+      perspState.rerun = rerun.report || null;
+      perspState.rerunSupported = perspState.rerun != null;
+      setPerspDeployHead(perspState.rerun);
+      if (rerun.note) {
+        setPerspRerunNote(rerun.note, rerun.kind);
+      } else if (perspState.rerun && !perspState.rerun.deployHead) {
+        // Every case is "unknown" in this state, so say once, at the top, what
+        // is missing and how to supply it, rather than only per row.
+        setPerspRerunNote(t("perspectives.rerun.noDeployLogBanner").replace("{profile}", state.profile), "warn");
+      } else {
+        setPerspRerunNote("");
+      }
+      renderPerspectives();
+    });
+  }
+
+  // Switching profile re-asks only the profile-scoped question: the
+  // perspectives document itself is project-scoped and does not change.
+  function reloadRerun() {
+    perspState.rerun = null;
+    setPerspRerunNote("");
+    setPerspDeployHead(null);
+    renderPerspectives();
+    return loadRerun();
+  }
+
   function openPerspectives() {
     showView("perspectives");
     document.getElementById("persp-q").value = perspState.q;
-    document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
-      b.setAttribute("aria-pressed", String(b.getAttribute("data-f") === perspState.f));
-    });
     loadPerspectives();
   }
 
@@ -3218,22 +3717,41 @@ const CLIENT_JS = `
     document.getElementById("project-menu").hidden ? openProjectMenu() : closeProjectMenu();
   }
 
-  // ── profile switching (Secrets-tab dropdown) ───────────────────────────
-  // Profiles scope ONLY variables + sessions (a profile is a set of env vars,
-  // like .ccqa/profiles/<name>.env). Prompts are project-wide and runs are
-  // cross-profile, so the selector lives inside the Secrets tab, not the header.
+  // ── profile switching (per-tab dropdowns) ──────────────────────────────
+  // Profiles scope variables + sessions (a profile is a set of env vars, like
+  // .ccqa/profiles/<name>.env) and, since ADR-0010, the needs-re-run verdict:
+  // two environments sit at different commits, so that question has no
+  // profile-free answer. Prompts are project-wide and runs are cross-profile,
+  // so there is still no header-level selector — Secrets and Perspectives each
+  // carry their own, sharing state.profile and differing only in which names
+  // they offer and what a pick reloads.
+
+  var PROFILE_MENUS = {
+    secrets: {
+      switchId: "sec-profile-switch", menuId: "sec-profile-menu", withNew: true,
+      names: function () { return knownProfiles; },
+      pick: function (p) { chooseProfile(p, loadSecrets); }
+    },
+    perspectives: {
+      switchId: "persp-profile-switch", menuId: "persp-profile-menu", withNew: false,
+      names: perspProfileNames,
+      pick: function (p) { chooseProfile(p, reloadRerun); }
+    }
+  };
 
   function setProfile(p) {
     state.profile = p || "default";
-    var cur = document.getElementById("sec-profile-current");
-    if (cur) cur.textContent = state.profile;
+    ["sec-profile-current", "persp-profile-current"].forEach(function (id) {
+      var cur = document.getElementById(id);
+      if (cur) cur.textContent = state.profile;
+    });
   }
 
-  // Switch profile and reload the Secrets tab under the new scope.
-  function chooseProfile(p) {
+  // Switch profile and reload the tab that asked, under the new scope.
+  function chooseProfile(p, reload) {
     setProfile(p);
     storeProfileForProject(state.project, state.profile);
-    loadSecrets();
+    reload();
   }
 
   // Fetch the profiles for the current project. "default" is always available
@@ -3247,17 +3765,20 @@ const CLIENT_JS = `
     }).catch(function () { knownProfiles = ["default"]; setProfile("default"); });
   }
 
-  function buildProfileMenu() {
-    var menu = document.getElementById("sec-profile-menu");
+  function buildProfileMenu(menuSpec) {
+    var menu = document.getElementById(menuSpec.menuId);
     clear(menu);
-    knownProfiles.forEach(function (p) {
+    menuSpec.names().forEach(function (p) {
       var mi = el("button", "mi" + (p === state.profile ? " current" : ""));
       mi.type = "button";
       mi.setAttribute("role", "menuitem");
       mi.appendChild(el("span", "name", p));
-      mi.addEventListener("click", function () { closeProfileMenu(); chooseProfile(p); });
+      mi.addEventListener("click", function () { closeProfileMenu(); menuSpec.pick(p); });
       menu.appendChild(mi);
     });
+    // Only the Secrets menu can create: a profile with no secrets is a usable
+    // secrets scope, but a profile with no runs has nothing to judge.
+    if (!menuSpec.withNew) return;
     menu.appendChild(el("div", "sep"));
     var newItem = el("button", "mi action");
     newItem.type = "button";
@@ -3268,20 +3789,26 @@ const CLIENT_JS = `
     menu.appendChild(newItem);
   }
 
-  function openProfileMenu() {
+  function openProfileMenu(which) {
     if (!state.token || !state.project) return;
-    buildProfileMenu();
-    document.getElementById("sec-profile-menu").hidden = false;
-    document.getElementById("sec-profile-switch").setAttribute("aria-expanded", "true");
+    var menuSpec = PROFILE_MENUS[which];
+    buildProfileMenu(menuSpec);
+    document.getElementById(menuSpec.menuId).hidden = false;
+    document.getElementById(menuSpec.switchId).setAttribute("aria-expanded", "true");
   }
+  // Closes both, so an outside click or Escape needs no idea which is open.
   function closeProfileMenu() {
-    var menu = document.getElementById("sec-profile-menu");
-    if (!menu) return;
-    menu.hidden = true;
-    document.getElementById("sec-profile-switch").setAttribute("aria-expanded", "false");
+    Object.keys(PROFILE_MENUS).forEach(function (which) {
+      var menuSpec = PROFILE_MENUS[which];
+      var menu = document.getElementById(menuSpec.menuId);
+      if (!menu) return;
+      menu.hidden = true;
+      document.getElementById(menuSpec.switchId).setAttribute("aria-expanded", "false");
+    });
   }
-  function toggleProfileMenu() {
-    document.getElementById("sec-profile-menu").hidden ? openProfileMenu() : closeProfileMenu();
+  function toggleProfileMenu(which) {
+    var menu = document.getElementById(PROFILE_MENUS[which].menuId);
+    if (menu.hidden) openProfileMenu(which); else closeProfileMenu();
   }
 
   // ── new-project dialog (centered modal; shares #scrim with the sheet) ──
@@ -3325,7 +3852,9 @@ const CLIENT_JS = `
       // Profiles are implicit like projects — created for real on the first
       // secret/prompt stored under them. Just add to the list and select it.
       if (knownProfiles.indexOf(name) === -1) { knownProfiles.push(name); knownProfiles.sort(); }
-      chooseProfile(name);
+      // The "new profile" item only exists in the Secrets menu, so that is the
+      // tab to reload.
+      chooseProfile(name, loadSecrets);
     } else {
       if (knownProjects.indexOf(name) === -1) { knownProjects.push(name); knownProjects.sort(); }
       chooseProject(name);
@@ -3412,13 +3941,16 @@ const CLIENT_JS = `
   });
   // Keep clicks inside the menu from bubbling to the document close-handler.
   document.getElementById("project-menu").addEventListener("click", function (e) { e.stopPropagation(); });
-  // Secrets-tab profile dropdown
-  document.getElementById("sec-profile-switch").addEventListener("click", function (e) {
-    e.stopPropagation();
-    closeProjectMenu();
-    toggleProfileMenu();
+  // Per-tab profile dropdowns (Secrets, Perspectives)
+  Object.keys(PROFILE_MENUS).forEach(function (which) {
+    var menuSpec = PROFILE_MENUS[which];
+    document.getElementById(menuSpec.switchId).addEventListener("click", function (e) {
+      e.stopPropagation();
+      closeProjectMenu();
+      toggleProfileMenu(which);
+    });
+    document.getElementById(menuSpec.menuId).addEventListener("click", function (e) { e.stopPropagation(); });
   });
-  document.getElementById("sec-profile-menu").addEventListener("click", function (e) { e.stopPropagation(); });
   // Outside click closes both menus.
   document.addEventListener("click", function () { closeProjectMenu(); closeProfileMenu(); });
 
@@ -3449,10 +3981,9 @@ const CLIENT_JS = `
   });
   document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
     b.addEventListener("click", function () {
+      // renderPerspectives -> syncPerspChips repaints aria-pressed from
+      // perspState.f, so the handler only has to record the choice.
       perspState.f = b.getAttribute("data-f");
-      document.querySelectorAll("#view-perspectives .fchip").forEach(function (x) {
-        x.setAttribute("aria-pressed", x === b ? "true" : "false");
-      });
       renderPerspectives();
     });
   });

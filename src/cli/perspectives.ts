@@ -35,6 +35,7 @@ import { DEFAULT_SPEC_MODE, SpecModeSchema, type SpecMode } from "../spec/yaml-s
 import type { HubClient } from "../hub-client/index.ts";
 import { HubConnectionError, requireHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
 import { resolveProject } from "./resolve-project.ts";
+import { listCheckoutFiles, relatedPathsFields } from "./related-paths-check.ts";
 import { formatToolSummary, printUnifiedDiff, prompt } from "./draft.ts";
 import { addHubOptions, addLanguageOption, languageDirective, useJapanesePrompts } from "./options.ts";
 import * as log from "./logger.ts";
@@ -83,7 +84,8 @@ async function runPerspectivesCheck(opts: PerspectivesOptions): Promise<void> {
   const project = resolveProject(opts);
   log.header("perspectives", `check (project: ${project})`);
 
-  const skeleton = await buildSkeleton(await listFeatureTree());
+  const [tree, checkoutFiles] = await Promise.all([listFeatureTree(), listCheckoutFiles(process.cwd())]);
+  const skeleton = await buildSkeleton(tree, checkoutFiles);
   const localCount = skeleton.reduce((n, f) => n + f.specs.length, 0);
 
   const existingDoc = await hub.getPerspectives(project);
@@ -200,9 +202,10 @@ async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
   const project = resolveProject(opts);
   log.header("perspectives", `project: ${project}`);
 
-  // 1. Mechanical skeleton: every feature/spec with title + relatedPaths + status.
-  const tree = await listFeatureTree();
-  const skeleton = await buildSkeleton(tree);
+  // 1. Mechanical skeleton: every feature/spec with title + relatedPaths +
+  //    status, plus the zero-match count from one shared checkout walk.
+  const [tree, checkoutFiles] = await Promise.all([listFeatureTree(), listCheckoutFiles(process.cwd())]);
+  const skeleton = await buildSkeleton(tree, checkoutFiles);
   const allSpecs = skeleton.flatMap((f) => f.specs);
 
   if (allSpecs.length === 0) {
@@ -288,8 +291,14 @@ async function cleanupLegacyLocalFiles(): Promise<void> {
  * relatedPaths transcribed from each spec, status derived mechanically from
  * on-disk artifacts. `summary` is left empty here; Claude fills it later.
  * Specs whose spec.yaml is missing or unparsable are skipped.
+ *
+ * `checkoutFiles` is the one shared file listing every spec's `relatedPaths`
+ * zero-match count is computed against.
  */
-export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<PerspectiveFeature[]> {
+export async function buildSkeleton(
+  tree: FeatureTreeEntry[],
+  checkoutFiles: readonly string[],
+): Promise<PerspectiveFeature[]> {
   // Config resolves each spec's target once for the whole sweep; a broken
   // config is not a reason to fail the inventory, so fall back to the schema
   // default (agent-browser) if it can't be loaded.
@@ -305,14 +314,13 @@ export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<Perspecti
             const meta = readSpecMeta(s.specName, specYaml);
             const plugin = resolveSpecTarget(specYaml, config);
             const status = await deriveStatus(feature.featureName, s.specName, meta.mode, plugin);
-            const entry: PerspectiveSpec = {
+            return {
               specName: s.specName,
               title: meta.title,
               summary: "",
+              ...relatedPathsFields(s.relatedPaths ?? [], checkoutFiles),
               status,
             };
-            if (s.relatedPaths) entry.relatedPaths = s.relatedPaths;
-            return entry;
           }),
       );
       return { featureName: feature.featureName, specs };

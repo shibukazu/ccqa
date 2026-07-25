@@ -7,6 +7,7 @@ import {
 } from "../types.ts";
 import { tryReadSpecFile, type SpecRef } from "../store/index.ts";
 import { deriveStatus, readSpecMeta, resolveSpecTarget, requestSummaries } from "./perspectives.ts";
+import { listCheckoutFiles, relatedPathsFields } from "./related-paths-check.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import type { HubContext } from "./hub-conn.ts";
 import * as log from "./logger.ts";
@@ -70,6 +71,11 @@ async function doSync(ctx: HubContext, opts: SyncSpecPerspectivesOptions): Promi
   const relatedPaths = extractRelatedPaths(specYaml);
   const previous = findSpec(doc, featureName, specName);
 
+  // Started before the Claude call and awaited after it: the listing is
+  // independent of the summaries, so it costs nothing behind a model call that
+  // takes seconds.
+  const checkoutFiles = listCheckoutFiles(process.cwd());
+
   // One-spec Claude call for the descriptive fields; on failure fall back to
   // whatever the document already said so the mechanical update still lands.
   const summaries = await requestSummaries(
@@ -82,6 +88,7 @@ async function doSync(ctx: HubContext, opts: SyncSpecPerspectivesOptions): Promi
     specName,
     title: meta.title,
     summary: written?.summary ?? previous?.summary ?? "",
+    ...relatedPathsFields(relatedPaths, await checkoutFiles),
     status,
   };
   const startScreen = written?.startScreen ?? previous?.startScreen;
@@ -90,7 +97,6 @@ async function doSync(ctx: HubContext, opts: SyncSpecPerspectivesOptions): Promi
   if (testCondition) entry.testCondition = testCondition;
   const preconditions = written?.preconditions ?? previous?.preconditions;
   if (preconditions && preconditions.length > 0) entry.preconditions = preconditions;
-  if (relatedPaths.length > 0) entry.relatedPaths = relatedPaths;
   if (previous?.note) entry.note = previous.note;
 
   upsertSpec(doc, featureName, entry);

@@ -36,7 +36,14 @@ Key flags (see `ccqa run --help` for the rest):
   intersect the git diff against `[base]` (below). Without a value the base
   comes from `GITHUB_BASE_REF` (pull_request CI); elsewhere pass it
   explicitly (e.g. `--changed=origin/main`). Cannot be combined with
-  explicit targets.
+  explicit targets. `--changed=last-run` selects from the hub instead of
+  from a diff — see [Running only what needs a
+  re-run](#running-only-what-needs-a-re-run).
+- `--include-unknown` — with `--changed=last-run` only: also run the specs
+  whose re-run need the hub cannot answer, and the ones that have never run.
+- `--dry-run` — print the specs this invocation would run, then exit `0`
+  without executing anything and without writing a report. Works with every
+  selection mode.
 - `--concurrency <n>` — run up to N specs in parallel **within each phase**
   (never across phases). Default 1.
 - `--no-evidence` — skip the step-boundary screenshots of deterministic
@@ -253,6 +260,44 @@ human-readable.
 monorepo, run from each package's directory (or use `--cwd packages/foo`)
 and write paths as that package sees them; changes outside the cwd are
 ignored.
+
+A pattern that matches **no file** silently narrows a spec to nothing, which
+is how selection ends up confidently skipping a spec whose code did change.
+`ccqa perspectives` counts those patterns per spec (one `git ls-files`, no
+Claude call) and records the count in the hub document, so the Perspectives
+view can flag them. Only tracked files count, since a deploy's changed paths
+never name anything else.
+
+### Running only what needs a re-run
+
+`--changed=last-run` asks the hub which specs are worth running instead of
+diffing a ref:
+
+```bash
+ccqa run --changed=last-run --profile stg
+ccqa run --changed=last-run --profile stg --dry-run     # check the selection first
+ccqa run --changed=last-run --profile stg --include-unknown
+```
+
+Each spec's baseline is **its own last run** — not its last green, and not a
+git ref — positioned against the deploy log the deploy job feeds the hub
+with [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record). A spec is
+selected when a deploy after that point touched its `relatedPaths`. No git
+diff is involved, and nothing is guessed: the baseline is either recorded or
+the answer is `unknown`.
+
+It needs a hub connection and `--profile` (`dev` and `stg` sit at different
+commits, so the question has no profile-free answer). Anything that makes
+the question unanswerable — no perspectives document, no deploy recorded for
+the profile, a hub too old to serve the endpoint — is an **error**, never an
+empty selection.
+
+By default only specs the hub reports as `needed` run. Specs whose need
+cannot be determined (`unknown`) and specs that have never run (`neverRun`)
+are left out; `--include-unknown` opts into running them too. This is a
+different question from `ccqa drift`, which asks whether a spec still
+describes the product — see
+[ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md).
 
 ## CI integration
 

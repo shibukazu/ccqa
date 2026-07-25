@@ -32,6 +32,14 @@ export function requireSafeSegment(value: string, paramName: string): string {
   return value;
 }
 
+/**
+ * The `?profile=` query param, defaulting to "default". Shared by every
+ * profile-scoped route so the default and the validation rule have one home.
+ */
+export function requireProfileParam(url: URL): string {
+  return requireSafeSegment(url.searchParams.get("profile") ?? "default", "profile");
+}
+
 /** Validate a `*path`-captured relative path (multiple segments allowed) as safe to join under a root dir. Throws 400 if unsafe. */
 export function requireSafeRelPath(relPath: string, paramName: string): string {
   const segments = relPath.split("/");

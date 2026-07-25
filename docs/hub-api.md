@@ -43,11 +43,12 @@ archive. Every field of the resulting `Run` is derived server-side from that
 report; a run is immutable once created (there is no update/patch).
 
 ```
-POST /api/v1/runs?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>
+POST /api/v1/runs?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&deployedSha=<sha>
   Content-Type: application/gzip
   body: gzip tar of a `ccqa run --report` output directory (must contain report.json)
   ?profile is optional — recorded on the Run for display; runs are not scoped by profile
   ?kind is optional — "run" (default) or "drift"; "drift" is a `ccqa drift --push` audit, not an executed run
+  ?deployedSha is optional — the commit the environment was running; overrides the deploy log's head
   → 201 Run
 
 GET /api/v1/runs?project=<name>&branch=<branch>&status=<status>&limit=<n>
@@ -71,7 +72,7 @@ As an alternative to the single-shot push above, a still-executing
 instead of waiting until it finishes:
 
 ```
-POST /api/v1/runs/open?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&gitHead=<sha>
+POST /api/v1/runs/open?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&gitHead=<sha>&deployedSha=<sha>
   (same query params as POST /api/v1/runs plus optional gitHead, no body)
   → 201 Run   (status: "running")
 
@@ -106,6 +107,9 @@ interface Run {
   ciRunId: string | null;    // from the report, e.g. GITHUB_RUN_ID; null when run locally
   reportCreatedAt: string;   // when the underlying `ccqa run` actually executed
   createdAt: string;         // when the hub accepted the push
+  deployedSha?: string | null;                          // the commit the environment was running (see Deploys)
+  deployedShaSource?: "hub-deploy-log" | "client" | null;
+  deployedShaAmbiguous?: boolean;                       // the deploy-log head moved while the run was open
 }
 ```
 
@@ -177,19 +181,115 @@ GET /api/v1/projects/:project/profiles
                                    "default" always included. Prompts/runs are not profile-scoped.)
 
 GET /api/v1/projects/:project/last-green?profile=<name>&branch=<branch>&fallbackBranch=<branch>
-  → 200 { entries: { "<feature>/<spec>": { gitHead, runId, at } } }
+  → 200 {
+      entries: { "<feature>/<spec>": SpecLedgerEntry },   // last green — unchanged meaning
+      lastRun: { "<feature>/<spec>": SpecLedgerEntry },   // last non-skipped execution
+      lastRed:  { "<feature>/<spec>": SpecLedgerEntry },  // last failure
+    }
+
+interface SpecLedgerEntry {
+  gitHead: string; runId: string; at: string;
+  deployedSha?: string | null;        // the commit the environment was running (see Deploys)
+  deployedShaAmbiguous?: boolean;     // the run straddled a deploy
+}
 ```
 
-`last-green` serves the per-spec baseline ledger behind
+`last-green` serves the per-spec ledger behind
 `ccqa run --failure-analysis=last-green`: for each spec, the head sha of the
 run in which it last passed. The hub advances the ledger whenever a
-`kind: "run"` run reaches a terminal state — every passed spec's entry moves
-to that run's `gitHead` (newest `at` wins). Entries are scoped by
+`kind: "run"` run reaches a terminal state — every executed spec's entry
+moves to that run's `gitHead` (newest `at` wins). A **skipped** row did not
+execute and advances nothing. Entries are scoped by
 project/profile/**branch**; the response overlays the `branch` bucket onto
 the optional `fallbackBranch` bucket (typically the default branch), so a PR
 branch inherits the default branch's baselines while its own greens take
 precedence — and a PR-branch green never contaminates the default branch's
 bucket. `profile` defaults to `"default"`; `branch` is required.
+
+`entries` keeps its original meaning (last green) so older clients keep
+working; `lastRun` and `lastRed` are siblings, not a redefinition.
+`lastRun` — not `lastGreen` — is the baseline for re-run selection: a red
+spec's information is already current, so re-running it teaches nothing
+until related code moves.
+
+## Deploys and re-run selection
+
+The hub has no checkout, never runs `git`, and never calls a git host, so it
+cannot work out what a deploy changed. The consuming deploy job tells it
+(ADR-0010), and the hub answers "which specs are worth running?" as set
+arithmetic over that log, the spec ledger, and each spec's `relatedPaths`
+from the perspectives document. No model call is involved.
+
+```
+POST /api/v1/projects/:project/deploys?profile=<name>
+  Content-Type: application/json
+  body: {
+    sha: string,
+    previousSha?: string | null,   // the commit replaced; omit it and the entry records a gap
+    changedPaths?: string[] | null, // from a TWO-dot diff (`git diff --name-only A B`)
+    ref?: string,
+    runUrl?: string,
+  }
+  → 201 DeployEntry
+
+GET /api/v1/projects/:project/deploys?profile=<name>&limit=<n>
+  → 200 { entries: DeployEntry[], nextIndex: number }   (oldest first)
+
+GET /api/v1/projects/:project/rerun?profile=<name>
+  → 200 {
+      project, profile,
+      deployHead: { index, sha, at } | null,
+      specs: { "<feature>/<spec>": SpecRerun },
+    }
+  | 404 (the project has no perspectives document)
+```
+
+```ts
+interface DeployEntry {
+  index: number;              // monotonic position — the only ordering used
+  sha: string;
+  previousSha: string | null;
+  at: string;
+  ref?: string;
+  runUrl?: string;
+  changedPaths: string[] | null;
+  truncated: boolean;         // the retained list no longer covers every change
+  gapBefore: boolean;         // previousSha did not chain onto the log head
+}
+
+interface SpecRerun {
+  state: "needed" | "notNeeded" | "unknown" | "neverRun" | "notEvaluated";
+  reason?: "noRelatedPaths" | "noDeployLog" | "unknownDeployedSha"
+         | "ambiguousDeployedSha" | "deployedShaNotInLog" | "gapInRange"
+         | "truncatedInRange";                     // set only when state is "unknown"
+  lastRun: SpecLedgerEntry | null;
+  lastGreen: SpecLedgerEntry | null;
+  lastRed: SpecLedgerEntry | null;
+  touchedBy?: string[];       // up to 10 matched paths; set only when state is "needed"
+}
+```
+
+Use a **two-dot** diff in the deploy hook. Three-dot resolves the merge base
+and reports an empty diff on a rollback, which would make the rollback
+invisible.
+
+Comparisons are positions in the deploy log, never wall clocks: a run that
+started before a deploy and finished after it looks up to date by timestamp,
+which is wrong in the unsafe direction. The hub stamps `Run.deployedSha`
+from the profile's deploy-log head when a run is created or opened, and sets
+`deployedShaAmbiguous` when the head moved before the run was finalized.
+Pass `?deployedSha=` on `POST /runs` or `POST /runs/open` to assert it
+instead — a single-shot push reaches the hub only after the run is over, so
+a deploy that landed mid-run would otherwise read as that run's baseline.
+
+`unknown` is never rendered as "not needed"; it always carries a reason. A
+deploy whose `changedPaths` are absent is treated as touching everything —
+fail-open and self-limiting, since it makes everything re-run once and then
+settles. `profile` is part of the scope key and defaults to `"default"`:
+two environments sit at different commits, so "needs re-run" has no
+profile-free answer. Branch is not part of the scope — a run exercises the
+deployed environment whatever branch its code came from, so the ledger is
+read across every branch of the profile.
 
 ## Sessions
 

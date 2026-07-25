@@ -106,6 +106,67 @@ branch, status, spec pass count, and a link to the run in the hub's UI. Use
 it for pushing a report from a run that didn't use `--push-report`, or from
 a separate job — see the next section for pushing incrementally instead.
 
+If the report carries a `deployedSha` — `ccqa run --profile <name>` records
+the profile's deploy-log head as it starts — `push` forwards it, so the run
+is attributed to the commit the environment was running *when it started*.
+Without that, the hub would fall back to its deploy-log head at push time,
+which is after the run: a deploy landing mid-run would read as that run's
+baseline and under-report what needs re-running later.
+
+### `ccqa hub deploy record`
+
+```bash
+ccqa hub deploy record --project demo --profile stg --sha "$GIT_SHA" --ref main
+```
+
+Tells the hub what a deploy shipped. It is the one input the hub cannot
+derive for itself — it has no checkout, never runs `git`, and never calls a
+git host — and it is what makes `ccqa run --changed=last-run` answerable at
+all. Run it from the deploy job, after the deploy succeeds. Flags:
+
+- `--profile <name>` — **required**: the environment this deploy landed in.
+  Two environments sit at different commits, so the deploy log is
+  per-profile.
+- `--sha <sha>` — **required**: the commit that was deployed.
+- `--previous <sha>` — the commit it replaced. Omitted, ccqa asks the hub
+  for the profile's current deploy-log head and diffs against that. With
+  neither (the first deploy ever recorded), the entry is stored as touching
+  everything, which makes every spec re-run once and then settles.
+- `--ref <ref>` — the branch or tag deployed, recorded for display.
+- `--project`, `--hub-url`, `--hub-token`, `--cwd` — as everywhere else.
+
+The changed paths come from a **two-dot** `git diff <previous> <sha>`,
+computed locally and posted with the entry. Two-dot matters: a three-dot
+diff resolves the merge base first, so redeploying an ancestor — a rollback
+— would report an empty diff and the rollback would become invisible.
+Rename detection is off, so a file moved out of a spec's `relatedPaths`
+still lists its old path.
+
+If the diff can't be produced (a shallow checkout that never fetched
+`previous`), ccqa warns and records the deploy as touching everything rather
+than claiming it changed nothing. Very large diffs are capped; the hub marks
+such an entry truncated and treats it the same way.
+
+A deploy job that has only `curl` and `git` can post the same body itself:
+
+```bash
+paths=$(git diff --name-only --no-renames "$PREVIOUS_SHA" "$SHA" \
+  | jq -Rsc 'split("\n") - [""]')
+body=$(jq -nc --arg sha "$SHA" --arg prev "$PREVIOUS_SHA" --argjson paths "$paths" \
+  '{sha: $sha, previousSha: $prev, changedPaths: $paths, ref: "main"}')
+curl -sS -X POST \
+  "$CCQA_HUB_URL/api/v1/projects/demo/deploys?profile=stg" \
+  -H "Authorization: Bearer $CCQA_HUB_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "$body"
+```
+
+Omit `changedPaths` (or send `null`) to declare the deploy as touching
+everything. See [the API reference](./hub-api.md#deploys-and-re-run-selection)
+for the full contract, and
+[ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md) for why the
+deploy job — not the hub — is the actor that answers this.
+
 ### Incremental push during `ccqa run`
 
 Passing `--push-report` to `ccqa run` (alongside hub credentials:

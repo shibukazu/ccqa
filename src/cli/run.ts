@@ -10,6 +10,7 @@ import {
   RunUsageError,
   type RunOptions,
 } from "../run/pipeline.ts";
+import { LAST_RUN } from "../run/git-context.ts";
 import { addHubOptions, addLanguageOption, addProfileOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { createRunTeardown, installTeardownSignalHandlers } from "./run-teardown.ts";
@@ -46,7 +47,15 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option(
       "--changed [base]",
-      "Restrict execution to specs whose relatedPaths intersect the git diff against [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --changed=origin/main). Cannot be combined with an explicit spec id.",
+      "Restrict execution to specs whose relatedPaths intersect the git diff against [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --changed=origin/main), or pass 'last-run' to run the specs the hub says need one — each spec's own last run compared against the deploy log (requires a hub connection and --profile; no git diff involved). Cannot be combined with an explicit spec id.",
+    )
+    .option(
+      "--include-unknown",
+      "(--changed=last-run only) Also run specs whose re-run need the hub cannot answer ('unknown') and specs that have never run ('neverRun'). Off by default: an unanswerable question is reported, not guessed.",
+    )
+    .option(
+      "--dry-run",
+      "Print the specs this invocation would run, then exit 0 without executing anything and without writing a report. Works with every selection mode.",
     )
     .option(
       "--failure-analysis [base]",
@@ -121,6 +130,7 @@ function parseConcurrency(raw: string): number {
 function headerTarget(targets: string[], opts: RunOptions): string {
   if (targets.length === 1) return targets[0]!;
   if (targets.length > 1) return `${targets.length} targets`;
+  if (opts.changed === LAST_RUN) return "(needs re-run)";
   return opts.changed ? "(changed)" : "(all specs)";
 }
 

@@ -3,13 +3,14 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { type Run, type RunStatus } from "../../contract/schema.ts";
+import { type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry } from "../../contract/schema.ts";
 import { GitEnvelopeSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
+import { emptyLedger } from "../../core/spec-ledger.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
-import { HttpError, readBody, sendBytes, sendJson } from "../respond.ts";
+import { errMsg, HttpError, readBody, readJsonBody, sendBytes, sendJson } from "../respond.ts";
 import { requireSafeRelPath, requireSafeSegment } from "../validate.ts";
 
 /** Default cap on a pushed report bundle. Overridable via `serve --max-push-mb`. */
@@ -29,7 +30,7 @@ export interface PushRunHandlerConfig {
 export function createPushRunHandler(config: PushRunHandlerConfig) {
   const maxPushBytes = config.maxPushBytes ?? DEFAULT_MAX_PUSH_BYTES;
   return async (ctx: RouteContext): Promise<void> => {
-    const { project, branch, profile, kind } = parseRunScope(ctx);
+    const { project, branch, profile, kind, deployedSha } = parseRunScope(ctx);
 
     const body = await readBody(ctx.req, maxPushBytes);
 
@@ -86,13 +87,19 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
         runUrl: report.runUrl ?? null,
         reportCreatedAt: report.createdAt,
         createdAt: new Date().toISOString(),
+        // A pushed run is already over, so the head the hub reads here is the
+        // head *after* it. A deploy that landed mid-run therefore reads as the
+        // run's baseline and under-reports "needs re-run" — pass ?deployedSha=
+        // (captured before the run started) to close that window.
+        ...(await resolveDeployedSha(config.storage, project, profile, deployedSha)),
+        deployedShaAmbiguous: false,
       };
 
       // Store artifacts before the run record so that once the run is listable,
       // its report is always fetchable.
       await config.storage.artifacts.putDir(run.id, dir);
       await config.storage.runs.create(run);
-      await updateLastGreenLedger(config.storage, run, report.results);
+      await updateSpecLedger(config.storage, run, report.results);
 
       sendJson(ctx.res, 201, run);
     } finally {
@@ -115,7 +122,7 @@ export interface OpenRunHandlerConfig {
  */
 export function createOpenRunHandler(config: OpenRunHandlerConfig) {
   return async (ctx: RouteContext): Promise<void> => {
-    const { project, branch, profile, kind } = parseRunScope(ctx);
+    const { project, branch, profile, kind, deployedSha } = parseRunScope(ctx);
     const gitHead = ctx.url.searchParams.get("gitHead");
     // Attributed from the start (like gitHead) so an incremental run that dies
     // before its final reconcile patch still links back to its CI run.
@@ -138,6 +145,11 @@ export function createOpenRunHandler(config: OpenRunHandlerConfig) {
       runUrl: runUrl || null,
       reportCreatedAt: now,
       createdAt: now,
+      // Stamped at open, not at finalize: this is the commit the environment
+      // was actually running when the run started. The finalize patch checks
+      // whether the head moved underneath it.
+      ...(await resolveDeployedSha(config.storage, project, profile, deployedSha)),
+      deployedShaAmbiguous: false,
     };
 
     await config.storage.runs.create(run);
@@ -187,39 +199,96 @@ function countSpecs(results: ReportSpecResult[]): { total: number; passed: numbe
 }
 
 /**
- * Advance the last-green ledger for every passed spec of a terminal
- * `kind: "run"` run. Spec-level, not run-level: a run with one chronically
- * failing spec still moves the baseline of every spec that did pass.
+ * Advance the spec ledger's three buckets from a terminal `kind: "run"` run.
+ * Spec-level, not run-level: a run with one chronically failing spec still
+ * moves the baselines of every spec that did pass.
+ *
+ * A skipped row did not execute, so it advances nothing — not even `run`.
+ * Everything else lands in `run` (the "needs re-run" baseline) and in `green`
+ * or `red` (the last outcome), which are orthogonal axes.
+ *
  * Best-effort — a ledger failure must not fail the push; the ledger is an
- * accelerator for `--failure-analysis=last-green`, not part of the run
- * record. Runs without a branch or gitHead can't be placed in the ledger and
- * are skipped.
+ * accelerator for `--failure-analysis=last-green` and re-run selection, not
+ * part of the run record. Runs without a branch or gitHead can't be placed in
+ * the ledger and are skipped.
  *
  * Ordering caveat (known approximation): `at` is the run's reportCreatedAt —
  * open time for incremental runs, report time for immutable pushes. When two
  * runs on the same branch+profile overlap, "newest at wins" can pick either
  * of the two genuinely-green commits, since the hub has no git ancestry to
  * order them properly. Accepted: CI serializes per branch in practice, and a
- * baseline can only ever point at a commit where the spec really passed.
+ * baseline can only ever point at a commit where the spec really ran.
  */
-async function updateLastGreenLedger(
+async function updateSpecLedger(
   storage: HubStorage,
   run: Run,
   results: ReportSpecResult[],
 ): Promise<void> {
   const { gitHead, branch } = run;
   if (run.kind !== "run" || !gitHead || !branch) return;
-  const passed = results.filter((r) => r.status === "passed");
-  if (passed.length === 0) return;
-  const entries = Object.fromEntries(
-    passed.map((r) => [`${r.feature}/${r.spec}`, { gitHead, runId: run.id, at: run.reportCreatedAt }]),
-  );
+  const entry: SpecLedgerEntry = {
+    gitHead,
+    runId: run.id,
+    at: run.reportCreatedAt,
+    // Denormalized from the Run so a re-run verdict is pure ledger + deploy
+    // log, with no per-spec run lookup.
+    deployedSha: run.deployedSha ?? null,
+    deployedShaAmbiguous: run.deployedShaAmbiguous ?? false,
+  };
+  const ledger: SpecLedger = emptyLedger();
+  for (const row of results) {
+    if (row.status === "skipped") continue;
+    const key = `${row.feature}/${row.spec}`;
+    ledger.run[key] = entry;
+    if (row.status === "passed") ledger.green[key] = entry;
+    else ledger.red[key] = entry;
+  }
+  if (Object.keys(ledger.run).length === 0) return;
   try {
-    await storage.lastGreen.merge(run.project, run.profile ?? "default", branch, entries);
+    await storage.ledger.merge(run.project, run.profile ?? "default", branch, ledger);
   } catch (err) {
-    console.error(
-      `hub: last-green ledger update failed for run "${run.id}": ${err instanceof Error ? err.message : String(err)}`,
-    );
+    console.error(`hub: spec ledger update failed for run "${run.id}": ${errMsg(err)}`);
+  }
+}
+
+/**
+ * What commit the environment was running for this run. An explicit
+ * `?deployedSha=` wins — ccqa never guesses a baseline, and a caller that
+ * knows what it deployed against is more authoritative than the log head.
+ *
+ * Best-effort: a deploy log the hub can't read leaves the run unattributed
+ * (re-run selection then answers `unknown`) rather than rejecting the run.
+ */
+async function resolveDeployedSha(
+  storage: HubStorage,
+  project: string,
+  profile: string | null,
+  explicit: string | null,
+): Promise<Pick<Run, "deployedSha" | "deployedShaSource">> {
+  if (explicit) return { deployedSha: explicit, deployedShaSource: "client" };
+  try {
+    const head = await storage.deploys.head(project, profile ?? "default");
+    if (head) return { deployedSha: head.sha, deployedShaSource: "hub-deploy-log" };
+  } catch (err) {
+    console.error(`hub: could not read the deploy log for "${project}/${profile ?? "default"}": ${errMsg(err)}`);
+  }
+  return { deployedSha: null, deployedShaSource: null };
+}
+
+/**
+ * True when the deploy-log head moved while the run was open: the run
+ * straddled a deploy, so which commit it exercised is not knowable and re-run
+ * selection must report `unknown` instead of picking one. Only meaningful for
+ * a sha the hub stamped itself — a client-asserted one is the caller's claim
+ * about its own run, not the hub's observation.
+ */
+async function deployHeadMovedDuringRun(storage: HubStorage, run: Run): Promise<boolean> {
+  if (run.deployedShaSource !== "hub-deploy-log" || !run.deployedSha) return false;
+  try {
+    const head = await storage.deploys.head(run.project, run.profile ?? "default");
+    return head !== null && head.sha !== run.deployedSha;
+  } catch {
+    return false;
   }
 }
 
@@ -246,22 +315,16 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
     // single run-id-keyed critical section to keep Run.specs and report.json in
     // agreement.
 
-    const raw = await readBody(ctx.req, maxPushBytes);
-    let bodyJson: unknown;
-    try {
-      bodyJson = JSON.parse(raw.toString("utf8"));
-    } catch {
-      throw new HttpError(400, "invalid_body", "request body is not valid JSON");
-    }
-    const parsed = PatchRunRequestSchema.safeParse(bodyJson);
-    if (!parsed.success) {
-      throw new HttpError(400, "invalid_body", `request body is invalid: ${parsed.error.issues[0]?.message ?? "schema mismatch"}`);
-    }
-    const { rows, evidence, done, finalStatus, reportMeta } = parsed.data;
+    const { rows, evidence, done, finalStatus, reportMeta } = await readJsonBody(
+      ctx.req,
+      maxPushBytes,
+      PatchRunRequestSchema,
+      "request body",
+    );
 
     // `mutate` runs inside the storage layer; capture the recomputed specs and
     // the merged results via closure so they're available afterward to update
-    // the Run record and (on `done`) the last-green ledger.
+    // the Run record and (on `done`) the spec ledger.
     let specs = run.specs;
     let mergedResults: ReportSpecResult[] = [];
     await config.storage.artifacts.updateJsonFile<RunReportData>(id, "report.json", (current) => {
@@ -319,10 +382,11 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
           specs,
           ...(reportMeta?.git?.head ? { gitHead: reportMeta.git.head } : {}),
           ...(reportMeta?.promptVersion ? { promptVersion: reportMeta.promptVersion } : {}),
+          ...((await deployHeadMovedDuringRun(config.storage, run)) ? { deployedShaAmbiguous: true } : {}),
         }
       : { specs };
     const updated = await config.storage.runs.update(id, patch);
-    if (done) await updateLastGreenLedger(config.storage, updated, mergedResults);
+    if (done) await updateSpecLedger(config.storage, updated, mergedResults);
 
     sendJson(ctx.res, 200, updated);
   };
@@ -425,16 +489,18 @@ function summarizeDrift(results: ReportSpecResult[]): { issues: number; errors: 
 }
 
 /**
- * Parse the `project`/`branch`/`profile`/`kind` query params shared by
- * `POST /runs` (push) and `POST /runs/open`. `project` is required; `profile`
- * is optional and recorded for display only (runs are not scoped by profile);
- * `kind` defaults to "run".
+ * Parse the `project`/`branch`/`profile`/`kind`/`deployedSha` query params
+ * shared by `POST /runs` (push) and `POST /runs/open`. `project` is required;
+ * `profile` is optional and recorded for display only (runs are not scoped by
+ * profile); `kind` defaults to "run"; `deployedSha` overrides what the hub
+ * would read from the profile's deploy log.
  */
 function parseRunScope(ctx: RouteContext): {
   project: string;
   branch: string | null;
   profile: string | null;
   kind: "run" | "drift";
+  deployedSha: string | null;
 } {
   const projectRaw = ctx.url.searchParams.get("project");
   if (!projectRaw) throw new HttpError(400, "missing_param", "project query parameter is required");
@@ -446,7 +512,8 @@ function parseRunScope(ctx: RouteContext): {
   if (kindRaw !== null && kindRaw !== "run" && kindRaw !== "drift") {
     throw new HttpError(400, "invalid_param", `invalid kind: must be "run" or "drift"`);
   }
-  return { project, branch, profile, kind: kindRaw ?? "run" };
+  const deployedSha = boundedParam(ctx.url.searchParams.get("deployedSha"), "deployedSha", 64);
+  return { project, branch, profile, kind: kindRaw ?? "run", deployedSha };
 }
 
 /**
@@ -457,11 +524,13 @@ function parseRunScope(ctx: RouteContext): {
  * send one. Exported for the last-green handler.
  */
 export function requireBranch(raw: string | null): string | null {
+  return boundedParam(raw, "branch", 256);
+}
+
+/** An opaque free-form query param: null when absent, otherwise length-capped as a sanity check. */
+function boundedParam(raw: string | null, name: string, max: number): string | null {
   if (raw === null || raw === "") return null;
-  if (raw.length > 256) throw new HttpError(400, "invalid_param", "branch is too long (max 256 chars)");
+  if (raw.length > max) throw new HttpError(400, "invalid_param", `${name} is too long (max ${max} chars)`);
   return raw;
 }
 
-function errMsg(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}

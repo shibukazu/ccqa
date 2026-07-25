@@ -180,8 +180,14 @@ relatedPaths:
 Both `ccqa draft` (provisional) and `ccqa record` (refined from real browser
 observations) maintain this list, so you rarely write it by hand. Commit it
 alongside the spec. It scopes `ccqa run --changed` / `ccqa drift --changed`
-and the failure-analysis diff — see
+and the failure-analysis diff, and it is what the hub matches deploys
+against for `ccqa run --changed=last-run` — see
 [Scoping with --changed](./running.md#scoping-with---changed-and-relatedpaths).
+
+Accuracy cuts one way here: a pattern that matches no file makes a spec look
+unaffected by changes that really do affect it. `ccqa perspectives` counts
+the patterns that match nothing and records the count on the spec's entry,
+so the hub's Perspectives view can flag it.
 
 ## File uploads
 
