@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { loadStateIntoSession, verifySessionRestores } from "./session-state.ts";
+import {
+  checkLiveSessionHealth,
+  loadStateIntoSession,
+  recoverLiveSession,
+  verifySessionRestores,
+} from "./session-state.ts";
 import { spawnAB } from "./spawn-ab.ts";
 
 vi.mock("./spawn-ab.ts", () => ({ spawnAB: vi.fn() }));
@@ -78,5 +83,50 @@ describe("verifySessionRestores", () => {
 
     expect(res).toEqual({ restored: false, reason: "nav failed" });
     expect(mockedSpawnAB.mock.calls.at(-1)![0]).toContain("close");
+  });
+});
+
+describe("checkLiveSessionHealth", () => {
+  it("is healthy on any real page, reading the URL without navigating", () => {
+    mockedSpawnAB.mockReturnValueOnce(ok(JSON.stringify("https://app.example/home/inbox")));
+    expect(checkLiveSessionHealth("sess")).toEqual({ healthy: true });
+    expect(mockedSpawnAB.mock.calls[0]![0]).toEqual(["--session", "sess", "eval", "location.href"]);
+  });
+
+  it("stays healthy on a different origin — a spec may roam mid-flow", () => {
+    // A false 'unhealthy' here would wipe auth the spec acquired at runtime.
+    mockedSpawnAB.mockReturnValueOnce(ok(JSON.stringify("https://admin.other/tickets")));
+    expect(checkLiveSessionHealth("sess")).toEqual({ healthy: true });
+  });
+
+  it("is unhealthy when the probe exits non-zero (wedged/restarted daemon)", () => {
+    mockedSpawnAB.mockReturnValueOnce({ status: 1, stdout: "", stderr: "no session" });
+    expect(checkLiveSessionHealth("sess").healthy).toBe(false);
+  });
+
+  it("is unhealthy on a blank/absent page (restart lost the page + state)", () => {
+    mockedSpawnAB.mockReturnValueOnce(ok(JSON.stringify("about:blank")));
+    expect(checkLiveSessionHealth("sess")).toEqual({
+      healthy: false,
+      reason: expect.stringContaining("about:blank"),
+    });
+  });
+});
+
+describe("recoverLiveSession", () => {
+  it("re-injects the state (open blank + state load) then re-opens the verify URL", () => {
+    mockedSpawnAB.mockReturnValue(ok());
+    const res = recoverLiveSession("sess", "/tmp/s.json", "https://app.example/home");
+    expect(res.ok).toBe(true);
+    expect(mockedSpawnAB.mock.calls[0]![0]).toEqual(["--session", "sess", "open", "about:blank"]);
+    expect(mockedSpawnAB.mock.calls[1]![0]).toEqual(["--session", "sess", "state", "load", "/tmp/s.json"]);
+    expect(mockedSpawnAB.mock.calls[2]![0]).toEqual(["--session", "sess", "open", "https://app.example/home"]);
+  });
+
+  it("surfaces the injection error and skips the re-open when re-injection fails", () => {
+    mockedSpawnAB.mockReturnValueOnce({ status: 1, stdout: "", stderr: "boot failed" });
+    const res = recoverLiveSession("sess", "/tmp/s.json", "https://app.example/home");
+    expect(res).toEqual({ ok: false, error: "boot failed" });
+    expect(mockedSpawnAB).toHaveBeenCalledTimes(1); // never reached the re-open
   });
 });

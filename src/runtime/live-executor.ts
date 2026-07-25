@@ -15,7 +15,7 @@ import type { ExpandedActionStep } from "../spec/expand.ts";
 import { stepArtifactPaths } from "./live-artifacts.ts";
 import { findLastStepResult } from "./live-result-parse.ts";
 import { takeScreenshot } from "./screenshot.ts";
-import { loadStateIntoSession } from "./session-state.ts";
+import { checkLiveSessionHealth, loadStateIntoSession, recoverLiveSession } from "./session-state.ts";
 
 /**
  * Per-step cost / usage / turn snapshot, derived from the SDK's `result`
@@ -99,6 +99,15 @@ export interface RunLiveExecutorInput {
    * already signed-in. Restore is load-only; the file is never written back to.
    */
   statePath?: string | null;
+  /**
+   * The signed-in verify URL embedded in the restored session, when present.
+   * Enables mid-run recovery: if the agent-browser daemon is replaced during a
+   * step (a crash/restart drops the in-memory auth-state), the executor probes
+   * this URL to detect the loss and re-anchors to it after re-injecting state
+   * (see checkLiveSessionHealth / recoverLiveSession). Null for older sessions
+   * saved without a verify URL — recovery is then disabled for that run.
+   */
+  verifyUrl?: string | null;
   systemPromptSuffix?: string | null;
   model?: string;
   language?: string;
@@ -135,6 +144,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
   // walks (resolveAgentBrowserBinDir → statSync up the tree) and per-step
   // ~5 KB string rebuilds of the full allSteps block.
   const statePath = input.statePath ?? null;
+  const verifyUrl = input.verifyUrl ?? null;
   const promptPrefix = buildLiveSystemPromptPrefix({
     title: input.spec.title,
     allSteps: input.steps,
@@ -181,13 +191,42 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       promptPrefix + buildLiveSystemPromptStepSection(step) + suffixBlock + langDirective;
     const userPrompt = buildLiveUserPrompt(step);
 
+    // `attempt` counts extra attempts beyond the first (feeds the "(after N
+    // attempts)" reasoning below). It advances on both a budgeted --retry and
+    // the one-shot session-loss recovery, so a run with --retry 0 still gets a
+    // second try when the daemon was replaced mid-step.
     let attempt = 0;
+    let recoveredOnce = false;
     let lastOutcome: StepAttemptOutcome | null = null;
-    while (attempt <= retries) {
-      if (attempt > 0) log.info(`  retry ${attempt}/${retries} for ${step.id}`);
+    for (;;) {
       lastOutcome = await executeStepAttempt(step, paths, systemPrompt, userPrompt);
       if (lastOutcome.status === "passed") break;
+
+      // Session-loss recovery. A step can fail because the agent-browser daemon
+      // crashed/restarted mid-step, dropping the in-memory auth-state injected
+      // at run start — the step then fails at a sign-in wall, not on its own
+      // merits. Probe the session (cheap, non-navigating) only after a failure,
+      // and only once per step; if it's no longer signed in, re-inject the
+      // saved state and grant a free extra attempt. Gated by the probe so a
+      // plain failure (wrong selector, real assertion miss) on a healthy
+      // session is left untouched — the model retries on its current page.
+      if (!recoveredOnce && statePath && verifyUrl) {
+        const health = checkLiveSessionHealth(input.sessionName);
+        if (!health.healthy) {
+          log.warn(
+            `session lost mid-step for ${step.id} (${health.reason}); re-injecting auth-state and retrying`,
+          );
+          const rec = recoverLiveSession(input.sessionName, statePath, verifyUrl);
+          if (!rec.ok) log.warn(`session recovery failed: ${rec.error}`);
+          recoveredOnce = true;
+          attempt++;
+          continue;
+        }
+      }
+
+      if (attempt >= retries) break;
       attempt++;
+      log.info(`  retry ${attempt}/${retries} for ${step.id}`);
     }
 
     const outcome = lastOutcome!;

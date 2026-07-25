@@ -280,7 +280,17 @@ type SpecRunOutcome =
     };
 
 type SessionResolution =
-  | { ok: true; statePath: string; cleanup: () => Promise<void> }
+  | {
+      ok: true;
+      statePath: string;
+      /**
+       * A signed-in verify URL embedded in one of the restored sessions (the
+       * first found), passed to the executor so a daemon restart mid-run can be
+       * detected and recovered from. Absent when no session carried one.
+       */
+      verifyUrl?: string;
+      cleanup: () => Promise<void>;
+    }
   | { ok: false; error: string; hint: string };
 
 /**
@@ -323,6 +333,12 @@ export async function resolveSessionState(
   const profileFlag = profile ? ` --profile ${profile}` : "";
   const loaded: StorageState[] = [];
   const broken: string[] = [];
+  // First verify URL seen across the requested sessions; the executor uses it
+  // as the signed-in anchor for mid-run daemon-restart recovery. Any one is
+  // enough — a restart drops the whole merged state at once, so re-injecting
+  // restores every provider and re-opening one anchor proves the session is
+  // signed in again.
+  let verifyUrl: string | undefined;
   for (const name of names) {
     let state: unknown;
     try {
@@ -338,6 +354,7 @@ export async function resolveSessionState(
 
     const embedded = (state as Record<string, unknown>)[SESSION_VERIFY_URL_KEY];
     if (typeof embedded === "string") {
+      verifyUrl ??= embedded;
       const memoKey = `${resolvedProfile}/${name}`;
       if (!verifiedSessions.has(memoKey)) {
         // Health-check this session's restore before the run. mergeStorageStates
@@ -373,7 +390,12 @@ export async function resolveSessionState(
   }
 
   const statePath = await writeMergedTempState(mergeStorageStates(loaded));
-  return { ok: true, statePath, cleanup: () => removeTempStateDir(statePath) };
+  return {
+    ok: true,
+    statePath,
+    ...(verifyUrl ? { verifyUrl } : {}),
+    cleanup: () => removeTempStateDir(statePath),
+  };
 }
 
 async function runOneSpec(args: {
@@ -417,6 +439,7 @@ async function runOneSpec(args: {
   // unauthenticated. The resolved state always lives in a temp file, cleaned
   // up in the `finally` below once the run (pass, fail, or throw) is done.
   let statePath: string | null = null;
+  let verifyUrl: string | null = null;
   let cleanupSession: (() => Promise<void>) | null = null;
   if (spec.session && spec.session.length > 0) {
     const resolution = await resolveSessionState(spec.session, opts.hubContext ?? null, opts.profile);
@@ -426,6 +449,7 @@ async function runOneSpec(args: {
       return { kind: "error", featureName, specName, error: resolution.error };
     }
     statePath = resolution.statePath;
+    verifyUrl = resolution.verifyUrl ?? null;
     cleanupSession = resolution.cleanup;
     log.meta("state", spec.session.join(", "));
   }
@@ -443,6 +467,7 @@ async function runOneSpec(args: {
       runDir,
       sessionName,
       statePath,
+      verifyUrl,
       systemPromptSuffix: userPromptSuffix,
       model: opts.model,
       language: opts.language,
