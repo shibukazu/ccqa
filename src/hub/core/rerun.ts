@@ -1,5 +1,7 @@
 import type {
+  DeployEntry,
   DeployLog,
+  DeployRef,
   RerunUnknownReason,
   SpecLedger,
   SpecLedgerEntry,
@@ -56,7 +58,7 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
 }
 
 type Verdict =
-  | { state: "needed"; touchedBy?: string[] }
+  | { state: "needed"; touchedBy?: string[]; touchedByDeploy: DeployRef | null }
   | { state: "notNeeded" }
   | { state: "neverRun" }
   | { state: "unknown"; reason: RerunUnknownReason };
@@ -81,15 +83,17 @@ function verdict(
   // the retained array. The touch index stores the former, so compare in it.
   const baselineIndex = log.entries[baselinePos]!.index;
 
-  // Newest first, so the reported `touchedBy` comes from the most recent
-  // deploy that touched the spec.
+  // Newest first, so the reported `touchedBy` and `touchedByDeploy` come from
+  // the most recent deploy in range that touched the spec. Scanning only
+  // `i > baselinePos` is what keeps that deploy in range: an older touch, even
+  // the newest one the touch index knows of, is not what made this verdict.
   let sawGap = false;
   let sawUnknownContents = false;
   for (let i = log.entries.length - 1; i > baselinePos; i--) {
     const entry = log.entries[i]!;
     if (entry.changedPaths !== null && !entry.truncated) {
       const matched = matchPaths(entry.changedPaths, spec.relatedPaths);
-      if (matched.length > 0) return { state: "needed", touchedBy: matched };
+      if (matched.length > 0) return { state: "needed", touchedBy: matched, touchedByDeploy: deployRef(entry) };
     } else {
       sawUnknownContents = true;
     }
@@ -104,11 +108,23 @@ function verdict(
   // spec's current paths.
   const touch = touchIndex[spec.key];
   if (touch && touch.lastTouchedIndex > baselineIndex) {
-    return touch.matchedPaths.length > 0
-      ? { state: "needed", touchedBy: touch.matchedPaths }
-      : { state: "needed" };
+    // The index proves *that* a deploy in range touched the spec, by position.
+    // Naming *which* one takes the log entry itself: the log is the record of
+    // what shipped and the index only a derived accelerator, so if the two
+    // disagree about what is retained, the deploy goes unnamed rather than
+    // asserted from a cache the record no longer backs.
+    const entry = log.entries.find((e) => e.index === touch.lastTouchedIndex);
+    return {
+      state: "needed",
+      ...(touch.matchedPaths.length > 0 ? { touchedBy: touch.matchedPaths } : {}),
+      touchedByDeploy: entry ? deployRef(entry) : null,
+    };
   }
   return unknown(sawGap ? "gapInRange" : "truncatedInRange");
+}
+
+function deployRef(entry: DeployEntry): DeployRef {
+  return { index: entry.index, sha: entry.sha, at: entry.at };
 }
 
 function unknown(reason: RerunUnknownReason): Verdict {

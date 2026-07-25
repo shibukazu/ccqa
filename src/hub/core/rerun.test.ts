@@ -62,7 +62,10 @@ describe("computeRerun", () => {
   });
 
   test("notNeeded when every deploy after the baseline misses it", () => {
-    expect(compute({ log: log(deploy(0), deploy(1)) }).state).toBe("notNeeded");
+    const verdict = compute({ log: log(deploy(0), deploy(1)) });
+    expect(verdict.state).toBe("notNeeded");
+    // Nothing touched it, so there is no deploy to name.
+    expect(verdict.touchedByDeploy).toBeUndefined();
   });
 
   test("the deploy the spec ran against does not count against itself", () => {
@@ -77,15 +80,40 @@ describe("computeRerun", () => {
     expect(verdict.state).toBe("needed");
   });
 
-  test("`touchedBy` comes from the most recent touching deploy", () => {
+  test("`touchedBy` and `touchedByDeploy` come from the most recent touching deploy", () => {
     const verdict = compute({
       log: log(
         deploy(0),
         deploy(1, { changedPaths: ["src/old.ts"] }),
         deploy(2, { changedPaths: ["src/new.ts"] }),
+        deploy(3),
       ),
     });
     expect(verdict.touchedBy).toEqual(["src/new.ts"]);
+    // The deploy that caused the verdict, not the log head (3).
+    expect(verdict.touchedByDeploy).toEqual({ index: 2, sha: "sha-2", at: "2026-07-22T00:00:00Z" });
+  });
+
+  test("a touch that predates the baseline is never the named deploy", () => {
+    const ranAtOne = ledgerWithRun(ranAt("sha-1"));
+    // The newest touch the index knows of is at position 0, behind the run's
+    // baseline at position 1. The deploy that made this verdict is 2.
+    const verdict = compute({
+      ledger: ranAtOne,
+      log: log(deploy(0, { changedPaths: ["src/old.ts"] }), deploy(1), deploy(2, { changedPaths: ["src/new.ts"] })),
+      touchIndex: touchedAt(0, ["src/old.ts"]),
+    });
+    expect(verdict.touchedByDeploy).toMatchObject({ index: 2, sha: "sha-2" });
+
+    // And with the retained log unable to answer, an out-of-range touch names
+    // nothing — it does not even make the verdict.
+    const stuck = compute({
+      ledger: ranAtOne,
+      log: log(deploy(0), deploy(1), deploy(2, { truncated: true })),
+      touchIndex: touchedAt(0, ["src/old.ts"]),
+    });
+    expect(stuck).toMatchObject({ state: "unknown", reason: "truncatedInRange" });
+    expect(stuck.touchedByDeploy).toBeUndefined();
   });
 
   test("the three ledger coordinates ride along with every verdict", () => {
@@ -167,6 +195,21 @@ describe("computeRerun", () => {
       state: "unknown",
       reason: "truncatedInRange",
     });
+  });
+
+  test("a touch the log no longer holds proves the verdict but names no deploy", () => {
+    const truncated = log(deploy(0), deploy(1, { truncated: true }));
+    // The proving entry is retained, so it can be named from the log itself.
+    expect(compute({ log: truncated, touchIndex: touchedAt(1) })).toMatchObject({
+      state: "needed",
+      touchedByDeploy: { index: 1, sha: "sha-1" },
+    });
+
+    // The index points past everything the log retains: the position still
+    // proves a touch in range, but no entry backs the sha, so none is claimed.
+    const verdict = compute({ log: truncated, touchIndex: touchedAt(9) });
+    expect(verdict.state).toBe("needed");
+    expect(verdict.touchedByDeploy).toBeNull();
   });
 
   test("the touch index is compared on log position, not on array offset", () => {

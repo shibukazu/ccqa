@@ -162,11 +162,14 @@ const HTML_BODY = `
           <div class="note info persp-note" id="persp-rerun-note" hidden></div>
           <div class="toolbar">
             <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="persp-q" type="search" data-i18n-ph="perspectives.search" aria-label="Search cases"></label>
-            <button class="fchip" data-f="all" aria-pressed="true" type="button" data-i18n="perspectives.filter.all">All</button>
-            <button class="fchip" data-f="deterministic" aria-pressed="false" type="button" data-i18n="perspectives.filter.deterministic">Deterministic</button>
-            <button class="fchip" data-f="live" aria-pressed="false" type="button" data-i18n="perspectives.filter.live">Live</button>
-            <button class="fchip" data-f="norec" aria-pressed="false" type="button" data-i18n="perspectives.filter.norec">Not recorded only</button>
-            <button class="fchip" id="persp-chip-rerun" data-f="rerun" aria-pressed="false" type="button" data-i18n="perspectives.filter.rerun" hidden>Needs re-run only</button>
+            <!-- Each chip carries the count of what it would leave behind, so
+                 data-i18n sits on the inner label span: applyStaticI18n swaps
+                 textContent, which on the button would delete the count. -->
+            <button class="fchip" data-f="all" aria-pressed="true" type="button"><span data-i18n="perspectives.filter.all">All</span><span class="fcount"></span></button>
+            <button class="fchip" data-f="deterministic" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.deterministic">Deterministic</span><span class="fcount"></span></button>
+            <button class="fchip" data-f="live" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.live">Live</span><span class="fcount"></span></button>
+            <button class="fchip" data-f="norec" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.norec">Not recorded only</span><span class="fcount"></span></button>
+            <button class="fchip" id="persp-chip-rerun" data-f="rerun" aria-pressed="false" type="button" hidden><span data-i18n="perspectives.filter.rerun">Needs re-run only</span><span class="fcount"></span></button>
             <div class="spacer"></div>
             <span class="muted persp-head" id="persp-deploy-head" hidden></span>
             <div class="sw-wrap" id="persp-profile-wrap">
@@ -363,6 +366,11 @@ const CSS = `
     --fail: #dc2626; --fail-bg: #fef2f2; --fail-border: #fecaca;
     --info: #2563eb; --info-bg: #eff6ff; --info-border: #bfdbfe;
     --amber: #a16207; --amber-bg: #fefce8; --amber-border: #fde68a;
+    /* Fill counterpart of --amber. The token above is tuned for *text* on
+       --amber-bg, so at swatch size it reads brown; a filled area needs the
+       actual yellow the badge is understood to mean. Same value in both
+       themes, since a fill has no contrast-on-background constraint. */
+    --amber-fill: #eab308;
     --violet: #7c3aed; --violet-bg: #f5f3ff; --violet-border: #ddd6fe;
     --radius: 10px; --radius-md: 8px; --radius-sm: 6px;
     --shadow: 0 10px 38px -10px rgba(0,0,0,0.20), 0 4px 12px -4px rgba(0,0,0,0.10);
@@ -380,6 +388,7 @@ const CSS = `
     --fail: #f87171; --fail-bg: rgba(248,113,113,0.10); --fail-border: rgba(248,113,113,0.25);
     --info: #60a5fa; --info-bg: rgba(96,165,250,0.10); --info-border: rgba(96,165,250,0.25);
     --amber: #eab308; --amber-bg: rgba(234,179,8,0.10); --amber-border: rgba(234,179,8,0.25);
+    --amber-fill: #eab308;
     --violet: #a78bfa; --violet-bg: rgba(167,139,250,0.10); --violet-border: rgba(167,139,250,0.25);
     --shadow: 0 10px 38px -10px rgba(0,0,0,0.6), 0 4px 12px -4px rgba(0,0,0,0.4);
   }
@@ -823,30 +832,39 @@ const CSS = `
   .prompt-diff pre { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2);
     font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--fg-dim); white-space: pre-wrap; word-break: break-word; max-height: 480px; overflow-y: auto; }
 
-  /* perspectives — coverage strip, filter toolbar, and the one-table-per-project
+  /* perspectives — summary row, filter toolbar, and the one-table-per-project
      view (feature section rows + expandable case detail rows). Reuses the
-     existing badge/chip primitives above; --pass/--amber cover the "runnable"
-     vs "not recorded" coloring so no new tokens are needed. */
-  .ov { display: flex; align-items: center; gap: 28px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 16px; flex-wrap: wrap; }
-  .ov .num { display: flex; flex-direction: column; }
-  .ov .num b { font-size: 24px; line-height: 1.15; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .ov .num span { font-size: 12px; color: var(--muted); }
-  .ov .sep { width: 1px; align-self: stretch; background: var(--border); }
-  .ov .breakdown { display: flex; gap: 20px; }
-  .covwrap { flex: 1; min-width: 220px; display: flex; flex-direction: column; gap: 6px; }
-  .covbar { height: 8px; border-radius: 999px; overflow: hidden; display: flex; background: var(--surface-3); }
-  .covbar .ok { background: var(--pass); }
-  .covbar .no { background: var(--amber); opacity: 0.75; }
-  .covleg { display: flex; gap: 16px; font-size: 12px; color: var(--muted); }
-  .covleg i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 5px; }
-  .covleg .lg-ok i { background: var(--pass); }
-  .covleg .lg-no i { background: var(--amber); opacity: 0.75; }
+     existing badge/chip primitives above, so no new tokens are needed.
+
+     The summary row answers the question this tab exists for — which cases
+     need re-running — as one inventory line plus one bar segmented by re-run
+     state. The mode and recorded-ness counts moved onto the filter chips,
+     which is where a count says something actionable. */
+  .ov { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 16px; }
+  .ov-inv { font-size: 13px; color: var(--muted); }
+  .ov-inv b { color: var(--fg); font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .rrbar { height: 8px; border-radius: 999px; overflow: hidden; display: flex; background: var(--surface-3); }
+  .rrleg { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12px; color: var(--muted); }
+  .rrleg span { display: inline-flex; align-items: center; gap: 6px; }
+  .rrleg i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .rrleg b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  /* One class per re-run state, worn by both the bar segment and its legend
+     dot. "unknown" takes the info hue: it must never be mistaken for a pass,
+     and the two neutral states are two different greys so adjacent segments
+     stay separable. */
+  .sg-needed { background: var(--amber-fill); }
+  .sg-unknown { background: var(--info); }
+  .sg-notneeded { background: var(--pass); }
+  .sg-neverrun { background: var(--muted-2); }
+  .sg-noteval { background: var(--muted); }
 
   .search { flex: 1; min-width: 200px; max-width: 340px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 10px; height: 32px; background: var(--surface); }
   .search svg { width: 15px; height: 15px; flex: none; color: var(--muted-2); }
   .search input { border: none; outline: none; font: inherit; font-size: 13px; width: 100%; background: transparent; color: var(--fg); }
   .fchip { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; color: var(--muted); }
   .fchip[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+  .fchip .fcount { margin-left: 6px; font-variant-numeric: tabular-nums; color: var(--muted-2); }
+  .fchip[aria-pressed="true"] .fcount { color: var(--accent-fg); opacity: 0.7; }
 
   .chip.live { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
   .badge.ok { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
@@ -875,29 +893,52 @@ const CSS = `
      selector, so it wraps instead of overflowing on a narrow window. */
   #view-perspectives .toolbar { flex-wrap: wrap; }
   .proj-menu.right { left: auto; right: 0; }
-  .d-note { margin-top: 12px; max-width: 860px; }
+  .d-note { margin-top: 12px; max-width: 900px; }
 
   .tblcard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  /* Badges across a case row must land on one line. Some of these cells carry
+     only a badge, others a badge plus a sub-line (sha · when) or a two-line
+     explanation, so middle-aligning the cells put each badge at a different
+     height. Top-aligning them fixes where the first line starts; a 24px first
+     line in the cell and a 24px badge box, both centred, fix where the text
+     inside it sits — so a badge's Y offset no longer depends on what follows
+     it. Sub-lines re-declare their own tighter leading. */
+  #persp-tbody td { vertical-align: top; }
+  #persp-tbody tr.row > td { line-height: 24px; }
+  #persp-tbody tr.row > td .chip, #persp-tbody tr.row > td .badge { vertical-align: top; min-height: 24px; line-height: 18px; }
   /* Feature section rows must read as headings, not as just another data row —
      larger, darker, extra padding, and a strong top rule marking the break. */
   tr.grp td { background: var(--surface-2); border-top: 2px solid var(--border-strong); border-bottom: 1px solid var(--border); padding: 12px 12px 10px; font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--fg); }
   tr.grp td .gcount { color: var(--muted); font-weight: 500; font-size: 12px; font-family: var(--font); margin-left: 10px; }
   td.c-title { font-weight: 500; max-width: 460px; }
-  td.c-title .csum { display: block; font-weight: 400; color: var(--muted); font-size: 12.5px; margin-top: 1px; }
+  td.c-title .csum { display: block; font-weight: 400; color: var(--muted); font-size: 12.5px; line-height: 1.45; margin-top: 1px; }
   td.c-chev { width: 28px; color: var(--muted-2); text-align: right; }
   .chev-i { display: inline-block; transition: transform 0.15s; font-size: 11px; }
   tr.row[aria-expanded="true"] .chev-i { transform: rotate(90deg); }
   tr.detail { display: none; }
   tr.detail.open { display: table-row; }
-  tr.detail > td { background: var(--surface-2); padding: 14px 16px 16px; }
+  /* The panel is the row continuing, not a card under it: same surface, and no
+     rule between a case and its own panel. The rule below the panel stays —
+     that one separates this case from the next. The hover tint is dropped
+     while open for the same reason; tinting only the top half would split the
+     two apart again. */
+  tr.detail > td { background: var(--surface); padding: 2px 16px 18px; }
+  #persp-tbody tr.row[aria-expanded="true"] > td { border-bottom: 0; }
+  #persp-tbody tr.row[aria-expanded="true"]:hover { background: var(--surface); }
 
-  .d-grid { display: grid; grid-template-columns: 120px 1fr; gap: 7px 14px; font-size: 13px; max-width: 860px; }
+  .d-grid { display: grid; grid-template-columns: 156px 1fr; gap: 9px 14px; font-size: 13px; max-width: 900px; }
   .d-grid dt { color: var(--muted); font-size: 12px; padding-top: 1px; }
   .d-grid dd { color: var(--fg-dim); }
   .d-grid dd ul { list-style: none; display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; }
   .d-grid dd li::before { content: "\\2022 "; color: var(--muted-2); }
-  .d-grid code { font-size: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
-  .notebox { margin-top: 12px; max-width: 860px; }
+  .d-grid code { font-size: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+  /* Prose gets a measure so it stops wrapping mid-phrase in a narrow column;
+     paths wrap as whole chips, never inside a path. */
+  .d-prose { max-width: 62ch; line-height: 1.5; }
+  .d-paths { display: flex; flex-wrap: wrap; gap: 6px; }
+  .d-paths code { white-space: nowrap; }
+  .d-prose + .d-paths { margin-top: 6px; }
+  .notebox { margin-top: 14px; max-width: 900px; }
   .notebox .nlabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .notebox textarea { width: 100%; min-height: 54px; resize: vertical; font: inherit; font-size: 13px; color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 8px 10px; }
   .notebox .nact { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
@@ -1001,9 +1042,7 @@ const CLIENT_JS = `
       "perspectives.loadFailed": "Loading perspectives failed",
       "perspectives.mode.deterministic": "deterministic", "perspectives.mode.live": "live",
       "perspectives.status.runnable": "runnable", "perspectives.status.notRecorded": "not recorded",
-      "perspectives.metric.features": "Features", "perspectives.metric.cases": "Test cases",
-      "perspectives.metric.deterministic": "Deterministic", "perspectives.metric.live": "Live",
-      "perspectives.cov.runnable": "runnable", "perspectives.cov.notRecorded": "not recorded",
+      "perspectives.ov.cases": "cases", "perspectives.ov.features": "features",
       "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
       "perspectives.d.testCondition": "Condition", "perspectives.d.spec": "spec",
       "perspectives.d.relatedPaths": "Related code",
@@ -1011,8 +1050,9 @@ const CLIENT_JS = `
       "perspectives.note.placeholder": "Notes about this case…",
       "perspectives.note.saved": "Saved",
       "perspectives.note.error": "Could not save — retry",
-      "perspectives.d.lastGreen": "Last passed", "perspectives.d.lastRed": "Last failed",
-      "perspectives.d.rerun": "Needs re-run", "perspectives.d.touchedBy": "Changed by deploy",
+      "perspectives.d.lastRed": "Most recent failure",
+      "perspectives.d.changedSince": "Changes since the last run",
+      "perspectives.d.cannotJudge": "Why this cannot be judged",
       "perspectives.result.never": "never run",
       "perspectives.result.openRun": "Open this run in the hub",
       "perspectives.result.ci": "CI",
@@ -1023,12 +1063,11 @@ const CLIENT_JS = `
       "perspectives.rerun.state.notEvaluated": "Not evaluated",
       "perspectives.rerun.vsDeploy": "judged against deploy",
       "perspectives.rerun.noDeployHead": "no deploy recorded for this profile",
-      "perspectives.rerun.notNeededDetail": "No deploy since this case last ran touched its related code.",
+      "perspectives.rerun.changedByDeploy": "deploy {sha} changed its related code",
+      "perspectives.rerun.changesSome": "yes (as of deploy {sha})",
+      "perspectives.rerun.changesNone": "none (as of deploy {sha})",
       "perspectives.rerun.touchedCount": "{n} deployed path(s) matched its related code",
       "perspectives.rerun.touchedUnknown": "a deploy since the last run touched its related code",
-      "perspectives.rerun.touchedByHint": "Deployed paths that matched this case's related code:",
-      "perspectives.rerun.neverGreen": "never passed on this profile",
-      "perspectives.rerun.neverRed": "never failed on this profile",
       "perspectives.rerun.neverRunHint": "no result recorded for this profile yet",
       "perspectives.rerun.notEvaluatedHint": "no run and no deploy has ever been recorded for this profile",
       "perspectives.rerun.why.noRelatedPaths": "no related code declared",
@@ -1142,9 +1181,7 @@ const CLIENT_JS = `
       "perspectives.loadFailed": "テスト観点の読み込みに失敗しました",
       "perspectives.mode.deterministic": "決定的", "perspectives.mode.live": "ライブ",
       "perspectives.status.runnable": "実行可能", "perspectives.status.notRecorded": "未record",
-      "perspectives.metric.features": "機能", "perspectives.metric.cases": "テストケース",
-      "perspectives.metric.deterministic": "決定的", "perspectives.metric.live": "ライブ",
-      "perspectives.cov.runnable": "実行可能", "perspectives.cov.notRecorded": "未record",
+      "perspectives.ov.cases": "ケース", "perspectives.ov.features": "機能",
       "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
       "perspectives.d.testCondition": "実行条件", "perspectives.d.spec": "spec",
       "perspectives.d.relatedPaths": "関連コード",
@@ -1152,8 +1189,9 @@ const CLIENT_JS = `
       "perspectives.note.placeholder": "このケースについてのメモ…",
       "perspectives.note.saved": "保存しました",
       "perspectives.note.error": "保存に失敗しました — 再試行してください",
-      "perspectives.d.lastGreen": "最終合格", "perspectives.d.lastRed": "最終失敗",
-      "perspectives.d.rerun": "再実行の要否", "perspectives.d.touchedBy": "デプロイでの変更",
+      "perspectives.d.lastRed": "直近の失敗",
+      "perspectives.d.changedSince": "前回実行以降の変更",
+      "perspectives.d.cannotJudge": "判定できない理由",
       "perspectives.result.never": "未実行",
       "perspectives.result.openRun": "ハブでこの実行を開く",
       "perspectives.result.ci": "CI",
@@ -1164,12 +1202,11 @@ const CLIENT_JS = `
       "perspectives.rerun.state.notEvaluated": "未評価",
       "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
       "perspectives.rerun.noDeployHead": "このプロファイルにはデプロイの記録がありません",
-      "perspectives.rerun.notNeededDetail": "前回実行以降のデプロイは、このケースの関連コードに触れていません。",
+      "perspectives.rerun.changedByDeploy": "デプロイ {sha} が関連コードを変更",
+      "perspectives.rerun.changesSome": "あり（デプロイ {sha} 時点）",
+      "perspectives.rerun.changesNone": "なし（デプロイ {sha} 時点）",
       "perspectives.rerun.touchedCount": "関連コードに一致したデプロイ差分 {n} 件",
       "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイが関連コードを変更しています",
-      "perspectives.rerun.touchedByHint": "このケースの関連コードに一致したデプロイ差分:",
-      "perspectives.rerun.neverGreen": "このプロファイルでは一度も合格していません",
-      "perspectives.rerun.neverRed": "このプロファイルでは一度も失敗していません",
       "perspectives.rerun.neverRunHint": "このプロファイルでの実行記録がまだありません",
       "perspectives.rerun.notEvaluatedHint": "このプロファイルには実行もデプロイも記録がありません",
       "perspectives.rerun.why.noRelatedPaths": "関連コードが未宣言です",
@@ -2994,35 +3031,83 @@ const CLIENT_JS = `
     return text === prefix + reason ? t(prefix + "unrecognized") : text;
   }
 
-  // The justification a verdict must always carry. "long" picks the actionable
-  // phrasing for the detail row; the short form fits a table cell. Nothing here
+  // Why the question cannot be answered, in the actionable phrasing the detail
+  // panel wants: name the missing input and how to supply it. Only "unknown"
+  // carries a machine-readable reason (ADR-0010); the other two are states of
+  // the ledger, not gaps in the inputs.
+  function rerunCannotJudge(rr) {
+    if (rr.state === "unknown") return rerunReasonText("perspectives.rerun.fix.", rr.reason || "");
+    if (rr.state === "neverRun") return t("perspectives.rerun.neverRunHint");
+    if (rr.state === "notEvaluated") return t("perspectives.rerun.notEvaluatedHint");
+    // A state a newer hub invented: say the UI cannot read it rather than leave
+    // the row blank, which would look like missing data.
+    return rerunReasonText("perspectives.rerun.fix.", rr.state);
+  }
+
+  // The short justification a table cell carries under its badge. Nothing here
   // may collapse to a bare "up to date" — notNeeded names the deploy it was
   // judged against, and unknown names the missing input.
-  function rerunWhy(rr, long) {
+  function rerunCellWhy(rr) {
     var head = perspState.rerun && perspState.rerun.deployHead;
     if (rr.state === "needed") {
       if (!rr.touchedBy || !rr.touchedBy.length) return t("perspectives.rerun.touchedUnknown");
-      return long
-        ? t("perspectives.rerun.touchedByHint")
-        : t("perspectives.rerun.touchedCount").replace("{n}", String(rr.touchedBy.length));
+      return t("perspectives.rerun.touchedCount").replace("{n}", String(rr.touchedBy.length));
     }
     if (rr.state === "notNeeded") {
       if (!head) return t("perspectives.rerun.noDeployHead");
-      var against = t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
-      return long ? t("perspectives.rerun.notNeededDetail") + " " + against : against;
+      return t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
     }
-    if (rr.state === "unknown") {
-      return rerunReasonText(long ? "perspectives.rerun.fix." : "perspectives.rerun.why.", rr.reason || "");
-    }
-    if (rr.state === "neverRun") return t("perspectives.rerun.neverRunHint");
-    if (rr.state === "notEvaluated") return t("perspectives.rerun.notEvaluatedHint");
-    return "";
+    if (rr.state === "unknown") return rerunReasonText("perspectives.rerun.why.", rr.reason || "");
+    return rerunCannotJudge(rr);
   }
 
   var RERUN_BADGE_CLASS = {
     needed: "rr-needed", notNeeded: "rr-notneeded", unknown: "rr-unknown",
     neverRun: "rr-none", notEvaluated: "rr-none"
   };
+
+  // --- pure: rerun composition ---------------------------------------------
+  // Self-contained on purpose: no DOM, no closures. rerun-view.test.ts lifts
+  // this region out of the rendered page and runs it, because the summary bar
+  // is where an overstatement would do the most damage and the suite has no
+  // browser to click through.
+
+  // Bar segments in drawing order: what to act on first, then what needs no
+  // action, then what was never measured. "unknown" keeps its own place and
+  // its own colour — folding it into "notNeeded" would turn "we cannot say"
+  // into "all clear", which is the one thing ADR-0010 forbids.
+  var RERUN_ORDER = ["needed", "unknown", "notNeeded", "neverRun", "notEvaluated"];
+  var RERUN_SEG_CLASS = {
+    needed: "sg-needed", unknown: "sg-unknown", notNeeded: "sg-notneeded",
+    neverRun: "sg-neverrun", notEvaluated: "sg-noteval"
+  };
+
+  // One verdict per case, bucketed. A case with no verdict at all — this hub
+  // does not answer the question, the fetch failed, or the case was added
+  // after the report was computed — is not evaluated, never "not needed". A
+  // state this UI does not know reads as unknown for the same reason: an
+  // answer we cannot interpret is not evidence that nothing is needed.
+  function rerunComposition(verdicts) {
+    var counts = { needed: 0, unknown: 0, notNeeded: 0, neverRun: 0, notEvaluated: 0 };
+    verdicts.forEach(function (rr) {
+      if (!rr || !rr.state) { counts.notEvaluated += 1; return; }
+      var known = Object.prototype.hasOwnProperty.call(counts, rr.state);
+      counts[known ? rr.state : "unknown"] += 1;
+    });
+    return counts;
+  }
+
+  // Only states with cases in them get drawn, which keeps the legend short and
+  // stops an empty state from reading as a verdict: a "needs re-run 0" printed
+  // for a profile nothing has been evaluated on is exactly that misreading.
+  function rerunSegments(counts) {
+    var out = [];
+    RERUN_ORDER.forEach(function (key) {
+      if (counts[key] > 0) out.push({ state: key, count: counts[key], cls: RERUN_SEG_CLASS[key] });
+    });
+    return out;
+  }
+  // --- end pure: rerun composition -----------------------------------------
 
   // NB: the parameter is not named "state" — that would shadow the app-wide
   // state object this scope closes over.
@@ -3112,18 +3197,16 @@ const CLIENT_JS = `
       return td;
     }
     td.appendChild(rerunBadge(rr.state));
-    var why = rerunWhy(rr, false);
+    var why = rerunCellWhy(rr);
     if (why) td.appendChild(el("span", "cellsub", why));
     return td;
   }
 
-  // A list of paths/globs as inline <code> chips.
+  // A list of paths/globs as <code> chips. A flex row, so a list that does not
+  // fit wraps between chips instead of breaking inside a path.
   function pathCodes(paths) {
-    var wrap = el("span");
-    paths.forEach(function (p, i) {
-      if (i > 0) wrap.appendChild(document.createTextNode(" "));
-      wrap.appendChild(el("code", null, p));
-    });
+    var wrap = el("span", "d-paths");
+    paths.forEach(function (p) { wrap.appendChild(el("code", null, p)); });
     return wrap;
   }
 
@@ -3167,65 +3250,56 @@ const CLIENT_JS = `
     return span;
   }
 
-  // Overview strip: feature/case counts, deterministic/live breakdown, and a
-  // runnable-vs-not-recorded coverage bar.
+  // Summary row: the inventory as one line, then one bar segmented by re-run
+  // state — the question this tab is opened to answer. The mode and
+  // recorded-ness counts are not lost; they moved onto the filter chips, where
+  // a count states what that filter would leave behind.
+  //
+  // With no re-run data (an older hub, a failed fetch, or a profile nothing
+  // has been recorded on) every case is "not evaluated" and the bar says so in
+  // one neutral segment, rather than showing a composition that reads as
+  // "nothing to do".
   function renderPerspOverview(doc) {
     var host = document.getElementById("persp-ov");
     clear(host);
-    var allSpecs = doc.features.reduce(function (acc, f) { return acc.concat(f.specs); }, []);
-    var total = allSpecs.length;
-    var ok = allSpecs.filter(perspRunnable).length;
-    var no = total - ok;
-    var det = allSpecs.filter(function (s) { return perspMode(s) === "deterministic"; }).length;
-    var live = total - det;
+    var verdicts = [];
+    doc.features.forEach(function (feature) {
+      feature.specs.forEach(function (spec) { verdicts.push(rerunFor(feature, spec)); });
+    });
 
-    function numBlock(value, labelKey) {
-      var box = el("div", "num");
-      box.appendChild(el("b", null, String(value)));
-      box.appendChild(el("span", null, t(labelKey)));
-      return box;
-    }
+    var inv = el("div", "ov-inv");
+    inv.appendChild(el("b", null, String(verdicts.length)));
+    inv.appendChild(document.createTextNode(" " + t("perspectives.ov.cases") + " / "));
+    inv.appendChild(el("b", null, String(doc.features.length)));
+    inv.appendChild(document.createTextNode(" " + t("perspectives.ov.features")));
+    host.appendChild(inv);
+    if (!verdicts.length) return;
 
-    host.appendChild(numBlock(doc.features.length, "perspectives.metric.features"));
-    host.appendChild(el("div", "sep"));
-    host.appendChild(numBlock(total, "perspectives.metric.cases"));
-    host.appendChild(el("div", "sep"));
-    var breakdown = el("div", "breakdown");
-    breakdown.appendChild(numBlock(det, "perspectives.metric.deterministic"));
-    breakdown.appendChild(numBlock(live, "perspectives.metric.live"));
-    host.appendChild(breakdown);
-
-    var covwrap = el("div", "covwrap");
-    var covbar = el("div", "covbar");
-    if (total > 0) {
-      var okBar = el("div", "ok");
-      okBar.style.width = (ok / total) * 100 + "%";
-      var noBar = el("div", "no");
-      noBar.style.width = (no / total) * 100 + "%";
-      covbar.appendChild(okBar);
-      covbar.appendChild(noBar);
-    }
-    covwrap.appendChild(covbar);
-    var covleg = el("div", "covleg");
-    var legOk = el("span", "lg-ok");
-    legOk.appendChild(el("i"));
-    legOk.appendChild(document.createTextNode(t("perspectives.cov.runnable") + " " + ok));
-    covleg.appendChild(legOk);
-    if (no > 0) {
-      var legNo = el("span", "lg-no");
-      legNo.appendChild(el("i"));
-      legNo.appendChild(document.createTextNode(t("perspectives.cov.notRecorded") + " " + no));
-      covleg.appendChild(legNo);
-    }
-    covwrap.appendChild(covleg);
-    host.appendChild(covwrap);
+    var bar = el("div", "rrbar");
+    var leg = el("div", "rrleg");
+    rerunSegments(rerunComposition(verdicts)).forEach(function (seg) {
+      var fill = el("div", seg.cls);
+      fill.style.width = (seg.count / verdicts.length) * 100 + "%";
+      bar.appendChild(fill);
+      var item = el("span");
+      item.appendChild(el("i", seg.cls));
+      item.appendChild(document.createTextNode(t("perspectives.rerun.state." + seg.state)));
+      item.appendChild(el("b", null, String(seg.count)));
+      leg.appendChild(item);
+    });
+    host.appendChild(bar);
+    host.appendChild(leg);
   }
 
-  function perspMatches(feature, spec) {
-    if (perspState.f === "deterministic" && perspMode(spec) !== "deterministic") return false;
-    if (perspState.f === "live" && perspMode(spec) !== "live") return false;
-    if (perspState.f === "norec" && perspRunnable(spec)) return false;
-    if (perspState.f === "rerun") {
+  // The filter is passed in rather than read from perspState so the same
+  // predicate can answer "what would this chip yield?" for every chip. The
+  // search text always applies: a chip's count has to be the number of rows
+  // clicking it actually leaves.
+  function perspMatches(feature, spec, f) {
+    if (f === "deterministic" && perspMode(spec) !== "deterministic") return false;
+    if (f === "live" && perspMode(spec) !== "live") return false;
+    if (f === "norec" && perspRunnable(spec)) return false;
+    if (f === "rerun") {
       var rr = rerunFor(feature, spec);
       // Only "needed": "unknown" is not a weaker "probably needed", and
       // folding it in here would be exactly the overstatement ADR-0010 forbids.
@@ -3238,16 +3312,99 @@ const CLIENT_JS = `
     return true;
   }
 
+  function perspFilterCount(f) {
+    var doc = perspState.doc;
+    if (!doc) return 0;
+    var n = 0;
+    doc.features.forEach(function (feature) {
+      feature.specs.forEach(function (spec) { if (perspMatches(feature, spec, f)) n += 1; });
+    });
+    return n;
+  }
+
+  // --- pure: rerun detail labels -------------------------------------------
+  // Self-contained on purpose (no DOM, no closures) so rerun-view.test.ts can
+  // lift this region out of the rendered page and run it: which label the
+  // panel's evidence row wears, and whether it has a failure row at all.
+
+  // needed/notNeeded put evidence in that row, so it is labelled by the
+  // timeframe the evidence covers. The other three have no evidence to show,
+  // only a missing input to name — a different kind of content, and forcing one
+  // label over both would make one of the two read as a lie.
+  function rerunEvidenceLabelKey(rerunState) {
+    return rerunState === "needed" || rerunState === "notNeeded"
+      ? "perspectives.d.changedSince"
+      : "perspectives.d.cannotJudge";
+  }
+
+  // The failure row points at a run. With no failure there is nothing to point
+  // at, so the row is omitted rather than filled with "never failed" — the row
+  // above already carries the last result.
+  function rerunHasFailure(rr) {
+    return !!(rr && rr.lastRed);
+  }
+
+  // Which deploy the evidence line names, and how. A "needed" verdict carries
+  // the deploy that caused it (touchedByDeploy) when the hub could confirm one,
+  // and that is the deploy a reader wants — so it is named, with when it
+  // landed. Without it (an older hub, or an entry the log no longer retains)
+  // the only deploy coordinate on hand is the report's head, which is the point
+  // the judgement was made at and not a cause: it keeps the weaker wording.
+  // "at" is set only when the line names a cause, so the caller knows whether a
+  // timestamp belongs on it.
+  function rerunChangeLine(rr, deployHead) {
+    var cause = rr.state === "needed" && rr.touchedByDeploy ? rr.touchedByDeploy : null;
+    if (cause && cause.sha) return { key: "perspectives.rerun.changedByDeploy", sha: cause.sha, at: cause.at };
+    if (!deployHead) return { key: "perspectives.rerun.noDeployHead", sha: null, at: null };
+    return {
+      key: rr.state === "needed" ? "perspectives.rerun.changesSome" : "perspectives.rerun.changesNone",
+      sha: deployHead.sha,
+      at: null,
+    };
+  }
+  // --- end pure: rerun detail labels ----------------------------------------
+
+  // The evidence behind the verdict, as the value of whichever row
+  // rerunEvidenceLabelKey chose. For needed/notNeeded that is what the deploy
+  // log holds since this case last ran, named by rerunChangeLine.
+  // The label already states the timeframe, so the value never repeats it.
+  function rerunEvidenceValue(rr) {
+    var wrap = el("div");
+    if (rr.state !== "needed" && rr.state !== "notNeeded") {
+      wrap.appendChild(el("div", "d-prose", rerunCannotJudge(rr)));
+      return wrap;
+    }
+    // Both states require a non-empty deploy log, so a head-less report
+    // contradicts itself; rerunChangeLine then names what is missing rather
+    // than inventing a baseline.
+    var line = rerunChangeLine(rr, perspState.rerun && perspState.rerun.deployHead);
+    var text = t(line.key).replace("{sha}", shortSha(line.sha));
+    if (line.at) text += " · " + relTime(line.at);
+    wrap.appendChild(el("div", "d-prose", text));
+    // A touch the index proved but cannot enumerate leaves no paths to list;
+    // the line above still says a change landed, which is all that is known.
+    if (rr.state === "needed" && rr.touchedBy && rr.touchedBy.length) {
+      wrap.appendChild(pathCodes(rr.touchedBy));
+    }
+    return wrap;
+  }
+
   // Detail row: a definition list of the case's fields plus the note editor.
   // Built with createElement/textContent throughout — every field here is
   // API-derived, so none of it may go through innerHTML.
+  //
+  // The panel shows only what the table row cannot. The row already carries the
+  // title, mode, recorded state, last result and the re-run verdict, so none of
+  // those is repeated: what is left is the case's definition, the evidence the
+  // verdict rests on, its related code, and the note.
   function perspDetailContent(feature, spec) {
     var frag = document.createDocumentFragment();
     var dl = el("dl", "d-grid");
     function row(labelKey, valueNode) {
       dl.appendChild(el("dt", null, t(labelKey)));
       var dd = el("dd");
-      if (typeof valueNode === "string") dd.textContent = valueNode;
+      // Prose gets a measure; a node brings its own layout.
+      if (typeof valueNode === "string") dd.appendChild(el("div", "d-prose", valueNode));
       else dd.appendChild(valueNode);
       dl.appendChild(dd);
     }
@@ -3258,36 +3415,22 @@ const CLIENT_JS = `
     }
     if (spec.startScreen) row("perspectives.d.startScreen", spec.startScreen);
     if (spec.testCondition) row("perspectives.d.testCondition", spec.testCondition);
-    var specCode = el("code", null, spec.specName);
-    row("perspectives.d.spec", specCode);
-    if (spec.relatedPaths && spec.relatedPaths.length) {
-      row("perspectives.d.relatedPaths", pathCodes(spec.relatedPaths));
-    }
+    // The spec id stays: it is what a user types to re-run this case, and the
+    // table shows the title, never the id.
+    row("perspectives.d.spec", el("code", null, spec.specName));
 
-    // Result and re-run need are orthogonal axes (ADR-0010), so both ledger
-    // coordinates are shown with an explicit "never" — a blank row would read
-    // as missing data rather than as "this has never happened".
     var rr = rerunFor(feature, spec);
     if (rr) {
-      var verdict = el("span");
-      verdict.appendChild(rerunBadge(rr.state));
-      var why = rerunWhy(rr, true);
-      if (why) verdict.appendChild(el("span", "cellsub", why));
-      row("perspectives.d.rerun", verdict);
-      if (rr.state === "needed" && rr.touchedBy && rr.touchedBy.length) {
-        row("perspectives.d.touchedBy", pathCodes(rr.touchedBy));
-      }
-      row("perspectives.d.lastGreen", rr.lastGreen
-        ? ledgerLine(rr.lastGreen)
-        : el("span", "muted", t("perspectives.rerun.neverGreen")));
-      row("perspectives.d.lastRed", rr.lastRed
-        ? ledgerLine(rr.lastRed)
-        : el("span", "muted", t("perspectives.rerun.neverRed")));
+      row(rerunEvidenceLabelKey(rr.state), rerunEvidenceValue(rr));
+      if (rerunHasFailure(rr)) row("perspectives.d.lastRed", ledgerLine(rr.lastRed));
+    }
+    if (spec.relatedPaths && spec.relatedPaths.length) {
+      row("perspectives.d.relatedPaths", pathCodes(spec.relatedPaths));
     }
     frag.appendChild(dl);
 
     // Too-narrow relatedPaths produce a confident "not needed" — the dangerous
-    // direction — so an unmatched pattern is flagged next to the verdict.
+    // direction — so an unmatched pattern is flagged under the paths it is about.
     var unmatched = unmatchedRelatedPathCount(spec);
     if (unmatched) {
       frag.appendChild(fillNote(el("div"), "warn",
@@ -3341,7 +3484,7 @@ const CLIENT_JS = `
     var cols = showRerun ? 6 : 4;
     var hits = 0;
     doc.features.forEach(function (feature) {
-      var specs = feature.specs.filter(function (s) { return perspMatches(feature, s); });
+      var specs = feature.specs.filter(function (s) { return perspMatches(feature, s, perspState.f); });
       if (!specs.length) return;
       hits += specs.length;
 
@@ -3349,7 +3492,7 @@ const CLIENT_JS = `
       var grpTd = el("td");
       grpTd.colSpan = cols;
       grpTd.appendChild(document.createTextNode(feature.featureName));
-      grpTd.appendChild(el("span", "gcount", specs.length + " " + t("perspectives.metric.cases").toLowerCase()));
+      grpTd.appendChild(el("span", "gcount", specs.length + " " + t("perspectives.ov.cases")));
       grpRow.appendChild(grpTd);
       tbody.appendChild(grpRow);
 
@@ -3421,12 +3564,17 @@ const CLIENT_JS = `
   // The needs-re-run chip only exists while the hub answers the question;
   // otherwise it would filter everything away. Drop back to "all" if it was
   // the active filter when the answer came back "not supported".
+  //
+  // Each chip also carries what it would yield — the mode breakdown the
+  // summary row used to spend four tiles on.
   function syncPerspChips() {
     var chip = document.getElementById("persp-chip-rerun");
     chip.hidden = perspState.rerunSupported !== true;
     if (perspState.rerunSupported === false && perspState.f === "rerun") perspState.f = "all";
     document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
-      b.setAttribute("aria-pressed", String(b.getAttribute("data-f") === perspState.f));
+      var f = b.getAttribute("data-f");
+      b.setAttribute("aria-pressed", String(f === perspState.f));
+      b.querySelector(".fcount").textContent = perspState.doc ? String(perspFilterCount(f)) : "";
     });
   }
 

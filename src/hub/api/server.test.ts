@@ -797,7 +797,12 @@ describe("hub API server", () => {
 
       await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/a/y.ts", "docs/z.md"] });
       const after = await getRerun();
-      expect(after.specs["f/a"]).toMatchObject({ state: "needed", touchedBy: ["src/a/y.ts"] });
+      // The verdict names the deploy that caused it, not just the head.
+      expect(after.specs["f/a"]).toMatchObject({
+        state: "needed",
+        touchedBy: ["src/a/y.ts"],
+        touchedByDeploy: { index: 1, sha: "d2" },
+      });
       expect(after.specs["f/b"].state).toBe("notNeeded");
       expect(after.specs["f/a"].lastGreen.gitHead).toBe("e".repeat(40));
     });

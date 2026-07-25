@@ -257,7 +257,12 @@ export type DeployInput = Omit<DeployEntry, "index" | "gapBefore" | "truncated">
 export const SpecTouchSchema = z.object({
   /** A `DeployEntry.index`, comparable against a baseline's position across an eviction. */
   lastTouchedIndex: z.number().int().nonnegative(),
-  /** Carried for display; the verdict is decided on `lastTouchedIndex` alone. */
+  /**
+   * Which deploy the fold matched, as it read it. The verdict is decided on
+   * `lastTouchedIndex` alone, and what the view *names* is read back out of the
+   * log entry at that index — so a deploy is never shown out of this derived
+   * copy when the log no longer backs it.
+   */
   lastTouchedSha: z.string(),
   lastTouchedAt: z.string(),
   /** A bounded sample (`MAX_TOUCHED_BY`) of what matched. Empty when the deploy reported no paths. */
@@ -301,10 +306,19 @@ export const RerunUnknownReasonSchema = z.enum([
 ]);
 export type RerunUnknownReason = z.infer<typeof RerunUnknownReasonSchema>;
 
+/** Where a deploy sits in a profile's log, as the view names it. */
+export const DeployRefSchema = z.object({
+  index: z.number().int().nonnegative(),
+  sha: z.string(),
+  at: z.string(),
+});
+export type DeployRef = z.infer<typeof DeployRefSchema>;
+
 /**
  * One spec's re-run verdict plus the three ledger coordinates the view shows
  * alongside it. The coordinates are always present (null when the spec has no
- * such entry); `reason` and `touchedBy` appear only in the states named below.
+ * such entry); `reason`, `touchedBy` and `touchedByDeploy` appear only in the
+ * states named below.
  */
 export const SpecRerunSchema = z.object({
   state: RerunStateSchema,
@@ -315,6 +329,17 @@ export const SpecRerunSchema = z.object({
   lastRed: SpecLedgerEntrySchema.nullable(),
   /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `state === "needed"`. */
   touchedBy: z.array(z.string()).optional(),
+  /**
+   * The deploy that made this spec `needed`: the newest entry *within the
+   * verdict's range* whose changes matched it. Distinct from the report's
+   * `deployHead`, which is only the point the judgement was made at.
+   *
+   * ADDITIVE and optional, so a report from an older hub — and a client older
+   * than this field — is unaffected. Null when the entry that proves the touch
+   * is no longer retained in the log: the verdict still stands on the touch
+   * index's position, but the deploy cannot be named without overstating.
+   */
+  touchedByDeploy: DeployRefSchema.nullable().optional(),
 });
 export type SpecRerun = z.infer<typeof SpecRerunSchema>;
 
@@ -323,9 +348,7 @@ export const RerunReportSchema = z.object({
   project: z.string(),
   profile: z.string(),
   /** The profile's newest deploy, or null when nothing has been recorded. */
-  deployHead: z
-    .object({ index: z.number().int().nonnegative(), sha: z.string(), at: z.string() })
-    .nullable(),
+  deployHead: DeployRefSchema.nullable(),
   specs: z.record(z.string(), SpecRerunSchema),
 });
 export type RerunReport = z.infer<typeof RerunReportSchema>;

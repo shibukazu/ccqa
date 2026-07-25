@@ -266,8 +266,17 @@ interface SpecRerun {
   lastGreen: SpecLedgerEntry | null;
   lastRed: SpecLedgerEntry | null;
   touchedBy?: string[];       // up to 10 matched paths; set only when state is "needed"
+  touchedByDeploy?: { index, sha, at } | null;  // the deploy that caused "needed"
 }
 ```
+
+`touchedByDeploy` names the newest deploy *in the verdict's range* whose
+changes matched the spec — the deploy that made it `needed`, which is not the
+same coordinate as `deployHead` (only the point the judgement was made at). It
+is additive and optional: an older hub omits it. It is null when the entry that
+proves the touch is no longer retained in the log — the verdict still stands on
+the touch index's recorded position, but the deploy cannot be named without
+overstating.
 
 Use a **two-dot** diff in the deploy hook. Three-dot resolves the merge base
 and reports an empty diff on a rollback, which would make the rollback
