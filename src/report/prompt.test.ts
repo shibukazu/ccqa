@@ -6,7 +6,7 @@ const BASE_INPUT: FailureAnalysisPromptInput = {
   diffPatch: null,
   changedFiles: null,
   baseRef: null,
-  driftIssues: null,
+  driftAudit: null,
 };
 
 const USER_HEADING = "## Project triage guidance (human-maintained)";
@@ -110,5 +110,38 @@ describe("buildFailureAnalysisPrompt no-baseline mode (v8)", () => {
     expect(buildFailureAnalysisPrompt(BASE_INPUT)).toBe(
       buildFailureAnalysisPrompt({ ...BASE_INPUT, baselineMissing: null }),
     );
+  });
+});
+
+describe("buildFailureAnalysisPrompt drift audit framing (v10)", () => {
+  test("renders no drift-audit section when driftAudit is null", () => {
+    const prompt = buildFailureAnalysisPrompt(BASE_INPUT);
+    expect(prompt).not.toContain("Spec↔code drift audit");
+  });
+
+  test("renders the diagnosis and warns against deferring to it", () => {
+    const prompt = buildFailureAnalysisPrompt({
+      ...BASE_INPUT,
+      driftAudit: {
+        label: "TEST_DRIFT",
+        confidence: 0.8,
+        surface: "generated",
+        subDiagnosis: "SELECTOR_DRIFT",
+        headline: "the Submit button's aria-label was renamed",
+        recommendation: "Update the selector",
+        evidence: [{ file: "src/app.tsx:12", detail: "aria-label is now 'Send'" }],
+        reasoning: "",
+      },
+    });
+    expect(prompt).toContain("TEST_DRIFT");
+    expect(prompt).toContain("the Submit button's aria-label was renamed");
+    expect(prompt).toContain("src/app.tsx:12");
+    // It cannot itself be PRODUCT_BUG evidence and must not be deferred to.
+    expect(prompt).toContain("cannot answer PRODUCT_BUG");
+    expect(prompt).toContain("Weigh this as one more piece of evidence — do not defer to it.");
+    // The audit's surface travels too: the classifier's own TEST_DRIFT is
+    // always about generated code, which isn't the same claim as `spec`.
+    expect(prompt).toContain("surface: generated");
+    expect(prompt).toContain("never the spec's prose");
   });
 });

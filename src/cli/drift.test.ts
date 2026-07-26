@@ -27,7 +27,7 @@ function fakeHubClient(pushRun: HubClient["pushRun"]): HubClient {
   return { pushRun } as unknown as HubClient;
 }
 
-const results: SpecResult[] = [{ target: { featureName: "tasks", specName: "create" }, ok: true, issues: [] }];
+const results: SpecResult[] = [{ target: { featureName: "tasks", specName: "create" }, ok: true, drift: null }];
 
 describe("pushDriftResults", () => {
   test("warns and returns without throwing when no hub is configured", async () => {

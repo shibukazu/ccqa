@@ -51,7 +51,7 @@ const PROMPT_PREVIEW_FIXTURE = {
   diffPatch: null,
   changedFiles: null,
   baseRef: null,
-  driftIssues: null,
+  driftAudit: null,
 } as const;
 
 /** Build the short failure signal a graded case shows the learning prompt. */
@@ -103,6 +103,11 @@ export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJo
     const runs = await storage.runs.list({ project: job.project, limit: runLimit });
     const cases: GradedCase[] = [];
     for (const run of runs) {
+      // Drift rows are gradeable too, and they carry the same three labels —
+      // but they were predicted by the drift prompt, so their corrections
+      // belong to a drift overlay, not to this one. Mixing them would tune the
+      // failure-analysis prompt on cases it never saw.
+      if (run.kind !== "run") continue;
       const records = await storage.triage.list(run.id);
       for (const r of records) {
         const actual = r.actualCause as FailureLabel;

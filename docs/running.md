@@ -208,15 +208,35 @@ injects it ahead of the learned calibration note.
 
 ## Drift detection
 
-Drift analysis asks Claude whether each `spec.yaml` is still in sync with
-the current codebase — renamed aria-labels, removed routes, missing blocks,
+Drift analysis asks Claude whether a test case is still in sync with the
+current codebase — renamed aria-labels, removed routes, missing blocks,
 assertions about UI that no longer exists. It is read-only: no browser, no
 patches. It runs in two places:
 
-1. **Inside `ccqa run`** — each failing spec's report entry includes a
-   drift audit, used as evidence for the root-cause call above.
+1. **Inside `ccqa run`** — each failing spec's report row carries its own
+   audit as `driftAudit`, fed to the root-cause call above as evidence it
+   weighs, never a verdict it defers to.
 2. **Standalone `ccqa drift`** — a full audit without running any tests,
    for scheduled jobs or pre-merge sweeps.
+
+A `deterministic` spec is two artifacts, and the audit reads both: the
+`spec.yaml` a human wrote, and the test code `ccqa generate` compiled from
+it. Either can drift from the source independently, so the audit checks the
+concrete selectors and strings the generated code holds, not only the prose
+in `spec.yaml`. A `mode: live` spec has no generated code — the spec itself
+is what runs — so only `spec.yaml` is audited there.
+
+Each audited spec gets **at most one diagnosis**, in the same vocabulary
+`--failure-analysis` uses: `TEST_DRIFT` (the test drifted from the source) or
+`SPEC_CHANGE` (the thing being verified changed), never `PRODUCT_BUG` — a
+static read can't tell a dropped side effect from a working one — plus
+`UNKNOWN` when the evidence is too weak to call. The diagnosis carries a
+confidence, a headline, a recommendation, cited evidence, and a `surface`
+that decides how to fix it: `spec` means `spec.yaml` itself has to be
+rewritten (and the code regenerated after); `generated` means only the
+generated code drifted, so a regeneration alone is enough. No finding at all
+means the spec still matches the code (`drift: null`), not a passing "check"
+to enumerate.
 
 ```bash
 ccqa drift                              # check every spec under .ccqa/features/
@@ -234,6 +254,11 @@ alongside `ccqa run` runs in the hub UI with its own issue counts. It needs
 a hub connection (`--hub-url`/`--hub-token` or `CCQA_HUB_URL`/
 `CCQA_HUB_TOKEN`); without one it logs a warning and is skipped, never
 changing the exit code (still driven by `--severity`).
+
+Pushing also advances the hub's per-project **drift ledger**: each spec's
+newest audit (or "no drift found") lands there, so the Perspectives tab shows
+every spec's last-known drift status without opening each run individually —
+see [the hub guide](./hub.md#drift-ledger).
 
 ### Scoping with `--changed`
 

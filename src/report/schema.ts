@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { FIXABLE_DIAGNOSIS_TYPES } from "../diagnose/types.ts";
-import { DraftIssueSchema } from "../types.ts";
 
 /**
  * The three-way root-cause call for a failing spec, framed as drift analysis:
@@ -36,6 +35,25 @@ export const FailureEvidenceSchema = z.object({
 export type FailureEvidence = z.infer<typeof FailureEvidenceSchema>;
 
 /**
+ * Which of a test case's two surfaces drifted, and therefore how it gets fixed.
+ *
+ * A `deterministic` spec is two artifacts: the spec.yaml a human wrote and the
+ * test code `ccqa generate` produced from it. Either can fall out of step with
+ * the source, and the repair differs — a stale spec has to be rewritten (and
+ * the code regenerated after), while stale code only has to be regenerated.
+ * A `mode: live` spec has no generated surface: the spec *is* the test, so this
+ * is always `spec` there.
+ *
+ * When both surfaces are stale the spec is the root and this reads `spec`:
+ * fixing it and regenerating settles the code too.
+ *
+ * Declared ahead of `FailureAnalysisSchema` (rather than beside
+ * `DriftDiagnosisSchema` below, its other user) so both can reference it.
+ */
+export const DriftSurfaceSchema = z.enum(["spec", "generated"]);
+export type DriftSurface = z.infer<typeof DriftSurfaceSchema>;
+
+/**
  * LLM output shape. Deliberately NOT .strict(): the model occasionally adds
  * keys, and rejecting the whole analysis over an extra field would collapse
  * a usable prediction into UNKNOWN. Zod's default strips unknown keys.
@@ -59,8 +77,76 @@ export const FailureAnalysisSchema = z.object({
   recommendation: z.string().default(""),
   evidence: z.array(FailureEvidenceSchema),
   reasoning: z.string(),
+  /**
+   * Which surface the diagnosis is about (see `DriftSurfaceSchema`). Only ever
+   * set for a `kind: "drift"` row, where `analysis` carries a full
+   * `DriftDiagnosis` (`driftResultsToReport`) rather than an ordinary failure
+   * analysis — absent there. Optional so existing failure-analysis data (and
+   * this schema's other callers) stay valid without it.
+   */
+  surface: DriftSurfaceSchema.optional(),
 });
 export type FailureAnalysis = z.infer<typeof FailureAnalysisSchema>;
+
+/**
+ * What a drift audit may conclude, in the same vocabulary `ccqa run
+ * --failure-analysis` uses for a failure. One question, one answer, the same
+ * words whether it was reached by running the spec or by reading the code — so
+ * a reader never translates between two taxonomies, and the hub renders,
+ * grades and learns from both through one path.
+ *
+ * `PRODUCT_BUG` is deliberately absent. Drift never opens a browser, so "the
+ * product regressed" is not something it can observe: a static read cannot
+ * tell a dropped side effect from a working one. Claiming it would be guessing
+ * in the one direction that wastes a developer's time. Unifying the vocabulary
+ * means sharing the definitions, not emitting every label.
+ */
+export const DriftLabelSchema = PredictedLabelSchema.extract([
+  "TEST_DRIFT",
+  "SPEC_CHANGE",
+  "UNKNOWN",
+]);
+export type DriftLabel = z.infer<typeof DriftLabelSchema>;
+
+/**
+ * The finer-grained kinds a static read can distinguish. `TIMING_ISSUE` and
+ * `DATA_MISSING` are runtime observations and stay out for the same reason
+ * `PRODUCT_BUG` does.
+ */
+export const DriftSubDiagnosisSchema = z
+  .enum(SUB_DIAGNOSES)
+  .extract(["SELECTOR_DRIFT", "OVER_ASSERTION", "NONE"]);
+
+/**
+ * One spec's drift verdict. Shaped to match `FailureAnalysisSchema` field for
+ * field, so it can travel in a report's `analysis` and be rendered by the
+ * diagnosis card the failure path already has.
+ *
+ * Lives here rather than `src/drift/types.ts` (which re-exports it) to avoid
+ * a schema cycle: `ReportSpecResult.driftAudit` below needs this type, and
+ * `src/drift/types.ts` already imports `FailureEvidenceSchema` /
+ * `PredictedLabelSchema` / `SUB_DIAGNOSES` from this module.
+ */
+export const DriftDiagnosisSchema = z.object({
+  label: DriftLabelSchema,
+  confidence: z.number().min(0).max(1),
+  /** Where the drift is, which decides how it is repaired. See `DriftSurfaceSchema`. */
+  surface: DriftSurfaceSchema.default("spec"),
+  subDiagnosis: DriftSubDiagnosisSchema.default("NONE"),
+  /** One line: what is out of sync. */
+  headline: z.string(),
+  /** What to change to bring them back in sync. */
+  recommendation: z.string().default(""),
+  /** file:line references backing the claim. A label without one is not earned. */
+  evidence: z.array(FailureEvidenceSchema),
+  /**
+   * How the label was reached, in prose. Carried for the same reason failure
+   * analysis carries it: the diagnosis card shows it, and a reader deciding
+   * whether to trust a label needs the argument, not only the conclusion.
+   */
+  reasoning: z.string().default(""),
+});
+export type DriftDiagnosis = z.infer<typeof DriftDiagnosisSchema>;
 
 export const ReportAssertionSchema = z.object({
   name: z.string(),
@@ -249,8 +335,13 @@ export const ReportSpecResultSchema = z.object({
    * report.json stays valid; absent when no diff context was resolved.
    */
   analysisBase: z.object({ ref: z.string(), sha: z.string() }).nullable().optional(),
-  /** Existing spec↔code drift audit findings (analyzeDrift), shown as supporting context. */
-  driftIssues: z.array(DraftIssueSchema).nullable(),
+  /**
+   * A normal run's own spec↔code drift audit (`analyzeDrift`), fed to the
+   * classifier as evidence for `analysis` above — not this row's own verdict.
+   * For a `kind: "drift"` run the diagnosis IS the row's verdict and lives in
+   * `analysis` instead; this stays null there.
+   */
+  driftAudit: DriftDiagnosisSchema.nullable(),
   failureLogExcerpt: z.string().nullable(),
   diffExcerpt: z.string().nullable(),
   specYaml: z.string().nullable(),

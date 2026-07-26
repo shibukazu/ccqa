@@ -4,13 +4,12 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { analyzeDrift } from "../drift/analyze.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import type { SpecResult } from "../drift/types.ts";
-import type { ReportSpecResult } from "../report/schema.ts";
+import type { DriftDiagnosis, ReportSpecResult } from "../report/schema.ts";
 import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import { loadAvailableBlocks, specKey, type SpecRef } from "../store/index.ts";
 import { specArtifactsDir } from "../targets/run-artifacts.ts";
 import { loadGeneratedManifest } from "../targets/llm-engine.ts";
-import type { DraftIssue } from "../types.ts";
 import { C } from "../cli/colors.ts";
 import * as log from "../cli/logger.ts";
 import type { DiffProvider } from "./diff-provider.ts";
@@ -77,7 +76,7 @@ export interface SpecFailureInput {
   specYaml: string | null;
   /** This spec's generation target — selects the custom-prompt overlay to apply. */
   target: string;
-  driftIssues: DraftIssue[] | null;
+  driftAudit: DriftDiagnosis | null;
   /**
    * cwd-relative directory holding this spec's run artifacts, when it has one
    * the classifier's read-only tools can reach. Named in the prompt so the
@@ -162,7 +161,7 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
           baseSource: specDiff?.base.source ?? null,
           range: specDiff?.range ?? null,
           ...(baselineMissing ? { baselineMissing } : {}),
-          driftIssues: input.driftIssues,
+          driftAudit: input.driftAudit,
           ...(input.artifactsDir ? { artifactsDir: input.artifactsDir } : {}),
           ...(deps.language ? { outputLanguage: deps.language } : {}),
           ...(deps.triageUserPrompt ? { triageUserPrompt: deps.triageUserPrompt } : {}),
@@ -208,9 +207,10 @@ function printAnalysis(
 
 /**
  * Audit the failing specs against the current source, as evidence for their
- * classification. Returns `specKey → issues`, with null for a spec whose audit
- * errored so its row records "audit unavailable" rather than a false clean
- * bill. The audit is advisory: a failure warns and never aborts the run.
+ * classification. Returns `specKey → diagnosis`, null both for a clean audit
+ * (no drift found) and for one that errored — the audit is advisory, so a
+ * failure warns and never aborts the run, and either way the row simply
+ * carries no drift evidence.
  *
  * Target-agnostic by construction — it compares `spec.yaml` against the
  * codebase (Read/Grep/Glob) and never looks at generated test code — so
@@ -223,8 +223,8 @@ function printAnalysis(
 export async function runDriftAudit(
   specs: readonly SpecRef[],
   deps: FailureAnalysisDeps,
-): Promise<Map<string, DraftIssue[] | null>> {
-  const byKey = new Map<string, DraftIssue[] | null>();
+): Promise<Map<string, DriftDiagnosis | null>> {
+  const byKey = new Map<string, DriftDiagnosis | null>();
   if (specs.length === 0 || deps.diffProvider === null || !deps.auth.ok) return byKey;
 
   let results: SpecResult[];
@@ -245,7 +245,7 @@ export async function runDriftAudit(
 
   for (const r of results) {
     if (!r.ok) log.warn(`drift audit failed for ${specKey(r.target)}: ${r.error ?? "no result"}`);
-    byKey.set(specKey(r.target), r.ok ? r.issues : null);
+    byKey.set(specKey(r.target), r.ok ? r.drift : null);
   }
   return byKey;
 }
@@ -254,7 +254,7 @@ export async function runDriftAudit(
 export interface FailureAnalysisRun {
   deps: FailureAnalysisDeps;
   pass: FailureAnalysisPass;
-  driftByKey: Map<string, DraftIssue[] | null>;
+  driftByKey: Map<string, DriftDiagnosis | null>;
 }
 
 /**
@@ -304,20 +304,20 @@ export async function analyzeExternalRows(
       continue;
     }
     const ref: SpecRef = { featureName: row.feature, specName: row.spec };
-    const driftIssues = driftByKey.get(specKey(ref)) ?? null;
+    const driftAudit = driftByKey.get(specKey(ref)) ?? null;
     const fields = await pass.analyze({
       ...ref,
       readScript: () => readGeneratedTestSources(ref, deps.cwd),
       failureLog: row.failureLogExcerpt ?? "",
       specYaml: row.specYaml,
       target: row.target ?? AGENT_BROWSER_TARGET,
-      driftIssues,
+      driftAudit,
       artifactsDir: readableArtifactsDir(ref, deps),
     });
     // `fields` only carries customPromptVersion when an overlay was applied
     // (optional, never present-with-undefined), so the plain spread is enough —
     // same as analysisBase above.
-    out.push({ ...row, ...fields, driftIssues });
+    out.push({ ...row, ...fields, driftAudit });
   }
   return out;
 }

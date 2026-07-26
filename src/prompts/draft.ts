@@ -153,7 +153,8 @@ Schema:
 `;
 }
 
-function formatBlockList(blocks: AvailableBlock[]): string {
+/** Shared with the drift audit, which needs the same block list to validate `include` steps. */
+export function formatBlockList(blocks: AvailableBlock[]): string {
   if (blocks.length === 0) {
     return "(no blocks defined yet — only action steps are available.)";
   }

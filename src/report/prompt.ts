@@ -4,9 +4,7 @@ import {
   buildCustomPromptBlock,
   buildTriageUserPromptBlock,
 } from "../prompts/custom-prompt.ts";
-import type { BaseSource } from "./schema.ts";
-import type { DraftIssue } from "../types.ts";
-import { DRAFT_CATEGORY_LABEL } from "../types.ts";
+import type { BaseSource, DriftDiagnosis } from "./schema.ts";
 
 /**
  * Bump on EVERY prompt change. Embedded in the report data and in exported
@@ -46,8 +44,18 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * spec's declared paths, only truncated by size — every changed file's hunk
  * is either inlined or one `changed_file_diff` call away, never filtered out
  * by relevance.
+ *
+ * v10: the drift audit's evidence changed shape from `driftIssues` (a list of
+ * category/severity findings) to `driftAudit`, a single diagnosis in the same
+ * TEST_DRIFT/SPEC_CHANGE/UNKNOWN vocabulary this classifier uses. The prompt
+ * now frames it explicitly as one more static opinion to weigh, not defer to:
+ * it can never answer PRODUCT_BUG (it never runs anything), so a disagreeing
+ * execution result wins. Also carries `driftAudit.surface` (`spec` vs
+ * `generated`), so the classifier can tell that its own TEST_DRIFT — always
+ * about the generated code it ran — isn't the same claim as a `spec`-surface
+ * finding from the audit.
  */
-export const ANALYSIS_PROMPT_VERSION = "9";
+export const ANALYSIS_PROMPT_VERSION = "10";
 
 /**
  * Fully-qualified name of the on-demand file-diff tool, as the model calls
@@ -113,8 +121,12 @@ export interface FailureAnalysisPromptInput {
    * `baseRef`, `baseSource` and `range` must all be null when this is set.
    */
   baselineMissing?: string | null;
-  /** Findings from the spec↔code drift audit (analyzeDrift), when it ran. */
-  driftIssues: DraftIssue[] | null;
+  /**
+   * This spec's own spec↔code drift audit (analyzeDrift), when it ran — a
+   * static opinion in the same label vocabulary as this classifier, offered
+   * as evidence and not a verdict to defer to (see the framing below).
+   */
+  driftAudit: DriftDiagnosis | null;
   /**
    * cwd-relative directory holding this spec's run artifacts, when it has one
    * the classifier's read-only tools can reach (external targets only). Named
@@ -152,7 +164,7 @@ export function buildFailureAnalysisPrompt(input: FailureAnalysisPromptInput): s
     baseRef,
     baseSource = null,
     range = null,
-    driftIssues,
+    driftAudit,
     artifactsDir = null,
     outputLanguage = "auto",
     triageUserPrompt,
@@ -220,20 +232,19 @@ ${diffPatch}
 `;
   }
 
-  const driftBlock =
-    driftIssues && driftIssues.length > 0
-      ? `## Spec↔code drift audit findings
+  const driftBlock = driftAudit
+    ? `## Spec↔code drift audit (a separate static opinion)
 
-A separate read-only audit compared the spec against the current source. Treat these as hints, not verdicts:
+A read-only static audit already compared this spec against the current source, using this SAME three-way vocabulary, and reached its own conclusion without running anything:
 
-${driftIssues
-  .map(
-    (i) =>
-      `- [${i.severity}] (${DRAFT_CATEGORY_LABEL[i.category]}${i.stepId ? `, step ${i.stepId}` : ""}) ${i.message}${i.detail ? ` — ${i.detail}` : ""}`,
-  )
-  .join("\n")}
+- **${driftAudit.label}** (confidence ${Math.round(driftAudit.confidence * 100)}%, surface: ${driftAudit.surface}): ${driftAudit.headline}
+${driftAudit.recommendation ? `  → ${driftAudit.recommendation}\n` : ""}${driftAudit.evidence.map((e) => `  - ${e.file ? `${e.file}: ` : ""}${e.detail}`).join("\n")}
+${driftAudit.reasoning ? `\nHow it got there: ${driftAudit.reasoning}\n` : ""}
+\`surface\` names which half of the test case the audit found stale: \`spec\` means spec.yaml's own wording no longer matches the product; \`generated\` means only the generated code drifted. That is a different question from what YOUR label means: your TEST_DRIFT is always about the generated code, since that is what actually ran, never the spec's prose.
+
+Weigh this as one more piece of evidence — do not defer to it. It never ran the spec, so it cannot answer PRODUCT_BUG; if the execution evidence above points at a product regression, say PRODUCT_BUG even when the audit called TEST_DRIFT or SPEC_CHANGE. Agree with it only when your own reading of the execution evidence and diff independently reaches the same label.
 `
-      : "";
+    : "";
 
   return `${
     baselineMissing
@@ -300,7 +311,7 @@ ${
           : ""
       }`
 }
-- The drift audit findings (when present) flag spec↔code mismatches; an ERROR there usually supports TEST_DRIFT or SPEC_CHANGE over PRODUCT_BUG.
+- The drift audit (when present, below) is a static opinion reached by reading code alone, in this same vocabulary — weigh it, but it cannot itself be PRODUCT_BUG evidence, and your own read of the execution evidence decides when the two disagree.
 
 ## Sub-diagnosis vocabulary
 

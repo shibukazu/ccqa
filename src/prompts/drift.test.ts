@@ -1,32 +1,37 @@
 import { describe, expect, test } from "vitest";
-import { buildDriftSystemPrompt } from "./drift.ts";
+import { buildDriftSystemPrompt, buildDriftUserPrompt } from "./drift.ts";
 
 const NO_BLOCKS: Parameters<typeof buildDriftSystemPrompt>[0] = [];
 
-describe("buildDriftSystemPrompt — severity policy guardrails", () => {
-  test("declares the spec/source-mismatch decision rule as CRITICAL", () => {
+describe("buildDriftSystemPrompt", () => {
+  test("excludes PRODUCT_BUG — a static read never observes a product regression", () => {
     const out = buildDriftSystemPrompt(NO_BLOCKS);
-    expect(out).toMatch(/CRITICAL: spec ↔ source mismatch is ERROR/);
+    expect(out).toMatch(/You may not answer PRODUCT_BUG/);
+    expect(out).toMatch(/a static read cannot tell a dropped side effect from a working one/);
   });
 
-  test("flags a concrete spec/source mismatch with a citation as MUST-be-ERROR (not vague WARN)", () => {
+  test("frames TEST_DRIFT vs SPEC_CHANGE by the action each leads to", () => {
     const out = buildDriftSystemPrompt(NO_BLOCKS);
-    expect(out).toMatch(/MUST use ERROR/);
-    expect(out).toMatch(/concrete spec\/source mismatch/);
+    expect(out).toMatch(/TEST_DRIFT gets the test re-recorded, SPEC_CHANGE gets a human to rewrite the spec/);
   });
 
-  test("scopes the WARN (vague phrasing) category narrowly — only when the literal target still exists in source", () => {
+  test("requires a citation before a TEST_DRIFT/SPEC_CHANGE finding is earned", () => {
     const out = buildDriftSystemPrompt(NO_BLOCKS);
-    expect(out).toMatch(/paraphrases a string that \*\*still exists\*\*/);
+    expect(out).toMatch(/A finding needs a citation/);
+    expect(out).toMatch(/No drift is a claim, not a default/);
   });
 
-  test("rejects 'vague phrasing' WARN as a safe fallback for actual drift", () => {
+  test("the output contract is a single JSON block with the diagnosis vocabulary", () => {
     const out = buildDriftSystemPrompt(NO_BLOCKS);
-    expect(out).toMatch(/"vague phrasing" WARN is not a safe fallback/);
+    expect(out).toMatch(/"drift": null/);
+    expect(out).toMatch(/"label": "TEST_DRIFT" \| "SPEC_CHANGE" \| "UNKNOWN"/);
+    expect(out).toMatch(/"subDiagnosis": "SELECTOR_DRIFT" \| "OVER_ASSERTION" \| "NONE"/);
   });
+});
 
-  test("retains the original `expected asserts a string ... no longer rendered` ERROR rule", () => {
-    const out = buildDriftSystemPrompt(NO_BLOCKS);
-    expect(out).toMatch(/no longer rendered by the relevant component/);
+describe("buildDriftUserPrompt", () => {
+  test("embeds the spec's YAML verbatim in a fenced block", () => {
+    const out = buildDriftUserPrompt({ specYaml: "title: Sample\nsteps: []", generated: [], live: false });
+    expect(out).toContain("```yaml\ntitle: Sample\nsteps: []\n```");
   });
 });

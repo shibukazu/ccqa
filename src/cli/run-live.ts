@@ -174,7 +174,7 @@ export async function runLiveSpecs(
  * Build one spec's report row: the live-run base row plus (for a failed spec)
  * the drift audit and failure-analysis fields. Runs inside the pool worker so
  * the row can be upserted incrementally the moment the spec finishes. The
- * drift audit only runs for failed specs — passing specs get no driftIssues,
+ * drift audit only runs for failed specs — passing specs get no driftAudit,
  * matching the deterministic path.
  */
 async function buildLiveReportRow(
@@ -202,7 +202,7 @@ async function buildLiveReportRow(
       : undefined;
   return {
     ...base,
-    driftIssues: driftForSpec,
+    driftAudit: driftForSpec,
     ...analysisFieldsFor(analysis, r.result.status),
   };
 }
@@ -245,7 +245,7 @@ async function runDriftAuditOne(
   r: Extract<SpecRunOutcome, { kind: "run" }>,
   opts: RunLiveOptions,
   cwd: string,
-): Promise<ReportSpecResult["driftIssues"]> {
+): Promise<ReportSpecResult["driftAudit"]> {
   const key = `${r.featureName}/${r.specName}`;
   log.info(`drift audit: ${key}`);
   const blocks = await loadAvailableBlocks(cwd);
@@ -260,7 +260,7 @@ async function runDriftAuditOne(
     log.warn(`drift audit failed for ${key}: ${result?.error ?? "no result"}`);
     return null;
   }
-  return result.issues.length > 0 ? result.issues : null;
+  return result.drift;
 }
 
 type SpecRunOutcome =
@@ -533,7 +533,7 @@ type LiveFailureAnalysis = {
 async function analyzeOneLiveFailure(
   r: Extract<SpecRunOutcome, { kind: "run" }>,
   diffProvider: DiffProvider,
-  driftForSpec: ReportSpecResult["driftIssues"],
+  driftForSpec: ReportSpecResult["driftAudit"],
   auth: DriftAuth,
   opts: RunLiveOptions,
   cwd: string,
@@ -575,7 +575,7 @@ async function analyzeOneLiveFailure(
       baseSource: specDiff?.base.source ?? null,
       range: specDiff?.range ?? null,
       ...(baselineMissing ? { baselineMissing } : {}),
-      driftIssues: driftForSpec,
+      driftAudit: driftForSpec,
       ...(opts.language ? { outputLanguage: opts.language } : {}),
       ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),
       ...(customPrompt ? { customPrompt } : {}),

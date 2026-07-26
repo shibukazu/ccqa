@@ -108,6 +108,17 @@ const ANALYSIS = {
   reasoning: "",
 };
 
+const DRIFT_DIAGNOSIS = {
+  label: "TEST_DRIFT" as const,
+  confidence: 0.7,
+  surface: "generated" as const,
+  subDiagnosis: "SELECTOR_DRIFT" as const,
+  headline: "label gone",
+  recommendation: "",
+  evidence: [],
+  reasoning: "",
+};
+
 describe("analyzeExternalRows", () => {
   it("classifies a failed row with the drift audit and generated test as evidence", async () => {
     await writeGeneratedTest();
@@ -115,7 +126,7 @@ describe("analyzeExternalRows", () => {
       {
         target: { featureName: "demo", specName: "x" },
         ok: true,
-        issues: [{ severity: "ERROR", category: "assertable", stepId: null, message: "label gone" }],
+        drift: DRIFT_DIAGNOSIS,
       },
     ]);
     vi.mocked(analyzeFailure).mockResolvedValue({ analysis: ANALYSIS, raw: "", sdkError: false });
@@ -130,7 +141,7 @@ describe("analyzeExternalRows", () => {
     expect(analyzed.analysisSkipped).toBeNull();
     expect(analyzed.analysisBase).toEqual({ ref: "origin/main", sha: "abc123" });
     expect(analyzed.diffExcerpt).toBe(RESOLVED_DIFF.patch);
-    expect(analyzed.driftIssues).toHaveLength(1);
+    expect(analyzed.driftAudit).toEqual(DRIFT_DIAGNOSIS);
     expect(rows.find((r) => r.spec === "ok")).toBe(passed);
     // A pre-execution failure keeps its recorded reason and is never classified.
     expect(rows.find((r) => r.spec === "crashed")).toBe(crashed);
@@ -142,14 +153,14 @@ describe("analyzeExternalRows", () => {
     expect(promptInput.script).toContain(GENERATED_TEST);
     expect(promptInput.script).not.toContain("helper.ts");
     expect(promptInput.failureLog).toBe("command failed (exit 1)");
-    expect(promptInput.driftIssues).toHaveLength(1);
+    expect(promptInput.driftAudit).toEqual(DRIFT_DIAGNOSIS);
     expect(promptInput.artifactsDir).toBe("report/artifacts/demo__x");
   });
 
   it("classifies without a baseline: no diff evidence, no analysisBase on the row", async () => {
     await writeGeneratedTest();
     vi.mocked(analyzeDrift).mockResolvedValue([
-      { target: { featureName: "demo", specName: "x" }, ok: true, issues: [] },
+      { target: { featureName: "demo", specName: "x" }, ok: true, drift: null },
     ]);
     vi.mocked(analyzeFailure).mockResolvedValue({ analysis: ANALYSIS, raw: "", sdkError: false });
     const [row] = await analyze(
