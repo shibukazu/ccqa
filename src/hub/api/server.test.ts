@@ -408,7 +408,7 @@ describe("hub API server", () => {
       expect(res.status).toBe(201);
       const run = await json(res);
       expect(run.kind).toBe("drift");
-      expect(run.drift).toEqual({ issues: 2, errors: 1, warnings: 1, specsWithIssues: 2 });
+      expect(run.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, unknown: 1 });
     });
 
     test("POST with no ?kind (and explicit ?kind=run) defaults to a kind:\"run\" Run with drift:null", async () => {

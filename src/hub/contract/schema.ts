@@ -36,13 +36,19 @@ export const RunSchema = z.object({
   status: RunStatusSchema,
   /** "run" = ccqa run/live execution; "drift" = ccqa drift --push. */
   kind: z.enum(["run", "drift"]).default("run"),
-  /** Drift result pushed via `ccqa drift --push`; null for kind:"run". */
+  /**
+   * Drift result pushed via `ccqa drift --push`; null for kind:"run". Counts
+   * by label rather than by a derived severity — a label IS the finding, and
+   * the sum of the three is deliberately not carried: it would always equal
+   * the number of audited specs with a diagnosis, one diagnosis per spec.
+   */
   drift: z
     .object({
-      issues: z.number(),
-      errors: z.number(),
-      warnings: z.number(),
-      specsWithIssues: z.number(),
+      /** How many specs this run audited. */
+      specs: z.number(),
+      testDrift: z.number(),
+      specChange: z.number(),
+      unknown: z.number(),
     })
     .nullable()
     .default(null),

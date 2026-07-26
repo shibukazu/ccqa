@@ -555,11 +555,12 @@ const CSS = `
   .badge-drift { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
   .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); }
   /* Below .chip in source order so these override its background/border/color
-     when combined as class="chip drift-*-chip" (same specificity — source
-     order decides). */
+     when combined as class="chip drift-count-chip" (same specificity — source
+     order decides). One amber look for every drift label chip — a label chip
+     is a finding, not a severity, so it does not split into fail-red/amber
+     the way the old errors/warnings counts did. */
   .chip.kind-chip { color: var(--violet); background: var(--violet-bg); border-color: var(--violet-border); font-family: var(--font); margin-left: 6px; }
   .chip.drift-count-chip { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); margin-left: 6px; }
-  .chip.drift-errors-chip { color: var(--fail); background: var(--fail-bg); border-color: var(--fail-border); margin-left: 6px; }
   .drift-meta-box { display: flex; flex-direction: column; gap: 4px; }
   .drift-meta-chips { display: flex; gap: 6px; }
   .specs { display: inline-flex; align-items: center; gap: 9px; }
@@ -587,6 +588,9 @@ const CSS = `
   .spec-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
   /* verdict signal is a single left rail on the whole card — no all-sides tint */
   .spec-card.failed { border-left: 3px solid var(--fail); }
+  /* A drift-kind card's "failed" rail is a diagnosis, not a broken test — same
+     amber as the drift badges (dr-found), not fail-red. */
+  .spec-card.drift-found { border-left: 3px solid var(--amber); }
   .spec-card.passed { border-left: 3px solid var(--pass); }
   .spec-card-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; }
   .spec-card-head .name { font-weight: 600; font-size: 15px; }
@@ -837,6 +841,9 @@ const CSS = `
   .ov { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 16px; }
   .ov-inv { font-size: 13px; color: var(--muted); }
   .ov-inv b { color: var(--fg); font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  /* One row per overview axis (re-run, drift): a short label above its own bar+legend. */
+  .ov-axis { display: flex; flex-direction: column; gap: 4px; }
+  .ov-axis-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted-2); }
   .rrbar { height: 8px; border-radius: 999px; overflow: hidden; display: flex; background: var(--surface-3); }
   .rrleg { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12px; color: var(--muted); }
   .rrleg span { display: inline-flex; align-items: center; gap: 6px; }
@@ -845,11 +852,16 @@ const CSS = `
   /* One class per re-run state, worn by both the bar segment and its legend
      dot. "unknown" takes the info hue: it must never be mistaken for a pass,
      and the two neutral states are two different greys so adjacent segments
-     stay separable. */
-  .sg-needed { background: var(--amber-fill); }
+     stay separable. Drift's own three states share these colours (found=amber,
+     notAudited=muted grey, clean=pass green) rather than inventing a second
+     palette — same reasoning as the badge classes below. Careful writing in
+     here: a star followed by a slash closes the comment early and silently
+     eats the next rule, and a backtick ends the template literal this CSS
+     lives in. */
+  .sg-drift-found, .sg-needed { background: var(--amber-fill); }
   .sg-unknown { background: var(--info); }
-  .sg-notneeded { background: var(--pass); }
-  .sg-neverrun { background: var(--muted-2); }
+  .sg-drift-clean, .sg-notneeded { background: var(--pass); }
+  .sg-drift-none, .sg-neverrun { background: var(--muted-2); }
   .sg-noteval { background: var(--muted); }
 
   .search { flex: 1; min-width: 200px; max-width: 340px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 10px; height: 32px; background: var(--surface); }
@@ -1016,9 +1028,10 @@ const CLIENT_JS = `
       "det.steps": "Steps",
       "det.noEvidence": "No step screenshots:",
       "kind.run": "Test run", "kind.drift": "Drift audit",
-      "drift.summary.issues": "Issues", "drift.summary.errors": "Errors",
-      "drift.summary.warnings": "Warnings", "drift.summary.specsWithIssues": "Specs with issues",
+      "drift.summary.ratio": "{found} of {total} specs",
       "drift.clean": "No drift issues",
+      "drift.run.found": "drift found", "drift.run.clean": "no drift",
+      "drift.spec.found": "drift", "drift.spec.clean": "no drift",
       "grade.question": "What was the real cause?",
       "grade.ungraded": "ungraded", "grade.matches": "saved · matches",
       "grade.corrected": "saved · corrected", "grade.saving": "saving…",
@@ -1046,6 +1059,7 @@ const CLIENT_JS = `
       "perspectives.mode.deterministic": "deterministic", "perspectives.mode.live": "live",
       "perspectives.status.runnable": "runnable", "perspectives.status.notRecorded": "not recorded",
       "perspectives.ov.cases": "cases", "perspectives.ov.features": "features",
+      "perspectives.ov.axis.rerun": "Re-run", "perspectives.ov.axis.drift": "Drift",
       "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
       "perspectives.d.testCondition": "Condition", "perspectives.d.spec": "spec",
       "perspectives.note.label": "Note",
@@ -1160,9 +1174,10 @@ const CLIENT_JS = `
       "det.steps": "ステップ",
       "det.noEvidence": "ステップのスクリーンショットなし:",
       "kind.run": "テスト実行", "kind.drift": "ドリフト監査",
-      "drift.summary.issues": "問題数", "drift.summary.errors": "エラー",
-      "drift.summary.warnings": "警告", "drift.summary.specsWithIssues": "問題のあるスペック",
+      "drift.summary.ratio": "{found} / {total} スペック",
       "drift.clean": "ドリフトの問題なし",
+      "drift.run.found": "ズレあり", "drift.run.clean": "ズレなし",
+      "drift.spec.found": "ズレあり", "drift.spec.clean": "ズレなし",
       "grade.question": "実際の原因は何でしたか？",
       "grade.ungraded": "未評価", "grade.matches": "保存済み · 一致",
       "grade.corrected": "保存済み · 修正", "grade.saving": "保存中…",
@@ -1190,6 +1205,7 @@ const CLIENT_JS = `
       "perspectives.mode.deterministic": "決定的", "perspectives.mode.live": "ライブ",
       "perspectives.status.runnable": "実行可能", "perspectives.status.notRecorded": "未record",
       "perspectives.ov.cases": "ケース", "perspectives.ov.features": "機能",
+      "perspectives.ov.axis.rerun": "実行", "perspectives.ov.axis.drift": "ドリフト",
       "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
       "perspectives.d.testCondition": "実行条件", "perspectives.d.spec": "spec",
       "perspectives.note.label": "note",
@@ -1492,6 +1508,52 @@ const CLIENT_JS = `
     return el("span", "lbl " + (known ? label : "none"), labelText(label));
   }
 
+  // A drift-kind run executes nothing, so its "failed"/"passed" status means
+  // "an audit found the spec is stale" / "the spec still matches the code" —
+  // not a test outcome. Same badge shape as statusBadge, drift's own words
+  // and colour (amber, not fail-red: a diagnosis, not something broken),
+  // reusing the dr-found/dr-clean classes the perspectives drift column
+  // already defines. i18nPrefix picks the wording size: the run-level badge
+  // names what drift found ("drift.run."); the per-spec badge is terser
+  // ("drift.spec.") since the diagnosis card below it says the rest.
+  function driftFoundBadge(status, i18nPrefix) {
+    var found = status === "failed";
+    var span = el("span", "badge " + (found ? "dr-found" : "dr-clean"));
+    span.appendChild(el("span", "d"));
+    span.appendChild(document.createTextNode(" " + t(i18nPrefix + (found ? "found" : "clean"))));
+    return span;
+  }
+
+  // Shared by the runs-list row and the run-detail header — the one place
+  // both decide whether a run's own status badge speaks drift's vocabulary.
+  function runStatusBadge(run) {
+    return run.kind === "drift" ? driftFoundBadge(run.status, "drift.run.") : statusBadge(run.status);
+  }
+
+  // One chip per non-zero drift label, worded via labelText — the same
+  // vocabulary the diagnosis card uses — so a run's summary never disagrees
+  // with its own spec cards. A zero-count label is omitted, same reasoning as
+  // rerunSegments below: a "0" chip next to a real count reads as a finding.
+  var DRIFT_LABELS = ["TEST_DRIFT", "SPEC_CHANGE", "UNKNOWN"];
+  var DRIFT_LABEL_COUNT_KEY = { TEST_DRIFT: "testDrift", SPEC_CHANGE: "specChange", UNKNOWN: "unknown" };
+  // A run stored by an older hub carries the previous drift summary shape
+  // (issue/severity counts). The read path returns runs as stored, so the
+  // label counts this build wants are simply absent — render nothing rather
+  // than "0 / undefined specs", which reads as a real audit that found none.
+  function driftSummary(run) {
+    var d = run && run.drift;
+    return d && typeof d.specs === "number" ? d : null;
+  }
+
+  function driftChips(drift) {
+    var chips = [];
+    DRIFT_LABELS.forEach(function (label) {
+      var count = drift[DRIFT_LABEL_COUNT_KEY[label]];
+      if (count > 0) chips.push(el("span", "chip drift-count-chip", labelText(label) + " " + count));
+    });
+    return chips;
+  }
+
   // Inline icons can't go through el() (SVG needs its own namespace), so they're
   // built with createElementNS. svgIcon() returns a fresh <svg> carrying the
   // stroke defaults every icon here shares; each builder adds its own paths.
@@ -1671,14 +1733,8 @@ const CLIENT_JS = `
       sub.appendChild(ciBadge(r));
       if (r.kind === "drift") {
         sub.appendChild(el("span", "chip kind-chip", t("kind.drift")));
-        if (r.drift) {
-          if (r.drift.errors > 0) {
-            sub.appendChild(el("span", "chip drift-errors-chip", t("drift.summary.errors") + " " + r.drift.errors));
-          }
-          if (r.drift.warnings > 0) {
-            sub.appendChild(el("span", "chip drift-count-chip", t("drift.summary.warnings") + " " + r.drift.warnings));
-          }
-        }
+        var rowDrift = driftSummary(r);
+        if (rowDrift) driftChips(rowDrift).forEach(function (chip) { sub.appendChild(chip); });
       } else {
         sub.appendChild(el("span", "chip kind-chip", t("kind.run")));
       }
@@ -1694,7 +1750,7 @@ const CLIENT_JS = `
       tr.appendChild(profileCell);
 
       var statusCell = document.createElement("td");
-      statusCell.appendChild(statusBadge(r.status));
+      statusCell.appendChild(runStatusBadge(r));
       tr.appendChild(statusCell);
 
       var specsCell = document.createElement("td");
@@ -1736,7 +1792,7 @@ const CLIENT_JS = `
     // NB: not named "t" — that would shadow the global t() translator in this scope.
     var titleRow = el("div", "t");
     titleRow.appendChild(el("span", "runid", run.id.slice(0, 8)));
-    titleRow.appendChild(statusBadge(run.status));
+    titleRow.appendChild(runStatusBadge(run));
     idblock.appendChild(titleRow);
     var sub = el("div", "subline");
     sub.appendChild(ciBadge(run));
@@ -1757,24 +1813,20 @@ const CLIENT_JS = `
     metaItem(t("meta.branch"), branchChip);
     // Which environment the run executed against (recorded at push, display-only).
     if (run.profile) metaItem(t("meta.profile"), el("span", "chip", run.profile));
-    if (run.kind === "drift" && run.drift) {
-      // Drift runs have no live/deterministic spec pass count. Errors/warnings
-      // are the actionable counts and get colored chips; issues/specsWithIssues
-      // are supplementary totals shown as a muted line below.
-      if (run.drift.errors === 0 && run.drift.warnings === 0) {
+    var summary = driftSummary(run);
+    if (run.kind === "drift" && summary) {
+      // Drift runs have no live/deterministic spec pass count. One chip per
+      // label found, plus how many of the audited specs that covers.
+      var driftFound = summary.testDrift + summary.specChange + summary.unknown;
+      if (driftFound === 0) {
         metaItem(t("meta.drift"), el("div", "drift-clean", t("drift.clean")));
       } else {
         var driftBox = el("div", "drift-meta-box");
         var chips = el("div", "drift-meta-chips");
-        if (run.drift.errors > 0) {
-          chips.appendChild(el("span", "chip drift-errors-chip", t("drift.summary.errors") + " " + run.drift.errors));
-        }
-        if (run.drift.warnings > 0) {
-          chips.appendChild(el("span", "chip drift-count-chip", t("drift.summary.warnings") + " " + run.drift.warnings));
-        }
+        driftChips(summary).forEach(function (chip) { chips.appendChild(chip); });
         driftBox.appendChild(chips);
-        var driftSub = el("div", "muted", t("drift.summary.specsWithIssues") + " " + run.drift.specsWithIssues + " / " + t("drift.summary.issues") + " " + run.drift.issues);
-        driftBox.appendChild(driftSub);
+        var ratio = t("drift.summary.ratio").replace("{found}", String(driftFound)).replace("{total}", String(summary.specs));
+        driftBox.appendChild(el("div", "muted", ratio));
         metaItem(t("meta.drift"), driftBox);
       }
     } else {
@@ -2269,7 +2321,10 @@ const CLIENT_JS = `
   }
 
   function renderSpecCard(runId, r, triageState, isDrift) {
-    var card = el("div", "spec-card " + r.status); // .passed / .failed rail
+    // .passed / .failed rail; a drift row's "failed" is a diagnosis, not a
+    // broken test, so it wears the amber drift-found rail instead of fail-red.
+    var driftFound = isDrift && r.status === "failed";
+    var card = el("div", "spec-card " + (driftFound ? "drift-found" : r.status));
     var head = el("div", "spec-card-head");
     var nameBlock = el("div");
     nameBlock.appendChild(el("div", "name", r.title || (r.feature + " / " + r.spec)));
@@ -2285,7 +2340,7 @@ const CLIENT_JS = `
     if (isDrift) head.appendChild(el("span", "badge badge-drift", t("kind.drift")));
     else if (r.liveRun) head.appendChild(el("span", "badge-live", t("spec.kind.live")));
     else if (!external) head.appendChild(el("span", "badge-det", t("spec.kind.det")));
-    head.appendChild(statusBadge(r.status));
+    head.appendChild(isDrift ? driftFoundBadge(r.status, "drift.spec.") : statusBadge(r.status));
     card.appendChild(head);
 
     var body = el("div", "spec-card-body");
@@ -3166,6 +3221,41 @@ const CLIENT_JS = `
   }
   // --- end pure: rerun composition -----------------------------------------
 
+  // --- pure: drift composition ----------------------------------------------
+  // Same shape as rerun composition above, and self-contained for the same
+  // reason: drift-overview.test.ts lifts this region out and runs it directly.
+  // Unlike rerun, drift never splits by label at the overview level — each
+  // spec carries at most one diagnosis already, so there are only three states.
+
+  // No entry at all ("never audited") is distinct from an entry whose label is
+  // null ("audited, no drift found") — the same distinction the ledger itself
+  // keeps, so a missing entry must not read as clean.
+  function driftState(entry) {
+    if (!entry) return "notAudited";
+    return entry.label ? "found" : "clean";
+  }
+
+  // Drawing order: what needs a look first, then what was never audited, then
+  // confirmed clean — same reasoning as RERUN_ORDER above.
+  var DRIFT_ORDER = ["found", "notAudited", "clean"];
+  var DRIFT_SEG_CLASS = { found: "sg-drift-found", notAudited: "sg-drift-none", clean: "sg-drift-clean" };
+
+  function driftComposition(entries) {
+    var counts = { found: 0, notAudited: 0, clean: 0 };
+    entries.forEach(function (entry) { counts[driftState(entry)] += 1; });
+    return counts;
+  }
+
+  // Only states with cases in them get drawn — see rerunSegments' comment above.
+  function driftSegments(counts) {
+    var out = [];
+    DRIFT_ORDER.forEach(function (key) {
+      if (counts[key] > 0) out.push({ state: key, count: counts[key], cls: DRIFT_SEG_CLASS[key] });
+    });
+    return out;
+  }
+  // --- end pure: drift composition -------------------------------------------
+
   // NB: the parameter is not named "state" — that would shadow the app-wide
   // state object this scope closes over.
   function rerunBadge(rerunState) {
@@ -3268,14 +3358,9 @@ const CLIENT_JS = `
 
   var DRIFT_BADGE_CLASS = { notAudited: "dr-none", clean: "dr-clean", found: "dr-found" };
 
-  // No entry at all ("never audited") is distinct from an entry whose label
-  // is null ("audited, no drift found") — the same distinction the ledger
-  // itself keeps, so the badge must not collapse the two into one grey.
-  function driftState(entry) {
-    if (!entry) return "notAudited";
-    return entry.label ? "found" : "clean";
-  }
-
+  // driftState() lives with driftComposition/driftSegments above (the "pure:
+  // drift composition" region) — the badge must not collapse "never audited"
+  // and "audited, no drift found" into one grey, same reasoning either way.
   function driftBadge(state) {
     var span = el("span", "badge " + (DRIFT_BADGE_CLASS[state] || "dr-none"));
     span.appendChild(el("span", "d"));
@@ -3335,21 +3420,53 @@ const CLIENT_JS = `
     return span;
   }
 
-  // Summary row: the inventory as one line, then one bar segmented by re-run
-  // state — the question this tab is opened to answer. The mode and
-  // recorded-ness counts are not lost; they moved onto the filter chips, where
-  // a count states what that filter would leave behind.
+  // One axis of the overview: a label, then the bar+legend shape the summary
+  // used to render just once (see .rrbar/.rrleg in the stylesheet) — re-run
+  // and drift each get their own row rather than sharing one bar, since they
+  // answer different questions and a single composite would blur both.
+  function ovAxisRow(label, segments, statePrefix, total) {
+    var row = el("div", "ov-axis");
+    row.appendChild(el("div", "ov-axis-label", label));
+    var bar = el("div", "rrbar");
+    var leg = el("div", "rrleg");
+    segments.forEach(function (seg) {
+      var fill = el("div", seg.cls);
+      fill.style.width = (seg.count / total) * 100 + "%";
+      bar.appendChild(fill);
+      var item = el("span");
+      item.appendChild(el("i", seg.cls));
+      item.appendChild(document.createTextNode(t(statePrefix + seg.state)));
+      item.appendChild(el("b", null, String(seg.count)));
+      leg.appendChild(item);
+    });
+    row.appendChild(bar);
+    row.appendChild(leg);
+    return row;
+  }
+
+  // Summary: the inventory as one line, then one row per axis — the two
+  // questions this tab answers, needs-re-run and drift, each segmented on its
+  // own bar rather than blended into one. The mode and recorded-ness counts
+  // are not lost; they moved onto the filter chips, where a count states what
+  // that filter would leave behind.
   //
   // With no re-run data (an older hub, a failed fetch, or a profile nothing
   // has been recorded on) every case is "not evaluated" and the bar says so in
   // one neutral segment, rather than showing a composition that reads as
-  // "nothing to do".
+  // "nothing to do". Drift has no profile and loads separately (loadDrift):
+  // when it hasn't (older hub, failed fetch), its row is omitted entirely
+  // rather than drawn as "all not audited" — that would read as a finding
+  // instead of missing data.
   function renderPerspOverview(doc) {
     var host = document.getElementById("persp-ov");
     clear(host);
     var verdicts = [];
+    var driftEntries = perspState.drift ? [] : null;
     doc.features.forEach(function (feature) {
-      feature.specs.forEach(function (spec) { verdicts.push(ledgerEntryFor(perspState.rerun, feature, spec)); });
+      feature.specs.forEach(function (spec) {
+        verdicts.push(ledgerEntryFor(perspState.rerun, feature, spec));
+        if (driftEntries) driftEntries.push(ledgerEntryFor(perspState.drift, feature, spec));
+      });
     });
 
     var inv = el("div", "ov-inv");
@@ -3360,20 +3477,14 @@ const CLIENT_JS = `
     host.appendChild(inv);
     if (!verdicts.length) return;
 
-    var bar = el("div", "rrbar");
-    var leg = el("div", "rrleg");
-    rerunSegments(rerunComposition(verdicts)).forEach(function (seg) {
-      var fill = el("div", seg.cls);
-      fill.style.width = (seg.count / verdicts.length) * 100 + "%";
-      bar.appendChild(fill);
-      var item = el("span");
-      item.appendChild(el("i", seg.cls));
-      item.appendChild(document.createTextNode(t("perspectives.rerun.state." + seg.state)));
-      item.appendChild(el("b", null, String(seg.count)));
-      leg.appendChild(item);
-    });
-    host.appendChild(bar);
-    host.appendChild(leg);
+    host.appendChild(ovAxisRow(
+      t("perspectives.ov.axis.rerun"), rerunSegments(rerunComposition(verdicts)), "perspectives.rerun.state.", verdicts.length,
+    ));
+    if (driftEntries) {
+      host.appendChild(ovAxisRow(
+        t("perspectives.ov.axis.drift"), driftSegments(driftComposition(driftEntries)), "perspectives.drift.state.", driftEntries.length,
+      ));
+    }
   }
 
   // The filter is passed in rather than read from perspState so the same

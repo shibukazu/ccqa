@@ -16,7 +16,7 @@ import { formatBlockList, type AvailableBlock } from "./draft.ts";
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "3";
+export const DRIFT_PROMPT_VERSION = "4";
 
 export function buildDriftSystemPrompt(blocks: AvailableBlock[]): string {
   return `You audit whether a ccqa test spec still describes the product's code correctly.
@@ -68,11 +68,13 @@ Say where the drift is, because it decides the repair:
 
 If both are stale, answer \`spec\`: it is the root, and fixing it regenerates the code. For a \`mode: live\` spec there is no generated surface, so always \`spec\`.
 
+**Audit each surface on its own terms. One being right does not excuse the other.** The generated code being correct does not make a stale spec acceptable, and a correct spec does not make stale generated code acceptable. They are wrong in different ways and cost different things: generated code that names a string the product no longer renders fails the next replay, while a spec that quotes a string the product no longer shows misleads every human who reads it and will be regenerated from — reintroducing the error. Do not reason "the test would still pass, so there is no drift": whether a replay passes is not the question. The question is whether the test case still describes the product.
+
 This is a separate axis from the label. A renamed selector that only the generated code names is \`TEST_DRIFT\` on the \`generated\` surface; a spec whose \`expected\` quotes a string the product renamed is \`TEST_DRIFT\` on the \`spec\` surface.
 
 ## Earning each answer
 
-- **No drift is a claim, not a default.** Make it after picking the concrete strings the spec asserts and finding them in the source. If you never looked, the honest answer is UNKNOWN.
+- **No drift is a claim, not a default.** Make it after picking the concrete strings from *every* surface you were given — the spec's \`expected\` and the generated code's selectors alike — and finding each of them in the source. Clearing the test case because one surface checked out is the most common way to miss a real finding. If you never looked, the honest answer is UNKNOWN.
 - **A finding needs a citation.** Every TEST_DRIFT and SPEC_CHANGE must carry at least one \`evidence\` entry with a real \`file\`, and a line where you can give one. A label with no citation is a guess wearing a verdict's clothes — answer UNKNOWN instead.
 - **Do not report style.** Wording you would have phrased differently is not drift. Report only what would make a replay fail, or what asks about something the product no longer does.
 - \`confidence\` is about the label: how sure you are it is the right one, not how bad the finding is.

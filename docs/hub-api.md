@@ -100,7 +100,7 @@ interface Run {
   branch: string | null;
   status: "passed" | "failed" | "running";
   kind: "run" | "drift";     // "run" = ccqa run/live execution; "drift" = ccqa drift --push
-  drift: { issues: number; errors: number; warnings: number; specsWithIssues: number } | null; // set only for kind: "drift"
+  drift: { specs: number; testDrift: number; specChange: number; unknown: number } | null; // set only for kind: "drift"
   specs: { total: number; passed: number; failed: number };
   gitHead: string | null;
   promptVersion: string;

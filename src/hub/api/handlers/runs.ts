@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry } from "../../contract/schema.ts";
 import { GitEnvelopeSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
-import { driftSeverity, type DriftLabel } from "../../../drift/types.ts";
+import type { DriftLabel } from "../../../drift/types.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
 import { emptyDriftLedger } from "../../core/drift-ledger.ts";
@@ -527,22 +527,29 @@ async function getRunOr404(storage: HubStorage, id: string): Promise<Run> {
 /**
  * Tally a `kind: "drift"` report's per-spec diagnoses (carried in `analysis`,
  * not `driftAudit` — see ReportSpecResultSchema) into the `Run.drift` summary
- * counters. One diagnosis per spec now, so `issues` and `specsWithIssues`
- * always agree; both are kept for wire compatibility with `RunSchema.drift`.
+ * counters, by label rather than by derived severity. A row with no
+ * `analysis` was audited and found clean (see `driftResultsToReport`), so it
+ * counts toward `specs` but none of the three labels.
  */
-function summarizeDrift(results: ReportSpecResult[]): { issues: number; errors: number; warnings: number; specsWithIssues: number } {
-  let errors = 0;
-  let warnings = 0;
-  let specsWithIssues = 0;
+function summarizeDrift(results: ReportSpecResult[]): { specs: number; testDrift: number; specChange: number; unknown: number } {
+  let specs = 0;
+  let testDrift = 0;
+  let specChange = 0;
+  let unknown = 0;
   for (const r of results) {
+    // A drift row's status is always "passed"/"failed" (driftResultsToReport),
+    // but skip defensively rather than assume that never changes.
+    if (r.status === "skipped") continue;
+    specs++;
     if (!r.analysis) continue;
-    specsWithIssues++;
     // A kind:"drift" row's `analysis` always originates from analyzeDrift, so
     // its label is one of TEST_DRIFT/SPEC_CHANGE/UNKNOWN, never PRODUCT_BUG.
-    if (driftSeverity(r.analysis.label as DriftLabel) === "error") errors++;
-    else warnings++;
+    const label = r.analysis.label as DriftLabel;
+    if (label === "TEST_DRIFT") testDrift++;
+    else if (label === "SPEC_CHANGE") specChange++;
+    else unknown++;
   }
-  return { issues: specsWithIssues, errors, warnings, specsWithIssues };
+  return { specs, testDrift, specChange, unknown };
 }
 
 /**
