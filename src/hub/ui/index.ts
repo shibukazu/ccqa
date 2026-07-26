@@ -2574,11 +2574,13 @@ const CLIENT_JS = `
     return seg;
   }
 
-  function loadTriage(runId, onLoaded) {
+  // isDrift is an argument, not something the caller patches on afterwards: the
+  // matrix is drawn here, before onLoaded runs, and it decides which rows exist.
+  function loadTriage(runId, isDrift, onLoaded) {
     apiFetch("/api/v1/runs/" + encodeURIComponent(runId) + "/triage").then(function (res) {
       var byKey = {};
       res.cases.forEach(function (c) { byKey[c.feature + "/" + c.spec] = c; });
-      var triageState = { byKey: byKey, total: res.total };
+      var triageState = { byKey: byKey, total: res.total, isDrift: isDrift };
       renderMatrix(triageState);
       onLoaded(triageState);
     }).catch(function (err) {
@@ -2588,7 +2590,7 @@ const CLIENT_JS = `
       var wrap = el("div", "matrix-wrap");
       wrap.appendChild(el("div", "muted", "Error loading triage: " + err.message));
       card.appendChild(wrap);
-      onLoaded({ byKey: {} });
+      onLoaded({ byKey: {}, isDrift: isDrift });
     });
   }
 
@@ -2630,8 +2632,7 @@ const CLIENT_JS = `
       // now carry, so nothing about the run's kind gates it.
       var isDrift = report.kind === "drift";
       renderSpecCards(runId, report.results, { byKey: {} }, isDrift);
-      loadTriage(runId, function (loaded) {
-        loaded.isDrift = isDrift;
+      loadTriage(runId, isDrift, function (loaded) {
         renderSpecCards(runId, report.results, loaded, isDrift);
       });
     }).catch(detailError("Error loading report"));
