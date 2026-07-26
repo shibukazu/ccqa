@@ -182,7 +182,7 @@ const HTML_BODY = `
             </div>
           </div>
           <div class="tblcard"><div class="table-wrap"><table>
-            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th data-i18n="perspectives.col.status">Status</th><th id="persp-th-result" data-i18n="perspectives.col.lastResult" hidden>Last result</th><th id="persp-th-rerun" data-i18n="perspectives.col.rerun" hidden>Needs re-run</th><th id="persp-th-drift" data-i18n="perspectives.col.drift" hidden>Drift</th><th></th></tr></thead>
+            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th id="persp-th-run" data-i18n="perspectives.col.run" hidden>Execution</th><th id="persp-th-drift" data-i18n="perspectives.col.drift" hidden>Drift audit</th><th></th></tr></thead>
             <tbody id="persp-tbody"></tbody>
           </table></div></div>
           <p class="empty-note" id="persp-no-hit" hidden data-i18n="perspectives.noHit">No matching cases.</p>
@@ -537,7 +537,7 @@ const CSS = `
   a.ci-badge { text-decoration: none; }
   a.ci-badge:hover { color: var(--fg); border-color: var(--fg-dim); }
 
-  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 7px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; border: 1px solid transparent; }
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 7px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; border: 1px solid transparent; white-space: nowrap; }
   .badge .d { width: 6px; height: 6px; border-radius: 50%; }
   .badge.pass, .badge.passed { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
   .badge.pass .d, .badge.passed .d { background: var(--pass); }
@@ -553,7 +553,7 @@ const CSS = `
   /* which generation target ran the spec (agent-browser / playwright / runn) */
   .badge-target { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-family: var(--mono); background: var(--surface-3); color: var(--muted); border: 1px solid var(--border); }
   .badge-drift { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
-  .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); }
+  .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
   /* Below .chip in source order so these override its background/border/color
      when combined as class="chip drift-count-chip" (same specificity — source
      order decides). One amber look for every drift label chip — a label chip
@@ -1049,15 +1049,16 @@ const CLIENT_JS = `
       "perspectives.filter.all": "All", "perspectives.filter.deterministic": "Deterministic",
       "perspectives.filter.live": "Live", "perspectives.filter.norec": "Not recorded only",
       "perspectives.filter.rerun": "Needs re-run only",
-      "perspectives.col.lastResult": "Last result", "perspectives.col.rerun": "Needs re-run",
-      "perspectives.col.drift": "Drift",
-      "perspectives.col.case": "Case", "perspectives.col.mode": "Mode", "perspectives.col.status": "Status",
+      "perspectives.col.run": "Execution", "perspectives.col.drift": "Drift audit",
+      "perspectives.run.state.needed": "re-run needed", "perspectives.run.state.unknown": "can't tell",
+      "perspectives.run.state.failed": "failed", "perspectives.run.state.passed": "passed",
+      "perspectives.run.state.never": "never run",
+      "perspectives.col.case": "Case", "perspectives.col.mode": "Mode",
       "perspectives.noHit": "No matching cases.",
       "perspectives.updated": "Last updated:",
       "perspectives.empty": "No perspectives yet. Run ccqa perspectives, or record a test — it's created automatically.",
       "perspectives.loadFailed": "Loading perspectives failed",
       "perspectives.mode.deterministic": "deterministic", "perspectives.mode.live": "live",
-      "perspectives.status.runnable": "runnable", "perspectives.status.notRecorded": "not recorded",
       "perspectives.ov.cases": "cases", "perspectives.ov.features": "features",
       "perspectives.ov.axis.rerun": "Re-run", "perspectives.ov.axis.drift": "Drift",
       "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
@@ -1069,7 +1070,6 @@ const CLIENT_JS = `
       "perspectives.d.lastRed": "Most recent failure",
       "perspectives.d.changedSince": "Changes since the last run",
       "perspectives.d.cannotJudge": "Why this cannot be judged",
-      "perspectives.result.never": "never run",
       "perspectives.result.openRun": "Open this run in the hub",
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needed": "Re-run needed",
@@ -1195,15 +1195,16 @@ const CLIENT_JS = `
       "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
       "perspectives.filter.live": "ライブ", "perspectives.filter.norec": "未recordのみ",
       "perspectives.filter.rerun": "要再実行のみ",
-      "perspectives.col.lastResult": "前回結果", "perspectives.col.rerun": "再実行の要否",
-      "perspectives.col.drift": "ドリフト",
-      "perspectives.col.case": "ケース", "perspectives.col.mode": "モード", "perspectives.col.status": "状態",
+      "perspectives.col.run": "実行", "perspectives.col.drift": "ドリフト監査",
+      "perspectives.run.state.needed": "要再実行", "perspectives.run.state.unknown": "判定できない",
+      "perspectives.run.state.failed": "失敗", "perspectives.run.state.passed": "合格",
+      "perspectives.run.state.never": "未実行",
+      "perspectives.col.case": "ケース", "perspectives.col.mode": "モード",
       "perspectives.noHit": "該当するケースがありません。",
       "perspectives.updated": "最終更新:",
       "perspectives.empty": "まだテスト観点がありません。ccqa perspectives を実行するか、recordすると自動作成されます。",
       "perspectives.loadFailed": "テスト観点の読み込みに失敗しました",
       "perspectives.mode.deterministic": "決定的", "perspectives.mode.live": "ライブ",
-      "perspectives.status.runnable": "実行可能", "perspectives.status.notRecorded": "未record",
       "perspectives.ov.cases": "ケース", "perspectives.ov.features": "機能",
       "perspectives.ov.axis.rerun": "実行", "perspectives.ov.axis.drift": "ドリフト",
       "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
@@ -1215,7 +1216,6 @@ const CLIENT_JS = `
       "perspectives.d.lastRed": "直近の失敗",
       "perspectives.d.changedSince": "前回実行以降の変更",
       "perspectives.d.cannotJudge": "判定できない理由",
-      "perspectives.result.never": "未実行",
       "perspectives.result.openRun": "ハブでこの実行を開く",
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needed": "要再実行",
@@ -2485,8 +2485,13 @@ const CLIENT_JS = `
       ? graded
       : graded.filter(function (c) { return caseTarget(c) === filter; });
 
+    // A drift audit cannot answer PRODUCT_BUG, so a row for it would sit at
+    // zero forever and read as "it never predicted a product bug" — an accuracy
+    // claim, when it is only a definition. The columns keep all three causes:
+    // a human may well decide a spec/code mismatch was the product breaking.
+    var predictedRows = triageState.isDrift ? DRIFT_LABELS : PREDICTED_LABELS;
     var matrix = {};
-    PREDICTED_LABELS.forEach(function (p) {
+    predictedRows.forEach(function (p) {
       matrix[p] = {};
       FAILURE_LABELS.forEach(function (a) { matrix[p][a] = 0; });
     });
@@ -2509,7 +2514,7 @@ const CLIENT_JS = `
     thead.appendChild(headRow);
     table.appendChild(thead);
     var tbody = document.createElement("tbody");
-    PREDICTED_LABELS.forEach(function (p) {
+    predictedRows.forEach(function (p) {
       var row = document.createElement("tr");
       row.appendChild(el("th", null, labelText(p)));
       FAILURE_LABELS.forEach(function (a) {
@@ -2619,13 +2624,15 @@ const CLIENT_JS = `
       // triage loads so the saved grades restore. Keeping these separate means
       // a triage failure (or a throw while rendering cards) can't be mislabelled
       // as the other, and neither escapes its own catch.
+      // A drift row is graded too — what is being graded is the classification,
+      // not an outcome — so the tally belongs here for the same reason it does
+      // on a run. The triage API keys off the row's analysis, which drift rows
+      // now carry, so nothing about the run's kind gates it.
       var isDrift = report.kind === "drift";
-      document.getElementById("triage-head").hidden = isDrift;
-      document.getElementById("triage-card").hidden = isDrift;
       renderSpecCards(runId, report.results, { byKey: {} }, isDrift);
-      if (isDrift) return; // drift runs have no triage: skip loadTriage entirely
-      loadTriage(runId, function (triageState) {
-        renderSpecCards(runId, report.results, triageState, isDrift);
+      loadTriage(runId, function (loaded) {
+        loaded.isDrift = isDrift;
+        renderSpecCards(runId, report.results, loaded, isDrift);
       });
     }).catch(detailError("Error loading report"));
   }
@@ -3173,10 +3180,6 @@ const CLIENT_JS = `
     return rerunCannotJudge(rr);
   }
 
-  var RERUN_BADGE_CLASS = {
-    needed: "rr-needed", notNeeded: "rr-notneeded", unknown: "rr-unknown",
-    neverRun: "rr-none", notEvaluated: "rr-none"
-  };
 
   // --- pure: rerun composition ---------------------------------------------
   // Self-contained on purpose: no DOM, no closures. rerun-view.test.ts lifts
@@ -3256,15 +3259,6 @@ const CLIENT_JS = `
   }
   // --- end pure: drift composition -------------------------------------------
 
-  // NB: the parameter is not named "state" — that would shadow the app-wide
-  // state object this scope closes over.
-  function rerunBadge(rerunState) {
-    var span = el("span", "badge " + (RERUN_BADGE_CLASS[rerunState] || "rr-none"));
-    span.appendChild(el("span", "d"));
-    span.appendChild(document.createTextNode(" " + t("perspectives.rerun.state." + rerunState)));
-    return span;
-  }
-
   // One ledger entry as "<short sha> · <when>", linking to the hub's run detail
   // and, when that run recorded one, to the CI run. Clicks must not bubble: the
   // table row itself toggles the detail panel.
@@ -3317,35 +3311,61 @@ const CLIENT_JS = `
     return null;
   }
 
-  function perspResultCell(rr) {
-    var td = el("td");
-    // No verdict at all: this case is in the document but not in the report
-    // (added since it was computed). Not the same statement as "never run".
-    if (!rr) {
-      td.appendChild(el("span", "muted", "—"));
-      return td;
-    }
+  // The execution axis as one state. "What did it say last time" and "is that
+  // still true" are two faces of one question, so the row answers it once and
+  // the detail panel keeps the coordinates.
+  //
+  // A needed re-run outranks a recorded failure: once the last result is known
+  // to be stale it is no longer a verdict, and what to do next is the same
+  // either way — run it. Reporting "failed" there would be describing a result
+  // nobody should still be acting on.
+  //
+  // "unknown" keeps its own state rather than folding into the last result:
+  // it means the hub cannot say whether that result still holds, and
+  // --changed=last-run does not re-run it without --include-unknown. Showing
+  // it as passed or failed would claim a confidence nothing supports.
+  function perspRunState(rr) {
+    if (!rr) return null;
+    if (rr.state === "needed") return "needed";
+    if (rr.state === "unknown") return "unknown";
     var last = lastResult(rr);
-    if (!last) {
-      td.appendChild(el("span", "muted", t("perspectives.result.never")));
-      return td;
-    }
-    td.appendChild(last.status ? statusBadge(last.status) : el("span", "muted", "—"));
-    var sub = el("span", "cellsub");
-    sub.appendChild(ledgerLine(last.entry));
-    td.appendChild(sub);
-    return td;
+    if (!last || !last.status) return "never";
+    return last.status === "failed" ? "failed" : "passed";
   }
 
-  function perspRerunCell(rr) {
+  // Reuses the badge classes that already mean these things elsewhere rather
+  // than minting a parallel palette: amber for "act on this", info for "cannot
+  // say", and the run status colours for a result that still stands.
+  var RUN_STATE_BADGE = {
+    needed: "rr-needed", unknown: "rr-unknown",
+    failed: "failed", passed: "passed", never: "rr-none"
+  };
+
+  function perspRunCell(rr) {
     var td = el("td");
-    if (!rr) {
+    var runState = perspRunState(rr);
+    // No verdict at all: this case is in the document but not in the report
+    // (added since it was computed). Not the same statement as "never run".
+    if (!runState) {
       td.appendChild(el("span", "muted", "—"));
       return td;
     }
-    td.appendChild(rerunBadge(rr.state));
-    var why = rerunCellWhy(rr);
-    if (why) td.appendChild(el("span", "cellsub", why));
+    var badge = el("span", "badge " + RUN_STATE_BADGE[runState]);
+    badge.appendChild(el("span", "d"));
+    badge.appendChild(document.createTextNode(" " + t("perspectives.run.state." + runState)));
+    td.appendChild(badge);
+
+    // The sub-line says why, not what: the reason a re-run is needed, or the
+    // coordinate of the result being reported.
+    if (runState === "needed" || runState === "unknown") {
+      var why = rerunCellWhy(rr);
+      if (why) td.appendChild(el("span", "cellsub", why));
+    } else if (runState !== "never") {
+      var last = lastResult(rr);
+      var sub = el("span", "cellsub");
+      sub.appendChild(ledgerLine(last.entry));
+      td.appendChild(sub);
+    }
     return td;
   }
 
@@ -3375,7 +3395,7 @@ const CLIENT_JS = `
       var sub = el("span", "cellsub");
       // Only a diagnosed entry has a label/surface to show; a clean audit's
       // badge already says everything the entry knows.
-      if (entry.label) sub.appendChild(document.createTextNode(entry.label + (entry.surface ? " (" + entry.surface + ")" : "") + " · "));
+      if (entry.label) sub.appendChild(document.createTextNode(labelText(entry.label) + (entry.surface ? " (" + t("diag.surface." + entry.surface) + ")" : "") + " · "));
       sub.appendChild(ledgerLine(entry));
       td.appendChild(sub);
     }
@@ -3409,14 +3429,6 @@ const CLIENT_JS = `
   function perspModeChip(mode) {
     var span = el("span", "chip" + (mode === "live" ? " live" : ""));
     span.textContent = t(mode === "live" ? "perspectives.mode.live" : "perspectives.mode.deterministic");
-    return span;
-  }
-
-  function perspStatusBadge(spec) {
-    var ok = perspRunnable(spec);
-    var span = el("span", "badge " + (ok ? "ok" : "norec"));
-    span.appendChild(el("span", "d"));
-    span.appendChild(document.createTextNode(" " + t(ok ? "perspectives.status.runnable" : "perspectives.status.notRecorded")));
     return span;
   }
 
@@ -3665,10 +3677,9 @@ const CLIENT_JS = `
     // exactly as it was on a hub that cannot answer the re-run/drift question.
     var showRerun = perspState.rerun != null;
     var showDrift = perspState.drift != null;
-    document.getElementById("persp-th-result").hidden = !showRerun;
-    document.getElementById("persp-th-rerun").hidden = !showRerun;
+    document.getElementById("persp-th-run").hidden = !showRerun;
     document.getElementById("persp-th-drift").hidden = !showDrift;
-    var cols = 4 + (showRerun ? 2 : 0) + (showDrift ? 1 : 0);
+    var cols = 3 + (showRerun ? 1 : 0) + (showDrift ? 1 : 0);
     var hits = 0;
     doc.features.forEach(function (feature) {
       var specs = feature.specs.filter(function (s) { return perspMatches(feature, s, perspState.f); });
@@ -3697,14 +3708,8 @@ const CLIENT_JS = `
         modeTd.appendChild(perspModeChip(perspMode(spec)));
         row.appendChild(modeTd);
 
-        var statusTd = el("td");
-        statusTd.appendChild(perspStatusBadge(spec));
-        row.appendChild(statusTd);
-
         if (showRerun) {
-          var rr = ledgerEntryFor(perspState.rerun, feature, spec);
-          row.appendChild(perspResultCell(rr));
-          row.appendChild(perspRerunCell(rr));
+          row.appendChild(perspRunCell(ledgerEntryFor(perspState.rerun, feature, spec)));
         }
         if (showDrift) row.appendChild(perspDriftCell(ledgerEntryFor(perspState.drift, feature, spec)));
 
