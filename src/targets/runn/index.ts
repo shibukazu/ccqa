@@ -16,8 +16,8 @@ const RUNN_TARGET = "runn";
  * The runn target (input: "spec"): no record phase — `ccqa generate` compiles
  * the spec directly into a runn runbook (YAML) via the shared LLM engine. The
  * prompt prescribes only runn's generic runbook shape; concrete endpoints and
- * payloads must be verified against the backend sources the spec's
- * `relatedPaths` point at.
+ * payloads must be verified against the backend sources, found via
+ * Read/Grep/Glob.
  */
 export const runnTarget: TargetPlugin = {
   id: RUNN_TARGET,

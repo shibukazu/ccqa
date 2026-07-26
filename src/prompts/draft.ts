@@ -73,7 +73,6 @@ Pure YAML — no markdown body, no frontmatter dashes.
 
 Top-level fields:
 - \`title\`: string (required) — short human-readable name for the test
-- \`relatedPaths\`: array of glob string (optional) — source files this spec depends on, used by \`ccqa drift --changed\`
 - \`steps\`: array (required, at least one)
 - \`target\`: string (optional) — generation-target id (e.g. \`playwright\`, \`runn\`); omitted = the project default (agent-browser)
 - \`mode\`: \`live\` (optional, agent-browser only) — Claude drives every run instead of replaying a recording
@@ -115,8 +114,7 @@ ${formatBlockList(blocks)}
 
 1. Read the codebase under cwd to find concrete strings: routes, button labels, aria-labels, page titles, placeholders. Use those exact strings in \`expected\`.
 2. If you use \`include:\` steps, verify each \`params\` key matches a declared param of the block (see the Available blocks list above).
-3. Populate \`relatedPaths\` with glob patterns pointing at the source files this spec depends on — this is the spec's final, authoritative list (nothing else updates it later, so get it right here): the route/page file for each URL the spec visits, plus the component files (or their parent feature directory) that render the aria-labels, placeholders, or visible texts the spec asserts on. Prefer directory globs (e.g. \`src/features/tasks/**\`) when several files in one area are involved. Confirm each path actually exists via \`Glob\`/\`Read\` before listing it — never guess a path by convention. Be conservative — when unsure whether a real path is relevant, include it rather than omit it (a missing path means a code change silently escapes \`drift --changed\`).
-4. Validate the (current or proposed) spec on four axes — emit one issue per finding:
+3. Validate the (current or proposed) spec on four axes — emit one issue per finding:
    - **assertable**: each \`expected\` can be verified against a string/URL/state that exists in code.
    - **blocks**: every \`include\` resolves to a real block; every \`params\` key is declared on that block; every required param is provided.
    - **granularity**: not too coarse (multiple actions per step) nor too fine (snapshot-only steps); order is logical.

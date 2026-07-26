@@ -1,11 +1,6 @@
 import { execFileP, stripLeadingDotSlash } from "../drift/affected.ts";
-import {
-  capturePrDiff,
-  type PatchSection,
-  scopePatchForSpec,
-  splitPatchByFile,
-} from "../report/diff.ts";
-import { listFeatureTree, specKey, type SpecRef } from "../store/index.ts";
+import { capturePrDiff, type PatchSection, splitPatchByFile, truncatePatch } from "../report/diff.ts";
+import type { SpecRef } from "../store/index.ts";
 import type { AnalysisBase } from "./git-context.ts";
 
 /**
@@ -23,8 +18,8 @@ export interface SpecDiff {
   /** The baseline this spec was diffed against. */
   base: AnalysisBase;
   /**
-   * Unified patch, confined to the working directory and scoped to the spec's
-   * relatedPaths, then truncated. Null when the capture failed.
+   * Unified patch, confined to the working directory and truncated. Null when
+   * the capture failed.
    */
   patch: string | null;
   /** `git diff --name-status` for the same range — cheap, never truncated. */
@@ -38,10 +33,10 @@ export interface SpecDiff {
    */
   range: { commitCount: number; days: number } | null;
   /**
-   * On-demand hunk lookup over the FULL (unscoped) captured diff, backing the
+   * On-demand hunk lookup over the full captured diff, backing the
    * classifier's `changed_file_diff` MCP tool: the inline `patch` is only the
-   * relatedPaths-scoped seed, and this is how changes outside that scope are
-   * pulled into context when (and only when) the model asks for them. Null
+   * truncated seed, and this is how a file dropped or cut by truncation is
+   * pulled into context when (and only when) the model asks for it. Null
    * when `path` has no changes in the diff range or the capture failed.
    */
   fileDiff: (path: string) => string | null;
@@ -71,10 +66,9 @@ export function lookupFileDiff(sections: PatchSection[], path: string): string |
  *
  * This exists to collapse two divergent implementations. The deterministic
  * path and the live path each used to resolve a base ref and capture a diff
- * on their own, which left three defects: a live-only run recorded no git
- * metadata at all, the live path fed the classifier the *entire* patch
- * instead of scoping it to the spec's relatedPaths, and neither could evolve
- * its baseline (fixed ref vs per-spec last-green) without the other drifting.
+ * on their own, which left two defects: a live-only run recorded no git
+ * metadata at all, and neither could evolve its baseline (fixed ref vs
+ * per-spec last-green) without the other drifting.
  *
  * The baseline comes from `resolveBase` per spec — a constant for
  * `--failure-analysis=<ref>`, a hub-ledger lookup for
@@ -88,6 +82,13 @@ export interface DiffProvider {
 
 interface CapturedDiff {
   sections: PatchSection[] | null;
+  /**
+   * Truncated to `TOTAL_PATCH_CAP`. Built once here, not per spec: with
+   * `relatedPaths` scoping gone, every spec sharing this base sha truncates
+   * the same sections to the same output, so recomputing it per failing spec
+   * was pure waste.
+   */
+  patch: string | null;
   nameStatus: string | null;
   error: string | null;
   range: { commitCount: number; days: number } | null;
@@ -126,17 +127,18 @@ export function createDiffProvider(args: {
   // per-spec baselines of last-green mode collapse into one capture whenever
   // they point at the same commit.
   const captures = new Map<string, Promise<CapturedDiff>>();
-  let relatedPathsIndex: Promise<Map<string, string[] | null>> | null = null;
 
   function capture(sha: string): Promise<CapturedDiff> {
     const cached = captures.get(sha);
     if (cached) return cached;
     const pending = (async (): Promise<CapturedDiff> => {
       const [result, range] = await Promise.all([capturePrDiff(sha, cwd), measureRange(sha, cwd)]);
-      if (!result.ok) return { sections: null, nameStatus: null, error: result.error, range };
-      const { patch, nameStatus } = result.diff;
+      if (!result.ok) return { sections: null, patch: null, nameStatus: null, error: result.error, range };
+      const { patch: rawPatch, nameStatus } = result.diff;
+      const sections = rawPatch.length > 0 ? splitPatchByFile(rawPatch) : [];
       return {
-        sections: patch.length > 0 ? splitPatchByFile(patch) : [],
+        sections,
+        patch: truncatePatch(sections),
         nameStatus,
         error: null,
         range,
@@ -146,34 +148,19 @@ export function createDiffProvider(args: {
     return pending;
   }
 
-  /** relatedPaths for every spec, read once from the feature tree. */
-  function relatedPaths(): Promise<Map<string, string[] | null>> {
-    relatedPathsIndex ??= listFeatureTree(cwd).then(
-      (tree) =>
-        new Map(
-          tree.flatMap((f) =>
-            f.specs.map((s) => [specKey({ featureName: f.featureName, specName: s.specName }), s.relatedPaths ?? null] as const),
-          ),
-        ),
-    );
-    return relatedPathsIndex;
-  }
-
   return {
     async forSpec(spec) {
       const resolved = await resolveBase(spec);
       if (!resolved.ok) return resolved;
-      const [captured, index] = await Promise.all([capture(resolved.base.sha), relatedPaths()]);
-      const scope = index.get(specKey(spec)) ?? null;
-      const sections = captured.sections;
+      const captured = await capture(resolved.base.sha);
       return {
         ok: true,
         base: resolved.base,
-        patch: sections ? scopePatchForSpec(sections, scope) : null,
+        patch: captured.patch,
         nameStatus: captured.nameStatus,
         error: captured.error,
         range: captured.range,
-        fileDiff: (path) => (sections ? lookupFileDiff(sections, path) : null),
+        fileDiff: (path) => (captured.sections ? lookupFileDiff(captured.sections, path) : null),
       };
     },
   };

@@ -3,7 +3,7 @@ import type { DeployEntry, DeployLog, SpecLedger, SpecLedgerEntry, SpecTouchInde
 import { computeRerun, type RerunInput } from "./rerun.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
-const SPEC: SpecTarget = { key: "f/s", relatedPaths: ["src/**"] };
+const SPEC: SpecTarget = { key: "f/s" };
 
 function deploy(index: number, overrides: Partial<DeployEntry> = {}): DeployEntry {
   return {
@@ -12,7 +12,7 @@ function deploy(index: number, overrides: Partial<DeployEntry> = {}): DeployEntr
     previousSha: index === 0 ? null : `sha-${index - 1}`,
     at: `2026-07-2${index}T00:00:00Z`,
     changedPaths: ["docs/x.md"],
-    truncated: false,
+    hasSelection: true,
     gapBefore: false,
     ...overrides,
   };
@@ -30,14 +30,10 @@ function ledgerWithRun(entry: SpecLedgerEntry | null): SpecLedger {
   return { green: {}, run: entry ? { "f/s": entry } : {}, red: {} };
 }
 
+/** A touch index where deploy `index` is the newest one that needed the spec. */
 function touchedAt(index: number, matchedPaths: string[] = ["src/a.ts"]): SpecTouchIndex {
   return {
-    "f/s": {
-      lastTouchedIndex: index,
-      lastTouchedSha: `sha-${index}`,
-      lastTouchedAt: "2026-07-21T00:00:00Z",
-      matchedPaths,
-    },
+    "f/s": { needed: { index, sha: `sha-${index}`, at: "2026-07-21T00:00:00Z", matchedPaths } },
   };
 }
 
@@ -53,67 +49,55 @@ function compute(overrides: Partial<RerunInput> = {}): ReturnType<typeof compute
 }
 
 describe("computeRerun", () => {
-  test("needed when a deploy after the baseline touches the spec's relatedPaths", () => {
+  test("needed when the touch index records a needed touch after the baseline", () => {
     const verdict = compute({
-      log: log(deploy(0), deploy(1, { changedPaths: ["src/a.ts", "src/b.ts"] })),
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1, ["src/a.ts", "src/b.ts"]),
     });
     expect(verdict.state).toBe("needed");
     expect(verdict.touchedBy).toEqual(["src/a.ts", "src/b.ts"]);
   });
 
-  test("notNeeded when every deploy after the baseline misses it", () => {
+  test("notNeeded when nothing in range needed it", () => {
     const verdict = compute({ log: log(deploy(0), deploy(1)) });
     expect(verdict.state).toBe("notNeeded");
-    // Nothing touched it, so there is no deploy to name.
     expect(verdict.touchedByDeploy).toBeUndefined();
   });
 
-  test("the deploy the spec ran against does not count against itself", () => {
-    // The baseline deploy touched the spec, but the run already exercised it.
-    expect(compute({ log: log(deploy(0, { changedPaths: ["src/a.ts"] })) }).state).toBe("notNeeded");
+  test("a touch at the baseline itself does not count against it", () => {
+    expect(compute({ touchIndex: touchedAt(0) }).state).toBe("notNeeded");
   });
 
   test("a sha deployed twice resolves to its earliest position, widening the range", () => {
     const verdict = compute({
-      log: log(deploy(0), deploy(1, { changedPaths: ["src/a.ts"] }), deploy(2, { sha: "sha-0" })),
+      log: log(deploy(0), deploy(1), deploy(2, { sha: "sha-0" })),
+      touchIndex: touchedAt(1),
     });
     expect(verdict.state).toBe("needed");
   });
 
-  test("`touchedBy` and `touchedByDeploy` come from the most recent touching deploy", () => {
+  test("touchedBy and touchedByDeploy come from the touch index's needed entry", () => {
     const verdict = compute({
-      log: log(
-        deploy(0),
-        deploy(1, { changedPaths: ["src/old.ts"] }),
-        deploy(2, { changedPaths: ["src/new.ts"] }),
-        deploy(3),
-      ),
+      log: log(deploy(0), deploy(1), deploy(2), deploy(3)),
+      touchIndex: touchedAt(2, ["src/new.ts"]),
     });
     expect(verdict.touchedBy).toEqual(["src/new.ts"]);
-    // The deploy that caused the verdict, not the log head (3).
     expect(verdict.touchedByDeploy).toEqual({ index: 2, sha: "sha-2", at: "2026-07-22T00:00:00Z" });
   });
 
-  test("a touch that predates the baseline is never the named deploy", () => {
-    const ranAtOne = ledgerWithRun(ranAt("sha-1"));
-    // The newest touch the index knows of is at position 0, behind the run's
-    // baseline at position 1. The deploy that made this verdict is 2.
-    const verdict = compute({
-      ledger: ranAtOne,
-      log: log(deploy(0, { changedPaths: ["src/old.ts"] }), deploy(1), deploy(2, { changedPaths: ["src/new.ts"] })),
-      touchIndex: touchedAt(0, ["src/old.ts"]),
+  test("a touch the log still retains is named; one it has evicted is not", () => {
+    const short = log(deploy(0), deploy(1));
+    expect(compute({ log: short, touchIndex: touchedAt(1) })).toMatchObject({
+      state: "needed",
+      touchedByDeploy: { index: 1, sha: "sha-1" },
     });
-    expect(verdict.touchedByDeploy).toMatchObject({ index: 2, sha: "sha-2" });
 
-    // And with the retained log unable to answer, an out-of-range touch names
-    // nothing — it does not even make the verdict.
-    const stuck = compute({
-      ledger: ranAtOne,
-      log: log(deploy(0), deploy(1), deploy(2, { truncated: true })),
-      touchIndex: touchedAt(0, ["src/old.ts"]),
-    });
-    expect(stuck).toMatchObject({ state: "unknown", reason: "truncatedInRange" });
-    expect(stuck.touchedByDeploy).toBeUndefined();
+    // The touch index points at a deploy the ring buffer has since evicted:
+    // the position still proves a touch in range, but no entry backs the
+    // sha, so none is claimed.
+    const verdict = compute({ log: short, touchIndex: touchedAt(9) });
+    expect(verdict.state).toBe("needed");
+    expect(verdict.touchedByDeploy).toBeNull();
   });
 
   test("the three ledger coordinates ride along with every verdict", () => {
@@ -136,11 +120,6 @@ describe("computeRerun", () => {
   });
 
   describe("unknown, never `notNeeded`", () => {
-    test("noRelatedPaths: the spec declares nothing to match against", () => {
-      const verdict = compute({ specs: [{ key: "f/s", relatedPaths: [] }] });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "noRelatedPaths" });
-    });
-
     test("noDeployLog: the profile's deploy job is not wired up", () => {
       const verdict = compute({ log: log(), ledger: ledgerWithRun(ranAt("sha-0")) });
       expect(verdict).toMatchObject({ state: "unknown", reason: "noDeployLog" });
@@ -168,72 +147,38 @@ describe("computeRerun", () => {
       expect(verdict).toMatchObject({ state: "unknown", reason: "gapInRange" });
     });
 
-    test("truncatedInRange: a deploy in range no longer lists all it changed", () => {
-      const verdict = compute({ log: log(deploy(0), deploy(1, { truncated: true })) });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "truncatedInRange" });
+    test("noSelectionInRange: a deploy in range was recorded without a spec selection", () => {
+      const verdict = compute({ log: log(deploy(0), deploy(1, { hasSelection: false })) });
+      expect(verdict).toMatchObject({ state: "unknown", reason: "noSelectionInRange" });
     });
 
-    test("truncatedInRange: a deploy in range reported no paths at all", () => {
-      const verdict = compute({ log: log(deploy(0), deploy(1, { changedPaths: null })) });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "truncatedInRange" });
-    });
-
-    test("a definite match outranks a gap or truncation later in the range", () => {
+    test("selectionUnknown: a selection in range answered unknown for this spec", () => {
       const verdict = compute({
-        log: log(deploy(0), deploy(1, { changedPaths: ["src/a.ts"] }), deploy(2, { gapBefore: true })),
+        log: log(deploy(0), deploy(1)),
+        touchIndex: { "f/s": { undecidedIndex: 1 } },
+      });
+      expect(verdict).toMatchObject({ state: "unknown", reason: "selectionUnknown" });
+    });
+
+    test("needed in range outranks a gap or a missing selection later in the range", () => {
+      const verdict = compute({
+        log: log(deploy(0), deploy(1), deploy(2, { gapBefore: true, hasSelection: false })),
+        touchIndex: touchedAt(1),
       });
       expect(verdict.state).toBe("needed");
     });
-  });
-
-  test("the write-time touch index rescues a range the retained log can no longer match", () => {
-    const truncated = log(deploy(0), deploy(1, { truncated: true }));
-    expect(compute({ log: truncated, touchIndex: touchedAt(1) }).state).toBe("needed");
-
-    // A touch at or before the baseline proves nothing about the range.
-    expect(compute({ log: truncated, touchIndex: touchedAt(0) })).toMatchObject({
-      state: "unknown",
-      reason: "truncatedInRange",
-    });
-  });
-
-  test("a touch the log no longer holds proves the verdict but names no deploy", () => {
-    const truncated = log(deploy(0), deploy(1, { truncated: true }));
-    // The proving entry is retained, so it can be named from the log itself.
-    expect(compute({ log: truncated, touchIndex: touchedAt(1) })).toMatchObject({
-      state: "needed",
-      touchedByDeploy: { index: 1, sha: "sha-1" },
-    });
-
-    // The index points past everything the log retains: the position still
-    // proves a touch in range, but no entry backs the sha, so none is claimed.
-    const verdict = compute({ log: truncated, touchIndex: touchedAt(9) });
-    expect(verdict.state).toBe("needed");
-    expect(verdict.touchedByDeploy).toBeNull();
   });
 
   test("the touch index is compared on log position, not on array offset", () => {
     // A log whose oldest entries were evicted: the baseline sits at array
     // offset 0 but log position 40, and a touch recorded at position 40 is at
     // the baseline, not after it.
-    const evicted = log(deploy(40, { gapBefore: true }), deploy(41, { truncated: true }));
-    expect(compute({ log: evicted, ledger: ledgerWithRun(ranAt("sha-40")), touchIndex: touchedAt(40) })).toMatchObject({
-      state: "unknown",
-      reason: "truncatedInRange",
-    });
+    const evicted = log(deploy(40, { gapBefore: true }), deploy(41, { hasSelection: false }));
+    expect(
+      compute({ log: evicted, ledger: ledgerWithRun(ranAt("sha-40")), touchIndex: touchedAt(40) }),
+    ).toMatchObject({ state: "unknown", reason: "noSelectionInRange" });
     expect(
       compute({ log: evicted, ledger: ledgerWithRun(ranAt("sha-40")), touchIndex: touchedAt(41) }).state,
     ).toBe("needed");
-  });
-
-  test("the touch index never overrides a conclusive log scan", () => {
-    // Folded when the spec still claimed `src/**`; its relatedPaths have since
-    // narrowed, and the retained log can answer, so the current paths win.
-    const verdict = compute({
-      specs: [{ key: "f/s", relatedPaths: ["src/kept/**"] }],
-      log: log(deploy(0), deploy(1, { changedPaths: ["src/a.ts"] })),
-      touchIndex: touchedAt(1),
-    });
-    expect(verdict.state).toBe("notNeeded");
   });
 });

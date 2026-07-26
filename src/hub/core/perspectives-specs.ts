@@ -1,15 +1,14 @@
 import type { PerspectivesStore } from "./storage/types.ts";
 
 /**
- * One spec as re-run selection sees it: its ledger key and the source paths it
- * declares a dependency on. An empty `relatedPaths` means the spec cannot be
- * matched against a deploy at all — the caller reports that as `unknown`,
- * never as "not needed".
+ * One spec as re-run selection sees it: its ledger key. Re-run verdicts come
+ * from the per-deploy touch index (`ccqa select-specs`, ADR-0011), not from
+ * anything carried on the spec itself — this exists to enumerate the keys
+ * `computeRerun` needs a verdict for.
  */
 export interface SpecTarget {
   /** "feature/spec" — the same key the spec ledger uses. */
   key: string;
-  relatedPaths: string[];
 }
 
 function prop(obj: unknown, key: string): unknown {
@@ -34,11 +33,7 @@ export function readSpecTargets(doc: unknown): SpecTarget[] {
     for (const spec of specs) {
       const specName = prop(spec, "specName");
       if (typeof specName !== "string") continue;
-      const related = prop(spec, "relatedPaths");
-      out.push({
-        key: `${featureName}/${specName}`,
-        relatedPaths: Array.isArray(related) ? related.filter((p): p is string => typeof p === "string") : [],
-      });
+      out.push({ key: `${featureName}/${specName}` });
     }
   }
   return out;

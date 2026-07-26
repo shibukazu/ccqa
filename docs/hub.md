@@ -130,22 +130,31 @@ all. Run it from the deploy job, after the deploy succeeds. Flags:
 - `--sha <sha>` — **required**: the commit that was deployed.
 - `--previous <sha>` — the commit it replaced. Omitted, ccqa asks the hub
   for the profile's current deploy-log head and diffs against that. With
-  neither (the first deploy ever recorded), the entry is stored as touching
-  everything, which makes every spec re-run once and then settles.
+  neither (the first deploy ever recorded), there's nothing to diff against:
+  the entry is recorded with no selection, so every spec behind it reads
+  `unknown` until a later deploy resolves it.
 - `--ref <ref>` — the branch or tag deployed, recorded for display.
+- `--select` — also decide which specs this deploy reaches
+  ([`ccqa select-specs`](./running.md#asking-the-question-on-its-own)) and
+  submit the verdicts with the entry. **Pass it**: without a selection the
+  deploy is a hole in the range, and every spec behind it reports `unknown`
+  rather than `notNeeded` — the hub has no other way to know what the deploy
+  touched. Skipped when there is no previous deploy to diff against.
+- `-m, --model <name>` — model for `--select`. A cheap one is enough; the
+  selection costs a fraction of the runs it avoids.
 - `--project`, `--hub-url`, `--hub-token`, `--cwd` — as everywhere else.
 
 The changed paths come from a **two-dot** `git diff <previous> <sha>`,
 computed locally and posted with the entry. Two-dot matters: a three-dot
 diff resolves the merge base first, so redeploying an ancestor — a rollback
 — would report an empty diff and the rollback would become invisible.
-Rename detection is off, so a file moved out of a spec's `relatedPaths`
-still lists its old path.
+Rename detection is off, so a renamed file's old path is still listed
+alongside its new one.
 
 If the diff can't be produced (a shallow checkout that never fetched
-`previous`), ccqa warns and records the deploy as touching everything rather
-than claiming it changed nothing. Very large diffs are capped; the hub marks
-such an entry truncated and treats it the same way.
+`previous`), ccqa warns and records the deploy without changed paths — they're
+kept for display only and have no effect on re-run verdicts, which are
+decided from `hasSelection` instead. Very large diffs are capped in storage.
 
 A deploy job that has only `curl` and `git` can post the same body itself:
 
@@ -161,8 +170,9 @@ curl -sS -X POST \
   -d "$body"
 ```
 
-Omit `changedPaths` (or send `null`) to declare the deploy as touching
-everything. See [the API reference](./hub-api.md#deploys-and-re-run-selection)
+Omit `changedPaths` (or send `null`) when it can't be produced — it's kept for
+display only and has no effect on re-run verdicts. See
+[the API reference](./hub-api.md#deploys-and-re-run-selection)
 for the full contract, and
 [ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md) for why the
 deploy job — not the hub — is the actor that answers this.

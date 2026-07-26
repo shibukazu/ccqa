@@ -708,12 +708,11 @@ describe("hub API server", () => {
   describe("deploy log and re-run selection", () => {
     const PROJECT = "rr";
 
-    function specEntry(specName: string, relatedPaths?: string[]) {
+    function specEntry(specName: string) {
       return {
         specName,
         title: specName,
         summary: "",
-        ...(relatedPaths ? { relatedPaths } : {}),
         status: { mode: "deterministic", traced: true, generated: true },
       };
     }
@@ -726,7 +725,7 @@ describe("hub API server", () => {
           features: [
             {
               featureName: "f",
-              specs: [specEntry("a", ["src/a/**"]), specEntry("b", ["src/b/**"]), specEntry("unscoped")],
+              specs: [specEntry("a"), specEntry("b"), specEntry("unscoped")],
             },
           ],
         }),
@@ -775,7 +774,7 @@ describe("hub API server", () => {
       await finishRun(opened.id, [makeRow({ feature: "f", spec: "b", status: "passed" })]);
     }
 
-    test("a deploy touching a spec's relatedPaths turns that spec — and only that spec — needed", async () => {
+    test("a deploy's selection turns a spec needed, notNeeded, or unknown — independently per spec", async () => {
       await putPerspectives();
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: ["src/a/x.ts"] });
 
@@ -792,10 +791,18 @@ describe("hub API server", () => {
       expect(settled.deployHead).toMatchObject({ index: 0, sha: "d1" });
       expect(settled.specs["f/a"].state).toBe("notNeeded");
       expect(settled.specs["f/b"].state).toBe("notNeeded");
-      // No relatedPaths means the question cannot be answered, ever.
-      expect(settled.specs["f/unscoped"]).toMatchObject({ state: "unknown", reason: "noRelatedPaths" });
+      expect(settled.specs["f/unscoped"].state).toBe("notNeeded");
 
-      await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/a/y.ts", "docs/z.md"] });
+      await recordDeploy({
+        sha: "d2",
+        previousSha: "d1",
+        changedPaths: ["src/a/y.ts", "docs/z.md"],
+        selection: {
+          "f/a": { verdict: "needed", reason: "touches src/a", touchedBy: ["src/a/y.ts"] },
+          "f/b": { verdict: "notNeeded", reason: "no match" },
+          "f/unscoped": { verdict: "unknown", reason: "could not tell" },
+        },
+      });
       const after = await getRerun();
       // The verdict names the deploy that caused it, not just the head.
       expect(after.specs["f/a"]).toMatchObject({
@@ -804,6 +811,7 @@ describe("hub API server", () => {
         touchedByDeploy: { index: 1, sha: "d2" },
       });
       expect(after.specs["f/b"].state).toBe("notNeeded");
+      expect(after.specs["f/unscoped"]).toMatchObject({ state: "unknown", reason: "selectionUnknown" });
       expect(after.specs["f/a"].lastGreen.gitHead).toBe("e".repeat(40));
     });
 
@@ -814,10 +822,10 @@ describe("hub API server", () => {
       expect((await getRerun()).specs["f/b"]).toMatchObject({ state: "unknown", reason: "gapInRange" });
     });
 
-    test("a deploy that reported no paths is treated as touching everything", async () => {
+    test("a deploy recorded without a selection leaves affected specs unknown, not notNeeded", async () => {
       await baselineRun();
-      await recordDeploy({ sha: "d2", previousSha: "d1" });
-      expect((await getRerun()).specs["f/b"].state).toBe("needed");
+      await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/b/z.ts"] });
+      expect((await getRerun()).specs["f/b"]).toMatchObject({ state: "unknown", reason: "noSelectionInRange" });
     });
 
     test("a run that straddles a deploy is unknown rather than credited with either commit", async () => {

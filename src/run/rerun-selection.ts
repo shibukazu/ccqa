@@ -77,7 +77,7 @@ function explainNotFound(hubCtx: HubContext, err: HubApiError): string {
   if (err.code === "no_perspectives") {
     return (
       `--changed=${LAST_RUN}: project "${hubCtx.project}" has no perspectives document on the hub, ` +
-      `so no spec has \`relatedPaths\` to match a deploy against. Run \`ccqa perspectives\` first.`
+      `so no spec is registered to compare against a deploy. Run \`ccqa perspectives\` first.`
     );
   }
   return (

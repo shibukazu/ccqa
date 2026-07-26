@@ -394,7 +394,15 @@ export async function executeRun(
       );
       log.meta("rerun-states", selection.summary);
     } else {
-      specs = await collectChangedSpecs(specs, { cwd, base: opts.changed });
+      specs = (
+        await collectChangedSpecs(specs, {
+          cwd,
+          base: opts.changed,
+          // Selection sees every spec plus the whole diff — the largest
+          // input of any call here, so -m must reach it like the rest.
+          ...(opts.model ? { model: opts.model } : {}),
+        })
+      ).specs;
     }
     log.meta(
       "changed-scoped",

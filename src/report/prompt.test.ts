@@ -76,13 +76,13 @@ describe("buildFailureAnalysisPrompt baseline-aware guidance (v6)", () => {
     expect(prompt).toContain("spans 12 commits over 5 days");
   });
 
-  test("captured-but-no-related-hunks renders the empty-patch state, not the no-diff state", () => {
+  test("captured-but-empty-range renders the empty-patch state, not the no-diff state", () => {
     const prompt = buildFailureAnalysisPrompt({
       ...WITH_DIFF,
       diffPatch: "",
       baseSource: "last-green",
     });
-    expect(prompt).toContain("No changed file matches this spec's relatedPaths");
+    expect(prompt).toContain("No changes in this range");
     expect(prompt).toContain("M\tsrc/a.ts");
     expect(prompt).not.toContain("No diff context is available");
   });

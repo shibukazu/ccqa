@@ -6,22 +6,14 @@ import {
   ensureCcqaDir,
   listFeatureTree,
   loadAvailableBlocks,
-  parseBlockPath,
   parseSpecPath,
-  specKey,
 } from "../store/index.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
 import { renderDrift } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
 import { driftResultsToReport } from "../drift/to-report.ts";
 import type { Format, SpecResult, SpecTarget, Threshold } from "../drift/types.ts";
-import {
-  getChangedFiles,
-  isPathAffectedBy,
-  resolveBaseRef,
-  type ChangedFile,
-} from "../drift/affected.ts";
-import { routeNewFilesToSpecs } from "../drift/route-new-files.ts";
+import { collectChangedSpecs } from "./changed-specs.ts";
 import { packDirToTarGz } from "../hub/core/tar.ts";
 import { HubApiError, type HubClient } from "../hub-client/index.ts";
 import { addLanguageOption } from "./options.ts";
@@ -29,6 +21,7 @@ import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { hubHeaderOption, hubTokenOption, hubUrlOption, resolveHubClient } from "./hub-conn.ts";
 import { detectBranch, getGitHead } from "./git-branch.ts";
+import { withUsageErrors } from "./usage-errors.ts";
 import * as log from "./logger.ts";
 
 interface DriftOptions {
@@ -76,18 +69,18 @@ export const driftCommand = addLanguageOption(
     )
     .option(
       "--changed",
-      "Restrict drift checks to specs whose relatedPaths intersect the git diff against --base (or, in CI, $GITHUB_BASE_REF, else origin/main). New files are routed to specs via a single lightweight Claude call.",
+      "Restrict drift checks to the specs a change reaches, decided by `ccqa select-specs` against --base (or, in CI, $GITHUB_BASE_REF). Costs one model call; specs it cannot decide are checked rather than skipped.",
     )
     .option(
       "--base <ref>",
-      "Base ref to diff against when --changed is set. Defaults to $GITHUB_BASE_REF (CI) or origin/main.",
+      "Base ref to diff against when --changed is set. Defaults to $GITHUB_BASE_REF (CI pull_request runs); required otherwise.",
     )
     .option("--push", "Push the drift result to a ccqa hub as a run (kind: drift).")
     .option("--project <name>", "Logical project name for the pushed run. Defaults to the current directory's name.")
     .option(...hubUrlOption)
     .option(...hubTokenOption)
     .option(...hubHeaderOption),
-).action(async (specPath: string | undefined, opts: DriftOptions) => {
+).action(withUsageErrors(async (specPath: string | undefined, opts: DriftOptions) => {
     const format = parseFormat(opts.format);
     const threshold = parseSeverity(opts.severity);
     const concurrency = parseConcurrency(opts.concurrency);
@@ -110,11 +103,20 @@ export const driftCommand = addLanguageOption(
       if (opts.cwd) log.meta("cwd", cwd);
     }
 
-    const baseRef = opts.changed ? resolveBaseRef(opts.base) : null;
+    let baseRef: string | null = null;
 
     if (opts.changed) {
       const total = targets.length;
-      targets = await filterByChanged({ targets, cwd, baseOverride: opts.base, format, model: opts.model });
+      const selection = await collectChangedSpecs(targets, {
+        cwd,
+        base: opts.base ?? true,
+        quiet: format !== "text",
+        ...(opts.model ? { model: opts.model } : {}),
+      });
+      // The base reported to the hub is the one selection actually diffed
+      // against — resolving it a second time here could name another commit.
+      targets = selection.specs;
+      baseRef = selection.base.ref;
       if (format === "text") {
         log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
       }
@@ -143,7 +145,7 @@ export const driftCommand = addLanguageOption(
     }
 
     process.exit(determineExitCode(results, threshold));
-  });
+  }));
 
 /**
  * Push a finished drift audit to a ccqa hub as a `kind: "drift"` run, so it
@@ -216,84 +218,6 @@ function exitWithNoSpecs(format: Format, message: string): never {
   process.exit(0);
 }
 
-interface FilterByChangedInput {
-  targets: SpecTarget[];
-  cwd: string;
-  baseOverride: string | undefined;
-  format: Format;
-  model: string | undefined;
-}
-
-async function filterByChanged(input: FilterByChangedInput): Promise<SpecTarget[]> {
-  const { targets, cwd, baseOverride, format, model } = input;
-  const base = resolveBaseRef(baseOverride);
-
-  let changed: ChangedFile[];
-  try {
-    changed = await getChangedFiles(base, cwd);
-  } catch (e) {
-    log.error(`failed to run 'git diff' against ${base}: ${(e as Error).message}`);
-    process.exit(2);
-  }
-
-  if (format === "text") {
-    log.meta("changed-base", base);
-    log.meta("changed-files", changed.length);
-  }
-  if (changed.length === 0) return [];
-
-  // Outside-cwd changes participate in glob matching only (a spec opts in
-  // with a repo-root-relative glob); the LLM new-file router and block
-  // invalidation are scoped to this working directory.
-  const newFiles = changed.filter((f) => f.status === "added" && !f.outsideCwd);
-  const existingChanges = changed.filter((f) => f.status !== "added" || f.outsideCwd);
-
-  const affected = new Set<string>();
-  const touchedBlockNames = new Set<string>();
-  for (const f of changed) {
-    if (f.outsideCwd) continue;
-    const blockName = parseBlockPath(f.path);
-    if (blockName) touchedBlockNames.add(blockName);
-  }
-
-  for (const t of targets) {
-    if (!t.relatedPaths) {
-      affected.add(specKey(t));
-      continue;
-    }
-    const hit = existingChanges.some((f) => isPathAffectedBy(f.path, t.relatedPaths!))
-      || newFiles.some((f) => isPathAffectedBy(f.path, t.relatedPaths!));
-    if (hit) {
-      affected.add(specKey(t));
-      continue;
-    }
-    if (t.includedBlocks?.some((name) => touchedBlockNames.has(name))) {
-      affected.add(specKey(t));
-    }
-  }
-
-  if (newFiles.length > 0) {
-    if (format === "text") {
-      log.info(`routing ${newFiles.length} new file(s) to specs via Claude...`);
-    }
-    const routed = await routeNewFilesToSpecs({
-      newFiles: newFiles.map((f) => f.path),
-      specs: targets
-        .filter((t) => t.relatedPaths)
-        .map((t) => ({
-          featureName: t.featureName,
-          specName: t.specName,
-          relatedPaths: t.relatedPaths!,
-        })),
-      cwd,
-      model,
-    });
-    for (const key of routed) affected.add(key);
-  }
-
-  return targets.filter((t) => affected.has(specKey(t)));
-}
-
 async function collectTargets(specPath: string | undefined, cwd: string): Promise<SpecTarget[]> {
   const tree = await listFeatureTree(cwd);
   if (specPath) {
@@ -303,17 +227,14 @@ async function collectTargets(specPath: string | undefined, cwd: string): Promis
       log.error(`spec not found: ${featureName}/${specName} (under ${cwd})`);
       process.exit(1);
     }
-    return [{ featureName, specName, includedBlocks: spec.includedBlocks ?? [] }];
+    return [{ featureName, specName }];
   }
 
   const out: SpecTarget[] = [];
   for (const feature of tree) {
     for (const spec of feature.specs) {
       if (!spec.hasSpecFile) continue;
-      const t: SpecTarget = { featureName: feature.featureName, specName: spec.specName };
-      if (spec.relatedPaths) t.relatedPaths = spec.relatedPaths;
-      if (spec.includedBlocks) t.includedBlocks = spec.includedBlocks;
-      out.push(t);
+      out.push({ featureName: feature.featureName, specName: spec.specName });
     }
   }
   return out;

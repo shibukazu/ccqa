@@ -8,7 +8,7 @@ import {
   withoutGeneratedAt,
   type SummaryEntry,
 } from "./perspectives.ts";
-import { extractRelatedPaths, upsertSpec } from "./perspectives-sync.ts";
+import { upsertSpec } from "./perspectives-sync.ts";
 import { PerspectivesSchema, type PerspectiveFeature, type Perspectives, type PerspectiveSpec } from "../types.ts";
 
 const skeleton: PerspectiveFeature[] = [
@@ -20,7 +20,6 @@ const skeleton: PerspectiveFeature[] = [
         title: "項目を検索できる",
         summary: "",
         status: { mode: "deterministic", traced: true, generated: true },
-        relatedPaths: ["src/features/tasks/**"],
       },
     ],
   },
@@ -41,7 +40,7 @@ describe("PerspectivesSchema", () => {
     expect(parsed.features).toHaveLength(1);
   });
 
-  test("allows an optional note and omitted relatedPaths", () => {
+  test("allows an optional note", () => {
     const parsed = PerspectivesSchema.parse({
       features: [
         {
@@ -373,7 +372,6 @@ describe("comparePerspectivesSkeleton (--check)", () => {
             summary: "Claude が書いた要約（比較対象外）",
             startScreen: "一覧画面",
             status: { mode: "deterministic", traced: true, generated: true },
-            relatedPaths: ["src/features/tasks/**"],
             note: "human note（比較対象外）",
             ...over,
           },
@@ -405,16 +403,14 @@ describe("comparePerspectivesSkeleton (--check)", () => {
     expect(issues).toHaveLength(2);
   });
 
-  test("flags title / relatedPaths / status drift on one line per spec", () => {
+  test("flags title / status drift on one line per spec", () => {
     const issues = comparePerspectivesSkeleton(skeleton, hubDoc({
       title: "古いタイトル",
-      relatedPaths: ["src/other/**"],
       status: { mode: "deterministic", traced: true, generated: false },
     }));
     expect(issues).toHaveLength(1);
     expect(issues[0]).toContain("tasks/search-tasks: out of date");
     expect(issues[0]).toContain("title");
-    expect(issues[0]).toContain("relatedPaths");
     expect(issues[0]).toContain("generated=false");
   });
 
@@ -428,7 +424,6 @@ describe("comparePerspectivesSkeleton (--check)", () => {
               specName: "search-tasks",
               title: "項目を検索できる",
               summary: "",
-              relatedPaths: ["src/features/tasks/**"],
               status: { mode: "deterministic", traced: true, generated: true, target: "playwright" },
             },
           ],
@@ -438,35 +433,5 @@ describe("comparePerspectivesSkeleton (--check)", () => {
     );
     expect(issues).toHaveLength(1);
     expect(issues[0]).toContain("target=playwright");
-  });
-
-  test("treats an absent relatedPaths and an empty list as equal", () => {
-    const local: PerspectiveFeature[] = [
-      {
-        featureName: "tasks",
-        specs: [{ specName: "s", title: "t", summary: "", status: { mode: "deterministic", traced: false, generated: false } }],
-      },
-    ];
-    const remote: Perspectives = {
-      features: [
-        {
-          featureName: "tasks",
-          specs: [{ specName: "s", title: "t", summary: "x", relatedPaths: [], status: { mode: "deterministic", traced: false, generated: false } }],
-        },
-      ],
-    };
-    expect(comparePerspectivesSkeleton(local, remote)).toEqual([]);
-  });
-});
-
-describe("extractRelatedPaths", () => {
-  test("transcribes string entries verbatim and drops non-strings", () => {
-    const yaml = ["title: t", "relatedPaths:", "  - src/features/tasks/**", "  - 42"].join("\n");
-    expect(extractRelatedPaths(yaml)).toEqual(["src/features/tasks/**"]);
-  });
-
-  test("returns empty for a spec without relatedPaths or unparsable YAML", () => {
-    expect(extractRelatedPaths("title: t")).toEqual([]);
-    expect(extractRelatedPaths(": : not yaml : :")).toEqual([]);
   });
 });

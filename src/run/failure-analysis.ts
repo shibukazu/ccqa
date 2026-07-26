@@ -216,13 +216,9 @@ function printAnalysis(
  * codebase (Read/Grep/Glob) and never looks at generated test code — so
  * external-target specs get the same evidence as agent-browser ones.
  *
- * Two deliberate differences from the earlier deterministic-only pass:
- * every failing spec is audited (it used to build its target list from the
- * feature tree, so a failed spec missing from that walk was silently skipped),
- * and `SpecTarget.relatedPaths` / `includedBlocks` are no longer populated.
- * The audit never reads those two fields — only `ccqa drift --changed` does,
- * to decide *which* specs to audit — so passing them here was inert. Don't
- * "restore" them.
+ * One deliberate difference from the earlier deterministic-only pass: every
+ * failing spec is audited. It used to build its target list from the feature
+ * tree, so a failed spec missing from that walk was silently skipped.
  */
 export async function runDriftAudit(
   specs: readonly SpecRef[],

@@ -148,8 +148,9 @@ export interface HubClient {
   /**
    * Per spec of one project/profile: is its last result still trustworthy?
    * Answers `ccqa run --changed=last-run`. 404 when the project has no
-   * perspectives document — there is then no `relatedPaths` to match a deploy
-   * against, which the caller must report rather than read as "nothing to run".
+   * perspectives document — there is then no spec registered to compare
+   * against a deploy, which the caller must report rather than read as
+   * "nothing to run".
    */
   getRerun(project: string, q: { profile: string }): Promise<RerunReport>;
   /** Tell the hub what a deploy shipped (`ccqa hub deploy record`). */

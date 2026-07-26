@@ -226,8 +226,6 @@ export async function runTrace(
   log.meta("actions", validatedActions.length);
   log.meta("status", overallStatus.toUpperCase());
 
-  // No relatedPaths handling here by design: they are authored in the spec (by
-  // `ccqa draft`) and human-managed, so re-recording leaves them untouched.
   log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
 
   return {

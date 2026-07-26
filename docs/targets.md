@@ -19,7 +19,7 @@ steps:
 |---|---|---|---|
 | `agent-browser` (default) | recording | ccqa mechanically compiles the recording into `test.spec.ts` (vitest) | vitest replay (`mode: deterministic`) or Claude live per step (`mode: live`) |
 | `playwright` | recording | The same recording, mechanically compiled into a plain `@playwright/test` spec; when the target's `resources` are configured, an LLM pass then rewrites the draft to reuse your existing page objects/helpers | via the target's configured `runCommand` |
-| `runn` | spec | No recording step — `ccqa generate` asks Claude to write a [runn](https://github.com/k1LoW/runn) runbook (YAML, validated to parse) directly from the spec and its `relatedPaths` sources | via the target's configured `runCommand` |
+| `runn` | spec | No recording step — `ccqa generate` asks Claude to write a [runn](https://github.com/k1LoW/runn) runbook (YAML, validated to parse) directly from the spec, reading the backend sources with Read/Grep/Glob | via the target's configured `runCommand` |
 
 `mode:` and `session:` are agent-browser-only fields; setting them on a spec
 whose `target:` resolves to anything else is a validation error.

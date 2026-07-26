@@ -1,4 +1,3 @@
-import { parse as parseYaml } from "yaml";
 import {
   PerspectivesSchema,
   type PerspectiveFeature,
@@ -7,7 +6,6 @@ import {
 } from "../types.ts";
 import { tryReadSpecFile, type SpecRef } from "../store/index.ts";
 import { deriveStatus, readSpecMeta, resolveSpecTarget, requestSummaries } from "./perspectives.ts";
-import { listCheckoutFiles, relatedPathsFields } from "./related-paths-check.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import type { HubContext } from "./hub-conn.ts";
 import * as log from "./logger.ts";
@@ -68,13 +66,7 @@ async function doSync(ctx: HubContext, opts: SyncSpecPerspectivesOptions): Promi
   const config = await loadProjectConfig(process.cwd()).catch(() => null);
   const plugin = resolveSpecTarget(specYaml, config);
   const status = await deriveStatus(featureName, specName, meta.mode, plugin);
-  const relatedPaths = extractRelatedPaths(specYaml);
   const previous = findSpec(doc, featureName, specName);
-
-  // Started before the Claude call and awaited after it: the listing is
-  // independent of the summaries, so it costs nothing behind a model call that
-  // takes seconds.
-  const checkoutFiles = listCheckoutFiles(process.cwd());
 
   // One-spec Claude call for the descriptive fields; on failure fall back to
   // whatever the document already said so the mechanical update still lands.
@@ -88,7 +80,6 @@ async function doSync(ctx: HubContext, opts: SyncSpecPerspectivesOptions): Promi
     specName,
     title: meta.title,
     summary: written?.summary ?? previous?.summary ?? "",
-    ...relatedPathsFields(relatedPaths, await checkoutFiles),
     status,
   };
   const startScreen = written?.startScreen ?? previous?.startScreen;
@@ -125,16 +116,5 @@ export function upsertSpec(doc: Perspectives, featureName: string, entry: Perspe
   } else {
     feature.specs.push(entry);
     feature.specs.sort((a, b) => a.specName.localeCompare(b.specName));
-  }
-}
-
-/** `relatedPaths` transcribed verbatim from the spec.yaml (empty when absent/unparsable). */
-export function extractRelatedPaths(specYaml: string): string[] {
-  try {
-    const parsed = parseYaml(specYaml) as { relatedPaths?: unknown };
-    if (!Array.isArray(parsed?.relatedPaths)) return [];
-    return parsed.relatedPaths.filter((p): p is string => typeof p === "string" && p.length > 0);
-  } catch {
-    return [];
   }
 }

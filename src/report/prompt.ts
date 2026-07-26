@@ -18,16 +18,16 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * analyze live-spec (`mode: live`) failures alongside deterministic ones.
  *
  * v5: the classifier gained the `mcp__diff__changed_file_diff` tool — the
- * inline patch is only the relatedPaths-scoped seed, and hunks of any other
- * changed file are pulled on demand — and the tools section documents it.
+ * inline patch is only a truncated seed, and hunks of any other changed file
+ * are pulled on demand — and the tools section documents it.
  *
  * v6: baseline-aware decision guidance. Under a last-green baseline the
  * range strictly covers the passing→failing window, so "no in-range cause"
  * flips from a PRODUCT_BUG lean to an UNKNOWN (external cause) lean, and
  * PRODUCT_BUG becomes a positive claim (cite the in-range change). The
  * prompt also states the range's width (commits/days) and no longer inlines
- * the full unrelated diff when nothing matches relatedPaths — the
- * name-status list plus the on-demand tool replace that fallback.
+ * the full diff when it exceeds the truncation caps — the name-status list
+ * plus the on-demand tool replace that fallback.
  *
  * v7: external-target support. The classifier now analyzes runCommand-target
  * failures too, so it may be pointed at the spec's run-artifacts directory to
@@ -40,8 +40,14 @@ import { DRAFT_CATEGORY_LABEL } from "../types.ts";
  * plus current-repository inspection (Read/Grep/Glob), with diff-dependent
  * guidance replaced by current-state guidance and a lower confidence
  * ceiling.
+ *
+ * v9: `relatedPaths` removed from the spec schema (superseded by
+ * `ccqa select-specs`, ADR-0011). The inline patch is no longer scoped to a
+ * spec's declared paths, only truncated by size — every changed file's hunk
+ * is either inlined or one `changed_file_diff` call away, never filtered out
+ * by relevance.
  */
-export const ANALYSIS_PROMPT_VERSION = "8";
+export const ANALYSIS_PROMPT_VERSION = "9";
 
 /**
  * Fully-qualified name of the on-demand file-diff tool, as the model calls
@@ -76,10 +82,9 @@ export interface FailureAnalysisPromptInput {
   liveTranscriptExcerpt?: string;
   specYaml: string;
   /**
-   * Unified diff base...HEAD, already scoped to the spec's relatedPaths and
-   * truncated. Null = no diff was captured; empty string = captured, but no
-   * changed file matched the spec's relatedPaths (the name-status list still
-   * shows everything, and hunks are fetchable via the on-demand tool).
+   * Unified diff base...HEAD, truncated. Null = no diff was captured (base
+   * ref resolution or git failed); empty string = captured, but the range
+   * has no changes.
    */
   diffPatch: string | null;
   /** `git diff --name-status` output for the same range. */
@@ -200,10 +205,10 @@ No diff context is available (the base ref could not be resolved, or there are n
 ### Changed files (name-status)
 ${changedFiles && changedFiles.length > 0 ? changedFiles : "(no changes in range)"}
 
-No changed file matches this spec's relatedPaths, so no hunks are inlined. "No related change" is a real signal — but before concluding, scan the name-status list for anything that could plausibly reach this spec and fetch its hunk with \`${CHANGED_FILE_DIFF_TOOL}\`.
+No changes in this range. "No change" is a real signal — but before concluding, check whether the failure could still be environmental (timing, data, an external service).
 `;
   } else {
-    diffBlock = `## Source changes since ${baseLabel}${rangeNote} (git diff, scoped to this spec's relatedPaths, may be truncated)
+    diffBlock = `## Source changes since ${baseLabel}${rangeNote} (git diff, may be truncated)
 
 ### Changed files (name-status)
 ${changedFiles ?? "(unavailable)"}
@@ -256,7 +261,7 @@ You can call \`Grep\`, \`Glob\`, and \`Read\` against the current repository (po
 ${
   baselineMissing
     ? `There is no diff range for this run, so the \`${CHANGED_FILE_DIFF_TOOL}\` tool has nothing to return — every conclusion must come from the current source state plus the failure evidence.`
-    : `You can also call \`${CHANGED_FILE_DIFF_TOOL}\` with a file path to fetch that file's diff hunk for this run's base...HEAD range. The inline patch below is scoped to this spec's relatedPaths — files OUTSIDE that scope still appear in "Changed files (name-status)" but their hunks are not inlined. Before blaming (or ruling out) such a file, fetch its diff with this tool; Read only shows you its post-change state, not what changed.`
+    : `You can also call \`${CHANGED_FILE_DIFF_TOOL}\` with a file path to fetch that file's diff hunk for this run's base...HEAD range. The inline patch below may be truncated — a file cut or dropped by the truncation still appears in "Changed files (name-status)" but its hunk is not inlined. Before blaming (or ruling out) such a file, fetch its diff with this tool; Read only shows you its post-change state, not what changed.`
 }
 ${
   artifactsDir

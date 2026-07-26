@@ -102,7 +102,6 @@ export const TestSpecSchema = z
      * config's `defaultTarget`" (agent-browser when that is absent too).
      */
     target: TargetIdSchema.optional(),
-    relatedPaths: z.array(z.string().min(1)).optional(),
     mode: SpecModeSchema.optional(),
     /**
      * Saved browser session(s) to restore so a `mode: live` spec starts

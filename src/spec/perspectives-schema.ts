@@ -71,7 +71,7 @@ export type PerspectiveStatus = z.infer<typeof PerspectiveStatusSchema>;
 /**
  * One test case in the inventory.
  *
- * - `title` / `relatedPaths` are transcribed verbatim from the spec.yaml.
+ * - `title` is transcribed verbatim from the spec.yaml.
  * - `status` is mechanically derived (see PerspectiveStatusSchema).
  * - `summary` is a 1–2 sentence description of *what the spec verifies*,
  *   derived from its steps by Claude.
@@ -94,17 +94,6 @@ export const PerspectiveSpecSchema = z
     startScreen: z.string().optional(),
     testCondition: z.string().optional(),
     preconditions: z.array(z.string().min(1)).optional(),
-    relatedPaths: z.array(z.string().min(1)).optional(),
-    /**
-     * How many `relatedPaths` patterns matched no file in the checkout when
-     * this entry was written. A pattern matching nothing is what makes re-run
-     * selection produce a confident "not needed" for a spec whose code did
-     * change (ADR-0010), so the count is a first-class data-quality signal for
-     * the UI, not a nicety. Absent when the spec declares no `relatedPaths`,
-     * or when an older CLI wrote the entry — which is why 0 is recorded
-     * explicitly rather than omitted.
-     */
-    relatedPathsUnmatched: z.number().int().nonnegative().optional(),
     status: PerspectiveStatusSchema,
     note: z.string().optional(),
   })

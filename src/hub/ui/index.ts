@@ -1045,7 +1045,6 @@ const CLIENT_JS = `
       "perspectives.ov.cases": "cases", "perspectives.ov.features": "features",
       "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
       "perspectives.d.testCondition": "Condition", "perspectives.d.spec": "spec",
-      "perspectives.d.relatedPaths": "Related code",
       "perspectives.note.label": "Note",
       "perspectives.note.placeholder": "Notes about this case…",
       "perspectives.note.saved": "Saved",
@@ -1063,34 +1062,33 @@ const CLIENT_JS = `
       "perspectives.rerun.state.notEvaluated": "Not evaluated",
       "perspectives.rerun.vsDeploy": "judged against deploy",
       "perspectives.rerun.noDeployHead": "no deploy recorded for this profile",
-      "perspectives.rerun.changedByDeploy": "deploy {sha} changed its related code",
+      "perspectives.rerun.changedByDeploy": "deploy {sha} changed files matched to this case",
       "perspectives.rerun.changesSome": "yes (as of deploy {sha})",
       "perspectives.rerun.changesNone": "none (as of deploy {sha})",
-      "perspectives.rerun.touchedCount": "{n} deployed path(s) matched its related code",
-      "perspectives.rerun.touchedUnknown": "a deploy since the last run touched its related code",
+      "perspectives.rerun.touchedCount": "{n} deployed path(s) matched this case",
+      "perspectives.rerun.touchedUnknown": "a deploy since the last run matched this case",
       "perspectives.rerun.neverRunHint": "no result recorded for this profile yet",
       "perspectives.rerun.notEvaluatedHint": "no run and no deploy has ever been recorded for this profile",
-      "perspectives.rerun.why.noRelatedPaths": "no related code declared",
+      "perspectives.rerun.why.noSelectionInRange": "a deploy in range was recorded without a spec selection",
+      "perspectives.rerun.why.selectionUnknown": "the selector could not tell whether this case was affected",
       "perspectives.rerun.why.noDeployLog": "no deploy log for this profile",
       "perspectives.rerun.why.unknownDeployedSha": "the last run's deployed commit is unknown",
       "perspectives.rerun.why.ambiguousDeployedSha": "a deploy landed while the last run was executing",
       "perspectives.rerun.why.deployedShaNotInLog": "the last run's commit predates the retained deploy log",
       "perspectives.rerun.why.gapInRange": "deploys are missing from the range",
-      "perspectives.rerun.why.truncatedInRange": "a deploy in range did not report what it changed",
       "perspectives.rerun.why.unrecognized": "this hub reported a reason this UI does not recognise",
-      "perspectives.rerun.fix.noRelatedPaths": "This case declares no related code, so no deploy can be matched against it. Add relatedPaths to its spec.yaml.",
+      "perspectives.rerun.fix.noSelectionInRange": "A deploy in range was recorded without a spec selection, so nothing says whether it affected this case. Run ccqa select-specs in the deploy job and send its verdict with the deploy.",
+      "perspectives.rerun.fix.selectionUnknown": "A deploy in range was judged, but the selector could not decide this case. Re-run it to get a clean baseline.",
       "perspectives.rerun.fix.noDeployLog": "Nothing has been recorded in this profile's deploy log. Wire ccqa hub deploy record into the deploy job for this environment so ccqa knows what shipped.",
       "perspectives.rerun.fix.unknownDeployedSha": "The last run did not record which commit the environment was running, so it cannot be positioned in the deploy log. Runs record it once this profile has a deploy log.",
       "perspectives.rerun.fix.ambiguousDeployedSha": "A deploy landed while the last run was executing, so which commit it exercised is not knowable. Re-run this case to get a clean baseline.",
       "perspectives.rerun.fix.deployedShaNotInLog": "The last run's deployed commit is older than the retained deploy log, so its position is lost. Re-run this case to re-anchor it.",
       "perspectives.rerun.fix.gapInRange": "A deploy in range did not chain onto its predecessor, so deploys are missing from the range. Have the deploy job report the commit it replaced.",
-      "perspectives.rerun.fix.truncatedInRange": "A deploy in range did not report what it changed, so its contents are not knowable. Have the deploy job send the changed paths of a two-dot diff.",
       "perspectives.rerun.fix.unrecognized": "This hub reported a reason this UI does not recognise. Upgrade the UI to see what it means.",
       "perspectives.rerun.unsupported": "This hub does not report which cases need a re-run. Upgrade the hub to enable it.",
       "perspectives.rerun.loadFailed": "Loading re-run data failed",
       "perspectives.rerun.noDeployLogBanner": "No deploy has been recorded for profile {profile}, so no case can be judged. Wire ccqa hub deploy record into the deploy job for this environment.",
       "perspectives.rerun.deployHead": "deploy head",
-      "perspectives.dq.unmatched": "{n} of this case's related-code patterns matched no file when perspectives were generated — a not-needed verdict may rest on paths that no longer exist.",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.playwright": "Playwright test generation",
@@ -1184,7 +1182,6 @@ const CLIENT_JS = `
       "perspectives.ov.cases": "ケース", "perspectives.ov.features": "機能",
       "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
       "perspectives.d.testCondition": "実行条件", "perspectives.d.spec": "spec",
-      "perspectives.d.relatedPaths": "関連コード",
       "perspectives.note.label": "note",
       "perspectives.note.placeholder": "このケースについてのメモ…",
       "perspectives.note.saved": "保存しました",
@@ -1202,34 +1199,33 @@ const CLIENT_JS = `
       "perspectives.rerun.state.notEvaluated": "未評価",
       "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
       "perspectives.rerun.noDeployHead": "このプロファイルにはデプロイの記録がありません",
-      "perspectives.rerun.changedByDeploy": "デプロイ {sha} が関連コードを変更",
+      "perspectives.rerun.changedByDeploy": "デプロイ {sha} がこのケースに一致するファイルを変更",
       "perspectives.rerun.changesSome": "あり（デプロイ {sha} 時点）",
       "perspectives.rerun.changesNone": "なし（デプロイ {sha} 時点）",
-      "perspectives.rerun.touchedCount": "関連コードに一致したデプロイ差分 {n} 件",
-      "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイが関連コードを変更しています",
+      "perspectives.rerun.touchedCount": "このケースに一致したデプロイ差分 {n} 件",
+      "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイがこのケースに一致する変更を行っています",
       "perspectives.rerun.neverRunHint": "このプロファイルでの実行記録がまだありません",
       "perspectives.rerun.notEvaluatedHint": "このプロファイルには実行もデプロイも記録がありません",
-      "perspectives.rerun.why.noRelatedPaths": "関連コードが未宣言です",
+      "perspectives.rerun.why.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあります",
+      "perspectives.rerun.why.selectionUnknown": "影響の有無を判定できませんでした",
       "perspectives.rerun.why.noDeployLog": "このプロファイルのデプロイ記録がありません",
       "perspectives.rerun.why.unknownDeployedSha": "前回実行時にデプロイされていたcommitが不明です",
       "perspectives.rerun.why.ambiguousDeployedSha": "前回実行の途中でデプロイが発生しました",
       "perspectives.rerun.why.deployedShaNotInLog": "前回実行のcommitが保持中のデプロイログより古いです",
       "perspectives.rerun.why.gapInRange": "対象範囲のデプロイ記録が欠けています",
-      "perspectives.rerun.why.truncatedInRange": "対象範囲に変更内容を報告していないデプロイがあります",
       "perspectives.rerun.why.unrecognized": "このUIが認識できない理由がハブから返されました",
-      "perspectives.rerun.fix.noRelatedPaths": "このケースは関連コードを宣言していないため、デプロイと突き合わせられません。spec.yaml に relatedPaths を追加してください。",
+      "perspectives.rerun.fix.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあり、このケースに影響したかどうかを示すものがありません。デプロイジョブで ccqa select-specs を実行し、判定をデプロイと一緒に送ってください。",
+      "perspectives.rerun.fix.selectionUnknown": "対象範囲のデプロイは判定されましたが、このケースについては判断がつきませんでした。再実行して基準を取り直してください。",
       "perspectives.rerun.fix.noDeployLog": "このプロファイルのデプロイログに記録がありません。何がデプロイされたかをccqaに伝えるため、この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
       "perspectives.rerun.fix.unknownDeployedSha": "前回実行は環境で動いていたcommitを記録していないため、デプロイログ上の位置を決められません。このプロファイルにデプロイログができれば、以降の実行では記録されます。",
       "perspectives.rerun.fix.ambiguousDeployedSha": "前回実行の途中でデプロイが発生したため、どのcommitを検証したのか確定できません。基準を取り直すには再実行してください。",
       "perspectives.rerun.fix.deployedShaNotInLog": "前回実行のデプロイcommitが保持中のデプロイログより古く、位置を特定できません。再実行して基準を取り直してください。",
       "perspectives.rerun.fix.gapInRange": "対象範囲のデプロイが直前のデプロイと連結しておらず、記録が欠けています。デプロイジョブから置き換え前のcommitも送ってください。",
-      "perspectives.rerun.fix.truncatedInRange": "対象範囲に変更内容を報告していないデプロイがあり、何が変わったのか確定できません。デプロイジョブから two-dot diff の変更パスを送ってください。",
       "perspectives.rerun.fix.unrecognized": "このUIが認識できない理由がハブから返されました。内容を表示するにはUIを更新してください。",
       "perspectives.rerun.unsupported": "このハブは再実行の要否を返しません。利用するにはハブを更新してください。",
       "perspectives.rerun.loadFailed": "再実行の要否の読み込みに失敗しました",
       "perspectives.rerun.noDeployLogBanner": "プロファイル {profile} にデプロイの記録がないため、どのケースも判定できません。この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
       "perspectives.rerun.deployHead": "最新デプロイ",
-      "perspectives.dq.unmatched": "このケースの関連コードのうち {n} 件のパターンが、テスト観点の生成時にどのファイルにも一致しませんでした。不要という判定が、すでに存在しないパスに基づいている可能性があります。",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.playwright": "Playwrightテスト生成",
@@ -3210,16 +3206,6 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  // How many of this case's related-code patterns matched no file when the
-  // document was written. ADDITIVE field: a document from a CLI older than
-  // ADR-0010 simply has no measurement, which is not the same as a measured
-  // zero — so anything that is not a real count reads as "not measured" and
-  // shows nothing, rather than as a clean bill of health.
-  function unmatchedRelatedPathCount(spec) {
-    var raw = spec.relatedPathsUnmatched;
-    return typeof raw === "number" && isFinite(raw) && raw >= 0 ? raw : null;
-  }
-
   // The execution mode lives inside the mechanically-derived status object
   // (spec.status.mode), not at the top level of a spec entry.
   function perspMode(spec) {
@@ -3396,7 +3382,7 @@ const CLIENT_JS = `
   // The panel shows only what the table row cannot. The row already carries the
   // title, mode, recorded state, last result and the re-run verdict, so none of
   // those is repeated: what is left is the case's definition, the evidence the
-  // verdict rests on, its related code, and the note.
+  // verdict rests on, and the note.
   function perspDetailContent(feature, spec) {
     var frag = document.createDocumentFragment();
     var dl = el("dl", "d-grid");
@@ -3424,18 +3410,7 @@ const CLIENT_JS = `
       row(rerunEvidenceLabelKey(rr.state), rerunEvidenceValue(rr));
       if (rerunHasFailure(rr)) row("perspectives.d.lastRed", ledgerLine(rr.lastRed));
     }
-    if (spec.relatedPaths && spec.relatedPaths.length) {
-      row("perspectives.d.relatedPaths", pathCodes(spec.relatedPaths));
-    }
     frag.appendChild(dl);
-
-    // Too-narrow relatedPaths produce a confident "not needed" — the dangerous
-    // direction — so an unmatched pattern is flagged under the paths it is about.
-    var unmatched = unmatchedRelatedPathCount(spec);
-    if (unmatched) {
-      frag.appendChild(fillNote(el("div"), "warn",
-        t("perspectives.dq.unmatched").replace("{n}", String(unmatched)), "d-note"));
-    }
 
     var notebox = el("div", "notebox");
     notebox.appendChild(el("div", "nlabel", t("perspectives.note.label")));

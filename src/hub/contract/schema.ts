@@ -218,16 +218,59 @@ export const DeployEntrySchema = z.object({
   /** URL of the deploy job, so the view can link back to it. */
   runUrl: z.string().optional(),
   /**
-   * Paths this deploy changed, from a two-dot diff. Null means the job didn't
-   * report them; either way the entry is then treated as touching everything.
+   * Paths this deploy changed, from a two-dot diff. Record-only: shown by the
+   * view, but not read by `verdict()` — which specs this deploy affects is
+   * decided entirely from `hasSelection` and the folded touch index (see
+   * `foldTouchIndex`/`computeRerun`). Null means the job didn't report them.
    */
   changedPaths: z.array(z.string()).nullable(),
-  /** True when `changedPaths` was cut to a bound and no longer lists every change. */
-  truncated: z.boolean().default(false),
+  /**
+   * Whether the deploy job supplied a spec selection alongside the paths.
+   *
+   * Re-run verdicts are folded from selections, so a deploy recorded without
+   * one is a hole in the range: the specs behind it cannot be cleared, only
+   * reported `unknown`. Recorded per entry rather than inferred, because
+   * "nothing was selected" and "no selection was run" mean opposite things.
+   */
+  hasSelection: z.boolean().default(false),
   /** True when `previousSha` did not chain onto the log head, so history is missing before this entry. */
   gapBefore: z.boolean().default(false),
 });
 export type DeployEntry = z.infer<typeof DeployEntrySchema>;
+
+/**
+ * Whether a spec is reached by a change, as `ccqa select-specs` decides it.
+ * The one source for this three-way union — `select/types.ts`'s CLI-internal
+ * `SelectVerdict` re-exports this rather than declaring its own, since it's
+ * the same value the CLI serializes into `DeploySelectionEntry` below.
+ *
+ * `unknown` is carried rather than collapsed into either answer. It is the
+ * selector saying it could not tell, which must reach the view as its own
+ * state — folding it into `notNeeded` would turn "we don't know" into "you're
+ * covered".
+ */
+export const SelectVerdictSchema = z.enum(["needed", "notNeeded", "unknown"]);
+export type SelectVerdict = z.infer<typeof SelectVerdictSchema>;
+
+/**
+ * One spec's verdict for one deploy, as `ccqa select-specs` decided it.
+ *
+ * The hub does not compute this and cannot: deciding which specs a change
+ * reaches means reading the diff against what each spec actually does, and the
+ * hub has no checkout. So the deploy job decides and reports, exactly as it
+ * already does for `changedPaths` (ADR-0010).
+ */
+export const DeploySelectionEntrySchema = z.object({
+  verdict: SelectVerdictSchema,
+  reason: z.string(),
+  /** Changed paths the selector tied to this spec. Present for `needed`. */
+  touchedBy: z.array(z.string()).optional(),
+});
+export type DeploySelectionEntry = z.infer<typeof DeploySelectionEntrySchema>;
+
+/** A deploy's selection, keyed by `"feature/spec"`. */
+export const DeploySelectionSchema = z.record(z.string(), DeploySelectionEntrySchema);
+export type DeploySelection = z.infer<typeof DeploySelectionSchema>;
 
 /**
  * A profile's retained deploy log. `nextIndex` is kept separately from
@@ -242,31 +285,50 @@ export const DeployLogSchema = z.object({
 export type DeployLog = z.infer<typeof DeployLogSchema>;
 
 /** A deploy as reported, before the log assigns its position and applies its bounds. */
-export type DeployInput = Omit<DeployEntry, "index" | "gapBefore" | "truncated">;
+export type DeployInput = Omit<DeployEntry, "index" | "gapBefore">;
 
 /**
- * One spec's entry in the derived touch index: the newest deploy known to have
- * touched it, folded in at write time from the deploy's full `changedPaths` so
- * that list can be dropped afterwards rather than retained per deploy.
+ * One spec's entry in the touch index: the newest deploy that needed it, and
+ * the newest that could not be decided, folded in as each deploy is recorded.
  *
- * Folded against the `relatedPaths` in force when the deploy landed, so it can
- * disagree with a match against a spec's current `relatedPaths`. It is
- * therefore only consulted where the retained log cannot answer (a truncated
- * entry), never in place of matching the current paths.
+ * This is the whole re-run computation, not an accelerator for it. Each spec's
+ * baseline sits at a different position in the log, so the question is always
+ * "since *this* spec last ran, was it ever needed" — two integer comparisons
+ * against the positions kept here. Re-deriving it per read is impossible
+ * anyway: the selections were made by a model against each deploy's diff, and
+ * neither the diff nor the model is available at read time.
+ *
+ * Each fold reflects what the specs looked like when that deploy landed. A
+ * spec edited afterwards is not retroactively re-judged — its own change marks
+ * it needed at the next deploy, which is the honest place to notice it.
  */
 export const SpecTouchSchema = z.object({
-  /** A `DeployEntry.index`, comparable against a baseline's position across an eviction. */
-  lastTouchedIndex: z.number().int().nonnegative(),
   /**
-   * Which deploy the fold matched, as it read it. The verdict is decided on
-   * `lastTouchedIndex` alone, and what the view *names* is read back out of the
-   * log entry at that index — so a deploy is never shown out of this derived
-   * copy when the log no longer backs it.
+   * The newest deploy that needed this spec. Absent when no recorded selection
+   * has ever needed it — which is what lets a baseline read as clean.
    */
-  lastTouchedSha: z.string(),
-  lastTouchedAt: z.string(),
-  /** A bounded sample (`MAX_TOUCHED_BY`) of what matched. Empty when the deploy reported no paths. */
-  matchedPaths: z.array(z.string()),
+  needed: z
+    .object({
+      /** A `DeployEntry.index`, comparable against a baseline's position across an eviction. */
+      index: z.number().int().nonnegative(),
+      /**
+       * The deploy as the fold read it. The verdict is decided on `index`
+       * alone, and what the view *names* is read back out of the log entry at
+       * that index — so a deploy is never shown out of this derived copy when
+       * the log no longer backs it.
+       */
+      sha: z.string(),
+      at: z.string(),
+      /** A bounded sample (`MAX_TOUCHED_BY`) of the paths the selector cited. */
+      matchedPaths: z.array(z.string()),
+    })
+    .optional(),
+  /**
+   * Position of the newest deploy whose selection answered `unknown` here.
+   * Kept apart from `needed` so an undecided deploy cannot read as a clean
+   * one: a baseline behind it reports `unknown`, never `notNeeded`.
+   */
+  undecidedIndex: z.number().int().nonnegative().optional(),
 });
 export type SpecTouch = z.infer<typeof SpecTouchSchema>;
 
@@ -289,8 +351,10 @@ export type RerunState = z.infer<typeof RerunStateSchema>;
  * never rendered as "not needed".
  */
 export const RerunUnknownReasonSchema = z.enum([
-  /** The spec declares no `relatedPaths`, so no deploy can be matched against it. */
-  "noRelatedPaths",
+  /** A deploy in range was recorded without a spec selection, so its effect on this spec is unrecorded. */
+  "noSelectionInRange",
+  /** A selection in range answered `unknown` for this spec — the selector could not tell. */
+  "selectionUnknown",
   /** Nothing has ever been recorded in this profile's deploy log. */
   "noDeployLog",
   /** The spec's last run predates deploy-sha stamping, or ran with no deploy log. */
@@ -301,8 +365,6 @@ export const RerunUnknownReasonSchema = z.enum([
   "deployedShaNotInLog",
   /** A deploy in range did not chain onto its predecessor, so deploys are missing from the range. */
   "gapInRange",
-  /** A deploy in range reported no paths, or more than the log retains, so its contents are not knowable. */
-  "truncatedInRange",
 ]);
 export type RerunUnknownReason = z.infer<typeof RerunUnknownReasonSchema>;
 
@@ -364,10 +426,17 @@ export const RecordDeployRequestSchema = z.object({
   /**
    * Changed paths from a **two-dot** diff (`git diff --name-only A B`). A
    * three-dot diff resolves the merge base and reports nothing on a rollback,
-   * which would make the rollback invisible. Omit to declare the deploy as
-   * touching everything.
+   * which would make the rollback invisible. Record-only — shown by the
+   * view, but re-run verdicts are decided from `selection`/`hasSelection`,
+   * not from these paths. Omit if it can't be produced.
    */
   changedPaths: z.array(z.string()).nullable().optional(),
+  /**
+   * Which specs this deploy reaches, from `ccqa select-specs`. Omit it and the
+   * deploy becomes a hole in the range: specs behind it report `unknown`
+   * rather than `notNeeded`, because nothing recorded what it touched.
+   */
+  selection: DeploySelectionSchema.optional(),
   ref: z.string().optional(),
   runUrl: z.string().optional(),
 });

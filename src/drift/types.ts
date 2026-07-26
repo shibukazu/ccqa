@@ -6,13 +6,6 @@ export type Threshold = "warn" | "error";
 export interface SpecTarget {
   featureName: string;
   specName: string;
-  /** null = unscoped spec; treat as always-affected under --changed. */
-  relatedPaths?: string[] | null;
-  /**
-   * Names of blocks this spec includes. Used by --changed to mark the
-   * spec affected whenever one of these blocks' spec.yaml is touched.
-   */
-  includedBlocks?: string[];
 }
 
 export interface SpecResult {

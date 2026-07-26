@@ -1,70 +1,47 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
 import {
-  isPathAffectedBy,
-  matchesGlob,
+  compileGlob,
   parseGitDiffOutput,
   rerootChangedFiles,
-  resolveBaseRef,
 } from "./affected.ts";
 
-describe("matchesGlob", () => {
+function matches(path: string, pattern: string): boolean {
+  return compileGlob(pattern).test(path);
+}
+
+describe("compileGlob", () => {
   test("matches a literal path", () => {
-    expect(matchesGlob("src/a.ts", "src/a.ts")).toBe(true);
-    expect(matchesGlob("src/a.ts", "src/b.ts")).toBe(false);
+    expect(matches("src/a.ts", "src/a.ts")).toBe(true);
+    expect(matches("src/b.ts", "src/a.ts")).toBe(false);
   });
 
   test("** matches any depth", () => {
-    expect(matchesGlob("src/features/tasks/page.tsx", "src/features/**")).toBe(true);
-    expect(matchesGlob("src/features/tasks/nested/x.tsx", "src/features/**")).toBe(true);
-    expect(matchesGlob("src/other/x.tsx", "src/features/**")).toBe(false);
+    expect(matches("src/features/tasks/page.tsx", "src/features/**")).toBe(true);
+    expect(matches("src/features/tasks/nested/x.tsx", "src/features/**")).toBe(true);
+    expect(matches("src/other/x.tsx", "src/features/**")).toBe(false);
   });
 
   test("** also matches the empty tail (no nested segment)", () => {
-    expect(matchesGlob("src/features", "src/features/**")).toBe(true);
+    expect(matches("src/features", "src/features/**")).toBe(true);
   });
 
   test("* does not cross path separators", () => {
-    expect(matchesGlob("src/a.ts", "src/*.ts")).toBe(true);
-    expect(matchesGlob("src/nested/a.ts", "src/*.ts")).toBe(false);
+    expect(matches("src/a.ts", "src/*.ts")).toBe(true);
+    expect(matches("src/nested/a.ts", "src/*.ts")).toBe(false);
   });
 
   test("? matches a single non-slash char", () => {
-    expect(matchesGlob("src/a.ts", "src/?.ts")).toBe(true);
-    expect(matchesGlob("src/ab.ts", "src/?.ts")).toBe(false);
+    expect(matches("src/a.ts", "src/?.ts")).toBe(true);
+    expect(matches("src/ab.ts", "src/?.ts")).toBe(false);
   });
 
-  test("ignores leading ./ on both sides", () => {
-    expect(matchesGlob("./src/a.ts", "src/a.ts")).toBe(true);
-    expect(matchesGlob("src/a.ts", "./src/a.ts")).toBe(true);
+  test("strips a leading ./ from the pattern", () => {
+    expect(matches("src/a.ts", "./src/a.ts")).toBe(true);
   });
 
   test("special regex chars in pattern are escaped", () => {
-    expect(matchesGlob("src/a.ts", "src/a.ts")).toBe(true);
-    expect(matchesGlob("src/aXts", "src/a.ts")).toBe(false);
-  });
-});
-
-describe("isPathAffectedBy", () => {
-  test("returns true when any pattern matches", () => {
-    expect(
-      isPathAffectedBy("src/features/tasks/page.tsx", [
-        "src/auth/**",
-        "src/features/tasks/**",
-      ]),
-    ).toBe(true);
-  });
-
-  test("returns false when no pattern matches", () => {
-    expect(
-      isPathAffectedBy("src/other/x.tsx", [
-        "src/auth/**",
-        "src/features/tasks/**",
-      ]),
-    ).toBe(false);
-  });
-
-  test("returns false for empty patterns", () => {
-    expect(isPathAffectedBy("anything", [])).toBe(false);
+    expect(matches("src/a.ts", "src/a.ts")).toBe(true);
+    expect(matches("src/aXts", "src/a.ts")).toBe(false);
   });
 });
 
@@ -147,35 +124,5 @@ describe("rerootChangedFiles", () => {
       { path: "js/apps/web", status: "modified", outsideCwd: true },
       { path: "src/a.ts", status: "modified" },
     ]);
-  });
-});
-
-describe("resolveBaseRef", () => {
-  const ORIGINAL = process.env["GITHUB_BASE_REF"];
-  beforeEach(() => {
-    delete process.env["GITHUB_BASE_REF"];
-  });
-  afterEach(() => {
-    if (ORIGINAL === undefined) delete process.env["GITHUB_BASE_REF"];
-    else process.env["GITHUB_BASE_REF"] = ORIGINAL;
-  });
-
-  test("returns the explicit override unchanged", () => {
-    expect(resolveBaseRef("main")).toBe("main");
-    expect(resolveBaseRef("origin/develop")).toBe("origin/develop");
-  });
-
-  test("uses GITHUB_BASE_REF when no override is given, prefixing origin/", () => {
-    process.env["GITHUB_BASE_REF"] = "main";
-    expect(resolveBaseRef(undefined)).toBe("origin/main");
-  });
-
-  test("does not double-prefix GITHUB_BASE_REF that already has origin/", () => {
-    process.env["GITHUB_BASE_REF"] = "origin/main";
-    expect(resolveBaseRef(undefined)).toBe("origin/main");
-  });
-
-  test("falls back to origin/main when nothing is set", () => {
-    expect(resolveBaseRef(undefined)).toBe("origin/main");
   });
 });

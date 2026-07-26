@@ -19,9 +19,9 @@ import type { Conventions, ResourceRef } from "./types.ts";
  * An entry that resolves to nothing is an error, never a silent skip — a
  * typo'd resource would otherwise quietly produce reuse-free output.
  *
- * Glob support reuses `compileGlob` (the deliberately small `**` / `*` / `?`
- * language of relatedPaths) plus a readdir walk, so no glob dependency is
- * added and the `engines` floor (Node 20, no `fs.glob`) keeps working.
+ * Glob support reuses `compileGlob` (a deliberately small `**` / `*` / `?`
+ * language) plus a readdir walk, so no glob dependency is added and the
+ * `engines` floor (Node 20, no `fs.glob`) keeps working.
  */
 
 export interface ResolvedResource {

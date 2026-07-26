@@ -347,7 +347,6 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
     taskInstructions: req.taskInstructions,
     specTitle: ctx.spec.title,
     steps,
-    relatedPaths: ctx.spec.relatedPaths ?? [],
     draft: req.draft,
     ...(req.draftInvariant ? { draftInvariant: req.draftInvariant } : {}),
     resources: resources.map(toPromptResource),

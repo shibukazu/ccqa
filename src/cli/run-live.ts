@@ -526,10 +526,9 @@ type LiveFailureAnalysis = {
  * Classify one failed live run via `analyzeFailure` — same prompt as the
  * deterministic path (Issue #47), fed the live transcript instead of the
  * vitest log. `auth` is hoisted once by the caller; the diff comes from the
- * shared provider, already scoped to this spec's relatedPaths and truncated
- * (the live path used to feed the whole unscoped patch — in a monorepo that
- * ballooned the prompt with unrelated changes). Auth-unavailable /
- * no-failed-step degrade to `analysisSkipped` rather than throwing.
+ * shared provider, already truncated (the live path used to feed the whole
+ * untruncated patch — in a monorepo that ballooned the prompt). Auth-unavailable
+ * / no-failed-step degrade to `analysisSkipped` rather than throwing.
  */
 async function analyzeOneLiveFailure(
   r: Extract<SpecRunOutcome, { kind: "run" }>,

@@ -31,7 +31,6 @@ export interface LlmGenPromptInput {
   taskInstructions: string;
   specTitle: string;
   steps: Array<{ id: string; instruction: string; expected: string }>;
-  relatedPaths: string[];
   /** Mechanical-emit draft (playwright): the recorded ground truth. */
   draft?: { path: string; contents: string };
   /**
@@ -80,7 +79,7 @@ export function reuseFirstContract(hasDraft: boolean, draftInvariant?: string): 
       `4. **The draft is ground truth.** The mechanical draft below encodes the recorded ` +
         `route. Do not change the meaning of its operation sequence or its assertions — ` +
         `no reordering, dropping, or weakening. You may rewrite locators when the ` +
-        `conventions or the sources under \`relatedPaths\` justify a better one.`,
+        `conventions or the sources you read justify a better one.`,
     );
     if (draftInvariant) rules.push(`5. ${draftInvariant}`);
   }
@@ -118,11 +117,7 @@ export function buildLlmGenPrompt(input: LlmGenPromptInput): string {
   const steps = input.steps
     .map((s) => `- ${s.id}: ${s.instruction}\n  expected: ${s.expected}`)
     .join("\n");
-  const related =
-    input.relatedPaths.length > 0
-      ? `\n\nRelated source paths (verify concrete details against these):\n${input.relatedPaths.map((p) => `- ${p}`).join("\n")}`
-      : "";
-  sections.push(`## Test spec\n\nTitle: ${input.specTitle}\n\nSteps:\n${steps}${related}`);
+  sections.push(`## Test spec\n\nTitle: ${input.specTitle}\n\nSteps:\n${steps}`);
 
   if (input.draft) {
     sections.push(
@@ -211,8 +206,8 @@ Write the rewritten test to \`${suggestedPath}\` unless the conventions/examples
 /**
  * runn generation pass: compile the spec into a runbook. Only the generic
  * runbook shape is prescribed here — concrete endpoints, payloads, and
- * response shapes must be verified against the backend sources referenced by
- * the spec's \`relatedPaths\`.
+ * response shapes must be verified against the backend sources, found via
+ * Read/Grep/Glob.
  */
 export function runnTaskInstructions(suggestedPath: string): string {
   return `You are generating a runn runbook (YAML) that covers the test spec below against this repository's backend.
@@ -223,7 +218,7 @@ Runbook shape (generic runn structure):
 - \`vars:\` — variable bindings for values reused across steps (test inputs, ids captured from responses).
 - \`steps:\` — one entry per spec step where possible: \`req\` steps perform the API calls, \`test\` steps assert on \`current.res\` (status, body fields). Bind values from earlier responses via \`steps[N]\` references when later steps need them.
 
-Do NOT invent endpoints, request bodies, or response fields: read the backend sources under the spec's related paths (routing tables, handlers, schemas) and derive the concrete paths, methods, parameters, and response shapes from them. If a detail cannot be confirmed from the sources, say so in \`summary\` instead of guessing silently.
+Do NOT invent endpoints, request bodies, or response fields: use Read/Grep/Glob to find the backend sources (routing tables, handlers, schemas) and derive the concrete paths, methods, parameters, and response shapes from them. If a detail cannot be confirmed from the sources, say so in \`summary\` instead of guessing silently.
 
 Write the runbook to \`${suggestedPath}\` unless the conventions/examples clearly use another layout under the output directory. If shared setup deserves its own helper runbook, output it as \`kind: "support"\`.`;
 }

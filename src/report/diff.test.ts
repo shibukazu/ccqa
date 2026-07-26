@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { scopePatchForSpec, splitPatchByFile } from "./diff.ts";
+import { splitPatchByFile, truncatePatch } from "./diff.ts";
 
 function fileSection(path: string, bodyLines: number): string {
   const lines = [
@@ -37,32 +37,21 @@ describe("splitPatchByFile", () => {
   });
 });
 
-describe("scopePatchForSpec", () => {
+describe("truncatePatch", () => {
   const patch = [
     fileSection("src/features/tasks/list.tsx", 2),
     fileSection("src/features/billing/invoice.tsx", 2),
   ].join("\n");
 
-  test("keeps only sections matching relatedPaths globs", () => {
-    const out = scopePatchForSpec(patch, ["src/features/tasks/**"]);
-    expect(out).toContain("src/features/tasks/list.tsx");
-    expect(out).not.toContain("billing");
-  });
-
-  test("null relatedPaths keeps the whole patch", () => {
-    const out = scopePatchForSpec(patch, null);
+  test("keeps the whole patch when it fits under the caps", () => {
+    const out = truncatePatch(patch);
     expect(out).toContain("tasks/list.tsx");
     expect(out).toContain("billing/invoice.tsx");
   });
 
-  test("returns the empty string when nothing matches — the prompt renders that state and hunks stay fetchable on demand", () => {
-    const out = scopePatchForSpec(patch, ["src/features/payments/**"]);
-    expect(out).toBe("");
-  });
-
   test("truncates a single oversized file section with a marker", () => {
     const big = fileSection("src/huge.ts", 50);
-    const out = scopePatchForSpec(big, null, { perFile: 200, total: 10_000 });
+    const out = truncatePatch(big, { perFile: 200, total: 10_000 });
     expect(out.length).toBeLessThan(big.length);
     expect(out).toContain("[truncated:");
     expect(out).toContain("src/huge.ts");
@@ -70,7 +59,7 @@ describe("scopePatchForSpec", () => {
 
   test("stops emitting sections once the total cap is reached and reports the drop", () => {
     const many = Array.from({ length: 10 }, (_, i) => fileSection(`src/f${i}.ts`, 5)).join("\n");
-    const out = scopePatchForSpec(many, null, { perFile: 10_000, total: 300 });
+    const out = truncatePatch(many, { perFile: 10_000, total: 300 });
     expect(out).toContain("more changed file(s) omitted");
     expect(out.length).toBeLessThan(many.length);
   });
