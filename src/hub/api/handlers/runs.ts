@@ -6,6 +6,7 @@ import { z } from "zod";
 import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry } from "../../contract/schema.ts";
 import { GitEnvelopeSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { DriftLabel } from "../../../drift/types.ts";
+import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
 import { emptyDriftLedger } from "../../core/drift-ledger.ts";
@@ -466,7 +467,7 @@ export function createListRunsHandler(storage: HubStorage) {
       ...(status ? { status: status as Run["status"] } : {}),
       ...(limitRaw ? { limit: Number(limitRaw) } : {}),
     });
-    sendJson(ctx.res, 200, { runs });
+    sendJson(ctx.res, 200, { runs: await Promise.all(runs.map((r) => withGradedDrift(storage, r))) });
   };
 }
 
@@ -474,8 +475,35 @@ export function createListRunsHandler(storage: HubStorage) {
 export function createGetRunHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const run = await getRunOr404(storage, ctx.params.id!);
-    sendJson(ctx.res, 200, run);
+    sendJson(ctx.res, 200, await withGradedDrift(storage, run));
   };
+}
+
+/**
+ * Join a drift run's human grades onto it as `gradedDrift`.
+ *
+ * Derived on read rather than stored: a terminal run is immutable (ADR-0009),
+ * and it should keep saying what the audit found. The grades are a separate
+ * later claim, so both are available and a reader picks. Only drift runs pay
+ * for the extra read, and only they can carry a grade that changes a count.
+ */
+async function withGradedDrift(storage: HubStorage, run: Run): Promise<Run> {
+  if (run.kind !== "drift" || !run.drift) return run;
+  const records = await storage.triage.list(run.id).catch(() => []);
+  if (records.length === 0) return run;
+  const gradedDrift = { ...run.drift, noDrift: 0, graded: 0 };
+  for (const record of records) {
+    const predicted = record.predicted.label as DriftLabel;
+    if (predicted === "TEST_DRIFT") gradedDrift.testDrift--;
+    else if (predicted === "SPEC_CHANGE") gradedDrift.specChange--;
+    else gradedDrift.unknown--;
+    if (record.actualCause === "TEST_DRIFT") gradedDrift.testDrift++;
+    else if (record.actualCause === "SPEC_CHANGE") gradedDrift.specChange++;
+    else if (record.actualCause === NO_DRIFT_CAUSE) gradedDrift.noDrift++;
+    else gradedDrift.unknown++;
+    gradedDrift.graded++;
+  }
+  return { ...run, gradedDrift };
 }
 
 /** GET /api/v1/runs/:id/report */

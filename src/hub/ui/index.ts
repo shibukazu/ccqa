@@ -910,6 +910,7 @@ const CSS = `
   .badge.rr-none, .badge.dr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   .badge.rr-none .d, .badge.dr-none .d { background: var(--muted); }
   .cellsub { display: block; margin-top: 3px; max-width: 260px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+  .graded-mark { color: var(--fg-dim); font-weight: 600; }
   .cellsub a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--border-strong); }
   .cellsub a:hover { color: var(--fg); }
   .persp-note { margin-bottom: 12px; }
@@ -1123,6 +1124,7 @@ const CLIENT_JS = `
       "perspectives.drift.state.notAudited": "Not audited",
       "perspectives.drift.state.clean": "No drift",
       "perspectives.drift.state.found": "Drift found", "perspectives.drift.state.unknown": "Can't tell",
+      "perspectives.drift.graded": "confirmed",
       "perspectives.drift.unsupported": "This hub does not report drift audit results. Upgrade the hub to enable it.",
       "perspectives.drift.loadFailed": "Loading drift data failed",
       "prompt.card.record": "Recording browser actions",
@@ -1270,6 +1272,7 @@ const CLIENT_JS = `
       "perspectives.drift.state.notAudited": "未監査",
       "perspectives.drift.state.clean": "ズレなし",
       "perspectives.drift.state.found": "ズレあり", "perspectives.drift.state.unknown": "判定できない",
+      "perspectives.drift.graded": "人が確認",
       "perspectives.drift.unsupported": "このハブはdrift監査結果を返しません。利用するにはハブを更新してください。",
       "perspectives.drift.loadFailed": "drift監査結果の読み込みに失敗しました",
       "prompt.card.record": "ブラウザ操作の記録",
@@ -1306,7 +1309,8 @@ const CLIENT_JS = `
       "jobs.failed": "学習ジョブが失敗しました。", "jobs.newCustomPrompt": "新しいカスタムプロンプト:", "jobs.empty": "まだ学習ジョブがありません。実行の失敗スペックを採点してから学習してください。"
     }
   };
-  var FAILURE_LABEL_JA = { TEST_DRIFT: "テストずれ", SPEC_CHANGE: "仕様変更", PRODUCT_BUG: "プロダクト不具合", UNKNOWN: "不明" };
+  var FAILURE_LABEL_JA = { TEST_DRIFT: "テストずれ", SPEC_CHANGE: "仕様変更", PRODUCT_BUG: "プロダクト不具合", UNKNOWN: "不明", NO_DRIFT: "ズレなし" };
+  var FAILURE_LABEL_EN = { NO_DRIFT: "no drift" };
 
   function loadLang() {
     try { return window.localStorage.getItem(LANG_KEY) || "en"; } catch (e) { return "en"; }
@@ -1317,7 +1321,7 @@ const CLIENT_JS = `
     if (d[key] != null) return d[key];
     return I18N.en[key] != null ? I18N.en[key] : key;
   }
-  function labelText(v) { return lang === "ja" ? (FAILURE_LABEL_JA[v] || v) : v; }
+  function labelText(v) { return lang === "ja" ? (FAILURE_LABEL_JA[v] || v) : (FAILURE_LABEL_EN[v] || v); }
 
   // Overwrite static HTML_BODY text nodes marked with data-i18n / data-i18n-ph.
   // The English text in the markup is the no-JS fallback; this runs on boot and
@@ -1566,7 +1570,7 @@ const CLIENT_JS = `
   // corrected to, so it is absent from both axes of the matrix and from the
   // grading control. Offering it in one place but not the other would let a
   // grade land in a cell that does not exist.
-  var DRIFT_CAUSES = ["TEST_DRIFT", "SPEC_CHANGE"];
+  var DRIFT_CAUSES = ["TEST_DRIFT", "SPEC_CHANGE", "NO_DRIFT"];
   function causeLabels(isDrift) { return isDrift ? DRIFT_CAUSES : FAILURE_LABELS; }
   var DRIFT_LABEL_COUNT_KEY = { TEST_DRIFT: "testDrift", SPEC_CHANGE: "specChange", UNKNOWN: "unknown" };
   // A run stored by an older hub carries the previous drift summary shape
@@ -1579,13 +1583,22 @@ const CLIENT_JS = `
   // available here — reading a row's build-threshold status instead of its
   // diagnosis, which prints "no drift" over an UNKNOWN finding — is invisible
   // without either a browser or this test.
+  // A grade is a human answering the same question the audit answered, later
+  // and with more to go on, so wherever both exist the grade is what a reader
+  // is shown. The audit's own answer is never overwritten — it stays on the
+  // run and in the confusion matrix, which is the whole point of measuring.
   function driftSummary(run) {
-    var d = run && run.drift;
+    var d = (run && run.gradedDrift) || (run && run.drift);
     return d && typeof d.specs === "number" ? d : null;
   }
 
-  /** One spec row's drift state: its own diagnosis, or status if it has none. */
-  function driftRowState(r) {
+  /**
+   * One spec row's drift state. The graded argument is the human's answer for
+   * this row, if it has one; NO_DRIFT means the audit reported drift and there
+   * was none.
+   */
+  function driftRowState(r, graded) {
+    if (graded) return graded === "NO_DRIFT" ? "clean" : "found";
     if (r.analysis && r.analysis.label) return r.analysis.label === "UNKNOWN" ? "unknown" : "found";
     return r.status === "failed" ? "found" : "clean";
   }
@@ -2393,10 +2406,15 @@ const CLIENT_JS = `
   }
 
   function renderSpecCard(runId, r, triageState, isDrift) {
+    // The human's answer for this row, if it has one. Everything the card says
+    // about whether the spec drifted follows it rather than the audit.
+    var gradedCase = triageState.byKey[r.feature + "/" + r.spec];
+    var graded = isDrift && gradedCase && gradedCase.actual ? gradedCase.actual.cause : null;
+    var rowState = isDrift ? driftRowState(r, graded) : null;
     // .passed / .failed rail; a drift row's "failed" is a diagnosis, not a
     // broken test, so it wears the amber drift-found rail instead of fail-red.
-    var driftFound = isDrift && r.status === "failed";
-    var card = el("div", "spec-card " + (driftFound ? "drift-found" : r.status));
+    var driftFound = rowState === "found";
+    var card = el("div", "spec-card " + (isDrift ? (driftFound ? "drift-found" : "passed") : r.status));
     var head = el("div", "spec-card-head");
     var nameBlock = el("div");
     nameBlock.appendChild(el("div", "name", r.title || (r.feature + " / " + r.spec)));
@@ -2419,7 +2437,7 @@ const CLIENT_JS = `
     var modeKnown = r.mode !== undefined || !isDrift;
     if (modeKnown && live) head.appendChild(el("span", "badge-live", t("spec.kind.live")));
     else if (modeKnown && !external) head.appendChild(el("span", "badge-det", t("spec.kind.det")));
-    head.appendChild(isDrift ? driftFoundBadge(driftRowState(r), "drift.spec.") : statusBadge(r.status));
+    head.appendChild(isDrift ? driftFoundBadge(rowState, "drift.spec.") : statusBadge(r.status));
     card.appendChild(head);
 
     var body = el("div", "spec-card-body");
@@ -3496,6 +3514,13 @@ const CLIENT_JS = `
         ));
       }
       sub.appendChild(ledgerLine(entry));
+      // A verdict someone has looked at is worth more than one nobody has, in
+      // both directions: a confirmed finding is real, and a confirmed clean is
+      // not just "the audit found nothing".
+      if (entry.graded) {
+        sub.appendChild(document.createTextNode(" · "));
+        sub.appendChild(el("span", "graded-mark", t("perspectives.drift.graded")));
+      }
       td.appendChild(sub);
     }
     return td;

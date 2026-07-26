@@ -28,3 +28,36 @@ export function mergeDriftLedgerInto(into: DriftLedger, from: DriftLedger): Drif
   }
   return into;
 }
+
+/**
+ * The entry a human grade should leave, or null when the grade must not touch
+ * the ledger.
+ *
+ * The guard is the point. Grading is retrospective — a run from last week can
+ * be graded today — and the ledger holds one entry per spec, the newest audit.
+ * Writing the grade unconditionally would let a correction to an old verdict
+ * overwrite a newer audit of newer code, which is the one direction that
+ * silently loses a real finding.
+ *
+ * `label: null` is how a cleared row is recorded, the same shape a clean audit
+ * produces, so every reader already handles it.
+ */
+export function gradedDriftEntry(
+  ledger: DriftLedger,
+  key: string,
+  runId: string,
+  label: SpecDriftEntry["label"],
+): SpecDriftEntry | null {
+  const entry = ledger.specs[key];
+  if (!entry || entry.runId !== runId) return null;
+  if (entry.label === label && entry.graded === true) return null;
+  const graded: SpecDriftEntry = { ...entry, label, graded: true };
+  // Neither describes a cleared row; leaving them would caption a "no drift"
+  // entry with the finding the audit had claimed.
+  if (label === null) {
+    delete graded.surface;
+    delete graded.headline;
+    delete graded.confidence;
+  }
+  return graded;
+}

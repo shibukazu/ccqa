@@ -25,6 +25,23 @@ export const PREDICTED_LABELS = [...FAILURE_LABELS, "UNKNOWN"] as const;
 export const PredictedLabelSchema = z.enum(PREDICTED_LABELS);
 export type PredictedLabel = z.infer<typeof PredictedLabelSchema>;
 
+/**
+ * What a human may record as the ground truth.
+ *
+ * A failing test always has a cause, so for a run the answer is one of
+ * FAILURE_LABELS. A drift audit can be wrong in one further way that has no
+ * equivalent there: it can report drift on a spec that still describes the
+ * product. `NO_DRIFT` records that, and it is offered on drift rows only —
+ * "the test failed but nothing is wrong" is not an answer about a run.
+ *
+ * Kept out of PREDICTED_LABELS deliberately: a clean audit is the *absence*
+ * of a diagnosis, not a fourth label the model emits.
+ */
+export const NO_DRIFT_CAUSE = "NO_DRIFT";
+export const ACTUAL_CAUSES = [...FAILURE_LABELS, NO_DRIFT_CAUSE] as const;
+export const ActualCauseSchema = z.enum(ACTUAL_CAUSES);
+export type ActualCause = z.infer<typeof ActualCauseSchema>;
+
 export const SUB_DIAGNOSES = [...FIXABLE_DIAGNOSIS_TYPES, "NONE"] as const;
 
 export const FailureEvidenceSchema = z.object({

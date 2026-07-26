@@ -153,8 +153,10 @@ GET /api/v1/runs/:id/triage
     }
 
 PUT /api/v1/runs/:id/triage/:feature/:spec/actual-cause
-  body: { cause: "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG", note?: string }
+  body: { cause: "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG" | "NO_DRIFT", note?: string }
   → 200 TriageCase | 404 (no such case) | 409 (run has no report yet)
+  "NO_DRIFT" records that an audit reported drift where there was none. It is
+  offered on `kind: "drift"` rows only — a failing test always has a cause.
 
 DELETE /api/v1/runs/:id/triage/:feature/:spec/actual-cause
   → 204
@@ -164,6 +166,13 @@ PUT /api/v1/runs/:id/triage/actual-causes
   → 200 { imported: number }
   Bulk-import path for a batch of graded actual-causes (e.g. from external tooling).
 ```
+
+Grading a `kind: "drift"` row also corrects that spec's entry in the drift
+ledger, so the Perspectives view shows what the human decided rather than what
+the audit guessed — but only while the entry still names this run, so a
+correction to an old verdict cannot overwrite a newer audit. The run itself is
+never rewritten: it keeps the audit's counts in `drift`, and a `gradedDrift`
+object is joined on when the run is read, present once any row is graded.
 
 ## Projects
 

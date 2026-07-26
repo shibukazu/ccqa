@@ -521,6 +521,39 @@ describe("hub API server", () => {
       expect(sealed.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, unknown: 1 });
     });
 
+    test("grading a drift row is joined on as gradedDrift, leaving the audit's own counts alone", async () => {
+      // A grade is the ground truth and every screen should follow it, but the
+      // run must keep saying what the audit found — that pair is what the
+      // confusion matrix measures. So the corrected counts ride alongside.
+      const res = await fetch(`${baseUrl}/api/v1/runs/open?project=demo&kind=drift`, authed({ method: "POST" }));
+      const run = await json(res);
+      const analysis: NonNullable<ReportSpecResult["analysis"]> = {
+        label: "TEST_DRIFT",
+        confidence: 0.9,
+        headline: "h",
+        recommendation: "r",
+        evidence: [],
+        reasoning: "",
+      };
+      await patch(run.id as string, {
+        rows: [
+          makeRow({ spec: "a", status: "failed", analysis }),
+          makeRow({ spec: "b", status: "failed", analysis }),
+        ],
+        done: true,
+      });
+
+      const graded = await fetch(
+        `${baseUrl}/api/v1/runs/${run.id}/triage/demo/a/actual-cause`,
+        authed({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cause: "NO_DRIFT" }) }),
+      );
+      expect(graded.status).toBe(200);
+
+      const after = await json(await fetch(`${baseUrl}/api/v1/runs/${run.id}`, authed()));
+      expect(after.drift).toEqual({ specs: 2, testDrift: 2, specChange: 0, unknown: 0 });
+      expect(after.gradedDrift).toEqual({ specs: 2, testDrift: 1, specChange: 0, unknown: 0, noDrift: 1, graded: 1 });
+    });
+
     test("PATCH with one row (no done) updates the report and specs, and stays running", async () => {
       const run = await openRun();
       const res = await patch(run.id as string, { rows: [makeRow({ status: "passed" })] });

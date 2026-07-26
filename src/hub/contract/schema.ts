@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DriftLabelSchema, DriftSurfaceSchema, FailureLabelSchema, PredictedLabelSchema } from "../../report/schema.ts";
+import { ActualCauseSchema, DriftLabelSchema, DriftSurfaceSchema, PredictedLabelSchema } from "../../report/schema.ts";
 
 /**
  * The hub's public REST contract (docs/hub-api.md). These schemas are
@@ -52,6 +52,27 @@ export const RunSchema = z.object({
     })
     .nullable()
     .default(null),
+  /**
+   * The same counts after human grading, present only when at least one row of
+   * a drift run has been graded. Joined in when the run is read, never stored
+   * on the run: a terminal run records what the audit said (ADR-0009), and a
+   * grade is a separate, later claim about the same rows. Readers that want
+   * the current best answer take this when it is there and `drift` otherwise;
+   * keeping both is what lets the confusion matrix stay honest about what the
+   * model predicted.
+   */
+  gradedDrift: z
+    .object({
+      specs: z.number(),
+      testDrift: z.number(),
+      specChange: z.number(),
+      unknown: z.number(),
+      /** Rows a human cleared: the audit reported drift, there was none. */
+      noDrift: z.number(),
+      /** How many of this run's rows carry a grade at all. */
+      graded: z.number(),
+    })
+    .optional(),
   /** Spec-level counts derived from the report's `results[]`. */
   specs: z.object({ total: z.number(), passed: z.number(), failed: z.number() }),
   gitHead: z.string().nullable(),
@@ -106,7 +127,7 @@ export const TriageCaseSchema = z.object({
   /** null when no human has recorded the actual cause yet. */
   actual: z
     .object({
-      cause: FailureLabelSchema,
+      cause: ActualCauseSchema,
       note: z.string().optional(),
       recordedAt: z.string(),
     })
@@ -125,7 +146,7 @@ export const RunTriageSchema = z.object({
 export type RunTriage = z.infer<typeof RunTriageSchema>;
 
 export const PutActualCauseRequestSchema = z.object({
-  cause: FailureLabelSchema,
+  cause: ActualCauseSchema,
   note: z.string().optional(),
 });
 export type PutActualCauseRequest = z.infer<typeof PutActualCauseRequestSchema>;
@@ -489,6 +510,14 @@ export const SpecDriftEntrySchema = z.object({
   runId: z.string(),
   /** The run's reportCreatedAt — the ordering key for ledger updates. */
   at: z.string(),
+  /**
+   * Set once a human has graded this row: `label` is then their answer, not
+   * the audit's. Kept as a flag rather than replacing the entry silently, so
+   * a reader can tell a verdict that was confirmed from one that was merely
+   * produced. A later audit of the same spec supersedes it, grade and all —
+   * the newer observation is about newer code.
+   */
+  graded: z.boolean().optional(),
 });
 export type SpecDriftEntry = z.infer<typeof SpecDriftEntrySchema>;
 

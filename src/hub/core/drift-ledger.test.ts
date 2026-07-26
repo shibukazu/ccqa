@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { DriftLedger, SpecDriftEntry } from "../contract/schema.ts";
-import { emptyDriftLedger, mergeDriftLedgerInto, toDriftLedger } from "./drift-ledger.ts";
+import { emptyDriftLedger, gradedDriftEntry, mergeDriftLedgerInto, toDriftLedger } from "./drift-ledger.ts";
 
 function entry(overrides: Partial<SpecDriftEntry> = {}): SpecDriftEntry {
   return { label: null, gitHead: "a", runId: "r", at: "2026-07-21T00:00:00Z", ...overrides };
@@ -36,5 +36,32 @@ describe("drift ledger", () => {
 
     expect(toDriftLedger(null)).toEqual(emptyDriftLedger());
     expect(toDriftLedger({})).toEqual(emptyDriftLedger());
+  });
+
+  test("a grade replaces the verdict, and clearing a row drops the finding's caption", () => {
+    const led = ledger({
+      "f/s": entry({ label: "TEST_DRIFT", surface: "spec", confidence: 0.9, headline: "stale copy" }),
+    });
+
+    const corrected = gradedDriftEntry(led, "f/s", "r", "SPEC_CHANGE");
+    expect(corrected).toMatchObject({ label: "SPEC_CHANGE", graded: true, headline: "stale copy" });
+
+    // Cleared: surface/headline/confidence described a finding that is now
+    // withdrawn, so leaving them would caption "no drift" with the old claim.
+    const cleared = gradedDriftEntry(led, "f/s", "r", null);
+    expect(cleared).toMatchObject({ label: null, graded: true });
+    expect(cleared).not.toHaveProperty("surface");
+    expect(cleared).not.toHaveProperty("headline");
+    expect(cleared).not.toHaveProperty("confidence");
+  });
+
+  test("grading an older run never overwrites a newer audit of the same spec", () => {
+    // The failure this guards: grading is retrospective, so a correction to a
+    // run from last week must not land on top of an audit of newer code.
+    const led = ledger({ "f/s": entry({ runId: "newer-run", label: "TEST_DRIFT" }) });
+
+    expect(gradedDriftEntry(led, "f/s", "older-run", null)).toBeNull();
+    expect(gradedDriftEntry(led, "f/never-audited", "newer-run", null)).toBeNull();
+    expect(gradedDriftEntry(led, "f/s", "newer-run", null)).not.toBeNull();
   });
 });
