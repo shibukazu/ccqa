@@ -288,6 +288,27 @@ want the hub to run those, give the hub process its own `ANTHROPIC_API_KEY` /
 Claude login. The hub starts fine without any credentials — only learning
 jobs fail (with a clear error) until you add one.
 
+## Drift ledger
+
+Whenever `ccqa drift --push` lands a `kind: "drift"` run, the hub advances a
+per-project **drift ledger**: one entry per spec holding its newest audit
+outcome. Unlike the spec ledger behind `/last-green` and `/rerun`, it carries
+no profile — drift asks whether a spec still describes the code, which has
+nothing to do with which environment is running it.
+
+- **Never audited** — the spec has no entry in the ledger at all.
+- **No drift found** — the spec was audited and still matched the code.
+- **Diagnosed** — `TEST_DRIFT` / `SPEC_CHANGE` / `UNKNOWN`, with the surface
+  (`spec` or `generated`) that decides how to fix it.
+
+"No drift found" and "never audited" are deliberately kept apart — collapsing
+them would read a spec nobody has checked yet as one that's known-clean.
+
+Read it via `GET /api/v1/projects/:project/drift` (no `?profile=` — see
+[the API reference](./hub-api.md#drift-ledger)), or in the **Perspectives**
+tab below, which shows it beside — never merged with — the re-run column,
+since the two answer different questions.
+
 ## The bundled UI
 
 Browsing `http://<hub>/` opens a small built-in dashboard (no build step, no
@@ -326,9 +347,13 @@ else is scoped to the selected project.
   [perspectives in the spec guide](./spec.md#inventory-coverage-with-perspectives)):
   a summary strip (features, test cases, deterministic/live breakdown, and a
   runnable-coverage bar) above one searchable, filterable table of every
-  case, grouped by feature. Expanding a row shows the case's preconditions,
-  start screen, related code, and a **note** field editable right here — the
-  document's only human-written field, preserved across regenerations.
+  case, grouped by feature. When the hub has the data, each row also shows
+  whether the case needs a re-run and its [drift ledger](#drift-ledger)
+  status (never audited / no drift / diagnosed, with the audited commit) —
+  two separate columns, since they answer two separate questions. Expanding a
+  row shows the case's preconditions, start screen, related code, and a
+  **note** field editable right here — the document's only human-written
+  field, preserved across regenerations.
 - **Secrets** lists, adds, and deletes the variables and sessions for the
   selected project, per **profile** (chosen with the selector in this tab —
   profiles scope secrets only; prompts and runs are project-wide). Sensitive

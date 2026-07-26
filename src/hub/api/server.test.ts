@@ -54,7 +54,7 @@ function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; r
             assertions: null,
             analysis: null,
             analysisSkipped: null,
-            driftIssues: null,
+            driftAudit: null,
             failureLogExcerpt: null,
             diffExcerpt: null,
             specYaml: null,
@@ -72,19 +72,20 @@ function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; r
 }
 
 /**
- * Build a pushed-report archive with `driftIssues` set on its specs, as
- * produced by `ccqa drift --push` (`kind: "drift"` report.json). Two specs:
- * one with a mix of ERROR/WARN/OK issues, one with none.
+ * Build a pushed-report archive with a per-spec drift diagnosis in `analysis`
+ * (never `driftAudit`, which is a normal run's own audit evidence — see
+ * ReportSpecResultSchema), as produced by `ccqa drift --push` (`kind: "drift"`
+ * report.json). Three specs: one TEST_DRIFT (error severity), one UNKNOWN
+ * (warn severity), one clean (no diagnosis).
  */
-function makeDriftReportTarGz(): Uint8Array {
-  const baseResult: Omit<ReportSpecResult, "feature" | "spec" | "driftIssues"> = {
+function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
+  const baseResult: Omit<ReportSpecResult, "feature" | "spec" | "analysis" | "status"> = {
     title: null,
-    status: "passed",
     testCounts: null,
     durationMs: null,
     assertions: null,
-    analysis: null,
     analysisSkipped: null,
+    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,
@@ -96,7 +97,7 @@ function makeDriftReportTarGz(): Uint8Array {
     kind: "drift",
     createdAt: new Date().toISOString(),
     runId: null,
-    git: { head: null, base: null },
+    git: { head: opts.gitHead ?? null, base: null },
     model: null,
     language: null,
     promptVersion: "1",
@@ -105,18 +106,39 @@ function makeDriftReportTarGz(): Uint8Array {
       {
         ...baseResult,
         feature: "demo",
-        spec: "with-issues",
-        driftIssues: [
-          { severity: "ERROR", category: "assertable", stepId: "step-1", message: "mismatch", detail: null },
-          { severity: "WARN", category: "blocks", stepId: null, message: "stale block", detail: null },
-          { severity: "OK", category: "granularity", stepId: null, message: "fine", detail: null },
-        ],
+        spec: "test-drift",
+        status: "failed",
+        analysis: {
+          label: "TEST_DRIFT",
+          confidence: 0.8,
+          subDiagnosis: "SELECTOR_DRIFT",
+          headline: "mismatch",
+          recommendation: "",
+          evidence: [],
+          reasoning: "",
+        },
+      },
+      {
+        ...baseResult,
+        feature: "demo",
+        spec: "unknown-drift",
+        status: "passed",
+        analysis: {
+          label: "UNKNOWN",
+          confidence: 0.3,
+          subDiagnosis: "NONE",
+          headline: "cannot tell",
+          recommendation: "",
+          evidence: [],
+          reasoning: "",
+        },
       },
       {
         ...baseResult,
         feature: "demo",
         spec: "clean",
-        driftIssues: [],
+        status: "passed",
+        analysis: null,
       },
     ],
   };
@@ -139,7 +161,7 @@ function makeRow(overrides: Partial<ReportSpecResult> = {}): ReportSpecResult {
     assertions: null,
     analysis: null,
     analysisSkipped: null,
-    driftIssues: null,
+    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,
@@ -378,7 +400,7 @@ describe("hub API server", () => {
       expect(reportRes.status).toBe(200);
     });
 
-    test("POST ?kind=drift stores drift summary counts derived from driftIssues", async () => {
+    test("POST ?kind=drift stores drift summary counts derived from each spec's diagnosis", async () => {
       const res = await fetch(`${baseUrl}/api/v1/runs?project=demo&kind=drift`, authed({
         method: "POST",
         body: makeDriftReportTarGz(),
@@ -386,7 +408,7 @@ describe("hub API server", () => {
       expect(res.status).toBe(201);
       const run = await json(res);
       expect(run.kind).toBe("drift");
-      expect(run.drift).toEqual({ issues: 3, errors: 1, warnings: 1, specsWithIssues: 1 });
+      expect(run.drift).toEqual({ issues: 2, errors: 1, warnings: 1, specsWithIssues: 2 });
     });
 
     test("POST with no ?kind (and explicit ?kind=run) defaults to a kind:\"run\" Run with drift:null", async () => {
@@ -702,6 +724,39 @@ describe("hub API server", () => {
     test("branch query parameter is required", async () => {
       const res = await fetch(`${baseUrl}/api/v1/projects/lg/last-green`, authed());
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe("drift ledger", () => {
+    function getDriftLedger(project: string): Promise<{ project: string; specs: Record<string, { label: string | null; gitHead: string; runId: string }> }> {
+      return fetch(`${baseUrl}/api/v1/projects/${project}/drift`, authed()).then(json);
+    }
+
+    test("pushing a kind:\"drift\" run advances the ledger, readable via GET /drift with no ?profile=", async () => {
+      const sha = "e".repeat(40);
+      const pushRes = await fetch(`${baseUrl}/api/v1/runs?project=dr&kind=drift&branch=main`, authed({
+        method: "POST",
+        body: makeDriftReportTarGz({ gitHead: sha }),
+      }));
+      expect(pushRes.status).toBe(201);
+
+      const ledger = await getDriftLedger("dr");
+      expect(ledger.specs["demo/test-drift"]).toMatchObject({ label: "TEST_DRIFT", gitHead: sha });
+      expect(ledger.specs["demo/unknown-drift"]).toMatchObject({ label: "UNKNOWN", gitHead: sha });
+      // Audited and clean (label: null) is distinct from never having a row at all.
+      expect(ledger.specs["demo/clean"]).toMatchObject({ label: null, gitHead: sha });
+      expect(ledger.specs["demo/never-audited"]).toBeUndefined();
+    });
+
+    test("a kind:\"run\" push does not touch the drift ledger", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=dr-run&branch=main`, authed({
+        method: "POST",
+        body: makeReportTarGz({ status: "passed" }),
+      }));
+      expect(res.status).toBe(201);
+
+      const ledger = await getDriftLedger("dr-run");
+      expect(ledger.specs).toEqual({});
     });
   });
 

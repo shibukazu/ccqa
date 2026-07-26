@@ -119,8 +119,10 @@ resolve `$GITHUB_HEAD_REF` → `$GITHUB_REF_NAME` → the local git branch), and
 `"running"` — `running` never means the hub itself is executing anything;
 it only means a `ccqa run` elsewhere is currently streaming results into
 this run record via `POST /api/v1/runs/open` and `PATCH /api/v1/runs/:id`.
-`drift` is derived from the pushed report's `results[].driftIssues` and is
-`null` for `kind: "run"`.
+`drift` is derived from the pushed report's `results[].analysis` (present only
+for `kind: "drift"` runs, where each row's `analysis` is a labelled
+`TEST_DRIFT`/`SPEC_CHANGE`/`UNKNOWN` diagnosis rather than a triage call) and
+is `null` for `kind: "run"`.
 
 A run opened via `POST /api/v1/runs/open` accepts repeated `PATCH` calls
 while it's `running`: each one upserts spec rows (by feature/spec) and adds
@@ -310,6 +312,41 @@ two environments sit at different commits, so "needs re-run" has no
 profile-free answer. Branch is not part of the scope — a run exercises the
 deployed environment whatever branch its code came from, so the ledger is
 read across every branch of the profile.
+
+## Drift ledger
+
+Every spec's last `ccqa drift --push` audit, so a project can be reviewed
+without opening each drift run individually. Unlike `/rerun` and
+`/last-green` above, this endpoint takes **no `?profile=`**: drift asks
+whether a spec still describes the code, which has nothing to do with which
+environment is running it.
+
+```
+GET /api/v1/projects/:project/drift
+  → 200 { project: string, specs: { "<feature>/<spec>": SpecDriftEntry } }
+```
+
+```ts
+interface SpecDriftEntry {
+  label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN" | null;  // null = audited, no drift found
+  surface?: "spec" | "generated";  // set only when label is non-null
+  confidence?: number;
+  headline?: string;
+  gitHead: string;   // the commit this audit read
+  runId: string;      // the kind: "drift" run this entry came from
+  at: string;         // the run's reportCreatedAt — the ordering key for ledger updates
+}
+```
+
+The hub advances the ledger whenever a `kind: "drift"` run reaches a
+terminal state: each row's `analysis` becomes that spec's newest entry —
+`label: null` when the audit found no drift, the labelled diagnosis
+otherwise. A spec with **no entry at all** was simply never audited; that is
+a different state from `label: null` and the two must not be conflated. A
+**skipped** row advances nothing, leaving whatever entry the spec already
+had (including none). Entries are scoped by project/**branch**; the response
+merges every branch, newest `at` per spec winning — the same approximation
+`/last-green`'s `getMerged` read makes.
 
 ## Sessions
 

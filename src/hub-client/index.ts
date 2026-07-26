@@ -1,6 +1,7 @@
 import type {
   DeployEntry,
   DeployLogResponse,
+  DriftLedgerResponse,
   LastGreenEntry,
   PutActualCauseRequest,
   RecordDeployRequest,
@@ -153,6 +154,12 @@ export interface HubClient {
    * "nothing to run".
    */
   getRerun(project: string, q: { profile: string }): Promise<RerunReport>;
+  /**
+   * Every spec's last `ccqa drift --push` audit, keyed by "feature/spec". No
+   * profile — drift asks whether a spec still describes the code, not
+   * whether an environment is stale.
+   */
+  getDriftLedger(project: string): Promise<DriftLedgerResponse>;
   /** Tell the hub what a deploy shipped (`ccqa hub deploy record`). */
   recordDeploy(project: string, profile: string, body: RecordDeployRequest): Promise<DeployEntry>;
   /** The profile's retained deploy log, oldest first; `limit` keeps the newest N. */
@@ -359,6 +366,9 @@ export function createHubClient(opts: HubClientOptions): HubClient {
 
     getRerun(project, q) {
       return json(`/api/v1/projects/${encodeURIComponent(project)}/rerun?${queryString({ profile: q.profile })}`);
+    },
+    getDriftLedger(project) {
+      return json(`/api/v1/projects/${encodeURIComponent(project)}/drift`);
     },
     recordDeploy(project, profile, body) {
       return json(`${deploysPath(project)}?${queryString({ profile })}`, {

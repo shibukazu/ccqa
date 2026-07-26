@@ -2,6 +2,7 @@ import type {
   DeployEntry,
   DeployInput,
   DeployLog,
+  DriftLedger,
   LearningJob,
   Run,
   RunStatus,
@@ -31,6 +32,7 @@ export interface HubStorage {
   perspectives: PerspectivesStore;
   jobs: JobStore;
   ledger: SpecLedgerStore;
+  driftLedger: DriftLedgerStore;
   deploys: DeployStore;
 }
 
@@ -52,6 +54,20 @@ export interface SpecLedgerStore {
   getMerged(project: string, profile: string): Promise<SpecLedger>;
   /** Upsert the given buckets; per bucket and key, an entry only advances (newer `at` wins). */
   merge(project: string, profile: string, branch: string, ledger: SpecLedger): Promise<void>;
+}
+
+/**
+ * The drift ledger: per (project, branch), "feature/spec" → its last audit
+ * from a `kind: "drift"` run. No profile — see `SpecDriftEntrySchema`. Branch
+ * is kept for the same reason the spec ledger keeps it (a PR branch's audits
+ * shouldn't become the default branch's baseline); readers merge across every
+ * branch, newest-`at` per key, the same approximation `SpecLedgerStore.getMerged`
+ * makes.
+ */
+export interface DriftLedgerStore {
+  getMerged(project: string): Promise<DriftLedger>;
+  /** Upsert the given entries; per key, an entry only advances (newer `at` wins). */
+  merge(project: string, branch: string, ledger: DriftLedger): Promise<void>;
 }
 
 /**

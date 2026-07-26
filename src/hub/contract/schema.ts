@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FailureLabelSchema, PredictedLabelSchema } from "../../report/schema.ts";
+import { DriftLabelSchema, DriftSurfaceSchema, FailureLabelSchema, PredictedLabelSchema } from "../../report/schema.ts";
 
 /**
  * The hub's public REST contract (docs/hub-api.md). These schemas are
@@ -460,6 +460,46 @@ export const LedgerResponseSchema = z.object({
   lastRed: z.record(z.string(), SpecLedgerEntrySchema).default({}),
 });
 export type LedgerResponse = z.infer<typeof LedgerResponseSchema>;
+
+/**
+ * One spec's last drift audit, as recorded by `ccqa drift --push`. Unlike the
+ * spec ledger above, this carries no profile: drift asks whether a spec still
+ * describes the code, which has nothing to do with which environment is
+ * running it (ADR-0010 draws the same line for "needs re-run").
+ *
+ * `label: null` is a completed audit that found no drift — a spec with no
+ * entry at all in the ledger was simply never audited. The two must not be
+ * conflated: `null` is an answer, a missing key is the absence of one.
+ */
+export const SpecDriftEntrySchema = z.object({
+  label: DriftLabelSchema.nullable(),
+  /** Set only when `label` is non-null — no surface applies to a clean audit. */
+  surface: DriftSurfaceSchema.optional(),
+  confidence: z.number().optional(),
+  headline: z.string().optional(),
+  /** The commit this audit read. */
+  gitHead: z.string(),
+  /** The `kind: "drift"` run this entry came from. */
+  runId: z.string(),
+  /** The run's reportCreatedAt — the ordering key for ledger updates. */
+  at: z.string(),
+});
+export type SpecDriftEntry = z.infer<typeof SpecDriftEntrySchema>;
+
+/** The per-(project, branch) drift ledger: "feature/spec" → its last audit. */
+export const DriftLedgerSchema = z.object({
+  specs: z.record(z.string(), SpecDriftEntrySchema).default({}),
+});
+export type DriftLedger = z.infer<typeof DriftLedgerSchema>;
+
+/**
+ * Body of `GET /projects/:project/drift`. No `?profile=` — see `SpecDriftEntrySchema`.
+ */
+export const DriftLedgerResponseSchema = z.object({
+  project: z.string(),
+  specs: z.record(z.string(), SpecDriftEntrySchema),
+});
+export type DriftLedgerResponse = z.infer<typeof DriftLedgerResponseSchema>;
 
 /**
  * A triage-learning job. Grading failing specs in the hub UI produces the
