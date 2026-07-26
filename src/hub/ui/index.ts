@@ -169,8 +169,8 @@ const HTML_BODY = `
             <button class="fchip" data-f="all" aria-pressed="true" type="button"><span data-i18n="perspectives.filter.all">All</span><span class="fcount"></span></button>
             <button class="fchip" data-f="deterministic" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.deterministic">Deterministic</span><span class="fcount"></span></button>
             <button class="fchip" data-f="live" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.live">Live</span><span class="fcount"></span></button>
-            <button class="fchip" data-f="norec" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.norec">Not recorded only</span><span class="fcount"></span></button>
             <button class="fchip" id="persp-chip-rerun" data-f="rerun" aria-pressed="false" type="button" hidden><span data-i18n="perspectives.filter.rerun">Needs re-run only</span><span class="fcount"></span></button>
+            <button class="fchip" id="persp-chip-drift" data-f="drift" aria-pressed="false" type="button" hidden><span data-i18n="perspectives.filter.drift">Drift found only</span><span class="fcount"></span></button>
             <div class="spacer"></div>
             <span class="muted persp-head" id="persp-deploy-head" hidden></span>
             <div class="sw-wrap" id="persp-profile-wrap">
@@ -562,7 +562,11 @@ const CSS = `
   .chip.kind-chip { color: var(--violet); background: var(--violet-bg); border-color: var(--violet-border); font-family: var(--font); margin-left: 6px; }
   .chip.drift-count-chip { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); margin-left: 6px; }
   .drift-meta-box { display: flex; flex-direction: column; gap: 4px; }
+  /* The chips carry their own margin for the run list, where they sit inline
+     after other chips. Here the container owns the spacing, so the margin only
+     indents the first one away from the label and the ratio line below it. */
   .drift-meta-chips { display: flex; gap: 6px; }
+  .drift-meta-chips .chip { margin-left: 0; }
   .specs { display: inline-flex; align-items: center; gap: 9px; }
   .meter { width: 54px; height: 6px; border-radius: 3px; background: var(--fail-bg); overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--pass); }
@@ -696,6 +700,9 @@ const CSS = `
   .matrix-table th, .matrix-table td { border: 1px solid var(--border); padding: 9px 16px; text-align: center; font-variant-numeric: tabular-nums; }
   .matrix-table thead th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
   .matrix-table tbody th { background: var(--surface-2); color: var(--fg-dim); font-weight: 600; font-size: 11px; text-align: left; white-space: nowrap; }
+  /* The list tables let their card draw the bottom edge, so the shared rule
+     strips the last row's border. This one draws a real grid and needs it. */
+  .matrix-table tbody tr:last-child td { border-bottom: 1px solid var(--border); }
   .matrix-table td { color: var(--muted); }
   .matrix-table td.nz { color: var(--fg); font-weight: 600; }
   .matrix-table td.diag { background: var(--pass-bg); color: var(--pass); font-weight: 700; }
@@ -980,7 +987,8 @@ const CLIENT_JS = `
   var FAILURE_LABELS = ${JSON.stringify(FAILURE_LABELS)};
   // Rows of the confusion matrix: the three actual labels plus UNKNOWN, since
   // the model can predict UNKNOWN. Columns (actual causes) are FAILURE_LABELS
-  // only (a human never records UNKNOWN as the ground-truth cause).
+  // only (a human never records UNKNOWN as the ground-truth cause). A drift run
+  // narrows both axes — see DRIFT_LABELS / DRIFT_CAUSES.
   var PREDICTED_LABELS = ${JSON.stringify(PREDICTED_LABELS)};
   var AGENT_BROWSER_TARGET = ${JSON.stringify(AGENT_BROWSER_TARGET)};
   var GUIDANCE_KINDS = ${JSON.stringify(GUIDANCE_KINDS)};
@@ -1047,8 +1055,8 @@ const CLIENT_JS = `
       "perspectives.title": "Perspectives",
       "perspectives.search": "Search cases…",
       "perspectives.filter.all": "All", "perspectives.filter.deterministic": "Deterministic",
-      "perspectives.filter.live": "Live", "perspectives.filter.norec": "Not recorded only",
-      "perspectives.filter.rerun": "Needs re-run only",
+      "perspectives.filter.live": "Live",
+      "perspectives.filter.rerun": "Needs re-run only", "perspectives.filter.drift": "Drift found only",
       "perspectives.col.run": "Execution", "perspectives.col.drift": "Drift audit",
       "perspectives.run.state.needed": "re-run needed", "perspectives.run.state.unknown": "can't tell",
       "perspectives.run.state.failed": "failed", "perspectives.run.state.passed": "passed",
@@ -1193,8 +1201,8 @@ const CLIENT_JS = `
       "perspectives.title": "テスト観点",
       "perspectives.search": "ケースを検索…",
       "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
-      "perspectives.filter.live": "ライブ", "perspectives.filter.norec": "未recordのみ",
-      "perspectives.filter.rerun": "要再実行のみ",
+      "perspectives.filter.live": "ライブ",
+      "perspectives.filter.rerun": "要再実行のみ", "perspectives.filter.drift": "ズレありのみ",
       "perspectives.col.run": "実行", "perspectives.col.drift": "ドリフト監査",
       "perspectives.run.state.needed": "要再実行", "perspectives.run.state.unknown": "判定できない",
       "perspectives.run.state.failed": "失敗", "perspectives.run.state.passed": "合格",
@@ -1535,6 +1543,13 @@ const CLIENT_JS = `
   // with its own spec cards. A zero-count label is omitted, same reasoning as
   // rerunSegments below: a "0" chip next to a real count reads as a finding.
   var DRIFT_LABELS = ["TEST_DRIFT", "SPEC_CHANGE", "UNKNOWN"];
+  // A drift audit opens no browser: it only ever compares the test case against
+  // the source. PRODUCT_BUG is therefore not a cause it can predict *or* be
+  // corrected to, so it is absent from both axes of the matrix and from the
+  // grading control. Offering it in one place but not the other would let a
+  // grade land in a cell that does not exist.
+  var DRIFT_CAUSES = ["TEST_DRIFT", "SPEC_CHANGE"];
+  function causeLabels(isDrift) { return isDrift ? DRIFT_CAUSES : FAILURE_LABELS; }
   var DRIFT_LABEL_COUNT_KEY = { TEST_DRIFT: "testDrift", SPEC_CHANGE: "specChange", UNKNOWN: "unknown" };
   // A run stored by an older hub carries the previous drift summary shape
   // (issue/severity counts). The read path returns runs as stored, so the
@@ -2247,6 +2262,7 @@ const CLIENT_JS = `
   // just shows its localized name.
   function triageGradeControl(runId, r, triageState) {
     var key = r.feature + "/" + r.spec;
+    var causes = causeLabels(triageState.isDrift);
     var predicted = r.analysis ? r.analysis.label : "UNKNOWN";
 
     var wrap = el("div", "grade");
@@ -2264,7 +2280,7 @@ const CLIENT_JS = `
 
     // Reflect the current selection (colour + check) and the status chip.
     function paint(selected) {
-      FAILURE_LABELS.forEach(function (lbl) {
+      causes.forEach(function (lbl) {
         var b = segByLabel[lbl];
         b.setAttribute("aria-pressed", String(lbl === selected));
         b.firstChild.textContent = (lbl === selected ? "✓ " : "") + labelText(lbl);
@@ -2278,7 +2294,7 @@ const CLIENT_JS = `
     var existing = triageState.byKey[key];
     var current = existing && existing.actual ? existing.actual.cause : "";
 
-    FAILURE_LABELS.forEach(function (lbl) {
+    causes.forEach(function (lbl) {
       var b = el("button", "seg " + lbl);
       b.type = "button";
       b.appendChild(el("span", null, labelText(lbl))); // text node the paint() updates
@@ -2286,7 +2302,7 @@ const CLIENT_JS = `
       b.addEventListener("click", function () {
         if (lbl === current) return; // no-op re-click
         var prev = current;
-        FAILURE_LABELS.forEach(function (l) { segByLabel[l].disabled = true; });
+        causes.forEach(function (l) { segByLabel[l].disabled = true; });
         paint(lbl);
         status.className = "grade-status saving";
         status.textContent = t("grade.saving");
@@ -2306,7 +2322,7 @@ const CLIENT_JS = `
             status.textContent = t("grade.error");
           })
           .then(function () {
-            FAILURE_LABELS.forEach(function (l) { segByLabel[l].disabled = false; });
+            causes.forEach(function (l) { segByLabel[l].disabled = false; });
           });
       });
       segByLabel[lbl] = b;
@@ -2485,15 +2501,15 @@ const CLIENT_JS = `
       ? graded
       : graded.filter(function (c) { return caseTarget(c) === filter; });
 
-    // A drift audit cannot answer PRODUCT_BUG, so a row for it would sit at
-    // zero forever and read as "it never predicted a product bug" — an accuracy
-    // claim, when it is only a definition. The columns keep all three causes:
-    // a human may well decide a spec/code mismatch was the product breaking.
+    // A drift audit cannot answer PRODUCT_BUG on either axis, so a row and a
+    // column for it would sit at zero forever and read as "it never predicted
+    // a product bug" — an accuracy claim, when it is only a definition.
     var predictedRows = triageState.isDrift ? DRIFT_LABELS : PREDICTED_LABELS;
+    var actualCols = causeLabels(triageState.isDrift);
     var matrix = {};
     predictedRows.forEach(function (p) {
       matrix[p] = {};
-      FAILURE_LABELS.forEach(function (a) { matrix[p][a] = 0; });
+      actualCols.forEach(function (a) { matrix[p][a] = 0; });
     });
     var correct = 0;
     cases.forEach(function (c) {
@@ -2510,14 +2526,14 @@ const CLIENT_JS = `
     var thead = document.createElement("thead");
     var headRow = document.createElement("tr");
     headRow.appendChild(el("th", null, t("matrix.predicted")));
-    FAILURE_LABELS.forEach(function (a) { headRow.appendChild(el("th", null, labelText(a))); });
+    actualCols.forEach(function (a) { headRow.appendChild(el("th", null, labelText(a))); });
     thead.appendChild(headRow);
     table.appendChild(thead);
     var tbody = document.createElement("tbody");
     predictedRows.forEach(function (p) {
       var row = document.createElement("tr");
       row.appendChild(el("th", null, labelText(p)));
-      FAILURE_LABELS.forEach(function (a) {
+      actualCols.forEach(function (a) {
         var n = matrix[p][a];
         var cls = (p === a ? "diag" : "") + (n > 0 ? " nz" : "");
         row.appendChild(el("td", cls.trim() || null, String(n)));
@@ -3417,10 +3433,6 @@ const CLIENT_JS = `
     return spec.status && spec.status.mode === "live" ? "live" : "deterministic";
   }
 
-  function perspRunnable(spec) {
-    return perspMode(spec) === "live" || (spec.status && spec.status.generated === true);
-  }
-
   function setPerspStatus(message) {
     var box = document.getElementById("persp-status");
     box.hidden = !message;
@@ -3507,13 +3519,15 @@ const CLIENT_JS = `
   function perspMatches(feature, spec, f) {
     if (f === "deterministic" && perspMode(spec) !== "deterministic") return false;
     if (f === "live" && perspMode(spec) !== "live") return false;
-    if (f === "norec" && perspRunnable(spec)) return false;
     if (f === "rerun") {
       var rr = ledgerEntryFor(perspState.rerun, feature, spec);
       // Only "needed": "unknown" is not a weaker "probably needed", and
       // folding it in here would be exactly the overstatement ADR-0010 forbids.
       if (!rr || rr.state !== "needed") return false;
     }
+    // Same asymmetry: an unaudited spec is not a quiet "probably clean", so it
+    // does not belong under a chip that claims to list what drifted.
+    if (f === "drift" && driftState(ledgerEntryFor(perspState.drift, feature, spec)) !== "found") return false;
     if (perspState.q) {
       var hay = (spec.title + " " + (spec.summary || "") + " " + spec.specName).toLowerCase();
       if (hay.indexOf(perspState.q) === -1) return false;
@@ -3765,6 +3779,11 @@ const CLIENT_JS = `
     var chip = document.getElementById("persp-chip-rerun");
     chip.hidden = perspState.rerunSupported !== true;
     if (perspState.rerunSupported === false && perspState.f === "rerun") perspState.f = "all";
+    // Same rule as the drift column: no ledger, no chip. A chip reading "0"
+    // would say "nothing drifted" when the hub was never asked.
+    var driftChip = document.getElementById("persp-chip-drift");
+    driftChip.hidden = perspState.drift == null;
+    if (perspState.drift == null && perspState.f === "drift") perspState.f = "all";
     document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
       var f = b.getAttribute("data-f");
       b.setAttribute("aria-pressed", String(f === perspState.f));
