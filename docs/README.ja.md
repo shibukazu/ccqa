@@ -179,91 +179,102 @@ ccqa serve                                               # 保存に必要
 | デプロイ後の実行 | デプロイのあと | どの spec の前回結果がもう信用できないか |
 | ドリフト監査 | 定期実行 | spec はまだコードを説明しているか |
 
-以下のコマンドはいずれも Claude を呼ぶので、CI に資格情報が要ります。
-deterministic な再生自体はモデルを使いませんが、変更範囲の選択、失敗分類、
-監査はどれも使います。マージ前の実行を素朴に回す場合を除いて、稼働中の
-[hub](#hub) も必要で、`CCQA_HUB_URL` と `CCQA_HUB_TOKEN` で接続します。
-[Environment variables](./commands.md#environment-variables) を参照してください。
+3 つとも、次の 2 つが必要です。
+
+- **Claude の資格情報。** 記録済み spec の再生自体はモデルを使いませんが、
+  変更範囲の選択、失敗分類、監査はどれも使います。
+- **稼働中の [hub](#hub)。** `CCQA_HUB_URL` と `CCQA_HUB_TOKEN` で接続します。
+  hub なしで済むのは、`--profile` も `--push-report` も付けないマージ前の実行
+  だけです。
+
+一覧は [Environment variables](./commands.md#environment-variables) にあります。
 
 **profile** はデプロイ先の環境 1 つを指します。hub 上の変数と保存済みセッション
 をまとめる名前であり、環境ごとにコミットが違うので、デプロイ履歴を分ける単位でも
-あります。spec が参照する変数は手元から一度だけ登録し、どのジョブでも同じ
-`--profile` と `--project` を渡してください。ジョブどうしはこれで突き合わさ
-ります。
+あります。spec が参照する変数は、手元から一度だけ登録します。
 
 ```bash
 ccqa hub var set APP_URL --value https://app.example --profile staging
 ```
 
+どのジョブでも同じ `--profile` と `--project` を渡してください。ジョブどうしが
+同じ環境を指すのはこれによります。
+
 ### プルリクエストで
 
-変更が到達する spec だけを再生し、壊れた理由を説明します。
+変更が到達する spec を実行し、壊れた原因を分類します。
 
 ```bash
 ccqa run --changed --failure-analysis --profile staging \
   --format github --push-report
 ```
 
-`--changed` は差分と手元の spec を読み、spec ごとに変更が到達するかを判定します。
-E2E の spec とプロダクトコードのあいだには静的にたどれる依存関係がないので、
-シロと判定できなかった spec は実行します。`unknown` を「安全」として扱うことは
-ありません。`--dry-run` を付けると選択結果だけを表示して止まりますが、選択その
-ものはモデル呼び出し 1 回ぶん課金されます。hub の変数とセッションを取ってくるのは
-`--profile` です。`--push-report` は実行しながら結果を hub に送ります。
+- `--changed`：差分が到達する spec を選びます。シロと判定できなかった spec は
+  実行します。
+- `--failure-analysis`：失敗した spec の原因を分類します。
+- `--profile staging`：その環境の変数と保存済みセッションを hub から取得します。
+  付けないと spec の `${…}` が解決されません。
+- `--format github`：プルリクエストに注釈を付けます。
+- `--push-report`：実行しながら結果を hub に送ります。
 
-`--changed` と `--failure-analysis` はどちらも `GITHUB_BASE_REF` から基準を取る
-ので、この形は `pull_request` のワークフロー向けです。基準は `origin/<base>` と
-して解決しますが、これは shallow な checkout には存在しません。`actions/checkout`
-に `fetch-depth: 0` を指定してください。指定しないと、テストが 1 本も走る前に
-usage error で終了します。`push` や `workflow_dispatch` のワークフローでは、基準を
-明示するか（`--changed=origin/main`）、`--failure-analysis=last-green` を
-使います。
+**`actions/checkout` に `fetch-depth: 0` を指定してください。** 選択に使う 2 つの
+フラグはどちらも `GITHUB_BASE_REF` から基準を取り、`origin/<base>` として解決し
+ます。shallow な checkout にはこれが存在しないので、指定しないとテストが 1 本も
+走る前に usage error で終了します。`pull_request` 以外のワークフローには
+`GITHUB_BASE_REF` がないので、基準を自分で渡してください
+（`--changed=origin/main`）。
+
+`--dry-run` を付けると選択結果を表示して止まります。選択そのものは、付けても
+付けなくてもモデル呼び出し 1 回ぶんかかります。
 
 ### デプロイのたびに
 
-hub は checkout を持たず `git` も実行しないので、何がデプロイされたかを知る手段が
-ありません。デプロイが成功した時点で、デプロイジョブから hub に伝えます。
+2 段階に分かれ、それぞれ別のジョブになります。まずデプロイが成功した時点で、
+何をデプロイしたかを hub に伝えます。
 
 ```bash
 ccqa hub deploy record --profile staging --sha "$GITHUB_SHA" --select
 ```
 
-各エントリには、デプロイしたコミット、それが置き換えたコミット、そして `--select`
-を付けた場合はその範囲がどの spec に到達するかが記録されます。この積み重ねが
-profile ごとの**デプロイログ**です。そのうえで別のジョブが、各 spec が最後に実行
-されて以降にデプロイが触ったものだけを再生します。
+続いて別のジョブで、そのデプロイによって信用できなくなった spec を実行します。
 
 ```bash
 ccqa run --changed=last-run --profile staging --push-report
 ```
 
-各 spec の基準点はそれぞれの前回実行なので、ある spec を「不要」と判定することは、
-その背後の範囲を全て確認したと主張することにあたります。`--select` なしで記録され
-たデプロイはその範囲の穴になり、背後の spec は `notNeeded` ではなく `unknown` を
-返します。判定を後から再構成せず、デプロイと一緒に記録するのはこのためです。
+- `--select`：デプロイした範囲がどの spec に到達するかを記録します。付けないと、
+  そのエントリより後ろの spec は `notNeeded` ではなく `unknown` を返します。
+- `--changed=last-run`：各 spec が最後に実行されて以降にデプロイがその spec を
+  触ったかどうかを、hub に問い合わせます。
 
-このジョブは hub 上の spec 一覧を読むので、`ccqa perspectives` を実行しておく必要
-があります。また導入直後は何も選ばれません。実行記録のない spec は `neverRun`、
-基準点がログより古い spec は `unknown` になり、どちらも既定では実行対象外だから
-です。デプロイを 1 件記録し、`--push-report` を付けて全 spec を一度走らせれば、
-次のデプロイから選択が意味を持ちます。内訳は `--dry-run` で確認でき、判定できな
-かった spec も走らせたい場合は `--include-unknown` を付けます。
+hub は checkout を持たず `git` も実行しないので、デプロイが何を変えたかを自分では
+割り出せません。判定を後から再構成せずデプロイと一緒に送るのはこのためで、
+`--select` なしで記録したデプロイの穴は、あとから埋める手段がありません。
+
+**導入直後は何も選ばれません。** 実行記録のない spec は `neverRun`、基準点が
+デプロイログより古い spec は `unknown` になり、どちらも既定では実行されません。
+デプロイを 1 件記録し、`--push-report` を付けて全 spec を一度走らせれば、次の
+デプロイから選択が意味を持ちます。このジョブは hub 上の spec 一覧も読むので、
+`ccqa perspectives` を実行しておく必要があります。判定できなかった spec も
+走らせたい場合は `--include-unknown` を付けます。
 
 ### 定期実行で
 
-ブラウザもデプロイも使わずに、spec をコードと突き合わせます。
+ブラウザもデプロイも使わずに、全 spec をコードと突き合わせます。
 
 ```bash
 ccqa drift --format github --push
 ```
 
+- `--severity warn|error`（既定は `error`）：どの判定でジョブを失敗させるかを
+  決めます。
+- `--push`：各判定を hub の spec ごとのドリフト台帳に記録します。台帳はテスト観点
+  タブに表示されます。終了コードは変わりません。
+- `--changed --base <ref>`：`push` のワークフローで範囲を絞れます。モデル
+  呼び出しが 1 回増えます。
+
 マージ前のジョブは失敗した spec を既に監査しています。このジョブが見るのは残りで、
 spec が通っていても、もう存在しないプロダクトを説明していることはあるからです。
-ジョブを失敗させるかどうかは `--severity warn|error`（既定は `error`）が決めます。
-`--push` は終了コードを変えません。`--push` は hub の spec ごとのドリフト台帳も
-前進させます。台帳はテスト観点タブに表示されるので、実行を 1 件ずつ開かなくても
-各 spec の最後の監査結果が分かります。`push` のワークフローなら
-`--changed --base <ref>` で範囲を絞れますが、モデル呼び出しが 1 回増えます。
 
 ### ワークフロー
 
