@@ -1,7 +1,14 @@
 # 0010. Decide "needs re-run" from a deploy log the hub is told about
 
-- Status: proposed
+- Status: accepted (the selection input is superseded by ADR-0011)
 - Date: 2026-07-25
+
+> Amended by [ADR-0011](0011-replace-relatedpaths-with-model-selection.md):
+> `relatedPaths` no longer exists. Wherever this record says the hub matches
+> a deploy's changed paths against a spec's `relatedPaths`, the verdict now
+> comes from `ccqa select-specs` and is recorded with the deploy. Everything
+> else here — the deploy log, the ledger, the five states, position-based
+> comparison — is unchanged.
 
 ## Context and problem statement
 

@@ -31,6 +31,7 @@ Specifically:
   *(Superseded in 1.4: `run` no longer has `--base` — the baseline is the value of `--failure-analysis [base]` / `--changed [base]`. `drift` keeps `--base`.)*
 - `--auto-fix <interactive|auto|skip>` replaces the `--auto` + `--no-interactive` 2-flag matrix on `record`.
 - `--changed` on `run` restricts execution to specs whose `relatedPaths` intersect the git diff, scoped to whatever `--base` resolves to.
+  *(Superseded in 1.10: `relatedPaths` is gone — `--changed` now asks `ccqa select-specs` which specs a range reaches. See ADR-0011.)*
 - `FailureAnalysisPromptInput` is generalised: deterministic runs pass `script` + `failureLog`, live runs pass an `ndTranscriptExcerpt` built from the failing step's log file. `ANALYSIS_PROMPT_VERSION` bumps 3 → 4 so old labels do not get mixed with new ones in accuracy measurements.
 - `--session` is removed; every live invocation auto-generates a fresh agent-browser session.
 
