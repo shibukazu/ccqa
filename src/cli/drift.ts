@@ -111,6 +111,7 @@ export const driftCommand = addLanguageOption(
         cwd,
         base: opts.base ?? true,
         quiet: format !== "text",
+        baseExample: "--base origin/main",
         ...(opts.model ? { model: opts.model } : {}),
       });
       // The base reported to the hub is the one selection actually diffed

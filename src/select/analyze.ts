@@ -187,16 +187,16 @@ async function judgeWithModel(input: JudgeInput): Promise<SpecSelection[]> {
     (_msg: SDKMessage) => {},
   );
 
-  if (isError) return allUnknown(undecided, "the selection model returned an error");
+  if (isError) return abandonSelection(undecided, "the selection model returned an error");
 
   const json = extractJsonBlock(result);
-  if (!json) return allUnknown(undecided, "the selection model returned no JSON block");
+  if (!json) return abandonSelection(undecided, "the selection model returned no JSON block");
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(json);
   } catch (e) {
-    return allUnknown(undecided, `the selection model's JSON did not parse: ${(e as Error).message}`);
+    return abandonSelection(undecided, `the selection model's JSON did not parse: ${(e as Error).message}`);
   }
 
   const changedPaths = new Set(productChanges.map((f) => f.path));
@@ -245,6 +245,20 @@ function readSpecArray(parsed: unknown): SelectRawAnswer[] {
     if (raw.success) out.push(raw.data);
   }
   return out;
+}
+
+/**
+ * The selection call failed as a whole: every spec becomes `unknown`, and the
+ * reason is warned about rather than only recorded per spec.
+ *
+ * Without the warning the caller reports "N specs could not be decided" and
+ * runs them all — which is the safe outcome, but indistinguishable from a
+ * genuinely ambiguous diff. A wrong model name or an expired credential would
+ * quietly cost a full suite run every time.
+ */
+function abandonSelection(specs: readonly SpecDescription[], reason: string): SpecSelection[] {
+  log.warn(`select-specs: ${reason} — every spec is left undecided and will run`);
+  return allUnknown(specs, reason);
 }
 
 function allUnknown(specs: readonly SpecDescription[], reason: string): SpecSelection[] {

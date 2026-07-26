@@ -23,6 +23,8 @@ export interface CollectChangedOptions {
   model?: string;
   /** Suppress progress lines. Set for machine-readable output, which shares stdout. */
   quiet?: boolean;
+  /** How this command spells "pass a base", for the no-base error. See `resolveAnalysisBase`. */
+  baseExample?: string;
 }
 
 /**
@@ -41,8 +43,8 @@ export async function collectChangedSpecs(
   specs: readonly SpecRef[],
   opts: CollectChangedOptions,
 ): Promise<ChangedSelection> {
-  const { cwd, base, model, quiet } = opts;
-  const resolved = await resolveAnalysisBase(base, "--changed", cwd);
+  const { cwd, base, model, quiet, baseExample } = opts;
+  const resolved = await resolveAnalysisBase(base, "--changed", cwd, baseExample);
   const meta = (key: string, value: string | number) => {
     if (!quiet) log.meta(key, value);
   };
