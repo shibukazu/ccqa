@@ -491,6 +491,36 @@ describe("hub API server", () => {
       expect(run.runUrl).toBe(runUrl);
     });
 
+    test("sealing a kind=drift run derives its label counts, like the single-shot push", async () => {
+      // The single-shot push summarises the whole report at create time. Here
+      // the rows only exist at `done`, so the counts have to be derived there
+      // too — otherwise `drift` stays null on a run whose rows plainly carry
+      // diagnoses, and "no summary" becomes indistinguishable from "no drift".
+      const res = await fetch(`${baseUrl}/api/v1/runs/open?project=demo&kind=drift`, authed({ method: "POST" }));
+      const run = await json(res);
+      expect(run.drift).toBeNull();
+
+      const diagnosis = (label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN") => ({
+        label,
+        confidence: 0.9,
+        headline: "h",
+        recommendation: "r",
+        evidence: [],
+        reasoning: "",
+      });
+      const sealed = await json(
+        await patch(run.id as string, {
+          rows: [
+            makeRow({ spec: "a", status: "failed", analysis: diagnosis("TEST_DRIFT") }),
+            makeRow({ spec: "b", status: "passed", analysis: diagnosis("UNKNOWN") }),
+            makeRow({ spec: "c", status: "passed" }),
+          ],
+          done: true,
+        }),
+      );
+      expect(sealed.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, unknown: 1 });
+    });
+
     test("PATCH with one row (no done) updates the report and specs, and stays running", async () => {
       const run = await openRun();
       const res = await patch(run.id as string, { rows: [makeRow({ status: "passed" })] });

@@ -21,6 +21,9 @@ export interface SpecArtifacts {
   /** Empty for a live spec, and for a deterministic spec that has not been generated yet. */
   generated: Array<{ path: string; content: string }>;
   live: boolean;
+  /** Null when the spec cannot be parsed. Carried into the report so a drift row
+   * reads as the test case it audited, not as its directory path. */
+  title: string | null;
 }
 
 /**
@@ -37,18 +40,19 @@ export async function collectSpecArtifacts(
   specYaml: string,
   cwd: string,
 ): Promise<SpecArtifacts> {
-  const live = isLive(specYaml);
-  if (live) return { specYaml, generated: [], live };
-  return { specYaml, generated: await readGenerated(featureName, specName, cwd), live };
+  const { live, title } = describe(specYaml);
+  if (live) return { specYaml, generated: [], live, title };
+  return { specYaml, generated: await readGenerated(featureName, specName, cwd), live, title };
 }
 
-function isLive(specYaml: string): boolean {
+function describe(specYaml: string): { live: boolean; title: string | null } {
   try {
-    return parseTestSpec(specYaml).mode === "live";
+    const spec = parseTestSpec(specYaml);
+    return { live: spec.mode === "live", title: spec.title ?? null };
   } catch {
     // An unparsable spec is audited as-is; assuming "not live" only means the
     // generated files are looked for, which is harmless when there are none.
-    return false;
+    return { live: false, title: null };
   }
 }
 

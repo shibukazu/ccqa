@@ -153,14 +153,18 @@ describe("hub UI: needs re-run", () => {
     }
   });
 
-  test("unknown never reads like notNeeded, and uses the ADR's Japanese words", () => {
+  test("unknown never reads like notNeeded, and is worded the same wherever it appears", () => {
     const { en, ja } = dictionaries();
     expect(ja["perspectives.rerun.state.needed"]).toBe("要再実行");
     expect(ja["perspectives.rerun.state.notNeeded"]).toBe("不要");
-    expect(ja["perspectives.rerun.state.unknown"]).toBe("不明");
     expect(ja["perspectives.rerun.state.neverRun"]).toBe("未実行");
     for (const dict of [en, ja]) {
       expect(dict["perspectives.rerun.state.unknown"]).not.toBe(dict["perspectives.rerun.state.notNeeded"]);
+      // "We cannot say" appears on the summary bar, in the table cell, and on
+      // the drift axis. Three wordings for one state reads as three states.
+      for (const key of ["perspectives.run.state.unknown", "perspectives.drift.state.unknown"]) {
+        expect(dict[key]!.toLowerCase()).toBe(dict["perspectives.rerun.state.unknown"]!.toLowerCase());
+      }
     }
   });
 
@@ -208,10 +212,13 @@ describe("hub UI: needs re-run", () => {
     const cls = Object.fromEntries(rerunSegments(counts).map((s) => [s.state, s.cls]));
     expect(cls.unknown).not.toBe(cls.notNeeded);
     // And it must not be painted like a pass: notNeeded owns --pass, unknown
-    // takes the info hue.
-    expect(HTML).toMatch(new RegExp(`\\.${cls.unknown}\\s*\\{[^}]*var\\(--info\\)`));
-    expect(HTML).not.toMatch(new RegExp(`\\.${cls.unknown}\\s*\\{[^}]*var\\(--pass\\)`));
-    expect(HTML).toMatch(new RegExp(`\\.${cls.notNeeded}\\s*\\{[^}]*var\\(--pass\\)`));
+    // takes the info hue. `[^{}]*` rather than `\s*` so the class may share its
+    // rule with others (drift's unknown reuses this one) — it cannot cross a
+    // rule boundary, since braces are excluded.
+    const rule = (c: string, v: string) => new RegExp(`\\.${c}[^{}]*\\{[^}]*var\\(--${v}\\)`);
+    expect(HTML).toMatch(rule(cls.unknown!, "info"));
+    expect(HTML).not.toMatch(rule(cls.unknown!, "pass"));
+    expect(HTML).toMatch(rule(cls.notNeeded!, "pass"));
   });
 
   test("every state the hub can send has a segment, and an unrecognised one is not an all-clear", () => {

@@ -89,10 +89,17 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
     }
     try {
       const reply = DriftReplySchema.parse(JSON.parse(json));
-      return { target, ok: true, drift: reply.drift };
+      return { target, ok: true, drift: reply.drift, live: artifacts.live, title: artifacts.title };
     } catch (e) {
       lastError = `failed to parse drift reply: ${(e as Error).message}`;
     }
   }
-  return { target, ok: false, drift: null, error: `${lastError} (${MAX_ATTEMPTS} attempts)` };
+  return {
+    target,
+    ok: false,
+    drift: null,
+    error: `${lastError} (${MAX_ATTEMPTS} attempts)`,
+    live: artifacts.live,
+    title: artifacts.title,
+  };
 }

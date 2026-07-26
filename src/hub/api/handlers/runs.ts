@@ -431,6 +431,13 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
       ? {
           status: finalStatus ?? (specs.failed > 0 ? "failed" : "passed"),
           specs,
+          // The single-shot push derives this at create time from the whole
+          // report. Here the rows only exist once the run is sealed, so it is
+          // derived at the same point — otherwise a drift run pushed
+          // incrementally would carry label counts of null while its rows
+          // plainly have diagnoses, and every reader of `drift` would have to
+          // treat "no summary" and "no drift" as the same thing.
+          ...(run.kind === "drift" ? { drift: summarizeDrift(mergedResults) } : {}),
           ...(reportMeta?.git?.head ? { gitHead: reportMeta.git.head } : {}),
           ...(reportMeta?.promptVersion ? { promptVersion: reportMeta.promptVersion } : {}),
           ...((await deployHeadMovedDuringRun(config.storage, run)) ? { deployedShaAmbiguous: true } : {}),

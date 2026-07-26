@@ -552,7 +552,6 @@ const CSS = `
   .badge-det { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   /* which generation target ran the spec (agent-browser / playwright / runn) */
   .badge-target { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-family: var(--mono); background: var(--surface-3); color: var(--muted); border: 1px solid var(--border); }
-  .badge-drift { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
   .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
   /* Below .chip in source order so these override its background/border/color
      when combined as class="chip drift-count-chip" (same specificity — source
@@ -570,6 +569,10 @@ const CSS = `
   .specs { display: inline-flex; align-items: center; gap: 9px; }
   .meter { width: 54px; height: 6px; border-radius: 3px; background: var(--fail-bg); overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--pass); }
+  /* A drift row's bar fills with what the audit FOUND, so a full bar is the bad
+     end — the opposite of a test run's. It must not be painted pass-green. */
+  .meter.drift { background: var(--surface-3); }
+  .meter.drift i { background: var(--amber-fill); }
 
   /* run detail */
   .rd-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
@@ -866,7 +869,7 @@ const CSS = `
      eats the next rule, and a backtick ends the template literal this CSS
      lives in. */
   .sg-drift-found, .sg-needed { background: var(--amber-fill); }
-  .sg-unknown { background: var(--info); }
+  .sg-unknown, .sg-drift-unknown { background: var(--info); }
   .sg-drift-clean, .sg-notneeded { background: var(--pass); }
   .sg-drift-none, .sg-neverrun { background: var(--muted-2); }
   .sg-noteval { background: var(--muted); }
@@ -900,8 +903,10 @@ const CSS = `
   .badge.rr-needed .d, .badge.dr-found .d { background: var(--amber); }
   .badge.rr-notneeded, .badge.dr-clean { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
   .badge.rr-notneeded .d, .badge.dr-clean .d { background: var(--pass); }
-  .badge.rr-unknown { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
-  .badge.rr-unknown .d { background: var(--info); }
+  /* Same blue on both axes: "we cannot say" means the same thing whether the
+     question is re-run or drift, and a reader should not have to relearn it. */
+  .badge.rr-unknown, .badge.dr-unknown { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
+  .badge.rr-unknown .d, .badge.dr-unknown .d { background: var(--info); }
   .badge.rr-none, .badge.dr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   .badge.rr-none .d, .badge.dr-none .d { background: var(--muted); }
   .cellsub { display: block; margin-top: 3px; max-width: 260px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
@@ -1038,8 +1043,9 @@ const CLIENT_JS = `
       "kind.run": "Test run", "kind.drift": "Drift audit",
       "drift.summary.ratio": "{found} of {total} specs",
       "drift.clean": "No drift issues",
-      "drift.run.found": "drift found", "drift.run.clean": "no drift",
-      "drift.spec.found": "drift", "drift.spec.clean": "no drift",
+      "status.passed": "passed", "status.failed": "failed", "status.skipped": "skipped", "status.running": "running",
+      "drift.run.found": "drift found", "drift.run.clean": "no drift", "drift.run.unknown": "can't tell",
+      "drift.spec.found": "drift", "drift.spec.clean": "no drift", "drift.spec.unknown": "can't tell",
       "grade.question": "What was the real cause?",
       "grade.ungraded": "ungraded", "grade.matches": "saved · matches",
       "grade.corrected": "saved · corrected", "grade.saving": "saving…",
@@ -1082,7 +1088,7 @@ const CLIENT_JS = `
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needed": "Re-run needed",
       "perspectives.rerun.state.notNeeded": "Not needed",
-      "perspectives.rerun.state.unknown": "Unknown",
+      "perspectives.rerun.state.unknown": "Can't tell",
       "perspectives.rerun.state.neverRun": "Never run",
       "perspectives.rerun.state.notEvaluated": "Not evaluated",
       "perspectives.rerun.vsDeploy": "judged against deploy",
@@ -1116,7 +1122,7 @@ const CLIENT_JS = `
       "perspectives.rerun.deployHead": "deploy head",
       "perspectives.drift.state.notAudited": "Not audited",
       "perspectives.drift.state.clean": "No drift",
-      "perspectives.drift.state.found": "Drift found",
+      "perspectives.drift.state.found": "Drift found", "perspectives.drift.state.unknown": "Can't tell",
       "perspectives.drift.unsupported": "This hub does not report drift audit results. Upgrade the hub to enable it.",
       "perspectives.drift.loadFailed": "Loading drift data failed",
       "prompt.card.record": "Recording browser actions",
@@ -1184,8 +1190,9 @@ const CLIENT_JS = `
       "kind.run": "テスト実行", "kind.drift": "ドリフト監査",
       "drift.summary.ratio": "{found} / {total} スペック",
       "drift.clean": "ドリフトの問題なし",
-      "drift.run.found": "ズレあり", "drift.run.clean": "ズレなし",
-      "drift.spec.found": "ズレあり", "drift.spec.clean": "ズレなし",
+      "status.passed": "合格", "status.failed": "失敗", "status.skipped": "スキップ", "status.running": "実行中",
+      "drift.run.found": "ズレあり", "drift.run.clean": "ズレなし", "drift.run.unknown": "判定できない",
+      "drift.spec.found": "ズレあり", "drift.spec.clean": "ズレなし", "drift.spec.unknown": "判定できない",
       "grade.question": "実際の原因は何でしたか？",
       "grade.ungraded": "未評価", "grade.matches": "保存済み · 一致",
       "grade.corrected": "保存済み · 修正", "grade.saving": "保存中…",
@@ -1228,7 +1235,7 @@ const CLIENT_JS = `
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needed": "要再実行",
       "perspectives.rerun.state.notNeeded": "不要",
-      "perspectives.rerun.state.unknown": "不明",
+      "perspectives.rerun.state.unknown": "判定できない",
       "perspectives.rerun.state.neverRun": "未実行",
       "perspectives.rerun.state.notEvaluated": "未評価",
       "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
@@ -1262,7 +1269,7 @@ const CLIENT_JS = `
       "perspectives.rerun.deployHead": "最新デプロイ",
       "perspectives.drift.state.notAudited": "未監査",
       "perspectives.drift.state.clean": "ズレなし",
-      "perspectives.drift.state.found": "ズレあり",
+      "perspectives.drift.state.found": "ズレあり", "perspectives.drift.state.unknown": "判定できない",
       "perspectives.drift.unsupported": "このハブはdrift監査結果を返しません。利用するにはハブを更新してください。",
       "perspectives.drift.loadFailed": "drift監査結果の読み込みに失敗しました",
       "prompt.card.record": "ブラウザ操作の記録",
@@ -1485,10 +1492,13 @@ const CLIENT_JS = `
     return sha ? String(sha).slice(0, 7) : "";
   }
 
+  // The class stays the raw status (the CSS keys off it); only the text is
+  // localized. An unrecognised status from a newer hub prints verbatim rather
+  // than falling back to a wording that would claim something about it.
   function statusBadge(status) {
     var span = el("span", "badge " + status);
     span.appendChild(el("span", "d"));
-    span.appendChild(document.createTextNode(" " + status));
+    span.appendChild(document.createTextNode(" " + (I18N.en["status." + status] ? t("status." + status) : status)));
     return span;
   }
 
@@ -1524,18 +1534,26 @@ const CLIENT_JS = `
   // already defines. i18nPrefix picks the wording size: the run-level badge
   // names what drift found ("drift.run."); the per-spec badge is terser
   // ("drift.spec.") since the diagnosis card below it says the rest.
-  function driftFoundBadge(status, i18nPrefix) {
-    var found = status === "failed";
-    var span = el("span", "badge " + (found ? "dr-found" : "dr-clean"));
+  // A row's status answers the threshold question — "would this fail a build" —
+  // which UNKNOWN deliberately answers "no" to, since an audit that could not
+  // tell must not break CI on its own. So status alone cannot label the badge:
+  // it would print "no drift" over a diagnosis that says the opposite. The
+  // state comes from the diagnosis where there is one, and status is only the
+  // fallback for a row or a hub that carries none.
+  var DRIFT_FOUND_CLASS = { found: "dr-found", unknown: "dr-unknown", clean: "dr-clean" };
+
+  function driftFoundBadge(state, i18nPrefix) {
+    var span = el("span", "badge " + (DRIFT_FOUND_CLASS[state] || "dr-clean"));
     span.appendChild(el("span", "d"));
-    span.appendChild(document.createTextNode(" " + t(i18nPrefix + (found ? "found" : "clean"))));
+    span.appendChild(document.createTextNode(" " + t(i18nPrefix + state)));
     return span;
   }
+
 
   // Shared by the runs-list row and the run-detail header — the one place
   // both decide whether a run's own status badge speaks drift's vocabulary.
   function runStatusBadge(run) {
-    return run.kind === "drift" ? driftFoundBadge(run.status, "drift.run.") : statusBadge(run.status);
+    return run.kind === "drift" ? driftFoundBadge(driftRunState(run), "drift.run.") : statusBadge(run.status);
   }
 
   // One chip per non-zero drift label, worded via labelText — the same
@@ -1555,10 +1573,31 @@ const CLIENT_JS = `
   // (issue/severity counts). The read path returns runs as stored, so the
   // label counts this build wants are simply absent — render nothing rather
   // than "0 / undefined specs", which reads as a real audit that found none.
+  // --- pure: drift row/run state -------------------------------------------
+  // Self-contained (no DOM, no closures) so drift-overview.test.ts can lift it
+  // out and run it. It decides what a drift badge says, and the one mistake
+  // available here — reading a row's build-threshold status instead of its
+  // diagnosis, which prints "no drift" over an UNKNOWN finding — is invisible
+  // without either a browser or this test.
   function driftSummary(run) {
     var d = run && run.drift;
     return d && typeof d.specs === "number" ? d : null;
   }
+
+  /** One spec row's drift state: its own diagnosis, or status if it has none. */
+  function driftRowState(r) {
+    if (r.analysis && r.analysis.label) return r.analysis.label === "UNKNOWN" ? "unknown" : "found";
+    return r.status === "failed" ? "found" : "clean";
+  }
+
+  /** A whole drift run's state. Label counts beat status for the same reason. */
+  function driftRunState(run) {
+    var d = driftSummary(run);
+    if (!d) return run.status === "failed" ? "found" : "clean";
+    if (d.testDrift + d.specChange > 0) return "found";
+    return d.unknown > 0 ? "unknown" : "clean";
+  }
+  // --- end pure: drift row/run state ---------------------------------------
 
   function driftChips(drift) {
     var chips = [];
@@ -1768,15 +1807,28 @@ const CLIENT_JS = `
       statusCell.appendChild(runStatusBadge(r));
       tr.appendChild(statusCell);
 
+      // A drift row counts what the audit found, not what "passed" — the same
+      // ratio its detail page shows. Reading passed/total here printed a
+      // different number for the same run in the two places you would compare.
+      var rowDriftSummary = r.kind === "drift" ? driftSummary(r) : null;
+      var found = rowDriftSummary
+        ? rowDriftSummary.testDrift + rowDriftSummary.specChange + rowDriftSummary.unknown
+        : null;
+      var num = rowDriftSummary
+        ? found + " / " + rowDriftSummary.specs
+        : r.specs.passed + " / " + r.specs.total;
+      var fillTotal = rowDriftSummary ? rowDriftSummary.specs : r.specs.total;
+      var fillPart = rowDriftSummary ? found : r.specs.passed;
+
       var specsCell = document.createElement("td");
       var specsWrap = el("div", "specs");
-      var meter = el("span", "meter");
-      var pct = r.specs.total > 0 ? Math.round((r.specs.passed / r.specs.total) * 100) : 0;
+      var meter = el("span", "meter" + (rowDriftSummary ? " drift" : ""));
+      var pct = fillTotal > 0 ? Math.round((fillPart / fillTotal) * 100) : 0;
       var bar = el("i");
       bar.style.width = pct + "%";
       meter.appendChild(bar);
       specsWrap.appendChild(meter);
-      specsWrap.appendChild(el("span", "num muted", r.specs.passed + " / " + r.specs.total));
+      specsWrap.appendChild(el("span", "num muted", num));
       specsCell.appendChild(specsWrap);
       tr.appendChild(specsCell);
 
@@ -1811,6 +1863,10 @@ const CLIENT_JS = `
     idblock.appendChild(titleRow);
     var sub = el("div", "subline");
     sub.appendChild(ciBadge(run));
+    // What kind of run this is, said once. The spec cards below used to repeat
+    // it per row, which read as "this spec was drift-audited" — a property of
+    // the run described as if it varied spec to spec. Same chip as the run list.
+    sub.appendChild(el("span", "chip kind-chip", t(run.kind === "drift" ? "kind.drift" : "kind.run")));
     idblock.appendChild(sub);
     head.appendChild(idblock);
 
@@ -2352,11 +2408,18 @@ const CLIENT_JS = `
     if (r.target) head.appendChild(el("span", "badge-target", r.target));
     // The live/det mode split only exists on the agent-browser target; an
     // external-target row is identified by its target chip alone.
+    //
+    // Whether this is a test run or a drift audit is a fact about the RUN, not
+    // about each spec in it — it is stated once in the run header. What belongs
+    // here is what this spec is, which for a drift audit also says how much of
+    // the test case was examined (two surfaces or one). The liveRun field cannot
+    // answer that on a drift row, since nothing ran; mode is carried for it.
     var external = r.target && r.target !== AGENT_BROWSER_TARGET;
-    if (isDrift) head.appendChild(el("span", "badge badge-drift", t("kind.drift")));
-    else if (r.liveRun) head.appendChild(el("span", "badge-live", t("spec.kind.live")));
-    else if (!external) head.appendChild(el("span", "badge-det", t("spec.kind.det")));
-    head.appendChild(isDrift ? driftFoundBadge(r.status, "drift.spec.") : statusBadge(r.status));
+    var live = r.mode ? r.mode === "live" : !!r.liveRun;
+    var modeKnown = r.mode !== undefined || !isDrift;
+    if (modeKnown && live) head.appendChild(el("span", "badge-live", t("spec.kind.live")));
+    else if (modeKnown && !external) head.appendChild(el("span", "badge-det", t("spec.kind.det")));
+    head.appendChild(isDrift ? driftFoundBadge(driftRowState(r), "drift.spec.") : statusBadge(r.status));
     card.appendChild(head);
 
     var body = el("div", "spec-card-body");
@@ -3244,24 +3307,36 @@ const CLIENT_JS = `
   // --- pure: drift composition ----------------------------------------------
   // Same shape as rerun composition above, and self-contained for the same
   // reason: drift-overview.test.ts lifts this region out and runs it directly.
-  // Unlike rerun, drift never splits by label at the overview level — each
-  // spec carries at most one diagnosis already, so there are only three states.
-
-  // No entry at all ("never audited") is distinct from an entry whose label is
-  // null ("audited, no drift found") — the same distinction the ledger itself
-  // keeps, so a missing entry must not read as clean.
+  // Unlike rerun, drift does not split by label at the overview level — each
+  // spec carries at most one diagnosis already. UNKNOWN is the exception, and
+  // it earns its own state rather than a label: it is the audit saying it could
+  // not tell, so counting it as "drift found" would assert a mismatch nobody
+  // established, and counting it as clean would hide one. Four states, three of
+  // which the ledger distinguishes structurally:
+  //
+  //   no entry      → never audited
+  //   null label    → audited, nothing found
+  //   UNKNOWN label → audited, could not tell
+  //   other label   → audited, drift found
   function driftState(entry) {
     if (!entry) return "notAudited";
-    return entry.label ? "found" : "clean";
+    if (!entry.label) return "clean";
+    return entry.label === "UNKNOWN" ? "unknown" : "found";
   }
 
-  // Drawing order: what needs a look first, then what was never audited, then
-  // confirmed clean — same reasoning as RERUN_ORDER above.
-  var DRIFT_ORDER = ["found", "notAudited", "clean"];
-  var DRIFT_SEG_CLASS = { found: "sg-drift-found", notAudited: "sg-drift-none", clean: "sg-drift-clean" };
+  // Drawing order: what needs a look first, then what could not be judged, then
+  // what was never audited, then confirmed clean — same reasoning as
+  // RERUN_ORDER above.
+  var DRIFT_ORDER = ["found", "unknown", "notAudited", "clean"];
+  var DRIFT_SEG_CLASS = {
+    found: "sg-drift-found",
+    unknown: "sg-drift-unknown",
+    notAudited: "sg-drift-none",
+    clean: "sg-drift-clean",
+  };
 
   function driftComposition(entries) {
-    var counts = { found: 0, notAudited: 0, clean: 0 };
+    var counts = { found: 0, unknown: 0, notAudited: 0, clean: 0 };
     entries.forEach(function (entry) { counts[driftState(entry)] += 1; });
     return counts;
   }
@@ -3393,7 +3468,7 @@ const CLIENT_JS = `
   // code at a commit, not of an environment, so this column never changes
   // when the profile switcher above it does.
 
-  var DRIFT_BADGE_CLASS = { notAudited: "dr-none", clean: "dr-clean", found: "dr-found" };
+  var DRIFT_BADGE_CLASS = { notAudited: "dr-none", clean: "dr-clean", found: "dr-found", unknown: "dr-unknown" };
 
   // driftState() lives with driftComposition/driftSegments above (the "pure:
   // drift composition" region) — the badge must not collapse "never audited"
@@ -3410,9 +3485,16 @@ const CLIENT_JS = `
     td.appendChild(driftBadge(driftState(entry)));
     if (entry) {
       var sub = el("span", "cellsub");
-      // Only a diagnosed entry has a label/surface to show; a clean audit's
-      // badge already says everything the entry knows.
-      if (entry.label) sub.appendChild(document.createTextNode(labelText(entry.label) + (entry.surface ? " (" + t("diag.surface." + entry.surface) + ")" : "") + " · "));
+      // The label and surface go here only when they add to the badge. A clean
+      // audit has neither. An UNKNOWN one has both on paper, but the badge
+      // already says "could not tell" — repeating it as a label says the same
+      // thing in a second wording, and naming the surface it could not judge
+      // claims more than the audit found.
+      if (entry.label && driftState(entry) === "found") {
+        sub.appendChild(document.createTextNode(
+          labelText(entry.label) + (entry.surface ? " (" + t("diag.surface." + entry.surface) + ")" : "") + " · ",
+        ));
+      }
       sub.appendChild(ledgerLine(entry));
       td.appendChild(sub);
     }

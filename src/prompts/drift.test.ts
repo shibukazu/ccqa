@@ -31,7 +31,12 @@ describe("buildDriftSystemPrompt", () => {
 
 describe("buildDriftUserPrompt", () => {
   test("embeds the spec's YAML verbatim in a fenced block", () => {
-    const out = buildDriftUserPrompt({ specYaml: "title: Sample\nsteps: []", generated: [], live: false });
+    const out = buildDriftUserPrompt({
+      specYaml: "title: Sample\nsteps: []",
+      generated: [],
+      live: false,
+      title: "Sample",
+    });
     expect(out).toContain("```yaml\ntitle: Sample\nsteps: []\n```");
   });
 });

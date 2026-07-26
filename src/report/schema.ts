@@ -292,6 +292,15 @@ export const ReportSpecResultSchema = z.object({
    */
   target: z.string().optional(),
   /**
+   * How the spec is defined, independent of whether anything ran. A normal run
+   * reveals this through `liveRun`, but a drift audit executes nothing and
+   * still needs to say it: a deterministic spec has two surfaces to check
+   * (the spec and the code compiled from it) and a live one has a single
+   * surface, so it states how much of the test case was examined. Optional so
+   * reports written before this field existed stay valid.
+   */
+  mode: z.enum(["deterministic", "live"]).optional(),
+  /**
    * "skipped" marks a spec that could not execute at all (e.g. it belongs to
    * a generate-only target with no `runCommand`); `skipReason` says why.
    */

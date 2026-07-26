@@ -22,7 +22,9 @@ function specStatus(result: SpecResult, threshold: Threshold): "passed" | "faile
  * Adapts `ccqa drift` results into the shared RunReportData shape so they can
  * be pushed to the hub (`ccqa drift --push`) and rendered by the same report
  * UI as `ccqa run`/`ccqa live`. Browser-execution fields (testCounts,
- * evidence, liveRun, ...) don't apply to a drift audit and are always null.
+ * evidence, liveRun, ...) don't apply to a drift audit and are always null —
+ * which is why `mode` is carried separately: nothing ran, but which surfaces
+ * were audited is still a fact about the row.
  *
  * Each result's diagnosis goes into `analysis` (not `driftAudit`, which is a
  * normal run's OWN audit evidence) — for a `kind: "drift"` report the
@@ -46,7 +48,8 @@ export function driftResultsToReport(
   const specResults: ReportSpecResult[] = results.map((result) => ({
     feature: result.target.featureName,
     spec: result.target.specName,
-    title: null,
+    title: result.title ?? null,
+    ...(result.live === undefined ? {} : { mode: result.live ? ("live" as const) : ("deterministic" as const) }),
     status: specStatus(result, meta.threshold),
     testCounts: null,
     durationMs: null,

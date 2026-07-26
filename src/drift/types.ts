@@ -35,6 +35,14 @@ export interface SpecResult {
   drift: DriftDiagnosis | null;
   /** Filled when the LLM call itself failed (network, parse, etc.). */
   error?: string;
+  /**
+   * What the audit read, carried through to the report. A deterministic spec
+   * has two surfaces to check and a live one has a single surface, so this is
+   * not decoration — it says how much of the test case was examined. Absent
+   * when the spec could not be read at all.
+   */
+  live?: boolean;
+  title?: string | null;
 }
 
 /**
