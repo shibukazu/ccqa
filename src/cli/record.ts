@@ -16,6 +16,8 @@ import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { ValidationMode } from "../runtime/replay-validate.ts";
 import type { Locator, ParsedStatusLine, RecordedAction } from "../types.ts";
 import * as log from "./logger.ts";
+import { withCostTally } from "../claude/cost-tally.ts";
+import { reportCost } from "./cost-line.ts";
 
 const VALIDATION_MODES = ["lenient", "strict"] as const;
 
@@ -89,7 +91,22 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       "--project <name>",
       "Project name for the hub. Defaults to the current directory's name.",
     ),
-))).action(withUsageErrors(async (specPath: string, opts: RecordOptions) => {
+)))
+  .action(
+    withUsageErrors(async (specPath: string, opts: RecordOptions) => {
+      // record calls Claude several times (browser trace, codegen cleanup, one
+      // diagnosis per auto-fix retry). Report the total, not each piece.
+      await withCostTally(async () => {
+        try {
+          await runRecord(specPath, opts);
+        } finally {
+          reportCost();
+        }
+      });
+    }),
+  );
+
+async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   const { featureName, specName } = parseSpecPath(specPath);
   const language = opts.language ?? DEFAULT_LANGUAGE;
 
@@ -201,7 +218,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     ...(language ? { language } : {}),
     ...(opts.model ? { model: opts.model } : {}),
   });
-}));
+}
 
 /**
  * Compact summary of the trace pass for the record agent-prompt refresh.

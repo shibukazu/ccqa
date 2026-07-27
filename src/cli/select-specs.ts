@@ -5,6 +5,8 @@ import { loadSpecInventory, type SpecDescription } from "../select/inventory.ts"
 import { specsToRun, type SelectReport, type SelectVerdict } from "../select/types.ts";
 import * as log from "./logger.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
+import { withCostTally } from "../claude/cost-tally.ts";
+import { reportCost } from "./cost-line.ts";
 
 interface SelectSpecsOptions {
   /** requiredOption — commander exits before the action runs if this is missing. */
@@ -36,60 +38,65 @@ export const selectSpecsCommand = new Command("select-specs")
   )
   .option("--format <fmt>", "Output format: text | json", "text")
   .action(async (opts: SelectSpecsOptions) => {
-    const format = parseFormat(opts.format);
-    const cwd = resolveCwd(opts.cwd);
-    const head = opts.head ?? DEFAULT_HEAD;
-
-    // Independent inputs — the spec tree (fs) and the diff (a git
-    // subprocess) — read concurrently rather than one after the other.
-    const [specsResult, changedResult] = await Promise.all([
-      loadSpecInventory(cwd).then(
-        (specs) => ({ ok: true as const, specs }),
-        (e: unknown) => ({ ok: false as const, error: e as Error }),
-      ),
-      getChangedFilesBetween(opts.base, head, cwd).then(
-        (changed) => ({ ok: true as const, changed }),
-        (e: unknown) => ({ ok: false as const, error: e as Error }),
-      ),
-    ]);
-
-    if (!specsResult.ok) {
-      // A spec that will not parse cannot be judged, and clearing it unread is
-      // the one outcome this command must not produce — so this is fatal.
-      log.error(specsResult.error.message);
-      process.exit(1);
-    }
-    const specs: SpecDescription[] = specsResult.specs;
-    if (specs.length === 0) {
-      log.error("no test specs found under .ccqa/features/");
-      process.exit(1);
-    }
-
-    if (!changedResult.ok) {
-      log.error(`failed to run 'git diff ${opts.base}..${head}': ${changedResult.error.message}`);
-      process.exit(2);
-    }
-    const changed: ChangedFile[] = changedResult.changed;
-
-    if (format === "text") {
-      log.header("select-specs", `${opts.base} → ${head}`);
-      if (opts.cwd) log.meta("cwd", cwd);
-      log.meta("changed-files", changed.length);
-      log.meta("specs", specs.length);
-    }
-
-    const report = await selectSpecs({
-      changed,
-      specs,
-      cwd,
-      base: opts.base,
-      head,
-      ...(opts.model ? { model: opts.model } : {}),
-    });
-
-    process.stdout.write(format === "json" ? `${JSON.stringify(report, null, 2)}\n` : renderText(report));
-    process.exit(0);
+    await withCostTally(() => runSelectSpecs(opts));
   });
+
+async function runSelectSpecs(opts: SelectSpecsOptions): Promise<void> {
+  const format = parseFormat(opts.format);
+  const cwd = resolveCwd(opts.cwd);
+  const head = opts.head ?? DEFAULT_HEAD;
+
+  // Independent inputs — the spec tree (fs) and the diff (a git
+  // subprocess) — read concurrently rather than one after the other.
+  const [specsResult, changedResult] = await Promise.all([
+    loadSpecInventory(cwd).then(
+      (specs) => ({ ok: true as const, specs }),
+      (e: unknown) => ({ ok: false as const, error: e as Error }),
+    ),
+    getChangedFilesBetween(opts.base, head, cwd).then(
+      (changed) => ({ ok: true as const, changed }),
+      (e: unknown) => ({ ok: false as const, error: e as Error }),
+    ),
+  ]);
+
+  if (!specsResult.ok) {
+    // A spec that will not parse cannot be judged, and clearing it unread is
+    // the one outcome this command must not produce — so this is fatal.
+    log.error(specsResult.error.message);
+    process.exit(1);
+  }
+  const specs: SpecDescription[] = specsResult.specs;
+  if (specs.length === 0) {
+    log.error("no test specs found under .ccqa/features/");
+    process.exit(1);
+  }
+
+  if (!changedResult.ok) {
+    log.error(`failed to run 'git diff ${opts.base}..${head}': ${changedResult.error.message}`);
+    process.exit(2);
+  }
+  const changed: ChangedFile[] = changedResult.changed;
+
+  if (format === "text") {
+    log.header("select-specs", `${opts.base} → ${head}`);
+    if (opts.cwd) log.meta("cwd", cwd);
+    log.meta("changed-files", changed.length);
+    log.meta("specs", specs.length);
+  }
+
+  const report = await selectSpecs({
+    changed,
+    specs,
+    cwd,
+    base: opts.base,
+    head,
+    ...(opts.model ? { model: opts.model } : {}),
+  });
+
+  process.stdout.write(format === "json" ? `${JSON.stringify(report, null, 2)}\n` : renderText(report));
+  reportCost();
+  process.exit(0);
+}
 
 const VERDICT_ORDER: SelectVerdict[] = ["needed", "unknown", "notNeeded"];
 
