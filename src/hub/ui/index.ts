@@ -702,6 +702,10 @@ const CSS = `
   .matrix-table { border-collapse: collapse; font-size: 12.5px; }
   .matrix-table th, .matrix-table td { border: 1px solid var(--border); padding: 9px 16px; text-align: center; font-variant-numeric: tabular-nums; }
   .matrix-table thead th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  /* The two axis captions carry the meaning of the table, so they read as
+     labels rather than as another column heading. */
+  .matrix-table th.matrix-corner, .matrix-table th.matrix-axis { color: var(--fg-dim); font-size: 11px; letter-spacing: 0; text-transform: none; }
+  .matrix-table th.matrix-corner { text-align: left; vertical-align: bottom; }
   .matrix-table tbody th { background: var(--surface-2); color: var(--fg-dim); font-weight: 600; font-size: 11px; text-align: left; white-space: nowrap; }
   /* The list tables let their card draw the bottom edge, so the shared rule
      strips the last row's border. This one draws a real grid and needs it. */
@@ -1052,7 +1056,8 @@ const CLIENT_JS = `
       "grade.corrected": "saved · corrected", "grade.saving": "saving…",
       "grade.error": "couldn't save — retry",
       "matrix.empty": "No grades yet. Pick the real cause on a failed spec's diagnosis card below and it is tallied here.",
-      "matrix.predicted": "predicted \\\\ actual", "matrix.accuracy": "Accuracy",
+      "matrix.axis.predicted": "ccqa predicted", "matrix.axis.actual": "you graded it",
+      "matrix.accuracy": "Accuracy",
       "matrix.accSuffix": "of graded cases match the prediction", "matrix.graded": "graded",
       "matrix.target.all": "All targets",
       "learn.cta.title": "Learn from these grades",
@@ -1200,7 +1205,8 @@ const CLIENT_JS = `
       "grade.corrected": "保存済み · 修正", "grade.saving": "保存中…",
       "grade.error": "保存に失敗 — 再試行",
       "matrix.empty": "まだ採点がありません。下の失敗スペックの診断カードで実際の原因を選ぶと、ここに集計されます。",
-      "matrix.predicted": "予測 \\\\ 実際", "matrix.accuracy": "正解率",
+      "matrix.axis.predicted": "ccqa の予測", "matrix.axis.actual": "人の採点",
+      "matrix.accuracy": "正解率",
       "matrix.accSuffix": "件の採点が予測と一致", "matrix.graded": "採点済み",
       "matrix.target.all": "すべてのターゲット",
       "learn.cta.title": "この採点から学習",
@@ -2411,10 +2417,15 @@ const CLIENT_JS = `
     var gradedCase = triageState.byKey[r.feature + "/" + r.spec];
     var graded = isDrift && gradedCase && gradedCase.actual ? gradedCase.actual.cause : null;
     var rowState = isDrift ? driftRowState(r, graded) : null;
-    // .passed / .failed rail; a drift row's "failed" is a diagnosis, not a
-    // broken test, so it wears the amber drift-found rail instead of fail-red.
-    var driftFound = rowState === "found";
-    var card = el("div", "spec-card " + (isDrift ? (driftFound ? "drift-found" : "passed") : r.status));
+    // The rail follows the AUDIT, not the grade — deliberately the one place
+    // that does. It is what a reader scans the page by ("which rows did this
+    // audit flag"), and repainting a graded row green would take it out of
+    // that scan, hiding the very call they are here to check. The badge on the
+    // row carries the graded answer.
+    var auditFlagged = isDrift && driftRowState(r, null) === "found";
+    // A drift row's "failed" is a diagnosis, not a broken test, so it wears the
+    // amber drift-found rail rather than fail-red.
+    var card = el("div", "spec-card " + (isDrift ? (auditFlagged ? "drift-found" : "passed") : r.status));
     var head = el("div", "spec-card-head");
     var nameBlock = el("div");
     nameBlock.appendChild(el("div", "name", r.title || (r.feature + " / " + r.spec)));
@@ -2604,9 +2615,19 @@ const CLIENT_JS = `
 
     var table = document.createElement("table");
     table.className = "matrix-table";
+    // Two header rows so each axis is named where it lives: "actual" spans the
+    // columns, "predicted" sits over the row labels. A single "predicted \\
+    // actual" corner cell leaves the reader to work out which is which.
     var thead = document.createElement("thead");
+    var axisRow = document.createElement("tr");
+    var corner = el("th", "matrix-corner", t("matrix.axis.predicted"));
+    corner.rowSpan = 2;
+    axisRow.appendChild(corner);
+    var actualHead = el("th", "matrix-axis", t("matrix.axis.actual"));
+    actualHead.colSpan = actualCols.length;
+    axisRow.appendChild(actualHead);
+    thead.appendChild(axisRow);
     var headRow = document.createElement("tr");
-    headRow.appendChild(el("th", null, t("matrix.predicted")));
     actualCols.forEach(function (a) { headRow.appendChild(el("th", null, labelText(a))); });
     thead.appendChild(headRow);
     table.appendChild(thead);
