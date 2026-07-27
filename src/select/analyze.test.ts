@@ -101,7 +101,9 @@ describe("selectSpecs: mechanical partitioning", () => {
     // reply landing as "unknown" rather than the mechanical "needed".
     expect(report.specs[0]!.verdict).toBe("unknown");
     expect(report.specs[0]!.source).toBe("model");
-    expect(invokeClaudeStreaming).toHaveBeenCalledTimes(1);
+    // That it was asked at all is the point; an errored reply is retried, so
+    // the count is not fixed here.
+    expect(invokeClaudeStreaming).toHaveBeenCalled();
   });
 
   it("drops a .ccqa/ path that is neither a spec nor a block from the evidence", async () => {
@@ -147,6 +149,39 @@ describe("selectSpecs: model judging", () => {
       expect(s.verdict).toBe("unknown");
       expect(s.source).toBe("model");
     }
+  });
+
+  it("retries once, so a single malformed reply does not cost the whole selection", async () => {
+    // Seen against a real repository: three runs over one commit produced a
+    // parse failure, a clean answer, and a different clean answer. Without the
+    // retry the first of those abandons all 37 specs to `unknown`, and the
+    // feature silently stops selecting anything.
+    vi.mocked(invokeClaudeStreaming)
+      .mockResolvedValueOnce(claudeResult("```json\n{not valid json\n```", false))
+      .mockResolvedValueOnce(
+        modelReply({
+          specs: specs.map((s) => ({
+            spec: `${s.featureName}/${s.specName}`,
+            verdict: "notNeeded",
+            reason: "unrelated area",
+            touchedBy: [],
+          })),
+        }),
+      );
+
+    const report = await selectSpecs({ changed, specs, cwd: "/repo", base: "main", head: "HEAD" });
+
+    expect(vi.mocked(invokeClaudeStreaming)).toHaveBeenCalledTimes(2);
+    for (const s of report.specs) expect(s.verdict).toBe("notNeeded");
+  });
+
+  it("gives up after the retry rather than calling forever", async () => {
+    vi.mocked(invokeClaudeStreaming).mockResolvedValue(claudeResult("```json\n{not valid json\n```", false));
+
+    const report = await selectSpecs({ changed, specs, cwd: "/repo", base: "main", head: "HEAD" });
+
+    expect(vi.mocked(invokeClaudeStreaming)).toHaveBeenCalledTimes(2);
+    for (const s of report.specs) expect(s.verdict).toBe("unknown");
   });
 
   it("leaves a spec the model never mentioned as unknown, while honoring the verdicts it did give", async () => {

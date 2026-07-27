@@ -1,3 +1,4 @@
+import { withUsageErrors } from "./usage-errors.ts";
 import { Command } from "commander";
 import { createInterface } from "node:readline";
 import { ensureCcqaDir, getRecording, parseSpecPath, readSpecFile } from "../store/index.ts";
@@ -296,7 +297,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
       "--project <name>",
       "Project name for the hub. Defaults to the current directory's name.",
     ),
-))).action(async (specPath: string, opts: GenerateCliOptions) => {
+))).action(withUsageErrors(async (specPath: string, opts: GenerateCliOptions) => {
   const { featureName, specName } = parseSpecPath(specPath);
   const language = opts.language ?? DEFAULT_LANGUAGE;
 
@@ -351,4 +352,4 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     ...(language ? { language } : {}),
     ...(opts.model ? { model: opts.model } : {}),
   });
-});
+}));
