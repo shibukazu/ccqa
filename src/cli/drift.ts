@@ -23,6 +23,8 @@ import { hubHeaderOption, hubTokenOption, hubUrlOption, resolveHubClient } from 
 import { detectBranch, getGitHead } from "./git-branch.ts";
 import { withUsageErrors } from "./usage-errors.ts";
 import * as log from "./logger.ts";
+import { withCostTally } from "../claude/cost-tally.ts";
+import { reportCost } from "./cost-line.ts";
 
 interface DriftOptions {
   format?: Format;
@@ -81,72 +83,77 @@ export const driftCommand = addLanguageOption(
     .option(...hubTokenOption)
     .option(...hubHeaderOption),
 ).action(withUsageErrors(async (specPath: string | undefined, opts: DriftOptions) => {
-    const format = parseFormat(opts.format);
-    const threshold = parseSeverity(opts.severity);
-    const concurrency = parseConcurrency(opts.concurrency);
-    const cwd = resolveCwd(opts.cwd);
+  await withCostTally(() => runDrift(specPath, opts));
+}));
 
-    await ensureCcqaDir(cwd);
+async function runDrift(specPath: string | undefined, opts: DriftOptions): Promise<void> {
+  const format = parseFormat(opts.format);
+  const threshold = parseSeverity(opts.severity);
+  const concurrency = parseConcurrency(opts.concurrency);
+  const cwd = resolveCwd(opts.cwd);
 
-    if (opts.changed && specPath) {
-      log.error("--changed and an explicit spec id cannot be combined; --changed only applies to a full sweep");
-      process.exit(2);
-    }
+  await ensureCcqaDir(cwd);
 
-    let targets = await collectTargets(specPath, cwd);
-    if (targets.length === 0) {
-      exitWithNoSpecs(format, "no test specs found under .ccqa/features/");
-    }
+  if (opts.changed && specPath) {
+    log.error("--changed and an explicit spec id cannot be combined; --changed only applies to a full sweep");
+    process.exit(2);
+  }
 
-    if (format === "text") {
-      log.header("drift", specPath ?? `${targets.length} spec${targets.length > 1 ? "s" : ""}`);
-      if (opts.cwd) log.meta("cwd", cwd);
-    }
+  let targets = await collectTargets(specPath, cwd);
+  if (targets.length === 0) {
+    exitWithNoSpecs(format, "no test specs found under .ccqa/features/");
+  }
 
-    let baseRef: string | null = null;
+  if (format === "text") {
+    log.header("drift", specPath ?? `${targets.length} spec${targets.length > 1 ? "s" : ""}`);
+    if (opts.cwd) log.meta("cwd", cwd);
+  }
 
-    if (opts.changed) {
-      const total = targets.length;
-      const selection = await collectChangedSpecs(targets, {
-        cwd,
-        base: opts.base ?? true,
-        quiet: format !== "text",
-        baseExample: "--base origin/main",
-        ...(opts.model ? { model: opts.model } : {}),
-      });
-      // The base reported to the hub is the one selection actually diffed
-      // against — resolving it a second time here could name another commit.
-      targets = selection.specs;
-      baseRef = selection.base.ref;
-      if (format === "text") {
-        log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
-      }
-      if (targets.length === 0) {
-        exitWithNoSpecs(format, "no specs intersect the changed file set; nothing to check");
-      }
-    }
+  let baseRef: string | null = null;
 
-    const blocks = await loadAvailableBlocks(cwd);
-    const results = await analyzeDrift({
-      targets,
+  if (opts.changed) {
+    const total = targets.length;
+    const selection = await collectChangedSpecs(targets, {
       cwd,
-      blocks,
-      concurrency,
+      base: opts.base ?? true,
+      quiet: format !== "text",
+      baseExample: "--base origin/main",
       ...(opts.model ? { model: opts.model } : {}),
-      ...(opts.language ? { language: opts.language } : {}),
-      onSpecStart: (t) => {
-        if (format === "text") log.info(`checking ${t.featureName}/${t.specName}`);
-      },
     });
-
-    process.stdout.write(renderDrift(results, format, cwd));
-
-    if (opts.push) {
-      await pushDriftResults({ results, threshold, cwd, opts, format, baseRef });
+    // The base reported to the hub is the one selection actually diffed
+    // against — resolving it a second time here could name another commit.
+    targets = selection.specs;
+    baseRef = selection.base.ref;
+    if (format === "text") {
+      log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
     }
+    if (targets.length === 0) {
+      exitWithNoSpecs(format, "no specs intersect the changed file set; nothing to check");
+    }
+  }
 
-    process.exit(determineExitCode(results, threshold));
-  }));
+  const blocks = await loadAvailableBlocks(cwd);
+  const results = await analyzeDrift({
+    targets,
+    cwd,
+    blocks,
+    concurrency,
+    ...(opts.model ? { model: opts.model } : {}),
+    ...(opts.language ? { language: opts.language } : {}),
+    onSpecStart: (t) => {
+      if (format === "text") log.info(`checking ${t.featureName}/${t.specName}`);
+    },
+  });
+
+  process.stdout.write(renderDrift(results, format, cwd));
+
+  if (opts.push) {
+    await pushDriftResults({ results, threshold, cwd, opts, format, baseRef });
+  }
+
+  reportCost();
+  process.exit(determineExitCode(results, threshold));
+}
 
 /**
  * Push a finished drift audit to a ccqa hub as a `kind: "drift"` run, so it
@@ -211,6 +218,7 @@ export async function pushDriftResults(
 }
 
 function exitWithNoSpecs(format: Format, message: string): never {
+  reportCost();
   if (format === "json") {
     process.stdout.write(`${JSON.stringify({ specs: [] }, null, 2)}\n`);
   } else if (format === "text") {

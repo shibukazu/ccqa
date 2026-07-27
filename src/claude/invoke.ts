@@ -4,6 +4,7 @@ import type { SDKMessage, Options, HookInput } from "@anthropic-ai/claude-agent-
 import * as log from "../cli/logger.ts";
 import { FIND_ACTIONS, FIND_LOCATORS } from "../ir/from-agent-browser.ts";
 import { missingNativeBinaryMessage, missingNativeBinaryPackage } from "./native-binary.ts";
+import { tallyInvocation } from "./cost-tally.ts";
 
 /**
  * One intercepted agent-browser command, as reported to `onAbAction`.
@@ -430,6 +431,7 @@ export async function invokeClaudeStreaming(
     }
   }
 
+  tallyInvocation(cost);
   return { result, isError, errorDetail, cost };
 }
 
