@@ -1,3 +1,4 @@
+import { RunUsageError } from "../run/errors.ts";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { collectIncludedBlockNames } from "../spec/expand.ts";
@@ -58,7 +59,10 @@ export function parseSpecPath(specPath: string): SpecRef {
     return { featureName: parts[0], specName: parts[1] };
   }
 
-  throw new Error(
+  // A usage error, not a crash: every caller of this is a CLI argument, so an
+  // unrecognised shape is the operator mistyping it. As a plain Error it
+  // escaped the commands' `withUsageErrors` boundary and printed a stack trace.
+  throw new RunUsageError(
     `Invalid spec path: "${specPath}". Expected "<feature>/<spec>" ` +
       `or "features/<feature>/test-cases/<spec>".`,
   );

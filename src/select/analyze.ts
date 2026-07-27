@@ -164,6 +164,15 @@ interface JudgeInput {
 }
 
 /**
+ * A malformed reply costs the whole selection, so it is worth one more call
+ * before giving up. `ccqa drift` retries per spec for the same reason; this
+ * call carries every undecided spec at once, so the blast radius is larger,
+ * not smaller. Observed in practice: three runs over one commit produced a
+ * parse failure, a clean answer, and a different clean answer.
+ */
+const MAX_ATTEMPTS = 2;
+
+/**
  * One model call for the whole undecided set, not one per spec: the specs are
  * judged against the same diff, and seeing them together is what lets the
  * model tell them apart.
@@ -175,29 +184,39 @@ interface JudgeInput {
 async function judgeWithModel(input: JudgeInput): Promise<SpecSelection[]> {
   const { productChanges, undecided, cwd, base, head, model } = input;
 
-  const { result, isError } = await invokeClaudeStreaming(
-    {
-      prompt: buildSelectPrompt({ changed: productChanges, specs: undecided, base, head }),
-      systemPrompt: buildSelectSystemPrompt(),
-      allowedTools: ["Read", "Grep", "Glob"],
-      silenceBashLog: true,
-      cwd,
-      ...(model ? { model } : {}),
-    },
-    (_msg: SDKMessage) => {},
-  );
-
-  if (isError) return abandonSelection(undecided, "the selection model returned an error");
-
-  const json = extractJsonBlock(result);
-  if (!json) return abandonSelection(undecided, "the selection model returned no JSON block");
-
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch (e) {
-    return abandonSelection(undecided, `the selection model's JSON did not parse: ${(e as Error).message}`);
+  let lastError = "";
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const { result, isError } = await invokeClaudeStreaming(
+      {
+        prompt: buildSelectPrompt({ changed: productChanges, specs: undecided, base, head }),
+        systemPrompt: buildSelectSystemPrompt(),
+        allowedTools: ["Read", "Grep", "Glob"],
+        silenceBashLog: true,
+        cwd,
+        ...(model ? { model } : {}),
+      },
+      (_msg: SDKMessage) => {},
+    );
+
+    if (isError) {
+      lastError = "the selection model returned an error";
+      continue;
+    }
+    const json = extractJsonBlock(result);
+    if (!json) {
+      lastError = "the selection model returned no JSON block";
+      continue;
+    }
+    try {
+      parsed = JSON.parse(json);
+      lastError = "";
+      break;
+    } catch (e) {
+      lastError = `the selection model's JSON did not parse: ${(e as Error).message}`;
+    }
   }
+  if (lastError) return abandonSelection(undecided, `${lastError} (${MAX_ATTEMPTS} attempts)`);
 
   const changedPaths = new Set(productChanges.map((f) => f.path));
   const byUndecidedKey = new Map(undecided.map((s) => [specKey(s), s]));

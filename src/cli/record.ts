@@ -1,3 +1,4 @@
+import { withUsageErrors } from "./usage-errors.ts";
 import { Command } from "commander";
 import { parseSpecPath, readSpecFile } from "../store/index.ts";
 import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
@@ -88,7 +89,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       "--project <name>",
       "Project name for the hub. Defaults to the current directory's name.",
     ),
-))).action(async (specPath: string, opts: RecordOptions) => {
+))).action(withUsageErrors(async (specPath: string, opts: RecordOptions) => {
   const { featureName, specName } = parseSpecPath(specPath);
   const language = opts.language ?? DEFAULT_LANGUAGE;
 
@@ -200,7 +201,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     ...(language ? { language } : {}),
     ...(opts.model ? { model: opts.model } : {}),
   });
-});
+}));
 
 /**
  * Compact summary of the trace pass for the record agent-prompt refresh.

@@ -1,3 +1,4 @@
+import { withUsageErrors } from "./usage-errors.ts";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -39,7 +40,7 @@ export const draftCommand = addLanguageOption(
     .description("Interactively draft and refine a spec.yaml with Claude Code")
     .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
     .option("--apply", "Auto-apply each generated patch without [y/N] confirmation", false),
-).action(async (specPath: string | undefined, opts: DraftOptions) => {
+).action(withUsageErrors(async (specPath: string | undefined, opts: DraftOptions) => {
   await ensureCcqaDir();
 
   let featureName: string;
@@ -56,7 +57,7 @@ export const draftCommand = addLanguageOption(
   }
 
   await runDraft(featureName, specName, opts, prefilledIntent);
-});
+}));
 
 interface DraftOptions {
   instruction?: string;
