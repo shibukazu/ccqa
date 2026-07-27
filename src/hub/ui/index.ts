@@ -1316,7 +1316,6 @@ const CLIENT_JS = `
     }
   };
   var FAILURE_LABEL_JA = { TEST_DRIFT: "テストずれ", SPEC_CHANGE: "仕様変更", PRODUCT_BUG: "プロダクト不具合", UNKNOWN: "不明", NO_DRIFT: "ズレなし" };
-  var FAILURE_LABEL_EN = { NO_DRIFT: "no drift" };
 
   function loadLang() {
     try { return window.localStorage.getItem(LANG_KEY) || "en"; } catch (e) { return "en"; }
@@ -1327,7 +1326,7 @@ const CLIENT_JS = `
     if (d[key] != null) return d[key];
     return I18N.en[key] != null ? I18N.en[key] : key;
   }
-  function labelText(v) { return lang === "ja" ? (FAILURE_LABEL_JA[v] || v) : (FAILURE_LABEL_EN[v] || v); }
+  function labelText(v) { return lang === "ja" ? (FAILURE_LABEL_JA[v] || v) : v; }
 
   // Overwrite static HTML_BODY text nodes marked with data-i18n / data-i18n-ph.
   // The English text in the markup is the no-JS fallback; this runs on boot and
