@@ -394,7 +394,15 @@ export async function executeRun(
       );
       log.meta("rerun-states", selection.summary);
     } else {
-      specs = await collectChangedSpecs(specs, { cwd, base: opts.changed });
+      specs = (
+        await collectChangedSpecs(specs, {
+          cwd,
+          base: opts.changed,
+          // Selection sees every spec plus the whole diff — the largest
+          // input of any call here, so -m must reach it like the rest.
+          ...(opts.model ? { model: opts.model } : {}),
+        })
+      ).specs;
     }
     log.meta(
       "changed-scoped",
@@ -965,7 +973,7 @@ async function analyzeDeterministicSummaries(
         status: "passed",
         analysis: null,
         analysisSkipped: null,
-        driftIssues: null,
+        driftAudit: null,
         failureLogExcerpt: null,
         diffExcerpt: null,
         specYaml: null,
@@ -974,7 +982,7 @@ async function analyzeDeterministicSummaries(
       continue;
     }
 
-    const driftIssues = driftByKey.get(specKey({ featureName: s.featureName, specName: s.specName })) ?? null;
+    const driftAudit = driftByKey.get(specKey({ featureName: s.featureName, specName: s.specName })) ?? null;
     const failureLog = buildFailureLog(s);
     const fields = await pass.analyze({
       featureName: s.featureName,
@@ -983,11 +991,11 @@ async function analyzeDeterministicSummaries(
       failureLog,
       specYaml,
       target: AGENT_BROWSER_TARGET,
-      driftIssues,
+      driftAudit,
     });
 
     // Spell out the failed-row keys in the historical order (analysis,
-    // analysisSkipped, analysisBase?, driftIssues, failureLogExcerpt,
+    // analysisSkipped, analysisBase?, driftAudit, failureLogExcerpt,
     // diffExcerpt, specYaml, liveRun) rather than spreading `fields` — a
     // spread would reorder `diffExcerpt` and change report.json byte-for-byte,
     // which the e2e goldens and cross-version diffs care about.
@@ -998,7 +1006,7 @@ async function analyzeDeterministicSummaries(
       analysisSkipped: fields.analysisSkipped,
       ...(fields.analysisBase ? { analysisBase: fields.analysisBase } : {}),
       ...(fields.customPromptVersion ? { customPromptVersion: fields.customPromptVersion } : {}),
-      driftIssues,
+      driftAudit,
       failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
       diffExcerpt: fields.diffExcerpt,
       specYaml,

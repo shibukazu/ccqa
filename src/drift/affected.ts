@@ -15,11 +15,9 @@ export interface ChangedFile {
   status: ChangeStatus;
   /**
    * True for a change outside the ccqa working directory (monorepo sibling
-   * package). Kept with its repo-root-relative path so a spec can opt into
-   * cross-package dependencies by declaring a repo-root-relative glob (e.g.
-   * `packages/ui-kit/**`) — an app-relative glob like `src/**` can never
-   * match these. Excluded from block invalidation and new-file routing,
-   * which are working-directory concerns.
+   * package). Kept with its repo-root-relative path: `ccqa select-specs`
+   * treats these as product changes it cannot attribute to a local spec or
+   * block, since a sibling package's own `.ccqa/` tree is not this one's.
    */
   outsideCwd?: boolean;
 }
@@ -27,46 +25,51 @@ export interface ChangedFile {
 /**
  * GITHUB_BASE_REF holds a bare branch name (e.g. "main"); the local checkout
  * only has it as a remote-tracking ref, so prefix `origin/` unless already
- * qualified. Shared by `ccqa drift`'s resolveBaseRef and `ccqa run`'s
- * resolveAnalysisBase so the rule can't drift between them.
+ * qualified. Used by `ccqa run`'s resolveAnalysisBase (`src/run/git-context.ts`),
+ * which both `ccqa run --changed` and `ccqa drift --changed` resolve their
+ * base through, so the rule can't drift between them.
  */
 export function normalizeGithubBaseRef(ref: string): string {
   return ref.startsWith("origin/") ? ref : `origin/${ref}`;
 }
 
 /**
- * Resolve the base ref to diff against for `ccqa drift --changed`.
- * Precedence: explicit override > GITHUB_BASE_REF > origin/main.
+ * Paths that differ between `base` and `head` (two-dot: `git diff base..head`),
+ * from `cwd`. Renames are reported under their NEW path with status
+ * "renamed" — the OLD path is dropped since only the current layout matters.
  *
- * Note: this is the `ccqa drift` rule. `ccqa run` resolves its baseline via
- * `src/run/git-context.ts` instead, which has no origin/main fallback — see
- * the rationale there.
+ * Two-dot vs three-dot (`base...head`) is a real choice, not a detail: for a
+ * pull request, three-dot is right — changes that landed on the base branch
+ * meanwhile are not this PR's doing. For "what changed in the environment
+ * between these two deploys", three-dot is wrong — it hides a revert, because
+ * a commit that was applied and then rolled back is absent from the
+ * merge-base diff while the environment definitely moved (ADR-0010). Every
+ * caller here answers the second question, so this is two-dot throughout.
+ *
+ * Paths are re-rooted to be relative to `cwd`, not the git repo root: in a
+ * monorepo where `cwd` is a sub-package (e.g. `apps/foo`), git emits paths
+ * relative to the repo root, but specs and blocks live under `cwd`'s own
+ * `.ccqa/`. Changes outside `cwd` are kept under their repo-root path and
+ * flagged `outsideCwd` (see `ChangedFile`) rather than dropped.
+ *
+ * `detectRenames` defaults on. `ccqa hub deploy record` turns it off (via
+ * `changedPathsBetween`): with rename detection, a rename is one entry naming
+ * only the destination, so a file's old path would silently drop out of the
+ * report — off, it appears as a delete plus an add and both paths are kept.
  */
-export function resolveBaseRef(explicit: string | undefined): string {
-  if (explicit && explicit.length > 0) return explicit;
-  const ghBase = process.env["GITHUB_BASE_REF"];
-  if (ghBase && ghBase.length > 0) return normalizeGithubBaseRef(ghBase);
-  return "origin/main";
+export async function getChangedFilesBetween(
+  base: string,
+  head: string,
+  cwd: string,
+  options: { detectRenames?: boolean } = {},
+): Promise<ChangedFile[]> {
+  return diffNameStatus(`${base}..${head}`, cwd, options.detectRenames ?? true);
 }
 
-/**
- * Run `git diff --name-status base...HEAD` from `cwd` and return one entry per
- * changed file. Renames are reported under their NEW path with status
- * "renamed" — the OLD path is dropped because the spec mapping is against the
- * post-rename layout.
- *
- * Paths are re-rooted to be relative to `cwd`, not the git repo root. In a
- * monorepo where `cwd` is a sub-package (e.g. `apps/foo`), git emits paths
- * relative to the repo root, but specs declare relatedPaths relative to
- * their own package. Changes outside `cwd` are kept under their repo-root
- * path and flagged `outsideCwd` — they only scope a spec in when the spec
- * explicitly declares a repo-root-relative glob, so an unrelated PR can
- * never accidentally match the app-relative globs.
- */
-export async function getChangedFiles(base: string, cwd: string): Promise<ChangedFile[]> {
+async function diffNameStatus(range: string, cwd: string, detectRenames: boolean): Promise<ChangedFile[]> {
   const [{ stdout: rootOut }, { stdout: diffOut }] = await Promise.all([
     execFileP("git", ["rev-parse", "--show-toplevel"], { cwd }),
-    execFileP("git", ["diff", "--name-status", "-M", `${base}...HEAD`], {
+    execFileP("git", ["diff", "--name-status", detectRenames ? "-M" : "--no-renames", range], {
       cwd,
       maxBuffer: 32 * 1024 * 1024,
     }),
@@ -139,31 +142,14 @@ export function parseGitDiffOutput(stdout: string): ChangedFile[] {
   return out;
 }
 
-/**
- * Returns true if `path` matches the glob `pattern`.
- *
- * Supports a deliberately small glob language sufficient for relatedPaths:
- *  - `**`  matches any number of path segments (including zero)
- *  - `*`   matches any run of characters that does NOT include `/`
- *  - `?`   matches exactly one character that is not `/`
- *  - leading `./` is stripped from both sides
- *
- * Everything else is treated literally. This is intentional — relatedPaths
- * comes from Claude and we want predictable matching behavior, not full
- * minimatch semantics.
- */
-export function matchesGlob(path: string, pattern: string): boolean {
-  return compileGlob(pattern).test(stripLeadingDotSlash(path));
-}
-
-/** Normalize a leading `./` away so diff paths and relatedPaths globs compare. */
+/** Normalize a leading `./` away so a diff path and a glob pattern compare. */
 export function stripLeadingDotSlash(s: string): string {
   return s.startsWith("./") ? s.slice(2) : s;
 }
 
 const REGEX_CACHE = new Map<string, RegExp>();
 
-/** Compiles `pattern` to a RegExp, memoized so repeated `--changed` matches don't re-build. */
+/** Compiles `pattern` to a RegExp, memoized so repeated glob matches don't re-build. */
 export function compileGlob(pattern: string): RegExp {
   const cached = REGEX_CACHE.get(pattern);
   if (cached) return cached;
@@ -203,17 +189,4 @@ function globToRegExp(pattern: string): RegExp {
     i += hasTrailingSlash ? 3 : 2;
   }
   return new RegExp(re + "$");
-}
-
-/**
- * Returns true if `changedPath` is covered by any of `relatedPaths`. An empty
- * `relatedPaths` returns false — callers handle the "unscoped spec" case
- * separately (treat the spec as always-affected) before calling this.
- */
-export function isPathAffectedBy(changedPath: string, relatedPaths: string[]): boolean {
-  const stripped = stripLeadingDotSlash(changedPath);
-  for (const pattern of relatedPaths) {
-    if (compileGlob(pattern).test(stripped)) return true;
-  }
-  return false;
 }

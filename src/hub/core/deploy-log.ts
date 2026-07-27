@@ -1,6 +1,10 @@
-import { isPathAffectedBy } from "../../drift/affected.ts";
-import type { DeployEntry, DeployInput, DeployLog, SpecTouchIndex } from "../contract/schema.ts";
-import type { SpecTarget } from "./perspectives-specs.ts";
+import type {
+  DeployEntry,
+  DeployInput,
+  DeployLog,
+  DeploySelection,
+  SpecTouchIndex,
+} from "../contract/schema.ts";
 
 /**
  * Pure deploy-log arithmetic: appending an entry, and folding it into the
@@ -14,8 +18,9 @@ export const MAX_RETAINED_DEPLOYS = 200;
 
 /**
  * How many changed paths one entry retains. A monorepo-wide refactor can list
- * tens of thousands; past this bound the entry keeps a prefix and is marked
- * truncated, which makes it "touches everything" for anyone reading it back.
+ * tens of thousands; `changedPaths` is record-only (re-run verdicts never
+ * read it), so past this bound the entry simply keeps a prefix rather than
+ * paying to store the rest.
  */
 export const MAX_RETAINED_CHANGED_PATHS = 500;
 
@@ -35,14 +40,12 @@ export function appendDeploy(current: DeployLog | null, input: DeployInput): Dep
   // first recorded deploy, so that one is not a gap; an empty log with a
   // non-zero `nextIndex` means eviction emptied it, which is.
   const gapBefore = head ? head.sha !== input.previousSha : log.nextIndex > 0;
-  const truncated = input.changedPaths !== null && input.changedPaths.length > MAX_RETAINED_CHANGED_PATHS;
   const entries = [
     ...log.entries,
     {
       ...input,
       index: log.nextIndex,
-      changedPaths: truncated ? input.changedPaths!.slice(0, MAX_RETAINED_CHANGED_PATHS) : input.changedPaths,
-      truncated,
+      changedPaths: input.changedPaths === null ? null : input.changedPaths.slice(0, MAX_RETAINED_CHANGED_PATHS),
       gapBefore,
     },
   ];
@@ -56,47 +59,42 @@ export function appendDeploy(current: DeployLog | null, input: DeployInput): Dep
 }
 
 /**
- * Fold one deploy into the touch index, matched against `changedPaths` as the
- * deploy job reported them — the log's retained copy may be truncated, and
- * this is the only moment the full list exists.
+ * Fold one deploy's selection into the touch index.
  *
- * A deploy that reported no paths touches every spec: fail-open, and
- * self-limiting because it makes everything re-run once and then settles.
+ * Only the two positions that decide a verdict move: the newest deploy that
+ * needed a spec, and the newest that could not decide it. A `notNeeded` writes
+ * neither — it is the absence of a marker at this position, which is exactly
+ * what a later baseline comparison reads it as.
+ *
+ * Positions only ever advance. Deploys are folded in log order, so a spec
+ * needed at #7 and cleared at #9 keeps `needed.index: 7`: a baseline at #5
+ * must still see that #7 touched it.
  */
 export function foldTouchIndex(
   current: SpecTouchIndex,
   entry: DeployEntry,
-  changedPaths: string[] | null,
-  targets: SpecTarget[],
+  selection: DeploySelection,
 ): SpecTouchIndex {
   const out = { ...current };
-  for (const target of targets) {
-    // An unscoped spec is `unknown`, not touched — recording a touch for it
-    // would dress that up as a definite answer.
-    if (target.relatedPaths.length === 0) continue;
-    const matched = changedPaths === null ? [] : matchPaths(changedPaths, target.relatedPaths);
-    if (changedPaths !== null && matched.length === 0) continue;
-    out[target.key] = {
-      lastTouchedIndex: entry.index,
-      lastTouchedSha: entry.sha,
-      lastTouchedAt: entry.at,
-      matchedPaths: matched,
-    };
-  }
-  return out;
-}
-
-/**
- * The paths in `changedPaths` covered by `relatedPaths`, up to the sample
- * size. Uses `isPathAffectedBy`, the same matcher `ccqa drift --changed` and
- * `ccqa run --changed` use, so the hub's verdict and the CLI's cannot diverge.
- */
-export function matchPaths(changedPaths: string[], relatedPaths: string[]): string[] {
-  const out: string[] = [];
-  for (const path of changedPaths) {
-    if (!isPathAffectedBy(path, relatedPaths)) continue;
-    out.push(path);
-    if (out.length >= MAX_TOUCHED_BY) break;
+  for (const [key, decision] of Object.entries(selection)) {
+    const previous = out[key] ?? {};
+    if (decision.verdict === "needed") {
+      out[key] = {
+        ...previous,
+        needed: {
+          index: entry.index,
+          sha: entry.sha,
+          at: entry.at,
+          matchedPaths: (decision.touchedBy ?? []).slice(0, MAX_TOUCHED_BY),
+        },
+      };
+    } else if (decision.verdict === "unknown") {
+      // An undecided deploy records only that this position is unresolved; it
+      // must not disturb an earlier real touch, which a baseline behind both
+      // still has to see.
+      out[key] = { ...previous, undecidedIndex: entry.index };
+    }
+    // `notNeeded` writes neither position — see the function doc.
   }
   return out;
 }

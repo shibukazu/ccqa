@@ -1,4 +1,4 @@
-import { execFileP, isPathAffectedBy } from "../drift/affected.ts";
+import { execFileP } from "../drift/affected.ts";
 
 /** Per-file cap keeps one giant generated file from monopolizing the prompt. */
 export const PER_FILE_PATCH_CAP = 8 * 1024;
@@ -18,8 +18,8 @@ export type PrDiffResult = { ok: true; diff: PrDiff } | { ok: false; error: stri
 
 /**
  * Capture the PR diff used as context for failure analysis. `--relative`
- * re-roots paths to `cwd` and drops changes outside it, matching how
- * relatedPaths are declared in a monorepo sub-package.
+ * re-roots paths to `cwd` and drops changes outside it, so a monorepo
+ * checkout only sees its own sub-package.
  *
  * Errors (unknown base ref, not a git repo, ...) are returned, not thrown:
  * the report is still worth generating without diff context.
@@ -56,7 +56,7 @@ export interface PatchSection {
 /**
  * Split a unified diff into per-file sections on `diff --git` boundaries.
  * The path is taken from the `b/` side so renames/edits key on the
- * post-change layout — the same side relatedPaths are written against.
+ * post-change layout.
  */
 const DIFF_HEADER = /^diff --git a\/(.+) b\/(.+)$/;
 
@@ -84,29 +84,19 @@ export function splitPatchByFile(patch: string): PatchSection[] {
 }
 
 /**
- * Scope a full patch down to the files a spec depends on, then truncate so
- * the analysis prompt stays bounded. `relatedPaths` null/empty means the
- * spec is unscoped — keep the whole patch (still truncated). When
- * relatedPaths are declared but nothing in the diff matches, the result is
- * the empty string: "no related change" is itself a signal the prompt
- * renders explicitly, and the model can inspect any unmatched file's hunk
- * via the on-demand diff tool — inlining the full unrelated diff (the old
- * fallback) just burned the prompt budget, especially under wide last-green
- * baselines. Callers scoping the same patch for many specs can pass
- * pre-split sections instead.
+ * Truncate a full patch so the analysis prompt stays bounded: a per-file cap
+ * keeps one giant generated file from monopolizing it, and a total cap bounds
+ * it regardless of how many files a PR touches. Callers truncating the same
+ * patch for many specs can pass pre-split sections instead.
  */
-export function scopePatchForSpec(
+export function truncatePatch(
   patch: string | PatchSection[],
-  relatedPaths: string[] | null | undefined,
   caps: { perFile?: number; total?: number } = {},
 ): string {
   const perFile = caps.perFile ?? PER_FILE_PATCH_CAP;
   const total = caps.total ?? TOTAL_PATCH_CAP;
 
-  let sections = typeof patch === "string" ? splitPatchByFile(patch) : patch;
-  if (relatedPaths && relatedPaths.length > 0) {
-    sections = sections.filter((s) => isPathAffectedBy(s.path, relatedPaths));
-  }
+  const sections = typeof patch === "string" ? splitPatchByFile(patch) : patch;
 
   const parts: string[] = [];
   let used = 0;

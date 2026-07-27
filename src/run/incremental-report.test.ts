@@ -29,7 +29,7 @@ function row(feature: string, spec: string, status: "passed" | "failed" = "passe
     assertions: null,
     analysis: null,
     analysisSkipped: null,
-    driftIssues: null,
+    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,

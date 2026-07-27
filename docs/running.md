@@ -32,9 +32,9 @@ Key flags (see `ccqa run --help` for the rest):
   the run executes (opt-in; needs hub credentials).
 - `--profile <name>` — apply the hub-stored variables for this profile
   before resolving `${VAR}` references (below).
-- `--changed [base]` — restrict execution to specs whose `relatedPaths`
-  intersect the git diff against `[base]` (below). Without a value the base
-  comes from `GITHUB_BASE_REF` (pull_request CI); elsewhere pass it
+- `--changed [base]` — restrict execution to the specs `ccqa select-specs`
+  decides the git diff against `[base]` reaches (below). Without a value the
+  base comes from `GITHUB_BASE_REF` (pull_request CI); elsewhere pass it
   explicitly (e.g. `--changed=origin/main`). Cannot be combined with
   explicit targets. `--changed=last-run` selects from the hub instead of
   from a diff — see [Running only what needs a
@@ -152,24 +152,22 @@ whichever target the spec uses.
 `pull_request` events). There is no silent fallback: a baseline that cannot
 be resolved to a local commit — including a shallow CI checkout that never
 fetched it — is a startup usage error, so the classification never runs
-against an accidental empty diff. For each failing spec the diff is scoped
-to its `relatedPaths` globs and truncated to keep the prompt bounded; when
-nothing matches, no hunks are inlined — the prompt states that explicitly
-(the full changed-file list is always present, and any file's hunk is one
-tool call away). The prompt also adapts its decision guidance to the
-baseline: under `last-green` the range strictly covers the
-passing→failing window, so a failure that no in-range change explains
-leans UNKNOWN (external cause) rather than PRODUCT_BUG, and the range's
-width (commits/days) is stated so wide baselines get a higher evidence
-bar.
+against an accidental empty diff. For each failing spec the diff is
+truncated to keep the prompt bounded; the full changed-file list is always
+present, and any file's hunk dropped or cut by truncation is one tool call
+away. The prompt also adapts its decision guidance to the baseline: under
+`last-green` the range strictly covers the passing→failing window, so a
+failure that no in-range change explains leans UNKNOWN (external cause)
+rather than PRODUCT_BUG, and the range's width (commits/days) is stated so
+wide baselines get a higher evidence bar.
 
-Scoping and truncation only bound the *seed* — what is pasted into the
-prompt up front. The classifier itself runs agentically with read-only
-tools (`Read` / `Grep` / `Glob` over the working tree, plus an in-process
+Truncation only bounds the *seed* — what is pasted into the prompt up
+front. The classifier itself runs agentically with read-only tools (`Read`
+/ `Grep` / `Glob` over the working tree, plus an in-process
 `changed_file_diff` tool that serves any changed file's diff hunk from the
 captured range on demand). The full list of changed files is always in the
-prompt, so a change outside the spec's `relatedPaths` is still visible and
-its hunk one tool call away — the full diff never has to ride in the
+prompt, so a file whose hunk was dropped or cut by truncation is still
+visible and one tool call away — the full diff never has to ride in the
 context.
 
 **`--failure-analysis=last-green`.** Instead of one fixed ref, each failing
@@ -210,15 +208,35 @@ injects it ahead of the learned calibration note.
 
 ## Drift detection
 
-Drift analysis asks Claude whether each `spec.yaml` is still in sync with
-the current codebase — renamed aria-labels, removed routes, missing blocks,
+Drift analysis asks Claude whether a test case is still in sync with the
+current codebase — renamed aria-labels, removed routes, missing blocks,
 assertions about UI that no longer exists. It is read-only: no browser, no
 patches. It runs in two places:
 
-1. **Inside `ccqa run`** — each failing spec's report entry includes a
-   drift audit, used as evidence for the root-cause call above.
+1. **Inside `ccqa run`** — each failing spec's report row carries its own
+   audit as `driftAudit`, fed to the root-cause call above as evidence it
+   weighs, never a verdict it defers to.
 2. **Standalone `ccqa drift`** — a full audit without running any tests,
    for scheduled jobs or pre-merge sweeps.
+
+A `deterministic` spec is two artifacts, and the audit reads both: the
+`spec.yaml` a human wrote, and the test code `ccqa generate` compiled from
+it. Either can drift from the source independently, so the audit checks the
+concrete selectors and strings the generated code holds, not only the prose
+in `spec.yaml`. A `mode: live` spec has no generated code — the spec itself
+is what runs — so only `spec.yaml` is audited there.
+
+Each audited spec gets **at most one diagnosis**, in the same vocabulary
+`--failure-analysis` uses: `TEST_DRIFT` (the test drifted from the source) or
+`SPEC_CHANGE` (the thing being verified changed), never `PRODUCT_BUG` — a
+static read can't tell a dropped side effect from a working one — plus
+`UNKNOWN` when the evidence is too weak to call. The diagnosis carries a
+confidence, a headline, a recommendation, cited evidence, and a `surface`
+that decides how to fix it: `spec` means `spec.yaml` itself has to be
+rewritten (and the code regenerated after); `generated` means only the
+generated code drifted, so a regeneration alone is enough. No finding at all
+means the spec still matches the code (`drift: null`), not a passing "check"
+to enumerate.
 
 ```bash
 ccqa drift                              # check every spec under .ccqa/features/
@@ -237,36 +255,59 @@ a hub connection (`--hub-url`/`--hub-token` or `CCQA_HUB_URL`/
 `CCQA_HUB_TOKEN`); without one it logs a warning and is skipped, never
 changing the exit code (still driven by `--severity`).
 
-### Scoping with `--changed` and `relatedPaths`
+Pushing also advances the hub's per-project **drift ledger**: each spec's
+newest audit (or "no drift found") lands there, so the Perspectives tab shows
+every spec's last-known drift status without opening each run individually —
+see [the hub guide](./hub.md#drift-ledger).
+
+### Scoping with `--changed`
 
 When `--changed` is set (on `ccqa drift` or `ccqa run`):
 
-1. ccqa runs `git diff --name-status <base>...HEAD`. On `ccqa run` the base
-   is `--changed`'s value, else `$GITHUB_BASE_REF` — never a silent
-   fallback (an unresolvable base is a usage error). On `ccqa drift` it is
-   `--base`, else `$GITHUB_BASE_REF`, else `origin/main`.
-2. Changed files are intersected with each spec's `relatedPaths` globs; a
-   spec is in scope if any change matches.
-3. For files **added** in the PR, a single lightweight Claude call maps each
-   new file to the specs it plausibly affects — catching drift no existing
-   glob could know about.
-4. Specs with no `relatedPaths` at all are always in scope.
+1. ccqa runs `git diff --name-status <base>..HEAD`, two-dot against the
+   resolved base commit. The base is `--changed`'s value (`ccqa run`) or
+   `--base` (`ccqa drift`), else `$GITHUB_BASE_REF` — never a silent
+   fallback (an unresolvable base is a usage error).
+2. `ccqa select-specs` decides which specs the diff reaches, in two passes.
+   Mechanical first: a change to a spec's own `spec.yaml`/recording, or to a
+   block it includes, marks that spec `needed` — set membership, no model
+   call. Everything left undecided is judged against the remaining
+   (product-code) changes in one Claude call, which reads the diff and each
+   spec's steps and answers `needed` / `notNeeded` / `unknown`, using
+   Read/Grep/Glob to check the codebase. The model call is skipped
+   entirely, and every remaining spec clears as `notNeeded`, when nothing
+   outside `.ccqa/` changed.
+3. Specs the selector could not decide come back `unknown` and stay in
+   scope — the safe reading of "I don't know" is to run it, never to skip
+   it.
 
-Supported glob syntax: `**` (any depth), `*` (run of non-slash chars), `?`
-(single non-slash char) — intentionally minimal so `relatedPaths` stays
-human-readable.
+Changes outside the cwd hosting `.ccqa/` are reported but never attributed
+to a spec — a sibling package's own `.ccqa/` names its own specs and blocks,
+not this project's.
 
-`relatedPaths` are interpreted relative to the cwd hosting `.ccqa/`. In a
-monorepo, run from each package's directory (or use `--cwd packages/foo`)
-and write paths as that package sees them; changes outside the cwd are
-ignored.
+### Asking the question on its own
 
-A pattern that matches **no file** silently narrows a spec to nothing, which
-is how selection ends up confidently skipping a spec whose code did change.
-`ccqa perspectives` counts those patterns per spec (one `git ls-files`, no
-Claude call) and records the count in the hub document, so the Perspectives
-view can flag them. Only tracked files count, since a deploy's changed paths
-never name anything else.
+`ccqa select-specs` is the same decision as a standalone command, for when
+you want the verdicts without running anything — inspecting what a range
+would select, or feeding the answer to another job.
+
+```sh
+ccqa select-specs --base origin/main             # against HEAD
+ccqa select-specs --base <sha> --head <sha>      # an explicit range
+ccqa select-specs --base origin/main --format json
+ccqa select-specs --base origin/main -m sonnet   # cheaper model
+ccqa select-specs --base origin/main --cwd packages/web
+```
+
+Every spec in the tree appears in the output, each with its verdict, a
+one-sentence reason, and — for `needed` — the changed paths the decision
+rests on. A spec whose `spec.yaml` cannot be parsed is a hard error rather
+than a spec judged without reading it.
+
+The deploy job runs the same decision via
+[`ccqa hub deploy record --select`](./hub.md#ccqa-hub-deploy-record), which
+submits the verdicts with the deploy so the hub can answer
+`--changed=last-run` later.
 
 ### Running only what needs a re-run
 
@@ -282,9 +323,12 @@ ccqa run --changed=last-run --profile stg --include-unknown
 Each spec's baseline is **its own last run** — not its last green, and not a
 git ref — positioned against the deploy log the deploy job feeds the hub
 with [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record). A spec is
-selected when a deploy after that point touched its `relatedPaths`. No git
-diff is involved, and nothing is guessed: the baseline is either recorded or
-the answer is `unknown`.
+selected when a deploy after that point was recorded as reaching it — the
+verdict `ccqa select-specs` made against that deploy's diff, submitted
+alongside it (`--select`, see [Deploys and re-run
+selection](./hub-api.md#deploys-and-re-run-selection)). No git diff runs
+locally, and nothing is guessed: the verdict is either recorded or the
+answer is `unknown`.
 
 It needs a hub connection and `--profile` (`dev` and `stg` sit at different
 commits, so the question has no profile-free answer). Anything that makes

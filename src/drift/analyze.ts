@@ -4,9 +4,9 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { buildDriftSystemPrompt, buildDriftUserPrompt } from "../prompts/drift.ts";
 import { languageDirective } from "../prompts/language.ts";
 import { tryReadSpecFile, type AvailableBlock } from "../store/index.ts";
+import { collectSpecArtifacts } from "./artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
-import { DraftReportSchema, type DraftReport } from "../types.ts";
-import type { SpecResult, SpecTarget } from "./types.ts";
+import { DriftReplySchema, type SpecResult, type SpecTarget } from "./types.ts";
 
 export interface AnalyzeDriftInput {
   targets: SpecTarget[];
@@ -51,10 +51,14 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
     return {
       target,
       ok: false,
-      issues: [],
+      drift: null,
       error: `spec file disappeared after enumeration: ${featureName}/${specName}`,
     };
   }
+
+  // Both surfaces of the test case, so the audit sees the code that actually
+  // runs and not only the prose that describes it.
+  const artifacts = await collectSpecArtifacts(featureName, specName, existing, opts.cwd);
 
   // One CI drift row shouldn't die on a single malformed reply (truncated
   // JSON, missing block) — retry the whole check once before reporting the
@@ -64,7 +68,7 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const { result, isError } = await invokeClaudeStreaming(
       {
-        prompt: buildDriftUserPrompt(existing),
+        prompt: buildDriftUserPrompt(artifacts),
         systemPrompt: buildDriftSystemPrompt(opts.blocks) + languageDirective(opts.language),
         allowedTools: ["Read", "Grep", "Glob"],
         silenceBashLog: true,
@@ -84,11 +88,18 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
       continue;
     }
     try {
-      const report: DraftReport = DraftReportSchema.parse(JSON.parse(json));
-      return { target, ok: true, issues: report.issues };
+      const reply = DriftReplySchema.parse(JSON.parse(json));
+      return { target, ok: true, drift: reply.drift, live: artifacts.live, title: artifacts.title };
     } catch (e) {
-      lastError = `failed to parse drift report: ${(e as Error).message}`;
+      lastError = `failed to parse drift reply: ${(e as Error).message}`;
     }
   }
-  return { target, ok: false, issues: [], error: `${lastError} (${MAX_ATTEMPTS} attempts)` };
+  return {
+    target,
+    ok: false,
+    drift: null,
+    error: `${lastError} (${MAX_ATTEMPTS} attempts)`,
+    live: artifacts.live,
+    title: artifacts.title,
+  };
 }

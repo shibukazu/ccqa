@@ -7,6 +7,18 @@ import {
   type TestSpec,
 } from "./yaml-schema.ts";
 
+/**
+ * Fields the schema used to accept, and what to do now. The schema is
+ * `.strict()`, so a spec still carrying one fails on an "unrecognized key"
+ * that says nothing about why it stopped being recognised. Folded into
+ * `humanizeIssue`'s `unrecognized_keys` branch (below) rather than checked
+ * ahead of validation, so the migration note reaches both `parseTestSpec` and
+ * `parseBlockSpec` through the one place that already rewrites that error.
+ */
+const REMOVED_FIELDS: Record<string, string> = {
+  relatedPaths: "which specs a change affects is now decided by `ccqa select-specs`, which reads the diff instead of a declared path list. Delete the field.",
+};
+
 /** Parse a spec.yaml. Schema rejections are rewritten with actionable messages. */
 export function parseTestSpec(content: string, source = "spec.yaml"): TestSpec {
   const raw = parseYamlOrThrow(content, source);
@@ -79,7 +91,11 @@ function humanizeIssue(issue: ZodLikeIssue, isBlock: boolean): string {
     if (isBlock && keys.includes("include")) {
       return `Nested blocks are not supported — flatten by inlining the included block's steps into this block.`;
     }
-    return `Unknown keys: ${keys.join(", ")}`;
+    const removed = keys.filter((k) => k in REMOVED_FIELDS);
+    const stillUnknown = keys.filter((k) => !(k in REMOVED_FIELDS));
+    const parts = removed.map((k) => `\`${k}\` is no longer part of the spec schema — ${REMOVED_FIELDS[k]}`);
+    if (stillUnknown.length > 0) parts.push(`Unknown keys: ${stillUnknown.join(", ")}`);
+    return parts.join(" ");
   }
   return issue.message;
 }

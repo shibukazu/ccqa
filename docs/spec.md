@@ -43,7 +43,6 @@ Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/` and
 | `target` | no | Generation-target plugin. Defaults to `defaultTarget` in `.ccqa/config.yaml`, then `agent-browser`. See [Generation targets](./targets.md). |
 | `mode` | no | `deterministic` (default) or `live`. agent-browser only. |
 | `session` | no | Saved session name(s) to restore before step 1. agent-browser `mode: live` only. See [Saved sessions](./sessions.md). |
-| `relatedPaths` | no | Glob list of source paths this spec depends on. |
 
 `mode:` and `session:` only apply to the `agent-browser` target. Setting
 either on a spec whose `target:` resolves to anything else is a validation
@@ -166,29 +165,6 @@ immediately, not at that spec's run time.
 (`test.spec.ts` / `actions.json` under a block directory) — delete them
 manually; blocks no longer carry recordings.
 
-## relatedPaths
-
-`relatedPaths` is a list of glob patterns naming the source files the spec
-depends on:
-
-```yaml
-relatedPaths:
-  - src/features/tasks/**
-  - src/app/tasks/page.tsx
-```
-
-Both `ccqa draft` (provisional) and `ccqa record` (refined from real browser
-observations) maintain this list, so you rarely write it by hand. Commit it
-alongside the spec. It scopes `ccqa run --changed` / `ccqa drift --changed`
-and the failure-analysis diff, and it is what the hub matches deploys
-against for `ccqa run --changed=last-run` — see
-[Scoping with --changed](./running.md#scoping-with---changed-and-relatedpaths).
-
-Accuracy cuts one way here: a pattern that matches no file makes a spec look
-unaffected by changes that really do affect it. `ccqa perspectives` counts
-the patterns that match nothing and records the count on the spec's entry,
-so the hub's Perspectives view can flag it.
-
 ## File uploads
 
 `<input type="file">` opens the OS file picker when clicked, and no
@@ -262,14 +238,13 @@ repo; the command deletes those leftovers when it runs.
 
 `--check` is the staleness gate for CI: it rebuilds the mechanical skeleton
 from the local specs and compares it against the hub document — the spec
-set, titles, `relatedPaths`, and `status` — listing every mismatch and
-exiting 1 (no Claude calls, so it is fast and free). Claude-authored
-descriptive fields and the human `note` are not compared; they can't signal
-staleness.
+set, titles, and `status` — listing every mismatch and exiting 1 (no Claude
+calls, so it is fast and free). Claude-authored descriptive fields and the
+human `note` are not compared; they can't signal staleness.
 
 How each case is assembled:
 
-- `title` and `relatedPaths` are transcribed verbatim from `spec.yaml`.
+- `title` is transcribed verbatim from `spec.yaml`.
 - `status` is mechanically derived by the CLI, never written by Claude:
   `traced` = `ir.json` exists, `generated` = `test.spec.ts` exists. For
   `mode: live` specs these carry no completeness meaning (live skips

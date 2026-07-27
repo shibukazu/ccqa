@@ -2,9 +2,9 @@ import {
   RecordDeployRequestSchema,
   type DeployEntry,
   type DeployLogResponse,
+  type DeploySelection,
 } from "../../contract/schema.ts";
 import { foldTouchIndex } from "../../core/deploy-log.ts";
-import { loadSpecTargets } from "../../core/perspectives-specs.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
 import { errMsg, readJsonBody, sendJson } from "../respond.ts";
@@ -26,7 +26,7 @@ export function createRecordDeployHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const project = requireSafeSegment(ctx.params.project!, "project");
     const profile = requireProfileParam(ctx.url);
-    const { sha, previousSha, changedPaths, ref, runUrl } = await readJsonBody(
+    const { sha, previousSha, changedPaths, selection, ref, runUrl } = await readJsonBody(
       ctx.req,
       MAX_DEPLOY_BODY_BYTES,
       RecordDeployRequestSchema,
@@ -40,33 +40,34 @@ export function createRecordDeployHandler(storage: HubStorage) {
       ...(ref ? { ref } : {}),
       ...(runUrl ? { runUrl } : {}),
       changedPaths: changedPaths ?? null,
+      hasSelection: selection !== undefined,
     });
-    await foldIntoTouchIndex(storage, project, profile, entry, changedPaths ?? null);
+    if (selection !== undefined) await foldIntoTouchIndex(storage, project, profile, entry, selection);
 
     sendJson(ctx.res, 201, entry);
   };
 }
 
 /**
- * Record which specs this deploy touched, matched against the full
- * `changedPaths` before the stored entry's bounded copy is all that is left.
+ * Record what this deploy's selection decided, so a later read can answer each
+ * spec's own range with two integer comparisons.
  *
- * Best-effort and deliberately after the append: the log is the record of what
- * shipped, the index is a derived accelerator, and losing the fold costs
- * precision on truncated entries — not correctness.
+ * Deliberately after the append, and it does not fail the request: the log is
+ * the record of what shipped and has to land even if the fold cannot. A lost
+ * fold shows up as specs reporting `unknown` rather than as a wrong `notNeeded`
+ * — the entry is already marked `hasSelection`, so the read side knows the
+ * range is unresolved either way.
  */
 async function foldIntoTouchIndex(
   storage: HubStorage,
   project: string,
   profile: string,
   entry: DeployEntry,
-  changedPaths: string[] | null,
+  selection: DeploySelection,
 ): Promise<void> {
   try {
-    const targets = await loadSpecTargets(storage.perspectives, project);
-    if (!targets || targets.length === 0) return;
     await storage.deploys.updateTouchIndex(project, profile, (current) =>
-      foldTouchIndex(current, entry, changedPaths, targets),
+      foldTouchIndex(current, entry, selection),
     );
   } catch (err) {
     console.error(

@@ -8,7 +8,6 @@ import type {
   SpecRerun,
   SpecTouchIndex,
 } from "../contract/schema.ts";
-import { matchPaths } from "./deploy-log.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 /**
@@ -42,6 +41,20 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
   log.entries.forEach((entry, i) => {
     if (!positionBySha.has(entry.sha)) positionBySha.set(entry.sha, i);
   });
+  // Built once instead of re-scanned per spec: `entryByIndex` backs the
+  // `needed.index` lookup below, and `gapFromPos`/`noSelectionFromPos` are
+  // suffix flags ("does any entry from this position onward have a gap / lack
+  // a selection") so `verdict`'s range check is an array read instead of a
+  // slice+scan. Specs mostly share one baseline deploy, so this turns what
+  // was O(specs × log length) into O(log length).
+  const entryByIndex = new Map(log.entries.map((e) => [e.index, e]));
+  const gapFromPos: boolean[] = new Array(log.entries.length + 1).fill(false);
+  const noSelectionFromPos: boolean[] = new Array(log.entries.length + 1).fill(false);
+  for (let i = log.entries.length - 1; i >= 0; i--) {
+    gapFromPos[i] = gapFromPos[i + 1]! || log.entries[i]!.gapBefore;
+    noSelectionFromPos[i] = noSelectionFromPos[i + 1]! || !log.entries[i]!.hasSelection;
+  }
+  const range: RangeLookup = { entryByIndex, gapFromPos, noSelectionFromPos };
 
   const out: Record<string, SpecRerun> = {};
   for (const spec of specs) {
@@ -52,9 +65,16 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
     };
     out[spec.key] = notEvaluated
       ? { state: "notEvaluated", ...coords }
-      : { ...verdict(spec, coords.lastRun, log, positionBySha, touchIndex), ...coords };
+      : { ...verdict(spec, coords.lastRun, log, positionBySha, touchIndex, range), ...coords };
   }
   return out;
+}
+
+/** Per-`computeRerun`-call lookups built once from the deploy log, not per spec. */
+interface RangeLookup {
+  entryByIndex: ReadonlyMap<number, DeployEntry>;
+  gapFromPos: readonly boolean[];
+  noSelectionFromPos: readonly boolean[];
 }
 
 type Verdict =
@@ -69,9 +89,9 @@ function verdict(
   log: DeployLog,
   positionBySha: ReadonlyMap<string, number>,
   touchIndex: SpecTouchIndex,
+  range: RangeLookup,
 ): Verdict {
   if (!lastRun) return { state: "neverRun" };
-  if (spec.relatedPaths.length === 0) return unknown("noRelatedPaths");
   if (log.entries.length === 0) return unknown("noDeployLog");
   if (lastRun.deployedShaAmbiguous) return unknown("ambiguousDeployedSha");
   const deployedSha = lastRun.deployedSha ?? null;
@@ -82,45 +102,39 @@ function verdict(
   // `index` is the monotonic log position; `baselinePos` is where it sits in
   // the retained array. The touch index stores the former, so compare in it.
   const baselineIndex = log.entries[baselinePos]!.index;
-
-  // Newest first, so the reported `touchedBy` and `touchedByDeploy` come from
-  // the most recent deploy in range that touched the spec. Scanning only
-  // `i > baselinePos` is what keeps that deploy in range: an older touch, even
-  // the newest one the touch index knows of, is not what made this verdict.
-  let sawGap = false;
-  let sawUnknownContents = false;
-  for (let i = log.entries.length - 1; i > baselinePos; i--) {
-    const entry = log.entries[i]!;
-    if (entry.changedPaths !== null && !entry.truncated) {
-      const matched = matchPaths(entry.changedPaths, spec.relatedPaths);
-      if (matched.length > 0) return { state: "needed", touchedBy: matched, touchedByDeploy: deployRef(entry) };
-    } else {
-      sawUnknownContents = true;
-    }
-    if (entry.gapBefore) sawGap = true;
-  }
-  if (!sawGap && !sawUnknownContents) return { state: "notNeeded" };
-
-  // Part of the range can't be matched against the spec's current
-  // `relatedPaths`. The write-time fold saw those deploys' full path lists, so
-  // it can still prove a touch — against the `relatedPaths` of the day, which
-  // is why it is consulted only here and never in place of matching the
-  // spec's current paths.
   const touch = touchIndex[spec.key];
-  if (touch && touch.lastTouchedIndex > baselineIndex) {
-    // The index proves *that* a deploy in range touched the spec, by position.
+
+  // A positive `needed` in range settles it, whatever else the range is
+  // missing: the spec has to re-run regardless of what a hole would have said.
+  const needed = touch?.needed;
+  if (needed && needed.index > baselineIndex) {
+    // The index proves *that* a deploy in range needed the spec, by position.
     // Naming *which* one takes the log entry itself: the log is the record of
-    // what shipped and the index only a derived accelerator, so if the two
-    // disagree about what is retained, the deploy goes unnamed rather than
-    // asserted from a cache the record no longer backs.
-    const entry = log.entries.find((e) => e.index === touch.lastTouchedIndex);
+    // what shipped and the index only derived from it, so if the two disagree
+    // about what is retained, the deploy goes unnamed rather than asserted
+    // from a copy the record no longer backs.
+    const entry = range.entryByIndex.get(needed.index);
     return {
       state: "needed",
-      ...(touch.matchedPaths.length > 0 ? { touchedBy: touch.matchedPaths } : {}),
+      ...(needed.matchedPaths.length > 0 ? { touchedBy: needed.matchedPaths } : {}),
       touchedByDeploy: entry ? deployRef(entry) : null,
     };
   }
-  return unknown(sawGap ? "gapInRange" : "truncatedInRange");
+
+  // Nothing needed it. Clearing the spec now claims the whole range was
+  // examined, so anything in it that was not disqualifies the claim. Order
+  // within the range has no meaning, so a precomputed "does the range from
+  // here on contain one" flag stands in for scanning it.
+  //
+  // Ordered by how much of the range each defect invalidates: missing deploys
+  // first, then deploys nobody judged, then a deploy that was judged and came
+  // back undecided for this spec.
+  if (range.gapFromPos[baselinePos + 1]) return unknown("gapInRange");
+  if (range.noSelectionFromPos[baselinePos + 1]) return unknown("noSelectionInRange");
+  if (touch?.undecidedIndex !== undefined && touch.undecidedIndex > baselineIndex) {
+    return unknown("selectionUnknown");
+  }
+  return { state: "notNeeded" };
 }
 
 function deployRef(entry: DeployEntry): DeployRef {

@@ -33,8 +33,8 @@ export interface SpecEnvScrub {
  * Longer values sort first so a `${SHORT}` whose value is a substring of a
  * `${LONG}` value doesn't clobber the longer one.
  *
- * `title` and `relatedPaths` are deliberately NOT scanned — they never
- * reach the recorded action stream.
+ * `title` is deliberately NOT scanned — it never reaches the recorded action
+ * stream.
  */
 export function buildSpecEnvScrub(spec: TestSpec, expanded: ExpandedActionStep[]): SpecEnvScrub {
   const refNames = new Set<string>();

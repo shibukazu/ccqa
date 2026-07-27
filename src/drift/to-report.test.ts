@@ -1,15 +1,18 @@
 import { describe, expect, test } from "vitest";
-import type { DraftIssue } from "../types.ts";
+import type { DriftDiagnosis } from "../report/schema.ts";
 import { driftResultsToReport } from "./to-report.ts";
 import type { SpecResult } from "./types.ts";
 
-function issue(overrides: Partial<DraftIssue> = {}): DraftIssue {
+function diagnosis(overrides: Partial<DriftDiagnosis> = {}): DriftDiagnosis {
   return {
-    severity: "WARN",
-    category: "assertable",
-    stepId: "s1",
-    message: "step asserts removed copy",
-    detail: null,
+    label: "TEST_DRIFT",
+    confidence: 0.8,
+    surface: "spec",
+    subDiagnosis: "SELECTOR_DRIFT",
+    headline: "step asserts removed copy",
+    recommendation: "Update the selector",
+    evidence: [],
+    reasoning: "",
     ...overrides,
   };
 }
@@ -18,7 +21,7 @@ function result(overrides: Partial<SpecResult> = {}): SpecResult {
   return {
     target: { featureName: "tasks", specName: "create" },
     ok: true,
-    issues: [],
+    drift: null,
     ...overrides,
   };
 }
@@ -29,24 +32,34 @@ const meta = {
 };
 
 describe("driftResultsToReport", () => {
-  test("clean specs are all passed and top-level kind is drift", () => {
+  test("clean specs (drift: null) are all passed and top-level kind is drift", () => {
     const report = driftResultsToReport([result(), result({ target: { featureName: "tasks", specName: "complete" } })], meta);
     expect(report.kind).toBe("drift");
     expect(report.results.map((r) => r.status)).toEqual(["passed", "passed"]);
+    expect(report.results.map((r) => r.analysis)).toEqual([null, null]);
   });
 
-  test("a spec with an ERROR issue is failed", () => {
-    const report = driftResultsToReport([result({ issues: [issue({ severity: "ERROR" })] })], meta);
+  test("a TEST_DRIFT/SPEC_CHANGE diagnosis (error severity) fails the spec", () => {
+    const report = driftResultsToReport([result({ drift: diagnosis({ label: "SPEC_CHANGE" }) })], meta);
     expect(report.results[0]!.status).toBe("failed");
   });
 
-  test("driftIssues carries the issue array through unchanged", () => {
-    const issues = [issue(), issue({ severity: "ERROR", message: "other" })];
-    const report = driftResultsToReport([result({ issues })], meta);
-    expect(report.results[0]!.driftIssues).toEqual(issues);
+  test("an UNKNOWN diagnosis (warn severity) passes under --severity error, fails under warn", () => {
+    const d = diagnosis({ label: "UNKNOWN" });
+    const underError = driftResultsToReport([result({ drift: d })], meta);
+    expect(underError.results[0]!.status).toBe("passed");
+    const underWarn = driftResultsToReport([result({ drift: d })], { ...meta, threshold: "warn" });
+    expect(underWarn.results[0]!.status).toBe("failed");
   });
 
-  test("a spec with a call error is failed regardless of issues", () => {
+  test("the diagnosis is carried through in `analysis`, not `driftAudit`", () => {
+    const d = diagnosis();
+    const report = driftResultsToReport([result({ drift: d })], meta);
+    expect(report.results[0]!.analysis).toEqual({ ...d, reasoning: "" });
+    expect(report.results[0]!.driftAudit).toBeNull();
+  });
+
+  test("a spec with a call error is failed regardless of the diagnosis", () => {
     const report = driftResultsToReport([result({ error: "claude call failed" })], meta);
     expect(report.results[0]!.status).toBe("failed");
   });

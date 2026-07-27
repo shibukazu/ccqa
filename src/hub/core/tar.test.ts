@@ -61,14 +61,33 @@ describe("packTarGz / unpackTarGz round-trip", () => {
     expect(await readFile(join(destDir, "empty.txt"), "utf8")).toBe("");
   });
 
-  test("rejects a path that does not fit the 100+155 byte ustar split", () => {
-    const path = "x".repeat(300);
-    expect(() => packTarGz([{ path, content: new Uint8Array(1), mode: 0o644 }])).toThrow(
-      /too long for ustar/,
-    );
+  test("round-trips a path with no valid ustar split via a pax header", async () => {
+    // Long overall, but every component stays under the filesystem's own
+    // 255-byte name limit — the point is the tar format, not the OS.
+    const path = `${"a".repeat(200)}/${"b".repeat(200)}`;
+    const archive = packTarGz([{ path, content: new TextEncoder().encode("long"), mode: 0o644 }]);
+    destDir = await mkdtemp(join(tmpdir(), "ccqa-tar-"));
+    await unpackTarGz(archive, destDir);
+    expect(await readFile(join(destDir, path), "utf8")).toBe("long");
   });
 
-  test("round-trips the maximum ustar path and rejects one byte past it", async () => {
+  test("round-trips a multi-byte path component longer than the name field", async () => {
+    // The shape that made every failing non-ASCII-titled spec unpushable: a
+    // test runner names its artifact dir after the test title, and one such
+    // component alone exceeds 100 bytes in UTF-8, so no split point exists.
+    // The repeated character stands in for such a title — what the test is
+    // about is the byte width, not the words.
+    const dir = "artifacts/spec__case";
+    const name = `artifacts-run-${"あ".repeat(40)}-trace`;
+    expect(Buffer.byteLength(name, "utf8")).toBeGreaterThan(100);
+    const path = `${dir}/${name}/trace.zip`;
+    const archive = packTarGz([{ path, content: new TextEncoder().encode("zip"), mode: 0o644 }]);
+    destDir = await mkdtemp(join(tmpdir(), "ccqa-tar-"));
+    await unpackTarGz(archive, destDir);
+    expect(await readFile(join(destDir, path), "utf8")).toBe("zip");
+  });
+
+  test("round-trips the maximum ustar path, and one byte past it via pax", async () => {
     // Exactly 155-byte prefix + 100-byte name: the largest path ustar can hold.
     const maxPath = `${"p".repeat(155)}/${"n".repeat(100)}`;
     const archive = packTarGz([
@@ -78,22 +97,29 @@ describe("packTarGz / unpackTarGz round-trip", () => {
     await unpackTarGz(archive, destDir);
     expect(await readFile(join(destDir, maxPath), "utf8")).toBe("max");
 
-    // One extra prefix byte leaves no slash with prefix <= 155 and name <= 100.
+    // One extra prefix byte leaves no slash with prefix <= 155 and name <= 100,
+    // so this one goes out as pax rather than being rejected.
     const overPath = `${"p".repeat(156)}/${"n".repeat(100)}`;
-    expect(() =>
-      packTarGz([{ path: overPath, content: new Uint8Array(1), mode: 0o644 }]),
-    ).toThrow(/too long for ustar/);
+    const overArchive = packTarGz([
+      { path: overPath, content: new TextEncoder().encode("over"), mode: 0o644 },
+    ]);
+    await unpackTarGz(overArchive, destDir);
+    expect(await readFile(join(destDir, overPath), "utf8")).toBe("over");
   });
 
   test("produces archives the system tar accepts", async () => {
     // Our own unpack never verifies header checksums, so round-trip tests
     // alone cannot catch header-format bugs. Extracting with the system tar
     // validates the checksum and prefix/name split against an independent
-    // implementation. The long dir forces the prefix field into play.
+    // implementation. The long dir forces the prefix field into play, and the
+    // multi-byte one forces a pax extended header — the claim that a downloaded
+    // bundle still extracts with the system tar has to be checked, not assumed.
     const longDir = "d".repeat(120);
+    const paxDir = `artifacts-${"あ".repeat(40)}-run`;
     const entries: TarEntry[] = [
       { path: "a.txt", content: new TextEncoder().encode("hello"), mode: 0o644 },
       { path: `${longDir}/deep.txt`, content: new TextEncoder().encode("deep"), mode: 0o644 },
+      { path: `${paxDir}/trace.zip`, content: new TextEncoder().encode("pax"), mode: 0o644 },
     ];
     destDir = await mkdtemp(join(tmpdir(), "ccqa-tar-"));
     const archivePath = join(destDir, "snapshot.tar.gz");
@@ -105,6 +131,7 @@ describe("packTarGz / unpackTarGz round-trip", () => {
 
     expect(await readFile(join(extractDir, "a.txt"), "utf8")).toBe("hello");
     expect(await readFile(join(extractDir, longDir, "deep.txt"), "utf8")).toBe("deep");
+    expect(await readFile(join(extractDir, paxDir, "trace.zip"), "utf8")).toBe("pax");
   });
 
   test("unpack refuses a path traversal entry ('..' segment)", async () => {

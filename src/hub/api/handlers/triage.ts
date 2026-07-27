@@ -1,9 +1,10 @@
-import type { FailureAnalysis, FailureLabel } from "../../../report/schema.ts";
-import { LabelsExportSchema, RunReportDataSchema, type RunReportData } from "../../../report/schema.ts";
+import type { ActualCause, DriftLabel, FailureAnalysis } from "../../../report/schema.ts";
+import { LabelsExportSchema, NO_DRIFT_CAUSE, RunReportDataSchema, type RunReportData } from "../../../report/schema.ts";
 import { PutActualCauseRequestSchema, type RunTriage, type TriageCase } from "../../contract/schema.ts";
+import { gradedDriftEntry } from "../../core/drift-ledger.ts";
 import type { HubStorage, TriageRecord } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
-import { HttpError, readBody, sendJson } from "../respond.ts";
+import { errMsg, HttpError, readBody, sendJson } from "../respond.ts";
 
 const MAX_TRIAGE_BODY_BYTES = 256 * 1024;
 const MAX_IMPORT_BODY_BYTES = 8 * 1024 * 1024;
@@ -41,6 +42,7 @@ export function createPutActualCauseHandler(storage: HubStorage) {
       target: result.target,
     });
     await storage.triage.putActualCause(runId!, record);
+    await applyGradeToDriftLedger(storage, runId!, feature!, spec!, parsed.data.cause);
 
     sendJson(ctx.res, 200, toTriageCase(feature!, spec!, result.analysis, result.target, record));
   };
@@ -91,6 +93,39 @@ async function readReport(storage: HubStorage, runId: string): Promise<RunReport
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Carry a grade on a drift row through to the drift ledger, so the Perspectives
+ * view shows what the human decided rather than what the audit guessed.
+ *
+ * A grade is the ground truth; the ledger is the one place that answers "does
+ * this spec still describe the code" for a reader who is not looking at the
+ * run. Leaving it at the audit's answer would mean a case a human has already
+ * cleared keeps flagging itself.
+ *
+ * Best-effort, like the ledger update at push time: a triage grade must be
+ * recorded even if the ledger write fails. A `kind: "run"` grade is a no-op —
+ * `gradedDriftEntry` finds no entry that names this run.
+ */
+async function applyGradeToDriftLedger(
+  storage: HubStorage,
+  runId: string,
+  feature: string,
+  spec: string,
+  cause: ActualCause,
+): Promise<void> {
+  try {
+    const run = await storage.runs.get(runId);
+    if (!run || run.kind !== "drift" || !run.branch) return;
+    const ledger = await storage.driftLedger.getMerged(run.project);
+    const label = cause === NO_DRIFT_CAUSE ? null : (cause as DriftLabel);
+    const entry = gradedDriftEntry(ledger, `${feature}/${spec}`, runId, label);
+    if (!entry) return;
+    await storage.driftLedger.merge(run.project, run.branch, { specs: { [`${feature}/${spec}`]: entry } });
+  } catch (err) {
+    console.error(`hub: drift ledger grade update failed for run "${runId}": ${errMsg(err)}`);
+  }
+}
+
 function buildRunTriage(runId: string, report: RunReportData | null, records: TriageRecord[]): RunTriage {
   if (!report) return { runId, promptVersion: "", cases: [], recorded: 0, total: 0 };
 
@@ -117,7 +152,7 @@ function buildTriageRecord(
   spec: string,
   analysis: FailureAnalysis,
   promptVersion: string,
-  actual: { cause: FailureLabel; note?: string; target?: string },
+  actual: { cause: ActualCause; note?: string; target?: string },
 ): TriageRecord {
   return {
     feature,
@@ -159,7 +194,7 @@ function toTriageCase(
     },
     actual: record
       ? {
-          cause: record.actualCause as FailureLabel,
+          cause: record.actualCause as ActualCause,
           ...(record.note ? { note: record.note } : {}),
           recordedAt: record.recordedAt,
         }

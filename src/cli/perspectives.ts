@@ -35,7 +35,6 @@ import { DEFAULT_SPEC_MODE, SpecModeSchema, type SpecMode } from "../spec/yaml-s
 import type { HubClient } from "../hub-client/index.ts";
 import { HubConnectionError, requireHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
 import { resolveProject } from "./resolve-project.ts";
-import { listCheckoutFiles, relatedPathsFields } from "./related-paths-check.ts";
 import { formatToolSummary, printUnifiedDiff, prompt } from "./draft.ts";
 import { addHubOptions, addLanguageOption, languageDirective, useJapanesePrompts } from "./options.ts";
 import * as log from "./logger.ts";
@@ -73,19 +72,19 @@ export const perspectivesCommand = addHubOptions(addLanguageOption(
 
 /**
  * `--check`: compare the hub document against a freshly-built local skeleton
- * on the CLI-owned mechanical fields only (the spec set, titles,
- * relatedPaths, status). Claude-authored descriptive fields and the human
- * note are deliberately not compared — they are not deterministic, so they
- * can't signal staleness. Exit 1 on any mismatch; this is the CI gate for
- * "someone changed the specs without the inventory catching up".
+ * on the CLI-owned mechanical fields only (the spec set, titles, status).
+ * Claude-authored descriptive fields and the human note are deliberately not
+ * compared — they are not deterministic, so they can't signal staleness.
+ * Exit 1 on any mismatch; this is the CI gate for "someone changed the specs
+ * without the inventory catching up".
  */
 async function runPerspectivesCheck(opts: PerspectivesOptions): Promise<void> {
   const hub = requireHubOrExit(opts);
   const project = resolveProject(opts);
   log.header("perspectives", `check (project: ${project})`);
 
-  const [tree, checkoutFiles] = await Promise.all([listFeatureTree(), listCheckoutFiles(process.cwd())]);
-  const skeleton = await buildSkeleton(tree, checkoutFiles);
+  const tree = await listFeatureTree();
+  const skeleton = await buildSkeleton(tree);
   const localCount = skeleton.reduce((n, f) => n + f.specs.length, 0);
 
   const existingDoc = await hub.getPerspectives(project);
@@ -147,7 +146,6 @@ export function comparePerspectivesSkeleton(
       }
       const fields: string[] = [];
       if (remoteSpec.title !== spec.title) fields.push("title");
-      if (!sameStringArray(remoteSpec.relatedPaths, spec.relatedPaths)) fields.push("relatedPaths");
       if (
         remoteSpec.status.mode !== spec.status.mode ||
         remoteSpec.status.traced !== spec.status.traced ||
@@ -176,13 +174,6 @@ function formatStatus(status: PerspectiveStatus): string {
   return `${status.mode}/traced=${status.traced}/generated=${status.generated}${target}`;
 }
 
-/** Order-sensitive equality; an absent list and an empty list are the same thing. */
-function sameStringArray(a: string[] | undefined, b: string[] | undefined): boolean {
-  const left = a ?? [];
-  const right = b ?? [];
-  return left.length === right.length && left.every((v, i) => v === right[i]);
-}
-
 /** Perspectives live on the hub only — no hub, no place to store (or check) them. */
 function requireHubOrExit(opts: PerspectivesOptions): HubClient {
   try {
@@ -202,10 +193,9 @@ async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
   const project = resolveProject(opts);
   log.header("perspectives", `project: ${project}`);
 
-  // 1. Mechanical skeleton: every feature/spec with title + relatedPaths +
-  //    status, plus the zero-match count from one shared checkout walk.
-  const [tree, checkoutFiles] = await Promise.all([listFeatureTree(), listCheckoutFiles(process.cwd())]);
-  const skeleton = await buildSkeleton(tree, checkoutFiles);
+  // 1. Mechanical skeleton: every feature/spec with title + status.
+  const tree = await listFeatureTree();
+  const skeleton = await buildSkeleton(tree);
   const allSpecs = skeleton.flatMap((f) => f.specs);
 
   if (allSpecs.length === 0) {
@@ -287,18 +277,12 @@ async function cleanupLegacyLocalFiles(): Promise<void> {
 // --- Pure, testable building blocks ---
 
 /**
- * Turn the feature tree into the skeleton perspectives features: title +
- * relatedPaths transcribed from each spec, status derived mechanically from
- * on-disk artifacts. `summary` is left empty here; Claude fills it later.
- * Specs whose spec.yaml is missing or unparsable are skipped.
- *
- * `checkoutFiles` is the one shared file listing every spec's `relatedPaths`
- * zero-match count is computed against.
+ * Turn the feature tree into the skeleton perspectives features: title
+ * transcribed from each spec, status derived mechanically from on-disk
+ * artifacts. `summary` is left empty here; Claude fills it later. Specs whose
+ * spec.yaml is missing or unparsable are skipped.
  */
-export async function buildSkeleton(
-  tree: FeatureTreeEntry[],
-  checkoutFiles: readonly string[],
-): Promise<PerspectiveFeature[]> {
+export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<PerspectiveFeature[]> {
   // Config resolves each spec's target once for the whole sweep; a broken
   // config is not a reason to fail the inventory, so fall back to the schema
   // default (agent-browser) if it can't be loaded.
@@ -318,7 +302,6 @@ export async function buildSkeleton(
               specName: s.specName,
               title: meta.title,
               summary: "",
-              ...relatedPathsFields(s.relatedPaths ?? [], checkoutFiles),
               status,
             };
           }),

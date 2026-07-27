@@ -106,6 +106,39 @@ describe("hub UI: needs re-run", () => {
     expect(() => new Function(clientScript())).not.toThrow();
   });
 
+  test("the client script calls no helper it does not define", () => {
+    // Parsing is not enough: deleting a helper leaves the page syntactically
+    // valid and throws only when a browser reaches the call. Comments and
+    // string literals are stripped first so prose does not read as a call.
+    const src = clientScript()
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+
+    const declared = new Set([
+      // Browser and language globals the script legitimately reaches for.
+      "encodeURIComponent", "String", "Number", "Boolean", "Error", "Date",
+      "Promise", "JSON", "Math", "Object", "Array", "fetch", "setTimeout",
+      "clearTimeout", "FileReader", "parseInt", "parseFloat", "isNaN",
+      // Keywords that take a parenthesised head.
+      "if", "for", "while", "switch", "catch", "return", "function", "typeof",
+      "new", "delete", "throw", "in", "of", "do", "else", "instanceof", "void",
+    ]);
+    for (const m of src.matchAll(/\bfunction\s+([A-Za-z_$][\w$]*)\s*\(/g)) declared.add(m[1] ?? "");
+    for (const m of src.matchAll(/\b(?:var|let|const)\s+([A-Za-z_$][\w$]*)/g)) declared.add(m[1] ?? "");
+    for (const m of src.matchAll(/\bfunction\s*[\w$]*\s*\(([^)]*)\)/g)) {
+      for (const p of (m[1] ?? "").split(",")) if (p.trim()) declared.add(p.trim());
+    }
+
+    const undefinedCallees = new Set<string>();
+    for (const m of src.matchAll(/(^|[^\w$.])([A-Za-z_$][\w$]*)\s*\(/gm)) {
+      const name = m[2] ?? "";
+      if (!declared.has(name)) undefinedCallees.add(name);
+    }
+    expect([...undefinedCallees]).toEqual([]);
+  });
+
   test("every state and unknown-reason the hub can send has wording", () => {
     const { en, ja } = dictionaries();
     for (const state of RerunStateSchema.options) {
@@ -120,14 +153,18 @@ describe("hub UI: needs re-run", () => {
     }
   });
 
-  test("unknown never reads like notNeeded, and uses the ADR's Japanese words", () => {
+  test("unknown never reads like notNeeded, and is worded the same wherever it appears", () => {
     const { en, ja } = dictionaries();
     expect(ja["perspectives.rerun.state.needed"]).toBe("要再実行");
     expect(ja["perspectives.rerun.state.notNeeded"]).toBe("不要");
-    expect(ja["perspectives.rerun.state.unknown"]).toBe("不明");
     expect(ja["perspectives.rerun.state.neverRun"]).toBe("未実行");
     for (const dict of [en, ja]) {
       expect(dict["perspectives.rerun.state.unknown"]).not.toBe(dict["perspectives.rerun.state.notNeeded"]);
+      // "We cannot say" appears on the summary bar, in the table cell, and on
+      // the drift axis. Three wordings for one state reads as three states.
+      for (const key of ["perspectives.run.state.unknown", "perspectives.drift.state.unknown"]) {
+        expect(dict[key]!.toLowerCase()).toBe(dict["perspectives.rerun.state.unknown"]!.toLowerCase());
+      }
     }
   });
 
@@ -175,10 +212,13 @@ describe("hub UI: needs re-run", () => {
     const cls = Object.fromEntries(rerunSegments(counts).map((s) => [s.state, s.cls]));
     expect(cls.unknown).not.toBe(cls.notNeeded);
     // And it must not be painted like a pass: notNeeded owns --pass, unknown
-    // takes the info hue.
-    expect(HTML).toMatch(new RegExp(`\\.${cls.unknown}\\s*\\{[^}]*var\\(--info\\)`));
-    expect(HTML).not.toMatch(new RegExp(`\\.${cls.unknown}\\s*\\{[^}]*var\\(--pass\\)`));
-    expect(HTML).toMatch(new RegExp(`\\.${cls.notNeeded}\\s*\\{[^}]*var\\(--pass\\)`));
+    // takes the info hue. `[^{}]*` rather than `\s*` so the class may share its
+    // rule with others (drift's unknown reuses this one) — it cannot cross a
+    // rule boundary, since braces are excluded.
+    const rule = (c: string, v: string) => new RegExp(`\\.${c}[^{}]*\\{[^}]*var\\(--${v}\\)`);
+    expect(HTML).toMatch(rule(cls.unknown!, "info"));
+    expect(HTML).not.toMatch(rule(cls.unknown!, "pass"));
+    expect(HTML).toMatch(rule(cls.notNeeded!, "pass"));
   });
 
   test("every state the hub can send has a segment, and an unrecognised one is not an all-clear", () => {
@@ -292,9 +332,9 @@ describe("hub UI: needs re-run", () => {
   });
 
   test("the panel repeats nothing the row already carries", () => {
-    // The verdict badge is rendered in exactly one place — the table cell. Two
-    // matches: the definition and that single call.
-    expect(clientScript().match(/rerunBadge\(/g)).toHaveLength(2);
+    // The execution verdict is rendered in exactly one place — the table cell.
+    // Two matches: the state function's definition and that single call.
+    expect(clientScript().match(/perspRunState\(/g)).toHaveLength(2);
     const { en, ja } = dictionaries();
     for (const key of [
       // The verdict badge and its explanation were a second copy of the cell.
@@ -322,7 +362,7 @@ describe("hub UI: needs re-run", () => {
   });
 
   test("the re-run surface starts hidden, so an older hub degrades to the current view", () => {
-    for (const id of ["persp-th-result", "persp-th-rerun", "persp-chip-rerun"]) {
+    for (const id of ["persp-th-run", "persp-chip-rerun"]) {
       const tag = HTML.match(new RegExp(`<[^>]*id="${id}"[^>]*>`));
       expect(tag, `${id} is missing from the markup`).toBeTruthy();
       expect(tag![0]).toContain("hidden");

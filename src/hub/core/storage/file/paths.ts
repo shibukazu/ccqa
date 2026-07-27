@@ -14,6 +14,7 @@ import type { SecretScope } from "../types.ts";
  *   triage/<runId>.json                         (TriageRecord[])
  *   jobs/<id>/job.json                          (LearningJob record, mutated as it runs)
  *   last-green/<project>/<profile>/<branch>.json (SpecLedger: green/run/red buckets)
+ *   drift-ledger/<project>/<branch>.json         (DriftLedger, no profile)
  *   deploys/<project>/<profile>/log.json         (DeployLog, ring-buffered)
  *   deploys/<project>/<profile>/touch.json       (SpecTouchIndex derived from the log)
  *
@@ -116,13 +117,26 @@ export function ledgerProfileDir(root: string, project: string, profile: string)
 // escaped byte becomes %XX; a fully-CJK branch triples), so past 200 chars
 // the name switches to a truncated-prefix + content-hash form to stay under
 // the ~255-byte filename limit — deterministic, so reads and writes agree.
-export function ledgerPath(root: string, project: string, profile: string, branch: string): string {
+// Shared by both ledgers (spec and drift) that key a per-branch document.
+function encodeBranchFilename(branch: string): string {
   const encoded = encodeURIComponent(branch);
-  const name =
-    encoded.length <= 200
-      ? encoded
-      : `${encoded.slice(0, 64)}-${createHash("sha256").update(branch).digest("hex").slice(0, 32)}`;
-  return join(ledgerProfileDir(root, project, profile), `${name}.json`);
+  return encoded.length <= 200
+    ? encoded
+    : `${encoded.slice(0, 64)}-${createHash("sha256").update(branch).digest("hex").slice(0, 32)}`;
+}
+
+export function ledgerPath(root: string, project: string, profile: string, branch: string): string {
+  return join(ledgerProfileDir(root, project, profile), `${encodeBranchFilename(branch)}.json`);
+}
+
+// Drift ledger: drift-ledger/<project>/<branch>.json. No profile directory —
+// drift is not scoped by environment (see SpecDriftEntrySchema).
+export function driftLedgerProjectDir(root: string, project: string): string {
+  return join(root, "drift-ledger", project);
+}
+
+export function driftLedgerPath(root: string, project: string, branch: string): string {
+  return join(driftLedgerProjectDir(root, project), `${encodeBranchFilename(branch)}.json`);
 }
 
 // Deploy log and its derived touch index, per (project, profile) — profile is

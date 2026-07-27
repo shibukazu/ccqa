@@ -15,7 +15,12 @@ import { DEFAULT_REPORT_DIR } from "../run/report-constants.ts";
 import { githubRunUrl } from "../run/github-run.ts";
 import { deployHeadSha } from "../run/deploy-head.ts";
 import { errMessage } from "../run/errors.ts";
-import { capDeployPaths, changedPathsBetween } from "./deploy-paths.ts";
+import { capDeployPaths } from "./deploy-paths.ts";
+import { getChangedFilesBetween, type ChangedFile } from "../drift/affected.ts";
+import { selectSpecs } from "../select/analyze.ts";
+import { loadSpecInventory } from "../select/inventory.ts";
+import type { DeploySelection } from "../hub/contract/schema.ts";
+import { specKey } from "../store/index.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { hubTokenOption, hubUrlOption, resolveHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
@@ -350,6 +355,8 @@ interface DeployRecordOptions extends HubConnOptions {
   sha: string;
   previous?: string;
   ref?: string;
+  select?: boolean;
+  model?: string;
 }
 
 const deployRecord = new Command("record")
@@ -366,9 +373,18 @@ const deployRecord = new Command("record")
   .requiredOption("--sha <sha>", "Commit that was deployed.")
   .option(
     "--previous <sha>",
-    "Commit this deploy replaced. Defaults to the profile's current deploy-log head on the hub. With neither, the deploy is recorded as touching everything.",
+    "Commit this deploy replaced. Defaults to the profile's current deploy-log head on the hub. With neither, there's nothing to diff against: changedPaths is unset and --select is skipped.",
   )
   .option("--ref <ref>", "Ref that was deployed (branch or tag). Recorded for display only.")
+  .option(
+    "--select",
+    "Also decide which specs this deploy reaches (`ccqa select-specs`) and send the verdict with it. " +
+      "Without it the deploy is a hole in the range: specs behind it report 'unknown' rather than 'not needed'.",
+  )
+  .option(
+    "-m, --model <name>",
+    "Model for --select. Claude alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+  )
   .option(...hubUrlOption)
   .option(...hubTokenOption)
   .option("--project <name>", "Project whose deploy log this entry joins. Defaults to the current directory's name.")
@@ -381,16 +397,23 @@ const deployRecord = new Command("record")
     // Without an explicit predecessor, the hub's own head is the only honest
     // answer to "what did this replace" — ccqa never guesses a baseline. When
     // there is no head yet (the first ever deploy), there is nothing to diff
-    // against, and `changedPaths: null` tells the hub to treat the entry as
-    // touching everything rather than as an empty change set.
+    // against: changedPaths stays null (record-only; re-run verdicts are
+    // decided from `hasSelection`, not from it) rather than an empty change set.
     const previous = opts.previous ?? (await deployHeadSha(hub, project, opts.profile));
     const runUrl = githubRunUrl();
-    const changedPaths = previous === null ? null : await diffOrTouchEverything(previous, opts.sha, cwd);
+    // One diff for the whole range, shared below by `changedPaths` and
+    // `--select` — they used to each run their own git diff over it.
+    const diff = previous === null ? null : await diffOrNull(previous, opts.sha, cwd);
+    const changedPaths = diff ? capDeployPaths(diff.map((f) => f.path)) : null;
+    const selection = opts.select && previous !== null && diff !== null
+      ? await selectionForDeploy(diff, previous, opts.sha, cwd, opts.model)
+      : undefined;
 
     const entry = await hub.recordDeploy(project, opts.profile, {
       sha: opts.sha,
       previousSha: previous,
       changedPaths,
+      ...(selection ? { selection } : {}),
       ...(opts.ref ? { ref: opts.ref } : {}),
       // Same source `ccqa run` uses, so a deploy recorded from Actions links
       // back to its job with no extra flag.
@@ -400,9 +423,9 @@ const deployRecord = new Command("record")
     log.header("hub deploy record", entry.sha.slice(0, 12));
     log.meta("project", project);
     log.meta("profile", opts.profile);
-    log.meta("previous", previous ? previous.slice(0, 12) : "(none — treated as touching everything)");
+    log.meta("previous", previous ? previous.slice(0, 12) : "(none)");
     log.meta("changed paths", changedPaths === null ? "(not reported)" : String(changedPaths.length));
-    if (entry.truncated) log.meta("truncated", "yes — the hub treats this deploy as touching everything");
+    if (opts.select) log.meta("selection", describeSelection(selection, diff !== null));
     if (entry.gapBefore) {
       log.warn(
         "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it report 'unknown' rather than 'not needed'",
@@ -412,22 +435,80 @@ const deployRecord = new Command("record")
   }));
 
 /**
- * The two-dot diff, or `null` when git can't produce one (a shallow checkout
- * that never fetched `previous`, a rolled-back sha that isn't local). `null`
- * makes the hub treat the deploy as touching everything: fail-open and
- * self-limiting — everything re-runs once, then it settles — whereas silently
- * sending an empty list would claim the deploy changed nothing.
+ * Decide which specs this deploy reaches, in the shape the hub stores.
+ *
+ * Takes the diff `deployRecord` already fetched for `changedPaths`, rather
+ * than diffing again — the decision needs the diff and the spec tree, and the
+ * hub has neither, but there's no reason to ask git for the same range twice.
+ * `undefined` on failure rather than a half-answer: the deploy is then
+ * recorded without a selection, and specs behind it read `unknown` instead of
+ * being cleared by a selection that isn't there.
  */
-async function diffOrTouchEverything(previous: string, sha: string, cwd: string): Promise<string[] | null> {
+async function selectionForDeploy(
+  changed: readonly ChangedFile[],
+  previous: string,
+  sha: string,
+  cwd: string,
+  model: string | undefined,
+): Promise<DeploySelection | undefined> {
   try {
-    return capDeployPaths(await changedPathsBetween(previous, sha, cwd));
+    const specs = await loadSpecInventory(cwd);
+    if (specs.length === 0) return undefined;
+    const report = await selectSpecs({
+      changed,
+      specs,
+      cwd,
+      base: previous,
+      head: sha,
+      ...(model ? { model } : {}),
+    });
+    return Object.fromEntries(
+      report.specs.map((s) => [
+        specKey(s),
+        {
+          verdict: s.verdict,
+          reason: s.reason,
+          ...(s.touchedBy?.length ? { touchedBy: s.touchedBy } : {}),
+        },
+      ]),
+    );
+  } catch (err) {
+    log.warn(
+      `could not decide which specs this deploy reaches (${errMessage(err)}); ` +
+        "recording the deploy without a selection",
+    );
+    return undefined;
+  }
+}
+
+/**
+ * The two-dot diff for this deploy's range, or `null` when git can't produce
+ * one (a shallow checkout that never fetched `previous`, a rolled-back sha
+ * that isn't local). Shared by `changedPaths` and `--select`'s input, so a
+ * diff failure skips both rather than each attempting — and separately
+ * failing — its own git call.
+ */
+async function diffOrNull(previous: string, sha: string, cwd: string): Promise<ChangedFile[] | null> {
+  try {
+    return await getChangedFilesBetween(previous, sha, cwd, { detectRenames: false });
   } catch (err) {
     log.warn(
       `could not diff ${previous.slice(0, 12)}..${sha.slice(0, 12)} (${errMessage(err)}); ` +
-        "recording the deploy as touching everything",
+        "recording the deploy without changed paths",
     );
     return null;
   }
+}
+
+/** The `--select` summary line: verdict counts, or why there isn't one. */
+function describeSelection(selection: DeploySelection | undefined, diffAvailable: boolean): string {
+  if (!selection) {
+    return diffAvailable ? "(skipped — see warning above)" : "(skipped — no diff to select against)";
+  }
+  const values = Object.values(selection);
+  const needed = values.filter((s) => s.verdict === "needed").length;
+  const unknown = values.filter((s) => s.verdict === "unknown").length;
+  return `${needed} needed / ${unknown} unknown / ${values.length} specs`;
 }
 
 const deployCommand = new Command("deploy")

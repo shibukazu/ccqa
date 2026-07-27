@@ -50,6 +50,18 @@ steps: []
     expect(err).not.toBeNull();
     expect(err!.message).toMatch(/Invalid spec\.yaml/);
   });
+
+  it("points a spec with `relatedPaths` at `ccqa select-specs` instead of a generic unknown-key error", () => {
+    expect(() =>
+      parseTestSpec(`title: demo
+relatedPaths:
+  - src/foo.ts
+steps:
+  - instruction: i
+    expected: e
+`),
+    ).toThrow(/relatedPaths.*no longer part of the spec schema.*ccqa select-specs/s);
+  });
 });
 
 describe("parseBlockSpec", () => {
@@ -73,5 +85,17 @@ steps:
   - include: inner
 `),
     ).toThrow(/Nested blocks/);
+  });
+
+  it("points a block with `relatedPaths` at the same migration note as a spec", () => {
+    expect(() =>
+      parseBlockSpec(`title: Login
+relatedPaths:
+  - src/foo.ts
+steps:
+  - instruction: i
+    expected: e
+`),
+    ).toThrow(/relatedPaths.*no longer part of the spec schema.*ccqa select-specs/s);
   });
 });

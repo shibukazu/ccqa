@@ -417,8 +417,6 @@ export async function listSpecsForFeature(featureName: string, cwd?: string): Pr
 export interface FeatureTreeSpec {
   specName: string;
   hasSpecFile: boolean;
-  /** Absent when the spec file is missing or the field is omitted. */
-  relatedPaths?: string[];
   /** Names of blocks this spec includes. Empty array when none. */
   includedBlocks?: string[];
 }
@@ -447,13 +445,11 @@ export async function listFeatureTree(cwd?: string): Promise<FeatureTreeEntry[]>
           if (content === null) return { specName, hasSpecFile: false };
           try {
             const spec = parseTestSpec(content, specFile);
-            const entry: FeatureTreeSpec = {
+            return {
               specName,
               hasSpecFile: true,
               includedBlocks: collectIncludedBlockNames(spec),
             };
-            if (spec.relatedPaths) entry.relatedPaths = spec.relatedPaths;
-            return entry;
           } catch {
             return { specName, hasSpecFile: true };
           }

@@ -54,7 +54,7 @@ function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; r
             assertions: null,
             analysis: null,
             analysisSkipped: null,
-            driftIssues: null,
+            driftAudit: null,
             failureLogExcerpt: null,
             diffExcerpt: null,
             specYaml: null,
@@ -72,19 +72,20 @@ function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; r
 }
 
 /**
- * Build a pushed-report archive with `driftIssues` set on its specs, as
- * produced by `ccqa drift --push` (`kind: "drift"` report.json). Two specs:
- * one with a mix of ERROR/WARN/OK issues, one with none.
+ * Build a pushed-report archive with a per-spec drift diagnosis in `analysis`
+ * (never `driftAudit`, which is a normal run's own audit evidence — see
+ * ReportSpecResultSchema), as produced by `ccqa drift --push` (`kind: "drift"`
+ * report.json). Three specs: one TEST_DRIFT (error severity), one UNKNOWN
+ * (warn severity), one clean (no diagnosis).
  */
-function makeDriftReportTarGz(): Uint8Array {
-  const baseResult: Omit<ReportSpecResult, "feature" | "spec" | "driftIssues"> = {
+function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
+  const baseResult: Omit<ReportSpecResult, "feature" | "spec" | "analysis" | "status"> = {
     title: null,
-    status: "passed",
     testCounts: null,
     durationMs: null,
     assertions: null,
-    analysis: null,
     analysisSkipped: null,
+    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,
@@ -96,7 +97,7 @@ function makeDriftReportTarGz(): Uint8Array {
     kind: "drift",
     createdAt: new Date().toISOString(),
     runId: null,
-    git: { head: null, base: null },
+    git: { head: opts.gitHead ?? null, base: null },
     model: null,
     language: null,
     promptVersion: "1",
@@ -105,18 +106,39 @@ function makeDriftReportTarGz(): Uint8Array {
       {
         ...baseResult,
         feature: "demo",
-        spec: "with-issues",
-        driftIssues: [
-          { severity: "ERROR", category: "assertable", stepId: "step-1", message: "mismatch", detail: null },
-          { severity: "WARN", category: "blocks", stepId: null, message: "stale block", detail: null },
-          { severity: "OK", category: "granularity", stepId: null, message: "fine", detail: null },
-        ],
+        spec: "test-drift",
+        status: "failed",
+        analysis: {
+          label: "TEST_DRIFT",
+          confidence: 0.8,
+          subDiagnosis: "SELECTOR_DRIFT",
+          headline: "mismatch",
+          recommendation: "",
+          evidence: [],
+          reasoning: "",
+        },
+      },
+      {
+        ...baseResult,
+        feature: "demo",
+        spec: "unknown-drift",
+        status: "passed",
+        analysis: {
+          label: "UNKNOWN",
+          confidence: 0.3,
+          subDiagnosis: "NONE",
+          headline: "cannot tell",
+          recommendation: "",
+          evidence: [],
+          reasoning: "",
+        },
       },
       {
         ...baseResult,
         feature: "demo",
         spec: "clean",
-        driftIssues: [],
+        status: "passed",
+        analysis: null,
       },
     ],
   };
@@ -139,7 +161,7 @@ function makeRow(overrides: Partial<ReportSpecResult> = {}): ReportSpecResult {
     assertions: null,
     analysis: null,
     analysisSkipped: null,
-    driftIssues: null,
+    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,
@@ -378,7 +400,7 @@ describe("hub API server", () => {
       expect(reportRes.status).toBe(200);
     });
 
-    test("POST ?kind=drift stores drift summary counts derived from driftIssues", async () => {
+    test("POST ?kind=drift stores drift summary counts derived from each spec's diagnosis", async () => {
       const res = await fetch(`${baseUrl}/api/v1/runs?project=demo&kind=drift`, authed({
         method: "POST",
         body: makeDriftReportTarGz(),
@@ -386,7 +408,7 @@ describe("hub API server", () => {
       expect(res.status).toBe(201);
       const run = await json(res);
       expect(run.kind).toBe("drift");
-      expect(run.drift).toEqual({ issues: 3, errors: 1, warnings: 1, specsWithIssues: 1 });
+      expect(run.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, unknown: 1 });
     });
 
     test("POST with no ?kind (and explicit ?kind=run) defaults to a kind:\"run\" Run with drift:null", async () => {
@@ -467,6 +489,69 @@ describe("hub API server", () => {
       const run = await json(res);
       expect(run.ciRunId).toBe("424242");
       expect(run.runUrl).toBe(runUrl);
+    });
+
+    test("sealing a kind=drift run derives its label counts, like the single-shot push", async () => {
+      // The single-shot push summarises the whole report at create time. Here
+      // the rows only exist at `done`, so the counts have to be derived there
+      // too — otherwise `drift` stays null on a run whose rows plainly carry
+      // diagnoses, and "no summary" becomes indistinguishable from "no drift".
+      const res = await fetch(`${baseUrl}/api/v1/runs/open?project=demo&kind=drift`, authed({ method: "POST" }));
+      const run = await json(res);
+      expect(run.drift).toBeNull();
+
+      const diagnosis = (label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN") => ({
+        label,
+        confidence: 0.9,
+        headline: "h",
+        recommendation: "r",
+        evidence: [],
+        reasoning: "",
+      });
+      const sealed = await json(
+        await patch(run.id as string, {
+          rows: [
+            makeRow({ spec: "a", status: "failed", analysis: diagnosis("TEST_DRIFT") }),
+            makeRow({ spec: "b", status: "passed", analysis: diagnosis("UNKNOWN") }),
+            makeRow({ spec: "c", status: "passed" }),
+          ],
+          done: true,
+        }),
+      );
+      expect(sealed.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, unknown: 1 });
+    });
+
+    test("grading a drift row is joined on as gradedDrift, leaving the audit's own counts alone", async () => {
+      // A grade is the ground truth and every screen should follow it, but the
+      // run must keep saying what the audit found — that pair is what the
+      // confusion matrix measures. So the corrected counts ride alongside.
+      const res = await fetch(`${baseUrl}/api/v1/runs/open?project=demo&kind=drift`, authed({ method: "POST" }));
+      const run = await json(res);
+      const analysis: NonNullable<ReportSpecResult["analysis"]> = {
+        label: "TEST_DRIFT",
+        confidence: 0.9,
+        headline: "h",
+        recommendation: "r",
+        evidence: [],
+        reasoning: "",
+      };
+      await patch(run.id as string, {
+        rows: [
+          makeRow({ spec: "a", status: "failed", analysis }),
+          makeRow({ spec: "b", status: "failed", analysis }),
+        ],
+        done: true,
+      });
+
+      const graded = await fetch(
+        `${baseUrl}/api/v1/runs/${run.id}/triage/demo/a/actual-cause`,
+        authed({ method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cause: "NO_DRIFT" }) }),
+      );
+      expect(graded.status).toBe(200);
+
+      const after = await json(await fetch(`${baseUrl}/api/v1/runs/${run.id}`, authed()));
+      expect(after.drift).toEqual({ specs: 2, testDrift: 2, specChange: 0, unknown: 0 });
+      expect(after.gradedDrift).toEqual({ specs: 2, testDrift: 1, specChange: 0, unknown: 0, noDrift: 1, graded: 1 });
     });
 
     test("PATCH with one row (no done) updates the report and specs, and stays running", async () => {
@@ -705,15 +790,47 @@ describe("hub API server", () => {
     });
   });
 
+  describe("drift ledger", () => {
+    function getDriftLedger(project: string): Promise<{ project: string; specs: Record<string, { label: string | null; gitHead: string; runId: string }> }> {
+      return fetch(`${baseUrl}/api/v1/projects/${project}/drift`, authed()).then(json);
+    }
+
+    test("pushing a kind:\"drift\" run advances the ledger, readable via GET /drift with no ?profile=", async () => {
+      const sha = "e".repeat(40);
+      const pushRes = await fetch(`${baseUrl}/api/v1/runs?project=dr&kind=drift&branch=main`, authed({
+        method: "POST",
+        body: makeDriftReportTarGz({ gitHead: sha }),
+      }));
+      expect(pushRes.status).toBe(201);
+
+      const ledger = await getDriftLedger("dr");
+      expect(ledger.specs["demo/test-drift"]).toMatchObject({ label: "TEST_DRIFT", gitHead: sha });
+      expect(ledger.specs["demo/unknown-drift"]).toMatchObject({ label: "UNKNOWN", gitHead: sha });
+      // Audited and clean (label: null) is distinct from never having a row at all.
+      expect(ledger.specs["demo/clean"]).toMatchObject({ label: null, gitHead: sha });
+      expect(ledger.specs["demo/never-audited"]).toBeUndefined();
+    });
+
+    test("a kind:\"run\" push does not touch the drift ledger", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=dr-run&branch=main`, authed({
+        method: "POST",
+        body: makeReportTarGz({ status: "passed" }),
+      }));
+      expect(res.status).toBe(201);
+
+      const ledger = await getDriftLedger("dr-run");
+      expect(ledger.specs).toEqual({});
+    });
+  });
+
   describe("deploy log and re-run selection", () => {
     const PROJECT = "rr";
 
-    function specEntry(specName: string, relatedPaths?: string[]) {
+    function specEntry(specName: string) {
       return {
         specName,
         title: specName,
         summary: "",
-        ...(relatedPaths ? { relatedPaths } : {}),
         status: { mode: "deterministic", traced: true, generated: true },
       };
     }
@@ -726,7 +843,7 @@ describe("hub API server", () => {
           features: [
             {
               featureName: "f",
-              specs: [specEntry("a", ["src/a/**"]), specEntry("b", ["src/b/**"]), specEntry("unscoped")],
+              specs: [specEntry("a"), specEntry("b"), specEntry("unscoped")],
             },
           ],
         }),
@@ -775,7 +892,7 @@ describe("hub API server", () => {
       await finishRun(opened.id, [makeRow({ feature: "f", spec: "b", status: "passed" })]);
     }
 
-    test("a deploy touching a spec's relatedPaths turns that spec — and only that spec — needed", async () => {
+    test("a deploy's selection turns a spec needed, notNeeded, or unknown — independently per spec", async () => {
       await putPerspectives();
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: ["src/a/x.ts"] });
 
@@ -792,10 +909,18 @@ describe("hub API server", () => {
       expect(settled.deployHead).toMatchObject({ index: 0, sha: "d1" });
       expect(settled.specs["f/a"].state).toBe("notNeeded");
       expect(settled.specs["f/b"].state).toBe("notNeeded");
-      // No relatedPaths means the question cannot be answered, ever.
-      expect(settled.specs["f/unscoped"]).toMatchObject({ state: "unknown", reason: "noRelatedPaths" });
+      expect(settled.specs["f/unscoped"].state).toBe("notNeeded");
 
-      await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/a/y.ts", "docs/z.md"] });
+      await recordDeploy({
+        sha: "d2",
+        previousSha: "d1",
+        changedPaths: ["src/a/y.ts", "docs/z.md"],
+        selection: {
+          "f/a": { verdict: "needed", reason: "touches src/a", touchedBy: ["src/a/y.ts"] },
+          "f/b": { verdict: "notNeeded", reason: "no match" },
+          "f/unscoped": { verdict: "unknown", reason: "could not tell" },
+        },
+      });
       const after = await getRerun();
       // The verdict names the deploy that caused it, not just the head.
       expect(after.specs["f/a"]).toMatchObject({
@@ -804,6 +929,7 @@ describe("hub API server", () => {
         touchedByDeploy: { index: 1, sha: "d2" },
       });
       expect(after.specs["f/b"].state).toBe("notNeeded");
+      expect(after.specs["f/unscoped"]).toMatchObject({ state: "unknown", reason: "selectionUnknown" });
       expect(after.specs["f/a"].lastGreen.gitHead).toBe("e".repeat(40));
     });
 
@@ -814,10 +940,10 @@ describe("hub API server", () => {
       expect((await getRerun()).specs["f/b"]).toMatchObject({ state: "unknown", reason: "gapInRange" });
     });
 
-    test("a deploy that reported no paths is treated as touching everything", async () => {
+    test("a deploy recorded without a selection leaves affected specs unknown, not notNeeded", async () => {
       await baselineRun();
-      await recordDeploy({ sha: "d2", previousSha: "d1" });
-      expect((await getRerun()).specs["f/b"].state).toBe("needed");
+      await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/b/z.ts"] });
+      expect((await getRerun()).specs["f/b"]).toMatchObject({ state: "unknown", reason: "noSelectionInRange" });
     });
 
     test("a run that straddles a deploy is unknown rather than credited with either commit", async () => {

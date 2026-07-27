@@ -130,22 +130,31 @@ all. Run it from the deploy job, after the deploy succeeds. Flags:
 - `--sha <sha>` — **required**: the commit that was deployed.
 - `--previous <sha>` — the commit it replaced. Omitted, ccqa asks the hub
   for the profile's current deploy-log head and diffs against that. With
-  neither (the first deploy ever recorded), the entry is stored as touching
-  everything, which makes every spec re-run once and then settles.
+  neither (the first deploy ever recorded), there's nothing to diff against:
+  the entry is recorded with no selection, so every spec behind it reads
+  `unknown` until a later deploy resolves it.
 - `--ref <ref>` — the branch or tag deployed, recorded for display.
+- `--select` — also decide which specs this deploy reaches
+  ([`ccqa select-specs`](./running.md#asking-the-question-on-its-own)) and
+  submit the verdicts with the entry. **Pass it**: without a selection the
+  deploy is a hole in the range, and every spec behind it reports `unknown`
+  rather than `notNeeded` — the hub has no other way to know what the deploy
+  touched. Skipped when there is no previous deploy to diff against.
+- `-m, --model <name>` — model for `--select`. A cheap one is enough; the
+  selection costs a fraction of the runs it avoids.
 - `--project`, `--hub-url`, `--hub-token`, `--cwd` — as everywhere else.
 
 The changed paths come from a **two-dot** `git diff <previous> <sha>`,
 computed locally and posted with the entry. Two-dot matters: a three-dot
 diff resolves the merge base first, so redeploying an ancestor — a rollback
 — would report an empty diff and the rollback would become invisible.
-Rename detection is off, so a file moved out of a spec's `relatedPaths`
-still lists its old path.
+Rename detection is off, so a renamed file's old path is still listed
+alongside its new one.
 
 If the diff can't be produced (a shallow checkout that never fetched
-`previous`), ccqa warns and records the deploy as touching everything rather
-than claiming it changed nothing. Very large diffs are capped; the hub marks
-such an entry truncated and treats it the same way.
+`previous`), ccqa warns and records the deploy without changed paths — they're
+kept for display only and have no effect on re-run verdicts, which are
+decided from `hasSelection` instead. Very large diffs are capped in storage.
 
 A deploy job that has only `curl` and `git` can post the same body itself:
 
@@ -161,8 +170,9 @@ curl -sS -X POST \
   -d "$body"
 ```
 
-Omit `changedPaths` (or send `null`) to declare the deploy as touching
-everything. See [the API reference](./hub-api.md#deploys-and-re-run-selection)
+Omit `changedPaths` (or send `null`) when it can't be produced — it's kept for
+display only and has no effect on re-run verdicts. See
+[the API reference](./hub-api.md#deploys-and-re-run-selection)
 for the full contract, and
 [ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md) for why the
 deploy job — not the hub — is the actor that answers this.
@@ -278,6 +288,27 @@ want the hub to run those, give the hub process its own `ANTHROPIC_API_KEY` /
 Claude login. The hub starts fine without any credentials — only learning
 jobs fail (with a clear error) until you add one.
 
+## Drift ledger
+
+Whenever `ccqa drift --push` lands a `kind: "drift"` run, the hub advances a
+per-project **drift ledger**: one entry per spec holding its newest audit
+outcome. Unlike the spec ledger behind `/last-green` and `/rerun`, it carries
+no profile — drift asks whether a spec still describes the code, which has
+nothing to do with which environment is running it.
+
+- **Never audited** — the spec has no entry in the ledger at all.
+- **No drift found** — the spec was audited and still matched the code.
+- **Diagnosed** — `TEST_DRIFT` / `SPEC_CHANGE` / `UNKNOWN`, with the surface
+  (`spec` or `generated`) that decides how to fix it.
+
+"No drift found" and "never audited" are deliberately kept apart — collapsing
+them would read a spec nobody has checked yet as one that's known-clean.
+
+Read it via `GET /api/v1/projects/:project/drift` (no `?profile=` — see
+[the API reference](./hub-api.md#drift-ledger)), or in the **Perspectives**
+tab below, which shows it beside — never merged with — the re-run column,
+since the two answer different questions.
+
 ## The bundled UI
 
 Browsing `http://<hub>/` opens a small built-in dashboard (no build step, no
@@ -316,9 +347,13 @@ else is scoped to the selected project.
   [perspectives in the spec guide](./spec.md#inventory-coverage-with-perspectives)):
   a summary strip (features, test cases, deterministic/live breakdown, and a
   runnable-coverage bar) above one searchable, filterable table of every
-  case, grouped by feature. Expanding a row shows the case's preconditions,
-  start screen, related code, and a **note** field editable right here — the
-  document's only human-written field, preserved across regenerations.
+  case, grouped by feature. When the hub has the data, each row also shows
+  whether the case needs a re-run and its [drift ledger](#drift-ledger)
+  status (never audited / no drift / diagnosed, with the audited commit) —
+  two separate columns, since they answer two separate questions. Expanding a
+  row shows the case's preconditions, start screen, related code, and a
+  **note** field editable right here — the document's only human-written
+  field, preserved across regenerations.
 - **Secrets** lists, adds, and deletes the variables and sessions for the
   selected project, per **profile** (chosen with the selector in this tab —
   profiles scope secrets only; prompts and runs are project-wide). Sensitive

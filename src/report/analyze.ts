@@ -27,13 +27,13 @@ export interface FailureAnalysisOutcome {
 
 /**
  * In-process MCP server exposing one tool: the diff hunk of a named changed
- * file. The inline patch in the prompt is only the relatedPaths-scoped seed;
- * this is the pull side — the model fetches hunks for files outside that
- * scope (or truncated inside it) only when it decides they matter, so the
- * full diff never has to ride in the prompt. Read-only over data already
- * captured in memory: no shell, no git access granted. The server/tool
- * names must compose to CHANGED_FILE_DIFF_TOOL (prompt.ts), which is how
- * the prompt tells the model to call it.
+ * file. The inline patch in the prompt is only a truncated seed; this is the
+ * pull side — the model fetches a hunk cut or dropped by truncation only
+ * when it decides it matters, so the full diff never has to ride in the
+ * prompt. Read-only over data already captured in memory: no shell, no git
+ * access granted. The server/tool names must compose to
+ * CHANGED_FILE_DIFF_TOOL (prompt.ts), which is how the prompt tells the
+ * model to call it.
  */
 function buildDiffMcpServer(getFileDiff: (path: string) => string | null) {
   return createSdkMcpServer({
@@ -42,7 +42,7 @@ function buildDiffMcpServer(getFileDiff: (path: string) => string | null) {
     tools: [
       tool(
         "changed_file_diff",
-        "Return the unified diff (base...HEAD) of one changed file from this run's diff range. Works for ANY file listed in 'Changed files (name-status)', including files outside the spec's relatedPaths scope whose hunks are not in the inline patch.",
+        "Return the unified diff (base...HEAD) of one changed file from this run's diff range. Works for ANY file listed in 'Changed files (name-status)', including one whose hunk was cut or dropped by truncation from the inline patch.",
         { path: z.string().describe("File path exactly as it appears in the name-status list") },
         async ({ path }) => {
           const hunk = getFileDiff(path);

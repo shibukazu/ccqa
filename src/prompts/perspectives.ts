@@ -4,8 +4,8 @@
  * The CLI hands Claude a fully-built skeleton (every feature/spec with its
  * title and steps) and asks only for the human-readable descriptive fields:
  * `summary`, plus the QA-table-style `startScreen`, `testCondition`, and
- * `preconditions`. The structural facts — status, relatedPaths, the set of
- * specs itself — are decided by the CLI and must not be touched, so we only
+ * `preconditions`. The structural facts — status, the set of specs itself —
+ * are decided by the CLI and must not be touched, so we only
  * ask Claude for those descriptive fields and merge them back ourselves. This
  * keeps the factual inventory deterministic and stops the model from
  * inventing entries.
@@ -38,7 +38,7 @@ Think of it as a QA coverage stock-take: for each existing test case, fill in a 
 - Do NOT evaluate whether the feature is good, complete, or correct.
 - Do NOT propose new test cases.
 - Do NOT restate the full step-by-step procedure or the per-step expected results — the spec.yaml is the source of truth for those and the inventory links to it.
-- Do NOT touch status, relatedPaths, feature names, or spec names — the CLI already fixed those.
+- Do NOT touch status, feature names, or spec names — the CLI already fixed those.
 
 ## Fields to write (per spec)
 

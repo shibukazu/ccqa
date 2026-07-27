@@ -82,6 +82,12 @@ export async function resolveAnalysisBase(
   flagValue: string | true,
   flagName: string,
   cwd: string,
+  /**
+   * How to pass the base on this command, for the "no base" error. Defaults to
+   * `<flagName>=origin/main`, which is right for `--changed` / `--failure-analysis`
+   * but not for `ccqa drift`, where the flag is the separate `--base <ref>`.
+   */
+  baseExample?: string,
 ): Promise<AnalysisBase> {
   let ref: string;
   let source: BaseSource;
@@ -107,7 +113,7 @@ export async function resolveAnalysisBase(
     const ghBase = process.env["GITHUB_BASE_REF"];
     if (!ghBase) {
       throw new RunUsageError(
-        `${flagName} without a base needs GITHUB_BASE_REF (a pull_request workflow); outside that context pass the base explicitly, e.g. ${flagName}=origin/main`,
+        `${flagName} without a base needs GITHUB_BASE_REF (a pull_request workflow); outside that context pass the base explicitly, e.g. ${baseExample ?? `${flagName}=origin/main`}`,
       );
     }
     ref = normalizeGithubBaseRef(ghBase);

@@ -48,9 +48,8 @@ describe("changedPathsBetween", () => {
   });
 
   test("a rename reports both the old and the new path", async () => {
-    // Rename detection would report only `renamed.ts`, so a spec whose
-    // relatedPaths still name `feature.ts` would not be selected even though
-    // the file it depends on moved away.
+    // Rename detection would report only `renamed.ts`, silently dropping
+    // `feature.ts` from what the deploy reports as changed.
     expect((await changedPathsBetween(second, third, repo)).sort()).toEqual(["feature.ts", "renamed.ts"]);
   });
 
@@ -60,9 +59,7 @@ describe("changedPathsBetween", () => {
 });
 
 describe("capDeployPaths", () => {
-  test("the cap sits above the hub's retention bound, so a cut list is always marked truncated", () => {
-    // If it were at or below the bound, the hub would receive a cut-down list,
-    // see nothing to truncate, and treat it as a complete change set.
+  test("caps a deploy's request body well above the hub's own retention bound", () => {
     expect(MAX_SENT_CHANGED_PATHS).toBeGreaterThan(MAX_RETAINED_CHANGED_PATHS);
     const paths = Array.from({ length: MAX_SENT_CHANGED_PATHS + 10 }, (_, i) => `src/f${i}.ts`);
     expect(capDeployPaths(paths)).toHaveLength(MAX_SENT_CHANGED_PATHS);

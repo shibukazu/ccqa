@@ -184,7 +184,7 @@ describe("runLiveSpecs drift audit gating", () => {
     outDir = await mkdtemp(join(tmpdir(), "ccqa-run-live-test-"));
     vi.mocked(analyzeDrift).mockClear();
     vi.mocked(analyzeDrift).mockResolvedValue([
-      { target: { featureName: "x", specName: "y" }, ok: true, issues: [] },
+      { target: { featureName: "x", specName: "y" }, ok: true, drift: null },
     ]);
     vi.mocked(runLiveExecutor)
       .mockReset()

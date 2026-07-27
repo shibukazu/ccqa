@@ -47,7 +47,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option(
       "--changed [base]",
-      "Restrict execution to specs whose relatedPaths intersect the git diff against [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --changed=origin/main), or pass 'last-run' to run the specs the hub says need one — each spec's own last run compared against the deploy log (requires a hub connection and --profile; no git diff involved). Cannot be combined with an explicit spec id.",
+      "Restrict execution to specs ccqa select-specs judges needed against the git diff against [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --changed=origin/main), or pass 'last-run' to run the specs the hub says need one — each spec's own last run compared against the deploy log (requires a hub connection and --profile; no git diff involved). Cannot be combined with an explicit spec id.",
     )
     .option(
       "--include-unknown",

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FailureLabelSchema, PredictedLabelSchema } from "../../report/schema.ts";
+import { ActualCauseSchema, DriftLabelSchema, DriftSurfaceSchema, PredictedLabelSchema } from "../../report/schema.ts";
 
 /**
  * The hub's public REST contract (docs/hub-api.md). These schemas are
@@ -36,16 +36,43 @@ export const RunSchema = z.object({
   status: RunStatusSchema,
   /** "run" = ccqa run/live execution; "drift" = ccqa drift --push. */
   kind: z.enum(["run", "drift"]).default("run"),
-  /** Drift result pushed via `ccqa drift --push`; null for kind:"run". */
+  /**
+   * Drift result pushed via `ccqa drift --push`; null for kind:"run". Counts
+   * by label rather than by a derived severity — a label IS the finding, and
+   * the sum of the three is deliberately not carried: it would always equal
+   * the number of audited specs with a diagnosis, one diagnosis per spec.
+   */
   drift: z
     .object({
-      issues: z.number(),
-      errors: z.number(),
-      warnings: z.number(),
-      specsWithIssues: z.number(),
+      /** How many specs this run audited. */
+      specs: z.number(),
+      testDrift: z.number(),
+      specChange: z.number(),
+      unknown: z.number(),
     })
     .nullable()
     .default(null),
+  /**
+   * The same counts after human grading, present only when at least one row of
+   * a drift run has been graded. Joined in when the run is read, never stored
+   * on the run: a terminal run records what the audit said (ADR-0009), and a
+   * grade is a separate, later claim about the same rows. Readers that want
+   * the current best answer take this when it is there and `drift` otherwise;
+   * keeping both is what lets the confusion matrix stay honest about what the
+   * model predicted.
+   */
+  gradedDrift: z
+    .object({
+      specs: z.number(),
+      testDrift: z.number(),
+      specChange: z.number(),
+      unknown: z.number(),
+      /** Rows a human cleared: the audit reported drift, there was none. */
+      noDrift: z.number(),
+      /** How many of this run's rows carry a grade at all. */
+      graded: z.number(),
+    })
+    .optional(),
   /** Spec-level counts derived from the report's `results[]`. */
   specs: z.object({ total: z.number(), passed: z.number(), failed: z.number() }),
   gitHead: z.string().nullable(),
@@ -100,7 +127,7 @@ export const TriageCaseSchema = z.object({
   /** null when no human has recorded the actual cause yet. */
   actual: z
     .object({
-      cause: FailureLabelSchema,
+      cause: ActualCauseSchema,
       note: z.string().optional(),
       recordedAt: z.string(),
     })
@@ -119,7 +146,7 @@ export const RunTriageSchema = z.object({
 export type RunTriage = z.infer<typeof RunTriageSchema>;
 
 export const PutActualCauseRequestSchema = z.object({
-  cause: FailureLabelSchema,
+  cause: ActualCauseSchema,
   note: z.string().optional(),
 });
 export type PutActualCauseRequest = z.infer<typeof PutActualCauseRequestSchema>;
@@ -218,16 +245,59 @@ export const DeployEntrySchema = z.object({
   /** URL of the deploy job, so the view can link back to it. */
   runUrl: z.string().optional(),
   /**
-   * Paths this deploy changed, from a two-dot diff. Null means the job didn't
-   * report them; either way the entry is then treated as touching everything.
+   * Paths this deploy changed, from a two-dot diff. Record-only: shown by the
+   * view, but not read by `verdict()` — which specs this deploy affects is
+   * decided entirely from `hasSelection` and the folded touch index (see
+   * `foldTouchIndex`/`computeRerun`). Null means the job didn't report them.
    */
   changedPaths: z.array(z.string()).nullable(),
-  /** True when `changedPaths` was cut to a bound and no longer lists every change. */
-  truncated: z.boolean().default(false),
+  /**
+   * Whether the deploy job supplied a spec selection alongside the paths.
+   *
+   * Re-run verdicts are folded from selections, so a deploy recorded without
+   * one is a hole in the range: the specs behind it cannot be cleared, only
+   * reported `unknown`. Recorded per entry rather than inferred, because
+   * "nothing was selected" and "no selection was run" mean opposite things.
+   */
+  hasSelection: z.boolean().default(false),
   /** True when `previousSha` did not chain onto the log head, so history is missing before this entry. */
   gapBefore: z.boolean().default(false),
 });
 export type DeployEntry = z.infer<typeof DeployEntrySchema>;
+
+/**
+ * Whether a spec is reached by a change, as `ccqa select-specs` decides it.
+ * The one source for this three-way union — `select/types.ts`'s CLI-internal
+ * `SelectVerdict` re-exports this rather than declaring its own, since it's
+ * the same value the CLI serializes into `DeploySelectionEntry` below.
+ *
+ * `unknown` is carried rather than collapsed into either answer. It is the
+ * selector saying it could not tell, which must reach the view as its own
+ * state — folding it into `notNeeded` would turn "we don't know" into "you're
+ * covered".
+ */
+export const SelectVerdictSchema = z.enum(["needed", "notNeeded", "unknown"]);
+export type SelectVerdict = z.infer<typeof SelectVerdictSchema>;
+
+/**
+ * One spec's verdict for one deploy, as `ccqa select-specs` decided it.
+ *
+ * The hub does not compute this and cannot: deciding which specs a change
+ * reaches means reading the diff against what each spec actually does, and the
+ * hub has no checkout. So the deploy job decides and reports, exactly as it
+ * already does for `changedPaths` (ADR-0010).
+ */
+export const DeploySelectionEntrySchema = z.object({
+  verdict: SelectVerdictSchema,
+  reason: z.string(),
+  /** Changed paths the selector tied to this spec. Present for `needed`. */
+  touchedBy: z.array(z.string()).optional(),
+});
+export type DeploySelectionEntry = z.infer<typeof DeploySelectionEntrySchema>;
+
+/** A deploy's selection, keyed by `"feature/spec"`. */
+export const DeploySelectionSchema = z.record(z.string(), DeploySelectionEntrySchema);
+export type DeploySelection = z.infer<typeof DeploySelectionSchema>;
 
 /**
  * A profile's retained deploy log. `nextIndex` is kept separately from
@@ -242,31 +312,50 @@ export const DeployLogSchema = z.object({
 export type DeployLog = z.infer<typeof DeployLogSchema>;
 
 /** A deploy as reported, before the log assigns its position and applies its bounds. */
-export type DeployInput = Omit<DeployEntry, "index" | "gapBefore" | "truncated">;
+export type DeployInput = Omit<DeployEntry, "index" | "gapBefore">;
 
 /**
- * One spec's entry in the derived touch index: the newest deploy known to have
- * touched it, folded in at write time from the deploy's full `changedPaths` so
- * that list can be dropped afterwards rather than retained per deploy.
+ * One spec's entry in the touch index: the newest deploy that needed it, and
+ * the newest that could not be decided, folded in as each deploy is recorded.
  *
- * Folded against the `relatedPaths` in force when the deploy landed, so it can
- * disagree with a match against a spec's current `relatedPaths`. It is
- * therefore only consulted where the retained log cannot answer (a truncated
- * entry), never in place of matching the current paths.
+ * This is the whole re-run computation, not an accelerator for it. Each spec's
+ * baseline sits at a different position in the log, so the question is always
+ * "since *this* spec last ran, was it ever needed" — two integer comparisons
+ * against the positions kept here. Re-deriving it per read is impossible
+ * anyway: the selections were made by a model against each deploy's diff, and
+ * neither the diff nor the model is available at read time.
+ *
+ * Each fold reflects what the specs looked like when that deploy landed. A
+ * spec edited afterwards is not retroactively re-judged — its own change marks
+ * it needed at the next deploy, which is the honest place to notice it.
  */
 export const SpecTouchSchema = z.object({
-  /** A `DeployEntry.index`, comparable against a baseline's position across an eviction. */
-  lastTouchedIndex: z.number().int().nonnegative(),
   /**
-   * Which deploy the fold matched, as it read it. The verdict is decided on
-   * `lastTouchedIndex` alone, and what the view *names* is read back out of the
-   * log entry at that index — so a deploy is never shown out of this derived
-   * copy when the log no longer backs it.
+   * The newest deploy that needed this spec. Absent when no recorded selection
+   * has ever needed it — which is what lets a baseline read as clean.
    */
-  lastTouchedSha: z.string(),
-  lastTouchedAt: z.string(),
-  /** A bounded sample (`MAX_TOUCHED_BY`) of what matched. Empty when the deploy reported no paths. */
-  matchedPaths: z.array(z.string()),
+  needed: z
+    .object({
+      /** A `DeployEntry.index`, comparable against a baseline's position across an eviction. */
+      index: z.number().int().nonnegative(),
+      /**
+       * The deploy as the fold read it. The verdict is decided on `index`
+       * alone, and what the view *names* is read back out of the log entry at
+       * that index — so a deploy is never shown out of this derived copy when
+       * the log no longer backs it.
+       */
+      sha: z.string(),
+      at: z.string(),
+      /** A bounded sample (`MAX_TOUCHED_BY`) of the paths the selector cited. */
+      matchedPaths: z.array(z.string()),
+    })
+    .optional(),
+  /**
+   * Position of the newest deploy whose selection answered `unknown` here.
+   * Kept apart from `needed` so an undecided deploy cannot read as a clean
+   * one: a baseline behind it reports `unknown`, never `notNeeded`.
+   */
+  undecidedIndex: z.number().int().nonnegative().optional(),
 });
 export type SpecTouch = z.infer<typeof SpecTouchSchema>;
 
@@ -289,8 +378,10 @@ export type RerunState = z.infer<typeof RerunStateSchema>;
  * never rendered as "not needed".
  */
 export const RerunUnknownReasonSchema = z.enum([
-  /** The spec declares no `relatedPaths`, so no deploy can be matched against it. */
-  "noRelatedPaths",
+  /** A deploy in range was recorded without a spec selection, so its effect on this spec is unrecorded. */
+  "noSelectionInRange",
+  /** A selection in range answered `unknown` for this spec — the selector could not tell. */
+  "selectionUnknown",
   /** Nothing has ever been recorded in this profile's deploy log. */
   "noDeployLog",
   /** The spec's last run predates deploy-sha stamping, or ran with no deploy log. */
@@ -301,8 +392,6 @@ export const RerunUnknownReasonSchema = z.enum([
   "deployedShaNotInLog",
   /** A deploy in range did not chain onto its predecessor, so deploys are missing from the range. */
   "gapInRange",
-  /** A deploy in range reported no paths, or more than the log retains, so its contents are not knowable. */
-  "truncatedInRange",
 ]);
 export type RerunUnknownReason = z.infer<typeof RerunUnknownReasonSchema>;
 
@@ -364,10 +453,17 @@ export const RecordDeployRequestSchema = z.object({
   /**
    * Changed paths from a **two-dot** diff (`git diff --name-only A B`). A
    * three-dot diff resolves the merge base and reports nothing on a rollback,
-   * which would make the rollback invisible. Omit to declare the deploy as
-   * touching everything.
+   * which would make the rollback invisible. Record-only — shown by the
+   * view, but re-run verdicts are decided from `selection`/`hasSelection`,
+   * not from these paths. Omit if it can't be produced.
    */
   changedPaths: z.array(z.string()).nullable().optional(),
+  /**
+   * Which specs this deploy reaches, from `ccqa select-specs`. Omit it and the
+   * deploy becomes a hole in the range: specs behind it report `unknown`
+   * rather than `notNeeded`, because nothing recorded what it touched.
+   */
+  selection: DeploySelectionSchema.optional(),
   ref: z.string().optional(),
   runUrl: z.string().optional(),
 });
@@ -391,6 +487,54 @@ export const LedgerResponseSchema = z.object({
   lastRed: z.record(z.string(), SpecLedgerEntrySchema).default({}),
 });
 export type LedgerResponse = z.infer<typeof LedgerResponseSchema>;
+
+/**
+ * One spec's last drift audit, as recorded by `ccqa drift --push`. Unlike the
+ * spec ledger above, this carries no profile: drift asks whether a spec still
+ * describes the code, which has nothing to do with which environment is
+ * running it (ADR-0010 draws the same line for "needs re-run").
+ *
+ * `label: null` is a completed audit that found no drift — a spec with no
+ * entry at all in the ledger was simply never audited. The two must not be
+ * conflated: `null` is an answer, a missing key is the absence of one.
+ */
+export const SpecDriftEntrySchema = z.object({
+  label: DriftLabelSchema.nullable(),
+  /** Set only when `label` is non-null — no surface applies to a clean audit. */
+  surface: DriftSurfaceSchema.optional(),
+  confidence: z.number().optional(),
+  headline: z.string().optional(),
+  /** The commit this audit read. */
+  gitHead: z.string(),
+  /** The `kind: "drift"` run this entry came from. */
+  runId: z.string(),
+  /** The run's reportCreatedAt — the ordering key for ledger updates. */
+  at: z.string(),
+  /**
+   * Set once a human has graded this row: `label` is then their answer, not
+   * the audit's. Kept as a flag rather than replacing the entry silently, so
+   * a reader can tell a verdict that was confirmed from one that was merely
+   * produced. A later audit of the same spec supersedes it, grade and all —
+   * the newer observation is about newer code.
+   */
+  graded: z.boolean().optional(),
+});
+export type SpecDriftEntry = z.infer<typeof SpecDriftEntrySchema>;
+
+/** The per-(project, branch) drift ledger: "feature/spec" → its last audit. */
+export const DriftLedgerSchema = z.object({
+  specs: z.record(z.string(), SpecDriftEntrySchema).default({}),
+});
+export type DriftLedger = z.infer<typeof DriftLedgerSchema>;
+
+/**
+ * Body of `GET /projects/:project/drift`. No `?profile=` — see `SpecDriftEntrySchema`.
+ */
+export const DriftLedgerResponseSchema = z.object({
+  project: z.string(),
+  specs: z.record(z.string(), SpecDriftEntrySchema),
+});
+export type DriftLedgerResponse = z.infer<typeof DriftLedgerResponseSchema>;
 
 /**
  * A triage-learning job. Grading failing specs in the hub UI produces the

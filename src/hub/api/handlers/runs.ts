@@ -3,10 +3,13 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry } from "../../contract/schema.ts";
+import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry } from "../../contract/schema.ts";
 import { GitEnvelopeSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
+import type { DriftLabel } from "../../../drift/types.ts";
+import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
+import { emptyDriftLedger } from "../../core/drift-ledger.ts";
 import { emptyLedger } from "../../core/spec-ledger.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
@@ -100,6 +103,7 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
       await config.storage.artifacts.putDir(run.id, dir);
       await config.storage.runs.create(run);
       await updateSpecLedger(config.storage, run, report.results);
+      await updateDriftLedger(config.storage, run, report.results);
 
       sendJson(ctx.res, 201, run);
     } finally {
@@ -252,6 +256,54 @@ async function updateSpecLedger(
 }
 
 /**
+ * Advance the drift ledger from a terminal `kind: "drift"` run: each row's
+ * `analysis` (the diagnosis `driftResultsToReport` put there — see
+ * `ReportSpecResultSchema.driftAudit`'s comment) becomes that spec's newest
+ * audit entry. No profile — drift asks whether the spec still describes the
+ * code, not whether an environment is stale.
+ *
+ * `analysis: null` still advances the entry, as `label: null` — a completed
+ * audit that found no drift. A skipped row did not execute and advances
+ * nothing, so a spec that predates this run keeps whatever it had (including
+ * no entry at all — "never audited").
+ *
+ * Best-effort, same as `updateSpecLedger`: a ledger failure must not fail the
+ * push. A no-op for `kind: "run"` runs.
+ */
+async function updateDriftLedger(
+  storage: HubStorage,
+  run: Run,
+  results: ReportSpecResult[],
+): Promise<void> {
+  const { gitHead, branch } = run;
+  if (run.kind !== "drift" || !gitHead || !branch) return;
+  const ledger: DriftLedger = emptyDriftLedger();
+  for (const row of results) {
+    if (row.status === "skipped") continue;
+    const key = `${row.feature}/${row.spec}`;
+    const diagnosis = row.analysis;
+    ledger.specs[key] = {
+      // A kind:"drift" row's `analysis` always originates from analyzeDrift
+      // (see summarizeDrift above), so its label is one of
+      // TEST_DRIFT/SPEC_CHANGE/UNKNOWN, never PRODUCT_BUG.
+      label: diagnosis ? (diagnosis.label as DriftLabel) : null,
+      surface: diagnosis?.surface,
+      confidence: diagnosis?.confidence,
+      headline: diagnosis?.headline,
+      gitHead,
+      runId: run.id,
+      at: run.reportCreatedAt,
+    };
+  }
+  if (Object.keys(ledger.specs).length === 0) return;
+  try {
+    await storage.driftLedger.merge(run.project, branch, ledger);
+  } catch (err) {
+    console.error(`hub: drift ledger update failed for run "${run.id}": ${errMsg(err)}`);
+  }
+}
+
+/**
  * What commit the environment was running for this run. An explicit
  * `?deployedSha=` wins — ccqa never guesses a baseline, and a caller that
  * knows what it deployed against is more authoritative than the log head.
@@ -380,13 +432,23 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
       ? {
           status: finalStatus ?? (specs.failed > 0 ? "failed" : "passed"),
           specs,
+          // The single-shot push derives this at create time from the whole
+          // report. Here the rows only exist once the run is sealed, so it is
+          // derived at the same point — otherwise a drift run pushed
+          // incrementally would carry label counts of null while its rows
+          // plainly have diagnoses, and every reader of `drift` would have to
+          // treat "no summary" and "no drift" as the same thing.
+          ...(run.kind === "drift" ? { drift: summarizeDrift(mergedResults) } : {}),
           ...(reportMeta?.git?.head ? { gitHead: reportMeta.git.head } : {}),
           ...(reportMeta?.promptVersion ? { promptVersion: reportMeta.promptVersion } : {}),
           ...((await deployHeadMovedDuringRun(config.storage, run)) ? { deployedShaAmbiguous: true } : {}),
         }
       : { specs };
     const updated = await config.storage.runs.update(id, patch);
-    if (done) await updateSpecLedger(config.storage, updated, mergedResults);
+    if (done) {
+      await updateSpecLedger(config.storage, updated, mergedResults);
+      await updateDriftLedger(config.storage, updated, mergedResults);
+    }
 
     sendJson(ctx.res, 200, updated);
   };
@@ -405,7 +467,7 @@ export function createListRunsHandler(storage: HubStorage) {
       ...(status ? { status: status as Run["status"] } : {}),
       ...(limitRaw ? { limit: Number(limitRaw) } : {}),
     });
-    sendJson(ctx.res, 200, { runs });
+    sendJson(ctx.res, 200, { runs: await Promise.all(runs.map((r) => withGradedDrift(storage, r))) });
   };
 }
 
@@ -413,8 +475,35 @@ export function createListRunsHandler(storage: HubStorage) {
 export function createGetRunHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const run = await getRunOr404(storage, ctx.params.id!);
-    sendJson(ctx.res, 200, run);
+    sendJson(ctx.res, 200, await withGradedDrift(storage, run));
   };
+}
+
+/**
+ * Join a drift run's human grades onto it as `gradedDrift`.
+ *
+ * Derived on read rather than stored: a terminal run is immutable (ADR-0009),
+ * and it should keep saying what the audit found. The grades are a separate
+ * later claim, so both are available and a reader picks. Only drift runs pay
+ * for the extra read, and only they can carry a grade that changes a count.
+ */
+async function withGradedDrift(storage: HubStorage, run: Run): Promise<Run> {
+  if (run.kind !== "drift" || !run.drift) return run;
+  const records = await storage.triage.list(run.id).catch(() => []);
+  if (records.length === 0) return run;
+  const gradedDrift = { ...run.drift, noDrift: 0, graded: 0 };
+  for (const record of records) {
+    const predicted = record.predicted.label as DriftLabel;
+    if (predicted === "TEST_DRIFT") gradedDrift.testDrift--;
+    else if (predicted === "SPEC_CHANGE") gradedDrift.specChange--;
+    else gradedDrift.unknown--;
+    if (record.actualCause === "TEST_DRIFT") gradedDrift.testDrift++;
+    else if (record.actualCause === "SPEC_CHANGE") gradedDrift.specChange++;
+    else if (record.actualCause === NO_DRIFT_CAUSE) gradedDrift.noDrift++;
+    else gradedDrift.unknown++;
+    gradedDrift.graded++;
+  }
+  return { ...run, gradedDrift };
 }
 
 /** GET /api/v1/runs/:id/report */
@@ -470,22 +559,32 @@ async function getRunOr404(storage: HubStorage, id: string): Promise<Run> {
   return run;
 }
 
-/** Tally `driftIssues` across all specs into the `Run.drift` summary counters. */
-function summarizeDrift(results: ReportSpecResult[]): { issues: number; errors: number; warnings: number; specsWithIssues: number } {
-  let issues = 0;
-  let errors = 0;
-  let warnings = 0;
-  let specsWithIssues = 0;
+/**
+ * Tally a `kind: "drift"` report's per-spec diagnoses (carried in `analysis`,
+ * not `driftAudit` — see ReportSpecResultSchema) into the `Run.drift` summary
+ * counters, by label rather than by derived severity. A row with no
+ * `analysis` was audited and found clean (see `driftResultsToReport`), so it
+ * counts toward `specs` but none of the three labels.
+ */
+function summarizeDrift(results: ReportSpecResult[]): { specs: number; testDrift: number; specChange: number; unknown: number } {
+  let specs = 0;
+  let testDrift = 0;
+  let specChange = 0;
+  let unknown = 0;
   for (const r of results) {
-    const driftIssues = r.driftIssues ?? [];
-    if (driftIssues.length > 0) specsWithIssues++;
-    for (const issue of driftIssues) {
-      issues++;
-      if (issue.severity === "ERROR") errors++;
-      else if (issue.severity === "WARN") warnings++;
-    }
+    // A drift row's status is always "passed"/"failed" (driftResultsToReport),
+    // but skip defensively rather than assume that never changes.
+    if (r.status === "skipped") continue;
+    specs++;
+    if (!r.analysis) continue;
+    // A kind:"drift" row's `analysis` always originates from analyzeDrift, so
+    // its label is one of TEST_DRIFT/SPEC_CHANGE/UNKNOWN, never PRODUCT_BUG.
+    const label = r.analysis.label as DriftLabel;
+    if (label === "TEST_DRIFT") testDrift++;
+    else if (label === "SPEC_CHANGE") specChange++;
+    else unknown++;
   }
-  return { issues, errors, warnings, specsWithIssues };
+  return { specs, testDrift, specChange, unknown };
 }
 
 /**

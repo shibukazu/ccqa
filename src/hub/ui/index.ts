@@ -160,6 +160,7 @@ const HTML_BODY = `
         <div id="persp-body" hidden>
           <div class="ov" id="persp-ov"></div>
           <div class="note info persp-note" id="persp-rerun-note" hidden></div>
+          <div class="note info persp-note" id="persp-drift-note" hidden></div>
           <div class="toolbar">
             <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="persp-q" type="search" data-i18n-ph="perspectives.search" aria-label="Search cases"></label>
             <!-- Each chip carries the count of what it would leave behind, so
@@ -168,8 +169,8 @@ const HTML_BODY = `
             <button class="fchip" data-f="all" aria-pressed="true" type="button"><span data-i18n="perspectives.filter.all">All</span><span class="fcount"></span></button>
             <button class="fchip" data-f="deterministic" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.deterministic">Deterministic</span><span class="fcount"></span></button>
             <button class="fchip" data-f="live" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.live">Live</span><span class="fcount"></span></button>
-            <button class="fchip" data-f="norec" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.norec">Not recorded only</span><span class="fcount"></span></button>
             <button class="fchip" id="persp-chip-rerun" data-f="rerun" aria-pressed="false" type="button" hidden><span data-i18n="perspectives.filter.rerun">Needs re-run only</span><span class="fcount"></span></button>
+            <button class="fchip" id="persp-chip-drift" data-f="drift" aria-pressed="false" type="button" hidden><span data-i18n="perspectives.filter.drift">Drift found only</span><span class="fcount"></span></button>
             <div class="spacer"></div>
             <span class="muted persp-head" id="persp-deploy-head" hidden></span>
             <div class="sw-wrap" id="persp-profile-wrap">
@@ -181,7 +182,7 @@ const HTML_BODY = `
             </div>
           </div>
           <div class="tblcard"><div class="table-wrap"><table>
-            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th data-i18n="perspectives.col.status">Status</th><th id="persp-th-result" data-i18n="perspectives.col.lastResult" hidden>Last result</th><th id="persp-th-rerun" data-i18n="perspectives.col.rerun" hidden>Needs re-run</th><th></th></tr></thead>
+            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th id="persp-th-run" data-i18n="perspectives.col.run" hidden>Execution</th><th id="persp-th-drift" data-i18n="perspectives.col.drift" hidden>Drift audit</th><th></th></tr></thead>
             <tbody id="persp-tbody"></tbody>
           </table></div></div>
           <p class="empty-note" id="persp-no-hit" hidden data-i18n="perspectives.noHit">No matching cases.</p>
@@ -536,7 +537,7 @@ const CSS = `
   a.ci-badge { text-decoration: none; }
   a.ci-badge:hover { color: var(--fg); border-color: var(--fg-dim); }
 
-  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 7px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; border: 1px solid transparent; }
+  .badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px 2px 7px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 500; border: 1px solid transparent; white-space: nowrap; }
   .badge .d { width: 6px; height: 6px; border-radius: 50%; }
   .badge.pass, .badge.passed { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
   .badge.pass .d, .badge.passed .d { background: var(--pass); }
@@ -551,19 +552,27 @@ const CSS = `
   .badge-det { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   /* which generation target ran the spec (agent-browser / playwright / runn) */
   .badge-target { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-family: var(--mono); background: var(--surface-3); color: var(--muted); border: 1px solid var(--border); }
-  .badge-drift { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
-  .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); }
+  .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
   /* Below .chip in source order so these override its background/border/color
-     when combined as class="chip drift-*-chip" (same specificity — source
-     order decides). */
+     when combined as class="chip drift-count-chip" (same specificity — source
+     order decides). One amber look for every drift label chip — a label chip
+     is a finding, not a severity, so it does not split into fail-red/amber
+     the way the old errors/warnings counts did. */
   .chip.kind-chip { color: var(--violet); background: var(--violet-bg); border-color: var(--violet-border); font-family: var(--font); margin-left: 6px; }
   .chip.drift-count-chip { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); margin-left: 6px; }
-  .chip.drift-errors-chip { color: var(--fail); background: var(--fail-bg); border-color: var(--fail-border); margin-left: 6px; }
   .drift-meta-box { display: flex; flex-direction: column; gap: 4px; }
+  /* The chips carry their own margin for the run list, where they sit inline
+     after other chips. Here the container owns the spacing, so the margin only
+     indents the first one away from the label and the ratio line below it. */
   .drift-meta-chips { display: flex; gap: 6px; }
+  .drift-meta-chips .chip { margin-left: 0; }
   .specs { display: inline-flex; align-items: center; gap: 9px; }
   .meter { width: 54px; height: 6px; border-radius: 3px; background: var(--fail-bg); overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--pass); }
+  /* A drift row's bar fills with what the audit FOUND, so a full bar is the bad
+     end — the opposite of a test run's. It must not be painted pass-green. */
+  .meter.drift { background: var(--surface-3); }
+  .meter.drift i { background: var(--amber-fill); }
 
   /* run detail */
   .rd-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
@@ -586,6 +595,9 @@ const CSS = `
   .spec-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 12px; overflow: hidden; }
   /* verdict signal is a single left rail on the whole card — no all-sides tint */
   .spec-card.failed { border-left: 3px solid var(--fail); }
+  /* A drift-kind card's "failed" rail is a diagnosis, not a broken test — same
+     amber as the drift badges (dr-found), not fail-red. */
+  .spec-card.drift-found { border-left: 3px solid var(--amber); }
   .spec-card.passed { border-left: 3px solid var(--pass); }
   .spec-card-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; }
   .spec-card-head .name { font-weight: 600; font-size: 15px; }
@@ -658,14 +670,7 @@ const CSS = `
   .drift-row { padding: 8px 0; font-size: 12.5px; color: var(--fg-dim); border-bottom: 1px solid var(--border); }
   .drift-row:last-child { border-bottom: none; }
   .drift-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .drift-sev { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; border: 1px solid transparent; text-transform: uppercase; letter-spacing: 0.03em; }
-  .drift-sev.error { background: var(--fail-bg); color: var(--fail); border-color: var(--fail-border); }
-  .drift-sev.warn { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
-  .drift-sev.ok { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
-  .drift-cat { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
-  .drift-step { font-family: var(--mono); font-size: 11px; color: var(--muted-2); }
   .drift-msg { margin-top: 4px; color: var(--fg-dim); }
-  .drift-detail { margin-top: 3px; color: var(--muted); font-size: 12px; }
   .drift-clean { color: var(--pass); font-size: 13px; }
 
   /* triage grading — an explicit question + a segmented single-select, framed
@@ -697,7 +702,14 @@ const CSS = `
   .matrix-table { border-collapse: collapse; font-size: 12.5px; }
   .matrix-table th, .matrix-table td { border: 1px solid var(--border); padding: 9px 16px; text-align: center; font-variant-numeric: tabular-nums; }
   .matrix-table thead th { background: var(--surface-2); color: var(--muted); font-weight: 600; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+  /* The two axis captions carry the meaning of the table, so they read as
+     labels rather than as another column heading. */
+  .matrix-table th.matrix-corner, .matrix-table th.matrix-axis { color: var(--fg-dim); font-size: 11px; letter-spacing: 0; text-transform: none; }
+  .matrix-table th.matrix-corner { text-align: left; vertical-align: bottom; }
   .matrix-table tbody th { background: var(--surface-2); color: var(--fg-dim); font-weight: 600; font-size: 11px; text-align: left; white-space: nowrap; }
+  /* The list tables let their card draw the bottom edge, so the shared rule
+     strips the last row's border. This one draws a real grid and needs it. */
+  .matrix-table tbody tr:last-child td { border-bottom: 1px solid var(--border); }
   .matrix-table td { color: var(--muted); }
   .matrix-table td.nz { color: var(--fg); font-weight: 600; }
   .matrix-table td.diag { background: var(--pass-bg); color: var(--pass); font-weight: 700; }
@@ -843,6 +855,9 @@ const CSS = `
   .ov { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 16px; }
   .ov-inv { font-size: 13px; color: var(--muted); }
   .ov-inv b { color: var(--fg); font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  /* One row per overview axis (re-run, drift): a short label above its own bar+legend. */
+  .ov-axis { display: flex; flex-direction: column; gap: 4px; }
+  .ov-axis-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted-2); }
   .rrbar { height: 8px; border-radius: 999px; overflow: hidden; display: flex; background: var(--surface-3); }
   .rrleg { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12px; color: var(--muted); }
   .rrleg span { display: inline-flex; align-items: center; gap: 6px; }
@@ -851,11 +866,16 @@ const CSS = `
   /* One class per re-run state, worn by both the bar segment and its legend
      dot. "unknown" takes the info hue: it must never be mistaken for a pass,
      and the two neutral states are two different greys so adjacent segments
-     stay separable. */
-  .sg-needed { background: var(--amber-fill); }
-  .sg-unknown { background: var(--info); }
-  .sg-notneeded { background: var(--pass); }
-  .sg-neverrun { background: var(--muted-2); }
+     stay separable. Drift's own three states share these colours (found=amber,
+     notAudited=muted grey, clean=pass green) rather than inventing a second
+     palette — same reasoning as the badge classes below. Careful writing in
+     here: a star followed by a slash closes the comment early and silently
+     eats the next rule, and a backtick ends the template literal this CSS
+     lives in. */
+  .sg-drift-found, .sg-needed { background: var(--amber-fill); }
+  .sg-unknown, .sg-drift-unknown { background: var(--info); }
+  .sg-drift-clean, .sg-notneeded { background: var(--pass); }
+  .sg-drift-none, .sg-neverrun { background: var(--muted-2); }
   .sg-noteval { background: var(--muted); }
 
   .search { flex: 1; min-width: 200px; max-width: 340px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 10px; height: 32px; background: var(--surface); }
@@ -875,16 +895,26 @@ const CSS = `
   /* "Needs re-run" (ADR-0010). Four distinct looks on purpose: rr-unknown must
      never be mistaken for rr-notneeded, so it takes the info hue rather than a
      dimmed green, and every badge is paired with a .cellsub saying what the
-     verdict rests on. */
-  .badge.rr-needed { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
-  .badge.rr-needed .d { background: var(--amber); }
-  .badge.rr-notneeded { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
-  .badge.rr-notneeded .d { background: var(--pass); }
-  .badge.rr-unknown { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
-  .badge.rr-unknown .d { background: var(--info); }
-  .badge.rr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
-  .badge.rr-none .d { background: var(--muted); }
+     verdict rests on.
+
+     The drift column (dr-*) answers a different question — does the spec
+     still describe the code, not whether the last result is stale — but
+     reuses these same three hues so the two columns read as siblings rather
+     than inventing a fourth palette: dr-found (a diagnosis exists) shares
+     rr-needed's amber, dr-clean (audited, no drift) shares rr-notneeded's
+     green, dr-none (never audited) shares rr-none's grey. */
+  .badge.rr-needed, .badge.dr-found { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+  .badge.rr-needed .d, .badge.dr-found .d { background: var(--amber); }
+  .badge.rr-notneeded, .badge.dr-clean { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
+  .badge.rr-notneeded .d, .badge.dr-clean .d { background: var(--pass); }
+  /* Same blue on both axes: "we cannot say" means the same thing whether the
+     question is re-run or drift, and a reader should not have to relearn it. */
+  .badge.rr-unknown, .badge.dr-unknown { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
+  .badge.rr-unknown .d, .badge.dr-unknown .d { background: var(--info); }
+  .badge.rr-none, .badge.dr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
+  .badge.rr-none .d, .badge.dr-none .d { background: var(--muted); }
   .cellsub { display: block; margin-top: 3px; max-width: 260px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
+  .graded-mark { color: var(--fg-dim); font-weight: 600; }
   .cellsub a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--border-strong); }
   .cellsub a:hover { color: var(--fg); }
   .persp-note { margin-bottom: 12px; }
@@ -967,7 +997,8 @@ const CLIENT_JS = `
   var FAILURE_LABELS = ${JSON.stringify(FAILURE_LABELS)};
   // Rows of the confusion matrix: the three actual labels plus UNKNOWN, since
   // the model can predict UNKNOWN. Columns (actual causes) are FAILURE_LABELS
-  // only (a human never records UNKNOWN as the ground-truth cause).
+  // only (a human never records UNKNOWN as the ground-truth cause). A drift run
+  // narrows both axes — see DRIFT_LABELS / DRIFT_CAUSES.
   var PREDICTED_LABELS = ${JSON.stringify(PREDICTED_LABELS)};
   var AGENT_BROWSER_TARGET = ${JSON.stringify(AGENT_BROWSER_TARGET)};
   var GUIDANCE_KINDS = ${JSON.stringify(GUIDANCE_KINDS)};
@@ -1001,10 +1032,11 @@ const CLIENT_JS = `
       "detail.back": "Runs", "detail.specs": "Specs",
       "detail.download": "Download artifacts",
       "detail.triage": "Triage",
-      "meta.branch": "Branch", "meta.specs": "Specs", "meta.prompt": "Prompt",
+      "meta.branch": "Branch", "meta.specs": "Specs",
       "meta.created": "Created", "meta.passed": "passed", "meta.profile": "Profile",
       "meta.drift": "Drift",
       "diag.cause": "Cause", "diag.fix": "Fix",
+      "diag.surface": "Surface", "diag.surface.spec": "spec", "diag.surface.generated": "generated code",
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
       "acc.assertions": "Assertions", "acc.drift": "Drift audit",
       "acc.artifacts": "Artifacts",
@@ -1014,15 +1046,18 @@ const CLIENT_JS = `
       "det.steps": "Steps",
       "det.noEvidence": "No step screenshots:",
       "kind.run": "Test run", "kind.drift": "Drift audit",
-      "drift.summary.issues": "Issues", "drift.summary.errors": "Errors",
-      "drift.summary.warnings": "Warnings", "drift.summary.specsWithIssues": "Specs with issues",
+      "drift.summary.ratio": "{found} of {total} specs",
       "drift.clean": "No drift issues",
+      "status.passed": "passed", "status.failed": "failed", "status.skipped": "skipped", "status.running": "running",
+      "drift.run.found": "drift found", "drift.run.clean": "no drift", "drift.run.unknown": "can't tell",
+      "drift.spec.found": "drift", "drift.spec.clean": "no drift", "drift.spec.unknown": "can't tell",
       "grade.question": "What was the real cause?",
       "grade.ungraded": "ungraded", "grade.matches": "saved · matches",
       "grade.corrected": "saved · corrected", "grade.saving": "saving…",
       "grade.error": "couldn't save — retry",
       "matrix.empty": "No grades yet. Pick the real cause on a failed spec's diagnosis card below and it is tallied here.",
-      "matrix.predicted": "predicted \\\\ actual", "matrix.accuracy": "Accuracy",
+      "matrix.axis.predicted": "ccqa predicted", "matrix.axis.actual": "you graded it",
+      "matrix.accuracy": "Accuracy",
       "matrix.accSuffix": "of graded cases match the prediction", "matrix.graded": "graded",
       "matrix.target.all": "All targets",
       "learn.cta.title": "Learn from these grades",
@@ -1032,20 +1067,22 @@ const CLIENT_JS = `
       "perspectives.title": "Perspectives",
       "perspectives.search": "Search cases…",
       "perspectives.filter.all": "All", "perspectives.filter.deterministic": "Deterministic",
-      "perspectives.filter.live": "Live", "perspectives.filter.norec": "Not recorded only",
-      "perspectives.filter.rerun": "Needs re-run only",
-      "perspectives.col.lastResult": "Last result", "perspectives.col.rerun": "Needs re-run",
-      "perspectives.col.case": "Case", "perspectives.col.mode": "Mode", "perspectives.col.status": "Status",
+      "perspectives.filter.live": "Live",
+      "perspectives.filter.rerun": "Needs re-run only", "perspectives.filter.drift": "Drift found only",
+      "perspectives.col.run": "Execution", "perspectives.col.drift": "Drift audit",
+      "perspectives.run.state.needed": "re-run needed", "perspectives.run.state.unknown": "can't tell",
+      "perspectives.run.state.failed": "failed", "perspectives.run.state.passed": "passed",
+      "perspectives.run.state.never": "never run",
+      "perspectives.col.case": "Case", "perspectives.col.mode": "Mode",
       "perspectives.noHit": "No matching cases.",
       "perspectives.updated": "Last updated:",
       "perspectives.empty": "No perspectives yet. Run ccqa perspectives, or record a test — it's created automatically.",
       "perspectives.loadFailed": "Loading perspectives failed",
       "perspectives.mode.deterministic": "deterministic", "perspectives.mode.live": "live",
-      "perspectives.status.runnable": "runnable", "perspectives.status.notRecorded": "not recorded",
       "perspectives.ov.cases": "cases", "perspectives.ov.features": "features",
+      "perspectives.ov.axis.rerun": "Re-run", "perspectives.ov.axis.drift": "Drift",
       "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
       "perspectives.d.testCondition": "Condition", "perspectives.d.spec": "spec",
-      "perspectives.d.relatedPaths": "Related code",
       "perspectives.note.label": "Note",
       "perspectives.note.placeholder": "Notes about this case…",
       "perspectives.note.saved": "Saved",
@@ -1053,44 +1090,48 @@ const CLIENT_JS = `
       "perspectives.d.lastRed": "Most recent failure",
       "perspectives.d.changedSince": "Changes since the last run",
       "perspectives.d.cannotJudge": "Why this cannot be judged",
-      "perspectives.result.never": "never run",
       "perspectives.result.openRun": "Open this run in the hub",
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needed": "Re-run needed",
       "perspectives.rerun.state.notNeeded": "Not needed",
-      "perspectives.rerun.state.unknown": "Unknown",
+      "perspectives.rerun.state.unknown": "Can't tell",
       "perspectives.rerun.state.neverRun": "Never run",
       "perspectives.rerun.state.notEvaluated": "Not evaluated",
       "perspectives.rerun.vsDeploy": "judged against deploy",
       "perspectives.rerun.noDeployHead": "no deploy recorded for this profile",
-      "perspectives.rerun.changedByDeploy": "deploy {sha} changed its related code",
+      "perspectives.rerun.changedByDeploy": "deploy {sha} changed files matched to this case",
       "perspectives.rerun.changesSome": "yes (as of deploy {sha})",
       "perspectives.rerun.changesNone": "none (as of deploy {sha})",
-      "perspectives.rerun.touchedCount": "{n} deployed path(s) matched its related code",
-      "perspectives.rerun.touchedUnknown": "a deploy since the last run touched its related code",
+      "perspectives.rerun.touchedCount": "{n} deployed path(s) matched this case",
+      "perspectives.rerun.touchedUnknown": "a deploy since the last run matched this case",
       "perspectives.rerun.neverRunHint": "no result recorded for this profile yet",
       "perspectives.rerun.notEvaluatedHint": "no run and no deploy has ever been recorded for this profile",
-      "perspectives.rerun.why.noRelatedPaths": "no related code declared",
+      "perspectives.rerun.why.noSelectionInRange": "a deploy in range was recorded without a spec selection",
+      "perspectives.rerun.why.selectionUnknown": "the selector could not tell whether this case was affected",
       "perspectives.rerun.why.noDeployLog": "no deploy log for this profile",
       "perspectives.rerun.why.unknownDeployedSha": "the last run's deployed commit is unknown",
       "perspectives.rerun.why.ambiguousDeployedSha": "a deploy landed while the last run was executing",
       "perspectives.rerun.why.deployedShaNotInLog": "the last run's commit predates the retained deploy log",
       "perspectives.rerun.why.gapInRange": "deploys are missing from the range",
-      "perspectives.rerun.why.truncatedInRange": "a deploy in range did not report what it changed",
       "perspectives.rerun.why.unrecognized": "this hub reported a reason this UI does not recognise",
-      "perspectives.rerun.fix.noRelatedPaths": "This case declares no related code, so no deploy can be matched against it. Add relatedPaths to its spec.yaml.",
+      "perspectives.rerun.fix.noSelectionInRange": "A deploy in range was recorded without a spec selection, so nothing says whether it affected this case. Run ccqa select-specs in the deploy job and send its verdict with the deploy.",
+      "perspectives.rerun.fix.selectionUnknown": "A deploy in range was judged, but the selector could not decide this case. Re-run it to get a clean baseline.",
       "perspectives.rerun.fix.noDeployLog": "Nothing has been recorded in this profile's deploy log. Wire ccqa hub deploy record into the deploy job for this environment so ccqa knows what shipped.",
       "perspectives.rerun.fix.unknownDeployedSha": "The last run did not record which commit the environment was running, so it cannot be positioned in the deploy log. Runs record it once this profile has a deploy log.",
       "perspectives.rerun.fix.ambiguousDeployedSha": "A deploy landed while the last run was executing, so which commit it exercised is not knowable. Re-run this case to get a clean baseline.",
       "perspectives.rerun.fix.deployedShaNotInLog": "The last run's deployed commit is older than the retained deploy log, so its position is lost. Re-run this case to re-anchor it.",
       "perspectives.rerun.fix.gapInRange": "A deploy in range did not chain onto its predecessor, so deploys are missing from the range. Have the deploy job report the commit it replaced.",
-      "perspectives.rerun.fix.truncatedInRange": "A deploy in range did not report what it changed, so its contents are not knowable. Have the deploy job send the changed paths of a two-dot diff.",
       "perspectives.rerun.fix.unrecognized": "This hub reported a reason this UI does not recognise. Upgrade the UI to see what it means.",
       "perspectives.rerun.unsupported": "This hub does not report which cases need a re-run. Upgrade the hub to enable it.",
       "perspectives.rerun.loadFailed": "Loading re-run data failed",
       "perspectives.rerun.noDeployLogBanner": "No deploy has been recorded for profile {profile}, so no case can be judged. Wire ccqa hub deploy record into the deploy job for this environment.",
       "perspectives.rerun.deployHead": "deploy head",
-      "perspectives.dq.unmatched": "{n} of this case's related-code patterns matched no file when perspectives were generated — a not-needed verdict may rest on paths that no longer exist.",
+      "perspectives.drift.state.notAudited": "Not audited",
+      "perspectives.drift.state.clean": "No drift",
+      "perspectives.drift.state.found": "Drift found", "perspectives.drift.state.unknown": "Can't tell",
+      "perspectives.drift.graded": "confirmed",
+      "perspectives.drift.unsupported": "This hub does not report drift audit results. Upgrade the hub to enable it.",
+      "perspectives.drift.loadFailed": "Loading drift data failed",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.playwright": "Playwright test generation",
@@ -1140,10 +1181,11 @@ const CLIENT_JS = `
       "detail.back": "実行", "detail.specs": "スペック",
       "detail.download": "アーティファクトをダウンロード",
       "detail.triage": "トリアージ",
-      "meta.branch": "ブランチ", "meta.specs": "スペック", "meta.prompt": "プロンプト",
+      "meta.branch": "ブランチ", "meta.specs": "スペック",
       "meta.created": "作成", "meta.passed": "合格", "meta.profile": "プロファイル",
       "meta.drift": "ドリフト",
       "diag.cause": "原因", "diag.fix": "対処",
+      "diag.surface": "対象", "diag.surface.spec": "spec", "diag.surface.generated": "生成コード",
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
       "acc.assertions": "アサーション", "acc.drift": "ドリフト監査",
       "acc.artifacts": "成果物",
@@ -1153,15 +1195,18 @@ const CLIENT_JS = `
       "det.steps": "ステップ",
       "det.noEvidence": "ステップのスクリーンショットなし:",
       "kind.run": "テスト実行", "kind.drift": "ドリフト監査",
-      "drift.summary.issues": "問題数", "drift.summary.errors": "エラー",
-      "drift.summary.warnings": "警告", "drift.summary.specsWithIssues": "問題のあるスペック",
+      "drift.summary.ratio": "{found} / {total} スペック",
       "drift.clean": "ドリフトの問題なし",
+      "status.passed": "合格", "status.failed": "失敗", "status.skipped": "スキップ", "status.running": "実行中",
+      "drift.run.found": "ズレあり", "drift.run.clean": "ズレなし", "drift.run.unknown": "判定できない",
+      "drift.spec.found": "ズレあり", "drift.spec.clean": "ズレなし", "drift.spec.unknown": "判定できない",
       "grade.question": "実際の原因は何でしたか？",
       "grade.ungraded": "未評価", "grade.matches": "保存済み · 一致",
       "grade.corrected": "保存済み · 修正", "grade.saving": "保存中…",
       "grade.error": "保存に失敗 — 再試行",
       "matrix.empty": "まだ採点がありません。下の失敗スペックの診断カードで実際の原因を選ぶと、ここに集計されます。",
-      "matrix.predicted": "予測 \\\\ 実際", "matrix.accuracy": "正解率",
+      "matrix.axis.predicted": "ccqa の予測", "matrix.axis.actual": "人の採点",
+      "matrix.accuracy": "正解率",
       "matrix.accSuffix": "件の採点が予測と一致", "matrix.graded": "採点済み",
       "matrix.target.all": "すべてのターゲット",
       "learn.cta.title": "この採点から学習",
@@ -1171,20 +1216,22 @@ const CLIENT_JS = `
       "perspectives.title": "テスト観点",
       "perspectives.search": "ケースを検索…",
       "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
-      "perspectives.filter.live": "ライブ", "perspectives.filter.norec": "未recordのみ",
-      "perspectives.filter.rerun": "要再実行のみ",
-      "perspectives.col.lastResult": "前回結果", "perspectives.col.rerun": "再実行の要否",
-      "perspectives.col.case": "ケース", "perspectives.col.mode": "モード", "perspectives.col.status": "状態",
+      "perspectives.filter.live": "ライブ",
+      "perspectives.filter.rerun": "要再実行のみ", "perspectives.filter.drift": "ズレありのみ",
+      "perspectives.col.run": "実行", "perspectives.col.drift": "ドリフト監査",
+      "perspectives.run.state.needed": "要再実行", "perspectives.run.state.unknown": "判定できない",
+      "perspectives.run.state.failed": "失敗", "perspectives.run.state.passed": "合格",
+      "perspectives.run.state.never": "未実行",
+      "perspectives.col.case": "ケース", "perspectives.col.mode": "モード",
       "perspectives.noHit": "該当するケースがありません。",
       "perspectives.updated": "最終更新:",
       "perspectives.empty": "まだテスト観点がありません。ccqa perspectives を実行するか、recordすると自動作成されます。",
       "perspectives.loadFailed": "テスト観点の読み込みに失敗しました",
       "perspectives.mode.deterministic": "決定的", "perspectives.mode.live": "ライブ",
-      "perspectives.status.runnable": "実行可能", "perspectives.status.notRecorded": "未record",
       "perspectives.ov.cases": "ケース", "perspectives.ov.features": "機能",
+      "perspectives.ov.axis.rerun": "実行", "perspectives.ov.axis.drift": "ドリフト",
       "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
       "perspectives.d.testCondition": "実行条件", "perspectives.d.spec": "spec",
-      "perspectives.d.relatedPaths": "関連コード",
       "perspectives.note.label": "note",
       "perspectives.note.placeholder": "このケースについてのメモ…",
       "perspectives.note.saved": "保存しました",
@@ -1192,44 +1239,48 @@ const CLIENT_JS = `
       "perspectives.d.lastRed": "直近の失敗",
       "perspectives.d.changedSince": "前回実行以降の変更",
       "perspectives.d.cannotJudge": "判定できない理由",
-      "perspectives.result.never": "未実行",
       "perspectives.result.openRun": "ハブでこの実行を開く",
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needed": "要再実行",
       "perspectives.rerun.state.notNeeded": "不要",
-      "perspectives.rerun.state.unknown": "不明",
+      "perspectives.rerun.state.unknown": "判定できない",
       "perspectives.rerun.state.neverRun": "未実行",
       "perspectives.rerun.state.notEvaluated": "未評価",
       "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
       "perspectives.rerun.noDeployHead": "このプロファイルにはデプロイの記録がありません",
-      "perspectives.rerun.changedByDeploy": "デプロイ {sha} が関連コードを変更",
+      "perspectives.rerun.changedByDeploy": "デプロイ {sha} がこのケースに一致するファイルを変更",
       "perspectives.rerun.changesSome": "あり（デプロイ {sha} 時点）",
       "perspectives.rerun.changesNone": "なし（デプロイ {sha} 時点）",
-      "perspectives.rerun.touchedCount": "関連コードに一致したデプロイ差分 {n} 件",
-      "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイが関連コードを変更しています",
+      "perspectives.rerun.touchedCount": "このケースに一致したデプロイ差分 {n} 件",
+      "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイがこのケースに一致する変更を行っています",
       "perspectives.rerun.neverRunHint": "このプロファイルでの実行記録がまだありません",
       "perspectives.rerun.notEvaluatedHint": "このプロファイルには実行もデプロイも記録がありません",
-      "perspectives.rerun.why.noRelatedPaths": "関連コードが未宣言です",
+      "perspectives.rerun.why.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあります",
+      "perspectives.rerun.why.selectionUnknown": "影響の有無を判定できませんでした",
       "perspectives.rerun.why.noDeployLog": "このプロファイルのデプロイ記録がありません",
       "perspectives.rerun.why.unknownDeployedSha": "前回実行時にデプロイされていたcommitが不明です",
       "perspectives.rerun.why.ambiguousDeployedSha": "前回実行の途中でデプロイが発生しました",
       "perspectives.rerun.why.deployedShaNotInLog": "前回実行のcommitが保持中のデプロイログより古いです",
       "perspectives.rerun.why.gapInRange": "対象範囲のデプロイ記録が欠けています",
-      "perspectives.rerun.why.truncatedInRange": "対象範囲に変更内容を報告していないデプロイがあります",
       "perspectives.rerun.why.unrecognized": "このUIが認識できない理由がハブから返されました",
-      "perspectives.rerun.fix.noRelatedPaths": "このケースは関連コードを宣言していないため、デプロイと突き合わせられません。spec.yaml に relatedPaths を追加してください。",
+      "perspectives.rerun.fix.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあり、このケースに影響したかどうかを示すものがありません。デプロイジョブで ccqa select-specs を実行し、判定をデプロイと一緒に送ってください。",
+      "perspectives.rerun.fix.selectionUnknown": "対象範囲のデプロイは判定されましたが、このケースについては判断がつきませんでした。再実行して基準を取り直してください。",
       "perspectives.rerun.fix.noDeployLog": "このプロファイルのデプロイログに記録がありません。何がデプロイされたかをccqaに伝えるため、この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
       "perspectives.rerun.fix.unknownDeployedSha": "前回実行は環境で動いていたcommitを記録していないため、デプロイログ上の位置を決められません。このプロファイルにデプロイログができれば、以降の実行では記録されます。",
       "perspectives.rerun.fix.ambiguousDeployedSha": "前回実行の途中でデプロイが発生したため、どのcommitを検証したのか確定できません。基準を取り直すには再実行してください。",
       "perspectives.rerun.fix.deployedShaNotInLog": "前回実行のデプロイcommitが保持中のデプロイログより古く、位置を特定できません。再実行して基準を取り直してください。",
       "perspectives.rerun.fix.gapInRange": "対象範囲のデプロイが直前のデプロイと連結しておらず、記録が欠けています。デプロイジョブから置き換え前のcommitも送ってください。",
-      "perspectives.rerun.fix.truncatedInRange": "対象範囲に変更内容を報告していないデプロイがあり、何が変わったのか確定できません。デプロイジョブから two-dot diff の変更パスを送ってください。",
       "perspectives.rerun.fix.unrecognized": "このUIが認識できない理由がハブから返されました。内容を表示するにはUIを更新してください。",
       "perspectives.rerun.unsupported": "このハブは再実行の要否を返しません。利用するにはハブを更新してください。",
       "perspectives.rerun.loadFailed": "再実行の要否の読み込みに失敗しました",
       "perspectives.rerun.noDeployLogBanner": "プロファイル {profile} にデプロイの記録がないため、どのケースも判定できません。この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
       "perspectives.rerun.deployHead": "最新デプロイ",
-      "perspectives.dq.unmatched": "このケースの関連コードのうち {n} 件のパターンが、テスト観点の生成時にどのファイルにも一致しませんでした。不要という判定が、すでに存在しないパスに基づいている可能性があります。",
+      "perspectives.drift.state.notAudited": "未監査",
+      "perspectives.drift.state.clean": "ズレなし",
+      "perspectives.drift.state.found": "ズレあり", "perspectives.drift.state.unknown": "判定できない",
+      "perspectives.drift.graded": "人が確認",
+      "perspectives.drift.unsupported": "このハブはdrift監査結果を返しません。利用するにはハブを更新してください。",
+      "perspectives.drift.loadFailed": "drift監査結果の読み込みに失敗しました",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.playwright": "Playwrightテスト生成",
@@ -1264,7 +1315,7 @@ const CLIENT_JS = `
       "jobs.failed": "学習ジョブが失敗しました。", "jobs.newCustomPrompt": "新しいカスタムプロンプト:", "jobs.empty": "まだ学習ジョブがありません。実行の失敗スペックを採点してから学習してください。"
     }
   };
-  var FAILURE_LABEL_JA = { TEST_DRIFT: "テストずれ", SPEC_CHANGE: "仕様変更", PRODUCT_BUG: "プロダクト不具合", UNKNOWN: "不明" };
+  var FAILURE_LABEL_JA = { TEST_DRIFT: "テストずれ", SPEC_CHANGE: "仕様変更", PRODUCT_BUG: "プロダクト不具合", UNKNOWN: "不明", NO_DRIFT: "ズレなし" };
 
   function loadLang() {
     try { return window.localStorage.getItem(LANG_KEY) || "en"; } catch (e) { return "en"; }
@@ -1450,10 +1501,13 @@ const CLIENT_JS = `
     return sha ? String(sha).slice(0, 7) : "";
   }
 
+  // The class stays the raw status (the CSS keys off it); only the text is
+  // localized. An unrecognised status from a newer hub prints verbatim rather
+  // than falling back to a wording that would claim something about it.
   function statusBadge(status) {
     var span = el("span", "badge " + status);
     span.appendChild(el("span", "d"));
-    span.appendChild(document.createTextNode(" " + status));
+    span.appendChild(document.createTextNode(" " + (I18N.en["status." + status] ? t("status." + status) : status)));
     return span;
   }
 
@@ -1479,6 +1533,97 @@ const CLIENT_JS = `
     var known = FAILURE_LABELS.indexOf(label) !== -1 || label === "UNKNOWN";
     // class carries the English value (for color); text shows the localized name.
     return el("span", "lbl " + (known ? label : "none"), labelText(label));
+  }
+
+  // A drift-kind run executes nothing, so its "failed"/"passed" status means
+  // "an audit found the spec is stale" / "the spec still matches the code" —
+  // not a test outcome. Same badge shape as statusBadge, drift's own words
+  // and colour (amber, not fail-red: a diagnosis, not something broken),
+  // reusing the dr-found/dr-clean classes the perspectives drift column
+  // already defines. i18nPrefix picks the wording size: the run-level badge
+  // names what drift found ("drift.run."); the per-spec badge is terser
+  // ("drift.spec.") since the diagnosis card below it says the rest.
+  // A row's status answers the threshold question — "would this fail a build" —
+  // which UNKNOWN deliberately answers "no" to, since an audit that could not
+  // tell must not break CI on its own. So status alone cannot label the badge:
+  // it would print "no drift" over a diagnosis that says the opposite. The
+  // state comes from the diagnosis where there is one, and status is only the
+  // fallback for a row or a hub that carries none.
+  var DRIFT_FOUND_CLASS = { found: "dr-found", unknown: "dr-unknown", clean: "dr-clean" };
+
+  function driftFoundBadge(state, i18nPrefix) {
+    var span = el("span", "badge " + (DRIFT_FOUND_CLASS[state] || "dr-clean"));
+    span.appendChild(el("span", "d"));
+    span.appendChild(document.createTextNode(" " + t(i18nPrefix + state)));
+    return span;
+  }
+
+
+  // Shared by the runs-list row and the run-detail header — the one place
+  // both decide whether a run's own status badge speaks drift's vocabulary.
+  function runStatusBadge(run) {
+    return run.kind === "drift" ? driftFoundBadge(driftRunState(run), "drift.run.") : statusBadge(run.status);
+  }
+
+  // One chip per non-zero drift label, worded via labelText — the same
+  // vocabulary the diagnosis card uses — so a run's summary never disagrees
+  // with its own spec cards. A zero-count label is omitted, same reasoning as
+  // rerunSegments below: a "0" chip next to a real count reads as a finding.
+  var DRIFT_LABELS = ["TEST_DRIFT", "SPEC_CHANGE", "UNKNOWN"];
+  // A drift audit opens no browser: it only ever compares the test case against
+  // the source. PRODUCT_BUG is therefore not a cause it can predict *or* be
+  // corrected to, so it is absent from both axes of the matrix and from the
+  // grading control. Offering it in one place but not the other would let a
+  // grade land in a cell that does not exist.
+  var DRIFT_CAUSES = ["TEST_DRIFT", "SPEC_CHANGE", "NO_DRIFT"];
+  function causeLabels(isDrift) { return isDrift ? DRIFT_CAUSES : FAILURE_LABELS; }
+  var DRIFT_LABEL_COUNT_KEY = { TEST_DRIFT: "testDrift", SPEC_CHANGE: "specChange", UNKNOWN: "unknown" };
+  // A run stored by an older hub carries the previous drift summary shape
+  // (issue/severity counts). The read path returns runs as stored, so the
+  // label counts this build wants are simply absent — render nothing rather
+  // than "0 / undefined specs", which reads as a real audit that found none.
+  // --- pure: drift row/run state -------------------------------------------
+  // Self-contained (no DOM, no closures) so drift-overview.test.ts can lift it
+  // out and run it. It decides what a drift badge says, and the one mistake
+  // available here — reading a row's build-threshold status instead of its
+  // diagnosis, which prints "no drift" over an UNKNOWN finding — is invisible
+  // without either a browser or this test.
+  // A grade is a human answering the same question the audit answered, later
+  // and with more to go on, so wherever both exist the grade is what a reader
+  // is shown. The audit's own answer is never overwritten — it stays on the
+  // run and in the confusion matrix, which is the whole point of measuring.
+  function driftSummary(run) {
+    var d = (run && run.gradedDrift) || (run && run.drift);
+    return d && typeof d.specs === "number" ? d : null;
+  }
+
+  /**
+   * One spec row's drift state. The graded argument is the human's answer for
+   * this row, if it has one; NO_DRIFT means the audit reported drift and there
+   * was none.
+   */
+  function driftRowState(r, graded) {
+    if (graded) return graded === "NO_DRIFT" ? "clean" : "found";
+    if (r.analysis && r.analysis.label) return r.analysis.label === "UNKNOWN" ? "unknown" : "found";
+    return r.status === "failed" ? "found" : "clean";
+  }
+
+  /** A whole drift run's state. Label counts beat status for the same reason. */
+  function driftRunState(run) {
+    var d = driftSummary(run);
+    if (!d) return run.status === "failed" ? "found" : "clean";
+    if (d.testDrift + d.specChange > 0) return "found";
+    return d.unknown > 0 ? "unknown" : "clean";
+  }
+  // --- end pure: drift row/run state ---------------------------------------
+
+  function driftChips(drift) {
+    var chips = [];
+    DRIFT_LABELS.forEach(function (label) {
+      var count = drift[DRIFT_LABEL_COUNT_KEY[label]];
+      if (count > 0) chips.push(el("span", "chip drift-count-chip", labelText(label) + " " + count));
+    });
+    return chips;
   }
 
   // Inline icons can't go through el() (SVG needs its own namespace), so they're
@@ -1660,14 +1805,8 @@ const CLIENT_JS = `
       sub.appendChild(ciBadge(r));
       if (r.kind === "drift") {
         sub.appendChild(el("span", "chip kind-chip", t("kind.drift")));
-        if (r.drift) {
-          if (r.drift.errors > 0) {
-            sub.appendChild(el("span", "chip drift-errors-chip", t("drift.summary.errors") + " " + r.drift.errors));
-          }
-          if (r.drift.warnings > 0) {
-            sub.appendChild(el("span", "chip drift-count-chip", t("drift.summary.warnings") + " " + r.drift.warnings));
-          }
-        }
+        var rowDrift = driftSummary(r);
+        if (rowDrift) driftChips(rowDrift).forEach(function (chip) { sub.appendChild(chip); });
       } else {
         sub.appendChild(el("span", "chip kind-chip", t("kind.run")));
       }
@@ -1683,18 +1822,31 @@ const CLIENT_JS = `
       tr.appendChild(profileCell);
 
       var statusCell = document.createElement("td");
-      statusCell.appendChild(statusBadge(r.status));
+      statusCell.appendChild(runStatusBadge(r));
       tr.appendChild(statusCell);
+
+      // A drift row counts what the audit found, not what "passed" — the same
+      // ratio its detail page shows. Reading passed/total here printed a
+      // different number for the same run in the two places you would compare.
+      var rowDriftSummary = r.kind === "drift" ? driftSummary(r) : null;
+      var found = rowDriftSummary
+        ? rowDriftSummary.testDrift + rowDriftSummary.specChange + rowDriftSummary.unknown
+        : null;
+      var num = rowDriftSummary
+        ? found + " / " + rowDriftSummary.specs
+        : r.specs.passed + " / " + r.specs.total;
+      var fillTotal = rowDriftSummary ? rowDriftSummary.specs : r.specs.total;
+      var fillPart = rowDriftSummary ? found : r.specs.passed;
 
       var specsCell = document.createElement("td");
       var specsWrap = el("div", "specs");
-      var meter = el("span", "meter");
-      var pct = r.specs.total > 0 ? Math.round((r.specs.passed / r.specs.total) * 100) : 0;
+      var meter = el("span", "meter" + (rowDriftSummary ? " drift" : ""));
+      var pct = fillTotal > 0 ? Math.round((fillPart / fillTotal) * 100) : 0;
       var bar = el("i");
       bar.style.width = pct + "%";
       meter.appendChild(bar);
       specsWrap.appendChild(meter);
-      specsWrap.appendChild(el("span", "num muted", r.specs.passed + " / " + r.specs.total));
+      specsWrap.appendChild(el("span", "num muted", num));
       specsCell.appendChild(specsWrap);
       tr.appendChild(specsCell);
 
@@ -1725,10 +1877,14 @@ const CLIENT_JS = `
     // NB: not named "t" — that would shadow the global t() translator in this scope.
     var titleRow = el("div", "t");
     titleRow.appendChild(el("span", "runid", run.id.slice(0, 8)));
-    titleRow.appendChild(statusBadge(run.status));
+    titleRow.appendChild(runStatusBadge(run));
     idblock.appendChild(titleRow);
     var sub = el("div", "subline");
     sub.appendChild(ciBadge(run));
+    // What kind of run this is, said once. The spec cards below used to repeat
+    // it per row, which read as "this spec was drift-audited" — a property of
+    // the run described as if it varied spec to spec. Same chip as the run list.
+    sub.appendChild(el("span", "chip kind-chip", t(run.kind === "drift" ? "kind.drift" : "kind.run")));
     idblock.appendChild(sub);
     head.appendChild(idblock);
 
@@ -1746,30 +1902,25 @@ const CLIENT_JS = `
     metaItem(t("meta.branch"), branchChip);
     // Which environment the run executed against (recorded at push, display-only).
     if (run.profile) metaItem(t("meta.profile"), el("span", "chip", run.profile));
-    if (run.kind === "drift" && run.drift) {
-      // Drift runs have no live/deterministic spec pass count. Errors/warnings
-      // are the actionable counts and get colored chips; issues/specsWithIssues
-      // are supplementary totals shown as a muted line below.
-      if (run.drift.errors === 0 && run.drift.warnings === 0) {
+    var summary = driftSummary(run);
+    if (run.kind === "drift" && summary) {
+      // Drift runs have no live/deterministic spec pass count. One chip per
+      // label found, plus how many of the audited specs that covers.
+      var driftFound = summary.testDrift + summary.specChange + summary.unknown;
+      if (driftFound === 0) {
         metaItem(t("meta.drift"), el("div", "drift-clean", t("drift.clean")));
       } else {
         var driftBox = el("div", "drift-meta-box");
         var chips = el("div", "drift-meta-chips");
-        if (run.drift.errors > 0) {
-          chips.appendChild(el("span", "chip drift-errors-chip", t("drift.summary.errors") + " " + run.drift.errors));
-        }
-        if (run.drift.warnings > 0) {
-          chips.appendChild(el("span", "chip drift-count-chip", t("drift.summary.warnings") + " " + run.drift.warnings));
-        }
+        driftChips(summary).forEach(function (chip) { chips.appendChild(chip); });
         driftBox.appendChild(chips);
-        var driftSub = el("div", "muted", t("drift.summary.specsWithIssues") + " " + run.drift.specsWithIssues + " / " + t("drift.summary.issues") + " " + run.drift.issues);
-        driftBox.appendChild(driftSub);
+        var ratio = t("drift.summary.ratio").replace("{found}", String(driftFound)).replace("{total}", String(summary.specs));
+        driftBox.appendChild(el("div", "muted", ratio));
         metaItem(t("meta.drift"), driftBox);
       }
     } else {
       metaItem(t("meta.specs"), run.specs.passed + " / " + run.specs.total + " " + t("meta.passed"));
     }
-    metaItem(t("meta.prompt"), run.promptVersion || "—");
     metaItem(t("meta.created"), relTime(run.createdAt));
     head.appendChild(meta);
 
@@ -1876,6 +2027,12 @@ const CLIENT_JS = `
     head.appendChild(el("span", "conf", Math.round(a.confidence * 100) + "%"));
     wrap.appendChild(head);
     var kv = el("div", "analysis-kv");
+    // a.surface only exists on a drift diagnosis (kind: "drift" rows reuse this
+    // section for their own verdict); a run's failure analysis has no surface.
+    if (a.surface) {
+      kv.appendChild(el("div", "k", t("diag.surface")));
+      kv.appendChild(el("div", "v", t("diag.surface." + a.surface)));
+    }
     if (a.headline) {
       kv.appendChild(el("div", "k", t("diag.cause")));
       kv.appendChild(el("div", "v headline", a.headline));
@@ -1888,17 +2045,15 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  // 根拠: the model's evidence items (file + what it proves) merged with the
-  // drift-audit findings. The audit is an input hint TO the classifier, so
-  // its findings belong here as supporting evidence — not as a sibling
-  // section that reads like an independent feature.
+  // 根拠: the model's own evidence items (file + what it proves). The drift
+  // audit (r.driftAudit) is a separate static opinion now, not a list of
+  // findings to fold in here — see driftAuditCard, rendered as its own
+  // supplementary card beside this one.
   function analysisEvidenceSection(r) {
     var wrap = el("div");
     var count = 0;
     var items = r.analysis && r.analysis.evidence ? r.analysis.evidence : [];
     items.forEach(function (e) {
-      // Same list shape as the drift findings below, so the merged 根拠 list
-      // reads as one.
       var row = el("div", "drift-row");
       if (e.file) {
         var head = el("div", "drift-head");
@@ -1909,11 +2064,6 @@ const CLIENT_JS = `
       wrap.appendChild(row);
       count++;
     });
-    if (r.driftIssues && r.driftIssues.length > 0) {
-      wrap.appendChild(el("div", "section-label", t("acc.drift")));
-      wrap.appendChild(driftSection(r.driftIssues));
-      count += r.driftIssues.length;
-    }
     return { node: wrap, count: count };
   }
 
@@ -2113,19 +2263,44 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  function driftSection(issues) {
-    var wrap = el("div");
-    issues.forEach(function (issue) {
-      var row = el("div", "drift-row");
-      var head = el("div", "drift-head");
-      head.appendChild(el("span", "drift-sev " + issue.severity.toLowerCase(), issue.severity));
-      head.appendChild(el("span", "drift-cat", issue.category));
-      if (issue.stepId) head.appendChild(el("span", "drift-step", "#" + issue.stepId));
-      row.appendChild(head);
-      row.appendChild(el("div", "drift-msg", issue.message));
-      if (issue.detail) row.appendChild(el("div", "drift-detail", issue.detail));
-      wrap.appendChild(row);
-    });
+  // A normal run's OWN drift audit (r.driftAudit): a single static diagnosis
+  // in the same label vocabulary as the triage card, shown as a supplementary
+  // opinion — never the row's own verdict, so it gets its own compact card
+  // rather than folding into analysisSection's grading/reasoning affordances.
+  function driftAuditCard(d) {
+    var wrap = el("div", "analysis-box");
+    var head = el("div", "analysis-head");
+    head.appendChild(labelChip(d.label));
+    head.appendChild(el("span", "conf", Math.round(d.confidence * 100) + "%"));
+    wrap.appendChild(head);
+    var kv = el("div", "analysis-kv");
+    if (d.surface) {
+      kv.appendChild(el("div", "k", t("diag.surface")));
+      kv.appendChild(el("div", "v", t("diag.surface." + d.surface)));
+    }
+    if (d.headline) {
+      kv.appendChild(el("div", "k", t("diag.cause")));
+      kv.appendChild(el("div", "v headline", d.headline));
+    }
+    if (d.recommendation) {
+      kv.appendChild(el("div", "k", t("diag.fix")));
+      kv.appendChild(el("div", "v", d.recommendation));
+    }
+    if (kv.childNodes.length > 0) wrap.appendChild(kv);
+    if (d.evidence && d.evidence.length > 0) {
+      var ev = el("div");
+      d.evidence.forEach(function (e) {
+        var row = el("div", "drift-row");
+        if (e.file) {
+          var evHead = el("div", "drift-head");
+          evHead.appendChild(el("code", "ev-file", e.file));
+          row.appendChild(evHead);
+        }
+        row.appendChild(el("div", "drift-msg", e.detail));
+        ev.appendChild(row);
+      });
+      wrap.appendChild(detailsBlock(t("acc.evidence"), d.evidence.length, ev));
+    }
     return wrap;
   }
 
@@ -2160,6 +2335,7 @@ const CLIENT_JS = `
   // just shows its localized name.
   function triageGradeControl(runId, r, triageState) {
     var key = r.feature + "/" + r.spec;
+    var causes = causeLabels(triageState.isDrift);
     var predicted = r.analysis ? r.analysis.label : "UNKNOWN";
 
     var wrap = el("div", "grade");
@@ -2177,7 +2353,7 @@ const CLIENT_JS = `
 
     // Reflect the current selection (colour + check) and the status chip.
     function paint(selected) {
-      FAILURE_LABELS.forEach(function (lbl) {
+      causes.forEach(function (lbl) {
         var b = segByLabel[lbl];
         b.setAttribute("aria-pressed", String(lbl === selected));
         b.firstChild.textContent = (lbl === selected ? "✓ " : "") + labelText(lbl);
@@ -2191,7 +2367,7 @@ const CLIENT_JS = `
     var existing = triageState.byKey[key];
     var current = existing && existing.actual ? existing.actual.cause : "";
 
-    FAILURE_LABELS.forEach(function (lbl) {
+    causes.forEach(function (lbl) {
       var b = el("button", "seg " + lbl);
       b.type = "button";
       b.appendChild(el("span", null, labelText(lbl))); // text node the paint() updates
@@ -2199,7 +2375,7 @@ const CLIENT_JS = `
       b.addEventListener("click", function () {
         if (lbl === current) return; // no-op re-click
         var prev = current;
-        FAILURE_LABELS.forEach(function (l) { segByLabel[l].disabled = true; });
+        causes.forEach(function (l) { segByLabel[l].disabled = true; });
         paint(lbl);
         status.className = "grade-status saving";
         status.textContent = t("grade.saving");
@@ -2219,7 +2395,7 @@ const CLIENT_JS = `
             status.textContent = t("grade.error");
           })
           .then(function () {
-            FAILURE_LABELS.forEach(function (l) { segByLabel[l].disabled = false; });
+            causes.forEach(function (l) { segByLabel[l].disabled = false; });
           });
       });
       segByLabel[lbl] = b;
@@ -2234,7 +2410,22 @@ const CLIENT_JS = `
   }
 
   function renderSpecCard(runId, r, triageState, isDrift) {
-    var card = el("div", "spec-card " + r.status); // .passed / .failed rail
+    // The human's answer for this row, if it has one. Everything the card says
+    // about whether the spec drifted follows it rather than the audit.
+    var gradedCase = triageState.byKey[r.feature + "/" + r.spec];
+    var graded = isDrift && gradedCase && gradedCase.actual ? gradedCase.actual.cause : null;
+    var rowState = isDrift ? driftRowState(r, graded) : null;
+    // The rail follows the AUDIT, not the grade — deliberately the one place
+    // that does. It is what a reader scans the page by ("which rows did this
+    // audit flag"), and repainting a graded row would take it out of that
+    // scan, hiding the very call they are here to check. The badge on the row
+    // carries the graded answer.
+    //
+    // Green is reserved for "clean" — it is the one colour that tells a reader
+    // to move on, and an audit that could not tell has not earned it. Unknown
+    // shares the amber "look at this" rail rather than getting a third colour.
+    var RAIL = { found: "drift-found", unknown: "drift-found", clean: "passed" };
+    var card = el("div", "spec-card " + (isDrift ? RAIL[driftRowState(r, null)] : r.status));
     var head = el("div", "spec-card-head");
     var nameBlock = el("div");
     nameBlock.appendChild(el("div", "name", r.title || (r.feature + " / " + r.spec)));
@@ -2246,22 +2437,33 @@ const CLIENT_JS = `
     if (r.target) head.appendChild(el("span", "badge-target", r.target));
     // The live/det mode split only exists on the agent-browser target; an
     // external-target row is identified by its target chip alone.
+    //
+    // Whether this is a test run or a drift audit is a fact about the RUN, not
+    // about each spec in it — it is stated once in the run header. What belongs
+    // here is what this spec is, which for a drift audit also says how much of
+    // the test case was examined (two surfaces or one). The liveRun field cannot
+    // answer that on a drift row, since nothing ran; mode is carried for it.
     var external = r.target && r.target !== AGENT_BROWSER_TARGET;
-    if (isDrift) head.appendChild(el("span", "badge badge-drift", t("kind.drift")));
-    else if (r.liveRun) head.appendChild(el("span", "badge-live", t("spec.kind.live")));
-    else if (!external) head.appendChild(el("span", "badge-det", t("spec.kind.det")));
-    head.appendChild(statusBadge(r.status));
+    var live = r.mode ? r.mode === "live" : !!r.liveRun;
+    var modeKnown = r.mode !== undefined || !isDrift;
+    if (modeKnown && live) head.appendChild(el("span", "badge-live", t("spec.kind.live")));
+    else if (modeKnown && !external) head.appendChild(el("span", "badge-det", t("spec.kind.det")));
+    head.appendChild(isDrift ? driftFoundBadge(rowState, "drift.spec.") : statusBadge(r.status));
     card.appendChild(head);
 
     var body = el("div", "spec-card-body");
     var any = false;
 
-    if (isDrift && (!r.driftIssues || r.driftIssues.length === 0)) {
+    if (isDrift && !r.analysis) {
       body.appendChild(el("div", "drift-clean", t("drift.clean")));
       any = true;
     }
 
-    var hasAnalysis = r.status === "failed" && r.analysis;
+    // A drift-kind row's diagnosis lives in analysis regardless of status
+    // (an UNKNOWN-labelled finding below the --severity threshold still
+    // "passes" but has something to show); a normal run only ever classifies
+    // a failed spec.
+    var hasAnalysis = isDrift ? !!r.analysis : r.status === "failed" && r.analysis;
     if (hasAnalysis) {
       // The diagnosis card: verdict + cause/fix, then evidence and reasoning
       // as accordions, then the grading zone — one surface for the whole
@@ -2276,11 +2478,24 @@ const CLIENT_JS = `
       if (reasoning.length > 2) {
         box.appendChild(detailsBlock(t("acc.reasoning"), null, el("div", "analysis-reasoning", reasoning)));
       }
+      // Drift rows are graded too. Nothing ran, so what is being graded is the
+      // classification itself — "it called this TEST_DRIFT; it was really a
+      // SPEC_CHANGE" — which is exactly the measurement that has to exist
+      // before a wrong label is allowed to drive an automatic fix.
       box.appendChild(triageGradeControl(runId, r, triageState));
       body.appendChild(box);
       any = true;
     } else if (r.status === "failed" && r.analysisSkipped) {
       body.appendChild(el("div", "muted", "Analysis skipped: " + r.analysisSkipped));
+      any = true;
+    }
+
+    // A normal run's OWN drift audit: a supplementary static opinion shown
+    // beside the triage card above, never a sibling verdict. Drift-kind rows
+    // never set this (their diagnosis is analysis itself, rendered above).
+    if (!isDrift && r.driftAudit) {
+      body.appendChild(el("div", "section-label", t("acc.drift")));
+      body.appendChild(driftAuditCard(r.driftAudit));
       any = true;
     }
 
@@ -2312,14 +2527,6 @@ const CLIENT_JS = `
 
     if (r.assertions && r.assertions.length > 0) {
       body.appendChild(detailsBlock(t("acc.assertions"), r.assertions.length, assertionsSection(r.assertions)));
-      any = true;
-    }
-
-    // Drift findings render standalone only when they aren't already folded
-    // into the diagnosis card's evidence: drift-kind runs (the audit IS the
-    // content) and failed rows whose analysis was skipped.
-    if (!hasAnalysis && r.driftIssues && r.driftIssues.length > 0) {
-      body.appendChild(detailsBlock(t("acc.drift"), r.driftIssues.length, driftSection(r.driftIssues)));
       any = true;
     }
 
@@ -2386,10 +2593,15 @@ const CLIENT_JS = `
       ? graded
       : graded.filter(function (c) { return caseTarget(c) === filter; });
 
+    // A drift audit cannot answer PRODUCT_BUG on either axis, so a row and a
+    // column for it would sit at zero forever and read as "it never predicted
+    // a product bug" — an accuracy claim, when it is only a definition.
+    var predictedRows = triageState.isDrift ? DRIFT_LABELS : PREDICTED_LABELS;
+    var actualCols = causeLabels(triageState.isDrift);
     var matrix = {};
-    PREDICTED_LABELS.forEach(function (p) {
+    predictedRows.forEach(function (p) {
       matrix[p] = {};
-      FAILURE_LABELS.forEach(function (a) { matrix[p][a] = 0; });
+      actualCols.forEach(function (a) { matrix[p][a] = 0; });
     });
     var correct = 0;
     cases.forEach(function (c) {
@@ -2403,17 +2615,27 @@ const CLIENT_JS = `
 
     var table = document.createElement("table");
     table.className = "matrix-table";
+    // Two header rows so each axis is named where it lives: "actual" spans the
+    // columns, "predicted" sits over the row labels. A single "predicted \\
+    // actual" corner cell leaves the reader to work out which is which.
     var thead = document.createElement("thead");
+    var axisRow = document.createElement("tr");
+    var corner = el("th", "matrix-corner", t("matrix.axis.predicted"));
+    corner.rowSpan = 2;
+    axisRow.appendChild(corner);
+    var actualHead = el("th", "matrix-axis", t("matrix.axis.actual"));
+    actualHead.colSpan = actualCols.length;
+    axisRow.appendChild(actualHead);
+    thead.appendChild(axisRow);
     var headRow = document.createElement("tr");
-    headRow.appendChild(el("th", null, t("matrix.predicted")));
-    FAILURE_LABELS.forEach(function (a) { headRow.appendChild(el("th", null, labelText(a))); });
+    actualCols.forEach(function (a) { headRow.appendChild(el("th", null, labelText(a))); });
     thead.appendChild(headRow);
     table.appendChild(thead);
     var tbody = document.createElement("tbody");
-    PREDICTED_LABELS.forEach(function (p) {
+    predictedRows.forEach(function (p) {
       var row = document.createElement("tr");
       row.appendChild(el("th", null, labelText(p)));
-      FAILURE_LABELS.forEach(function (a) {
+      actualCols.forEach(function (a) {
         var n = matrix[p][a];
         var cls = (p === a ? "diag" : "") + (n > 0 ? " nz" : "");
         row.appendChild(el("td", cls.trim() || null, String(n)));
@@ -2470,11 +2692,13 @@ const CLIENT_JS = `
     return seg;
   }
 
-  function loadTriage(runId, onLoaded) {
+  // isDrift is an argument, not something the caller patches on afterwards: the
+  // matrix is drawn here, before onLoaded runs, and it decides which rows exist.
+  function loadTriage(runId, isDrift, onLoaded) {
     apiFetch("/api/v1/runs/" + encodeURIComponent(runId) + "/triage").then(function (res) {
       var byKey = {};
       res.cases.forEach(function (c) { byKey[c.feature + "/" + c.spec] = c; });
-      var triageState = { byKey: byKey, total: res.total };
+      var triageState = { byKey: byKey, total: res.total, isDrift: isDrift };
       renderMatrix(triageState);
       onLoaded(triageState);
     }).catch(function (err) {
@@ -2484,7 +2708,7 @@ const CLIENT_JS = `
       var wrap = el("div", "matrix-wrap");
       wrap.appendChild(el("div", "muted", "Error loading triage: " + err.message));
       card.appendChild(wrap);
-      onLoaded({ byKey: {} });
+      onLoaded({ byKey: {}, isDrift: isDrift });
     });
   }
 
@@ -2520,13 +2744,14 @@ const CLIENT_JS = `
       // triage loads so the saved grades restore. Keeping these separate means
       // a triage failure (or a throw while rendering cards) can't be mislabelled
       // as the other, and neither escapes its own catch.
+      // A drift row is graded too — what is being graded is the classification,
+      // not an outcome — so the tally belongs here for the same reason it does
+      // on a run. The triage API keys off the row's analysis, which drift rows
+      // now carry, so nothing about the run's kind gates it.
       var isDrift = report.kind === "drift";
-      document.getElementById("triage-head").hidden = isDrift;
-      document.getElementById("triage-card").hidden = isDrift;
       renderSpecCards(runId, report.results, { byKey: {} }, isDrift);
-      if (isDrift) return; // drift runs have no triage: skip loadTriage entirely
-      loadTriage(runId, function (triageState) {
-        renderSpecCards(runId, report.results, triageState, isDrift);
+      loadTriage(runId, isDrift, function (loaded) {
+        renderSpecCards(runId, report.results, loaded, isDrift);
       });
     }).catch(detailError("Error loading report"));
   }
@@ -2934,9 +3159,13 @@ const CLIENT_JS = `
   // "rerunSupported" is tri-state: null until the first answer, then whether
   // this hub answers at all. Chip visibility follows it rather than the report,
   // so switching profile doesn't drop the filter while the next one loads.
+  // "drift" is the DriftLedgerResponse, or null when unanswered (older hub, or
+  // a failed fetch) — not profile-scoped, so it does not reset when the
+  // profile switcher changes (unlike "rerun" above).
   var perspState = {
     doc: null, q: "", f: "all",
-    rerun: null, rerunSupported: null, runUrls: {}, rerunProfiles: []
+    rerun: null, rerunSupported: null, runUrls: {}, rerunProfiles: [],
+    drift: null
   };
 
   function perspectivesPath() {
@@ -2969,20 +3198,29 @@ const CLIENT_JS = `
       "/rerun?profile=" + encodeURIComponent(state.profile);
   }
 
+  // Shared by rerun and drift, which differ only in path and i18n prefix.
   // Resolves { report } or { note } and never rejects: a hub that predates
-  // this endpoint costs the two extra columns, not the whole tab. A 404 here
-  // can only mean "no such route" — the endpoint's own 404 is "the project has
-  // no perspectives document", and this runs only after that document loaded.
-  function fetchRerun() {
-    return fetch(rerunPath(), { headers: { Authorization: "Bearer " + state.token } }).then(function (res) {
-      if (res.status === 404) return { note: t("perspectives.rerun.unsupported"), kind: "info" };
-      if (!res.ok) return { note: t("perspectives.rerun.loadFailed") + ": " + res.status + " " + res.statusText, kind: "warn" };
+  // the endpoint costs only that column, not the whole tab. A 404 here can
+  // only mean "no such route" — the endpoint's own 404 is "the project has no
+  // perspectives document", and this runs only after that document loaded.
+  function fetchLedgerColumn(path, i18nPrefix) {
+    return fetch(path, { headers: { Authorization: "Bearer " + state.token } }).then(function (res) {
+      if (res.status === 404) return { note: t(i18nPrefix + "unsupported"), kind: "info" };
+      if (!res.ok) return { note: t(i18nPrefix + "loadFailed") + ": " + res.status + " " + res.statusText, kind: "warn" };
       return res.json().then(function (report) { return { report: report }; }, function () {
-        return { note: t("perspectives.rerun.loadFailed"), kind: "warn" };
+        return { note: t(i18nPrefix + "loadFailed"), kind: "warn" };
       });
     }, function () {
-      return { note: t("perspectives.rerun.loadFailed"), kind: "warn" };
+      return { note: t(i18nPrefix + "loadFailed"), kind: "warn" };
     });
+  }
+
+  // ── perspectives: drift ledger ────────────────────────────────────────
+  // Not profile-scoped (see perspState.drift above), so unlike rerunPath this
+  // takes no ?profile=.
+
+  function driftPath() {
+    return "/api/v1/projects/" + encodeURIComponent(state.project) + "/drift";
   }
 
   // The ledger records a runId but no link, and the profile list the Secrets
@@ -3018,8 +3256,8 @@ const CLIENT_JS = `
     return feature.featureName + "/" + spec.specName;
   }
 
-  function rerunFor(feature, spec) {
-    var report = perspState.rerun;
+  // Shared by rerun and drift, which differ only in which report they read.
+  function ledgerEntryFor(report, feature, spec) {
     return report && report.specs ? (report.specs[perspSpecKey(feature, spec)] || null) : null;
   }
 
@@ -3061,10 +3299,6 @@ const CLIENT_JS = `
     return rerunCannotJudge(rr);
   }
 
-  var RERUN_BADGE_CLASS = {
-    needed: "rr-needed", notNeeded: "rr-notneeded", unknown: "rr-unknown",
-    neverRun: "rr-none", notEvaluated: "rr-none"
-  };
 
   // --- pure: rerun composition ---------------------------------------------
   // Self-contained on purpose: no DOM, no closures. rerun-view.test.ts lifts
@@ -3109,14 +3343,52 @@ const CLIENT_JS = `
   }
   // --- end pure: rerun composition -----------------------------------------
 
-  // NB: the parameter is not named "state" — that would shadow the app-wide
-  // state object this scope closes over.
-  function rerunBadge(rerunState) {
-    var span = el("span", "badge " + (RERUN_BADGE_CLASS[rerunState] || "rr-none"));
-    span.appendChild(el("span", "d"));
-    span.appendChild(document.createTextNode(" " + t("perspectives.rerun.state." + rerunState)));
-    return span;
+  // --- pure: drift composition ----------------------------------------------
+  // Same shape as rerun composition above, and self-contained for the same
+  // reason: drift-overview.test.ts lifts this region out and runs it directly.
+  // Unlike rerun, drift does not split by label at the overview level — each
+  // spec carries at most one diagnosis already. UNKNOWN is the exception, and
+  // it earns its own state rather than a label: it is the audit saying it could
+  // not tell, so counting it as "drift found" would assert a mismatch nobody
+  // established, and counting it as clean would hide one. Four states, three of
+  // which the ledger distinguishes structurally:
+  //
+  //   no entry      → never audited
+  //   null label    → audited, nothing found
+  //   UNKNOWN label → audited, could not tell
+  //   other label   → audited, drift found
+  function driftState(entry) {
+    if (!entry) return "notAudited";
+    if (!entry.label) return "clean";
+    return entry.label === "UNKNOWN" ? "unknown" : "found";
   }
+
+  // Drawing order: what needs a look first, then what could not be judged, then
+  // what was never audited, then confirmed clean — same reasoning as
+  // RERUN_ORDER above.
+  var DRIFT_ORDER = ["found", "unknown", "notAudited", "clean"];
+  var DRIFT_SEG_CLASS = {
+    found: "sg-drift-found",
+    unknown: "sg-drift-unknown",
+    notAudited: "sg-drift-none",
+    clean: "sg-drift-clean",
+  };
+
+  function driftComposition(entries) {
+    var counts = { found: 0, unknown: 0, notAudited: 0, clean: 0 };
+    entries.forEach(function (entry) { counts[driftState(entry)] += 1; });
+    return counts;
+  }
+
+  // Only states with cases in them get drawn — see rerunSegments' comment above.
+  function driftSegments(counts) {
+    var out = [];
+    DRIFT_ORDER.forEach(function (key) {
+      if (counts[key] > 0) out.push({ state: key, count: counts[key], cls: DRIFT_SEG_CLASS[key] });
+    });
+    return out;
+  }
+  // --- end pure: drift composition -------------------------------------------
 
   // One ledger entry as "<short sha> · <when>", linking to the hub's run detail
   // and, when that run recorded one, to the CI run. Clicks must not bubble: the
@@ -3170,35 +3442,108 @@ const CLIENT_JS = `
     return null;
   }
 
-  function perspResultCell(rr) {
+  // The execution axis as one state. "What did it say last time" and "is that
+  // still true" are two faces of one question, so the row answers it once and
+  // the detail panel keeps the coordinates.
+  //
+  // A needed re-run outranks a recorded failure: once the last result is known
+  // to be stale it is no longer a verdict, and what to do next is the same
+  // either way — run it. Reporting "failed" there would be describing a result
+  // nobody should still be acting on.
+  //
+  // "unknown" keeps its own state rather than folding into the last result:
+  // it means the hub cannot say whether that result still holds, and
+  // --changed=last-run does not re-run it without --include-unknown. Showing
+  // it as passed or failed would claim a confidence nothing supports.
+  function perspRunState(rr) {
+    if (!rr) return null;
+    if (rr.state === "needed") return "needed";
+    if (rr.state === "unknown") return "unknown";
+    var last = lastResult(rr);
+    if (!last || !last.status) return "never";
+    return last.status === "failed" ? "failed" : "passed";
+  }
+
+  // Reuses the badge classes that already mean these things elsewhere rather
+  // than minting a parallel palette: amber for "act on this", info for "cannot
+  // say", and the run status colours for a result that still stands.
+  var RUN_STATE_BADGE = {
+    needed: "rr-needed", unknown: "rr-unknown",
+    failed: "failed", passed: "passed", never: "rr-none"
+  };
+
+  function perspRunCell(rr) {
     var td = el("td");
+    var runState = perspRunState(rr);
     // No verdict at all: this case is in the document but not in the report
     // (added since it was computed). Not the same statement as "never run".
-    if (!rr) {
+    if (!runState) {
       td.appendChild(el("span", "muted", "—"));
       return td;
     }
-    var last = lastResult(rr);
-    if (!last) {
-      td.appendChild(el("span", "muted", t("perspectives.result.never")));
-      return td;
+    var badge = el("span", "badge " + RUN_STATE_BADGE[runState]);
+    badge.appendChild(el("span", "d"));
+    badge.appendChild(document.createTextNode(" " + t("perspectives.run.state." + runState)));
+    td.appendChild(badge);
+
+    // The sub-line says why, not what: the reason a re-run is needed, or the
+    // coordinate of the result being reported.
+    if (runState === "needed" || runState === "unknown") {
+      var why = rerunCellWhy(rr);
+      if (why) td.appendChild(el("span", "cellsub", why));
+    } else if (runState !== "never") {
+      var last = lastResult(rr);
+      var sub = el("span", "cellsub");
+      sub.appendChild(ledgerLine(last.entry));
+      td.appendChild(sub);
     }
-    td.appendChild(last.status ? statusBadge(last.status) : el("span", "muted", "—"));
-    var sub = el("span", "cellsub");
-    sub.appendChild(ledgerLine(last.entry));
-    td.appendChild(sub);
     return td;
   }
 
-  function perspRerunCell(rr) {
+  // ── perspectives: drift ledger ────────────────────────────────────────
+  // "Does this case still describe the product?" — a different question from
+  // re-run above, and shown as its own column rather than folded into it.
+  // Unlike re-run, drift carries no profile: an audit is a property of the
+  // code at a commit, not of an environment, so this column never changes
+  // when the profile switcher above it does.
+
+  var DRIFT_BADGE_CLASS = { notAudited: "dr-none", clean: "dr-clean", found: "dr-found", unknown: "dr-unknown" };
+
+  // driftState() lives with driftComposition/driftSegments above (the "pure:
+  // drift composition" region) — the badge must not collapse "never audited"
+  // and "audited, no drift found" into one grey, same reasoning either way.
+  function driftBadge(state) {
+    var span = el("span", "badge " + (DRIFT_BADGE_CLASS[state] || "dr-none"));
+    span.appendChild(el("span", "d"));
+    span.appendChild(document.createTextNode(" " + t("perspectives.drift.state." + state)));
+    return span;
+  }
+
+  function perspDriftCell(entry) {
     var td = el("td");
-    if (!rr) {
-      td.appendChild(el("span", "muted", "—"));
-      return td;
+    td.appendChild(driftBadge(driftState(entry)));
+    if (entry) {
+      var sub = el("span", "cellsub");
+      // The label and surface go here only when they add to the badge. A clean
+      // audit has neither. An UNKNOWN one has both on paper, but the badge
+      // already says "could not tell" — repeating it as a label says the same
+      // thing in a second wording, and naming the surface it could not judge
+      // claims more than the audit found.
+      if (entry.label && driftState(entry) === "found") {
+        sub.appendChild(document.createTextNode(
+          labelText(entry.label) + (entry.surface ? " (" + t("diag.surface." + entry.surface) + ")" : "") + " · ",
+        ));
+      }
+      sub.appendChild(ledgerLine(entry));
+      // A verdict someone has looked at is worth more than one nobody has, in
+      // both directions: a confirmed finding is real, and a confirmed clean is
+      // not just "the audit found nothing".
+      if (entry.graded) {
+        sub.appendChild(document.createTextNode(" · "));
+        sub.appendChild(el("span", "graded-mark", t("perspectives.drift.graded")));
+      }
+      td.appendChild(sub);
     }
-    td.appendChild(rerunBadge(rr.state));
-    var why = rerunCellWhy(rr);
-    if (why) td.appendChild(el("span", "cellsub", why));
     return td;
   }
 
@@ -3210,24 +3555,10 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  // How many of this case's related-code patterns matched no file when the
-  // document was written. ADDITIVE field: a document from a CLI older than
-  // ADR-0010 simply has no measurement, which is not the same as a measured
-  // zero — so anything that is not a real count reads as "not measured" and
-  // shows nothing, rather than as a clean bill of health.
-  function unmatchedRelatedPathCount(spec) {
-    var raw = spec.relatedPathsUnmatched;
-    return typeof raw === "number" && isFinite(raw) && raw >= 0 ? raw : null;
-  }
-
   // The execution mode lives inside the mechanically-derived status object
   // (spec.status.mode), not at the top level of a spec entry.
   function perspMode(spec) {
     return spec.status && spec.status.mode === "live" ? "live" : "deterministic";
-  }
-
-  function perspRunnable(spec) {
-    return perspMode(spec) === "live" || (spec.status && spec.status.generated === true);
   }
 
   function setPerspStatus(message) {
@@ -3242,29 +3573,53 @@ const CLIENT_JS = `
     return span;
   }
 
-  function perspStatusBadge(spec) {
-    var ok = perspRunnable(spec);
-    var span = el("span", "badge " + (ok ? "ok" : "norec"));
-    span.appendChild(el("span", "d"));
-    span.appendChild(document.createTextNode(" " + t(ok ? "perspectives.status.runnable" : "perspectives.status.notRecorded")));
-    return span;
+  // One axis of the overview: a label, then the bar+legend shape the summary
+  // used to render just once (see .rrbar/.rrleg in the stylesheet) — re-run
+  // and drift each get their own row rather than sharing one bar, since they
+  // answer different questions and a single composite would blur both.
+  function ovAxisRow(label, segments, statePrefix, total) {
+    var row = el("div", "ov-axis");
+    row.appendChild(el("div", "ov-axis-label", label));
+    var bar = el("div", "rrbar");
+    var leg = el("div", "rrleg");
+    segments.forEach(function (seg) {
+      var fill = el("div", seg.cls);
+      fill.style.width = (seg.count / total) * 100 + "%";
+      bar.appendChild(fill);
+      var item = el("span");
+      item.appendChild(el("i", seg.cls));
+      item.appendChild(document.createTextNode(t(statePrefix + seg.state)));
+      item.appendChild(el("b", null, String(seg.count)));
+      leg.appendChild(item);
+    });
+    row.appendChild(bar);
+    row.appendChild(leg);
+    return row;
   }
 
-  // Summary row: the inventory as one line, then one bar segmented by re-run
-  // state — the question this tab is opened to answer. The mode and
-  // recorded-ness counts are not lost; they moved onto the filter chips, where
-  // a count states what that filter would leave behind.
+  // Summary: the inventory as one line, then one row per axis — the two
+  // questions this tab answers, needs-re-run and drift, each segmented on its
+  // own bar rather than blended into one. The mode and recorded-ness counts
+  // are not lost; they moved onto the filter chips, where a count states what
+  // that filter would leave behind.
   //
   // With no re-run data (an older hub, a failed fetch, or a profile nothing
   // has been recorded on) every case is "not evaluated" and the bar says so in
   // one neutral segment, rather than showing a composition that reads as
-  // "nothing to do".
+  // "nothing to do". Drift has no profile and loads separately (loadDrift):
+  // when it hasn't (older hub, failed fetch), its row is omitted entirely
+  // rather than drawn as "all not audited" — that would read as a finding
+  // instead of missing data.
   function renderPerspOverview(doc) {
     var host = document.getElementById("persp-ov");
     clear(host);
     var verdicts = [];
+    var driftEntries = perspState.drift ? [] : null;
     doc.features.forEach(function (feature) {
-      feature.specs.forEach(function (spec) { verdicts.push(rerunFor(feature, spec)); });
+      feature.specs.forEach(function (spec) {
+        verdicts.push(ledgerEntryFor(perspState.rerun, feature, spec));
+        if (driftEntries) driftEntries.push(ledgerEntryFor(perspState.drift, feature, spec));
+      });
     });
 
     var inv = el("div", "ov-inv");
@@ -3275,20 +3630,14 @@ const CLIENT_JS = `
     host.appendChild(inv);
     if (!verdicts.length) return;
 
-    var bar = el("div", "rrbar");
-    var leg = el("div", "rrleg");
-    rerunSegments(rerunComposition(verdicts)).forEach(function (seg) {
-      var fill = el("div", seg.cls);
-      fill.style.width = (seg.count / verdicts.length) * 100 + "%";
-      bar.appendChild(fill);
-      var item = el("span");
-      item.appendChild(el("i", seg.cls));
-      item.appendChild(document.createTextNode(t("perspectives.rerun.state." + seg.state)));
-      item.appendChild(el("b", null, String(seg.count)));
-      leg.appendChild(item);
-    });
-    host.appendChild(bar);
-    host.appendChild(leg);
+    host.appendChild(ovAxisRow(
+      t("perspectives.ov.axis.rerun"), rerunSegments(rerunComposition(verdicts)), "perspectives.rerun.state.", verdicts.length,
+    ));
+    if (driftEntries) {
+      host.appendChild(ovAxisRow(
+        t("perspectives.ov.axis.drift"), driftSegments(driftComposition(driftEntries)), "perspectives.drift.state.", driftEntries.length,
+      ));
+    }
   }
 
   // The filter is passed in rather than read from perspState so the same
@@ -3298,13 +3647,15 @@ const CLIENT_JS = `
   function perspMatches(feature, spec, f) {
     if (f === "deterministic" && perspMode(spec) !== "deterministic") return false;
     if (f === "live" && perspMode(spec) !== "live") return false;
-    if (f === "norec" && perspRunnable(spec)) return false;
     if (f === "rerun") {
-      var rr = rerunFor(feature, spec);
+      var rr = ledgerEntryFor(perspState.rerun, feature, spec);
       // Only "needed": "unknown" is not a weaker "probably needed", and
       // folding it in here would be exactly the overstatement ADR-0010 forbids.
       if (!rr || rr.state !== "needed") return false;
     }
+    // Same asymmetry: an unaudited spec is not a quiet "probably clean", so it
+    // does not belong under a chip that claims to list what drifted.
+    if (f === "drift" && driftState(ledgerEntryFor(perspState.drift, feature, spec)) !== "found") return false;
     if (perspState.q) {
       var hay = (spec.title + " " + (spec.summary || "") + " " + spec.specName).toLowerCase();
       if (hay.indexOf(perspState.q) === -1) return false;
@@ -3396,7 +3747,7 @@ const CLIENT_JS = `
   // The panel shows only what the table row cannot. The row already carries the
   // title, mode, recorded state, last result and the re-run verdict, so none of
   // those is repeated: what is left is the case's definition, the evidence the
-  // verdict rests on, its related code, and the note.
+  // verdict rests on, and the note.
   function perspDetailContent(feature, spec) {
     var frag = document.createDocumentFragment();
     var dl = el("dl", "d-grid");
@@ -3419,23 +3770,12 @@ const CLIENT_JS = `
     // table shows the title, never the id.
     row("perspectives.d.spec", el("code", null, spec.specName));
 
-    var rr = rerunFor(feature, spec);
+    var rr = ledgerEntryFor(perspState.rerun, feature, spec);
     if (rr) {
       row(rerunEvidenceLabelKey(rr.state), rerunEvidenceValue(rr));
       if (rerunHasFailure(rr)) row("perspectives.d.lastRed", ledgerLine(rr.lastRed));
     }
-    if (spec.relatedPaths && spec.relatedPaths.length) {
-      row("perspectives.d.relatedPaths", pathCodes(spec.relatedPaths));
-    }
     frag.appendChild(dl);
-
-    // Too-narrow relatedPaths produce a confident "not needed" — the dangerous
-    // direction — so an unmatched pattern is flagged under the paths it is about.
-    var unmatched = unmatchedRelatedPathCount(spec);
-    if (unmatched) {
-      frag.appendChild(fillNote(el("div"), "warn",
-        t("perspectives.dq.unmatched").replace("{n}", String(unmatched)), "d-note"));
-    }
 
     var notebox = el("div", "notebox");
     notebox.appendChild(el("div", "nlabel", t("perspectives.note.label")));
@@ -3476,12 +3816,13 @@ const CLIENT_JS = `
   function renderPerspTable(doc) {
     var tbody = document.getElementById("persp-tbody");
     clear(tbody);
-    // Hiding the two <th>s (rather than emitting empty cells) leaves the table
-    // exactly as it was on a hub that cannot answer the re-run question.
+    // Hiding the <th>s (rather than emitting empty cells) leaves the table
+    // exactly as it was on a hub that cannot answer the re-run/drift question.
     var showRerun = perspState.rerun != null;
-    document.getElementById("persp-th-result").hidden = !showRerun;
-    document.getElementById("persp-th-rerun").hidden = !showRerun;
-    var cols = showRerun ? 6 : 4;
+    var showDrift = perspState.drift != null;
+    document.getElementById("persp-th-run").hidden = !showRerun;
+    document.getElementById("persp-th-drift").hidden = !showDrift;
+    var cols = 3 + (showRerun ? 1 : 0) + (showDrift ? 1 : 0);
     var hits = 0;
     doc.features.forEach(function (feature) {
       var specs = feature.specs.filter(function (s) { return perspMatches(feature, s, perspState.f); });
@@ -3510,15 +3851,10 @@ const CLIENT_JS = `
         modeTd.appendChild(perspModeChip(perspMode(spec)));
         row.appendChild(modeTd);
 
-        var statusTd = el("td");
-        statusTd.appendChild(perspStatusBadge(spec));
-        row.appendChild(statusTd);
-
         if (showRerun) {
-          var rr = rerunFor(feature, spec);
-          row.appendChild(perspResultCell(rr));
-          row.appendChild(perspRerunCell(rr));
+          row.appendChild(perspRunCell(ledgerEntryFor(perspState.rerun, feature, spec)));
         }
+        if (showDrift) row.appendChild(perspDriftCell(ledgerEntryFor(perspState.drift, feature, spec)));
 
         var chevTd = el("td", "c-chev");
         chevTd.appendChild(el("span", "chev-i", "\\u25b6"));
@@ -3571,6 +3907,11 @@ const CLIENT_JS = `
     var chip = document.getElementById("persp-chip-rerun");
     chip.hidden = perspState.rerunSupported !== true;
     if (perspState.rerunSupported === false && perspState.f === "rerun") perspState.f = "all";
+    // Same rule as the drift column: no ledger, no chip. A chip reading "0"
+    // would say "nothing drifted" when the hub was never asked.
+    var driftChip = document.getElementById("persp-chip-drift");
+    driftChip.hidden = perspState.drift == null;
+    if (perspState.drift == null && perspState.f === "drift") perspState.f = "all";
     document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
       var f = b.getAttribute("data-f");
       b.setAttribute("aria-pressed", String(f === perspState.f));
@@ -3578,8 +3919,9 @@ const CLIENT_JS = `
     });
   }
 
-  function setPerspRerunNote(text, kind) {
-    var box = document.getElementById("persp-rerun-note");
+  // Shared by the rerun and drift notes, which differ only in which box they fill.
+  function setPerspNote(boxId, text, kind) {
+    var box = document.getElementById(boxId);
     box.hidden = !text;
     if (!text) { clear(box); return; }
     fillNote(box, kind || "info", text, "persp-note");
@@ -3609,10 +3951,12 @@ const CLIENT_JS = `
     setPerspStatus("");
     document.getElementById("persp-body").hidden = true;
     setPerspUpdated(null);
-    setPerspRerunNote("");
+    setPerspNote("persp-rerun-note", "");
     setPerspDeployHead(null);
     perspState.rerun = null;
     perspState.rerunSupported = null;
+    setPerspNote("persp-drift-note", "");
+    perspState.drift = null;
     syncPerspChips();
     fetchPerspectives()
       .then(function (doc) {
@@ -3620,15 +3964,24 @@ const CLIENT_JS = `
         if (!doc) { setPerspStatus(t("perspectives.empty")); return; }
         setPerspUpdated(doc);
         document.getElementById("persp-body").hidden = false;
-        // The inventory renders first: re-run data is additive to it, and a
-        // slow or absent /rerun must never hold up the table.
+        // The inventory renders first: re-run/drift data is additive to it,
+        // and a slow or absent fetch must never hold up the table.
         renderPerspectives();
-        // Scoped to its own failure message: a fault here costs the two extra
-        // columns, and reporting it as "loading perspectives failed" would
-        // point at the inventory that in fact loaded fine.
-        return loadRerun().catch(function (err) {
-          setPerspRerunNote(t("perspectives.rerun.loadFailed") + ": " + err.message, "warn");
-        });
+        // Each scoped to its own failure message: a fault in one costs only
+        // its own column(s), and reporting it as "loading perspectives
+        // failed" would point at the inventory that in fact loaded fine.
+        // loadRunIndex runs alongside rather than inside loadRerun: it is
+        // project-scoped (see fetchRunIndex), so a profile switch must not
+        // re-fetch it, and its result must not wait on the rerun report.
+        return Promise.all([
+          loadRunIndex(),
+          loadRerun().catch(function (err) {
+            setPerspNote("persp-rerun-note", t("perspectives.rerun.loadFailed") + ": " + err.message, "warn");
+          }),
+          loadDrift().catch(function (err) {
+            setPerspNote("persp-drift-note", t("perspectives.drift.loadFailed") + ": " + err.message, "warn");
+          }),
+        ]);
       })
       .catch(function (err) {
         perspState.doc = null;
@@ -3640,36 +3993,55 @@ const CLIENT_JS = `
     return state.project + "/" + state.profile;
   }
 
+  // Project-scoped (see fetchRunIndex) — never rejects, so this always
+  // re-renders once the run index settles, whichever of the three loads in
+  // loadPerspectives is slowest.
+  function loadRunIndex() {
+    return fetchRunIndex().then(function (result) {
+      perspState.runUrls = result.urls;
+      perspState.rerunProfiles = result.profiles;
+      renderPerspectives();
+    });
+  }
+
   function loadRerun() {
     var scope = rerunScope();
-    return Promise.all([fetchRerun(), fetchRunIndex()]).then(function (results) {
+    return fetchLedgerColumn(rerunPath(), "perspectives.rerun.").then(function (rerun) {
       // A second profile pick can land while this one is still in flight; the
       // older response must not overwrite the newer scope's verdicts.
       if (scope !== rerunScope()) return;
-      var rerun = results[0];
-      perspState.runUrls = results[1].urls;
-      perspState.rerunProfiles = results[1].profiles;
       perspState.rerun = rerun.report || null;
       perspState.rerunSupported = perspState.rerun != null;
       setPerspDeployHead(perspState.rerun);
       if (rerun.note) {
-        setPerspRerunNote(rerun.note, rerun.kind);
+        setPerspNote("persp-rerun-note", rerun.note, rerun.kind);
       } else if (perspState.rerun && !perspState.rerun.deployHead) {
         // Every case is "unknown" in this state, so say once, at the top, what
         // is missing and how to supply it, rather than only per row.
-        setPerspRerunNote(t("perspectives.rerun.noDeployLogBanner").replace("{profile}", state.profile), "warn");
+        setPerspNote("persp-rerun-note", t("perspectives.rerun.noDeployLogBanner").replace("{profile}", state.profile), "warn");
       } else {
-        setPerspRerunNote("");
+        setPerspNote("persp-rerun-note", "");
       }
       renderPerspectives();
     });
   }
 
+  // Loaded once per project open — never re-run on a profile switch, since
+  // drift carries no profile (unlike loadRerun/reloadRerun below).
+  function loadDrift() {
+    return fetchLedgerColumn(driftPath(), "perspectives.drift.").then(function (result) {
+      perspState.drift = result.report || null;
+      setPerspNote("persp-drift-note", result.note || "", result.kind);
+      renderPerspectives();
+    });
+  }
+
   // Switching profile re-asks only the profile-scoped question: the
-  // perspectives document itself is project-scoped and does not change.
+  // perspectives document itself is project-scoped and does not change, and
+  // neither does the run index loadRerun used to (wastefully) re-fetch.
   function reloadRerun() {
     perspState.rerun = null;
-    setPerspRerunNote("");
+    setPerspNote("persp-rerun-note", "");
     setPerspDeployHead(null);
     renderPerspectives();
     return loadRerun();

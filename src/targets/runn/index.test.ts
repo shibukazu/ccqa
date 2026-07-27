@@ -19,7 +19,6 @@ function makeContext(): GenerateContext {
   const spec = TestSpecSchema.parse({
     title: "create a task via the API",
     target: "runn",
-    relatedPaths: ["server/routes/**"],
     steps: [{ instruction: "POST a new task", expected: "201 with the task id" }],
   });
   return {
@@ -108,9 +107,8 @@ describe("runn target generate", () => {
     expect(result.passed).toBe(true);
     const written = await readFile(resolve(cwd, "runbooks/tasks/create.yaml"), "utf8");
     expect(parseYaml(written)).toMatchObject({ desc: "create a task" });
-    // The prompt prescribes the generic runbook shape and points at relatedPaths.
+    // The prompt prescribes the generic runbook shape.
     expect(prompts[0]).toContain("runn runbook");
-    expect(prompts[0]).toContain("server/routes/**");
   });
 
   it("rejects broken YAML before writing (contract retries, then error)", async () => {

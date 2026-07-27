@@ -22,7 +22,7 @@ export function emptySpecRow(args: {
     assertions: null,
     analysis: null,
     analysisSkipped: null,
-    driftIssues: null,
+    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,

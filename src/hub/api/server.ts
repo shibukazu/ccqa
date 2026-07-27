@@ -21,6 +21,7 @@ import {
 } from "./handlers/secrets.ts";
 import { createListProfilesHandler, createListProjectsHandler } from "./handlers/projects.ts";
 import { createGetLastGreenHandler } from "./handlers/last-green.ts";
+import { createGetDriftLedgerHandler } from "./handlers/drift-ledger.ts";
 import { createGetDeployLogHandler, createRecordDeployHandler } from "./handlers/deploys.ts";
 import { createGetRerunHandler } from "./handlers/rerun.ts";
 import {
@@ -195,6 +196,7 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.get("/api/v1/projects", createListProjectsHandler(storage));
   router.get("/api/v1/projects/:project/profiles", createListProfilesHandler(storage));
   router.get("/api/v1/projects/:project/last-green", createGetLastGreenHandler(storage));
+  router.get("/api/v1/projects/:project/drift", createGetDriftLedgerHandler(storage));
 
   // The deploy log is the one input the hub can't derive; `rerun` answers from
   // it plus the spec ledger (ADR-0010).

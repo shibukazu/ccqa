@@ -7,9 +7,10 @@ import type { TargetDispatch } from "./target-dispatch.ts";
  * what would have executed it.
  *
  * This exists because a selection can be wrong in a way that costs money.
- * `relatedPaths` accuracy is not yet proven, and both `--changed <ref>` and
- * `--changed=last-run` decide from it, so a human has to be able to read the
- * selection back before a live spec spends a Claude budget on it.
+ * `ccqa select-specs`'s model judgment is not infallible, and both
+ * `--changed <ref>` and `--changed=last-run` decide from it, so a human has to
+ * be able to read the selection back before a live spec spends a Claude
+ * budget on it.
  *
  * Rows that would not have executed (a generate-only target, an unresolvable
  * one) are listed too, with their reason: they are part of what the selection

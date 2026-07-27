@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { DeployEntry, DeployInput, DeployLog } from "../contract/schema.ts";
+import type { DeployEntry, DeployInput, DeployLog, SpecTouchIndex } from "../contract/schema.ts";
 import {
   appendDeploy,
   foldTouchIndex,
@@ -14,6 +14,7 @@ function input(overrides: Partial<DeployInput> = {}): DeployInput {
     previousSha: null,
     at: "2026-07-25T00:00:00Z",
     changedPaths: ["src/a.ts"],
+    hasSelection: false,
     ...overrides,
   };
 }
@@ -47,20 +48,19 @@ describe("appendDeploy", () => {
     expect(appendOne(chained, { sha: "sha-9", previousSha: null }).gapBefore).toBe(true);
   });
 
-  test("changedPaths beyond the retained bound are cut and the entry is marked truncated", () => {
+  test("changedPaths beyond the retained bound are cut to the bound", () => {
     const paths = Array.from({ length: MAX_RETAINED_CHANGED_PATHS + 5 }, (_, i) => `src/f${i}.ts`);
     const entry = appendOne(null, { changedPaths: paths });
-    expect(entry.truncated).toBe(true);
     expect(entry.changedPaths).toHaveLength(MAX_RETAINED_CHANGED_PATHS);
 
     // Exactly at the bound nothing is lost.
-    expect(appendOne(null, { changedPaths: paths.slice(0, MAX_RETAINED_CHANGED_PATHS) }).truncated).toBe(false);
+    const atBound = appendOne(null, { changedPaths: paths.slice(0, MAX_RETAINED_CHANGED_PATHS) });
+    expect(atBound.changedPaths).toHaveLength(MAX_RETAINED_CHANGED_PATHS);
   });
 
   test("a deploy that reported no paths is stored as null, not as an empty change set", () => {
     const entry = appendOne(null, { changedPaths: null });
     expect(entry.changedPaths).toBeNull();
-    expect(entry.truncated).toBe(false);
   });
 
   test("the ring buffer evicts the oldest entries and leaves a synthetic gap at the boundary", () => {
@@ -86,46 +86,48 @@ describe("appendDeploy", () => {
 describe("foldTouchIndex", () => {
   const entry = appendOne(null, { sha: "sha-a", changedPaths: ["src/a.ts", "docs/x.md"] });
 
-  test("records the deploy for specs whose relatedPaths match, with a sample of what matched", () => {
-    const index = foldTouchIndex({}, entry, ["src/a.ts", "docs/x.md"], [
-      { key: "f/hit", relatedPaths: ["src/**"] },
-      { key: "f/miss", relatedPaths: ["lib/**"] },
-    ]);
-    expect(index["f/hit"]).toEqual({
-      lastTouchedIndex: 0,
-      lastTouchedSha: "sha-a",
-      lastTouchedAt: entry.at,
-      matchedPaths: ["src/a.ts"],
+  test("needed records the deploy's position with a sample of touchedBy", () => {
+    const index = foldTouchIndex({}, entry, {
+      "f/hit": { verdict: "needed", reason: "matched", touchedBy: ["src/a.ts"] },
     });
-    expect(index["f/miss"]).toBeUndefined();
-  });
-
-  test("a deploy that reported no paths touches every scoped spec, and no unscoped one", () => {
-    const index = foldTouchIndex({}, entry, null, [
-      { key: "f/scoped", relatedPaths: ["lib/**"] },
-      { key: "f/unscoped", relatedPaths: [] },
-    ]);
-    expect(index["f/scoped"]?.matchedPaths).toEqual([]);
-    // An unscoped spec is `unknown`, so recording a touch would dress that up
-    // as a definite answer.
-    expect(index["f/unscoped"]).toBeUndefined();
+    expect(index["f/hit"]).toEqual({
+      needed: { index: 0, sha: "sha-a", at: entry.at, matchedPaths: ["src/a.ts"] },
+    });
   });
 
   test("the matched sample is bounded", () => {
     const many = Array.from({ length: MAX_TOUCHED_BY + 5 }, (_, i) => `src/f${i}.ts`);
-    const index = foldTouchIndex({}, entry, many, [{ key: "f/s", relatedPaths: ["src/**"] }]);
-    expect(index["f/s"]?.matchedPaths).toHaveLength(MAX_TOUCHED_BY);
+    const index = foldTouchIndex({}, entry, { "f/s": { verdict: "needed", reason: "many", touchedBy: many } });
+    expect(index["f/s"]?.needed?.matchedPaths).toHaveLength(MAX_TOUCHED_BY);
   });
 
-  test("a later deploy overwrites an earlier touch, and untouched specs keep theirs", () => {
-    const targets = [
-      { key: "f/a", relatedPaths: ["src/**"] },
-      { key: "f/b", relatedPaths: ["lib/**"] },
-    ];
-    const first = foldTouchIndex({}, entry, ["src/a.ts"], targets);
-    const second = appendOne({ nextIndex: 1, entries: [] }, { sha: "sha-b", changedPaths: ["lib/b.ts"] });
-    const merged = foldTouchIndex(first, second, ["lib/b.ts"], targets);
-    expect(merged["f/a"]?.lastTouchedSha).toBe("sha-a");
-    expect(merged["f/b"]?.lastTouchedSha).toBe("sha-b");
+  test("notNeeded writes nothing, leaving an existing entry untouched", () => {
+    const withNeeded: SpecTouchIndex = {
+      "f/s": { needed: { index: 0, sha: "sha-a", at: entry.at, matchedPaths: ["src/a.ts"] } },
+    };
+    const index = foldTouchIndex(withNeeded, entry, { "f/s": { verdict: "notNeeded", reason: "no match" } });
+    expect(index["f/s"]).toBe(withNeeded["f/s"]);
+    // Same for a spec with no prior entry: nothing is created.
+    expect(foldTouchIndex({}, entry, { "f/new": { verdict: "notNeeded", reason: "no match" } })["f/new"]).toBeUndefined();
+  });
+
+  test("unknown sets undecidedIndex without disturbing an existing needed", () => {
+    const withNeeded: SpecTouchIndex = {
+      "f/s": { needed: { index: 0, sha: "sha-a", at: entry.at, matchedPaths: ["src/a.ts"] } },
+    };
+    const later = appendOne({ nextIndex: 1, entries: [entry] }, { sha: "sha-b" });
+    const index = foldTouchIndex(withNeeded, later, { "f/s": { verdict: "unknown", reason: "could not tell" } });
+    expect(index["f/s"]).toEqual({
+      needed: { index: 0, sha: "sha-a", at: entry.at, matchedPaths: ["src/a.ts"] },
+      undecidedIndex: 1,
+    });
+  });
+
+  test("positions only advance: needed at #7 survives notNeeded at #9", () => {
+    const e7: DeployEntry = { ...entry, index: 7, sha: "sha-7" };
+    const e9: DeployEntry = { ...entry, index: 9, sha: "sha-9" };
+    const afterNeeded = foldTouchIndex({}, e7, { "f/s": { verdict: "needed", reason: "x", touchedBy: ["src/a.ts"] } });
+    const afterNotNeeded = foldTouchIndex(afterNeeded, e9, { "f/s": { verdict: "notNeeded", reason: "y" } });
+    expect(afterNotNeeded["f/s"]?.needed?.index).toBe(7);
   });
 });

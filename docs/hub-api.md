@@ -100,7 +100,7 @@ interface Run {
   branch: string | null;
   status: "passed" | "failed" | "running";
   kind: "run" | "drift";     // "run" = ccqa run/live execution; "drift" = ccqa drift --push
-  drift: { issues: number; errors: number; warnings: number; specsWithIssues: number } | null; // set only for kind: "drift"
+  drift: { specs: number; testDrift: number; specChange: number; unknown: number } | null; // set only for kind: "drift"
   specs: { total: number; passed: number; failed: number };
   gitHead: string | null;
   promptVersion: string;
@@ -119,8 +119,10 @@ resolve `$GITHUB_HEAD_REF` → `$GITHUB_REF_NAME` → the local git branch), and
 `"running"` — `running` never means the hub itself is executing anything;
 it only means a `ccqa run` elsewhere is currently streaming results into
 this run record via `POST /api/v1/runs/open` and `PATCH /api/v1/runs/:id`.
-`drift` is derived from the pushed report's `results[].driftIssues` and is
-`null` for `kind: "run"`.
+`drift` is derived from the pushed report's `results[].analysis` (present only
+for `kind: "drift"` runs, where each row's `analysis` is a labelled
+`TEST_DRIFT`/`SPEC_CHANGE`/`UNKNOWN` diagnosis rather than a triage call) and
+is `null` for `kind: "run"`.
 
 A run opened via `POST /api/v1/runs/open` accepts repeated `PATCH` calls
 while it's `running`: each one upserts spec rows (by feature/spec) and adds
@@ -151,8 +153,10 @@ GET /api/v1/runs/:id/triage
     }
 
 PUT /api/v1/runs/:id/triage/:feature/:spec/actual-cause
-  body: { cause: "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG", note?: string }
+  body: { cause: "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG" | "NO_DRIFT", note?: string }
   → 200 TriageCase | 404 (no such case) | 409 (run has no report yet)
+  "NO_DRIFT" records that an audit reported drift where there was none. It is
+  offered on `kind: "drift"` rows only — a failing test always has a cause.
 
 DELETE /api/v1/runs/:id/triage/:feature/:spec/actual-cause
   → 204
@@ -162,6 +166,13 @@ PUT /api/v1/runs/:id/triage/actual-causes
   → 200 { imported: number }
   Bulk-import path for a batch of graded actual-causes (e.g. from external tooling).
 ```
+
+Grading a `kind: "drift"` row also corrects that spec's entry in the drift
+ledger, so the Perspectives view shows what the human decided rather than what
+the audit guessed — but only while the entry still names this run, so a
+correction to an old verdict cannot overwrite a newer audit. The run itself is
+never rewritten: it keeps the audit's counts in `drift`, and a `gradedDrift`
+object is joined on when the run is read, present once any row is graded.
 
 ## Projects
 
@@ -215,10 +226,12 @@ until related code moves.
 ## Deploys and re-run selection
 
 The hub has no checkout, never runs `git`, and never calls a git host, so it
-cannot work out what a deploy changed. The consuming deploy job tells it
-(ADR-0010), and the hub answers "which specs are worth running?" as set
-arithmetic over that log, the spec ledger, and each spec's `relatedPaths`
-from the perspectives document. No model call is involved.
+cannot work out what a deploy changed or which specs it reaches. The
+consuming deploy job tells it both: the changed paths, and (optionally) which
+specs `ccqa select-specs` decided the deploy reaches (ADR-0010, ADR-0011).
+The hub answers "which specs are worth running?" as set arithmetic over that
+log, the spec ledger, and the per-deploy selections submitted alongside it —
+the hub itself makes no model call.
 
 ```
 POST /api/v1/projects/:project/deploys?profile=<name>
@@ -227,6 +240,7 @@ POST /api/v1/projects/:project/deploys?profile=<name>
     sha: string,
     previousSha?: string | null,   // the commit replaced; omit it and the entry records a gap
     changedPaths?: string[] | null, // from a TWO-dot diff (`git diff --name-only A B`)
+    selection?: { "<feature>/<spec>": DeploySelectionEntry },  // from `ccqa select-specs`
     ref?: string,
     runUrl?: string,
   }
@@ -252,16 +266,22 @@ interface DeployEntry {
   at: string;
   ref?: string;
   runUrl?: string;
-  changedPaths: string[] | null;
-  truncated: boolean;         // the retained list no longer covers every change
+  changedPaths: string[] | null; // record-only; verdicts read hasSelection, not this
+  hasSelection: boolean;      // whether `selection` was supplied alongside changedPaths
   gapBefore: boolean;         // previousSha did not chain onto the log head
+}
+
+interface DeploySelectionEntry {
+  verdict: "needed" | "notNeeded" | "unknown";
+  reason: string;
+  touchedBy?: string[];        // changed paths the selector tied to this spec; set for "needed"
 }
 
 interface SpecRerun {
   state: "needed" | "notNeeded" | "unknown" | "neverRun" | "notEvaluated";
-  reason?: "noRelatedPaths" | "noDeployLog" | "unknownDeployedSha"
-         | "ambiguousDeployedSha" | "deployedShaNotInLog" | "gapInRange"
-         | "truncatedInRange";                     // set only when state is "unknown"
+  reason?: "noSelectionInRange" | "selectionUnknown" | "noDeployLog"
+         | "unknownDeployedSha" | "ambiguousDeployedSha" | "deployedShaNotInLog"
+         | "gapInRange";                            // set only when state is "unknown"
   lastRun: SpecLedgerEntry | null;
   lastGreen: SpecLedgerEntry | null;
   lastRed: SpecLedgerEntry | null;
@@ -292,13 +312,50 @@ instead — a single-shot push reaches the hub only after the run is over, so
 a deploy that landed mid-run would otherwise read as that run's baseline.
 
 `unknown` is never rendered as "not needed"; it always carries a reason. A
-deploy whose `changedPaths` are absent is treated as touching everything —
-fail-open and self-limiting, since it makes everything re-run once and then
-settles. `profile` is part of the scope key and defaults to `"default"`:
+deploy recorded without a selection (`hasSelection: false`) is a hole in the
+range — fail-open and self-limiting: specs whose baseline sits behind it read
+`unknown` rather than `notNeeded`, until a later deploy resolves them.
+`changedPaths` is record-only and plays no part in this. `profile` is part
+of the scope key and defaults to `"default"`:
 two environments sit at different commits, so "needs re-run" has no
 profile-free answer. Branch is not part of the scope — a run exercises the
 deployed environment whatever branch its code came from, so the ledger is
 read across every branch of the profile.
+
+## Drift ledger
+
+Every spec's last `ccqa drift --push` audit, so a project can be reviewed
+without opening each drift run individually. Unlike `/rerun` and
+`/last-green` above, this endpoint takes **no `?profile=`**: drift asks
+whether a spec still describes the code, which has nothing to do with which
+environment is running it.
+
+```
+GET /api/v1/projects/:project/drift
+  → 200 { project: string, specs: { "<feature>/<spec>": SpecDriftEntry } }
+```
+
+```ts
+interface SpecDriftEntry {
+  label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN" | null;  // null = audited, no drift found
+  surface?: "spec" | "generated";  // set only when label is non-null
+  confidence?: number;
+  headline?: string;
+  gitHead: string;   // the commit this audit read
+  runId: string;      // the kind: "drift" run this entry came from
+  at: string;         // the run's reportCreatedAt — the ordering key for ledger updates
+}
+```
+
+The hub advances the ledger whenever a `kind: "drift"` run reaches a
+terminal state: each row's `analysis` becomes that spec's newest entry —
+`label: null` when the audit found no drift, the labelled diagnosis
+otherwise. A spec with **no entry at all** was simply never audited; that is
+a different state from `label: null` and the two must not be conflated. A
+**skipped** row advances nothing, leaving whatever entry the spec already
+had (including none). Entries are scoped by project/**branch**; the response
+merges every branch, newest `at` per spec winning — the same approximation
+`/last-green`'s `getMerged` read makes.
 
 ## Sessions
 
