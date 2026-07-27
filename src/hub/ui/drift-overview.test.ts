@@ -87,6 +87,17 @@ describe("hub UI: perspectives drift overview", () => {
     expect(driftRowState({ status: "passed", analysis: null })).toBe("clean");
   });
 
+  test("only a clean audit gets a green rail", () => {
+    // Green tells a reader to move on. A finding has not earned that, and
+    // neither has an audit that could not tell — the two share the amber rail.
+    const rails = { found: "drift-found", unknown: "drift-found", clean: "passed" };
+    const rule = (c: string, v: string) => new RegExp(`\\.spec-card\\.${c}[^{}]*\\{[^}]*var\\(--${v}\\)`);
+    expect(HTML).toMatch(rule(rails.clean, "pass"));
+    expect(rails.unknown).not.toBe(rails.clean);
+    expect(HTML).toMatch(rule(rails.found, "amber"));
+    expect(HTML).not.toMatch(rule(rails.found, "pass"));
+  });
+
   test("a run's badge follows its label counts, and only falls back to status", () => {
     const { driftRunState } = rowStates();
     const run = (drift: unknown, status = "passed") => ({ status, drift });

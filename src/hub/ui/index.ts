@@ -2419,13 +2419,15 @@ const CLIENT_JS = `
     var rowState = isDrift ? driftRowState(r, graded) : null;
     // The rail follows the AUDIT, not the grade — deliberately the one place
     // that does. It is what a reader scans the page by ("which rows did this
-    // audit flag"), and repainting a graded row green would take it out of
-    // that scan, hiding the very call they are here to check. The badge on the
-    // row carries the graded answer.
-    var auditFlagged = isDrift && driftRowState(r, null) === "found";
-    // A drift row's "failed" is a diagnosis, not a broken test, so it wears the
-    // amber drift-found rail rather than fail-red.
-    var card = el("div", "spec-card " + (isDrift ? (auditFlagged ? "drift-found" : "passed") : r.status));
+    // audit flag"), and repainting a graded row would take it out of that
+    // scan, hiding the very call they are here to check. The badge on the row
+    // carries the graded answer.
+    //
+    // Green is reserved for "clean" — it is the one colour that tells a reader
+    // to move on, and an audit that could not tell has not earned it. Unknown
+    // shares the amber "look at this" rail rather than getting a third colour.
+    var RAIL = { found: "drift-found", unknown: "drift-found", clean: "passed" };
+    var card = el("div", "spec-card " + (isDrift ? RAIL[driftRowState(r, null)] : r.status));
     var head = el("div", "spec-card-head");
     var nameBlock = el("div");
     nameBlock.appendChild(el("div", "name", r.title || (r.feature + " / " + r.spec)));
