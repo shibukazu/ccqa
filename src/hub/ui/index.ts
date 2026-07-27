@@ -715,7 +715,6 @@ const CSS = `
   .matrix-table td.diag { background: var(--pass-bg); color: var(--pass); font-weight: 700; }
   .matrix-accuracy { margin-top: 14px; font-size: 13px; color: var(--fg-dim); }
   .matrix-accuracy b { color: var(--fg); font-size: 15px; }
-  .matrix-accuracy .matrix-prompt { color: var(--muted); }
   .triage-head { display: flex; align-items: baseline; gap: 10px; margin: 24px 0 10px; }
   .triage-summary { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .triage-summary b { color: var(--fg); font-weight: 600; }
@@ -1060,7 +1059,6 @@ const CLIENT_JS = `
       "matrix.axis.predicted": "ccqa predicted", "matrix.axis.actual": "you graded it",
       "matrix.accuracy": "Accuracy",
       "matrix.accSuffix": "of graded cases match the prediction", "matrix.graded": "graded",
-      "matrix.promptVersion": "classifier prompt",
       "matrix.target.all": "All targets",
       "learn.cta.title": "Learn from these grades",
       "learn.cta.desc": "Learn from what you graded so ccqa classifies failure causes the same way next time.",
@@ -1210,7 +1208,6 @@ const CLIENT_JS = `
       "matrix.axis.predicted": "ccqa の予測", "matrix.axis.actual": "人の採点",
       "matrix.accuracy": "正解率",
       "matrix.accSuffix": "件の採点が予測と一致", "matrix.graded": "採点済み",
-      "matrix.promptVersion": "分類プロンプト",
       "matrix.target.all": "すべてのターゲット",
       "learn.cta.title": "この採点から学習",
       "learn.cta.desc": "採点した内容をもとに、ccqaが次回から同じように失敗の原因を分類できるよう学習します。",
@@ -2654,13 +2651,6 @@ const CLIENT_JS = `
     accEl.appendChild(document.createTextNode(t("matrix.accuracy") + " "));
     accEl.appendChild(el("b", null, accuracy + "%"));
     accEl.appendChild(document.createTextNode(" — " + correct + " / " + cases.length + " " + t("matrix.accSuffix")));
-    // Which build of ccqa's classifier produced these predictions. It belongs
-    // next to the accuracy it qualifies, not among the run's own attributes:
-    // it is a provenance stamp compiled into ccqa, not a prompt anyone manages
-    // on the Prompts tab.
-    if (triageState.promptVersion) {
-      accEl.appendChild(el("span", "matrix-prompt", " · " + t("matrix.promptVersion") + " v" + triageState.promptVersion));
-    }
     wrap.appendChild(accEl);
 
     // Header must not mix populations: when a target filter is active, the
@@ -2709,7 +2699,7 @@ const CLIENT_JS = `
     apiFetch("/api/v1/runs/" + encodeURIComponent(runId) + "/triage").then(function (res) {
       var byKey = {};
       res.cases.forEach(function (c) { byKey[c.feature + "/" + c.spec] = c; });
-      var triageState = { byKey: byKey, total: res.total, isDrift: isDrift, promptVersion: res.promptVersion };
+      var triageState = { byKey: byKey, total: res.total, isDrift: isDrift };
       renderMatrix(triageState);
       onLoaded(triageState);
     }).catch(function (err) {
