@@ -1,40 +1,26 @@
 # ccqa
 
+> [!WARNING]
+> ccqa is under active development. Expect breaking changes.
+
 **Your Claude subscription already includes a QA engineer.**
 
-ccqa turns Claude Code into a browser test recorder and runner. You write a
-test spec in YAML; Claude drives a real browser **once** to discover the
-route; ccqa compiles that recording into ordinary test code your CI replays
-with no model in the loop.
-
-Recording is where the subscription pays off — `claude` on your machine is
-enough, no extra API key. CI is where it stops needing one: a recorded spec
-replays as plain test code. Only the optional Claude-driven parts —
-[the audit and the failure analysis](#audit-then-run),
-[change selection](#wire-it-into-ci), and `mode: live` specs — need a
-credential in CI.
+Write a test spec in YAML. Claude drives a real browser **once** to
+discover the route, and ccqa compiles the recording into plain test code
+your CI replays — no model in the loop, no API key. Claude returns only
+where it pays: auditing specs against the code, explaining failures, and
+driving `mode: live` specs.
 
 [日本語版 README](./docs/README.ja.md)
 
-## Install
-
-```bash
-pnpm add -D ccqa vitest agent-browser
-```
-
-Requires Node.js **20+**.
-[agent-browser](https://github.com/vercel-labs/agent-browser) and
-[vitest](https://vitest.dev) are peer dependencies of the **default
-agent-browser target** — they run its recorded tests. A project that only uses
-an external target (`playwright`, `runn`) needs just `ccqa` plus that tool
-(e.g. `pnpm add -D ccqa @playwright/test`); ccqa executes it through the
-target's `runCommand`.
-
 ## Quick start
 
-**1. Write a spec** — by hand, or interactively with
-[`ccqa draft`](./docs/draft.md). (`ccqa init` scaffolds the `.ccqa/`
-skeleton.)
+```bash
+pnpm add -D ccqa vitest agent-browser   # Node 20+
+```
+
+Write a spec — `ccqa init` scaffolds the tree,
+[`ccqa draft`](./docs/draft.md) writes one with you:
 
 ```yaml
 # .ccqa/features/tasks/test-cases/create-and-complete/spec.yaml
@@ -50,312 +36,161 @@ steps:
     expected: Task appears in the task list with status "Open"
 ```
 
-**2. Tell ccqa what `${APP_URL}` is.** A spec names variables instead of
-embedding an environment, so the same spec runs against local and staging. A
-`.env` file covers you locally; in CI the values come from a hub
-(`ccqa hub var set`) so nothing environment-specific lives in the repo. See
-[Profiles and environment variables](./docs/running.md#profiles-and-environment-variables).
+Record once, replay forever:
 
 ```bash
-echo 'APP_URL=http://localhost:3000' >> .env
+echo 'APP_URL=http://localhost:3000' >> .env   # ${VAR}s stay out of specs
+ccqa record tasks/create-and-complete          # Claude drives the browser
+ccqa run tasks/create-and-complete             # vitest replays — no LLM
 ```
 
-**3. Record once** — Claude drives the browser and generates the test:
+Every run writes `report.json` and step screenshots to `ccqa-report/`.
 
-```bash
-ccqa record tasks/create-and-complete
-```
-
-**4. Run it** — vitest replays the recording; no LLM involved:
-
-```bash
-ccqa run tasks/create-and-complete
-```
-
-A `report.json` (+ step screenshots) is always written to `ccqa-report/`.
-See [Running specs](./docs/running.md) for flags and the report format.
-
-If the spec sits behind a login that a recording cannot reproduce — an SSO
-redirect, a device-trust gate — record a session by hand once with
-[`ccqa hub session capture`](./docs/sessions.md) and name it in the spec.
+Some logins cannot be replayed from a recording — an SSO redirect, a
+device-trust prompt. Sign in by hand once with
+[`ccqa hub session capture`](./docs/sessions.md), and specs start from
+that saved session.
 
 ## How it works
 
 ```
-spec.yaml ──► ccqa record ─────► ir.json ────► ccqa generate ──► test code
- steps +       Claude drives      recorded       per-target        agent-browser
- expected      the browser and    actions as     emit              / playwright
- results       discovers the      tool-neutral   (reuse-first)     / runn
-               route              IR
-
-test code ──► ccqa run ────────► report.json ─► ccqa hub push /
-               vitest replay /    + evidence      --report-to-hub
-               runCommand /       + artifacts     team dashboard,
-               live (Claude                       failure triage,
-               drives per step)                   grading & learning
+spec.yaml ──► ccqa record ──► ir.json ──► test code ──► ccqa run
+ steps +       Claude drives    recorded     per-target     replayed in CI,
+ expected      the browser      actions      emit           no LLM
 ```
 
 A spec runs in one of two ways:
 
-**Deterministic (the default).** Claude drives the browser once
-(`ccqa record`), and the recording is compiled into plain test code. From
-then on, CI just replays that code — no LLM at run time, cheapest and most
-stable. The `target:` field picks only **what the recording compiles
-into**; every target is the same deterministic replay:
+**Deterministic (the default).** The recording compiles into plain test
+code and CI replays it with no model in the loop. `target:` picks only
+what it compiles into:
 
 | `target:` | Generated file | Replayed by |
 |---|---|---|
-| `agent-browser` (default) | `test.spec.ts` (vitest + agent-browser) | vitest |
-| `playwright` | `test.spec.ts` (plain `@playwright/test`) | your `runCommand` |
-| `runn` | `runbook.yaml` (API scenario — compiled from the spec, no recording) | your `runCommand` |
-
-`runCommand` is the one-line command your repo already uses to run that
-tool, declared once in `.ccqa/config.yaml` — e.g.
-`pnpm exec playwright test {files}`. See
-[Generation targets](./docs/targets.md) for the substitution contract.
+| `agent-browser` (default) | `test.spec.ts` (vitest) | vitest |
+| `playwright` | plain `@playwright/test` spec | your `runCommand` |
+| `runn` | `runbook.yaml` (API scenario, no recording) | your `runCommand` |
 
 **Live (`mode: live`).** No codegen: Claude drives every run and judges
-each step's `expected` — for fragile, timing-heavy UIs where a fixed
-recording would break.
+each step's `expected` — for UIs a fixed recording would break on.
+
+vitest and agent-browser are peer dependencies of the default target; a
+project on an external target alone needs just `ccqa` and that tool.
+`runCommand` and reusing your existing page objects:
+[Generation targets](./docs/targets.md).
 
 ## Audit, then run
 
-A failing E2E test does not say whose problem it is. Two questions decide it,
-and ccqa asks them in a fixed order — because one is cheap and the other is
-not.
+**A spec describes the code your verification environment is running** —
+not your branch, not the tip of main. A deploy moves that code, and some
+specs stop describing it. Those specs are not failing; they say nothing
+true about what runs, so executing them proves nothing.
 
-**First, without a browser: does each spec still describe the code?**
-`ccqa audit` reads the spec against the source. For a deterministic spec that
-means both artifacts — the spec a human wrote and the test code compiled from
-it — since either can fall out of step. Which one drifted decides the repair,
-so the audit reports it: stale generated code is re-recorded, a stale spec
-needs a human. Cents per spec, no environment required.
+So ccqa asks the cheap question before the expensive one:
 
-**Then, for the specs it cleared: run them, and label what still fails.**
-`ccqa run --only-hub-audited-clean --on-fail-explain` executes only the specs
-the audit found no drift in, and labels each failure `TEST_DRIFT`,
-`SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN` when the evidence does not support
-a call. Each spec is read against the commit where it last passed, taken from
-the hub; `--on-fail-explain-base <ref>` diffs against one shared ref instead,
-for when there is no hub to hold the baselines.
-
-The order is what makes the second step worth paying for. A spec the audit
-flagged will fail for a reason you have already been told, and finding that
-out again costs a live run instead of a static read. Filter first and the
-failures that remain are the ones no amount of reading could have caught.
-
-A spec nobody has audited is not run either — `--only-hub-audited-clean` acts
-on a verdict, and "never looked" is not one.
-
-Every call is gradable on the hub, and the hub learns from your grades. See
-[Failure triage](./docs/running.md#failure-triage) and
-[Drift detection](./docs/running.md#drift-detection).
-
-## The hub
-
-A hub is optional for one person on one machine. For a team, or for CI, it is
-where the shared state lives — there is no second place to put it:
-
-- the coverage inventory of what is tested
-  ([perspectives](./docs/spec.md#inventory-coverage-with-perspectives)), kept
-  current by `record`/`generate`
-- the variables `${…}` resolve to, and saved browser sessions, fetched at run
-  time — so CI holds one secret instead of an environment
-- the deploy log behind `--only-hub-stale`, and the drift ledger
-- a dashboard of runs with per-step screenshots, triage grading, and the
-  prompts learned from those grades
-
-```bash
-export CCQA_HUB_TOKEN=$(openssl rand -hex 24)
-export CCQA_HUB_ENCRYPTION_KEY=$(openssl rand -hex 32)   # required to store
-ccqa serve                                               # sessions/variables
+```
+        the code the verification environment is running
+                            │
+                            │  a spec describes this
+                            ▼
+              the deployed commit changes
+                            │
+                            ▼
+           audit the specs that change reaches
+                            │
+      still describes it ───┴─── no longer describes it
+              │                            │
+              ▼                            ▼
+           run it                   repair the spec
+                                           │
+                                  re-audited next round;
+                                  unverified until then
 ```
 
-**Anything that needs the hub says so in its name** — `--hub-profile`,
-`--only-hub-stale`, `--only-hub-audited-clean`, `--learn-hub-live-prompt`,
-`--report-to-hub` — and fails when it cannot reach one. Asking for hub-backed
-selection and silently getting an unfiltered run, or asking to publish and
-silently not publishing, are worth stopping for.
+`ccqa audit` reads each spec against the source — cents per spec, no
+browser — and records every verdict on the **hub**, the small server
+that holds what the team and CI share. Stale generated code is
+re-recorded; a stale spec goes to a human and stays **unverified** —
+neither passing nor failing — until repaired.
 
-The repository root also ships a `Dockerfile` and `docker-compose.yaml` for
-container deployment — clone it, or copy them from
-[Running the hub in a container](./docs/hub.md#running-the-hub-in-a-container);
-they are not part of the npm package.
+`ccqa run --only-hub-rerun-needed` asks the hub which specs are worth
+running: cleared by the audit *and* invalidated by a deploy. A drifted
+spec answers `blocked` and is never run — a run cannot repair a spec.
 
-See [Hub](./docs/hub.md) for the full setup and
-[Hub API](./docs/hub-api.md) to script it over HTTP.
+When a clean spec still fails, `--on-fail-explain` labels whose problem
+it is: `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN`. You
+grade the calls on the hub, and it learns from your grades.
 
-## Wire it into CI
-
-**Audit first, then run what the audit cleared.** That order is the whole
-shape of ccqa in CI:
+## In CI
 
 ```
 deploy lands
-  │
-  ├─ ccqa hub deploy record --select     what shipped, and which specs it reaches
-  │
-  ├─ ccqa audit --report-to-hub          does each spec still describe the code?
-  │                                      static: no browser, cents per spec
-  │
-  └─ ccqa run --only-hub-audited-clean --only-hub-stale --on-fail-explain
-                                         run only what the audit cleared and
-                                         the deploy invalidated
+  ├─ ccqa hub deploy record --select   what shipped, which specs it reaches
+  ├─ ccqa audit --report-to-hub        does each spec still describe it?
+  └─ ccqa run --only-hub-rerun-needed --on-fail-explain \
+       --hub-profile ci --report-to-hub
 ```
 
-The audit costs cents; a live spec costs dollars. Running a spec the audit has
-already flagged spends the expensive step to rediscover something the cheap one
-knew — and the failure it produces is the drift you were already told about,
-not news. Filtering first leaves a run whose failures are worth reading.
-
-Two jobs sit outside that loop. A `pull_request` run catches breakage before it
-merges; a scheduled audit covers the specs the deploy path never reaches.
+The audit costs cents; a live spec costs dollars. Filtering first leaves
+a run whose failures are worth reading. Record every deploy with
+`--select` — a range recorded without it answers `unknown` forever, and
+nothing fills the hole later.
 
 | Job | Trigger | Question it answers |
 |---|---|---|
-| Deploy loop | after a deploy | Which cleared specs did this deploy invalidate? |
+| Deploy loop | after a deploy | Which specs did this deploy invalidate? |
 | Pre-merge run | `pull_request` | Does this change break a spec, and whose fault is it? |
-| Full audit | `schedule` | Do the specs still describe the code? |
+| Full audit | `schedule` | Do all the specs still describe the code? |
 
-All of them need two things:
-
-- **A Claude credential.** Replaying a recorded spec uses no model, but the
-  change selection, the failure analysis and the audit all do.
-- **A running [hub](#the-hub)**, reached with `CCQA_HUB_URL` and
-  `CCQA_HUB_TOKEN`. Only a pre-merge run with no `--hub-profile` and no
-  `--report-to-hub` can do without one.
-
-See [Environment variables](./docs/commands.md#environment-variables) for the
-full list.
-
-A **profile** is one deployed environment. It names a bucket of variables and
-saved sessions on the hub, and — since two environments sit at different
-commits — its own deploy history. Register the variables your specs reference
-once, from your machine:
+The two jobs outside the loop:
 
 ```bash
-ccqa hub var set APP_URL --value https://app.example --profile staging
-```
-
-Pass the same `--hub-profile` and `--project` in every job. That is what makes the
-jobs refer to the same environment.
-
-### On a pull request
-
-Run the specs the change reaches, and label what broke.
-
-```bash
+# pull request — run what the diff reaches, label what broke
+# (checkout with fetch-depth: 0, or the base ref is not there to resolve)
 ccqa run --only-affected-by "origin/$GITHUB_BASE_REF" --on-fail-explain \
-  --hub-profile staging --report-format github --report-to-hub
-```
+  --hub-profile ci --report-format github --report-to-hub
 
-- `--only-affected-by <ref>` selects the specs the diff against `<ref>` reaches.
-  A spec it cannot clear runs anyway.
-- `--on-fail-explain` labels the cause of each failure.
-- `--hub-profile staging` fetches that environment's variables and saved sessions
-  from the hub. Without it, a spec's `${…}` references go unresolved.
-- `--report-format github` annotates the pull request.
-- `--report-to-hub` streams results to the hub as the run executes.
-
-**Pass the base ref yourself.** ccqa reads nothing from the environment: on a
-`pull_request` workflow that means `origin/$GITHUB_BASE_REF`, elsewhere
-whatever you are comparing against. An unresolvable ref is a usage error
-before the first test, never an empty diff.
-
-**Set `fetch-depth: 0` on `actions/checkout`,** or that base is not in the
-checkout to resolve.
-
-`--dry-run` prints the selection and stops. The selection costs one model call
-either way.
-
-### On a deploy
-
-Two steps, in two jobs. First, when the deploy succeeds, tell the hub what
-shipped:
-
-```bash
-ccqa hub deploy record --profile staging --sha "$GITHUB_SHA" --select
-```
-
-Then, in a job of its own, run what that deploy invalidated:
-
-```bash
-ccqa run --only-hub-stale --hub-profile staging --report-to-hub
-```
-
-- `--select` records which specs the deployed range reaches. Without it, every
-  spec behind that entry answers `unknown` instead of `notNeeded`.
-- `--only-hub-stale` asks the hub, per spec, whether any deploy has touched
-  it since that spec last ran.
-
-The hub has no checkout and never runs `git`, so it cannot work out what a
-deploy changed. That is why the selection is submitted with the deploy rather
-than reconstructed later — and why a deploy recorded without `--select` leaves
-a hole nothing can fill in afterwards.
-
-**Expect it to select nothing at first.** A spec with no recorded run is
-`neverRun`; one whose baseline predates the deploy log is `unknown`. Neither
-runs by default. Record a deploy, run every spec once with `--report-to-hub`,
-and the selection means something from the next deploy on. This job also reads
-the spec inventory from the hub, so `ccqa perspectives` has to have run.
-`--only-hub-stale-with-unknown` opts the undecided specs in.
-
-### On a schedule
-
-Audit every spec against the codebase, with no browser and no deploy.
-
-```bash
+# schedule — audit everything; no browser, no deploy
 ccqa audit --report-format github --report-to-hub
 ```
 
-- `--exit-on warn|error` (default `error`) decides whether a verdict fails
-  the job.
-- `--report-to-hub` records each verdict in the hub's per-spec drift ledger,
-  shown in the Perspectives tab. It is what `--only-hub-audited-clean` reads.
-- `--only-affected-by <ref>` narrows the sweep on a `push` workflow, at the cost
-  of one more model call.
+Runnable workflows and every flag:
+[CI integration](./docs/running.md#ci-integration).
 
-The pre-merge job already audits the specs that failed. This one covers the
-rest, because a spec can pass and still describe a product that no longer
-exists.
+## The hub
 
-Once the ledger is being kept, the post-deploy run can require it — spend a
-run only where the audit cleared the spec **and** the last result no longer
-holds:
+You have met the hub twice now: the audit writes its verdicts there,
+and the run asks it what is worth running. The same server holds the
+rest of what a team shares: the variables and sessions `${…}` resolves
+to (CI keeps one secret), the deploy log behind the selection flags,
+run reports with screenshots, and the prompts learned from your triage
+grades.
 
 ```bash
-ccqa run --only-hub-audited-clean --only-hub-stale --hub-profile staging --report-to-hub
+export CCQA_HUB_TOKEN=$(openssl rand -hex 24)
+export CCQA_HUB_ENCRYPTION_KEY=$(openssl rand -hex 32)
+ccqa serve
 ```
 
-Every `--only-*` narrows what the one before it left, so they compose.
-
-### Workflows
-
-[CI integration](./docs/running.md#ci-integration) has runnable workflows for
-the pre-merge run and the scheduled audit.
-[`ccqa hub deploy record`](./docs/hub.md#ccqa-hub-deploy-record) covers the
-deploy job, including a `curl`-only variant for pipelines with no Node.
+Anything that needs the hub names it — `--hub-profile`,
+`--only-hub-rerun-needed`, `--report-to-hub` — and fails rather than
+degrade when it cannot reach one. A **profile** is a named value set — a
+tenant, an account, a role — not an environment: ccqa tracks one
+verification environment
+([ADR-0013](./docs/adr/0013-one-verification-environment.md)).
 
 ## Documentation
 
 | I want to… | Read |
 |---|---|
-| Look up a command or an environment variable | [Command reference](./docs/commands.md) |
-| Write specs: fields, reusable blocks, file uploads, coverage inventory | [spec.yaml reference](./docs/spec.md) |
-| Draft specs interactively with Claude | [Draft](./docs/draft.md) |
-| Generate Playwright or runn tests that reuse my existing test code | [Generation targets](./docs/targets.md) |
-| Run specs and read the report | [Running specs](./docs/running.md) |
-| Classify failures and grade the calls | [Failure triage](./docs/running.md#failure-triage) |
-| Audit specs against the codebase without running them | [Drift detection](./docs/running.md#drift-detection) |
-| Replay only the specs a change reaches | [Scoping with `--only-affected-by`](./docs/running.md#scoping-with---only-affected-by) |
-| Wire ccqa into GitHub Actions | [CI integration](./docs/running.md#ci-integration) |
-| Run specs live (no codegen), with per-project guidance | [Live specs](./docs/live.md) |
-| Start runs already signed in / skip device-trust gates | [Saved sessions](./docs/sessions.md) |
-| See which assertions generated tests use | [Assertions](./docs/assertions.md) |
-| Auto-fix failing recorded tests | [Auto-fix](./docs/auto-fix.md) |
-| Aggregate results, sessions, and variables on a team server | [Hub](./docs/hub.md) |
-| Script the hub over HTTP | [Hub API](./docs/hub-api.md) |
-| Understand why ccqa is built this way | [ADR](./docs/adr/README.md) |
+| Write specs — fields, blocks, file uploads | [spec.yaml](./docs/spec.md) |
+| Run specs and read the report | [Running](./docs/running.md) |
+| Wire it into GitHub Actions | [CI integration](./docs/running.md#ci-integration) |
+| Emit Playwright / runn tests | [Targets](./docs/targets.md) |
+| Drive specs live, with per-project guidance | [Live specs](./docs/live.md) |
+| Sign in once and reuse the session | [Sessions](./docs/sessions.md) |
+| Run the team hub / script it over HTTP | [Hub](./docs/hub.md) · [API](./docs/hub-api.md) |
+| Understand why it is built this way | [ADR](./docs/adr/README.md) |
 
 ## License
 

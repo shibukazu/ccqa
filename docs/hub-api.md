@@ -316,11 +316,11 @@ deploy recorded without a selection (`hasSelection: false`) is a hole in the
 range — fail-open and self-limiting: specs whose baseline sits behind it read
 `unknown` rather than `notNeeded`, until a later deploy resolves them.
 `changedPaths` is record-only and plays no part in this. `profile` is part
-of the scope key and defaults to `"default"`:
-two environments sit at different commits, so "needs re-run" has no
-profile-free answer. Branch is not part of the scope — a run exercises the
-deployed environment whatever branch its code came from, so the ledger is
-read across every branch of the profile.
+of the scope key and defaults to `"default"`: a spec run under one value set
+says nothing about another, so "needs re-run" has no profile-free answer.
+Branch is not part of the scope — a run exercises the deployed environment
+whatever branch its code came from, so the ledger is read across every branch
+of the profile.
 
 ## Drift ledger
 

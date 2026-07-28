@@ -35,13 +35,13 @@ Key flags (see `ccqa run --help` for the rest):
 - `--only-affected-by <ref>` — restrict execution to the specs `ccqa
   select-specs` decides the git diff against `<ref>` reaches (below). The ref
   is always explicit: in a pull_request workflow pass `$GITHUB_BASE_REF`.
-- `--only-hub-stale` — restrict execution to the specs the hub says are no longer
-  covered by their last result. Reads the deploy log, not a diff — see
-  [Running only what needs a re-run](#running-only-what-needs-a-re-run).
-- `--only-hub-stale-with-unknown` — with `--only-hub-stale` only: also run the specs
+- `--only-hub-rerun-needed` — restrict execution to the specs the hub answers
+  `needed` for: their last result no longer covers what is deployed. Specs the
+  audit rejected answer `blocked` and are never taken. Reads the deploy log and
+  the drift ledger, not a diff — see [Running only what needs a
+  re-run](#running-only-what-needs-a-re-run).
+- `--only-hub-rerun-needed-with-unknown` — with `--only-hub-rerun-needed` only: also run the specs
   whose re-run need the hub cannot answer, and the ones that have never run.
-- `--only-hub-audited-clean` — restrict execution to the specs `ccqa audit` last
-  found no drift in. A spec nobody has audited is not run.
 - `--dry-run` — print the specs this invocation would run, then exit `0`
   without executing anything and without writing a report. Works with every
   selection flag.
@@ -70,18 +70,19 @@ Key flags (see `ccqa run --help` for the rest):
   for fetching sessions/variables/prompts and for `--report-to-hub`.
 
 Every `--only-*` narrows what the one before it left, so passing several means
-"all of these". `--only-hub-audited-clean --only-hub-stale` is the CI combination:
-audit the cheap way first, then spend a run only where the audit cleared the
-spec and the last result no longer holds. None of them can be combined with
-explicit spec targets.
+"all of these". None of them can be combined with explicit spec targets.
 
 Exit code: `0` when every executed spec passed, `1` when any failed, `2` on
 usage errors. The failure analysis never changes the exit code.
 
 ## Profiles and environment variables
 
-Keep environment-specific values out of specs as `${VAR}` references and
-supply them per environment:
+A **profile** is a named set of variables and saved sessions on the hub — a
+tenant, an account, a role. It is **not an environment**: ccqa tracks one
+verification environment, because there is one version of the test code and it
+can only describe one deployment.
+
+Keep the values themselves out of specs as `${VAR}` references:
 
 - **Without `--hub-profile`**, ccqa auto-loads `<cwd>/.env` if present (it does
   not override variables already set in the shell); otherwise `${VAR}`
@@ -96,9 +97,9 @@ supply them per environment:
 Register variables once per project/profile:
 
 ```bash
-ccqa hub var set BASE_URL --value https://staging.example --profile staging
-echo "$TOKEN" | ccqa hub var set API_TOKEN --sensitive --profile staging
-ccqa run auth/login --hub-profile staging     # same spec, staging values
+ccqa hub var set BASE_URL --value https://app.example --profile admin
+echo "$TOKEN" | ccqa hub var set API_TOKEN --sensitive --profile admin
+ccqa run auth/login --hub-profile admin     # same spec, the admin account's values
 ```
 
 `--sensitive` hides the value from `ccqa hub var ls` listings. The same
@@ -316,17 +317,17 @@ than a spec judged without reading it.
 The deploy job runs the same decision via
 [`ccqa hub deploy record --select`](./hub.md#ccqa-hub-deploy-record), which
 submits the verdicts with the deploy so the hub can answer
-`--only-hub-stale` later.
+`--only-hub-rerun-needed` later.
 
 ### Running only what needs a re-run
 
-`--only-hub-stale` asks the hub which specs are worth running instead of
+`--only-hub-rerun-needed` asks the hub which specs are worth running instead of
 diffing a ref:
 
 ```bash
-ccqa run --only-hub-stale --hub-profile stg
-ccqa run --only-hub-stale --hub-profile stg --dry-run     # check the selection first
-ccqa run --only-hub-stale --hub-profile stg --only-hub-stale-with-unknown
+ccqa run --only-hub-rerun-needed --hub-profile stg
+ccqa run --only-hub-rerun-needed --hub-profile stg --dry-run     # check the selection first
+ccqa run --only-hub-rerun-needed --hub-profile stg --only-hub-rerun-needed-with-unknown
 ```
 
 Each spec's baseline is **its own last run** — not its last green, and not a
@@ -339,18 +340,28 @@ selection](./hub-api.md#deploys-and-re-run-selection)). No git diff runs
 locally, and nothing is guessed: the verdict is either recorded or the
 answer is `unknown`.
 
-It needs a hub connection and `--hub-profile` (`dev` and `stg` sit at different
-commits, so the question has no profile-free answer). Anything that makes
+It needs a hub connection and `--hub-profile` (the deploy log is per profile —
+a spec run under one value set says nothing about another). Anything that makes
 the question unanswerable — no perspectives document, no deploy recorded for
 the profile, a hub too old to serve the endpoint — is an **error**, never an
 empty selection.
 
 By default only specs the hub reports as `needed` run. Specs whose need
 cannot be determined (`unknown`) and specs that have never run (`neverRun`)
-are left out; `--only-hub-stale-with-unknown` opts into running them too. This is a
-different question from `ccqa audit`, which asks whether a spec still
-describes the product — see
-[ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md).
+are left out; `--only-hub-rerun-needed-with-unknown` opts into running them too.
+
+**A spec the audit rejected answers `blocked`, and no flag opts into it.**
+Re-running cannot repair a spec that no longer describes the code: it would
+fail for the reason the audit already gave, or pass while verifying something
+the product stopped doing. The state carries which repair it needs —
+`testDrift` for a stale recording, which `ccqa record` fixes, or `specChange`
+for a spec a human has to rewrite — because the two differ in who acts and how
+long it takes.
+
+A blocked spec is **not** passing and **not** failing. It is unverified, and
+the selection summary counts it as its own state so that never reads as an
+all-clear. See [ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md) and
+[ADR-0013](./adr/0013-one-verification-environment.md).
 
 ## CI integration
 

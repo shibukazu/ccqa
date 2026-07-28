@@ -45,16 +45,12 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Only specs `ccqa select-specs` judges reached by the diff against <ref> (e.g. origin/main). In pull_request CI, pass $GITHUB_BASE_REF. Cannot be combined with an explicit spec id.",
     )
     .option(
-      "--only-hub-stale",
-      "Only specs the hub says are no longer covered by their last result — each spec's own last run compared against the hub's deploy log. No git diff involved. Requires a hub connection and --hub-profile.",
+      "--only-hub-rerun-needed",
+      "Only specs the hub answers `needed` for: their last result no longer covers what is deployed. Specs the audit rejected answer `blocked` and are never taken — a run cannot repair a spec. No git diff involved. Requires a hub connection and --hub-profile.",
     )
     .option(
-      "--only-hub-stale-with-unknown",
-      "With --only-hub-stale: also take specs whose re-run need the hub cannot answer ('unknown') and specs that never ran ('neverRun'). Off by default: an unanswerable question is reported, not guessed.",
-    )
-    .option(
-      "--only-hub-audited-clean",
-      "Only specs the hub's drift ledger records as audited with no drift. A spec that has never been audited is not taken: this flag spends a run where a cheap audit already cleared the spec, and \"never looked\" is not that. Requires a hub connection.",
+      "--only-hub-rerun-needed-with-unknown",
+      "With --only-hub-rerun-needed: also take specs whose re-run need the hub cannot answer ('unknown') and specs that never ran ('neverRun'). Off by default: an unanswerable question is reported, not guessed.",
     )
     .option(
       "--dry-run",
@@ -154,8 +150,7 @@ function headerTarget(targets: string[], opts: RunOptions): string {
   if (targets.length > 1) return `${targets.length} targets`;
   const filters = [
     opts.onlyAffectedBy ? "affected" : null,
-    opts.onlyHubStale ? "stale" : null,
-    opts.onlyHubAuditedClean ? "audited clean" : null,
+    opts.onlyHubRerunNeeded ? "needs re-run" : null,
   ].filter((s): s is string => s !== null);
   return filters.length === 0 ? "(all specs)" : `(${filters.join(" + ")})`;
 }

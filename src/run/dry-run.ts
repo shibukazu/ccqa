@@ -8,7 +8,7 @@ import type { TargetDispatch } from "./target-dispatch.ts";
  *
  * This exists because a selection can be wrong in a way that costs money.
  * `ccqa select-specs`'s model judgment is not infallible, and both
- * `--only-affected-by` and `--only-hub-stale` decide from it, so a human has to
+ * `--only-affected-by` and `--only-hub-rerun-needed` decide from it, so a human has to
  * be able to read the selection back before a live spec spends a Claude
  * budget on it.
  *

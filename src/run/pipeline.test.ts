@@ -27,32 +27,32 @@ afterEach(() => {
 
 describe("executeRun selection guards", () => {
   test("a selection filter cannot be combined with an explicit spec target", async () => {
-    await expect(executeRun(["f/s"], { onlyHubStale: true, cwd })).rejects.toThrow(
+    await expect(executeRun(["f/s"], { onlyHubRerunNeeded: true, cwd })).rejects.toThrow(
       /cannot be combined/,
     );
   });
 
-  test("--only-hub-stale without --hub-profile names the flag it needs", async () => {
-    const err = await executeRun([], { onlyHubStale: true, cwd }).catch((e: unknown) => e);
+  test("--only-hub-rerun-needed without --hub-profile names the flag it needs", async () => {
+    const err = await executeRun([], { onlyHubRerunNeeded: true, cwd }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RunUsageError);
     expect((err as Error).message).toMatch(/--hub-profile/);
   });
 
-  test("--only-hub-stale without hub credentials fails on the profile the flag requires", async () => {
+  test("--only-hub-rerun-needed without hub credentials fails on the profile the flag requires", async () => {
     vi.stubEnv("CCQA_HUB_URL", "");
     vi.stubEnv("CCQA_HUB_TOKEN", "");
-    await expect(executeRun([], { onlyHubStale: true, hubProfile: "stg", cwd })).rejects.toThrow(
+    await expect(executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", cwd })).rejects.toThrow(
       /hub URL and token are required/,
     );
   });
 
-  test("--only-hub-stale --dry-run without hub credentials names the flag that needs one", async () => {
+  test("--only-hub-rerun-needed --dry-run without hub credentials names the flag that needs one", async () => {
     // A dry run resolves no profile environment, so this is the path on which
     // the missing hub surfaces as last-run's own requirement.
     vi.stubEnv("CCQA_HUB_URL", "");
     vi.stubEnv("CCQA_HUB_TOKEN", "");
     await expect(
-      executeRun([], { onlyHubStale: true, hubProfile: "stg", dryRun: true, cwd }),
-    ).rejects.toThrow(/--only-hub-stale requires a hub connection/);
+      executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd }),
+    ).rejects.toThrow(/--only-hub-rerun-needed requires a hub connection/);
   });
 });
