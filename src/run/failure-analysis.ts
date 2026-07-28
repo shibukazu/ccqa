@@ -33,8 +33,8 @@ import type { DiffProvider } from "./diff-provider.ts";
  * `ANALYSIS_DISABLED` string is shared with it.
  */
 
-/** `analysisSkipped` for a failed row when `--failure-analysis` was not requested. */
-export const ANALYSIS_DISABLED = "skipped: --failure-analysis not enabled";
+/** `analysisSkipped` for a failed row when `--on-fail-explain` was not requested. */
+export const ANALYSIS_DISABLED = "skipped: --on-fail-explain not enabled";
 
 /** Result of `driftAuthAvailable()`, probed once per run by the pipeline. */
 export type ClaudeAuth = { ok: true } | { ok: false; reason: string };
@@ -42,7 +42,7 @@ export type ClaudeAuth = { ok: true } | { ok: false; reason: string };
 /** What an analysis pass needs that does not vary spec to spec. */
 export interface FailureAnalysisDeps {
   /**
-   * Per-spec source-diff resolver, present exactly when `--failure-analysis`
+   * Per-spec source-diff resolver, present exactly when `--on-fail-explain`
    * was requested. Null disables both the classification and the drift audit —
    * they are one unit, since the audit's findings feed the classifier prompt.
    */

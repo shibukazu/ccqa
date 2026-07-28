@@ -34,10 +34,10 @@ export const RunSchema = z.object({
   profile: z.string().nullable(),
   branch: z.string().nullable(),
   status: RunStatusSchema,
-  /** "run" = ccqa run/live execution; "drift" = ccqa drift --push. */
+  /** "run" = ccqa run/live execution; "drift" = ccqa audit --report-to-hub. */
   kind: z.enum(["run", "drift"]).default("run"),
   /**
-   * Drift result pushed via `ccqa drift --push`; null for kind:"run". Counts
+   * Drift result pushed via `ccqa audit --report-to-hub`; null for kind:"run". Counts
    * by label rather than by a derived severity — a label IS the finding, and
    * the sum of the three is deliberately not carried: it would always equal
    * the number of audited specs with a diagnosis, one diagnosis per spec.
@@ -185,7 +185,7 @@ export type HubError = z.infer<typeof HubErrorSchema>;
  * updates the ledger whenever a `kind: "run"` run reaches a terminal state:
  * every spec that passed gets its entry advanced to that run's `gitHead`
  * (newest `at` wins, so out-of-order finalizes can't move a baseline
- * backwards). `ccqa run --failure-analysis=last-green` reads it to diff each
+ * backwards). `ccqa run --on-fail-explain` reads it to diff each
  * failing spec against the commit where that spec was last green.
  */
 export const LastGreenEntrySchema = z.object({
@@ -489,7 +489,7 @@ export const LedgerResponseSchema = z.object({
 export type LedgerResponse = z.infer<typeof LedgerResponseSchema>;
 
 /**
- * One spec's last drift audit, as recorded by `ccqa drift --push`. Unlike the
+ * One spec's last drift audit, as recorded by `ccqa audit --report-to-hub`. Unlike the
  * spec ledger above, this carries no profile: drift asks whether a spec still
  * describes the code, which has nothing to do with which environment is
  * running it (ADR-0010 draws the same line for "needs re-run").

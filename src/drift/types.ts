@@ -46,7 +46,7 @@ export interface SpecResult {
 }
 
 /**
- * How a label reads against `--severity`. The threshold asks "would a
+ * How a label reads against `--exit-on`. The threshold asks "would a
  * deterministic replay fail today", which is what the label already answers:
  * both findings mean the spec no longer describes the code, while `UNKNOWN`
  * means the audit could not tell and should not fail a build on its own.

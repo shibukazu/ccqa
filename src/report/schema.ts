@@ -107,7 +107,7 @@ export type FailureAnalysis = z.infer<typeof FailureAnalysisSchema>;
 
 /**
  * What a drift audit may conclude, in the same vocabulary `ccqa run
- * --failure-analysis` uses for a failure. One question, one answer, the same
+ * --on-fail-explain` uses for a failure. One question, one answer, the same
  * words whether it was reached by running the spec or by reading the code — so
  * a reader never translates between two taxonomies, and the hub renders,
  * grades and learns from both through one path.
@@ -356,7 +356,7 @@ export const ReportSpecResultSchema = z.object({
   customPromptVersion: z.string().optional(),
   /**
    * The baseline THIS spec's diff was taken against. Matches the envelope's
-   * git.base for fixed baselines; under `--failure-analysis=last-green` each
+   * git.base for fixed baselines; with per-spec last-green baselines each
    * spec has its own (the commit where it last passed). Optional so older
    * report.json stays valid; absent when no diff context was resolved.
    */
@@ -418,7 +418,7 @@ export const GitEnvelopeSchema = z.object({
    */
   head: z.string().nullable(),
   /**
-   * The failure-analysis baseline ref (`--failure-analysis [base]`); null
+   * The failure-analysis baseline ref (`--on-fail-explain-base`); null
    * when analysis was not requested.
    */
   base: z.string().nullable(),

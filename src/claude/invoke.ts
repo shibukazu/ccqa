@@ -64,7 +64,7 @@ export interface ClaudeInvokeOptions {
   model?: string;
   /**
    * Working directory the SDK exposes to its tools (Read/Grep/Glob/Bash).
-   * Falls back to `process.cwd()` when unset. Used by `ccqa drift --cwd` to
+   * Falls back to `process.cwd()` when unset. Used by `ccqa audit --cwd` to
    * point Claude at a specific package inside a monorepo.
    */
   cwd?: string;

@@ -7,7 +7,7 @@ import { requireSafeSegment } from "../validate.ts";
 /**
  * GET /api/v1/projects/:project/drift
  *
- * Every spec's last `ccqa drift --push` audit, keyed by "feature/spec". No
+ * Every spec's last `ccqa audit --report-to-hub` result, keyed by "feature/spec". No
  * `?profile=` — drift asks whether a spec still describes the code, which
  * has nothing to do with which environment is running it, unlike the
  * `/rerun` and `/last-green` endpoints. Merged across every branch (newest

@@ -54,7 +54,7 @@ export interface RunLiveOptions {
   reportDir?: string;
   retry?: number;
   /**
-   * Per-spec source-diff resolver, present exactly when `--failure-analysis`
+   * Per-spec source-diff resolver, present exactly when `--on-fail-explain`
    * was requested (the pipeline resolves the baseline up front). Null/absent
    * disables both the failure classification and the drift audit.
    */
@@ -107,7 +107,7 @@ export async function runLiveSpecs(
   const userPromptSuffix = userPromptBundle?.text ?? null;
 
   // Both pieces of automated analysis cost Claude turns; they only run when
-  // the pipeline resolved a `--failure-analysis` baseline (diffProvider set).
+  // the pipeline resolved an `--on-fail-explain` baseline (diffProvider set).
   // The drift audit is an input to the classification (its findings feed the
   // prompt), so the two are one unit: analysis on means audit on.
   const diffProvider = opts.diffProvider ?? null;
@@ -305,7 +305,7 @@ const verifiedSessions = new Set<string>();
  * each named session from the hub (`.ccqa/sessions/*.json` is no longer
  * read here). Every name must load as a valid agent-browser state (the spec
  * assumes it starts signed-in); a missing/malformed session fails with a
- * `ccqa session bootstrap` hint instead of running unauthenticated.
+ * `ccqa hub session capture` hint instead of running unauthenticated.
  *
  * If a session carries an embedded verify URL (bootstrap saved it), the
  * restore is health-checked before the run starts, so an expired/unusable
@@ -367,7 +367,7 @@ export async function resolveSessionState(
           return {
             ok: false,
             error: `session '${name}' did not restore to a signed-in page — ${check.reason}`,
-            hint: `re-bootstrap it: ccqa session bootstrap ${name}${profileFlag}`,
+            hint: `re-bootstrap it: ccqa hub session capture ${name}${profileFlag}`,
           };
         }
         verifiedSessions.add(memoKey);
@@ -385,7 +385,7 @@ export async function resolveSessionState(
     return {
       ok: false,
       error: `session not usable on the hub: ${broken.join(", ")}`,
-      hint: `create it with: ${broken.map((name) => `ccqa session bootstrap ${name}${profileFlag}`).join("  ·  ")}`,
+      hint: `create it with: ${broken.map((name) => `ccqa hub session capture ${name}${profileFlag}`).join("  ·  ")}`,
     };
   }
 

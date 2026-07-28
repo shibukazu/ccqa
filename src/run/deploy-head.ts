@@ -19,7 +19,7 @@ export async function deployHeadSha(
  *
  * Captured before any spec executes and asserted on both push paths
  * (`?deployedSha=` on `POST /runs` via `ccqa hub push`, and on `POST
- * /runs/open` for `--push-report`). Left to itself the hub reads its own
+ * /runs/open` for `--report-to-hub`). Left to itself the hub reads its own
  * deploy-log head when the call lands — after the whole run for a single-shot
  * push, after the deterministic phase for an incremental one — so a deploy
  * landing in that window would be recorded as the run's baseline and

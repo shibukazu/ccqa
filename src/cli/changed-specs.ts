@@ -11,7 +11,7 @@ export interface ChangedSelection {
   specs: SpecRef[];
   /**
    * The baseline actually diffed against. Returned rather than left for the
-   * caller to resolve again: `ccqa drift` reports this to the hub, and a
+   * caller to resolve again: `ccqa audit` reports this to the hub, and a
    * second resolver would report a commit other than the one selection used.
    */
   base: AnalysisBase;

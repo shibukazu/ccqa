@@ -172,7 +172,7 @@ export function getBlockDir(name: string, cwd?: string): string {
 /**
  * Inverse of `getBlockDir`. Given a file path that appears in a git diff,
  * return the block name if the path points at the block's spec.yaml, else
- * null. Used by `drift --changed` to invalidate specs whose included blocks
+ * null. Used by `audit --only-affected-by` to invalidate specs whose included blocks
  * were edited. (v0.4 inlines blocks into every spec's own trace, so the
  * block directory holds only spec.yaml — no per-block recording lives
  * here anymore.)
@@ -282,7 +282,7 @@ function assemblePromptBundle(
     loaded.push(user.label);
   }
   if (agent.text !== null) {
-    sections.push(`### Agent learnings (auto-updated by ccqa --update-agent-prompt)\n\n${agent.text}`);
+    sections.push(`### Agent learnings (auto-updated by ccqa's --learn-*-prompt flags)\n\n${agent.text}`);
     loaded.push(agent.label);
   }
   let text = sections.join("\n\n");

@@ -32,7 +32,7 @@ describe("ccqa run (deterministic replay) report output", () => {
     const data = JSON.parse(json);
     const boom = data.results.find((r: { feature: string; spec: string }) => r.feature === "demo" && r.spec === "boom");
     expect(boom).toBeDefined();
-    expect(boom.analysisSkipped).toMatch(/--failure-analysis not enabled/);
+    expect(boom.analysisSkipped).toMatch(/--on-fail-explain not enabled/);
     expect(boom.failureLogExcerpt).toBeTruthy();
   });
 

@@ -109,7 +109,7 @@ export function collectIncludedBlockNames(spec: TestSpec): string[] {
 
 /**
  * Best-effort variant for callers that only need the block list and don't
- * care to surface parse errors (e.g. `drift --changed` scoping, where a
+ * care to surface parse errors (e.g. `audit --only-affected-by` scoping, where a
  * malformed spec is reported separately by the main drift check). Returns
  * an empty array on any parse failure.
  */

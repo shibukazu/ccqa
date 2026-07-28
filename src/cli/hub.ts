@@ -123,7 +123,7 @@ const sessionPush = new Command("push")
       state = await loadStorageState(path);
     } catch (err) {
       log.error(`could not read session "${name}" at ${path}: ${err instanceof Error ? err.message : String(err)}`);
-      log.hint(`create it first with:  ccqa session bootstrap ${name}${opts.profile ? ` --profile ${opts.profile}` : ""}`);
+      log.hint(`create it first with:  ccqa hub session capture ${name}${opts.profile ? ` --profile ${opts.profile}` : ""}`);
       process.exit(2);
     }
 
@@ -289,12 +289,12 @@ const promptPush = new Command("push")
       body = await readFile(path, "utf8");
     } catch (err) {
       log.error(`could not read prompt "${name}" at ${path}: ${err instanceof Error ? err.message : String(err)}`);
-      log.hint("nothing to push; generate it first (e.g. ccqa run --update-agent-prompt)");
+      log.hint("nothing to push; generate it first (e.g. ccqa run --learn-live-prompt)");
       process.exit(2);
     }
     if (body.trim().length === 0) {
       log.error(`prompt "${name}" at ${path} is empty`);
-      log.hint("nothing to push; generate it first (e.g. ccqa run --update-agent-prompt)");
+      log.hint("nothing to push; generate it first (e.g. ccqa run --learn-live-prompt)");
       process.exit(2);
     }
 
@@ -364,7 +364,7 @@ interface DeployRecordOptions extends HubConnOptions {
 const deployRecord = new Command("record")
   .description(
     "Tell the hub what a deploy shipped, so it can answer which specs need a re-run " +
-      "(`ccqa run --changed=last-run`). Run this from the deploy job, after the deploy succeeds. " +
+      "(`ccqa run --only-stale`). Run this from the deploy job, after the deploy succeeds. " +
       "The changed paths are computed locally with a two-dot `git diff <previous> <sha>`; " +
       "a job that has only curl and git can POST the same body directly (see docs/hub.md).",
   )
@@ -514,7 +514,7 @@ function describeSelection(selection: DeploySelection | undefined, diffAvailable
 }
 
 const deployCommand = new Command("deploy")
-  .description("Report deploys to the hub, the input behind `ccqa run --changed=last-run`.")
+  .description("Report deploys to the hub, the input behind `ccqa run --only-stale`.")
   .addCommand(deployRecord);
 
 // ── push ──────────────────────────────────────────────────────────────────

@@ -501,7 +501,7 @@ export async function executeRun(
 
   const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDir);
 
-  // Incremental hub push: when --push-report is set and a hub is configured,
+  // Incremental hub push: when --report-to-hub is set and a hub is configured,
   // open a "running" run up front so each finished spec can be PATCHed to the
   // hub as it lands (real-time reflection of a long run). The report dir always
   // exists, so the only thing that can still block the push is a missing hub
@@ -510,7 +510,7 @@ export async function executeRun(
   // response could leave a second orphan running run, so on failure we degrade
   // to local-report-only.
   if (opts.reportToHub && hubCtx == null) {
-    log.warn("--push-report requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN); skipping push");
+    log.warn("--report-to-hub requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN); skipping push");
   }
   let hubRunId: string | null = null;
   let hubSink: ReportSink | undefined;
@@ -601,7 +601,7 @@ export async function executeRun(
   // External-target specs run between the det and live phases. Rows (including
   // the skipped / target-resolution-failure stubs) are upserted into the
   // incremental report as each spec finishes, so an interrupt and
-  // --push-report treat them like live rows. Their failure analysis happens
+  // --report-to-hub treat them like live rows. Their failure analysis happens
   // in the tail phase below, with the deterministic one.
   const externalRows = await runExternalSpecs(dispatch, {
     cwd,
@@ -1131,7 +1131,7 @@ interface RowFilesAcc {
 /**
  * Add one row's file assets to `acc` as `{ reportDir-relative posix path →
  * base64 }`. Every kind of screenshot a row can carry has to be collected here,
- * or `--push-report` — the way CI publishes — silently ships a report whose
+ * or `--report-to-hub` — the way CI publishes — silently ships a report whose
  * images 404 on the hub: a live row's per-step PNGs
  * (`liveRun.steps[].beforePng/afterPng`), a script-driven row's step evidence
  * (`evidence[].pngPath` / `beforePngPath`, written by agent-browser replays and

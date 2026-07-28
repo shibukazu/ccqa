@@ -260,7 +260,7 @@ function parseFormat(raw: string | undefined): Format {
 function parseSeverity(raw: string | undefined): Threshold {
   const v = raw ?? "error";
   if (v === "warn" || v === "error") return v;
-  log.error(`invalid --severity: ${v} (expected warn|error)`);
+  log.error(`invalid --exit-on: ${v} (expected warn|error)`);
   process.exit(2);
 }
 

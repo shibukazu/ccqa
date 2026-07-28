@@ -182,11 +182,11 @@ async function runGenerateLocked(
 }
 
 /**
- * `ccqa generate --update-agent-prompt`: refresh the target's learned
+ * `ccqa generate --learn-codegen-prompt`: refresh the target's learned
  * `<target>.agent` playbook from this generation. Only targets that declare a
  * `guidanceKind` (the LLM-generating ones: playwright, runn) have such a
  * prompt — agent-browser's codegen is mechanical, so point at `ccqa record
- * --update-agent-prompt` for its tracer instead.
+ * --learn-trace-prompt` for its tracer instead.
  */
 async function runGenerateAgentPromptUpdate(
   target: TargetPlugin,
@@ -198,7 +198,7 @@ async function runGenerateAgentPromptUpdate(
 ): Promise<void> {
   if (target.guidanceKind === undefined) {
     log.warn(
-      `--update-agent-prompt has no effect on the "${target.id}" target — it has no learned ` +
+      `--learn-codegen-prompt has no effect on the "${target.id}" target — it has no learned ` +
         `generation prompt (only LLM-generating targets like playwright/runn do)`,
     );
     return;

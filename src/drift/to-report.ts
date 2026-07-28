@@ -19,7 +19,7 @@ function specStatus(result: SpecResult, threshold: Threshold): "passed" | "faile
 }
 
 /**
- * Adapts `ccqa drift` results into the shared RunReportData shape so they can
+ * Adapts `ccqa audit` results into the shared RunReportData shape so they can
  * be pushed to the hub (`ccqa audit --report-to-hub`) and rendered by the same report
  * UI as `ccqa run`/`ccqa live`. Browser-execution fields (testCounts,
  * evidence, liveRun, ...) don't apply to a drift audit and are always null —

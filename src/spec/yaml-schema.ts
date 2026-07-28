@@ -106,7 +106,7 @@ export const TestSpecSchema = z
     /**
      * Saved browser session(s) to restore so a `mode: live` spec starts
      * already signed-in (see SessionFieldSchema for the name/merge mechanics).
-     * Each name comes from `ccqa session bootstrap <name>`; the state files are
+     * Each name comes from `ccqa hub session capture <name>`; the state files are
      * restored read-only, so re-runs (local or CI) never mutate them. A missing
      * session stops the run with a bootstrap hint rather than running
      * unauthenticated. Ignored for deterministic specs — to log in normally,

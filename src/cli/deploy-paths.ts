@@ -27,7 +27,7 @@ export function capDeployPaths(paths: readonly string[]): string[] {
  * The files that differ between two commits, as a deploy must report them.
  *
  * A thin wrapper over `getChangedFilesBetween` (two-dot, the same helper
- * `--changed` uses) with rename detection off — see that function's doc for
+ * `--only-affected-by` uses) with rename detection off — see that function's doc for
  * why two-dot is right here, and why this call turns renames off.
  */
 export async function changedPathsBetween(

@@ -2,7 +2,7 @@ import { outputLanguageBlock } from "./format.ts";
 import type { GuidanceKind } from "./prompt-names.ts";
 
 /**
- * Build the prompts used by `--update-agent-prompt` to refresh
+ * Build the prompts used by the `--learn-*-prompt` flags to refresh
  * `.ccqa/prompts/<kind>.agent.md` after a run:
  *   - `ccqa run` (live) → `live.agent`
  *   - `ccqa record` (trace) → `record.agent`

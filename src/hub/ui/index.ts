@@ -320,7 +320,7 @@ const HTML_BODY = `
           <div style="font-weight:600" data-i18n="session.help.title">How to get this JSON</div>
           <ol class="help-steps">
             <li><span class="step-n">1</span><div class="step-b"><span data-i18n="session.help.step1">Run this in your terminal and log in by hand when the browser opens:</span>
-              <div class="cmd"><code id="session-help-cmd">ccqa session bootstrap &lt;name&gt;</code><button type="button" class="copy" id="session-help-copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span data-i18n="common.copy">Copy</span></button></div>
+              <div class="cmd"><code id="session-help-cmd">ccqa hub session capture &lt;name&gt;</code><button type="button" class="copy" id="session-help-copy"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span data-i18n="common.copy">Copy</span></button></div>
             </div></li>
             <li><span class="step-n">2</span><div class="step-b"><span data-i18n="session.help.step2">Open the saved file and paste its contents below:</span>
               <div style="margin-top:5px"><span class="path">.ccqa/sessions/&lt;profile&gt;/&lt;name&gt;.json</span></div>
@@ -2460,7 +2460,7 @@ const CLIENT_JS = `
     }
 
     // A drift-kind row's diagnosis lives in analysis regardless of status
-    // (an UNKNOWN-labelled finding below the --severity threshold still
+    // (an UNKNOWN-labelled finding below the --exit-on threshold still
     // "passes" but has something to show); a normal run only ever classifies
     // a failed spec.
     var hasAnalysis = isDrift ? !!r.analysis : r.status === "failed" && r.analysis;
@@ -3453,7 +3453,7 @@ const CLIENT_JS = `
   //
   // "unknown" keeps its own state rather than folding into the last result:
   // it means the hub cannot say whether that result still holds, and
-  // --changed=last-run does not re-run it without --include-unknown. Showing
+  // --only-stale does not re-run it without --only-stale-with-unknown. Showing
   // it as passed or failed would claim a confidence nothing supports.
   function perspRunState(rr) {
     if (!rr) return null;
