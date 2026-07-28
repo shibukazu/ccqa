@@ -41,12 +41,10 @@ describe("updateAgentPrompt", () => {
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("no ANTHROPIC_API_KEY"));
   });
 
-  test("skips (warn only) when there's no hub connection", async () => {
-    const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
-
-    await updateAgentPrompt({ kind: "record", flag: "--learn-live-prompt", runSummary: "summary", hubContext: null });
-
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("hub connection required"));
+  test("throws without a hub connection — the prompt has nowhere to go", async () => {
+    await expect(
+      updateAgentPrompt({ kind: "record", flag: "--learn-hub-trace-prompt", runSummary: "summary", hubContext: null }),
+    ).rejects.toThrow(/--learn-hub-trace-prompt requires a hub connection/);
   });
 
   test("fetches the current prompt from the hub and writes the new one back", async () => {

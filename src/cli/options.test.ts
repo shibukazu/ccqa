@@ -89,11 +89,11 @@ describe("addProfileOption", () => {
     expect(cmd.opts().profile).toBeUndefined();
   });
 
-  test("parses an explicit --profile value", () => {
+  test("parses an explicit --hub-profile value", () => {
     const cmd = addProfileOption(new Command("demo").exitOverride());
     cmd.action(() => {});
-    cmd.parse(["--profile", "stg"], { from: "user" });
-    expect(cmd.opts().profile).toBe("stg");
+    cmd.parse(["--hub-profile", "stg"], { from: "user" });
+    expect(cmd.opts().hubProfile).toBe("stg");
   });
 });
 

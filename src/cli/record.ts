@@ -24,14 +24,14 @@ const VALIDATION_MODES = ["lenient", "strict"] as const;
 interface RecordOptions {
   model?: string;
   language?: string;
-  profile?: string;
+  hubProfile?: string;
   traceValidation?: ValidationMode;
   autoFix?: AutoFixMode;
   autoFixMaxRetries?: string;
   overwrite?: boolean;
   sessionPin?: boolean;
   traceOnly?: boolean;
-  learnTracePrompt?: boolean;
+  learnHubTracePrompt?: boolean;
   cwd?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -81,7 +81,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     .option("--overwrite", "Replace an existing test.spec.ts without warning")
     .optionsGroup("Learning:")
     .option(
-      "--learn-trace-prompt",
+      "--learn-hub-trace-prompt",
       "After the trace finishes, ask Claude to refresh the \"record.agent\" prompt on the hub from a summary of the run. Requires a hub connection.",
     )
     .optionsGroup("Environment and connection:")
@@ -130,11 +130,11 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // Trace drives a real browser and resolves the spec's ${VAR} (login URL,
   // credentials) against process.env, so the profile (or default .env) must be
   // merged first. Project resolution (for scoping the hub lookup) only
-  // happens when --profile is actually given.
-  const project = opts.profile !== undefined ? resolveProject(opts) : undefined;
-  if (opts.profile !== undefined) {
+  // happens when --hub-profile is actually given.
+  const project = opts.hubProfile !== undefined ? resolveProject(opts) : undefined;
+  if (opts.hubProfile !== undefined) {
     await applyProfileFromOption({
-      profile: opts.profile,
+      profile: opts.hubProfile,
       project: project!,
       cwd: cwdForProfile,
       hubUrl: opts.hubUrl,
@@ -150,10 +150,17 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // resolver would change the error mode for an invalid --project from
   // process.exit(2) to an uncaught throw. The project scope matters whenever
   // a hub is configured (prompt lookups, the perspectives auto-update), not
-  // only when --profile asked for hub variables.
+  // only when --hub-profile asked for hub variables.
   const hubClientForTrace = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken, hubHeader: opts.hubHeader });
   const hubProject = project ?? (hubClientForTrace !== null ? resolveProject(opts) : undefined);
   const hubContext: HubContext | null = hubClientForTrace && hubProject ? { hub: hubClientForTrace, project: hubProject } : null;
+
+  // Checked before the browser runs: a recording that cannot write back what
+  // it learned should say so first, not after the expensive part.
+  if (opts.learnHubTracePrompt && hubContext === null) {
+    log.error("--learn-hub-trace-prompt requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)");
+    process.exit(2);
+  }
 
   // Hold the spec lock across trace + generate: a concurrent record/generate
   // of the same spec would interleave ir.json and output writes. runGenerate
@@ -192,12 +199,12 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
     await releaseLock();
   }
 
-  if (opts.learnTracePrompt && traceResult !== null) {
+  if (opts.learnHubTracePrompt && traceResult !== null) {
     {
       log.blank();
       await updateAgentPrompt({
         kind: "record",
-        flag: "--learn-trace-prompt",
+        flag: "--learn-hub-trace-prompt",
         runSummary: buildRecordRunSummary(featureName, specName, traceResult),
         hubContext,
         ...(opts.model ? { model: opts.model } : {}),

@@ -30,13 +30,20 @@ function fakeHubClient(pushRun: HubClient["pushRun"]): HubClient {
 const results: SpecResult[] = [{ target: { featureName: "tasks", specName: "create" }, ok: true, drift: null }];
 
 describe("pushDriftResults", () => {
-  test("warns and returns without throwing when no hub is configured", async () => {
+  test("exits rather than skipping when no hub is configured", async () => {
+    // Asking to publish and silently not publishing is the failure mode this
+    // guards: a CI job would go green having recorded nothing.
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
+      throw new Error("exit");
+    }) as never);
     await expect(
       pushDriftResults(
         { results, threshold: "error", cwd: process.cwd(), opts: { project: "demo" }, format: "text" },
         () => null,
       ),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow("exit");
+    expect(exit).toHaveBeenCalledWith(2);
+    exit.mockRestore();
   });
 
   test("pushes the report with kind: drift when a hub is configured", async () => {

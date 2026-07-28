@@ -128,11 +128,11 @@ describe("loadPromptBundleFromHub", () => {
     expect(out!.text).toContain("Learned hint.");
   });
 
-  test("returns null when getPrompt throws", async () => {
+  test("propagates a hub failure rather than running without the stored guidance", async () => {
     const hub = fakeHubClient(async () => {
       throw new Error("network error");
     });
-    expect(await loadPromptBundleFromHub({ hub, project: "demo" }, "record")).toBeNull();
+    await expect(loadPromptBundleFromHub({ hub, project: "demo" }, "record")).rejects.toThrow("network error");
   });
 });
 

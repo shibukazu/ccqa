@@ -182,11 +182,11 @@ async function runGenerateLocked(
 }
 
 /**
- * `ccqa generate --learn-codegen-prompt`: refresh the target's learned
+ * `ccqa generate --learn-hub-codegen-prompt`: refresh the target's learned
  * `<target>.agent` playbook from this generation. Only targets that declare a
  * `guidanceKind` (the LLM-generating ones: playwright, runn) have such a
  * prompt — agent-browser's codegen is mechanical, so point at `ccqa record
- * --learn-trace-prompt` for its tracer instead.
+ * --learn-hub-trace-prompt` for its tracer instead.
  */
 async function runGenerateAgentPromptUpdate(
   target: TargetPlugin,
@@ -198,7 +198,7 @@ async function runGenerateAgentPromptUpdate(
 ): Promise<void> {
   if (target.guidanceKind === undefined) {
     log.warn(
-      `--learn-codegen-prompt has no effect on the "${target.id}" target — it has no learned ` +
+      `--learn-hub-codegen-prompt has no effect on the "${target.id}" target — it has no learned ` +
         `generation prompt (only LLM-generating targets like playwright/runn do)`,
     );
     return;
@@ -206,7 +206,7 @@ async function runGenerateAgentPromptUpdate(
   log.blank();
   await updateAgentPrompt({
     kind: target.guidanceKind,
-    flag: "--learn-codegen-prompt",
+    flag: "--learn-hub-codegen-prompt",
     // The summary relativizes written-file paths against the project root, not
     // process.cwd() — under `--cwd <subpackage>` those differ, and a learned
     // playbook keyed on `../..`-style paths would be useless.
@@ -240,13 +240,13 @@ async function confirmOverwrite(path: string): Promise<boolean> {
 interface GenerateCliOptions {
   model?: string;
   language?: string;
-  profile?: string;
+  hubProfile?: string;
   target?: string;
   autoFix?: AutoFixMode;
   autoFixMaxRetries?: string;
   overwrite?: boolean;
   sessionPin?: boolean;
-  learnCodegenPrompt?: boolean;
+  learnHubCodegenPrompt?: boolean;
   cwd?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -290,7 +290,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     .option("--overwrite", "Replace previously generated test code without warning")
     .optionsGroup("Learning:")
     .option(
-      "--learn-codegen-prompt",
+      "--learn-hub-codegen-prompt",
       "After generation, ask Claude to refresh the target's \"<target>.agent\" learning prompt on the hub from a summary of the run. LLM-generating targets (playwright, runn) only; requires a hub connection.",
     )
     .optionsGroup("Environment and connection:")
@@ -312,12 +312,12 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
   const cwd = resolveCwd(opts.cwd);
   const hubClient = resolveHubClient({ hubUrl: opts.hubUrl, hubToken: opts.hubToken, hubHeader: opts.hubHeader });
   // The project scope matters whenever a hub is configured (prompt lookups,
-  // the perspectives auto-update), not only when --profile asks for hub
+  // the perspectives auto-update), not only when --hub-profile asks for hub
   // variables — resolve it in either case.
-  const project = opts.profile !== undefined || hubClient !== null ? resolveProject(opts) : undefined;
-  if (opts.profile !== undefined) {
+  const project = opts.hubProfile !== undefined || hubClient !== null ? resolveProject(opts) : undefined;
+  if (opts.hubProfile !== undefined) {
     await applyProfileFromOption({
-      profile: opts.profile,
+      profile: opts.hubProfile,
       project: project!,
       cwd,
       hubUrl: opts.hubUrl,
@@ -328,6 +328,10 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     await applyProfileFromOption({ profile: undefined, project: "", cwd });
   }
 
+  if (opts.learnHubCodegenPrompt && hubClient === null) {
+    log.error("--learn-hub-codegen-prompt requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)");
+    process.exit(2);
+  }
   const hubContext: HubContext | null = hubClient && project ? { hub: hubClient, project } : null;
 
   try {
@@ -341,7 +345,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
       targetOverride: opts.target,
       cwd,
       hubContext,
-      updateAgentPrompt: opts.learnCodegenPrompt ?? false,
+      updateAgentPrompt: opts.learnHubCodegenPrompt ?? false,
     });
   } catch (e) {
     if (e instanceof SpecLockedError) {

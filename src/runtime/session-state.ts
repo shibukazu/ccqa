@@ -30,7 +30,7 @@ interface StateOrigin {
 /** Default per-profile sessions root, relative to the project (`--cwd`). */
 const SESSIONS_SUBDIR = ".ccqa/sessions";
 
-/** The profile bucket sessions live under when no `--profile` was given. */
+/** The profile bucket sessions live under when no `--hub-profile` was given. */
 export const DEFAULT_SESSION_PROFILE = "default";
 
 /**

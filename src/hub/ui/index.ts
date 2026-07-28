@@ -3453,7 +3453,7 @@ const CLIENT_JS = `
   //
   // "unknown" keeps its own state rather than folding into the last result:
   // it means the hub cannot say whether that result still holds, and
-  // --only-stale does not re-run it without --only-stale-with-unknown. Showing
+  // --only-hub-stale does not re-run it without --only-hub-stale-with-unknown. Showing
   // it as passed or failed would claim a confidence nothing supports.
   function perspRunState(rr) {
     if (!rr) return null;

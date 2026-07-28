@@ -45,16 +45,16 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Only specs `ccqa select-specs` judges reached by the diff against <ref> (e.g. origin/main). In pull_request CI, pass $GITHUB_BASE_REF. Cannot be combined with an explicit spec id.",
     )
     .option(
-      "--only-stale",
-      "Only specs whose last result no longer holds — each spec's own last run compared against the hub's deploy log. No git diff involved. Requires a hub connection and --profile.",
+      "--only-hub-stale",
+      "Only specs the hub says are no longer covered by their last result — each spec's own last run compared against the hub's deploy log. No git diff involved. Requires a hub connection and --hub-profile.",
     )
     .option(
-      "--only-stale-with-unknown",
-      "With --only-stale: also take specs whose re-run need the hub cannot answer ('unknown') and specs that never ran ('neverRun'). Off by default: an unanswerable question is reported, not guessed.",
+      "--only-hub-stale-with-unknown",
+      "With --only-hub-stale: also take specs whose re-run need the hub cannot answer ('unknown') and specs that never ran ('neverRun'). Off by default: an unanswerable question is reported, not guessed.",
     )
     .option(
-      "--only-audited-clean",
-      "Only specs `ccqa audit` last found no drift in. A spec that has never been audited is not taken: this flag spends a run where a cheap audit already cleared the spec, and \"never looked\" is not that. Requires a hub connection.",
+      "--only-hub-audited-clean",
+      "Only specs the hub's drift ledger records as audited with no drift. A spec that has never been audited is not taken: this flag spends a run where a cheap audit already cleared the spec, and \"never looked\" is not that. Requires a hub connection.",
     )
     .option(
       "--dry-run",
@@ -120,11 +120,11 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .optionsGroup("Learning:")
     .option(
-      "--learn-live-prompt",
+      "--learn-hub-live-prompt",
       "(live only) After the run finishes, ask Claude to refresh the \"live.agent\" prompt on the hub from a summary of the run. Requires a hub connection.",
     )
     // Last group wins for everything added after it, which is how the shared
-    // --language / --profile / --hub-* options land here too.
+    // --language / --hub-profile / --hub-* options land here too.
     .optionsGroup("Environment and connection:")
     .option(
       "--cwd <path>",
@@ -154,8 +154,8 @@ function headerTarget(targets: string[], opts: RunOptions): string {
   if (targets.length > 1) return `${targets.length} targets`;
   const filters = [
     opts.onlyAffectedBy ? "affected" : null,
-    opts.onlyStale ? "stale" : null,
-    opts.onlyAuditedClean ? "audited clean" : null,
+    opts.onlyHubStale ? "stale" : null,
+    opts.onlyHubAuditedClean ? "audited clean" : null,
   ].filter((s): s is string => s !== null);
   return filters.length === 0 ? "(all specs)" : `(${filters.join(" + ")})`;
 }

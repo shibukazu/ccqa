@@ -242,7 +242,9 @@ export interface PromptBundle {
  * Load the prompt bundle from the hub for one guidance kind ("record" /
  * "live" / an LLM-generation target such as "playwright" or "runn").
  * Best-effort: no hub client, a fetch failure, or both prompts absent all
- * resolve to null — a broken/missing hub prompt must never stop a run.
+ * A prompt that was never stored resolves to null. A hub that cannot be
+ * reached throws: running with silently different guidance than the project
+ * configured is worse than stopping.
  */
 export async function loadPromptBundleFromHub(
   ctx: HubContext | null,
@@ -251,18 +253,14 @@ export async function loadPromptBundleFromHub(
   if (!ctx) return null;
   const userName: PromptName = `${kind}.user`;
   const agentName: PromptName = `${kind}.agent`;
-  try {
-    const [userText, agentText] = await Promise.all([
-      ctx.hub.getPrompt(ctx.project, userName).then(normalizePromptText),
-      ctx.hub.getPrompt(ctx.project, agentName).then(normalizePromptText),
-    ]);
-    return assemblePromptBundle(
-      { text: userText, label: userName },
-      { text: agentText, label: agentName },
-    );
-  } catch {
-    return null;
-  }
+  const [userText, agentText] = await Promise.all([
+    ctx.hub.getPrompt(ctx.project, userName).then(normalizePromptText),
+    ctx.hub.getPrompt(ctx.project, agentName).then(normalizePromptText),
+  ]);
+  return assemblePromptBundle(
+    { text: userText, label: userName },
+    { text: agentText, label: agentName },
+  );
 }
 
 /**

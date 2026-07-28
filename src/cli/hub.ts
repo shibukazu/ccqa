@@ -289,12 +289,12 @@ const promptPush = new Command("push")
       body = await readFile(path, "utf8");
     } catch (err) {
       log.error(`could not read prompt "${name}" at ${path}: ${err instanceof Error ? err.message : String(err)}`);
-      log.hint("nothing to push; generate it first (e.g. ccqa run --learn-live-prompt)");
+      log.hint("nothing to push; generate it first (e.g. ccqa run --learn-hub-live-prompt)");
       process.exit(2);
     }
     if (body.trim().length === 0) {
       log.error(`prompt "${name}" at ${path} is empty`);
-      log.hint("nothing to push; generate it first (e.g. ccqa run --learn-live-prompt)");
+      log.hint("nothing to push; generate it first (e.g. ccqa run --learn-hub-live-prompt)");
       process.exit(2);
     }
 
@@ -364,7 +364,7 @@ interface DeployRecordOptions extends HubConnOptions {
 const deployRecord = new Command("record")
   .description(
     "Tell the hub what a deploy shipped, so it can answer which specs need a re-run " +
-      "(`ccqa run --only-stale`). Run this from the deploy job, after the deploy succeeds. " +
+      "(`ccqa run --only-hub-stale`). Run this from the deploy job, after the deploy succeeds. " +
       "The changed paths are computed locally with a two-dot `git diff <previous> <sha>`; " +
       "a job that has only curl and git can POST the same body directly (see docs/hub.md).",
   )
@@ -514,7 +514,7 @@ function describeSelection(selection: DeploySelection | undefined, diffAvailable
 }
 
 const deployCommand = new Command("deploy")
-  .description("Report deploys to the hub, the input behind `ccqa run --only-stale`.")
+  .description("Report deploys to the hub, the input behind `ccqa run --only-hub-stale`.")
   .addCommand(deployRecord);
 
 // ── push ──────────────────────────────────────────────────────────────────

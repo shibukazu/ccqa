@@ -150,7 +150,7 @@ spec がまだコードを説明しているかだけを調べます。determini
   `record` と `generate` のたびに最新化されます
 - `${…}` が解決する変数と、保存済みのブラウザセッション。実行時に取得するので、
   CI が持つのは環境一式ではなく secret 1 つで済みます
-- `--only-stale` の判定に使うデプロイログと、drift の台帳
+- `--only-hub-stale` の判定に使うデプロイログと、drift の台帳
 - step ごとのスクリーンショット付きの実行ダッシュボード、triage の採点、
   その採点から学習したプロンプト
 
@@ -184,7 +184,7 @@ ccqa serve                                               # 保存に必要
 - **Claude の資格情報。** 記録済み spec の再生自体はモデルを使いませんが、
   変更範囲の選択、失敗分類、監査はどれも使います。
 - **稼働中の [hub](#hub)。** `CCQA_HUB_URL` と `CCQA_HUB_TOKEN` で接続します。
-  hub なしで済むのは、`--profile` も `--report-to-hub` も付けないマージ前の実行
+  hub なしで済むのは、`--hub-profile` も `--report-to-hub` も付けないマージ前の実行
   だけです。
 
 一覧は [Environment variables](./commands.md#environment-variables) にあります。
@@ -197,7 +197,7 @@ ccqa serve                                               # 保存に必要
 ccqa hub var set APP_URL --value https://app.example --profile staging
 ```
 
-どのジョブでも同じ `--profile` と `--project` を渡してください。ジョブどうしが
+どのジョブでも同じ `--hub-profile` と `--project` を渡してください。ジョブどうしが
 同じ環境を指すのはこれによります。
 
 ### プルリクエストで
@@ -205,14 +205,14 @@ ccqa hub var set APP_URL --value https://app.example --profile staging
 変更が到達する spec を実行し、壊れた原因を分類します。
 
 ```bash
-ccqa run --only-affected-by --on-fail-explain --profile staging \
+ccqa run --only-affected-by --on-fail-explain --hub-profile staging \
   --report-format github --report-to-hub
 ```
 
 - `--only-affected-by`：差分が到達する spec を選びます。シロと判定できなかった spec は
   実行します。
 - `--on-fail-explain`：失敗した spec の原因を分類します。
-- `--profile staging`：その環境の変数と保存済みセッションを hub から取得します。
+- `--hub-profile staging`：その環境の変数と保存済みセッションを hub から取得します。
   付けないと spec の `${…}` が解決されません。
 - `--report-format github`：プルリクエストに注釈を付けます。
 - `--report-to-hub`：実行しながら結果を hub に送ります。
@@ -239,12 +239,12 @@ ccqa hub deploy record --profile staging --sha "$GITHUB_SHA" --select
 続いて別のジョブで、そのデプロイによって信用できなくなった spec を実行します。
 
 ```bash
-ccqa run --only-stale --profile staging --report-to-hub
+ccqa run --only-hub-stale --hub-profile staging --report-to-hub
 ```
 
 - `--select`：デプロイした範囲がどの spec に到達するかを記録します。付けないと、
   そのエントリより後ろの spec は `notNeeded` ではなく `unknown` を返します。
-- `--only-stale`：各 spec が最後に実行されて以降にデプロイがその spec を
+- `--only-hub-stale`：各 spec が最後に実行されて以降にデプロイがその spec を
   触ったかどうかを、hub に問い合わせます。
 
 hub は checkout を持たず `git` も実行しないので、デプロイが何を変えたかを自分では
@@ -256,7 +256,7 @@ hub は checkout を持たず `git` も実行しないので、デプロイが�
 デプロイを 1 件記録し、`--report-to-hub` を付けて全 spec を一度走らせれば、次の
 デプロイから選択が意味を持ちます。このジョブは hub 上の spec 一覧も読むので、
 `ccqa perspectives` を実行しておく必要があります。判定できなかった spec も
-走らせたい場合は `--only-stale-with-unknown` を付けます。
+走らせたい場合は `--only-hub-stale-with-unknown` を付けます。
 
 ### 定期実行で
 

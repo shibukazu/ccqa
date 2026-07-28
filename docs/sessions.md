@@ -33,7 +33,7 @@ ccqa hub session capture admin --url https://app.example.com/login --hub-url <ur
 ccqa hub session ls
 ```
 
-`bootstrap` requires a hub connection (`--hub-url`/`--hub-token`, or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) — it uploads the saved cookies + localStorage straight to the hub (encrypted at rest) and never writes them to disk locally. The `--profile` you pass (default `default`) is the same one `--profile` selects for environment variables, so one flag picks both the environment and its sessions bucket. At run time, a spec's `session:` restore fetches the named session(s) from the hub for the resolved project/profile — see [Hub](./hub.md) for how the project is resolved.
+`bootstrap` requires a hub connection (`--hub-url`/`--hub-token`, or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) — it uploads the saved cookies + localStorage straight to the hub (encrypted at rest) and never writes them to disk locally. The `--profile` you pass (default `default`) is the same one `--hub-profile` selects for environment variables, so one flag picks both the environment and its sessions bucket. At run time, a spec's `session:` restore fetches the named session(s) from the hub for the resolved project/profile — see [Hub](./hub.md) for how the project is resolved.
 
 When a spec names a session that hasn't been created yet, the run stops and tells you which `ccqa hub session capture` to run, rather than starting unauthenticated.
 

@@ -106,7 +106,7 @@ branch, status, spec pass count, and a link to the run in the hub's UI. Use
 it for pushing a report from a run that didn't use `--report-to-hub`, or from
 a separate job — see the next section for pushing incrementally instead.
 
-If the report carries a `deployedSha` — `ccqa run --profile <name>` records
+If the report carries a `deployedSha` — `ccqa run --hub-profile <name>` records
 the profile's deploy-log head as it starts — `push` forwards it, so the run
 is attributed to the commit the environment was running *when it started*.
 Without that, the hub would fall back to its deploy-log head at push time,
@@ -121,7 +121,7 @@ ccqa hub deploy record --project demo --profile stg --sha "$GIT_SHA" --ref main
 
 Tells the hub what a deploy shipped. It is the one input the hub cannot
 derive for itself — it has no checkout, never runs `git`, and never calls a
-git host — and it is what makes `ccqa run --only-stale` answerable at
+git host — and it is what makes `ccqa run --only-hub-stale` answerable at
 all. Run it from the deploy job, after the deploy succeeds. Flags:
 
 - `--profile <name>` — **required**: the environment this deploy landed in.
@@ -209,9 +209,9 @@ need from the hub directly as they execute, whenever `--hub-url`/`--hub-token`
 
 - A spec's `session:` restores fetch the named session(s) for the resolved
   project/profile straight from the hub.
-- `--profile <name>` fetches every variable for that project/profile and
+- `--hub-profile <name>` fetches every variable for that project/profile and
   applies them to the process environment before the run starts.
-- `--learn-trace-prompt` / `--learn-live-prompt` read and write the `record.agent` / `live.agent`
+- `--learn-hub-trace-prompt` / `--learn-hub-live-prompt` read and write the `record.agent` / `live.agent`
   prompt on the hub; the human-maintained `triage.user` guidance and the
   learned failure-analysis custom prompt are fetched the same way.
 
@@ -261,7 +261,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa run --project demo --profile staging --report-to-hub
+      - run: pnpm exec ccqa run --project demo --hub-profile staging --report-to-hub
       - uses: actions/upload-artifact@v4
         if: always()
         with:

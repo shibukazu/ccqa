@@ -38,10 +38,12 @@ export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<vo
     return;
   }
   if (!hubContext) {
-    log.warn(
-      `${flag} skipped (hub connection required; pass --hub-url/--hub-token or set CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
+    // The prompt lives on the hub, so there is nowhere to write without one.
+    // Callers check this before doing the work; reaching here is a programming
+    // error, not a user one.
+    throw new Error(
+      `${flag} requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
     );
-    return;
   }
   const { hub, project } = hubContext;
   const promptName = `${kind}.agent` as PromptName;

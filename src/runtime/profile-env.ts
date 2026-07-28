@@ -64,13 +64,13 @@ async function readDotenv(path: string): Promise<Record<string, string> | null> 
   return parseDotenv(content);
 }
 
-/** Absolute path of the default `.env` ccqa loads when `--profile` is absent. */
+/** Absolute path of the default `.env` ccqa loads when `--hub-profile` is absent. */
 export function defaultEnvPath(cwd: string): string {
   return join(cwd, ".env");
 }
 
 /**
- * Load `<cwd>/.env`, the default when no `--profile` is given. A missing `.env`
+ * Load `<cwd>/.env`, the default when no `--hub-profile` is given. A missing `.env`
  * is fine (returns `null`) — the run falls back to the existing `process.env`.
  */
 export async function loadDefaultEnv(cwd: string): Promise<Record<string, string> | null> {

@@ -5,7 +5,7 @@ import type { Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
-import { noColorEnv } from "../_helpers/env.ts";
+import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
 import { installFakeAgentBrowser } from "../_helpers/fake-ab.ts";
 import { writeMockMessages } from "../_helpers/fake-claude.ts";
 import { createHubServer } from "../../../src/hub/api/server.ts";
@@ -116,16 +116,16 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
     expect(localReport.results[0]!.spec).toBe("x");
   }, 120_000);
 
-  test("an unreachable hub is best-effort: the run still succeeds with a local report", async () => {
+  test("an unreachable hub fails the run rather than going green without publishing", async () => {
     project = await makeFakeProject("run-live-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
     const mockPath = join(project.cwd, "claude-mock.jsonl");
     await writeMockMessages(mockPath, [...mockStepMessages("step-01")]);
     const reportDir = join(project.cwd, "ccqa-report");
 
-    // A hub URL that refuses connections (a port with nothing listening). Every
-    // openRun/patchRun must be swallowed, leaving a green run + a valid local
-    // report — the hub is a best-effort side channel, never a run gate.
+    // A hub URL that refuses connections (a port with nothing listening).
+    // --report-to-hub asked for publication; not publishing has to be visible
+    // in the exit code, or CI reads "green" as "results are on the hub".
     const result = await runCcqa(
       ["run", "demo/x", "--report-dir", reportDir, "--project", "demo-proj", "--report-to-hub"],
       {
@@ -139,12 +139,11 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
         timeoutMs: 90_000,
       },
     );
-    expect(result.exitCode).toBe(0);
-    const report = JSON.parse(
-      await readFile(join(reportDir, "report.json"), "utf8"),
-    ) as { results: Array<{ feature: string; spec: string }> };
-    expect(report.results).toHaveLength(1);
-    expect(report.results[0]!.spec).toBe("x");
+    const combined = stripAnsi(result.stdout + result.stderr);
+    expect(result.exitCode, combined).toBe(2);
+    // Whichever hub read reaches the dead port first — the point is that one
+    // of them stops the run instead of degrading to a local-only report.
+    expect(combined).toMatch(/could not read from the hub|could not open a run on the hub/);
   }, 120_000);
 
   // Gate on hub-run creation: a run is opened on the hub ONLY when both
@@ -154,7 +153,7 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
     project = await makeFakeProject("passing-spec", { linkCcqa: true });
     const baseArgs = ["run", "demo/smoke", "--project", "demo-proj"];
 
-    // (a) hub creds present, but --push-report absent → no run opened.
+    // (a) hub creds present, but --report-to-hub absent → no run opened.
     const noFlag = await runCcqa(baseArgs, {
       cwd: project.cwd,
       env: { ...noColorEnv(), CCQA_HUB_URL: baseUrl, CCQA_HUB_TOKEN: TOKEN },
@@ -162,12 +161,12 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
     expect(noFlag.exitCode).toBe(0);
     expect(await listRuns()).toHaveLength(0);
 
-    // (b) --push-report present, but hub creds absent → no run opened.
+    // (b) --report-to-hub present, but hub creds absent → usage error, no run.
     const noCreds = await runCcqa([...baseArgs, "--report-to-hub"], {
       cwd: project.cwd,
       env: { ...noColorEnv(), CCQA_HUB_URL: "", CCQA_HUB_TOKEN: "" },
     });
-    expect(noCreds.exitCode).toBe(0);
+    expect(noCreds.exitCode).toBe(2);
     expect(await listRuns()).toHaveLength(0);
   });
 });

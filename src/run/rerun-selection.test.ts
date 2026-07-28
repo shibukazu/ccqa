@@ -28,7 +28,7 @@ function hubCtx(client: Partial<HubClient>): HubContext {
 describe("requireRerunProfile", () => {
   test("rejects a missing profile — the deploy log has no profile-free answer", () => {
     expect(() => requireRerunProfile(undefined)).toThrow(RunUsageError);
-    expect(() => requireRerunProfile(undefined)).toThrow(/--profile/);
+    expect(() => requireRerunProfile(undefined)).toThrow(/--hub-profile/);
   });
 
   test("passes a given profile through", () => {

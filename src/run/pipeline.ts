@@ -127,7 +127,7 @@ export type SpecRunSummary = {
 export interface RunOptions {
   reportDir?: string;
   cwd?: string;
-  profile?: string;
+  hubProfile?: string;
   model?: string;
   language?: string;
   reportFormat?: ReportFormat;
@@ -141,14 +141,14 @@ export interface RunOptions {
   /** Take only the specs a diff against this ref reaches. */
   onlyAffectedBy?: string;
   /** Take only the specs whose last result the hub says no longer holds. */
-  onlyStale?: boolean;
+  onlyHubStale?: boolean;
   /** Take only the specs the drift ledger records as audited with no drift. */
-  onlyAuditedClean?: boolean;
-  /** With `onlyStale`: also take specs whose re-run need is unknown / that never ran. */
-  onlyStaleWithUnknown?: boolean;
+  onlyHubAuditedClean?: boolean;
+  /** With `onlyHubStale`: also take specs whose re-run need is unknown / that never ran. */
+  onlyHubStaleWithUnknown?: boolean;
   /** Print the selected specs and stop — no execution, no report, no hub writes. */
   dryRun?: boolean;
-  learnLivePrompt?: boolean;
+  learnHubLivePrompt?: boolean;
   concurrency?: number;
   hubUrl?: string;
   hubToken?: string;
@@ -177,6 +177,20 @@ function resolveReportDir(reportDir: string | undefined, cwd: string): string {
   return resolve(cwd, reportDir ?? DEFAULT_REPORT_DIR);
 }
 
+/**
+ * Turn a hub transport failure into a usage error, as a `.catch` so the
+ * tuple types of the `Promise.all` it guards survive.
+ *
+ * Without it the raw `fetch failed` escapes as an unhandled rejection: a stack
+ * trace and exit 1, where the user needs "the hub is unreachable" and exit 2.
+ * Errors the callers already shaped pass through — they say more than this
+ * wrapper could.
+ */
+function asHubReadError(err: unknown): never {
+  if (err instanceof RunUsageError) throw err;
+  throw new RunUsageError(`could not read from the hub: ${errMessage(err)}`);
+}
+
 /** De-dupe by `featureName/specName`, keeping first-seen order. */
 function dedupeSpecs(
   specs: Array<{ featureName: string; specName: string }>,
@@ -203,16 +217,16 @@ export async function executeRun(
   targets: string[],
   opts: RunOptions,
 ): Promise<RunPipelineResult> {
-  const filtering = Boolean(opts.onlyAffectedBy || opts.onlyStale || opts.onlyAuditedClean);
+  const filtering = Boolean(opts.onlyAffectedBy || opts.onlyHubStale || opts.onlyHubAuditedClean);
   if (filtering && targets.length > 0) {
     throw new RunUsageError("a --only-* filter and an explicit spec target cannot be combined");
   }
-  // `--only-stale` reads per-profile verdicts off the hub instead of a git
+  // `--only-hub-stale` reads per-profile verdicts off the hub instead of a git
   // diff, so its two inputs (a profile, and further down a hub connection)
   // are checked before anything else runs.
-  const rerunProfile = opts.onlyStale === true ? requireRerunProfile(opts.profile) : null;
-  if (opts.onlyStaleWithUnknown && rerunProfile === null) {
-    log.warn("--only-stale-with-unknown is ignored: it only applies to --only-stale");
+  const rerunProfile = opts.onlyHubStale === true ? requireRerunProfile(opts.hubProfile) : null;
+  if (opts.onlyHubStaleWithUnknown && rerunProfile === null) {
+    log.warn("--only-hub-stale-with-unknown is ignored: it only applies to --only-hub-stale");
   }
   // A dry run answers "which specs would run?" and stops. It never resolves a
   // `${VAR}`, classifies a failure or writes a report, so every input that
@@ -258,9 +272,9 @@ export async function executeRun(
   // executes nothing and so resolves no `${VAR}`.
   if (forExecution) {
     try {
-      if (opts.profile !== undefined) {
+      if (opts.hubProfile !== undefined) {
         await resolveProfileEnv({
-          profile: opts.profile,
+          profile: opts.hubProfile,
           project: resolveProjectOrThrow(opts.project, cwd),
           cwd,
           hubUrl: opts.hubUrl,
@@ -276,7 +290,7 @@ export async function executeRun(
       if (err instanceof HubConnectionError || err instanceof HubApiError) {
         throw new RunUsageError(err.message);
       }
-      throw new RunUsageError(`failed to load profile "${opts.profile}": ${errMessage(err)}`);
+      throw new RunUsageError(`failed to load profile "${opts.hubProfile}": ${errMessage(err)}`);
     }
   }
 
@@ -316,33 +330,50 @@ export async function executeRun(
   // a dry run skips that, so this is where it finds out.
   if (rerunProfile !== null && hubCtx == null) {
     throw new RunUsageError(
-      "--only-stale requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+      "--only-hub-stale requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
     );
   }
-  if (opts.onlyAuditedClean && hubCtx == null) {
+  if (opts.onlyHubAuditedClean && hubCtx == null) {
     throw new RunUsageError(
-      "--only-audited-clean requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+      "--only-hub-audited-clean requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+    );
+  }
+  // Checked here rather than where the push happens: a run that cannot publish
+  // its result should not spend the run first. Same for the prompt refresh.
+  if (opts.reportToHub && hubCtx == null) {
+    throw new RunUsageError(
+      "--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+    );
+  }
+  if (opts.learnHubLivePrompt && hubCtx == null) {
+    throw new RunUsageError(
+      "--learn-hub-live-prompt requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
     );
   }
 
-  // Two failure-analysis prompt layers, both best-effort (null without a hub):
-  // the human-maintained `triage.user` guidance and the learned custom prompt.
-  // The last-green ledger, the re-run verdicts and the deploy head (when
-  // applicable) join the same batch — all are independent hub round trips.
+  // Everything this run needs from the hub, in one batch of independent round
+  // trips: the two failure-analysis prompt layers (`triage.user` guidance and
+  // the learned custom prompt), the last-green ledger, the re-run verdicts,
+  // the deploy head and the drift ledger.
+  //
+  // A prompt that was never stored resolves to null; a hub that cannot be
+  // reached throws. Those are different answers, and the second one stops the
+  // run — guidance the project configured but ccqa could not read would change
+  // what Claude does with nobody told.
   const [customPrompt, triageUserPrompt, ledgerEntries, rerunReport, fetchedDeployHead, auditedLedger] = await Promise.all([
     forExecution ? fetchCustomPrompt(hubCtx) : null,
     forExecution ? fetchTriageUserPrompt(hubCtx) : null,
-    forExecution && ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.profile, cwd) : null,
+    forExecution && ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.hubProfile, cwd) : null,
     rerunProfile !== null && hubCtx ? fetchRerunReport(hubCtx, rerunProfile) : null,
     // Skipped when the re-run report is being fetched: that response already
     // carries the profile's deploy head, so asking twice would be a second
     // round trip for one value — and two reads that a deploy between them
     // could make disagree.
-    forExecution && hubCtx && opts.profile && rerunProfile === null
-      ? tryDeployHeadSha(hubCtx, opts.profile)
+    forExecution && hubCtx && opts.hubProfile && rerunProfile === null
+      ? tryDeployHeadSha(hubCtx, opts.hubProfile)
       : null,
-    opts.onlyAuditedClean && hubCtx ? fetchAuditedLedger(hubCtx) : null,
-  ]);
+    opts.onlyHubAuditedClean && hubCtx ? fetchAuditedLedger(hubCtx) : null,
+  ]).catch(asHubReadError);
   const deployedSha = rerunReport?.deployHead.sha ?? fetchedDeployHead;
   if (ledgerEntries) {
     diffProvider = createDiffProvider({
@@ -391,7 +422,7 @@ export async function executeRun(
     // below to spend model tokens reasoning about.
     if (rerunReport) {
       const selection = selectSpecsNeedingRerun(specs, rerunReport, {
-        includeUnknown: opts.onlyStaleWithUnknown === true,
+        includeUnknown: opts.onlyHubStaleWithUnknown === true,
       });
       specs = selection.selected;
       unanswerable = selection.excludedUnanswerable;
@@ -430,7 +461,7 @@ export async function executeRun(
     if (specs.length === 0 && unanswerable > 0) {
       log.hint(
         `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
-          `a re-run; pass --only-stale-with-unknown to run them anyway`,
+          `a re-run; pass --only-hub-stale-with-unknown to run them anyway`,
       );
     }
   }
@@ -475,7 +506,7 @@ export async function executeRun(
     const why = "it only applies to agent-browser 'mode: live' specs, and this run has none";
     if (typeof opts.liveStepRetry === "number" && opts.liveStepRetry > 0) log.warn(`--live-step-retry is ignored: ${why}`);
     if (opts.liveArtifactsDir) log.warn(`--live-artifacts-dir is ignored: ${why}`);
-    if (opts.learnLivePrompt) log.warn(`--learn-live-prompt is ignored: ${why}`);
+    if (opts.learnHubLivePrompt) log.warn(`--learn-live-prompt is ignored: ${why}`);
   } else if (opts.liveArtifactsDir && liveSpecs.length > 1) {
     // A single --out dir can't hold multiple specs' artifacts without them
     // overwriting each other (worse under --concurrency), so it only applies
@@ -509,9 +540,6 @@ export async function executeRun(
   // run (test execution is the point). The open is not retried: a dropped
   // response could leave a second orphan running run, so on failure we degrade
   // to local-report-only.
-  if (opts.reportToHub && hubCtx == null) {
-    log.warn("--report-to-hub requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN); skipping push");
-  }
   let hubRunId: string | null = null;
   let hubSink: ReportSink | undefined;
   if (hubCtx != null && opts.reportToHub) {
@@ -522,7 +550,7 @@ export async function executeRun(
       const opened = await hubCtx.hub.openRun({
         project: hubCtx.project,
         ...(branch ? { branch } : {}),
-        ...(opts.profile ? { profile: opts.profile } : {}),
+        ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
         ...(git.head ? { gitHead: git.head } : {}),
         // Captured before the first spec. Left to itself the hub stamps its
         // deploy-log head when this call lands — after the deterministic
@@ -546,7 +574,12 @@ export async function executeRun(
         },
       };
     } catch (err) {
-      log.warn(`hub: could not open incremental run (${errMessage(err)}); continuing with local report only`);
+      // Before any spec runs, so nothing is wasted. A job that asked to publish
+      // and cannot reach the hub has not done what it was told — going green
+      // with a local-only report is the failure this refuses to hide.
+      throw new RunUsageError(
+        `--report-to-hub: could not open a run on the hub (${errMessage(err)})`,
+      );
     }
   }
 
@@ -620,7 +653,7 @@ export async function executeRun(
     reportDir,
     ...(typeof opts.liveStepRetry === "number" ? { retry: opts.liveStepRetry } : {}),
     concurrency: opts.concurrency ?? 1,
-    ...(opts.profile ? { profile: opts.profile } : {}),
+    ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
     diffProvider,
     hubContext: hubCtx,
     customPrompt,
@@ -712,7 +745,7 @@ export async function executeRun(
 
   // "ignored without any 'mode: live' spec" already warned upfront alongside
   // the other live-only flags.
-  if (opts.learnLivePrompt && liveSpecs.length > 0) {
+  if (opts.learnHubLivePrompt && liveSpecs.length > 0) {
     log.blank();
     await updateAgentPrompt({
       kind: "live",

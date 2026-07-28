@@ -383,12 +383,12 @@ DELETE /api/v1/projects/:project/sessions/:profile/:name
 
 ## Variables
 
-Environment variables fetched directly into a run via `--profile`, scoped
+Environment variables fetched directly into a run via `--hub-profile`, scoped
 by project/profile. Non-sensitive values are always readable back (useful
 for a dashboard to display current config). `sensitive: true` values are
 hidden from the plain listing, but **not** from `?include=values` — that
 query param is a real read of every value, sensitive or not, and is what
-`--profile` resolution uses.
+`--hub-profile` resolution uses.
 
 ```
 PUT /api/v1/projects/:project/variables/:profile/:name

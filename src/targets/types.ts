@@ -66,7 +66,7 @@ export interface TargetPlugin {
   /**
    * The guidance-prompt kind this target learns under (`<kind>.user` /
    * `<kind>.agent`). Set only by LLM-generating targets (playwright, runn):
-   * `ccqa generate --learn-codegen-prompt` refreshes `<guidanceKind>.agent`
+   * `ccqa generate --learn-hub-codegen-prompt` refreshes `<guidanceKind>.agent`
    * from the run. Absent means the target has no learned generation prompt
    * (agent-browser's codegen is mechanical); the CLI then declines the flag.
    */

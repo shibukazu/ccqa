@@ -47,11 +47,11 @@ ccqa generate tasks/create-and-complete   # recording targets: re-run generate
   <interactive|auto|skip>` (default `interactive`), `--auto-fix-max-retries <n>`
   (default 3), `--overwrite` (overwrite an existing generated test without the
   y/N prompt) — see [Auto-fix](./auto-fix.md) — plus `-m/--model`,
-  `--language`, `--cwd`, `--profile`, and the hub connection flags.
+  `--language`, `--cwd`, `--hub-profile`, and the hub connection flags.
 - To regenerate from an existing `ir.json` without re-recording, run `ccqa
   generate` — `ccqa record` always traces.
 - `ccqa record` also accepts `--trace-only` (stop after the trace),
-  `--trace-validation <lenient|strict>`, and `--learn-trace-prompt` (refresh
+  `--trace-validation <lenient|strict>`, and `--learn-hub-trace-prompt` (refresh
   the hub-stored `record.agent` learning notes after the trace).
 
 > **Breaking change:** recordings used to be stored as `actions.json`; they

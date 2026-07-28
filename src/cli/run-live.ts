@@ -61,7 +61,7 @@ export interface RunLiveOptions {
   diffProvider?: DiffProvider | null;
   cwd?: string;
   concurrency?: number;
-  /** Active `--profile` name; selects the sessions bucket for `spec.session`. */
+  /** Active `--hub-profile` name; selects the sessions bucket for `spec.session`. */
   profile?: string;
   hubContext?: HubContext | null;
   customPrompt?: AnalysisCustomPrompt | null;
