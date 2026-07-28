@@ -58,7 +58,7 @@ export async function generateAgentBrowserTest(ctx: GenerateContext): Promise<Ge
 
   // Pin the agent-browser session so we can re-attach for snapshot capture
   // after a vitest failure. The generated script reads AGENT_BROWSER_SESSION
-  // via `||=`, so this value flows through unmodified. `--no-snapshot`
+  // via `||=`, so this value flows through unmodified. `--no-session-pin`
   // disables both the pin and the post-failure snapshot, restoring the
   // pre-snapshot behavior for debugging.
   const agentBrowserSession = fix.useSnapshot ? `ccqa-generate-${Date.now()}` : undefined;

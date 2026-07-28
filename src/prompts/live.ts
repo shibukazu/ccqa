@@ -44,7 +44,7 @@ export interface LiveSystemPromptPrefixInput {
  * Project-specific guidance ("the admin tenant is foo.example", "session
  * times out at X minutes", …) is appended from
  * `.ccqa/prompts/live.user.md` (human-maintained) and
- * `.ccqa/prompts/live.agent.md` (updated by `ccqa run --update-agent-prompt`)
+ * `.ccqa/prompts/live.agent.md` (updated by `ccqa run --learn-hub-live-prompt`)
  * by the caller, so ccqa stays clean of downstream-product context.
  *
  * Constraint posture: `ccqa record` (trace) enforces a strict selector

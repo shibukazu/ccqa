@@ -99,7 +99,7 @@ export function requireHubClient(opts: HubConnOptions): HubClient {
  * prompt bundle) so callers stop passing `hubClient`/`project` separately
  * and re-deriving the `hubClient && project` guard at each call site.
  *
- * Deliberately scoped to best-effort hub lookups only — `--profile`
+ * Deliberately scoped to best-effort hub lookups only — `--hub-profile`
  * resolution has different error semantics (a missing hub there is a hard
  * failure, not a "degrade to null" case) and keeps resolving its own
  * client/project instead of going through this type.

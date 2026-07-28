@@ -152,7 +152,7 @@ where the shared state lives — there is no second place to put it:
   current by `record`/`generate`
 - the variables `${…}` resolve to, and saved browser sessions, fetched at run
   time — so CI holds one secret instead of an environment
-- the deploy log behind `--only-stale`, and the drift ledger
+- the deploy log behind `--only-hub-stale`, and the drift ledger
 - a dashboard of runs with per-step screenshots, triage grading, and the
   prompts learned from those grades
 
@@ -186,7 +186,7 @@ All three need two things:
 - **A Claude credential.** Replaying a recorded spec uses no model, but the
   change selection, the failure analysis and the audit all do.
 - **A running [hub](#the-hub)**, reached with `CCQA_HUB_URL` and
-  `CCQA_HUB_TOKEN`. Only a pre-merge run with no `--profile` and no
+  `CCQA_HUB_TOKEN`. Only a pre-merge run with no `--hub-profile` and no
   `--report-to-hub` can do without one.
 
 See [Environment variables](./docs/commands.md#environment-variables) for the
@@ -201,7 +201,7 @@ once, from your machine:
 ccqa hub var set APP_URL --value https://app.example --profile staging
 ```
 
-Pass the same `--profile` and `--project` in every job. That is what makes the
+Pass the same `--hub-profile` and `--project` in every job. That is what makes the
 jobs refer to the same environment.
 
 ### On a pull request
@@ -209,14 +209,14 @@ jobs refer to the same environment.
 Run the specs the change reaches, and label what broke.
 
 ```bash
-ccqa run --only-affected-by --on-fail-explain --profile staging \
+ccqa run --only-affected-by --on-fail-explain --hub-profile staging \
   --report-format github --report-to-hub
 ```
 
 - `--only-affected-by` selects the specs the diff reaches. A spec it cannot clear runs
   anyway.
 - `--on-fail-explain` labels the cause of each failure.
-- `--profile staging` fetches that environment's variables and saved sessions
+- `--hub-profile staging` fetches that environment's variables and saved sessions
   from the hub. Without it, a spec's `${…}` references go unresolved.
 - `--report-format github` annotates the pull request.
 - `--report-to-hub` streams results to the hub as the run executes.
@@ -242,12 +242,12 @@ ccqa hub deploy record --profile staging --sha "$GITHUB_SHA" --select
 Then, in a job of its own, run what that deploy invalidated:
 
 ```bash
-ccqa run --only-stale --profile staging --report-to-hub
+ccqa run --only-hub-stale --hub-profile staging --report-to-hub
 ```
 
 - `--select` records which specs the deployed range reaches. Without it, every
   spec behind that entry answers `unknown` instead of `notNeeded`.
-- `--only-stale` asks the hub, per spec, whether any deploy has touched
+- `--only-hub-stale` asks the hub, per spec, whether any deploy has touched
   it since that spec last ran.
 
 The hub has no checkout and never runs `git`, so it cannot work out what a
@@ -260,7 +260,7 @@ a hole nothing can fill in afterwards.
 runs by default. Record a deploy, run every spec once with `--report-to-hub`,
 and the selection means something from the next deploy on. This job also reads
 the spec inventory from the hub, so `ccqa perspectives` has to have run.
-`--only-stale-with-unknown` opts the undecided specs in.
+`--only-hub-stale-with-unknown` opts the undecided specs in.
 
 ### On a schedule
 

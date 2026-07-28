@@ -26,7 +26,7 @@ async function detectDefaultBranch(cwd: string): Promise<string> {
 /**
  * Fetch the last-green ledger for this run — one hub round trip, logged as
  * the run's analysis-base meta line. Fails fast (RunUsageError) when the hub
- * can't serve it: `--failure-analysis=last-green` explicitly opted into
+ * can't serve it: `--on-fail-explain` explicitly opted into
  * hub-backed baselines, so a broken hub connection is a usage error, never a
  * silent no-baseline run.
  */
@@ -59,7 +59,7 @@ export async function fetchLastGreenLedger(
 }
 
 /**
- * Per-spec baseline resolver for `--failure-analysis=last-green`. A spec
+ * Per-spec baseline resolver for `--on-fail-explain` without an explicit base. A spec
  * missing from the ledger (never green on a pushed run yet) or whose
  * baseline commit isn't in this checkout resolves to a skip — the run
  * continues; only that spec's classification is withheld, with the reason

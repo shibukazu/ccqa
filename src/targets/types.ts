@@ -66,7 +66,7 @@ export interface TargetPlugin {
   /**
    * The guidance-prompt kind this target learns under (`<kind>.user` /
    * `<kind>.agent`). Set only by LLM-generating targets (playwright, runn):
-   * `ccqa generate --update-agent-prompt` refreshes `<guidanceKind>.agent`
+   * `ccqa generate --learn-hub-codegen-prompt` refreshes `<guidanceKind>.agent`
    * from the run. Absent means the target has no learned generation prompt
    * (agent-browser's codegen is mechanical); the CLI then declines the flag.
    */
@@ -82,12 +82,12 @@ export type StepEvidenceSupport = { supported: true } | { supported: false; reas
  * loop).
  */
 export interface FixOptions {
-  /** `--max-retries`: fix attempts after a failing verification run. */
+  /** `--auto-fix-max-retries`: fix attempts after a failing verification run. */
   maxRetries: number;
   /** `--auto-fix`: whether fixes may be applied without confirmation. */
   mode: FixMode;
   /**
-   * `--no-snapshot` sets this false: recorder-backed targets then skip
+   * `--no-session-pin` sets this false: recorder-backed targets then skip
    * pinning a browser session for post-failure page snapshots.
    */
   useSnapshot: boolean;

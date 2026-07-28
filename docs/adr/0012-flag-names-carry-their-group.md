@@ -15,7 +15,7 @@ Three specific failures had accumulated.
 ref — resolved by diffing and asking `ccqa select-specs` — or the literal
 string `last-run`, which read per-spec verdicts off the hub and did no git
 work at all. The two need different inputs (one needs a hub connection and
-`--profile`), fail differently, and share only the word "changed". Worse,
+`--hub-profile`), fail differently, and share only the word "changed". Worse,
 they could not be combined: the selection CI actually wants is "reached by
 this diff **and** audited clean", which a single value cannot express.
 
@@ -55,10 +55,21 @@ apply to one execution mode, `--learn-` writes a prompt back to the hub.
 left, so passing several ANDs them:
 
 ```
-ccqa run --only-audited-clean --only-stale
+ccqa run --only-hub-audited-clean --only-hub-stale
 ```
 
 Each is one condition, so the combination needs no new vocabulary.
+
+**A flag that reads or writes the hub says so in its name**, and fails when it
+cannot reach one. `--only-hub-stale`, `--only-hub-audited-clean`,
+`--learn-hub-live-prompt`, `--report-to-hub`, `--hub-profile`: from the name
+alone you can tell which invocations need a hub running. None of them degrade
+— asking for hub-backed selection and silently getting an unfiltered run, or
+asking to publish and silently not publishing, are the failures worth being
+loud about. Prompt fetching follows the same rule without a flag: a prompt
+that was never stored is null, but a hub that cannot be reached stops the run,
+because guidance the project configured and ccqa could not read would change
+what Claude does with nobody told.
 
 **Groups appear in `--help` too**, via commander 14's `.optionsGroup()` and
 `.commandsGroup()`. The prefix tells you the group from the name alone; the
@@ -66,8 +77,8 @@ help confirms it.
 
 `drift` is renamed to `audit`. Every other command is a verb; `drift` was a
 noun, and the name of a *result* rather than the act of looking for it. The
-word stays where it names a result (`--only-audited-clean` reads the drift
-ledger).
+word stays where it names a result (`--only-hub-audited-clean` reads the
+drift ledger).
 
 Old names are not kept as aliases. The tool has few users today, and carrying
 both spellings would put the thing this ADR is fixing — two names for one

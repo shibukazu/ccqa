@@ -2,7 +2,7 @@ import type { SpecArtifacts } from "../drift/artifacts.ts";
 import { formatBlockList, type AvailableBlock } from "./draft.ts";
 
 /**
- * The prompt behind `ccqa drift`.
+ * The prompt behind `ccqa audit`.
  *
  * Standalone rather than layered on the draft prompt, which is what it used to
  * be. Drafting refines a spec toward what its author wants; an audit answers

@@ -60,11 +60,11 @@ describe("fetchCustomPrompt", () => {
     expect(customPrompt?.customPromptVersion).toBe("v1");
   });
 
-  test("returns null when getPrompt throws", async () => {
+  test("propagates a hub failure instead of running with different guidance", async () => {
     const hub = fakeHubClient(async () => {
       throw new Error("network error");
     });
-    expect(await fetchCustomPrompt({ hub, project: "demo" })).toBeNull();
+    await expect(fetchCustomPrompt({ hub, project: "demo" })).rejects.toThrow("network error");
   });
 
   test("returns null when the stored value doesn't match the schema", async () => {
@@ -143,14 +143,16 @@ describe("buildTriageUserPromptBlock", () => {
 });
 
 describe("fetchTriageUserPrompt", () => {
-  test("returns null without a hub context / stored prompt / on fetch failure", async () => {
+  test("returns null without a hub context or a stored prompt, but not on a hub failure", async () => {
+    // "nothing stored" and "cannot reach the hub" have to stay distinguishable:
+    // the first is normal, the second means the run would use other guidance.
     expect(await fetchTriageUserPrompt(null)).toBeNull();
     expect(await fetchTriageUserPrompt({ hub: fakeHubClient(async () => null), project: "demo" })).toBeNull();
     expect(await fetchTriageUserPrompt({ hub: fakeHubClient(async () => "  \n"), project: "demo" })).toBeNull();
     const throwing = fakeHubClient(async () => {
       throw new Error("network error");
     });
-    expect(await fetchTriageUserPrompt({ hub: throwing, project: "demo" })).toBeNull();
+    await expect(fetchTriageUserPrompt({ hub: throwing, project: "demo" })).rejects.toThrow("network error");
   });
 
   test("returns the trimmed stored markdown", async () => {

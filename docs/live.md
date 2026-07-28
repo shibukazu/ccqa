@@ -29,9 +29,9 @@ Constraints on selectors / `agent-browser` subcommands that apply during `ccqa r
 ccqa's live-mode system prompt is deliberately product-agnostic. Anything specific to **your** project — staging URLs, login flow quirks, rich-editor types, common access-denied wording — belongs in a pair of prompts stored on the [hub](./hub.md), per project:
 
 - `live.user` — human-maintained stable guidance. Edit it in the hub UI's Prompts tab, or locally in `.ccqa/prompts/live.user.md` and upload with `ccqa hub prompt push live.user`.
-- `live.agent` — auto-updated on the hub by `ccqa run --learn-live-prompt` from each run's summary. You can push a hand-edited version, but the next `--learn-live-prompt` run may rewrite it; durable rules should live in `live.user`.
+- `live.agent` — auto-updated on the hub by `ccqa run --learn-hub-live-prompt` from each run's summary. You can push a hand-edited version, but the next `--learn-hub-live-prompt` run may rewrite it; durable rules should live in `live.user`.
 
-When hub credentials are configured, `ccqa run` fetches both prompts once per invocation and appends them to the system prompt (missing or unreachable prompts never stop a run — you just run without guidance). The `ccqa record` (trace) side has the same split: `record.user` + `record.agent`, refreshed by `ccqa record --learn-trace-prompt`.
+When hub credentials are configured, `ccqa run` fetches both prompts once per invocation and appends them to the system prompt (missing or unreachable prompts never stop a run — you just run without guidance). The `ccqa record` (trace) side has the same split: `record.user` + `record.agent`, refreshed by `ccqa record --learn-hub-trace-prompt`.
 
 Keep them short. A page or two of focused notes beats a long handbook — Claude has the spec's `expected` text to work from, these files are for the *non-obvious* product knowledge that isn't in any single spec. Examples of what's useful here:
 

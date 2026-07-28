@@ -30,17 +30,17 @@ Key flags (see `ccqa run --help` for the rest):
   `ccqa-report/`.
 - `--report-to-hub` — stream results to a [hub](./hub.md) incrementally as
   the run executes (opt-in; needs hub credentials).
-- `--profile <name>` — apply the hub-stored variables for this profile
+- `--hub-profile <name>` — apply the hub-stored variables for this profile
   before resolving `${VAR}` references (below).
 - `--only-affected-by <ref>` — restrict execution to the specs `ccqa
   select-specs` decides the git diff against `<ref>` reaches (below). The ref
   is always explicit: in a pull_request workflow pass `$GITHUB_BASE_REF`.
-- `--only-stale` — restrict execution to the specs the hub says are no longer
+- `--only-hub-stale` — restrict execution to the specs the hub says are no longer
   covered by their last result. Reads the deploy log, not a diff — see
   [Running only what needs a re-run](#running-only-what-needs-a-re-run).
-- `--only-stale-with-unknown` — with `--only-stale` only: also run the specs
+- `--only-hub-stale-with-unknown` — with `--only-hub-stale` only: also run the specs
   whose re-run need the hub cannot answer, and the ones that have never run.
-- `--only-audited-clean` — restrict execution to the specs `ccqa audit` last
+- `--only-hub-audited-clean` — restrict execution to the specs `ccqa audit` last
   found no drift in. A spec nobody has audited is not run.
 - `--dry-run` — print the specs this invocation would run, then exit `0`
   without executing anything and without writing a report. Works with every
@@ -59,7 +59,7 @@ Key flags (see `ccqa run --help` for the rest):
 - `--report-format <fmt>` — `text` (default), `json` (print report.json), `github`
   (GitHub Actions annotations).
 - `--live-step-retry <n>` — live specs only: retry each failing step up to N times.
-- `--learn-live-prompt` — live specs only: refresh the hub-stored
+- `--learn-hub-live-prompt` — live specs only: refresh the hub-stored
   `live.agent` learning notes from this run.
 - `-m/--model <name>` — `sonnet` / `opus` / `haiku` alias or a full model
   id; overrides the `CCQA_MODEL` env var. `--language <bcp47>` picks the
@@ -70,7 +70,7 @@ Key flags (see `ccqa run --help` for the rest):
   for fetching sessions/variables/prompts and for `--report-to-hub`.
 
 Every `--only-*` narrows what the one before it left, so passing several means
-"all of these". `--only-audited-clean --only-stale` is the CI combination:
+"all of these". `--only-hub-audited-clean --only-hub-stale` is the CI combination:
 audit the cheap way first, then spend a run only where the audit cleared the
 spec and the last result no longer holds. None of them can be combined with
 explicit spec targets.
@@ -83,11 +83,11 @@ usage errors. The failure analysis never changes the exit code.
 Keep environment-specific values out of specs as `${VAR}` references and
 supply them per environment:
 
-- **Without `--profile`**, ccqa auto-loads `<cwd>/.env` if present (it does
+- **Without `--hub-profile`**, ccqa auto-loads `<cwd>/.env` if present (it does
   not override variables already set in the shell); otherwise `${VAR}`
   resolves against the existing `process.env`, so a secret manager (e.g.
   `op run -- ccqa run ...`) works as-is.
-- **With `--profile <name>`**, ccqa fetches every variable stored on the
+- **With `--hub-profile <name>`**, ccqa fetches every variable stored on the
   [hub](./hub.md) for the resolved project/profile and applies them to the
   process environment (overriding inherited values) before the run starts.
   This requires a hub connection; an unreachable hub or unknown profile is
@@ -98,12 +98,12 @@ Register variables once per project/profile:
 ```bash
 ccqa hub var set BASE_URL --value https://staging.example --profile staging
 echo "$TOKEN" | ccqa hub var set API_TOKEN --sensitive --profile staging
-ccqa run auth/login --profile staging     # same spec, staging values
+ccqa run auth/login --hub-profile staging     # same spec, staging values
 ```
 
 `--sensitive` hides the value from `ccqa hub var ls` listings. The same
-`--profile` also selects the sessions bucket for `session:` restores — one
-flag picks both. `ccqa record` accepts `--profile` the same way.
+`--hub-profile` also selects the sessions bucket for `session:` restores —
+one flag picks both. `ccqa record` accepts `--hub-profile` the same way.
 
 ## The run report
 
@@ -316,17 +316,17 @@ than a spec judged without reading it.
 The deploy job runs the same decision via
 [`ccqa hub deploy record --select`](./hub.md#ccqa-hub-deploy-record), which
 submits the verdicts with the deploy so the hub can answer
-`--only-stale` later.
+`--only-hub-stale` later.
 
 ### Running only what needs a re-run
 
-`--only-stale` asks the hub which specs are worth running instead of
+`--only-hub-stale` asks the hub which specs are worth running instead of
 diffing a ref:
 
 ```bash
-ccqa run --only-stale --profile stg
-ccqa run --only-stale --profile stg --dry-run     # check the selection first
-ccqa run --only-stale --profile stg --only-stale-with-unknown
+ccqa run --only-hub-stale --hub-profile stg
+ccqa run --only-hub-stale --hub-profile stg --dry-run     # check the selection first
+ccqa run --only-hub-stale --hub-profile stg --only-hub-stale-with-unknown
 ```
 
 Each spec's baseline is **its own last run** — not its last green, and not a
@@ -339,7 +339,7 @@ selection](./hub-api.md#deploys-and-re-run-selection)). No git diff runs
 locally, and nothing is guessed: the verdict is either recorded or the
 answer is `unknown`.
 
-It needs a hub connection and `--profile` (`dev` and `stg` sit at different
+It needs a hub connection and `--hub-profile` (`dev` and `stg` sit at different
 commits, so the question has no profile-free answer). Anything that makes
 the question unanswerable — no perspectives document, no deploy recorded for
 the profile, a hub too old to serve the endpoint — is an **error**, never an
@@ -347,7 +347,7 @@ empty selection.
 
 By default only specs the hub reports as `needed` run. Specs whose need
 cannot be determined (`unknown`) and specs that have never run (`neverRun`)
-are left out; `--only-stale-with-unknown` opts into running them too. This is a
+are left out; `--only-hub-stale-with-unknown` opts into running them too. This is a
 different question from `ccqa audit`, which asks whether a spec still
 describes the product — see
 [ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md).
@@ -382,7 +382,7 @@ jobs:
       # workflow_dispatch / push workflow, use --on-fail-explain
       # (each spec diffs against the commit where it last passed, from the
       # hub's ledger) or pass a ref explicitly.
-      - run: pnpm exec ccqa run --project demo --profile staging --report-to-hub --on-fail-explain
+      - run: pnpm exec ccqa run --project demo --hub-profile staging --report-to-hub --on-fail-explain
       - uses: actions/upload-artifact@v4
         if: always()
         with:

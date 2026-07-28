@@ -20,8 +20,8 @@ authoritative for flags.
 |---|---|
 | `ccqa run [feature/spec…]` | Replay specs and write a report. See [Running specs](./running.md#ccqa-run). |
 | `ccqa run --only-affected-by <ref>` | Replay only the specs the diff against `<ref>` reaches. See [Scoping with `--only-affected-by`](./running.md#scoping-with---only-affected-by). |
-| `ccqa run --only-stale` | Replay only the specs whose last result the hub says no longer holds. See [Scoping with `--only-affected-by`](./running.md#scoping-with---only-affected-by). |
-| `ccqa run --only-audited-clean` | Replay only the specs `ccqa audit` last found no drift in. Combine with the two above — every `--only-*` narrows what the last one left. |
+| `ccqa run --only-hub-stale` | Replay only the specs whose last result the hub says no longer holds. See [Scoping with `--only-affected-by`](./running.md#scoping-with---only-affected-by). |
+| `ccqa run --only-hub-audited-clean` | Replay only the specs `ccqa audit` last found no drift in. Combine with the two above — every `--only-*` narrows what the last one left. |
 | `ccqa run --on-fail-explain` | Give every failing spec a root-cause label and a drift audit. See [Failure triage](./running.md#failure-triage). |
 | `ccqa audit [feature/spec]` | Audit specs against the codebase without running a browser. See [Drift detection](./running.md#drift-detection). |
 | `ccqa select-specs --base <ref>` | Answer which specs a range reaches, and nothing else — the machinery behind `--only-affected-by`, usable on its own. See [Asking the question on its own](./running.md#asking-the-question-on-its-own). |
@@ -44,7 +44,7 @@ look before letting a selection decide what a paid run covers.
 | `ccqa serve` | Start the hub. See [Hub](./hub.md#starting-a-hub). |
 | `ccqa hub push --report-dir <dir>` | Upload a finished report. Prefer `ccqa run --report-to-hub`, which streams as the run executes. See [`ccqa hub push`](./hub.md#ccqa-hub-push). |
 | `ccqa hub var set / ls / rm` | Manage the variables `${…}` in a spec resolve to at run time. See [Sharing sessions and variables](./hub.md#sharing-sessions-and-variables-via-the-hub). |
-| `ccqa hub deploy record --profile <p> --sha <sha>` | Tell the hub what a deploy shipped. Add `--select` so it also records which specs that deploy reaches — without it, `--only-stale` has to answer `unknown`. See [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record). |
+| `ccqa hub deploy record --profile <p> --sha <sha>` | Tell the hub what a deploy shipped. Add `--select` so it also records which specs that deploy reaches — without it, `--only-hub-stale` has to answer `unknown`. See [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record). |
 | `ccqa hub prompt push / ls / rm` | Manage per-flow guidance and learned prompts. See [Triage learning](./hub.md#triage-learning). |
 
 ## Environment variables

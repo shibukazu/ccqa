@@ -140,7 +140,7 @@ export interface ExternalRunContext {
   concurrency: number;
   model?: string;
   language?: string;
-  /** Rows land here as they finish (report.json flush + hub sink under --push-report). */
+  /** Rows land here as they finish (report.json flush + hub sink under --report-to-hub). */
   report: IncrementalReport;
 }
 
@@ -150,7 +150,7 @@ export interface ExternalRunContext {
  * then each external target group through its runner. Every row is upserted
  * into the incremental report the moment it exists — the runner reports each
  * spec through `onSpecComplete` as it finishes — so an interrupt keeps what
- * already ran and `--push-report` streams spec by spec. Rows are also
+ * already ran and `--report-to-hub` streams spec by spec. Rows are also
  * returned for the tail phase (failure analysis) and the final batch write. A
  * crashing runner marks its own specs failed instead of aborting the run.
  */
@@ -178,7 +178,7 @@ export async function runExternalSpecs(
     });
   }
   // Row-level upsert (not upsertAll) so the hub sink fires per row under
-  // --push-report; upsertAll only flushes locally.
+  // --report-to-hub; upsertAll only flushes locally.
   for (const row of rows) await ctx.report.upsert(row);
 
   for (const group of dispatch.external) {

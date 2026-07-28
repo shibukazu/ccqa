@@ -27,7 +27,7 @@ export async function fetchAuditedLedger(hubCtx: HubContext): Promise<AuditedLed
     ledger = await hubCtx.hub.getDriftLedger(hubCtx.project);
   } catch (err) {
     throw new RunUsageError(
-      `--only-audited-clean: could not fetch the drift ledger from the hub: ${errMessage(err)}`,
+      `--only-hub-audited-clean: could not fetch the drift ledger from the hub: ${errMessage(err)}`,
     );
   }
   const clean = new Set<string>();

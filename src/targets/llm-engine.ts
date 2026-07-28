@@ -487,11 +487,11 @@ async function runVerificationLoop(
 
   // `useSnapshot` pins an agent-browser session so that target can re-attach
   // for a post-failure page snapshot; a runCommand target has no such session
-  // (its fix prompt is fed the command's output tail), so `--no-snapshot` is
+  // (its fix prompt is fed the command's output tail), so `--no-session-pin` is
   // inapplicable here. Say so once rather than ignoring it silently.
   if (!p.ctx.fix.useSnapshot) {
     log.warn(
-      `--no-snapshot has no effect on the ${p.target} target — it captures no browser snapshot; ` +
+      `--no-session-pin has no effect on the ${p.target} target — it captures no browser snapshot; ` +
         `the fix loop uses the command's output instead`,
     );
   }

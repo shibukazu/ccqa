@@ -94,14 +94,14 @@ describe("resolveSessionState", () => {
     });
     const r = await resolveSessionState(["admin"], ctx, undefined);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.hint).toContain("ccqa session bootstrap admin");
+    if (!r.ok) expect(r.hint).toContain("ccqa hub session capture admin");
   });
 
   test("fails when the hub returns a value that isn't storage-state shaped", async () => {
     const ctx = hubCtx(async () => ({ nope: true }));
     const r = await resolveSessionState(["admin"], ctx, undefined);
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.hint).toContain("ccqa session bootstrap admin");
+    if (!r.ok) expect(r.hint).toContain("ccqa hub session capture admin");
   });
 
   test("threads --profile into the bootstrap hint", async () => {
@@ -110,7 +110,7 @@ describe("resolveSessionState", () => {
     });
     const r = await resolveSessionState(["admin"], ctx, "stg");
     expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.hint).toContain("ccqa session bootstrap admin --profile stg");
+    if (!r.ok) expect(r.hint).toContain("ccqa hub session capture admin --profile stg");
   });
 
   test("health-checks a session that carries an embedded verify URL", async () => {
@@ -138,7 +138,7 @@ describe("resolveSessionState", () => {
     if (!r.ok) {
       expect(r.error).toContain("hc-bad");
       expect(r.error).toContain("landed on /signin");
-      expect(r.hint).toContain("ccqa session bootstrap hc-bad --profile dev");
+      expect(r.hint).toContain("ccqa hub session capture hc-bad --profile dev");
     }
   });
 

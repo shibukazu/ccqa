@@ -165,7 +165,7 @@ interface JudgeInput {
 
 /**
  * A malformed reply costs the whole selection, so it is worth one more call
- * before giving up. `ccqa drift` retries per spec for the same reason; this
+ * before giving up. `ccqa audit` retries per spec for the same reason; this
  * call carries every undecided spec at once, so the blast radius is larger,
  * not smaller. Observed in practice: three runs over one commit produced a
  * parse failure, a clean answer, and a different clean answer.

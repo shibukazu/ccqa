@@ -212,7 +212,7 @@ function countSpecs(results: ReportSpecResult[]): { total: number; passed: numbe
  * or `red` (the last outcome), which are orthogonal axes.
  *
  * Best-effort — a ledger failure must not fail the push; the ledger is an
- * accelerator for `--failure-analysis=last-green` and re-run selection, not
+ * accelerator for `--on-fail-explain` baselines and re-run selection, not
  * part of the run record. Runs without a branch or gitHead can't be placed in
  * the ledger and are skipped.
  *

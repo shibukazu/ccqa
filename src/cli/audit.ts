@@ -68,7 +68,7 @@ export const auditCommand = addLanguageOption(
     .option("--report-format <fmt>", "Output format: text | json | github", "text")
     .option(
       "--report-to-hub",
-      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger `ccqa run --only-audited-clean` reads.",
+      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger `ccqa run --only-hub-audited-clean` reads.",
     )
     .option(
       "--exit-on <level>",
@@ -158,9 +158,9 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
 
 /**
  * Push a finished drift audit to a ccqa hub as a `kind: "drift"` run, so it
- * shows up alongside `ccqa run` runs in the hub UI. Best-effort: a missing
- * hub connection warns and returns rather than failing the command (`--report-to-hub`
- * never changes drift's own exit code).
+ * shows up alongside `ccqa run` runs in the hub UI. A missing hub connection
+ * is a usage error, not a silent skip — a CI job that asked to publish and
+ * did not must say so.
  *
  * `resolveHub` is injectable so tests can supply a fake `HubClient` without
  * a real hub connection; it defaults to the real flag/env resolution.
@@ -179,8 +179,8 @@ export async function pushDriftResults(
   const { results, threshold, cwd, opts, format, baseRef } = args;
   const hub = resolveHub(opts);
   if (!hub) {
-    log.warn("--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN) — skipping push");
-    return;
+    log.error("--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)");
+    process.exit(2);
   }
 
   try {
@@ -260,7 +260,7 @@ function parseFormat(raw: string | undefined): Format {
 function parseSeverity(raw: string | undefined): Threshold {
   const v = raw ?? "error";
   if (v === "warn" || v === "error") return v;
-  log.error(`invalid --severity: ${v} (expected warn|error)`);
+  log.error(`invalid --exit-on: ${v} (expected warn|error)`);
   process.exit(2);
 }
 

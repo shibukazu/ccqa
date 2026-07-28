@@ -172,7 +172,7 @@ export function getBlockDir(name: string, cwd?: string): string {
 /**
  * Inverse of `getBlockDir`. Given a file path that appears in a git diff,
  * return the block name if the path points at the block's spec.yaml, else
- * null. Used by `drift --changed` to invalidate specs whose included blocks
+ * null. Used by `audit --only-affected-by` to invalidate specs whose included blocks
  * were edited. (v0.4 inlines blocks into every spec's own trace, so the
  * block directory holds only spec.yaml — no per-block recording lives
  * here anymore.)
@@ -242,7 +242,9 @@ export interface PromptBundle {
  * Load the prompt bundle from the hub for one guidance kind ("record" /
  * "live" / an LLM-generation target such as "playwright" or "runn").
  * Best-effort: no hub client, a fetch failure, or both prompts absent all
- * resolve to null — a broken/missing hub prompt must never stop a run.
+ * A prompt that was never stored resolves to null. A hub that cannot be
+ * reached throws: running with silently different guidance than the project
+ * configured is worse than stopping.
  */
 export async function loadPromptBundleFromHub(
   ctx: HubContext | null,
@@ -251,18 +253,14 @@ export async function loadPromptBundleFromHub(
   if (!ctx) return null;
   const userName: PromptName = `${kind}.user`;
   const agentName: PromptName = `${kind}.agent`;
-  try {
-    const [userText, agentText] = await Promise.all([
-      ctx.hub.getPrompt(ctx.project, userName).then(normalizePromptText),
-      ctx.hub.getPrompt(ctx.project, agentName).then(normalizePromptText),
-    ]);
-    return assemblePromptBundle(
-      { text: userText, label: userName },
-      { text: agentText, label: agentName },
-    );
-  } catch {
-    return null;
-  }
+  const [userText, agentText] = await Promise.all([
+    ctx.hub.getPrompt(ctx.project, userName).then(normalizePromptText),
+    ctx.hub.getPrompt(ctx.project, agentName).then(normalizePromptText),
+  ]);
+  return assemblePromptBundle(
+    { text: userText, label: userName },
+    { text: agentText, label: agentName },
+  );
 }
 
 /**
@@ -282,7 +280,7 @@ function assemblePromptBundle(
     loaded.push(user.label);
   }
   if (agent.text !== null) {
-    sections.push(`### Agent learnings (auto-updated by ccqa --update-agent-prompt)\n\n${agent.text}`);
+    sections.push(`### Agent learnings (auto-updated by ccqa's --learn-*-prompt flags)\n\n${agent.text}`);
     loaded.push(agent.label);
   }
   let text = sections.join("\n\n");

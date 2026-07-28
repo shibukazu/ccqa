@@ -71,8 +71,7 @@ export function lookupFileDiff(sections: PatchSection[], path: string): string |
  * per-spec last-green) without the other drifting.
  *
  * The baseline comes from `resolveBase` per spec — a constant for
- * `--failure-analysis=<ref>`, a hub-ledger lookup for
- * `--failure-analysis=last-green`. Captures are lazy (nothing runs on a
+ * `--on-fail-explain-base <ref>`, a hub-ledger lookup when it is omitted. Captures are lazy (nothing runs on a
  * green run) and memoized per base sha, so N failing specs sharing a
  * baseline commit cost one `git diff`.
  */

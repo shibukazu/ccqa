@@ -8,7 +8,7 @@ import { join } from "node:path";
  *
  * Two kinds share one namespace:
  *  - "guidance": the record/live prompt bundle — `.user.md` (human-maintained)
- *    and `.agent.md` (auto-rewritten by `ccqa run --update-agent-prompt`) —
+ *    and `.agent.md` (auto-rewritten by `ccqa run --learn-hub-live-prompt`) —
  *    plus `triage.user`, the human-maintained guidance injected into the
  *    failure-analysis (triage) prompt.
  *  - "custom-prompt": `analysis-custom-prompt` — Claude-written calibration guidance

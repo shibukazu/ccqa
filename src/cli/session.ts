@@ -84,7 +84,7 @@ export const sessionCaptureCommand = new Command("capture")
       process.exit(2);
     }
 
-    log.header("session bootstrap", name);
+    log.header("session capture", name);
     log.meta("project", project);
     log.meta("profile", opts.profile ?? DEFAULT_SESSION_PROFILE);
     log.blank();

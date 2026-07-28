@@ -5,7 +5,7 @@ import { specKey, type SpecRef } from "../store/index.ts";
 import { errMessage, RunUsageError } from "./errors.ts";
 
 /**
- * `ccqa run --changed=last-run`: select specs from the hub's re-run verdicts
+ * `ccqa run --only-hub-stale`: select specs from the hub's re-run verdicts
  * instead of from a git diff (ADR-0010). The baseline is not a ref at all —
  * it is each spec's own last run, positioned against the deploy log the
  * consuming deploy job feeds the hub — so this path does no git work.
@@ -24,14 +24,14 @@ export type RerunBaseline = RerunReport & {
 };
 
 /**
- * The profile `--changed=last-run` asks about. Mandatory: two environments sit
+ * The profile `--only-hub-stale` asks about. Mandatory: two environments sit
  * at different commits and the deploy log is per-profile, so "needs re-run"
  * has no profile-free answer.
  */
 export function requireRerunProfile(profile: string | undefined): string {
   if (profile === undefined) {
     throw new RunUsageError(
-      `--only-stale requires --profile <name>: the deploy log it reads is per-profile, ` +
+      `--only-hub-stale requires --hub-profile <name>: the deploy log it reads is per-profile, ` +
         `so which specs need a re-run has no answer without one`,
     );
   }
@@ -54,14 +54,14 @@ export async function fetchRerunReport(
       throw new RunUsageError(explainNotFound(hubCtx, err));
     }
     throw new RunUsageError(
-      `--only-stale: could not ask the hub which specs need a re-run: ${errMessage(err)}`,
+      `--only-hub-stale: could not ask the hub which specs need a re-run: ${errMessage(err)}`,
     );
   }
   if (report.deployHead === null) {
     throw new RunUsageError(
-      `--only-stale: no deploy has been recorded for profile "${profile}" of project ` +
+      `--only-hub-stale: no deploy has been recorded for profile "${profile}" of project ` +
         `"${hubCtx.project}", so nothing can be compared against. Wire \`ccqa hub deploy record\` ` +
-        `into the deploy job, or pass an explicit baseline (--changed=<ref>).`,
+        `into the deploy job, or select with --only-affected-by <ref> instead.`,
     );
   }
   return { ...report, deployHead: report.deployHead };
@@ -75,13 +75,13 @@ export async function fetchRerunReport(
 function explainNotFound(hubCtx: HubContext, err: HubApiError): string {
   if (err.code === "no_perspectives") {
     return (
-      `--only-stale: project "${hubCtx.project}" has no perspectives document on the hub, ` +
+      `--only-hub-stale: project "${hubCtx.project}" has no perspectives document on the hub, ` +
       `so no spec is registered to compare against a deploy. Run \`ccqa perspectives\` first.`
     );
   }
   return (
-    `--only-stale: this hub does not serve re-run verdicts — it needs ccqa ` +
-    `${RERUN_MIN_HUB_VERSION} or newer. Upgrade the hub, or pass an explicit baseline (--changed=<ref>).`
+    `--only-hub-stale: this hub does not serve re-run verdicts — it needs ccqa ` +
+    `${RERUN_MIN_HUB_VERSION} or newer. Upgrade the hub, or select with --only-affected-by <ref> instead.`
   );
 }
 
@@ -114,7 +114,7 @@ export interface RerunSelection {
  *
  * `needed` is always selected. `unknown` and `neverRun` are "the question
  * cannot be answered", so they are excluded by default and opted into with
- * `--include-unknown` — fail-open on request, never silently. `notNeeded` and
+ * `--only-hub-stale-with-unknown` — fail-open on request, never silently. `notNeeded` and
  * `notEvaluated` are never selected.
  */
 export function selectSpecsNeedingRerun(

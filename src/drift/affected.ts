@@ -26,7 +26,7 @@ export interface ChangedFile {
  * GITHUB_BASE_REF holds a bare branch name (e.g. "main"); the local checkout
  * only has it as a remote-tracking ref, so prefix `origin/` unless already
  * qualified. Used by `ccqa run`'s resolveAnalysisBase (`src/run/git-context.ts`),
- * which both `ccqa run --changed` and `ccqa drift --changed` resolve their
+ * which both `ccqa run` and `ccqa audit` resolve their `--only-affected-by`
  * base through, so the rule can't drift between them.
  */
 export function normalizeGithubBaseRef(ref: string): string {

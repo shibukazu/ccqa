@@ -139,14 +139,13 @@ export async function fetchCustomPrompt(
   ctx: HubContext | null,
 ): Promise<AnalysisCustomPrompt | null> {
   if (!ctx) return null;
-  try {
-    const raw = await ctx.hub.getPrompt(ctx.project, "analysis-custom-prompt");
-    if (raw === null) return null;
-    const parsed = AnalysisCustomPromptSchema.safeParse(JSON.parse(raw));
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
+  // `getPrompt` answers null for a prompt that was never stored, so anything
+  // thrown here is the hub itself being unreachable — which the caller must
+  // hear about rather than run with silently different guidance.
+  const raw = await ctx.hub.getPrompt(ctx.project, "analysis-custom-prompt");
+  if (raw === null) return null;
+  const parsed = AnalysisCustomPromptSchema.safeParse(JSON.parse(raw));
+  return parsed.success ? parsed.data : null;
 }
 
 /**
@@ -176,13 +175,9 @@ ${trimmed}
  */
 export async function fetchTriageUserPrompt(ctx: HubContext | null): Promise<string | null> {
   if (!ctx) return null;
-  try {
-    const raw = await ctx.hub.getPrompt(ctx.project, "triage.user");
-    const trimmed = raw?.trim();
-    return trimmed ? trimmed : null;
-  } catch {
-    return null;
-  }
+  const raw = await ctx.hub.getPrompt(ctx.project, "triage.user");
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed : null;
 }
 
 /**

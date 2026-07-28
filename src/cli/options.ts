@@ -28,7 +28,7 @@ export function addLanguageOption(command: Command): Command {
  */
 export function addProfileOption(command: Command): Command {
   return command.option(
-    "--profile <name>",
+    "--hub-profile <name>",
     "Load this profile's variables from the hub into the environment before resolving spec ${VAR} references (URLs, credentials), so one spec can target dev/stg/prd without per-environment copies. Profile values override the inherited environment. Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN).",
   );
 }

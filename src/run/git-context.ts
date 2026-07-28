@@ -34,7 +34,7 @@ export interface AnalysisBase {
  * `base` is null exactly when failure analysis was not requested: the
  * three-way classification is defined in terms of a source diff (TEST_DRIFT /
  * SPEC_CHANGE must cite it, PRODUCT_BUG claims it explains nothing), so
- * analysis is opt-in via `--failure-analysis [base]` and a baseline that
+ * analysis is opt-in via `--on-fail-explain` and a baseline that
  * cannot be resolved is a startup usage error, never a silent fallback.
  */
 export interface GitContext {
