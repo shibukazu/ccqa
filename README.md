@@ -10,7 +10,7 @@ with no model in the loop.
 Recording is where the subscription pays off — `claude` on your machine is
 enough, no extra API key. CI is where it stops needing one: a recorded spec
 replays as plain test code. Only the optional Claude-driven parts —
-[failure analysis](#failure-analysis-and-drift), [drift](#failure-analysis-and-drift),
+[the audit and the failure analysis](#audit-then-run),
 [change selection](#wire-it-into-ci), and `mode: live` specs — need a
 credential in CI.
 
@@ -118,25 +118,34 @@ tool, declared once in `.ccqa/config.yaml` — e.g.
 each step's `expected` — for fragile, timing-heavy UIs where a fixed
 recording would break.
 
-## Failure analysis and drift
+## Audit, then run
 
-A failing E2E test does not say whose problem it is. ccqa answers that
-question in one vocabulary, from two directions.
+A failing E2E test does not say whose problem it is. Two questions decide it,
+and ccqa asks them in a fixed order — because one is cheap and the other is
+not.
 
-**When a spec fails**, `ccqa run --on-fail-explain` labels the cause
-— `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN` when the evidence
-does not support a call. The label comes with a drift audit of the same spec,
-because "did the test break" and "does the test still describe the product"
-are the same investigation. `[base]` is what the diff is read against: a git
-ref, or `last-green` to have each spec diff against the commit where it last
-passed. With neither, the label rests on the failure alone and says so.
+**First, without a browser: does each spec still describe the code?**
+`ccqa audit` reads the spec against the source. For a deterministic spec that
+means both artifacts — the spec a human wrote and the test code compiled from
+it — since either can fall out of step. Which one drifted decides the repair,
+so the audit reports it: stale generated code is re-recorded, a stale spec
+needs a human. Cents per spec, no environment required.
 
-**Before anything runs**, `ccqa audit` asks the second question on its own,
-with no browser: does each spec still describe the code? For a deterministic
-spec that means both artifacts — the spec a human wrote and the test code
-compiled from it — since either can fall out of step. Which one drifted
-decides the repair, so the audit reports it: stale generated code is
-re-recorded, a stale spec needs a human.
+**Then, for the specs it cleared: run them, and label what still fails.**
+`ccqa run --only-hub-audited-clean --on-fail-explain` executes only the specs
+the audit found no drift in, and labels each failure `TEST_DRIFT`,
+`SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN` when the evidence does not support
+a call. Each spec is read against the commit where it last passed, taken from
+the hub; `--on-fail-explain-base <ref>` diffs against one shared ref instead,
+for when there is no hub to hold the baselines.
+
+The order is what makes the second step worth paying for. A spec the audit
+flagged will fail for a reason you have already been told, and finding that
+out again costs a live run instead of a static read. Filter first and the
+failures that remain are the ones no amount of reading could have caught.
+
+A spec nobody has audited is not run either — `--only-hub-audited-clean` acts
+on a verdict, and "never looked" is not one.
 
 Every call is gradable on the hub, and the hub learns from your grades. See
 [Failure triage](./docs/running.md#failure-triage) and
@@ -162,6 +171,12 @@ export CCQA_HUB_ENCRYPTION_KEY=$(openssl rand -hex 32)   # required to store
 ccqa serve                                               # sessions/variables
 ```
 
+**Anything that needs the hub says so in its name** — `--hub-profile`,
+`--only-hub-stale`, `--only-hub-audited-clean`, `--learn-hub-live-prompt`,
+`--report-to-hub` — and fails when it cannot reach one. Asking for hub-backed
+selection and silently getting an unfiltered run, or asking to publish and
+silently not publishing, are worth stopping for.
+
 The repository root also ships a `Dockerfile` and `docker-compose.yaml` for
 container deployment — clone it, or copy them from
 [Running the hub in a container](./docs/hub.md#running-the-hub-in-a-container);
@@ -172,16 +187,37 @@ See [Hub](./docs/hub.md) for the full setup and
 
 ## Wire it into CI
 
-Three jobs. They are independent: the pull-request job on its own is a
-complete adoption, and the other two can come later.
+**Audit first, then run what the audit cleared.** That order is the whole
+shape of ccqa in CI:
+
+```
+deploy lands
+  │
+  ├─ ccqa hub deploy record --select     what shipped, and which specs it reaches
+  │
+  ├─ ccqa audit --report-to-hub          does each spec still describe the code?
+  │                                      static: no browser, cents per spec
+  │
+  └─ ccqa run --only-hub-audited-clean --only-hub-stale --on-fail-explain
+                                         run only what the audit cleared and
+                                         the deploy invalidated
+```
+
+The audit costs cents; a live spec costs dollars. Running a spec the audit has
+already flagged spends the expensive step to rediscover something the cheap one
+knew — and the failure it produces is the drift you were already told about,
+not news. Filtering first leaves a run whose failures are worth reading.
+
+Two jobs sit outside that loop. A `pull_request` run catches breakage before it
+merges; a scheduled audit covers the specs the deploy path never reaches.
 
 | Job | Trigger | Question it answers |
 |---|---|---|
+| Deploy loop | after a deploy | Which cleared specs did this deploy invalidate? |
 | Pre-merge run | `pull_request` | Does this change break a spec, and whose fault is it? |
-| Post-deploy run | after a deploy | Which specs' last result is no longer trustworthy? |
-| Drift audit | `schedule` | Do the specs still describe the code? |
+| Full audit | `schedule` | Do the specs still describe the code? |
 
-All three need two things:
+All of them need two things:
 
 - **A Claude credential.** Replaying a recorded spec uses no model, but the
   change selection, the failure analysis and the audit all do.
@@ -209,23 +245,25 @@ jobs refer to the same environment.
 Run the specs the change reaches, and label what broke.
 
 ```bash
-ccqa run --only-affected-by --on-fail-explain --hub-profile staging \
-  --report-format github --report-to-hub
+ccqa run --only-affected-by "origin/$GITHUB_BASE_REF" --on-fail-explain \
+  --hub-profile staging --report-format github --report-to-hub
 ```
 
-- `--only-affected-by` selects the specs the diff reaches. A spec it cannot clear runs
-  anyway.
+- `--only-affected-by <ref>` selects the specs the diff against `<ref>` reaches.
+  A spec it cannot clear runs anyway.
 - `--on-fail-explain` labels the cause of each failure.
 - `--hub-profile staging` fetches that environment's variables and saved sessions
   from the hub. Without it, a spec's `${…}` references go unresolved.
 - `--report-format github` annotates the pull request.
 - `--report-to-hub` streams results to the hub as the run executes.
 
-**Set `fetch-depth: 0` on `actions/checkout`.** Both selection flags read
-their baseline from `GITHUB_BASE_REF` and resolve it against `origin/<base>`,
-which a shallow checkout does not have. Without it the run exits with a usage
-error before the first test. Outside a `pull_request` workflow there is no
-`GITHUB_BASE_REF`, so pass the base yourself: `--only-affected-by origin/main`.
+**Pass the base ref yourself.** ccqa reads nothing from the environment: on a
+`pull_request` workflow that means `origin/$GITHUB_BASE_REF`, elsewhere
+whatever you are comparing against. An unresolvable ref is a usage error
+before the first test, never an empty diff.
+
+**Set `fetch-depth: 0` on `actions/checkout`,** or that base is not in the
+checkout to resolve.
 
 `--dry-run` prints the selection and stops. The selection costs one model call
 either way.
@@ -272,14 +310,24 @@ ccqa audit --report-format github --report-to-hub
 
 - `--exit-on warn|error` (default `error`) decides whether a verdict fails
   the job.
-- `--report-to-hub` records each verdict in the hub's per-spec drift ledger, shown in
-  the Perspectives tab. It never changes the exit code.
+- `--report-to-hub` records each verdict in the hub's per-spec drift ledger,
+  shown in the Perspectives tab. It is what `--only-hub-audited-clean` reads.
 - `--only-affected-by <ref>` narrows the sweep on a `push` workflow, at the cost
   of one more model call.
 
 The pre-merge job already audits the specs that failed. This one covers the
 rest, because a spec can pass and still describe a product that no longer
 exists.
+
+Once the ledger is being kept, the post-deploy run can require it — spend a
+run only where the audit cleared the spec **and** the last result no longer
+holds:
+
+```bash
+ccqa run --only-hub-audited-clean --only-hub-stale --hub-profile staging --report-to-hub
+```
+
+Every `--only-*` narrows what the one before it left, so they compose.
 
 ### Workflows
 
