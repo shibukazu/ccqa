@@ -10,7 +10,7 @@ ccqa は Claude Code をブラウザテストのレコーダー兼ランナー�
 サブスクリプションが効くのは record のときです。手元に `claude` があれば追加の
 API キーは要りません。CI では記録済みのコードを再生するだけなので、そもそも
 Claude を使いません。資格情報が必要になるのは Claude を使う機能を有効にした
-ときだけで、[失敗分類と drift](#失敗分類と-drift)、
+ときだけで、[監査と失敗分類](#監査してから実行する)、
 [変更範囲の選択](#ci-に組み込む)、`mode: live` の spec がこれにあたります。
 
 [English README](../README.md)
@@ -116,25 +116,34 @@ record`）、その記録がプレーンなテストコードに変換されま�
 操作し、各 step の `expected` を判定します。固定の記録ではすぐ壊れてしまう、
 タイミングに左右されやすい UI 向けです。
 
-## 失敗分類と drift
+## 監査してから実行する
 
 E2E テストが落ちても、それが誰の担当すべき問題なのかまでは分かりません。
-ccqa は同じ語彙を使って、この問いに 2 つの入り口から答えます。
+これを決める問いは 2 つあり、ccqa はそれを決まった順序で問います。片方が安く、
+もう片方が高いからです。
 
-**spec が失敗したとき**は、`ccqa run --on-fail-explain` が原因を
-`TEST_DRIFT`（テストのずれ）、`SPEC_CHANGE`（仕様変更）、`PRODUCT_BUG`
-（プロダクトの不具合）に分類します。根拠が足りず判断できないときは `UNKNOWN`
-になります。この分類には同じ spec の drift 監査が伴います。「テストが壊れたのか」
-と「テストはまだプロダクトを説明しているか」は、結局のところ同じ調査だからです。
-`[base]` は差分を読む基準で、git の ref か `last-green`（各 spec が最後に成功
-したコミットを基準にする）を指定します。どちらも指定しない場合は失敗そのものだけ
-を根拠に分類し、その旨を明示します。
-
-**何も実行せずに問う**こともできます。`ccqa audit` はブラウザを開かずに、各
-spec がまだコードを説明しているかだけを調べます。deterministic な spec では、
+**まずブラウザを使わずに、各 spec がまだコードを説明しているかを見ます。**
+`ccqa audit` が spec とソースを突き合わせます。deterministic な spec では、
 人が書いた spec と、そこから生成されたテストコードの両方を見ます。どちらもずれ
 うるからです。どちらがずれたかで直し方が変わるので、監査はそれも報告します。
 生成コードのずれは record し直せば済み、spec のずれは人が書き直す必要があります。
+1 spec あたり数セント、環境も要りません。
+
+**次に、監査がシロと言った spec だけを実行し、それでも落ちたものを分類します。**
+`ccqa run --only-hub-audited-clean --on-fail-explain` は、監査でズレが見つからな
+かった spec だけを実行し、失敗を `TEST_DRIFT`（テストのずれ）、`SPEC_CHANGE`
+（仕様変更）、`PRODUCT_BUG`（プロダクトの不具合）に分類します。根拠が足りず
+判断できないときは `UNKNOWN` です。差分を読む基準は、各 spec が最後に成功した
+コミットで、hub から取得します。`--on-fail-explain-base <ref>` を渡すと、代わりに
+指定した 1 つの ref を基準にします。基準を hub に置けない環境で使います。
+
+**この順序が、高いほうの工程を払う価値を作ります。** 監査が指摘した spec は、
+すでに伝えられている理由で落ちます。それをもう一度確かめるのに、静的な読解では
+なく実ブラウザの実行を使うことになる。先に絞れば、残った失敗は読むだけでは
+捕まえられなかったものだけになります。
+
+一度も監査していない spec も実行しません。`--only-hub-audited-clean` は判定に
+従って動くフラグで、「まだ見ていない」は判定ではないからです。
 
 いずれの判断も hub 上で採点でき、hub はその採点から学習します。詳細は
 [Failure triage](./running.md#failure-triage) と
@@ -160,6 +169,12 @@ export CCQA_HUB_ENCRYPTION_KEY=$(openssl rand -hex 32)   # セッションと変
 ccqa serve                                               # 保存に必要
 ```
 
+**hub が要るものは名前に hub が入ります。** `--hub-profile`、
+`--only-hub-stale`、`--only-hub-audited-clean`、`--learn-hub-live-prompt`、
+`--report-to-hub` がそれで、hub に繋げないときはエラーになります。hub 由来の
+絞り込みを頼んだのに黙って全件走る、送信を頼んだのに黙って送られない、
+どちらも止める価値があるからです。
+
 コンテナで動かすための `Dockerfile` と `docker-compose.yaml` はリポジトリの
 ルートにあります。npm パッケージには含まれないので、clone するか
 [Running the hub in a container](./hub.md#running-the-hub-in-a-container)
@@ -170,16 +185,37 @@ ccqa serve                                               # 保存に必要
 
 ## CI に組み込む
 
-ジョブは 3 つです。互いに独立しているので、プルリクエストのジョブだけを入れて
-も導入として成立します。残り 2 つは後から足せます。
+**監査してから、監査が通したものを実行する。** これが CI における ccqa の
+全体像です。
+
+```
+デプロイ完了
+  │
+  ├─ ccqa hub deploy record --select     何が載ったか、どの spec に届くか
+  │
+  ├─ ccqa audit --report-to-hub          spec はまだコードを説明しているか
+  │                                      静的・ブラウザ不要・1 本数セント
+  │
+  └─ ccqa run --only-hub-audited-clean --only-hub-stale --on-fail-explain
+                                         監査が通し、かつデプロイが無効化した
+                                         spec だけを実行
+```
+
+監査は数セント、live の spec は数ドルです。監査が指摘済みの spec を実行するのは、
+安いほうが既に知っていることを高いほうで見つけ直すことにあたります。しかも出て
+くる失敗は、先に伝えられていたズレそのもので、新しい情報ではありません。先に
+絞れば、読む価値のある失敗だけが残ります。
+
+このループの外に 2 つジョブが立ちます。`pull_request` の実行はマージ前に壊れを
+捕まえ、定期監査はデプロイ経路が通らない spec を拾います。
 
 | ジョブ | きっかけ | 答える問い |
 |---|---|---|
+| デプロイのループ | デプロイのあと | 通っている spec のうち、このデプロイが無効化したのはどれか |
 | マージ前の実行 | `pull_request` | この変更は spec を壊すか。壊したのは誰の責任か |
-| デプロイ後の実行 | デプロイのあと | どの spec の前回結果がもう信用できないか |
-| ドリフト監査 | 定期実行 | spec はまだコードを説明しているか |
+| 全体監査 | 定期実行 | spec はまだコードを説明しているか |
 
-3 つとも、次の 2 つが必要です。
+どれも、次の 2 つが必要です。
 
 - **Claude の資格情報。** 記録済み spec の再生自体はモデルを使いませんが、
   変更範囲の選択、失敗分類、監査はどれも使います。
@@ -205,24 +241,25 @@ ccqa hub var set APP_URL --value https://app.example --profile staging
 変更が到達する spec を実行し、壊れた原因を分類します。
 
 ```bash
-ccqa run --only-affected-by --on-fail-explain --hub-profile staging \
-  --report-format github --report-to-hub
+ccqa run --only-affected-by "origin/$GITHUB_BASE_REF" --on-fail-explain \
+  --hub-profile staging --report-format github --report-to-hub
 ```
 
-- `--only-affected-by`：差分が到達する spec を選びます。シロと判定できなかった spec は
-  実行します。
+- `--only-affected-by <ref>`：`<ref>` との差分が到達する spec を選びます。
+  シロと判定できなかった spec は実行します。
 - `--on-fail-explain`：失敗した spec の原因を分類します。
 - `--hub-profile staging`：その環境の変数と保存済みセッションを hub から取得します。
   付けないと spec の `${…}` が解決されません。
 - `--report-format github`：プルリクエストに注釈を付けます。
 - `--report-to-hub`：実行しながら結果を hub に送ります。
 
-**`actions/checkout` に `fetch-depth: 0` を指定してください。** 選択に使う 2 つの
-フラグはどちらも `GITHUB_BASE_REF` から基準を取り、`origin/<base>` として解決し
-ます。shallow な checkout にはこれが存在しないので、指定しないとテストが 1 本も
-走る前に usage error で終了します。`pull_request` 以外のワークフローには
-`GITHUB_BASE_REF` がないので、基準を自分で渡してください
-（`--only-affected-by origin/main`）。
+**基準の ref は自分で渡してください。** ccqa は環境変数を一切読みません。
+`pull_request` のワークフローなら `origin/$GITHUB_BASE_REF`、それ以外なら
+比較したいものを指定します。解決できない ref はテストが 1 本も走る前に
+usage error になります。空の差分として黙って通ることはありません。
+
+**`actions/checkout` に `fetch-depth: 0` を指定してください。** shallow な
+checkout には、その基準コミットが存在しません。
 
 `--dry-run` を付けると選択結果を表示して止まります。選択そのものは、付けても
 付けなくてもモデル呼び出し 1 回ぶんかかります。
@@ -268,13 +305,22 @@ ccqa audit --report-format github --report-to-hub
 
 - `--exit-on warn|error`（既定は `error`）：どの判定でジョブを失敗させるかを
   決めます。
-- `--report-to-hub`：各判定を hub の spec ごとのドリフト台帳に記録します。台帳はテスト観点
-  タブに表示されます。終了コードは変わりません。
+- `--report-to-hub`：各判定を hub の spec ごとのドリフト台帳に記録します。
+  台帳はテスト観点タブに表示され、`--only-hub-audited-clean` が読むのもこれです。
 - `--only-affected-by <ref>`：`push` のワークフローで範囲を絞れます。モデル
   呼び出しが 1 回増えます。
 
 マージ前のジョブは失敗した spec を既に監査しています。このジョブが見るのは残りで、
 spec が通っていても、もう存在しないプロダクトを説明していることはあるからです。
+
+台帳が溜まってきたら、デプロイ後の実行をそれに従わせられます。監査がシロと
+言い、かつ前回の結果が古くなった spec にだけ実行を使う形です。
+
+```bash
+ccqa run --only-hub-audited-clean --only-hub-stale --hub-profile staging --report-to-hub
+```
+
+`--only-*` は前のフラグが残したものをさらに絞るので、重ねられます。
 
 ### ワークフロー
 
