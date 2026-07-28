@@ -166,7 +166,7 @@ export interface RunnerOptions {
   /**
    * Called with each spec's row the moment it finishes, before the runner
    * returns. This is what makes an external run interrupt-safe and streams it
-   * to a hub under `--push-report`: a runner that batches its rows until the
+   * to a hub under `--report-to-hub`: a runner that batches its rows until the
    * end loses every one of them to a CI cancel. Rows are still returned from
    * `run()` for the final report, so the callback is purely incremental.
    */

@@ -16,7 +16,7 @@ export interface AnalyzeDriftInput {
   model?: string;
   /** BCP-47 tag or "auto"; controls the language of issue messages. */
   language?: string;
-  /** Called once per spec when its check starts. Used by `cli/drift` for progress logging. */
+  /** Called once per spec when its check starts. Used by `cli/audit` for progress logging. */
   onSpecStart?: (target: SpecTarget) => void;
 }
 
@@ -25,7 +25,7 @@ const DEFAULT_CONCURRENCY = 3;
 /**
  * Run drift checks against a list of pre-collected targets. Pure library
  * function: no commander, no process.exit, no stdout writes. Callers handle
- * presentation. `cli/drift` does the full sweep with `--changed` scoping;
+ * presentation. `cli/audit` does the full sweep with `--only-affected-by` scoping;
  * `cli/run` calls this with just the failing specs after vitest.
  */
 export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult[]> {

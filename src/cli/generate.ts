@@ -128,12 +128,12 @@ async function runGenerateLocked(
   // We always confirm interactively (regardless of --auto / --no-interactive),
   // because overwriting a hand-edited file is a different kind of decision
   // than auto-applying an auto-fix and warrants an explicit y/N. CI flows
-  // should pass --force.
+  // should pass --overwrite.
   const existingOutput = (await target.existingOutput?.({ featureName, specName }, cwd)) ?? null;
   if (existingOutput && !opts.force) {
     const proceed = await confirmOverwrite(existingOutput);
     if (!proceed) {
-      log.info("aborted; pass --force to overwrite without prompting");
+      log.info("aborted; pass --overwrite to replace it without prompting");
       return;
     }
   }
@@ -206,6 +206,7 @@ async function runGenerateAgentPromptUpdate(
   log.blank();
   await updateAgentPrompt({
     kind: target.guidanceKind,
+    flag: "--learn-codegen-prompt",
     // The summary relativizes written-file paths against the project root, not
     // process.cwd() — under `--cwd <subpackage>` those differ, and a learned
     // playbook keyed on `../..`-style paths would be useless.
@@ -242,10 +243,10 @@ interface GenerateCliOptions {
   profile?: string;
   target?: string;
   autoFix?: AutoFixMode;
-  maxRetries?: string;
-  force?: boolean;
-  snapshot?: boolean;
-  updateAgentPrompt?: boolean;
+  autoFixMaxRetries?: string;
+  overwrite?: boolean;
+  sessionPin?: boolean;
+  learnCodegenPrompt?: boolean;
   cwd?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -264,6 +265,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
         "compile the existing ir.json (run `ccqa record` first); spec-input targets " +
         "generate directly from the spec.",
     )
+    .optionsGroup("How to generate:")
     .option(
       "-m, --model <name>",
       "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
@@ -279,16 +281,19 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
       parseAutoFixFlag,
       "interactive" as AutoFixMode,
     )
-    .option("--max-retries <n>", "Maximum number of auto-fix retries", "3")
-    .option("--force", "Overwrite previously generated test code without warning")
+    .option("--auto-fix-max-retries <n>", "Maximum number of auto-fix retries", "3")
     .option(
-      "--no-snapshot",
+      "--no-session-pin",
       "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
     )
+    .optionsGroup("What to do with the result:")
+    .option("--overwrite", "Replace previously generated test code without warning")
+    .optionsGroup("Learning:")
     .option(
-      "--update-agent-prompt",
+      "--learn-codegen-prompt",
       "After generation, ask Claude to refresh the target's \"<target>.agent\" learning prompt on the hub from a summary of the run. LLM-generating targets (playwright, runn) only; requires a hub connection.",
     )
+    .optionsGroup("Environment and connection:")
     .option(
       "--cwd <path>",
       "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
@@ -327,16 +332,16 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
 
   try {
     await runGenerate(featureName, specName, {
-      maxRetries: parseInt(opts.maxRetries ?? "3", 10),
+      maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
       fixMode: toFixMode(opts.autoFix ?? "interactive"),
-      force: opts.force ?? false,
-      useSnapshot: opts.snapshot !== false,
+      force: opts.overwrite ?? false,
+      useSnapshot: opts.sessionPin !== false,
       language,
       model: opts.model,
       targetOverride: opts.target,
       cwd,
       hubContext,
-      updateAgentPrompt: opts.updateAgentPrompt ?? false,
+      updateAgentPrompt: opts.learnCodegenPrompt ?? false,
     });
   } catch (e) {
     if (e instanceof SpecLockedError) {

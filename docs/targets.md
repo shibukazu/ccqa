@@ -44,14 +44,15 @@ ccqa generate tasks/create-and-complete   # recording targets: re-run generate
   `ccqa generate`. Running `ccqa generate` on a recording target with no
   `ir.json` errors with "Run `ccqa record` first".
 - Both commands share the codegen flags: `--auto-fix
-  <interactive|auto|skip>` (default `interactive`), `--max-retries <n>`
-  (default 3), `--force` (overwrite an existing generated test without the
+  <interactive|auto|skip>` (default `interactive`), `--auto-fix-max-retries <n>`
+  (default 3), `--overwrite` (overwrite an existing generated test without the
   y/N prompt) — see [Auto-fix](./auto-fix.md) — plus `-m/--model`,
   `--language`, `--cwd`, `--profile`, and the hub connection flags.
-- `ccqa record` also accepts `--skip-trace` (reuse the existing `ir.json`),
-  `--skip-codegen` (trace only), `--validation-mode <lenient|strict>`, and
-  `--update-agent-prompt` (refresh the hub-stored `record.agent` learning
-  notes after the trace).
+- To regenerate from an existing `ir.json` without re-recording, run `ccqa
+  generate` — `ccqa record` always traces.
+- `ccqa record` also accepts `--trace-only` (stop after the trace),
+  `--trace-validation <lenient|strict>`, and `--learn-trace-prompt` (refresh
+  the hub-stored `record.agent` learning notes after the trace).
 
 > **Breaking change:** recordings used to be stored as `actions.json`; they
 > are now `ir.json`. There is no migration — re-run `ccqa record` for any
@@ -161,7 +162,7 @@ is named in a warning, never silently cut. The examples above use
 and `--capture {artifactsDir}` (runn: run captures land in the report).
 
 A failing `runCommand` spec is triaged like any other: with
-`ccqa run --failure-analysis [base]` it gets the same root-cause call and
+`ccqa run --on-fail-explain` it gets the same root-cause call and
 spec↔code drift audit as an agent-browser spec, built from its generated
 test files, the command's output tail, and its `spec.yaml` — see
 [Failure triage](./running.md#failure-triage). When the command left a

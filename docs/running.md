@@ -26,37 +26,40 @@ One run mixes every kind of spec; each group is dispatched by the spec's
 
 Key flags (see `ccqa run --help` for the rest):
 
-- `--report [dir]` — where the report (always written) is saved. Default
+- `--report-dir <dir>` — where the report (always written) is saved. Default
   `ccqa-report/`.
-- `--push-report` — stream results to a [hub](./hub.md) incrementally as
+- `--report-to-hub` — stream results to a [hub](./hub.md) incrementally as
   the run executes (opt-in; needs hub credentials).
 - `--profile <name>` — apply the hub-stored variables for this profile
   before resolving `${VAR}` references (below).
-- `--changed [base]` — restrict execution to the specs `ccqa select-specs`
-  decides the git diff against `[base]` reaches (below). Without a value the
-  base comes from `GITHUB_BASE_REF` (pull_request CI); elsewhere pass it
-  explicitly (e.g. `--changed=origin/main`). Cannot be combined with
-  explicit targets. `--changed=last-run` selects from the hub instead of
-  from a diff — see [Running only what needs a
-  re-run](#running-only-what-needs-a-re-run).
-- `--include-unknown` — with `--changed=last-run` only: also run the specs
+- `--only-affected-by <ref>` — restrict execution to the specs `ccqa
+  select-specs` decides the git diff against `<ref>` reaches (below). The ref
+  is always explicit: in a pull_request workflow pass `$GITHUB_BASE_REF`.
+- `--only-stale` — restrict execution to the specs the hub says are no longer
+  covered by their last result. Reads the deploy log, not a diff — see
+  [Running only what needs a re-run](#running-only-what-needs-a-re-run).
+- `--only-stale-with-unknown` — with `--only-stale` only: also run the specs
   whose re-run need the hub cannot answer, and the ones that have never run.
+- `--only-audited-clean` — restrict execution to the specs `ccqa audit` last
+  found no drift in. A spec nobody has audited is not run.
 - `--dry-run` — print the specs this invocation would run, then exit `0`
   without executing anything and without writing a report. Works with every
-  selection mode.
+  selection flag.
 - `--concurrency <n>` — run up to N specs in parallel **within each phase**
   (never across phases). Default 1.
-- `--no-evidence` — skip the step-boundary screenshots of deterministic
+- `--replay-skip-evidence` — skip the step-boundary screenshots of deterministic
   specs.
-- `--failure-analysis [base]` — classify each failure, on any target,
-  against the source diff since `[base]` (same base rules as `--changed`).
-  Off by default: no Claude calls without it. The spec↔code drift audit
-  always runs with it — its findings are an input to the classification
-  (and standalone via `ccqa drift`); there is no separate audit flag.
-- `--format <fmt>` — `text` (default), `json` (print report.json), `github`
+- `--on-fail-explain` — classify each failure, on any target, against the
+  source diff since the commit where that spec last passed (per-spec
+  baselines from the hub). Off by default: no Claude calls without it. The
+  spec↔code drift audit always runs with it — its findings are an input to
+  the classification (and standalone via `ccqa audit`).
+- `--on-fail-explain-base <ref>` — diff against one shared ref instead of each
+  spec's last green. Use it when there is no hub to hold the baselines.
+- `--report-format <fmt>` — `text` (default), `json` (print report.json), `github`
   (GitHub Actions annotations).
-- `--retry <n>` — live specs only: retry each failing step up to N times.
-- `--update-agent-prompt` — live specs only: refresh the hub-stored
+- `--live-step-retry <n>` — live specs only: retry each failing step up to N times.
+- `--learn-live-prompt` — live specs only: refresh the hub-stored
   `live.agent` learning notes from this run.
 - `-m/--model <name>` — `sonnet` / `opus` / `haiku` alias or a full model
   id; overrides the `CCQA_MODEL` env var. `--language <bcp47>` picks the
@@ -64,7 +67,13 @@ Key flags (see `ccqa run --help` for the rest):
   spec/codebase). `--cwd <path>` pins the `.ccqa/` root for monorepos. All
   Claude-driven commands accept these three.
 - `--project`, `--hub-url`, `--hub-token`, `--hub-header` — hub connection
-  for fetching sessions/variables/prompts and for `--push-report`.
+  for fetching sessions/variables/prompts and for `--report-to-hub`.
+
+Every `--only-*` narrows what the one before it left, so passing several means
+"all of these". `--only-audited-clean --only-stale` is the CI combination:
+audit the cheap way first, then spend a run only where the audit cleared the
+spec and the last result no longer holds. None of them can be combined with
+explicit spec targets.
 
 Exit code: `0` when every executed spec passed, `1` when any failed, `2` on
 usage errors. The failure analysis never changes the exit code.
@@ -100,7 +109,7 @@ flag picks both. `ccqa record` accepts `--profile` the same way.
 
 `ccqa run` always writes `report.json` (plus evidence PNGs) to the report
 directory. There is no standalone HTML file: push the directory to a
-[hub](./hub.md) (`ccqa hub push`, or incrementally with `--push-report`)
+[hub](./hub.md) (`ccqa hub push`, or incrementally with `--report-to-hub`)
 and the hub UI renders it — spec rows with a target chip, pass/fail status,
 test counts, screenshots, artifacts, and failure analysis.
 
@@ -109,7 +118,7 @@ Per spec, the report contains:
 - **Evidence** — per-step screenshots with a JSON sidecar (URL/title/status),
   under `<report-dir>/evidence/<feature>/<spec>/` and referenced from
   `report.json`. Agent-browser deterministic specs capture one boundary PNG
-  per step (by default; `--no-evidence` to skip); agent-browser live specs and
+  per step (by default; `--replay-skip-evidence` to skip); agent-browser live specs and
   Playwright specs capture a before/after pair per step. A target with no
   screen to shoot (an API runbook) records why instead. Playwright capture
   needs nothing from you — ccqa injects the calls into the generated test and
@@ -127,7 +136,7 @@ Per spec, the report contains:
 
 ## Failure triage
 
-With `--failure-analysis [base]`, each failing spec gets a **root-cause
+With `--on-fail-explain`, each failing spec gets a **root-cause
 call** made by Claude with the source diff since the baseline as context:
 
 - `TEST_DRIFT` — what the spec verifies is unchanged; only the test code
@@ -147,7 +156,7 @@ same shape a vitest replay is analyzed from, and live specs supply their
 Claude transcript instead. Report rows and the CI log block look identical
 whichever target the spec uses.
 
-**Diff context.** The baseline is the flag's value (`--failure-analysis
+**Diff context.** The baseline is the flag's value (`--on-fail-explain
 <ref>`); without a value it comes from `GITHUB_BASE_REF` (set on
 `pull_request` events). There is no silent fallback: a baseline that cannot
 be resolved to a local commit — including a shallow CI checkout that never
@@ -170,7 +179,7 @@ prompt, so a file whose hunk was dropped or cut by truncation is still
 visible and one tool call away — the full diff never has to ride in the
 context.
 
-**`--failure-analysis=last-green`.** Instead of one fixed ref, each failing
+**`--on-fail-explain`.** Instead of one fixed ref, each failing
 spec is diffed against the commit where **that spec last passed** — the
 natural baseline for runs that have no PR to diff against (`push` /
 `workflow_dispatch` / scheduled). Baselines come from the hub's last-green
@@ -179,7 +188,7 @@ run finalizes: every spec that passed advances its own entry to the run's
 head commit, so one chronically failing spec never blocks the others'
 baselines. The ledger is branch-scoped — a PR branch overlays its own
 greens onto the default branch's — and requires a hub connection plus
-pushed runs (`--push-report` or `ccqa hub push`) to fill. A spec with no
+pushed runs (`--report-to-hub` or `ccqa hub push`) to fill. A spec with no
 recorded green yet, or whose baseline commit is missing from a shallow
 checkout, has its classification skipped with the reason in its report row;
 the rest of the run proceeds. Each analyzed row records its own baseline in
@@ -216,7 +225,7 @@ patches. It runs in two places:
 1. **Inside `ccqa run`** — each failing spec's report row carries its own
    audit as `driftAudit`, fed to the root-cause call above as evidence it
    weighs, never a verdict it defers to.
-2. **Standalone `ccqa drift`** — a full audit without running any tests,
+2. **Standalone `ccqa audit`** — a full audit without running any tests,
    for scheduled jobs or pre-merge sweeps.
 
 A `deterministic` spec is two artifacts, and the audit reads both: the
@@ -227,7 +236,7 @@ in `spec.yaml`. A `mode: live` spec has no generated code — the spec itself
 is what runs — so only `spec.yaml` is audited there.
 
 Each audited spec gets **at most one diagnosis**, in the same vocabulary
-`--failure-analysis` uses: `TEST_DRIFT` (the test drifted from the source) or
+`--on-fail-explain` uses: `TEST_DRIFT` (the test drifted from the source) or
 `SPEC_CHANGE` (the thing being verified changed), never `PRODUCT_BUG` — a
 static read can't tell a dropped side effect from a working one — plus
 `UNKNOWN` when the evidence is too weak to call. The diagnosis carries a
@@ -239,35 +248,35 @@ means the spec still matches the code (`drift: null`), not a passing "check"
 to enumerate.
 
 ```bash
-ccqa drift                              # check every spec under .ccqa/features/
-ccqa drift tasks/create-and-complete    # single spec
-ccqa drift --format github              # emit GitHub Actions annotations
-ccqa drift --severity warn              # exit non-zero on WARN or higher (default: error)
-ccqa drift --concurrency 5              # parallel spec checks (default: 3)
-ccqa drift --changed --base origin/dev  # only specs affected by the PR diff
-ccqa drift --cwd packages/web           # monorepo: pin .ccqa root and codebase scope
-ccqa drift --push                       # also push the result to a ccqa hub
+ccqa audit                              # check every spec under .ccqa/features/
+ccqa audit tasks/create-and-complete    # single spec
+ccqa audit --report-format github         # emit GitHub Actions annotations
+ccqa audit --exit-on warn                 # exit non-zero on WARN or higher (default: error)
+ccqa audit --concurrency 5                # parallel spec checks (default: 3)
+ccqa audit --only-affected-by origin/dev  # only specs the PR diff reaches
+ccqa audit --cwd packages/web             # monorepo: pin .ccqa root and codebase scope
+ccqa audit --report-to-hub                # also push the result to a ccqa hub
 ```
 
-`--push` uploads the drift result to a hub as a `kind: "drift"` run, shown
+`--report-to-hub` uploads the audit result to a hub as a `kind: "drift"` run, shown
 alongside `ccqa run` runs in the hub UI with its own issue counts. It needs
 a hub connection (`--hub-url`/`--hub-token` or `CCQA_HUB_URL`/
 `CCQA_HUB_TOKEN`); without one it logs a warning and is skipped, never
-changing the exit code (still driven by `--severity`).
+changing the exit code (still driven by `--exit-on`).
 
 Pushing also advances the hub's per-project **drift ledger**: each spec's
 newest audit (or "no drift found") lands there, so the Perspectives tab shows
 every spec's last-known drift status without opening each run individually —
 see [the hub guide](./hub.md#drift-ledger).
 
-### Scoping with `--changed`
+### Scoping with `--only-affected-by`
 
-When `--changed` is set (on `ccqa drift` or `ccqa run`):
+When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
 
-1. ccqa runs `git diff --name-status <base>..HEAD`, two-dot against the
-   resolved base commit. The base is `--changed`'s value (`ccqa run`) or
-   `--base` (`ccqa drift`), else `$GITHUB_BASE_REF` — never a silent
-   fallback (an unresolvable base is a usage error).
+1. ccqa runs `git diff --name-status <ref>..HEAD`, two-dot against the
+   resolved base commit. The ref is always the flag's own value — nothing is
+   read from the environment, and an unresolvable ref is a usage error rather
+   than an empty diff.
 2. `ccqa select-specs` decides which specs the diff reaches, in two passes.
    Mechanical first: a change to a spec's own `spec.yaml`/recording, or to a
    block it includes, marks that spec `needed` — set membership, no model
@@ -307,17 +316,17 @@ than a spec judged without reading it.
 The deploy job runs the same decision via
 [`ccqa hub deploy record --select`](./hub.md#ccqa-hub-deploy-record), which
 submits the verdicts with the deploy so the hub can answer
-`--changed=last-run` later.
+`--only-stale` later.
 
 ### Running only what needs a re-run
 
-`--changed=last-run` asks the hub which specs are worth running instead of
+`--only-stale` asks the hub which specs are worth running instead of
 diffing a ref:
 
 ```bash
-ccqa run --changed=last-run --profile stg
-ccqa run --changed=last-run --profile stg --dry-run     # check the selection first
-ccqa run --changed=last-run --profile stg --include-unknown
+ccqa run --only-stale --profile stg
+ccqa run --only-stale --profile stg --dry-run     # check the selection first
+ccqa run --only-stale --profile stg --only-stale-with-unknown
 ```
 
 Each spec's baseline is **its own last run** — not its last green, and not a
@@ -338,14 +347,14 @@ empty selection.
 
 By default only specs the hub reports as `needed` run. Specs whose need
 cannot be determined (`unknown`) and specs that have never run (`neverRun`)
-are left out; `--include-unknown` opts into running them too. This is a
-different question from `ccqa drift`, which asks whether a spec still
+are left out; `--only-stale-with-unknown` opts into running them too. This is a
+different question from `ccqa audit`, which asks whether a spec still
 describes the product — see
 [ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md).
 
 ## CI integration
 
-The recommended shape: run with `--push-report` so results stream to the
+The recommended shape: run with `--report-to-hub` so results stream to the
 hub as the run executes, keep the local report directory as a backup
 artifact, and hold exactly one secret (`CCQA_HUB_TOKEN`) plus
 `ANTHROPIC_API_KEY` for the failure analysis. Profile variables come from
@@ -368,12 +377,12 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      # --failure-analysis without a value takes its baseline from
+      # --on-fail-explain without a value takes its baseline from
       # GITHUB_BASE_REF, so this shape works on pull_request events. On a
-      # workflow_dispatch / push workflow, use --failure-analysis=last-green
+      # workflow_dispatch / push workflow, use --on-fail-explain
       # (each spec diffs against the commit where it last passed, from the
       # hub's ledger) or pass a ref explicitly.
-      - run: pnpm exec ccqa run --project demo --profile staging --push-report --failure-analysis
+      - run: pnpm exec ccqa run --project demo --profile staging --report-to-hub --on-fail-explain
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -382,14 +391,14 @@ jobs:
 ```
 
 Add `ccqa-report/` to the consuming repo's `.gitignore`. Without
-`--push-report`, add a separate `ccqa hub push` step with `if: always()`
+`--report-to-hub`, add a separate `ccqa hub push` step with `if: always()`
 instead — see [Hub](./hub.md) for the trade-off.
 
 For a scheduled audit that runs regardless of test status, run standalone
 drift:
 
 ```yaml
-name: ccqa drift audit
+name: ccqa audit
 on:
   schedule:
     - cron: "0 9 * * 1"   # weekly Monday 09:00 UTC
@@ -402,7 +411,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa drift --format github
+      - run: pnpm exec ccqa audit --report-format github
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```

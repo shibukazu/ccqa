@@ -10,7 +10,6 @@ import {
   RunUsageError,
   type RunOptions,
 } from "../run/pipeline.ts";
-import { LAST_RUN } from "../run/git-context.ts";
 import { addHubOptions, addLanguageOption, addProfileOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { createRunTeardown, installTeardownSignalHandlers } from "./run-teardown.ts";
@@ -35,78 +34,101 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Run specs, on any target. Agent-browser specs replay the recorded test.spec.ts under vitest " +
         "(default), or, with spec.yaml `mode: live`, have Claude drive agent-browser live per step. " +
         "External-target specs (playwright, runn) run through the target's configured `runCommand`. " +
-        "A structured report (report.json + evidence) is always written; use --push-report to also stream it to a hub.",
+        "A structured report (report.json + evidence) is always written; use --report-to-hub to also stream it to a hub.",
+    )
+    // Every `--only-*` narrows the set independently, so passing several ANDs
+    // them. That is the point: "reached by this diff AND audited clean" is the
+    // combination CI wants, and a single mode enum cannot express it.
+    .optionsGroup("Which specs to run:")
+    .option(
+      "--only-affected-by <ref>",
+      "Only specs `ccqa select-specs` judges reached by the diff against <ref> (e.g. origin/main). In pull_request CI, pass $GITHUB_BASE_REF. Cannot be combined with an explicit spec id.",
     )
     .option(
-      "--report [dir]",
-      `Directory for the structured run results (report.json + evidence PNGs) that are always written. Default: ${DEFAULT_REPORT_DIR}/. Pass this only to change the location.`,
+      "--only-stale",
+      "Only specs whose last result no longer holds — each spec's own last run compared against the hub's deploy log. No git diff involved. Requires a hub connection and --profile.",
     )
     .option(
-      "--push-report",
-      "Incrementally push the run report to the hub as the run progresses (open → patch per spec → finalize). Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN). Without it, hub credentials are used only to fetch variables/sessions/prompts, not to push.",
+      "--only-stale-with-unknown",
+      "With --only-stale: also take specs whose re-run need the hub cannot answer ('unknown') and specs that never ran ('neverRun'). Off by default: an unanswerable question is reported, not guessed.",
     )
     .option(
-      "--changed [base]",
-      "Restrict execution to specs ccqa select-specs judges needed against the git diff against [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --changed=origin/main), or pass 'last-run' to run the specs the hub says need one — each spec's own last run compared against the deploy log (requires a hub connection and --profile; no git diff involved). Cannot be combined with an explicit spec id.",
-    )
-    .option(
-      "--include-unknown",
-      "(--changed=last-run only) Also run specs whose re-run need the hub cannot answer ('unknown') and specs that have never run ('neverRun'). Off by default: an unanswerable question is reported, not guessed.",
+      "--only-audited-clean",
+      "Only specs `ccqa audit` last found no drift in. A spec that has never been audited is not taken: this flag spends a run where a cheap audit already cleared the spec, and \"never looked\" is not that. Requires a hub connection.",
     )
     .option(
       "--dry-run",
-      "Print the specs this invocation would run, then exit 0 without executing anything and without writing a report. Works with every selection mode.",
+      "Print the specs this invocation would run, then exit 0 without executing anything and without writing a report. Works with every selection flag.",
     )
+    .optionsGroup("How to run them:")
     .option(
-      "--failure-analysis [base]",
-      "Classify each failure (TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG) against the source diff since [base]. Without a value the base comes from $GITHUB_BASE_REF (pull_request CI); elsewhere pass it explicitly (e.g. --failure-analysis=origin/main), or pass 'last-green' to diff each spec against the commit where it last passed (per-spec baselines from the hub; requires a hub connection). Off by default — no Claude calls without it.",
-    )
-    .option(
-      "--cwd <path>",
-      "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
-    )
-    .option(
-      "--format <fmt>",
-      "Additional output format alongside HTML when --report is set: 'text' (default), 'json' (writes report.json), 'github' (GitHub Actions annotations on stdout).",
-      (raw): ReportFormat => {
-        if ((REPORT_FORMATS as readonly string[]).includes(raw)) return raw as ReportFormat;
-        throw new Error(`--format must be one of ${REPORT_FORMATS.join(" | ")}`);
-      },
-      "text" as ReportFormat,
+      "--concurrency <n>",
+      "Run up to N specs in parallel within each phase (deterministic / external-target / live), never across phases. Default 1 (sequential). Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
+      parseConcurrency,
+      1,
     )
     .option(
       "-m, --model <name>",
       "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
     )
     .option(
-      "--no-evidence",
-      `(deterministic only) Skip step-boundary evidence capture (PNG + meta JSON written to ${DEFAULT_REPORT_DIR}/${EVIDENCE_SUBDIR}/ by default).`,
-    )
-    .option(
-      "--retry <n>",
-      "(live only) Retry each failed step up to N more times before recording failure. Default 0.",
+      "--live-step-retry <n>",
+      "(live only) Retry each failed step up to N more times before recording failure. This retries a step, not the whole spec — see --on-fail-explain-rerun for that.",
       (raw) => {
         const n = Number(raw);
         if (!Number.isFinite(n) || n < 0 || Math.floor(n) !== n) {
-          throw new Error(`--retry must be a non-negative integer, got "${raw}"`);
+          throw new Error(`--live-step-retry must be a non-negative integer, got "${raw}"`);
         }
         return n;
       },
       0,
     )
     .option(
-      "--out <dir>",
+      "--live-artifacts-dir <dir>",
       "(live only) Override the per-spec artifact directory. Default: <specDir>/runs/<runId>. Ignored when running multiple specs.",
     )
     .option(
-      "--update-agent-prompt",
-      "(live only) After the run finishes, ask Claude to refresh the \"live.agent\" prompt on the hub from a summary of the run. Requires a hub connection.",
+      "--replay-skip-evidence",
+      `(deterministic replay only) Skip step-boundary evidence capture (PNG + meta JSON written to ${DEFAULT_REPORT_DIR}/${EVIDENCE_SUBDIR}/ by default).`,
+    )
+    .optionsGroup("What to do about failures:")
+    .option(
+      "--on-fail-explain",
+      "Classify each failure against the source diff since the commit where that spec last passed (per-spec baselines from the hub). Off by default — no Claude calls without it.",
     )
     .option(
-      "--concurrency <n>",
-      "Run up to N specs in parallel within each phase (deterministic / external-target / live), never across phases. Default 1 (sequential). Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
-      parseConcurrency,
-      1,
+      "--on-fail-explain-base <ref>",
+      "With --on-fail-explain: diff against <ref> instead of each spec's last green. Use when there is no hub to hold the baselines.",
+    )
+    .optionsGroup("What to do with the results:")
+    .option(
+      "--report-dir <dir>",
+      `Directory for the structured run results (report.json + evidence PNGs), which are always written. Default: ${DEFAULT_REPORT_DIR}/.`,
+    )
+    .option(
+      "--report-format <fmt>",
+      "Additional output format alongside HTML: 'text' (default), 'json' (writes report.json), 'github' (GitHub Actions annotations on stdout).",
+      (raw): ReportFormat => {
+        if ((REPORT_FORMATS as readonly string[]).includes(raw)) return raw as ReportFormat;
+        throw new Error(`--report-format must be one of ${REPORT_FORMATS.join(" | ")}`);
+      },
+      "text" as ReportFormat,
+    )
+    .option(
+      "--report-to-hub",
+      "Incrementally push the run report to the hub as the run progresses (open → patch per spec → finalize). Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN). Without it, hub credentials are used only to fetch variables/sessions/prompts, not to push.",
+    )
+    .optionsGroup("Learning:")
+    .option(
+      "--learn-live-prompt",
+      "(live only) After the run finishes, ask Claude to refresh the \"live.agent\" prompt on the hub from a summary of the run. Requires a hub connection.",
+    )
+    // Last group wins for everything added after it, which is how the shared
+    // --language / --profile / --hub-* options land here too.
+    .optionsGroup("Environment and connection:")
+    .option(
+      "--cwd <path>",
+      "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
     )
     .option(
       "--project <name>",
@@ -126,12 +148,16 @@ function parseConcurrency(raw: string): number {
   return n;
 }
 
-/** Header label shown after `ccqa run`: the lone target, a count, or a mode marker. */
+/** Header label shown after `ccqa run`: the lone target, a count, or how they were selected. */
 function headerTarget(targets: string[], opts: RunOptions): string {
   if (targets.length === 1) return targets[0]!;
   if (targets.length > 1) return `${targets.length} targets`;
-  if (opts.changed === LAST_RUN) return "(needs re-run)";
-  return opts.changed ? "(changed)" : "(all specs)";
+  const filters = [
+    opts.onlyAffectedBy ? "affected" : null,
+    opts.onlyStale ? "stale" : null,
+    opts.onlyAuditedClean ? "audited clean" : null,
+  ].filter((s): s is string => s !== null);
+  return filters.length === 0 ? "(all specs)" : `(${filters.join(" + ")})`;
 }
 
 /**

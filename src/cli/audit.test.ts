@@ -2,7 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { HubApiError, type HubClient } from "../hub-client/index.ts";
 import type { Run } from "../hub/contract/schema.ts";
 import type { SpecResult } from "../drift/types.ts";
-import { pushDriftResults } from "./drift.ts";
+import { pushDriftResults } from "./audit.ts";
 
 function fakeRun(overrides: Partial<Run> = {}): Run {
   return {

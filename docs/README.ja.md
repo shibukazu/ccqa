@@ -76,7 +76,7 @@ ccqa run tasks/create-and-complete
 ください。
 
 SSO のリダイレクトやデバイス認証のように、record では再現できないログインの
-先に spec がある場合は、[`ccqa session bootstrap`](./sessions.md) で 1 度だけ
+先に spec がある場合は、[`ccqa hub session capture`](./sessions.md) で 1 度だけ
 手作業でログインしてセッションを保存し、spec からその名前を参照します。
 
 ## 仕組み
@@ -88,7 +88,7 @@ spec.yaml ──► ccqa record ─────► ir.json ────► ccqa 
                発見               ツール中立 IR   (reuse-first)      / runn
 
 テストコード ─► ccqa run ───────► report.json ─► ccqa hub push /
-               vitest 再生 /      + evidence      --push-report
+               vitest 再生 /      + evidence      --report-to-hub
                runCommand /       + artifacts     チームダッシュボード、
                live (Claude が                    失敗 triage、
                毎回操作)                          採点と学習
@@ -121,7 +121,7 @@ record`）、その記録がプレーンなテストコードに変換されま�
 E2E テストが落ちても、それが誰の担当すべき問題なのかまでは分かりません。
 ccqa は同じ語彙を使って、この問いに 2 つの入り口から答えます。
 
-**spec が失敗したとき**は、`ccqa run --failure-analysis [base]` が原因を
+**spec が失敗したとき**は、`ccqa run --on-fail-explain` が原因を
 `TEST_DRIFT`（テストのずれ）、`SPEC_CHANGE`（仕様変更）、`PRODUCT_BUG`
 （プロダクトの不具合）に分類します。根拠が足りず判断できないときは `UNKNOWN`
 になります。この分類には同じ spec の drift 監査が伴います。「テストが壊れたのか」
@@ -130,7 +130,7 @@ ccqa は同じ語彙を使って、この問いに 2 つの入り口から答え
 したコミットを基準にする）を指定します。どちらも指定しない場合は失敗そのものだけ
 を根拠に分類し、その旨を明示します。
 
-**何も実行せずに問う**こともできます。`ccqa drift` はブラウザを開かずに、各
+**何も実行せずに問う**こともできます。`ccqa audit` はブラウザを開かずに、各
 spec がまだコードを説明しているかだけを調べます。deterministic な spec では、
 人が書いた spec と、そこから生成されたテストコードの両方を見ます。どちらもずれ
 うるからです。どちらがずれたかで直し方が変わるので、監査はそれも報告します。
@@ -150,7 +150,7 @@ spec がまだコードを説明しているかだけを調べます。determini
   `record` と `generate` のたびに最新化されます
 - `${…}` が解決する変数と、保存済みのブラウザセッション。実行時に取得するので、
   CI が持つのは環境一式ではなく secret 1 つで済みます
-- `--changed=last-run` の判定に使うデプロイログと、drift の台帳
+- `--only-stale` の判定に使うデプロイログと、drift の台帳
 - step ごとのスクリーンショット付きの実行ダッシュボード、triage の採点、
   その採点から学習したプロンプト
 
@@ -184,7 +184,7 @@ ccqa serve                                               # 保存に必要
 - **Claude の資格情報。** 記録済み spec の再生自体はモデルを使いませんが、
   変更範囲の選択、失敗分類、監査はどれも使います。
 - **稼働中の [hub](#hub)。** `CCQA_HUB_URL` と `CCQA_HUB_TOKEN` で接続します。
-  hub なしで済むのは、`--profile` も `--push-report` も付けないマージ前の実行
+  hub なしで済むのは、`--profile` も `--report-to-hub` も付けないマージ前の実行
   だけです。
 
 一覧は [Environment variables](./commands.md#environment-variables) にあります。
@@ -205,24 +205,24 @@ ccqa hub var set APP_URL --value https://app.example --profile staging
 変更が到達する spec を実行し、壊れた原因を分類します。
 
 ```bash
-ccqa run --changed --failure-analysis --profile staging \
-  --format github --push-report
+ccqa run --only-affected-by --on-fail-explain --profile staging \
+  --report-format github --report-to-hub
 ```
 
-- `--changed`：差分が到達する spec を選びます。シロと判定できなかった spec は
+- `--only-affected-by`：差分が到達する spec を選びます。シロと判定できなかった spec は
   実行します。
-- `--failure-analysis`：失敗した spec の原因を分類します。
+- `--on-fail-explain`：失敗した spec の原因を分類します。
 - `--profile staging`：その環境の変数と保存済みセッションを hub から取得します。
   付けないと spec の `${…}` が解決されません。
-- `--format github`：プルリクエストに注釈を付けます。
-- `--push-report`：実行しながら結果を hub に送ります。
+- `--report-format github`：プルリクエストに注釈を付けます。
+- `--report-to-hub`：実行しながら結果を hub に送ります。
 
 **`actions/checkout` に `fetch-depth: 0` を指定してください。** 選択に使う 2 つの
 フラグはどちらも `GITHUB_BASE_REF` から基準を取り、`origin/<base>` として解決し
 ます。shallow な checkout にはこれが存在しないので、指定しないとテストが 1 本も
 走る前に usage error で終了します。`pull_request` 以外のワークフローには
 `GITHUB_BASE_REF` がないので、基準を自分で渡してください
-（`--changed=origin/main`）。
+（`--only-affected-by origin/main`）。
 
 `--dry-run` を付けると選択結果を表示して止まります。選択そのものは、付けても
 付けなくてもモデル呼び出し 1 回ぶんかかります。
@@ -239,12 +239,12 @@ ccqa hub deploy record --profile staging --sha "$GITHUB_SHA" --select
 続いて別のジョブで、そのデプロイによって信用できなくなった spec を実行します。
 
 ```bash
-ccqa run --changed=last-run --profile staging --push-report
+ccqa run --only-stale --profile staging --report-to-hub
 ```
 
 - `--select`：デプロイした範囲がどの spec に到達するかを記録します。付けないと、
   そのエントリより後ろの spec は `notNeeded` ではなく `unknown` を返します。
-- `--changed=last-run`：各 spec が最後に実行されて以降にデプロイがその spec を
+- `--only-stale`：各 spec が最後に実行されて以降にデプロイがその spec を
   触ったかどうかを、hub に問い合わせます。
 
 hub は checkout を持たず `git` も実行しないので、デプロイが何を変えたかを自分では
@@ -253,24 +253,24 @@ hub は checkout を持たず `git` も実行しないので、デプロイが�
 
 **導入直後は何も選ばれません。** 実行記録のない spec は `neverRun`、基準点が
 デプロイログより古い spec は `unknown` になり、どちらも既定では実行されません。
-デプロイを 1 件記録し、`--push-report` を付けて全 spec を一度走らせれば、次の
+デプロイを 1 件記録し、`--report-to-hub` を付けて全 spec を一度走らせれば、次の
 デプロイから選択が意味を持ちます。このジョブは hub 上の spec 一覧も読むので、
 `ccqa perspectives` を実行しておく必要があります。判定できなかった spec も
-走らせたい場合は `--include-unknown` を付けます。
+走らせたい場合は `--only-stale-with-unknown` を付けます。
 
 ### 定期実行で
 
 ブラウザもデプロイも使わずに、全 spec をコードと突き合わせます。
 
 ```bash
-ccqa drift --format github --push
+ccqa audit --report-format github --report-to-hub
 ```
 
-- `--severity warn|error`（既定は `error`）：どの判定でジョブを失敗させるかを
+- `--exit-on warn|error`（既定は `error`）：どの判定でジョブを失敗させるかを
   決めます。
-- `--push`：各判定を hub の spec ごとのドリフト台帳に記録します。台帳はテスト観点
+- `--report-to-hub`：各判定を hub の spec ごとのドリフト台帳に記録します。台帳はテスト観点
   タブに表示されます。終了コードは変わりません。
-- `--changed --base <ref>`：`push` のワークフローで範囲を絞れます。モデル
+- `--only-affected-by <ref>`：`push` のワークフローで範囲を絞れます。モデル
   呼び出しが 1 回増えます。
 
 マージ前のジョブは失敗した spec を既に監査しています。このジョブが見るのは残りで、
@@ -296,7 +296,7 @@ Node の無いパイプライン向けに `curl` だけの例も載っていま�
 | spec を実行してレポートを読む | [Running specs](./running.md) |
 | 失敗を分類して判断を採点する | [Failure triage](./running.md#failure-triage) |
 | 実行せずに spec とコードのずれを監査する | [Drift detection](./running.md#drift-detection) |
-| 変更が到達する spec だけを再生する | [Scoping with `--changed`](./running.md#scoping-with---changed) |
+| 変更が到達する spec だけを再生する | [Scoping with `--only-affected-by`](./running.md#scoping-with---only-affected-by) |
 | GitHub Actions に組み込む | [CI integration](./running.md#ci-integration) |
 | live で spec を実行する（コード生成なし）、プロジェクト別のガイダンス | [Live specs](./live.md) |
 | サインイン済みの状態で実行を始める、デバイス認証を避ける | [Saved sessions](./sessions.md) |

@@ -13,7 +13,7 @@ Each diagnosis has a `confidence` score. By default high-confidence fixes are ap
 ccqa record tasks/create-and-complete                    # default: interactive on low confidence
 ccqa record tasks/create-and-complete --auto-fix auto     # CI: always auto-apply
 ccqa record tasks/create-and-complete --auto-fix skip     # CI: auto-apply on high confidence, give up otherwise
-ccqa record tasks/create-and-complete --max-retries 5
+ccqa record tasks/create-and-complete --auto-fix-max-retries 5
 ```
 
-> **Note**: `record` regenerates `test.spec.ts` from `ir.json` on every run. Manual edits to `test.spec.ts` are lost on the next `record`. When an existing `test.spec.ts` is detected, `record` always asks for `y/N` confirmation before overwriting (even with `--auto-fix auto` / `--auto-fix skip`). To skip the prompt in CI, pass `--force`. To persist a fix, re-run `record` so `ir.json` reflects the new flow.
+> **Note**: `record` regenerates `test.spec.ts` from `ir.json` on every run. Manual edits to `test.spec.ts` are lost on the next `record`. When an existing `test.spec.ts` is detected, `record` always asks for `y/N` confirmation before overwriting (even with `--auto-fix auto` / `--auto-fix skip`). To skip the prompt in CI, pass `--overwrite`. To persist a fix, re-run `record` so `ir.json` reflects the new flow.

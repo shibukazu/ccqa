@@ -3,7 +3,6 @@ import { HubApiError } from "../hub-client/index.ts";
 import type { RerunReport, RerunState } from "../hub/contract/schema.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
 import { errMessage, RunUsageError } from "./errors.ts";
-import { LAST_RUN } from "./git-context.ts";
 
 /**
  * `ccqa run --changed=last-run`: select specs from the hub's re-run verdicts
@@ -32,7 +31,7 @@ export type RerunBaseline = RerunReport & {
 export function requireRerunProfile(profile: string | undefined): string {
   if (profile === undefined) {
     throw new RunUsageError(
-      `--changed=${LAST_RUN} requires --profile <name>: the deploy log it reads is per-profile, ` +
+      `--only-stale requires --profile <name>: the deploy log it reads is per-profile, ` +
         `so which specs need a re-run has no answer without one`,
     );
   }
@@ -55,12 +54,12 @@ export async function fetchRerunReport(
       throw new RunUsageError(explainNotFound(hubCtx, err));
     }
     throw new RunUsageError(
-      `--changed=${LAST_RUN}: could not ask the hub which specs need a re-run: ${errMessage(err)}`,
+      `--only-stale: could not ask the hub which specs need a re-run: ${errMessage(err)}`,
     );
   }
   if (report.deployHead === null) {
     throw new RunUsageError(
-      `--changed=${LAST_RUN}: no deploy has been recorded for profile "${profile}" of project ` +
+      `--only-stale: no deploy has been recorded for profile "${profile}" of project ` +
         `"${hubCtx.project}", so nothing can be compared against. Wire \`ccqa hub deploy record\` ` +
         `into the deploy job, or pass an explicit baseline (--changed=<ref>).`,
     );
@@ -76,12 +75,12 @@ export async function fetchRerunReport(
 function explainNotFound(hubCtx: HubContext, err: HubApiError): string {
   if (err.code === "no_perspectives") {
     return (
-      `--changed=${LAST_RUN}: project "${hubCtx.project}" has no perspectives document on the hub, ` +
+      `--only-stale: project "${hubCtx.project}" has no perspectives document on the hub, ` +
       `so no spec is registered to compare against a deploy. Run \`ccqa perspectives\` first.`
     );
   }
   return (
-    `--changed=${LAST_RUN}: this hub does not serve re-run verdicts — it needs ccqa ` +
+    `--only-stale: this hub does not serve re-run verdicts — it needs ccqa ` +
     `${RERUN_MIN_HUB_VERSION} or newer. Upgrade the hub, or pass an explicit baseline (--changed=<ref>).`
   );
 }

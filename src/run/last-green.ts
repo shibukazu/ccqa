@@ -49,7 +49,7 @@ export async function fetchLastGreenLedger(
     });
   } catch (err) {
     throw new RunUsageError(
-      `--failure-analysis=${LAST_GREEN}: could not fetch the last-green ledger from the hub: ${err instanceof Error ? err.message : String(err)}`,
+      `--on-fail-explain: could not fetch the last-green ledger from the hub: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
   const n = Object.keys(entries).length;

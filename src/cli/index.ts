@@ -5,11 +5,10 @@ import { runCommand } from "./run.ts";
 import { recordCommand } from "./record.ts";
 import { generateCommand } from "./generate.ts";
 import { draftCommand } from "./draft.ts";
-import { driftCommand } from "./drift.ts";
+import { auditCommand } from "./audit.ts";
 import { initCommand } from "./init.ts";
 import { perspectivesCommand } from "./perspectives.ts";
 import { selectSpecsCommand } from "./select-specs.ts";
-import { sessionCommand } from "./session.ts";
 import { serveCommand } from "./serve.ts";
 import { hubCommand } from "./hub.ts";
 
@@ -35,18 +34,26 @@ program
   .description("E2E test CLI powered by Claude Code — agent-browser by default, or Playwright / runn targets")
   .version(version);
 
-// `init` is a one-shot bootstrap, listed first so it's discoverable.
-// Lifecycle order for the rest: draft → perspectives → record → generate → run → drift
+// Grouped so `ccqa --help` reads as what the tool does rather than an
+// alphabet of verbs. Within each group the order is the lifecycle order.
+program.commandsGroup("Write specs:");
 program.addCommand(initCommand);
 program.addCommand(draftCommand);
 program.addCommand(perspectivesCommand);
+
+program.commandsGroup("Build tests from them:");
 program.addCommand(recordCommand);
 program.addCommand(generateCommand);
+
+program.commandsGroup("Check them:");
 program.addCommand(runCommand);
-program.addCommand(driftCommand);
-program.addCommand(selectSpecsCommand);
-program.addCommand(sessionCommand);
-program.addCommand(serveCommand);
+program.addCommand(auditCommand);
+
+program.commandsGroup("Hub:");
 program.addCommand(hubCommand);
+program.addCommand(serveCommand);
+
+program.commandsGroup("Building blocks:");
+program.addCommand(selectSpecsCommand);
 
 program.parse();

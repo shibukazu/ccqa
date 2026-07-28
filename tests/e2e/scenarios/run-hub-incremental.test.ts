@@ -11,7 +11,7 @@ import { writeMockMessages } from "../_helpers/fake-claude.ts";
 import { createHubServer } from "../../../src/hub/api/server.ts";
 import { createFileHubStorage } from "../../../src/hub/core/storage/file/index.ts";
 
-// End-to-end for incremental hub push: `ccqa run --push-report` opens a
+// End-to-end for incremental hub push: `ccqa run --report-to-hub` opens a
 // "running" run on the hub, PATCHes each finished spec's row as it lands, and
 // finalizes the run (running → terminal) at the end. `--push-report` alone is
 // enough (it implies the default report dir); `--report <dir>` only controls
@@ -28,7 +28,7 @@ function mockStepMessages(stepId: string): Array<Record<string, unknown>> {
   ];
 }
 
-describe("ccqa run --push-report — incremental hub push", () => {
+describe("ccqa run --report-to-hub — incremental hub push", () => {
   let project: FakeProject | null = null;
   let server: Server;
   let dataDir: string;
@@ -71,7 +71,7 @@ describe("ccqa run --push-report — incremental hub push", () => {
     return runs;
   };
 
-  test("--push-report opens, patches, and finalizes a run, and writes the default local report", async () => {
+  test("--report-to-hub opens, patches, and finalizes a run, and writes the default local report", async () => {
     project = await makeFakeProject("run-live-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
     const mockPath = join(project.cwd, "claude-mock.jsonl");
@@ -80,7 +80,7 @@ describe("ccqa run --push-report — incremental hub push", () => {
     // No --report: --push-report implies the default report dir so it has
     // something to upload, and drives the full open → patch → finalize flow.
     const result = await runCcqa(
-      ["run", "demo/x", "--project", "demo-proj", "--push-report"],
+      ["run", "demo/x", "--project", "demo-proj", "--report-to-hub"],
       {
         cwd: project.cwd,
         env: {
@@ -127,7 +127,7 @@ describe("ccqa run --push-report — incremental hub push", () => {
     // openRun/patchRun must be swallowed, leaving a green run + a valid local
     // report — the hub is a best-effort side channel, never a run gate.
     const result = await runCcqa(
-      ["run", "demo/x", "--report", reportDir, "--project", "demo-proj", "--push-report"],
+      ["run", "demo/x", "--report-dir", reportDir, "--project", "demo-proj", "--report-to-hub"],
       {
         cwd: project.cwd,
         env: {
@@ -150,7 +150,7 @@ describe("ccqa run --push-report — incremental hub push", () => {
   // Gate on hub-run creation: a run is opened on the hub ONLY when both
   // --push-report and hub creds are present. Uses a deterministic spec (no live
   // executor) so the two negative branches stay cheap.
-  test("no run is opened without both --push-report and hub creds", async () => {
+  test("no run is opened without both --report-to-hub and hub creds", async () => {
     project = await makeFakeProject("passing-spec", { linkCcqa: true });
     const baseArgs = ["run", "demo/smoke", "--project", "demo-proj"];
 
@@ -163,7 +163,7 @@ describe("ccqa run --push-report — incremental hub push", () => {
     expect(await listRuns()).toHaveLength(0);
 
     // (b) --push-report present, but hub creds absent → no run opened.
-    const noCreds = await runCcqa([...baseArgs, "--push-report"], {
+    const noCreds = await runCcqa([...baseArgs, "--report-to-hub"], {
       cwd: project.cwd,
       env: { ...noColorEnv(), CCQA_HUB_URL: "", CCQA_HUB_TOKEN: "" },
     });

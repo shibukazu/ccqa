@@ -48,7 +48,7 @@ Runs and secrets take two independent, one-directional paths:
 ```
 ccqa run ──► ccqa hub push ──► hub   (stores as an immutable Run)
 
-ccqa run --push-report ──► hub       (incremental: open, patch per spec, seal)
+ccqa run --report-to-hub ──► hub       (incremental: open, patch per spec, seal)
 
 ccqa hub session push / var set ──► hub ──► ccqa run / ccqa record (fetched at run time)
 ```
@@ -57,7 +57,7 @@ ccqa hub session push / var set ──► hub ──► ccqa run / ccqa record (
 never uploads a result — the only thing that connects the two directions is
 that a CI job typically runs `ccqa run` (which fetches what it needs
 from the hub as it goes) then `ccqa hub push` in sequence, all authenticated
-with the same `CCQA_HUB_TOKEN`. Passing `--push-report` to `ccqa run`
+with the same `CCQA_HUB_TOKEN`. Passing `--report-to-hub` to `ccqa run`
 folds that second step into the run itself, pushing incrementally instead of
 in one shot at the end — see [Incremental push during `ccqa
 run`](#incremental-push-during-ccqa-run) below.
@@ -82,7 +82,7 @@ ccqa hub push --project demo
 Uploads the report directory produced by an already-finished `ccqa run` as a
 tar.gz to the hub, which records it as an immutable `Run`. Flags:
 
-- `--report <dir>` — report directory to push. Default `ccqa-report`.
+- `--report-dir <dir>` — report directory to push. Default `ccqa-report`.
 - `--project <name>` — logical project name. Defaults to the current
   directory's basename.
 - `--branch <name>` — branch label. Defaults to `$GITHUB_HEAD_REF`, then
@@ -98,12 +98,12 @@ tar.gz to the hub, which records it as an immutable `Run`. Flags:
 run-artifacts dir) and uploads it; the hub UI renders the results and serves
 each file over its API. It exits 2 if `report.json` is missing or invalid in the
 report directory, with a hint to run `ccqa run` first — note that
-`--report <dir>` passed to `hub push` must match wherever `ccqa run
---report <dir>` (if used) wrote it. `push` only uploads a result, it never
+`--report-dir <dir>` passed to `hub push` must match wherever `ccqa run
+--report-dir <dir>` (if used) wrote it. `push` only uploads a result, it never
 re-runs or re-judges anything, so its exit code reflects the upload itself,
 not the run's pass/fail outcome. On success it prints the run id, project,
 branch, status, spec pass count, and a link to the run in the hub's UI. Use
-it for pushing a report from a run that didn't use `--push-report`, or from
+it for pushing a report from a run that didn't use `--report-to-hub`, or from
 a separate job — see the next section for pushing incrementally instead.
 
 If the report carries a `deployedSha` — `ccqa run --profile <name>` records
@@ -121,7 +121,7 @@ ccqa hub deploy record --project demo --profile stg --sha "$GIT_SHA" --ref main
 
 Tells the hub what a deploy shipped. It is the one input the hub cannot
 derive for itself — it has no checkout, never runs `git`, and never calls a
-git host — and it is what makes `ccqa run --changed=last-run` answerable at
+git host — and it is what makes `ccqa run --only-stale` answerable at
 all. Run it from the deploy job, after the deploy succeeds. Flags:
 
 - `--profile <name>` — **required**: the environment this deploy landed in.
@@ -179,7 +179,7 @@ deploy job — not the hub — is the actor that answers this.
 
 ### Incremental push during `ccqa run`
 
-Passing `--push-report` to `ccqa run` (alongside hub credentials:
+Passing `--report-to-hub` to `ccqa run` (alongside hub credentials:
 `--hub-url`/`--hub-token` or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) pushes results
 incrementally as the run executes — spec by spec — instead of only via a
 separate `ccqa hub push` step at the end. A long run's progress is then
@@ -192,11 +192,11 @@ same as any other run everywhere else in this document. It's best-effort —
 if the hub is unreachable, the CLI logs it and keeps running the tests
 locally; the local report.json is unaffected either way.
 
-If you passed `--push-report` to `ccqa run`, a separate `ccqa hub push` step
+If you passed `--report-to-hub` to `ccqa run`, a separate `ccqa hub push` step
 for the same run is redundant and would create a second, separate run
 record — drop the extra push step from CI in that case. Only add a plain
-`ccqa hub push` step when you did *not* pass `--push-report`. Without
-`--push-report`, hub credentials passed to `ccqa run` are used only for
+`ccqa hub push` step when you did *not* pass `--report-to-hub`. Without
+`--report-to-hub`, hub credentials passed to `ccqa run` are used only for
 fetching sessions/variables/prompts (see the next section) — they never
 cause `ccqa run` to create or push a run to the hub on their own.
 
@@ -211,7 +211,7 @@ need from the hub directly as they execute, whenever `--hub-url`/`--hub-token`
   project/profile straight from the hub.
 - `--profile <name>` fetches every variable for that project/profile and
   applies them to the process environment before the run starts.
-- `--update-agent-prompt` reads and writes the `record.agent` / `live.agent`
+- `--learn-trace-prompt` / `--learn-live-prompt` read and write the `record.agent` / `live.agent`
   prompt on the hub; the human-maintained `triage.user` guidance and the
   learned failure-analysis custom prompt are fetched the same way.
 
@@ -242,7 +242,7 @@ and sessions per project/profile (sensitive values stay hidden in listings).
 
 ### GitHub Actions example
 
-Recommended: push incrementally by adding `--push-report` to the run step
+Recommended: push incrementally by adding `--report-to-hub` to the run step
 itself, so progress is visible on the hub as the run executes and no
 separate push step is needed:
 
@@ -261,7 +261,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec ccqa run --project demo --profile staging --push-report
+      - run: pnpm exec ccqa run --project demo --profile staging --report-to-hub
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -272,7 +272,7 @@ jobs:
 The `upload-artifact` step still keeps the local report directory as a
 backup artifact even though the hub already has the results.
 
-Alternative: without `--push-report`, run `ccqa run` (report.json is always
+Alternative: without `--report-to-hub`, run `ccqa run` (report.json is always
 written) and add a separate `ccqa hub push --project demo` step with
 `if: always()` after it — still valid, e.g. when you want to push from a
 different job/step or don't need incremental visibility.
@@ -290,7 +290,7 @@ jobs fail (with a clear error) until you add one.
 
 ## Drift ledger
 
-Whenever `ccqa drift --push` lands a `kind: "drift"` run, the hub advances a
+Whenever `ccqa audit --report-to-hub` lands a `kind: "drift"` run, the hub advances a
 per-project **drift ledger**: one entry per spec holding its newest audit
 outcome. Unlike the spec ledger behind `/last-green` and `/rerun`, it carries
 no profile — drift asks whether a spec still describes the code, which has
@@ -448,7 +448,7 @@ restarts. Point clients at it the usual way:
 ```bash
 export CCQA_HUB_URL=http://localhost:8787
 export CCQA_HUB_TOKEN=<the token from .env>   # then `ccqa hub var set ...`,
-                                              # `ccqa run --push-report`, ...
+                                              # `ccqa run --report-to-hub`, ...
 ```
 
 `ANTHROPIC_API_KEY` in `.env` is optional — only hub-side triage-learning

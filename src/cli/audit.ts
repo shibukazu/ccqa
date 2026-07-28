@@ -26,16 +26,15 @@ import * as log from "./logger.ts";
 import { withCostTally } from "../claude/cost-tally.ts";
 import { reportCost } from "./cost-line.ts";
 
-interface DriftOptions {
-  format?: Format;
-  severity?: Threshold;
+interface AuditOptions {
+  reportFormat?: Format;
+  exitOn?: Threshold;
   concurrency?: string;
   model?: string;
   cwd?: string;
-  changed?: boolean;
-  base?: string;
+  onlyAffectedBy?: string;
   language?: string;
-  push?: boolean;
+  reportToHub?: boolean;
   project?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -44,58 +43,61 @@ interface DriftOptions {
 
 const DEFAULT_CONCURRENCY = 3;
 
-export const driftCommand = addLanguageOption(
-  new Command("drift")
+export const auditCommand = addLanguageOption(
+  new Command("audit")
     .argument(
       "[feature/spec]",
       "Optional spec id. If omitted, every spec under .ccqa/features/ is checked.",
     )
     .description(
-      "Standalone spec ↔ codebase static audit. Use for PR checks where the browser isn't run. " +
-        "For run-time audit with a structured report, see `ccqa run --report`.",
+      "Read each spec against the code it describes and report where the two have drifted. " +
+        "Static: no browser is run, so this is the cheap check to put in front of `ccqa run`.",
     )
-    .option("--format <fmt>", "Output format: text | json | github", "text")
+    .optionsGroup("Which specs to audit:")
     .option(
-      "--severity <level>",
-      "Exit non-zero on this severity or higher: warn | error",
-      "error",
+      "--only-affected-by <ref>",
+      "Only specs `ccqa select-specs` judges reached by the diff against <ref> (e.g. origin/main). In pull_request CI, pass $GITHUB_BASE_REF. Costs one model call; specs it cannot decide are audited rather than skipped.",
     )
+    .optionsGroup("How to run it:")
     .option("--concurrency <n>", `Parallel spec checks (default: ${DEFAULT_CONCURRENCY})`)
     .option(
       "-m, --model <name>",
       "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
     )
+    .optionsGroup("What to do with the results:")
+    .option("--report-format <fmt>", "Output format: text | json | github", "text")
+    .option(
+      "--report-to-hub",
+      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger `ccqa run --only-audited-clean` reads.",
+    )
+    .option(
+      "--exit-on <level>",
+      "Exit non-zero on this severity or higher: warn | error",
+      "error",
+    )
+    .optionsGroup("Environment and connection:")
     .option(
       "--cwd <path>",
       "Working directory used as both the .ccqa root and the codebase Claude reads. Useful for monorepos. Defaults to process.cwd().",
     )
-    .option(
-      "--changed",
-      "Restrict drift checks to the specs a change reaches, decided by `ccqa select-specs` against --base (or, in CI, $GITHUB_BASE_REF). Costs one model call; specs it cannot decide are checked rather than skipped.",
-    )
-    .option(
-      "--base <ref>",
-      "Base ref to diff against when --changed is set. Defaults to $GITHUB_BASE_REF (CI pull_request runs); required otherwise.",
-    )
-    .option("--push", "Push the drift result to a ccqa hub as a run (kind: drift).")
     .option("--project <name>", "Logical project name for the pushed run. Defaults to the current directory's name.")
     .option(...hubUrlOption)
     .option(...hubTokenOption)
     .option(...hubHeaderOption),
-).action(withUsageErrors(async (specPath: string | undefined, opts: DriftOptions) => {
-  await withCostTally(() => runDrift(specPath, opts));
+).action(withUsageErrors(async (specPath: string | undefined, opts: AuditOptions) => {
+  await withCostTally(() => runAudit(specPath, opts));
 }));
 
-async function runDrift(specPath: string | undefined, opts: DriftOptions): Promise<void> {
-  const format = parseFormat(opts.format);
-  const threshold = parseSeverity(opts.severity);
+async function runAudit(specPath: string | undefined, opts: AuditOptions): Promise<void> {
+  const format = parseFormat(opts.reportFormat);
+  const threshold = parseSeverity(opts.exitOn);
   const concurrency = parseConcurrency(opts.concurrency);
   const cwd = resolveCwd(opts.cwd);
 
   await ensureCcqaDir(cwd);
 
-  if (opts.changed && specPath) {
-    log.error("--changed and an explicit spec id cannot be combined; --changed only applies to a full sweep");
+  if (opts.onlyAffectedBy && specPath) {
+    log.error("--only-affected-by and an explicit spec id cannot be combined; it only applies to a full sweep");
     process.exit(2);
   }
 
@@ -105,19 +107,18 @@ async function runDrift(specPath: string | undefined, opts: DriftOptions): Promi
   }
 
   if (format === "text") {
-    log.header("drift", specPath ?? `${targets.length} spec${targets.length > 1 ? "s" : ""}`);
+    log.header("audit", specPath ?? `${targets.length} spec${targets.length > 1 ? "s" : ""}`);
     if (opts.cwd) log.meta("cwd", cwd);
   }
 
   let baseRef: string | null = null;
 
-  if (opts.changed) {
+  if (opts.onlyAffectedBy) {
     const total = targets.length;
     const selection = await collectChangedSpecs(targets, {
       cwd,
-      base: opts.base ?? true,
+      base: opts.onlyAffectedBy,
       quiet: format !== "text",
-      baseExample: "--base origin/main",
       ...(opts.model ? { model: opts.model } : {}),
     });
     // The base reported to the hub is the one selection actually diffed
@@ -147,7 +148,7 @@ async function runDrift(specPath: string | undefined, opts: DriftOptions): Promi
 
   process.stdout.write(renderDrift(results, format, cwd));
 
-  if (opts.push) {
+  if (opts.reportToHub) {
     await pushDriftResults({ results, threshold, cwd, opts, format, baseRef });
   }
 
@@ -158,7 +159,7 @@ async function runDrift(specPath: string | undefined, opts: DriftOptions): Promi
 /**
  * Push a finished drift audit to a ccqa hub as a `kind: "drift"` run, so it
  * shows up alongside `ccqa run` runs in the hub UI. Best-effort: a missing
- * hub connection warns and returns rather than failing the command (`--push`
+ * hub connection warns and returns rather than failing the command (`--report-to-hub`
  * never changes drift's own exit code).
  *
  * `resolveHub` is injectable so tests can supply a fake `HubClient` without
@@ -169,16 +170,16 @@ export async function pushDriftResults(
     results: SpecResult[];
     threshold: Threshold;
     cwd: string;
-    opts: DriftOptions;
+    opts: AuditOptions;
     format: Format;
     baseRef?: string | null;
   },
-  resolveHub: (opts: DriftOptions) => HubClient | null = resolveHubClient,
+  resolveHub: (opts: AuditOptions) => HubClient | null = resolveHubClient,
 ): Promise<void> {
   const { results, threshold, cwd, opts, format, baseRef } = args;
   const hub = resolveHub(opts);
   if (!hub) {
-    log.warn("--push requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN) — skipping push");
+    log.warn("--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN) — skipping push");
     return;
   }
 

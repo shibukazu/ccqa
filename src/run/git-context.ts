@@ -1,19 +1,16 @@
-import { execFileP, normalizeGithubBaseRef } from "../drift/affected.ts";
+import { execFileP } from "../drift/affected.ts";
 import { type BaseSource } from "../report/schema.ts";
 import { RunUsageError } from "./errors.ts";
 
 export type { BaseSource };
 
-/** The `--failure-analysis` value that selects per-spec hub-ledger baselines. */
-export const LAST_GREEN = "last-green";
-
 /**
- * The `--changed` value that selects specs from the hub's re-run verdicts
- * (`rerun-selection.ts` acts on it). Kept here beside `LAST_GREEN` so the two
- * "not a git ref" keywords, and the rules that reject each on the flag it does
- * not belong to, sit in one place.
+ * Marks a baseline as "each spec's own last green commit" rather than one
+ * shared ref. Not a flag value — `--on-fail-explain` uses per-spec baselines
+ * unless `--on-fail-explain-base` names a ref — but the report and the log
+ * lines need a word for it.
  */
-export const LAST_RUN = "last-run";
+export const LAST_GREEN = "last-green";
 
 /** A resolved, verified-to-exist analysis baseline. */
 export interface AnalysisBase {
@@ -65,67 +62,25 @@ export async function resolveCommitSha(ref: string, cwd: string): Promise<string
 }
 
 /**
- * Resolve a `[base]` flag value (from `--failure-analysis [base]` or
- * `--changed [base]`) to a verified baseline, failing fast — before any spec
- * runs — when it cannot be resolved.
- *
- *   - a string value is an explicit ref;
- *   - bare `true` derives the ref from GITHUB_BASE_REF (pull_request events)
- *     and errors outside that context;
- *   - the ref must resolve to a local commit, so a shallow CI checkout that
- *     never fetched the base surfaces here as an actionable error instead of
- *     an empty diff downstream.
+ * Resolve a base ref to a verified baseline, failing fast — before any spec
+ * runs — when it cannot be resolved. The ref must resolve to a local commit,
+ * so a shallow CI checkout that never fetched the base surfaces here as an
+ * actionable error instead of an empty diff downstream.
  *
  * `flagName` only shapes the error messages.
  */
 export async function resolveAnalysisBase(
-  flagValue: string | true,
+  ref: string,
   flagName: string,
   cwd: string,
-  /**
-   * How to pass the base on this command, for the "no base" error. Defaults to
-   * `<flagName>=origin/main`, which is right for `--changed` / `--failure-analysis`
-   * but not for `ccqa drift`, where the flag is the separate `--base <ref>`.
-   */
-  baseExample?: string,
 ): Promise<AnalysisBase> {
-  let ref: string;
-  let source: BaseSource;
-  if (flagValue === LAST_GREEN) {
-    // The pipeline resolves last-green itself (it needs the hub ledger);
-    // reaching here means a flag that doesn't support it (e.g. --changed).
-    throw new RunUsageError(
-      `${flagName}=${LAST_GREEN} is not supported — last-green baselines are per-spec and only apply to --failure-analysis`,
-    );
-  }
-  if (flagValue === LAST_RUN) {
-    // Same shape, the other way round: the pipeline handles last-run for
-    // --changed, so reaching here is a flag that doesn't support it. Without
-    // this it would be taken for a git ref named "last-run".
-    throw new RunUsageError(
-      `${flagName}=${LAST_RUN} is not supported — last-run selects which specs to run and only applies to --changed`,
-    );
-  }
-  if (typeof flagValue === "string") {
-    ref = flagValue;
-    source = "explicit";
-  } else {
-    const ghBase = process.env["GITHUB_BASE_REF"];
-    if (!ghBase) {
-      throw new RunUsageError(
-        `${flagName} without a base needs GITHUB_BASE_REF (a pull_request workflow); outside that context pass the base explicitly, e.g. ${baseExample ?? `${flagName}=origin/main`}`,
-      );
-    }
-    ref = normalizeGithubBaseRef(ghBase);
-    source = "github-base-ref";
-  }
-
+  const source: BaseSource = "explicit";
   const sha = await resolveCommitSha(ref, cwd);
   if (sha === null) {
     throw new RunUsageError(
       `${flagName}: '${ref}' is not a resolvable git ref in this checkout. ` +
         `If this is CI, the base may not be fetched (try fetch-depth: 0). ` +
-        `If '${ref}' was meant as a spec target, put spec targets before flags or use ${flagName}=<ref>.`,
+        `If '${ref}' was meant as a spec target, put spec targets before flags.`,
     );
   }
   return { ref, sha, source };
