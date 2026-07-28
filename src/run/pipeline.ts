@@ -29,7 +29,6 @@ import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.
 import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
 import { tryDeployHeadSha } from "./deploy-head.ts";
 import { formatDryRunLines } from "./dry-run.ts";
-import { fetchAuditedLedger, selectAuditedClean } from "./audited-clean.ts";
 import {
   fetchRerunReport,
   requireRerunProfile,
@@ -140,12 +139,10 @@ export interface RunOptions {
   liveArtifactsDir?: string;
   /** Take only the specs a diff against this ref reaches. */
   onlyAffectedBy?: string;
-  /** Take only the specs whose last result the hub says no longer holds. */
-  onlyHubStale?: boolean;
-  /** Take only the specs the drift ledger records as audited with no drift. */
-  onlyHubAuditedClean?: boolean;
-  /** With `onlyHubStale`: also take specs whose re-run need is unknown / that never ran. */
-  onlyHubStaleWithUnknown?: boolean;
+  /** Take only the specs the hub answers `needed` for. */
+  onlyHubRerunNeeded?: boolean;
+  /** With `onlyHubRerunNeeded`: also take specs whose re-run need is unknown / that never ran. */
+  onlyHubRerunNeededWithUnknown?: boolean;
   /** Print the selected specs and stop — no execution, no report, no hub writes. */
   dryRun?: boolean;
   learnHubLivePrompt?: boolean;
@@ -217,16 +214,16 @@ export async function executeRun(
   targets: string[],
   opts: RunOptions,
 ): Promise<RunPipelineResult> {
-  const filtering = Boolean(opts.onlyAffectedBy || opts.onlyHubStale || opts.onlyHubAuditedClean);
+  const filtering = Boolean(opts.onlyAffectedBy || opts.onlyHubRerunNeeded);
   if (filtering && targets.length > 0) {
     throw new RunUsageError("a --only-* filter and an explicit spec target cannot be combined");
   }
-  // `--only-hub-stale` reads per-profile verdicts off the hub instead of a git
+  // `--only-hub-rerun-needed` reads per-profile verdicts off the hub instead of a git
   // diff, so its two inputs (a profile, and further down a hub connection)
   // are checked before anything else runs.
-  const rerunProfile = opts.onlyHubStale === true ? requireRerunProfile(opts.hubProfile) : null;
-  if (opts.onlyHubStaleWithUnknown && rerunProfile === null) {
-    log.warn("--only-hub-stale-with-unknown is ignored: it only applies to --only-hub-stale");
+  const rerunProfile = opts.onlyHubRerunNeeded === true ? requireRerunProfile(opts.hubProfile) : null;
+  if (opts.onlyHubRerunNeededWithUnknown && rerunProfile === null) {
+    log.warn("--only-hub-rerun-needed-with-unknown is ignored: it only applies to --only-hub-rerun-needed");
   }
   // A dry run answers "which specs would run?" and stops. It never resolves a
   // `${VAR}`, classifies a failure or writes a report, so every input that
@@ -330,12 +327,7 @@ export async function executeRun(
   // a dry run skips that, so this is where it finds out.
   if (rerunProfile !== null && hubCtx == null) {
     throw new RunUsageError(
-      "--only-hub-stale requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
-    );
-  }
-  if (opts.onlyHubAuditedClean && hubCtx == null) {
-    throw new RunUsageError(
-      "--only-hub-audited-clean requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+      "--only-hub-rerun-needed requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
     );
   }
   // Checked here rather than where the push happens: a run that cannot publish
@@ -360,7 +352,7 @@ export async function executeRun(
   // reached throws. Those are different answers, and the second one stops the
   // run — guidance the project configured but ccqa could not read would change
   // what Claude does with nobody told.
-  const [customPrompt, triageUserPrompt, ledgerEntries, rerunReport, fetchedDeployHead, auditedLedger] = await Promise.all([
+  const [customPrompt, triageUserPrompt, ledgerEntries, rerunReport, fetchedDeployHead] = await Promise.all([
     forExecution ? fetchCustomPrompt(hubCtx) : null,
     forExecution ? fetchTriageUserPrompt(hubCtx) : null,
     forExecution && ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.hubProfile, cwd) : null,
@@ -372,7 +364,6 @@ export async function executeRun(
     forExecution && hubCtx && opts.hubProfile && rerunProfile === null
       ? tryDeployHeadSha(hubCtx, opts.hubProfile)
       : null,
-    opts.onlyHubAuditedClean && hubCtx ? fetchAuditedLedger(hubCtx) : null,
   ]).catch(asHubReadError);
   const deployedSha = rerunReport?.deployHead.sha ?? fetchedDeployHead;
   if (ledgerEntries) {
@@ -422,7 +413,7 @@ export async function executeRun(
     // below to spend model tokens reasoning about.
     if (rerunReport) {
       const selection = selectSpecsNeedingRerun(specs, rerunReport, {
-        includeUnknown: opts.onlyHubStaleWithUnknown === true,
+        includeUnknown: opts.onlyHubRerunNeededWithUnknown === true,
       });
       specs = selection.selected;
       unanswerable = selection.excludedUnanswerable;
@@ -431,14 +422,6 @@ export async function executeRun(
         `deploy ${rerunReport.deployHead.sha.slice(0, 12)} (profile ${rerunReport.profile})`,
       );
       log.meta("stale-states", selection.summary);
-    }
-    if (auditedLedger) {
-      const picked = selectAuditedClean(specs, auditedLedger);
-      specs = picked.selected;
-      log.meta(
-        "audit-states",
-        `${picked.selected.length} clean, ${picked.drifted} drifted, ${picked.unaudited} never audited`,
-      );
     }
     if (opts.onlyAffectedBy) {
       specs = (
@@ -461,7 +444,7 @@ export async function executeRun(
     if (specs.length === 0 && unanswerable > 0) {
       log.hint(
         `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
-          `a re-run; pass --only-hub-stale-with-unknown to run them anyway`,
+          `a re-run; pass --only-hub-rerun-needed-with-unknown to run them anyway`,
       );
     }
   }

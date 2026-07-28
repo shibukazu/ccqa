@@ -364,7 +364,7 @@ interface DeployRecordOptions extends HubConnOptions {
 const deployRecord = new Command("record")
   .description(
     "Tell the hub what a deploy shipped, so it can answer which specs need a re-run " +
-      "(`ccqa run --only-hub-stale`). Run this from the deploy job, after the deploy succeeds. " +
+      "(`ccqa run --only-hub-rerun-needed`). Run this from the deploy job, after the deploy succeeds. " +
       "The changed paths are computed locally with a two-dot `git diff <previous> <sha>`; " +
       "a job that has only curl and git can POST the same body directly (see docs/hub.md).",
   )
@@ -514,7 +514,7 @@ function describeSelection(selection: DeploySelection | undefined, diffAvailable
 }
 
 const deployCommand = new Command("deploy")
-  .description("Report deploys to the hub, the input behind `ccqa run --only-hub-stale`.")
+  .description("Report deploys to the hub, the input behind `ccqa run --only-hub-rerun-needed`.")
   .addCommand(deployRecord);
 
 // ── push ──────────────────────────────────────────────────────────────────

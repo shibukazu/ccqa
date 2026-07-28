@@ -66,6 +66,15 @@ The consequence for the audit is that it reads the commit the verification
 environment is running, not the tip of the default branch. Auditing the tip
 answers a question about code nobody is running yet.
 
+The consequence for the run is a third answer. A spec the audit rejected is
+`blocked`, alongside `needed` and `notNeeded`, and no flag opts into running
+it: re-running cannot repair a spec that no longer describes the code. The
+state carries which repair it needs, because `testDrift` clears itself within
+minutes (`ccqa record`) and `specChange` waits for a human — treating them
+alike would hide the one that accumulates. Only a finding blocks: a spec never
+audited, or one the audit could not judge, is not withheld, or no newly written
+spec would ever run.
+
 ## Consequences
 
 **Good.** The audit and the run agree by construction, because they are about

@@ -1,5 +1,12 @@
 import { describe, expect, test } from "vitest";
-import type { DeployEntry, DeployLog, SpecLedger, SpecLedgerEntry, SpecTouchIndex } from "../contract/schema.ts";
+import type {
+  DeployEntry,
+  DeployLog,
+  DriftLedger,
+  SpecLedger,
+  SpecLedgerEntry,
+  SpecTouchIndex,
+} from "../contract/schema.ts";
 import { computeRerun, type RerunInput } from "./rerun.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
@@ -43,6 +50,7 @@ function compute(overrides: Partial<RerunInput> = {}): ReturnType<typeof compute
     ledger: ledgerWithRun(ranAt("sha-0")),
     log: log(deploy(0)),
     touchIndex: {},
+    drift: { specs: {} },
     ...overrides,
   });
   return result["f/s"]!;
@@ -180,5 +188,49 @@ describe("computeRerun", () => {
     expect(
       compute({ log: evicted, ledger: ledgerWithRun(ranAt("sha-40")), touchIndex: touchedAt(41) }).state,
     ).toBe("needed");
+  });
+});
+
+/** A drift ledger holding one audit verdict for the spec under test. */
+function audited(label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN" | null): DriftLedger {
+  return {
+    specs: {
+      "f/s": { label, gitHead: "head", runId: "drift-1", at: "2026-07-26T00:00:00Z" },
+    },
+  };
+}
+
+describe("a spec the audit rejected", () => {
+  test("is blocked, and carries which repair it needs", () => {
+    // The two reasons differ in who repairs them and how long that takes, so
+    // collapsing them into a bare "blocked" would hide what matters most.
+    expect(compute({ drift: audited("TEST_DRIFT") })).toMatchObject({
+      state: "blocked",
+      blockedReason: "testDrift",
+    });
+    expect(compute({ drift: audited("SPEC_CHANGE") })).toMatchObject({
+      state: "blocked",
+      blockedReason: "specChange",
+    });
+  });
+
+  test("stays blocked even when it would otherwise need a re-run", () => {
+    // Blocking has to win: re-running cannot repair a spec that no longer
+    // describes the code, so offering it as `needed` would spend a run to
+    // rediscover what the audit already said.
+    const verdict = compute({
+      drift: audited("SPEC_CHANGE"),
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1),
+    });
+    expect(verdict.state).toBe("blocked");
+  });
+
+  test("a clean, unknown or absent verdict does not block", () => {
+    // "never audited" and "the audit could not tell" are not findings. Treating
+    // either as one would stop every newly written spec from ever running.
+    expect(compute({ drift: audited(null) }).state).not.toBe("blocked");
+    expect(compute({ drift: audited("UNKNOWN") }).state).not.toBe("blocked");
+    expect(compute({ drift: { specs: {} } }).state).not.toBe("blocked");
   });
 });

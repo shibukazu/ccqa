@@ -2,6 +2,8 @@ import type {
   DeployEntry,
   DeployLog,
   DeployRef,
+  DriftLedger,
+  RerunBlockedReason,
   RerunUnknownReason,
   SpecLedger,
   SpecLedgerEntry,
@@ -23,10 +25,12 @@ export interface RerunInput {
   ledger: SpecLedger;
   log: DeployLog;
   touchIndex: SpecTouchIndex;
+  /** The project's drift ledger. A spec the audit found drifted is `blocked`. */
+  drift: DriftLedger;
 }
 
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
-  const { specs, ledger, log, touchIndex } = input;
+  const { specs, ledger, log, touchIndex, drift } = input;
   // Nothing has ever been recorded for this profile: neither a run nor a
   // deploy. That is a different statement from "this spec has never run".
   // `green` is checked separately from `run` because a pre-ledger document
@@ -63,11 +67,36 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       lastGreen: ledger.green[spec.key] ?? null,
       lastRed: ledger.red[spec.key] ?? null,
     };
-    out[spec.key] = notEvaluated
-      ? { state: "notEvaluated", ...coords }
-      : { ...verdict(spec, coords.lastRun, log, positionBySha, touchIndex, range), ...coords };
+    // Blocking wins over every other answer, including `neverRun`. Re-running
+    // a spec the audit rejected cannot clear it: what is wrong is the spec, not
+    // the age of its last result.
+    const blocked = blockedBy(drift, spec.key);
+    out[spec.key] = blocked
+      ? { state: "blocked", blockedReason: blocked, ...coords }
+      : notEvaluated
+        ? { state: "notEvaluated", ...coords }
+        : { ...verdict(spec, coords.lastRun, log, positionBySha, touchIndex, range), ...coords };
   }
   return out;
+}
+
+/**
+ * Why the audit rejects this spec, or null when it does not.
+ *
+ * Only a finding blocks. A spec with no ledger entry was never audited, and a
+ * `UNKNOWN` entry is the audit saying it could not tell — neither is a reason
+ * to withhold a run, and treating them as one would stop every newly written
+ * spec from ever executing.
+ */
+function blockedBy(drift: DriftLedger, key: string): RerunBlockedReason | null {
+  switch (drift.specs[key]?.label) {
+    case "TEST_DRIFT":
+      return "testDrift";
+    case "SPEC_CHANGE":
+      return "specChange";
+    default:
+      return null;
+  }
 }
 
 /** Per-`computeRerun`-call lookups built once from the deploy log, not per spec. */

@@ -9,22 +9,26 @@ import { requireProfileParam, requireSafeSegment } from "../validate.ts";
 /**
  * GET /api/v1/projects/:project/rerun?profile=
  *
- * Per spec: is its last result still trustworthy? Set arithmetic over the spec
+ * Per spec: is it worth running, and if not, why? Set arithmetic over the spec
  * ledger, the profile's deploy log and each deploy's per-spec touch verdicts
- * recorded by `ccqa select-specs` (ADR-0010, ADR-0011). The ledger is read
- * across every branch: a run exercises the deployed environment whatever
- * branch its code came from.
+ * recorded by `ccqa select-specs` (ADR-0010, ADR-0011), plus the drift ledger —
+ * a spec the audit rejected answers `blocked`, because re-running it cannot
+ * clear what is wrong with it. The spec ledger is read across every branch: a
+ * run exercises the deployed environment whatever branch its code came from.
  */
 export function createGetRerunHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const project = requireSafeSegment(ctx.params.project!, "project");
     const profile = requireProfileParam(ctx.url);
 
-    const [specs, ledger, log, touchIndex] = await Promise.all([
+    const [specs, ledger, log, touchIndex, drift] = await Promise.all([
       loadSpecTargets(storage.perspectives, project),
       storage.ledger.getMerged(project, profile),
       storage.deploys.getLog(project, profile),
       storage.deploys.getTouchIndex(project, profile),
+      // Not profile-scoped: whether a spec still describes the code is a
+      // question about the repository, not about an environment (ADR-0013).
+      storage.driftLedger.getMerged(project),
     ]);
     if (specs === null) {
       // Distinct from the generic `not_found` an unrouted path returns: the
@@ -43,7 +47,7 @@ export function createGetRerunHandler(storage: HubStorage) {
       project,
       profile,
       deployHead: head ? { index: head.index, sha: head.sha, at: head.at } : null,
-      specs: computeRerun({ specs, ledger, log, touchIndex }),
+      specs: computeRerun({ specs, ledger, log, touchIndex, drift }),
     } satisfies RerunReport);
   };
 }

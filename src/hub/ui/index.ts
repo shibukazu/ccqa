@@ -873,6 +873,7 @@ const CSS = `
      eats the next rule, and a backtick ends the template literal this CSS
      lives in. */
   .sg-drift-found, .sg-needed { background: var(--amber-fill); }
+  .sg-blocked { background: var(--fail); }
   .sg-unknown, .sg-drift-unknown { background: var(--info); }
   .sg-drift-clean, .sg-notneeded { background: var(--pass); }
   .sg-drift-none, .sg-neverrun { background: var(--muted-2); }
@@ -1094,6 +1095,7 @@ const CLIENT_JS = `
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needed": "Re-run needed",
       "perspectives.rerun.state.notNeeded": "Not needed",
+      "perspectives.rerun.state.blocked": "Blocked by the audit",
       "perspectives.rerun.state.unknown": "Can't tell",
       "perspectives.rerun.state.neverRun": "Never run",
       "perspectives.rerun.state.notEvaluated": "Not evaluated",
@@ -1106,6 +1108,8 @@ const CLIENT_JS = `
       "perspectives.rerun.touchedUnknown": "a deploy since the last run matched this case",
       "perspectives.rerun.neverRunHint": "no result recorded for this profile yet",
       "perspectives.rerun.notEvaluatedHint": "no run and no deploy has ever been recorded for this profile",
+      "perspectives.rerun.blocked.testDrift": "the generated test no longer matches the code — re-record it",
+      "perspectives.rerun.blocked.specChange": "the spec describes something the code no longer does — a human decides",
       "perspectives.rerun.why.noSelectionInRange": "a deploy in range was recorded without a spec selection",
       "perspectives.rerun.why.selectionUnknown": "the selector could not tell whether this case was affected",
       "perspectives.rerun.why.noDeployLog": "no deploy log for this profile",
@@ -1243,6 +1247,7 @@ const CLIENT_JS = `
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needed": "要再実行",
       "perspectives.rerun.state.notNeeded": "不要",
+      "perspectives.rerun.state.blocked": "監査で保留",
       "perspectives.rerun.state.unknown": "判定できない",
       "perspectives.rerun.state.neverRun": "未実行",
       "perspectives.rerun.state.notEvaluated": "未評価",
@@ -1255,6 +1260,8 @@ const CLIENT_JS = `
       "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイがこのケースに一致する変更を行っています",
       "perspectives.rerun.neverRunHint": "このプロファイルでの実行記録がまだありません",
       "perspectives.rerun.notEvaluatedHint": "このプロファイルには実行もデプロイも記録がありません",
+      "perspectives.rerun.blocked.testDrift": "生成されたテストが古くなっています。録り直してください",
+      "perspectives.rerun.blocked.specChange": "spec がコードのやめた動作を書いています。人が判断します",
       "perspectives.rerun.why.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあります",
       "perspectives.rerun.why.selectionUnknown": "影響の有無を判定できませんでした",
       "perspectives.rerun.why.noDeployLog": "このプロファイルのデプロイ記録がありません",
@@ -3295,6 +3302,7 @@ const CLIENT_JS = `
       if (!head) return t("perspectives.rerun.noDeployHead");
       return t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
     }
+    if (rr.state === "blocked") return rerunReasonText("perspectives.rerun.blocked.", rr.blockedReason || "");
     if (rr.state === "unknown") return rerunReasonText("perspectives.rerun.why.", rr.reason || "");
     return rerunCannotJudge(rr);
   }
@@ -3307,12 +3315,13 @@ const CLIENT_JS = `
   // browser to click through.
 
   // Bar segments in drawing order: what to act on first, then what needs no
-  // action, then what was never measured. "unknown" keeps its own place and
-  // its own colour — folding it into "notNeeded" would turn "we cannot say"
-  // into "all clear", which is the one thing ADR-0010 forbids.
-  var RERUN_ORDER = ["needed", "unknown", "notNeeded", "neverRun", "notEvaluated"];
+  // action, then what was never measured. "blocked" leads because it is the
+  // only state a run cannot clear — someone has to repair the spec. "unknown"
+  // keeps its own place and its own colour: folding it into "notNeeded" would
+  // turn "we cannot say" into "all clear", which is what ADR-0010 forbids.
+  var RERUN_ORDER = ["blocked", "needed", "unknown", "notNeeded", "neverRun", "notEvaluated"];
   var RERUN_SEG_CLASS = {
-    needed: "sg-needed", unknown: "sg-unknown", notNeeded: "sg-notneeded",
+    blocked: "sg-blocked", needed: "sg-needed", unknown: "sg-unknown", notNeeded: "sg-notneeded",
     neverRun: "sg-neverrun", notEvaluated: "sg-noteval"
   };
 
@@ -3322,7 +3331,7 @@ const CLIENT_JS = `
   // state this UI does not know reads as unknown for the same reason: an
   // answer we cannot interpret is not evidence that nothing is needed.
   function rerunComposition(verdicts) {
-    var counts = { needed: 0, unknown: 0, notNeeded: 0, neverRun: 0, notEvaluated: 0 };
+    var counts = { blocked: 0, needed: 0, unknown: 0, notNeeded: 0, neverRun: 0, notEvaluated: 0 };
     verdicts.forEach(function (rr) {
       if (!rr || !rr.state) { counts.notEvaluated += 1; return; }
       var known = Object.prototype.hasOwnProperty.call(counts, rr.state);
@@ -3453,7 +3462,7 @@ const CLIENT_JS = `
   //
   // "unknown" keeps its own state rather than folding into the last result:
   // it means the hub cannot say whether that result still holds, and
-  // --only-hub-stale does not re-run it without --only-hub-stale-with-unknown. Showing
+  // --only-hub-rerun-needed does not re-run it without --only-hub-rerun-needed-with-unknown. Showing
   // it as passed or failed would claim a confidence nothing supports.
   function perspRunState(rr) {
     if (!rr) return null;

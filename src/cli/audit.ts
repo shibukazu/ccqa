@@ -68,7 +68,7 @@ export const auditCommand = addLanguageOption(
     .option("--report-format <fmt>", "Output format: text | json | github", "text")
     .option(
       "--report-to-hub",
-      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger `ccqa run --only-hub-audited-clean` reads.",
+      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger. A spec it finds drifted answers `blocked` to `ccqa run --only-hub-rerun-needed`, and is not run until the drift clears.",
     )
     .option(
       "--exit-on <level>",

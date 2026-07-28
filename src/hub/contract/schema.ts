@@ -369,8 +369,22 @@ export type SpecTouchIndex = z.infer<typeof SpecTouchIndexSchema>;
  * no model call) is a different question from drift (does the spec still
  * describe the product), and the two must not be conflated — see ADR-0010.
  */
-export const RerunStateSchema = z.enum(["needed", "notNeeded", "unknown", "neverRun", "notEvaluated"]);
+export const RerunStateSchema = z.enum(["needed", "notNeeded", "blocked", "unknown", "neverRun", "notEvaluated"]);
 export type RerunState = z.infer<typeof RerunStateSchema>;
+
+/**
+ * Why a spec is `blocked`. Always carried: the two answers differ in who
+ * repairs them and how long that takes — a stale recording is re-recorded
+ * automatically within minutes, a changed spec waits for a human — so a view
+ * that showed only "blocked" would hide the distinction that matters most.
+ */
+export const RerunBlockedReasonSchema = z.enum([
+  /** The audit found the generated test code stale. `ccqa record` repairs it. */
+  "testDrift",
+  /** The audit found the spec itself describes something the code no longer does. A human repairs it. */
+  "specChange",
+]);
+export type RerunBlockedReason = z.infer<typeof RerunBlockedReasonSchema>;
 
 /**
  * Why a spec is `unknown`. Always carried, so the view can name the missing
@@ -413,6 +427,8 @@ export const SpecRerunSchema = z.object({
   state: RerunStateSchema,
   /** Set only when `state === "unknown"`. */
   reason: RerunUnknownReasonSchema.optional(),
+  /** Set only when `state === "blocked"`. */
+  blockedReason: RerunBlockedReasonSchema.optional(),
   lastRun: SpecLedgerEntrySchema.nullable(),
   lastGreen: SpecLedgerEntrySchema.nullable(),
   lastRed: SpecLedgerEntrySchema.nullable(),

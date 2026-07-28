@@ -121,7 +121,7 @@ ccqa hub deploy record --project demo --profile stg --sha "$GIT_SHA" --ref main
 
 Tells the hub what a deploy shipped. It is the one input the hub cannot
 derive for itself — it has no checkout, never runs `git`, and never calls a
-git host — and it is what makes `ccqa run --only-hub-stale` answerable at
+git host — and it is what makes `ccqa run --only-hub-rerun-needed` answerable at
 all. Run it from the deploy job, after the deploy succeeds. Flags:
 
 - `--profile <name>` — **required**: the profile whose deploy log this joins.
