@@ -1,5 +1,8 @@
 # ccqa
 
+> [!WARNING]
+> ccqa は開発中です。破壊的変更が入ることがあります。
+
 **Claude のサブスクリプションには、QA エンジニアがすでに含まれています。**
 
 ccqa は Claude Code をブラウザテストのレコーダー兼ランナーとして使えるように
@@ -118,9 +121,36 @@ record`）、その記録がプレーンなテストコードに変換されま�
 
 ## 監査してから実行する
 
-E2E テストが落ちても、それが誰の担当すべき問題なのかまでは分かりません。
-これを決める問いは 2 つあり、ccqa はそれを決まった順序で問います。片方が安く、
-もう片方が高いからです。
+**spec は、検証環境で動いているコードを説明するものです。** 手元のブランチの
+コードでも、デフォルトブランチの先端でもなく、いま検証しているデプロイそのもの。
+以下はすべて、この 1 文から出てきます。
+
+デプロイでそのコードが変わると、説明できなくなる spec が出ます。これは**落ちる
+テストではなく、動いているものについて何も正しいことを言わなくなったテスト**です。
+実行しても何も分かりません。それを問うのが監査で、**何かを実行する前に答えを
+出します。**
+
+```
+         検証環境で動いているコード
+                     │
+                     │  spec はこれを説明している
+                     ▼
+        デプロイのコミットが変わる
+                     │
+                     ▼
+      その変更が届く spec だけ監査
+                     │
+   まだ説明できている ─┴─ 説明できなくなった
+          │                      │
+          ▼                      ▼
+       実行する            spec を書き換える
+                                 │
+                        次の回で監査し直す。
+                        それまでは未検証
+```
+
+監査するのは変更が届いた spec だけ、実行するのはまだ説明できている spec だけです。
+直し待ちの spec は**通ったのでも落ちたのでもなく、未検証**であり、そう報告されます。
 
 **まずブラウザを使わずに、各 spec がまだコードを説明しているかを見ます。**
 `ccqa audit` が spec とソースを突き合わせます。deterministic な spec では、
@@ -129,7 +159,8 @@ E2E テストが落ちても、それが誰の担当すべき問題なのかま�
 生成コードのずれは record し直せば済み、spec のずれは人が書き直す必要があります。
 1 spec あたり数セント、環境も要りません。
 
-**次に、監査がシロと言った spec だけを実行し、それでも落ちたものを分類します。**
+**次に、監査が通した spec を実行します。それでも落ちたものについては、誰の担当
+かまで踏み込みます。** E2E テストは、落ちただけではそれを教えてくれません。
 `ccqa run --only-hub-audited-clean --on-fail-explain` は、監査でズレが見つからな
 かった spec だけを実行し、失敗を `TEST_DRIFT`（テストのずれ）、`SPEC_CHANGE`
 （仕様変更）、`PRODUCT_BUG`（プロダクトの不具合）に分類します。根拠が足りず
@@ -225,12 +256,16 @@ ccqa serve                                               # 保存に必要
 
 一覧は [Environment variables](./commands.md#environment-variables) にあります。
 
-**profile** はデプロイ先の環境 1 つを指します。hub 上の変数と保存済みセッション
-をまとめる名前であり、環境ごとにコミットが違うので、デプロイ履歴を分ける単位でも
-あります。spec が参照する変数は、手元から一度だけ登録します。
+**profile** は hub 上の変数と保存済みセッションの、名前を付けた組です。テナント、
+アカウント、役割といったものを指します。**環境ではありません。**
+
+開発中はどこに向けても構いませんが、ccqa が*追跡する*のは検証環境 1 つです。
+テストコードは 1 バージョンしかなく、記述できるデプロイも 1 つだからです。監査も
+再実行判定も、問うているのはその 1 つについてです。spec が参照する変数は、手元から
+一度だけ登録します。
 
 ```bash
-ccqa hub var set APP_URL --value https://app.example --profile staging
+ccqa hub var set APP_URL --value https://app.example --profile ci
 ```
 
 どのジョブでも同じ `--hub-profile` と `--project` を渡してください。ジョブどうしが
@@ -242,13 +277,13 @@ ccqa hub var set APP_URL --value https://app.example --profile staging
 
 ```bash
 ccqa run --only-affected-by "origin/$GITHUB_BASE_REF" --on-fail-explain \
-  --hub-profile staging --report-format github --report-to-hub
+  --hub-profile ci --report-format github --report-to-hub
 ```
 
 - `--only-affected-by <ref>`：`<ref>` との差分が到達する spec を選びます。
   シロと判定できなかった spec は実行します。
 - `--on-fail-explain`：失敗した spec の原因を分類します。
-- `--hub-profile staging`：その環境の変数と保存済みセッションを hub から取得します。
+- `--hub-profile ci`：その profile の変数と保存済みセッションを hub から取得します。
   付けないと spec の `${…}` が解決されません。
 - `--report-format github`：プルリクエストに注釈を付けます。
 - `--report-to-hub`：実行しながら結果を hub に送ります。
@@ -270,13 +305,13 @@ checkout には、その基準コミットが存在しません。
 何をデプロイしたかを hub に伝えます。
 
 ```bash
-ccqa hub deploy record --profile staging --sha "$GITHUB_SHA" --select
+ccqa hub deploy record --profile ci --sha "$GITHUB_SHA" --select
 ```
 
 続いて別のジョブで、そのデプロイによって信用できなくなった spec を実行します。
 
 ```bash
-ccqa run --only-hub-stale --hub-profile staging --report-to-hub
+ccqa run --only-hub-stale --hub-profile ci --report-to-hub
 ```
 
 - `--select`：デプロイした範囲がどの spec に到達するかを記録します。付けないと、
@@ -317,7 +352,7 @@ spec が通っていても、もう存在しないプロダクトを説明して
 言い、かつ前回の結果が古くなった spec にだけ実行を使う形です。
 
 ```bash
-ccqa run --only-hub-audited-clean --only-hub-stale --hub-profile staging --report-to-hub
+ccqa run --only-hub-audited-clean --only-hub-stale --hub-profile ci --report-to-hub
 ```
 
 `--only-*` は前のフラグが残したものをさらに絞るので、重ねられます。

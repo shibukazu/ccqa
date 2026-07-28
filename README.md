@@ -1,5 +1,8 @@
 # ccqa
 
+> [!WARNING]
+> ccqa is under active development. Expect breaking changes.
+
 **Your Claude subscription already includes a QA engineer.**
 
 ccqa turns Claude Code into a browser test recorder and runner. You write a
@@ -120,9 +123,37 @@ recording would break.
 
 ## Audit, then run
 
-A failing E2E test does not say whose problem it is. Two questions decide it,
-and ccqa asks them in a fixed order — because one is cheap and the other is
-not.
+**A spec describes the code your verification environment is running.** Not the
+code on your branch, not the tip of the default branch — the deployment you are
+verifying, as it stands. Everything below follows from that one sentence.
+
+A deploy moves that code, and some specs stop describing it. Those are not
+tests that fail; they are tests that no longer say anything true about what is
+running, so executing them tells you nothing. The audit is what asks the
+question, and it is answered before anything runs.
+
+```
+        the code the verification environment is running
+                            │
+                            │  a spec describes this
+                            ▼
+              the deployed commit changes
+                            │
+                            ▼
+           audit the specs that change reaches
+                            │
+      still describes it ───┴─── no longer describes it
+              │                            │
+              ▼                            ▼
+           run it                   repair the spec
+                                           │
+                                  re-audited next round;
+                                  unverified until then
+```
+
+Only the specs the change reaches are audited, and only the ones that still
+describe the deployment are run. A spec awaiting repair is **not** a passing
+spec and **not** a failing one — it is unverified, and says so.
 
 **First, without a browser: does each spec still describe the code?**
 `ccqa audit` reads the spec against the source. For a deterministic spec that
@@ -131,7 +162,8 @@ it — since either can fall out of step. Which one drifted decides the repair,
 so the audit reports it: stale generated code is re-recorded, a stale spec
 needs a human. Cents per spec, no environment required.
 
-**Then, for the specs it cleared: run them, and label what still fails.**
+**Then run what it cleared — and when something still fails, say whose problem
+it is.** A failing E2E test does not tell you that on its own.
 `ccqa run --only-hub-audited-clean --on-fail-explain` executes only the specs
 the audit found no drift in, and labels each failure `TEST_DRIFT`,
 `SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN` when the evidence does not support
@@ -228,13 +260,17 @@ All of them need two things:
 See [Environment variables](./docs/commands.md#environment-variables) for the
 full list.
 
-A **profile** is one deployed environment. It names a bucket of variables and
-saved sessions on the hub, and — since two environments sit at different
-commits — its own deploy history. Register the variables your specs reference
-once, from your machine:
+A **profile** is a named set of variables and saved sessions on the hub — a
+tenant, an account, a role. It is **not an environment**.
+
+Point a spec wherever you like while developing; what ccqa *tracks* is one
+verification environment. There is a single version of the test code, and it can
+only describe one deployment — which is what the drift audit and the re-run
+verdict are both about. Register the variables your specs reference once, from
+your machine:
 
 ```bash
-ccqa hub var set APP_URL --value https://app.example --profile staging
+ccqa hub var set APP_URL --value https://app.example --profile admin
 ```
 
 Pass the same `--hub-profile` and `--project` in every job. That is what makes the
@@ -246,13 +282,13 @@ Run the specs the change reaches, and label what broke.
 
 ```bash
 ccqa run --only-affected-by "origin/$GITHUB_BASE_REF" --on-fail-explain \
-  --hub-profile staging --report-format github --report-to-hub
+  --hub-profile ci --report-format github --report-to-hub
 ```
 
 - `--only-affected-by <ref>` selects the specs the diff against `<ref>` reaches.
   A spec it cannot clear runs anyway.
 - `--on-fail-explain` labels the cause of each failure.
-- `--hub-profile staging` fetches that environment's variables and saved sessions
+- `--hub-profile ci` fetches that profile's variables and saved sessions
   from the hub. Without it, a spec's `${…}` references go unresolved.
 - `--report-format github` annotates the pull request.
 - `--report-to-hub` streams results to the hub as the run executes.
@@ -274,13 +310,13 @@ Two steps, in two jobs. First, when the deploy succeeds, tell the hub what
 shipped:
 
 ```bash
-ccqa hub deploy record --profile staging --sha "$GITHUB_SHA" --select
+ccqa hub deploy record --profile ci --sha "$GITHUB_SHA" --select
 ```
 
 Then, in a job of its own, run what that deploy invalidated:
 
 ```bash
-ccqa run --only-hub-stale --hub-profile staging --report-to-hub
+ccqa run --only-hub-stale --hub-profile ci --report-to-hub
 ```
 
 - `--select` records which specs the deployed range reaches. Without it, every
@@ -324,7 +360,7 @@ run only where the audit cleared the spec **and** the last result no longer
 holds:
 
 ```bash
-ccqa run --only-hub-audited-clean --only-hub-stale --hub-profile staging --report-to-hub
+ccqa run --only-hub-audited-clean --only-hub-stale --hub-profile ci --report-to-hub
 ```
 
 Every `--only-*` narrows what the one before it left, so they compose.

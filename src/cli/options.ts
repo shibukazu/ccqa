@@ -29,7 +29,7 @@ export function addLanguageOption(command: Command): Command {
 export function addProfileOption(command: Command): Command {
   return command.option(
     "--hub-profile <name>",
-    "Load this profile's variables from the hub into the environment before resolving spec ${VAR} references (URLs, credentials), so one spec can target dev/stg/prd without per-environment copies. Profile values override the inherited environment. Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN).",
+    "Load this profile's variables from the hub into the environment before resolving spec ${VAR} references (URLs, credentials), so one spec can run as a different tenant, account or role without a copy per set of values. A profile is a value set, not an environment — ccqa tracks one verification environment. Profile values override the inherited environment. Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN).",
   );
 }
 

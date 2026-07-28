@@ -124,7 +124,7 @@ derive for itself — it has no checkout, never runs `git`, and never calls a
 git host — and it is what makes `ccqa run --only-hub-stale` answerable at
 all. Run it from the deploy job, after the deploy succeeds. Flags:
 
-- `--profile <name>` — **required**: the environment this deploy landed in.
+- `--profile <name>` — **required**: the profile whose deploy log this joins.
   Two environments sit at different commits, so the deploy log is
   per-profile.
 - `--sha <sha>` — **required**: the commit that was deployed.
@@ -342,7 +342,7 @@ else is scoped to the selected project.
   header (never in the URL). You can grade each failed
   spec's **actual cause** right here — the grade is saved to the hub (not just
   your browser) and a confusion matrix of predicted-vs-actual updates live. Each
-  run also shows which **profile** (environment) it executed against.
+  run also shows which **profile** (value set) it executed against.
 - **Perspectives** renders the project's coverage inventory (see
   [perspectives in the spec guide](./spec.md#inventory-coverage-with-perspectives)):
   a summary strip (features, test cases, deterministic/live breakdown, and a

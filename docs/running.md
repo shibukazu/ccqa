@@ -80,8 +80,12 @@ usage errors. The failure analysis never changes the exit code.
 
 ## Profiles and environment variables
 
-Keep environment-specific values out of specs as `${VAR}` references and
-supply them per environment:
+A **profile** is a named set of variables and saved sessions on the hub — a
+tenant, an account, a role. It is **not an environment**: ccqa tracks one
+verification environment, because there is one version of the test code and it
+can only describe one deployment.
+
+Keep the values themselves out of specs as `${VAR}` references:
 
 - **Without `--hub-profile`**, ccqa auto-loads `<cwd>/.env` if present (it does
   not override variables already set in the shell); otherwise `${VAR}`
@@ -96,9 +100,9 @@ supply them per environment:
 Register variables once per project/profile:
 
 ```bash
-ccqa hub var set BASE_URL --value https://staging.example --profile staging
-echo "$TOKEN" | ccqa hub var set API_TOKEN --sensitive --profile staging
-ccqa run auth/login --hub-profile staging     # same spec, staging values
+ccqa hub var set BASE_URL --value https://app.example --profile admin
+echo "$TOKEN" | ccqa hub var set API_TOKEN --sensitive --profile admin
+ccqa run auth/login --hub-profile admin     # same spec, the admin account's values
 ```
 
 `--sensitive` hides the value from `ccqa hub var ls` listings. The same
@@ -339,8 +343,8 @@ selection](./hub-api.md#deploys-and-re-run-selection)). No git diff runs
 locally, and nothing is guessed: the verdict is either recorded or the
 answer is `unknown`.
 
-It needs a hub connection and `--hub-profile` (`dev` and `stg` sit at different
-commits, so the question has no profile-free answer). Anything that makes
+It needs a hub connection and `--hub-profile` (the deploy log is per profile —
+a spec run under one value set says nothing about another). Anything that makes
 the question unanswerable — no perspectives document, no deploy recorded for
 the profile, a hub too old to serve the endpoint — is an **error**, never an
 empty selection.
