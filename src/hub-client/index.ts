@@ -155,7 +155,7 @@ export interface HubClient {
    */
   getRerun(project: string, q: { profile: string }): Promise<RerunReport>;
   /**
-   * Every spec's last `ccqa drift --push` audit, keyed by "feature/spec". No
+   * Every spec's last `ccqa audit --report-to-hub` result, keyed by "feature/spec". No
    * profile — drift asks whether a spec still describes the code, not
    * whether an environment is stale.
    */

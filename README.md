@@ -77,7 +77,7 @@ See [Running specs](./docs/running.md) for flags and the report format.
 
 If the spec sits behind a login that a recording cannot reproduce — an SSO
 redirect, a device-trust gate — record a session by hand once with
-[`ccqa session bootstrap`](./docs/sessions.md) and name it in the spec.
+[`ccqa hub session capture`](./docs/sessions.md) and name it in the spec.
 
 ## How it works
 
@@ -89,7 +89,7 @@ spec.yaml ──► ccqa record ─────► ir.json ────► ccqa 
                route              IR
 
 test code ──► ccqa run ────────► report.json ─► ccqa hub push /
-               vitest replay /    + evidence      --push-report
+               vitest replay /    + evidence      --report-to-hub
                runCommand /       + artifacts     team dashboard,
                live (Claude                       failure triage,
                drives per step)                   grading & learning
@@ -123,7 +123,7 @@ recording would break.
 A failing E2E test does not say whose problem it is. ccqa answers that
 question in one vocabulary, from two directions.
 
-**When a spec fails**, `ccqa run --failure-analysis [base]` labels the cause
+**When a spec fails**, `ccqa run --on-fail-explain` labels the cause
 — `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN` when the evidence
 does not support a call. The label comes with a drift audit of the same spec,
 because "did the test break" and "does the test still describe the product"
@@ -131,7 +131,7 @@ are the same investigation. `[base]` is what the diff is read against: a git
 ref, or `last-green` to have each spec diff against the commit where it last
 passed. With neither, the label rests on the failure alone and says so.
 
-**Before anything runs**, `ccqa drift` asks the second question on its own,
+**Before anything runs**, `ccqa audit` asks the second question on its own,
 with no browser: does each spec still describe the code? For a deterministic
 spec that means both artifacts — the spec a human wrote and the test code
 compiled from it — since either can fall out of step. Which one drifted
@@ -152,7 +152,7 @@ where the shared state lives — there is no second place to put it:
   current by `record`/`generate`
 - the variables `${…}` resolve to, and saved browser sessions, fetched at run
   time — so CI holds one secret instead of an environment
-- the deploy log behind `--changed=last-run`, and the drift ledger
+- the deploy log behind `--only-stale`, and the drift ledger
 - a dashboard of runs with per-step screenshots, triage grading, and the
   prompts learned from those grades
 
@@ -187,7 +187,7 @@ All three need two things:
   change selection, the failure analysis and the audit all do.
 - **A running [hub](#the-hub)**, reached with `CCQA_HUB_URL` and
   `CCQA_HUB_TOKEN`. Only a pre-merge run with no `--profile` and no
-  `--push-report` can do without one.
+  `--report-to-hub` can do without one.
 
 See [Environment variables](./docs/commands.md#environment-variables) for the
 full list.
@@ -209,23 +209,23 @@ jobs refer to the same environment.
 Run the specs the change reaches, and label what broke.
 
 ```bash
-ccqa run --changed --failure-analysis --profile staging \
-  --format github --push-report
+ccqa run --only-affected-by --on-fail-explain --profile staging \
+  --report-format github --report-to-hub
 ```
 
-- `--changed` selects the specs the diff reaches. A spec it cannot clear runs
+- `--only-affected-by` selects the specs the diff reaches. A spec it cannot clear runs
   anyway.
-- `--failure-analysis` labels the cause of each failure.
+- `--on-fail-explain` labels the cause of each failure.
 - `--profile staging` fetches that environment's variables and saved sessions
   from the hub. Without it, a spec's `${…}` references go unresolved.
-- `--format github` annotates the pull request.
-- `--push-report` streams results to the hub as the run executes.
+- `--report-format github` annotates the pull request.
+- `--report-to-hub` streams results to the hub as the run executes.
 
 **Set `fetch-depth: 0` on `actions/checkout`.** Both selection flags read
 their baseline from `GITHUB_BASE_REF` and resolve it against `origin/<base>`,
 which a shallow checkout does not have. Without it the run exits with a usage
 error before the first test. Outside a `pull_request` workflow there is no
-`GITHUB_BASE_REF`, so pass the base yourself: `--changed=origin/main`.
+`GITHUB_BASE_REF`, so pass the base yourself: `--only-affected-by origin/main`.
 
 `--dry-run` prints the selection and stops. The selection costs one model call
 either way.
@@ -242,12 +242,12 @@ ccqa hub deploy record --profile staging --sha "$GITHUB_SHA" --select
 Then, in a job of its own, run what that deploy invalidated:
 
 ```bash
-ccqa run --changed=last-run --profile staging --push-report
+ccqa run --only-stale --profile staging --report-to-hub
 ```
 
 - `--select` records which specs the deployed range reaches. Without it, every
   spec behind that entry answers `unknown` instead of `notNeeded`.
-- `--changed=last-run` asks the hub, per spec, whether any deploy has touched
+- `--only-stale` asks the hub, per spec, whether any deploy has touched
   it since that spec last ran.
 
 The hub has no checkout and never runs `git`, so it cannot work out what a
@@ -257,24 +257,24 @@ a hole nothing can fill in afterwards.
 
 **Expect it to select nothing at first.** A spec with no recorded run is
 `neverRun`; one whose baseline predates the deploy log is `unknown`. Neither
-runs by default. Record a deploy, run every spec once with `--push-report`,
+runs by default. Record a deploy, run every spec once with `--report-to-hub`,
 and the selection means something from the next deploy on. This job also reads
 the spec inventory from the hub, so `ccqa perspectives` has to have run.
-`--include-unknown` opts the undecided specs in.
+`--only-stale-with-unknown` opts the undecided specs in.
 
 ### On a schedule
 
 Audit every spec against the codebase, with no browser and no deploy.
 
 ```bash
-ccqa drift --format github --push
+ccqa audit --report-format github --report-to-hub
 ```
 
-- `--severity warn|error` (default `error`) decides whether a verdict fails
+- `--exit-on warn|error` (default `error`) decides whether a verdict fails
   the job.
-- `--push` records each verdict in the hub's per-spec drift ledger, shown in
+- `--report-to-hub` records each verdict in the hub's per-spec drift ledger, shown in
   the Perspectives tab. It never changes the exit code.
-- `--changed --base <ref>` narrows the sweep on a `push` workflow, at the cost
+- `--only-affected-by <ref>` narrows the sweep on a `push` workflow, at the cost
   of one more model call.
 
 The pre-merge job already audits the specs that failed. This one covers the
@@ -299,7 +299,7 @@ deploy job, including a `curl`-only variant for pipelines with no Node.
 | Run specs and read the report | [Running specs](./docs/running.md) |
 | Classify failures and grade the calls | [Failure triage](./docs/running.md#failure-triage) |
 | Audit specs against the codebase without running them | [Drift detection](./docs/running.md#drift-detection) |
-| Replay only the specs a change reaches | [Scoping with `--changed`](./docs/running.md#scoping-with---changed) |
+| Replay only the specs a change reaches | [Scoping with `--only-affected-by`](./docs/running.md#scoping-with---only-affected-by) |
 | Wire ccqa into GitHub Actions | [CI integration](./docs/running.md#ci-integration) |
 | Run specs live (no codegen), with per-project guidance | [Live specs](./docs/live.md) |
 | Start runs already signed in / skip device-trust gates | [Saved sessions](./docs/sessions.md) |

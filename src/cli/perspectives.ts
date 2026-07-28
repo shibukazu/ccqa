@@ -41,8 +41,8 @@ import * as log from "./logger.ts";
 
 interface PerspectivesOptions extends HubConnOptions {
   instruction?: string;
-  apply?: boolean;
-  check?: boolean;
+  yes?: boolean;
+  verify?: boolean;
   model?: string;
   language?: string;
   project?: string;
@@ -54,16 +54,16 @@ export const perspectivesCommand = addHubOptions(addLanguageOption(
       "Generate/update the project's perspectives document on the hub — a factual inventory of existing test coverage (no severity, no gap analysis)",
     )
     .option("--instruction <text>", "Hint to steer how summaries are written")
-    .option("--apply", "Auto-apply without [y/N] confirmation", false)
+    .option("-y, --yes", "Apply without asking [y/N]", false)
     .option(
-      "--check",
-      "Verify the hub document still matches the local specs (mechanical fields only) and exit 1 when it is stale. No Claude calls — cheap enough for CI.",
+      "--verify",
+      "Check the hub document against the local specs (mechanical fields only) and exit 1 when it is stale. No Claude calls — cheap enough for CI.",
       false,
     )
     .option("-m, --model <name>", "Claude model alias ('sonnet'|'opus'|'haiku') or full ID")
     .option("--project <name>", "Hub project to store the document under (default: cwd directory name)"),
 )).action(withHubErrors(async (opts: PerspectivesOptions) => {
-  if (opts.check) {
+  if (opts.verify) {
     await runPerspectivesCheck(opts);
   } else {
     await runPerspectives(opts);
@@ -245,7 +245,7 @@ async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
   log.blank();
 
   const apply =
-    opts.apply === true ||
+    opts.yes === true ||
     /^y/i.test(
       await prompt(
         useJapanesePrompts(opts.language)

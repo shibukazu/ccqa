@@ -25,10 +25,11 @@ import {
   type FailureAnalysisRun,
 } from "./failure-analysis.ts";
 import { createDiffProvider, type DiffProvider } from "./diff-provider.ts";
-import { LAST_GREEN, LAST_RUN, resolveAnalysisBase, type GitContext } from "./git-context.ts";
+import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.ts";
 import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
 import { tryDeployHeadSha } from "./deploy-head.ts";
 import { formatDryRunLines } from "./dry-run.ts";
+import { fetchAuditedLedger, selectAuditedClean } from "./audited-clean.ts";
 import {
   fetchRerunReport,
   requireRerunProfile,
@@ -124,38 +125,36 @@ export type SpecRunSummary = {
 };
 
 export interface RunOptions {
-  report?: string | boolean;
+  reportDir?: string;
   cwd?: string;
   profile?: string;
   model?: string;
   language?: string;
-  format?: ReportFormat;
-  /**
-   * Opt-in failure classification: absent/false = off, `true` = baseline from
-   * GITHUB_BASE_REF, a string = explicit base ref. See `--failure-analysis
-   * [base]` and resolveAnalysisBase.
-   */
-  failureAnalysis?: boolean | string;
-  evidence?: boolean;
-  retry?: number;
-  out?: string;
-  /**
-   * Same value shape as `failureAnalysis` (`true` = GITHUB_BASE_REF, string =
-   * explicit base), plus the keyword `last-run`, which selects from the hub's
-   * re-run verdicts and does no git work at all.
-   */
-  changed?: boolean | string;
-  /** With `--changed=last-run`: also select specs whose re-run need is unknown / that never ran. */
-  includeUnknown?: boolean;
+  reportFormat?: ReportFormat;
+  /** Opt-in failure classification. See `--on-fail-explain`. */
+  onFailExplain?: boolean;
+  /** Diff base for the classification; without it, each spec's own last green. */
+  onFailExplainBase?: string;
+  replaySkipEvidence?: boolean;
+  liveStepRetry?: number;
+  liveArtifactsDir?: string;
+  /** Take only the specs a diff against this ref reaches. */
+  onlyAffectedBy?: string;
+  /** Take only the specs whose last result the hub says no longer holds. */
+  onlyStale?: boolean;
+  /** Take only the specs the drift ledger records as audited with no drift. */
+  onlyAuditedClean?: boolean;
+  /** With `onlyStale`: also take specs whose re-run need is unknown / that never ran. */
+  onlyStaleWithUnknown?: boolean;
   /** Print the selected specs and stop — no execution, no report, no hub writes. */
   dryRun?: boolean;
-  updateAgentPrompt?: boolean;
+  learnLivePrompt?: boolean;
   concurrency?: number;
   hubUrl?: string;
   hubToken?: string;
   hubHeader?: string[];
-  /** Opt-in for incremental hub push during the run (see run.ts --push-report help). */
-  pushReport?: boolean;
+  /** Opt-in for incremental hub push during the run (see run.ts --report-to-hub help). */
+  reportToHub?: boolean;
   project?: string;
   /** Reap agent-browser sessions / flush the report on SIGINT/SIGTERM. See run-teardown.ts. */
   teardown?: RunTeardown;
@@ -172,13 +171,10 @@ export interface RunPipelineResult {
 
 /**
  * Resolve the report directory. A report (report.json + evidence) is always
- * written now, so this is never undefined: `--report <dir>` only picks *where*
- * it lands, defaulting to `DEFAULT_REPORT_DIR`. `--report` with no value (a
- * bare boolean flag) also means "default location".
+ * written, so `--report-dir` only picks *where* it lands.
  */
-function resolveReportDir(report: string | boolean | undefined, cwd: string): string {
-  const raw = typeof report === "string" ? report : DEFAULT_REPORT_DIR;
-  return resolve(cwd, raw);
+function resolveReportDir(reportDir: string | undefined, cwd: string): string {
+  return resolve(cwd, reportDir ?? DEFAULT_REPORT_DIR);
 }
 
 /** De-dupe by `featureName/specName`, keeping first-seen order. */
@@ -207,15 +203,16 @@ export async function executeRun(
   targets: string[],
   opts: RunOptions,
 ): Promise<RunPipelineResult> {
-  if (opts.changed && targets.length > 0) {
-    throw new RunUsageError("--changed and an explicit spec target cannot be combined");
+  const filtering = Boolean(opts.onlyAffectedBy || opts.onlyStale || opts.onlyAuditedClean);
+  if (filtering && targets.length > 0) {
+    throw new RunUsageError("a --only-* filter and an explicit spec target cannot be combined");
   }
-  // `--changed=last-run` reads per-profile verdicts off the hub instead of a
-  // git diff, so its two inputs (a profile, and further down a hub connection)
+  // `--only-stale` reads per-profile verdicts off the hub instead of a git
+  // diff, so its two inputs (a profile, and further down a hub connection)
   // are checked before anything else runs.
-  const rerunProfile = opts.changed === LAST_RUN ? requireRerunProfile(opts.profile) : null;
-  if (opts.includeUnknown && rerunProfile === null) {
-    log.warn(`--include-unknown is ignored: it only applies to --changed=${LAST_RUN}`);
+  const rerunProfile = opts.onlyStale === true ? requireRerunProfile(opts.profile) : null;
+  if (opts.onlyStaleWithUnknown && rerunProfile === null) {
+    log.warn("--only-stale-with-unknown is ignored: it only applies to --only-stale");
   }
   // A dry run answers "which specs would run?" and stops. It never resolves a
   // `${VAR}`, classifies a failure or writes a report, so every input that
@@ -227,17 +224,17 @@ export async function executeRun(
   const cwd = opts.cwd ?? process.cwd();
 
   // Resolve git coordinates before anything else runs: `head` is recorded in
-  // the report unconditionally, and an unresolvable --failure-analysis
-  // baseline must fail here — a fast usage error — not after minutes of spec
+  // the report unconditionally, and an unresolvable --on-fail-explain-base
+  // must fail here — a fast usage error — not after minutes of spec
   // execution. `base` stays null when analysis wasn't requested, which is
-  // what downstream reads as "classification off". The last-green mode needs
-  // the hub connection, so its ledger fetch happens below once hubCtx exists;
-  // the fixed-ref modes fail fast right here.
-  const wantsLastGreen = opts.failureAnalysis === LAST_GREEN;
+  // what downstream reads as "classification off". Without an explicit base
+  // each spec diffs against its own last green, which needs the hub
+  // connection, so that ledger fetch happens below once hubCtx exists.
+  const wantsLastGreen = opts.onFailExplain === true && opts.onFailExplainBase === undefined;
   const [head, fixedBase] = await Promise.all([
     getGitHead(cwd),
-    forExecution && opts.failureAnalysis && !wantsLastGreen
-      ? resolveAnalysisBase(opts.failureAnalysis, "--failure-analysis", cwd)
+    forExecution && opts.onFailExplain && opts.onFailExplainBase !== undefined
+      ? resolveAnalysisBase(opts.onFailExplainBase, "--on-fail-explain-base", cwd)
       : null,
   ]);
   const git: GitContext = {
@@ -309,7 +306,7 @@ export async function executeRun(
   // connection is a usage error, not a degrade-to-no-analysis.
   if (wantsLastGreen && hubCtx == null) {
     throw new RunUsageError(
-      `--failure-analysis=${LAST_GREEN} requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
+      "--on-fail-explain needs a hub connection for the per-spec last-green baselines (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN), or an explicit --on-fail-explain-base <ref>",
     );
   }
   const ledgerHub = wantsLastGreen ? hubCtx : null;
@@ -319,7 +316,12 @@ export async function executeRun(
   // a dry run skips that, so this is where it finds out.
   if (rerunProfile !== null && hubCtx == null) {
     throw new RunUsageError(
-      `--changed=${LAST_RUN} requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
+      "--only-stale requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+    );
+  }
+  if (opts.onlyAuditedClean && hubCtx == null) {
+    throw new RunUsageError(
+      "--only-audited-clean requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
     );
   }
 
@@ -327,7 +329,7 @@ export async function executeRun(
   // the human-maintained `triage.user` guidance and the learned custom prompt.
   // The last-green ledger, the re-run verdicts and the deploy head (when
   // applicable) join the same batch — all are independent hub round trips.
-  const [customPrompt, triageUserPrompt, ledgerEntries, rerunReport, fetchedDeployHead] = await Promise.all([
+  const [customPrompt, triageUserPrompt, ledgerEntries, rerunReport, fetchedDeployHead, auditedLedger] = await Promise.all([
     forExecution ? fetchCustomPrompt(hubCtx) : null,
     forExecution ? fetchTriageUserPrompt(hubCtx) : null,
     forExecution && ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.profile, cwd) : null,
@@ -339,6 +341,7 @@ export async function executeRun(
     forExecution && hubCtx && opts.profile && rerunProfile === null
       ? tryDeployHeadSha(hubCtx, opts.profile)
       : null,
+    opts.onlyAuditedClean && hubCtx ? fetchAuditedLedger(hubCtx) : null,
   ]);
   const deployedSha = rerunReport?.deployHead.sha ?? fetchedDeployHead;
   if (ledgerEntries) {
@@ -353,7 +356,7 @@ export async function executeRun(
   // PNGs share a directory even when --cwd points at a subpackage. A report is
   // always written now; --report only picks where. Resolved up front so the
   // analysis deps below can carry it (they locate a spec's run artifacts).
-  const reportDir = resolveReportDir(opts.report, cwd);
+  const reportDir = resolveReportDir(opts.reportDir, cwd);
 
   // Everything the failure analysis needs, resolved once and shared by every
   // execution path that classifies (deterministic + external targets; the live
@@ -379,25 +382,38 @@ export async function executeRun(
   );
   let specs = dedupeSpecs(resolved.flat());
 
-  if (opts.changed) {
+  if (filtering) {
     const before = specs.length;
     let unanswerable = 0;
+    // Each filter narrows what the previous one left, so passing both means
+    // "stale AND affected". The hub verdicts run first because they are
+    // already fetched: whatever they drop is one less spec for the selector
+    // below to spend model tokens reasoning about.
     if (rerunReport) {
       const selection = selectSpecsNeedingRerun(specs, rerunReport, {
-        includeUnknown: opts.includeUnknown === true,
+        includeUnknown: opts.onlyStaleWithUnknown === true,
       });
       specs = selection.selected;
       unanswerable = selection.excludedUnanswerable;
       log.meta(
-        "rerun-base",
+        "stale-base",
         `deploy ${rerunReport.deployHead.sha.slice(0, 12)} (profile ${rerunReport.profile})`,
       );
-      log.meta("rerun-states", selection.summary);
-    } else {
+      log.meta("stale-states", selection.summary);
+    }
+    if (auditedLedger) {
+      const picked = selectAuditedClean(specs, auditedLedger);
+      specs = picked.selected;
+      log.meta(
+        "audit-states",
+        `${picked.selected.length} clean, ${picked.drifted} drifted, ${picked.unaudited} never audited`,
+      );
+    }
+    if (opts.onlyAffectedBy) {
       specs = (
         await collectChangedSpecs(specs, {
           cwd,
-          base: opts.changed,
+          base: opts.onlyAffectedBy,
           // Selection sees every spec plus the whole diff — the largest
           // input of any call here, so -m must reach it like the rest.
           ...(opts.model ? { model: opts.model } : {}),
@@ -405,7 +421,7 @@ export async function executeRun(
       ).specs;
     }
     log.meta(
-      "changed-scoped",
+      "selected",
       `${specs.length} of ${before} spec${before === 1 ? "" : "s"}`,
     );
     // Selecting nothing is a real answer only when every spec was answered.
@@ -414,7 +430,7 @@ export async function executeRun(
     if (specs.length === 0 && unanswerable > 0) {
       log.hint(
         `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
-          `a re-run; pass --include-unknown to run them anyway`,
+          `a re-run; pass --only-stale-with-unknown to run them anyway`,
       );
     }
   }
@@ -457,16 +473,16 @@ export async function executeRun(
   // external-target specs run via their own runCommand and never honor them.
   if (liveSpecs.length === 0) {
     const why = "it only applies to agent-browser 'mode: live' specs, and this run has none";
-    if (typeof opts.retry === "number" && opts.retry > 0) log.warn(`--retry is ignored: ${why}`);
-    if (opts.out) log.warn(`--out is ignored: ${why}`);
-    if (opts.updateAgentPrompt) log.warn(`--update-agent-prompt is ignored: ${why}`);
-  } else if (opts.out && liveSpecs.length > 1) {
+    if (typeof opts.liveStepRetry === "number" && opts.liveStepRetry > 0) log.warn(`--live-step-retry is ignored: ${why}`);
+    if (opts.liveArtifactsDir) log.warn(`--live-artifacts-dir is ignored: ${why}`);
+    if (opts.learnLivePrompt) log.warn(`--learn-live-prompt is ignored: ${why}`);
+  } else if (opts.liveArtifactsDir && liveSpecs.length > 1) {
     // A single --out dir can't hold multiple specs' artifacts without them
     // overwriting each other (worse under --concurrency), so it only applies
     // to single-spec runs, matching the flag's help text.
     log.warn("--out is ignored when running multiple live specs");
   }
-  if (detSpecs.length === 0 && opts.evidence === false) {
+  if (detSpecs.length === 0 && opts.replaySkipEvidence === true) {
     log.warn(
       "--no-evidence is ignored: it only applies to agent-browser 'mode: deterministic' specs, and this run has none",
     );
@@ -493,12 +509,12 @@ export async function executeRun(
   // run (test execution is the point). The open is not retried: a dropped
   // response could leave a second orphan running run, so on failure we degrade
   // to local-report-only.
-  if (opts.pushReport && hubCtx == null) {
+  if (opts.reportToHub && hubCtx == null) {
     log.warn("--push-report requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN); skipping push");
   }
   let hubRunId: string | null = null;
   let hubSink: ReportSink | undefined;
-  if (hubCtx != null && opts.pushReport) {
+  if (hubCtx != null && opts.reportToHub) {
     try {
       const branch = await detectBranch(cwd);
       const ciRunId = githubRunId();
@@ -599,10 +615,10 @@ export async function executeRun(
   const liveOpts: RunLiveOptions = {
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
-    ...(opts.out && liveSpecs.length === 1 ? { out: opts.out } : {}),
+    ...(opts.liveArtifactsDir && liveSpecs.length === 1 ? { out: opts.liveArtifactsDir } : {}),
     cwd,
     reportDir,
-    ...(typeof opts.retry === "number" ? { retry: opts.retry } : {}),
+    ...(typeof opts.liveStepRetry === "number" ? { retry: opts.liveStepRetry } : {}),
     concurrency: opts.concurrency ?? 1,
     ...(opts.profile ? { profile: opts.profile } : {}),
     diffProvider,
@@ -696,10 +712,11 @@ export async function executeRun(
 
   // "ignored without any 'mode: live' spec" already warned upfront alongside
   // the other live-only flags.
-  if (opts.updateAgentPrompt && liveSpecs.length > 0) {
+  if (opts.learnLivePrompt && liveSpecs.length > 0) {
     log.blank();
     await updateAgentPrompt({
       kind: "live",
+      flag: "--learn-live-prompt",
       runSummary: buildLiveRunSummary(live.reportResults),
       hubContext: hubCtx,
       ...(opts.model ? { model: opts.model } : {}),
@@ -800,12 +817,12 @@ async function runDeterministicSpecs(
 
   const tmpDir = await mkdtemp(join(tmpdir(), "ccqa-run-"));
   const vitestConfig = await resolveVitestConfig(cwd);
-  // A report is always written, so keep the vitest output tail unless failure
-  // analysis (its only consumer, via failureLogExcerpt) is turned off.
-  const captureOutput = opts.failureAnalysis !== false;
+  // The report's failure excerpts come from this tail, and a report is always
+  // written, so it is kept whether or not classification runs.
+  const captureOutput = true;
   // Evidence lives under the report dir for the standalone CI artifact; the
   // per-spec dir is composed via specEvidenceDir at capture time.
-  const captureEvidence = opts.evidence !== false;
+  const captureEvidence = opts.replaySkipEvidence !== true;
   // Parallel vitest streams interleave illegibly, so above 1 worker each spec
   // buffers its narration + vitest output (via log.withBuffer) and flushes one
   // labelled block on completion. At 1 worker output streams live, as before.
@@ -1088,7 +1105,7 @@ async function writeUnifiedReport(args: {
   const jsonPath = join(reportDir, "report.json");
   await writeFile(jsonPath, JSON.stringify(data, null, 2) + "\n", "utf8");
   log.info(`run report (json) written to ${jsonPath}`);
-  if (opts.format === "github") {
+  if (opts.reportFormat === "github") {
     for (const line of emitGithubAnnotations(data)) log.emitRaw(line + "\n");
   }
 

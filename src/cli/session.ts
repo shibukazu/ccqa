@@ -52,14 +52,14 @@ const projectOption = [
   "Project the session belongs to on the hub. Defaults to the current directory's name.",
 ] as const;
 
-interface BootstrapOptions extends HubConnOptions {
+interface CaptureOptions extends HubConnOptions {
   url?: string;
   profile?: string;
   project?: string;
   cwd?: string;
 }
 
-const bootstrapCommand = new Command("bootstrap")
+export const sessionCaptureCommand = new Command("capture")
   .description(
     "Open a headed browser so you can log in by hand, then upload the resulting " +
       "session (cookies + localStorage) to the hub for `session:` specs to restore.",
@@ -71,7 +71,7 @@ const bootstrapCommand = new Command("bootstrap")
   .option(...hubTokenOption)
   .option(...projectOption)
   .option("--cwd <path>", "Directory the default --project name is derived from (defaults to the current directory).")
-  .action(async (rawName: string, opts: BootstrapOptions) => {
+  .action(async (rawName: string, opts: CaptureOptions) => {
     const name = validateName(rawName);
     const cwd = resolveCwd(opts.cwd);
     const project = resolveProject(opts);
@@ -148,10 +148,3 @@ const bootstrapCommand = new Command("bootstrap")
     log.info(`uploaded session "${name}" to the hub (encrypted at rest)`);
     log.hint("reference it from a spec with:  session: " + name);
   });
-
-export const sessionCommand = new Command("session")
-  .description(
-    "Manage saved browser sessions (cookies + localStorage) for `session:` specs. " +
-      "Use `ccqa hub session ls` to list sessions stored on the hub.",
-  )
-  .addCommand(bootstrapCommand);

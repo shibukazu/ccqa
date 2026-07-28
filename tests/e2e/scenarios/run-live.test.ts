@@ -59,7 +59,7 @@ describe("ccqa run (live mode) — mocked Claude + fake agent-browser", () => {
 
     const reportDir = join(project.cwd, "ccqa-report");
 
-    const result = await runCcqa(["run", "demo/x", "--report", reportDir], {
+    const result = await runCcqa(["run", "demo/x", "--report-dir", reportDir], {
       cwd: project.cwd,
       env: { ...noColorEnv(), CCQA_CLAUDE_MOCK_FILE: mockPath },
       timeoutMs: 90_000,

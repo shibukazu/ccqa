@@ -39,7 +39,7 @@ export const draftCommand = addLanguageOption(
     .argument("[feature/spec]", "Optional spec path (e.g. tasks/create-and-complete). If omitted, Claude proposes one from your intent.")
     .description("Interactively draft and refine a spec.yaml with Claude Code")
     .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
-    .option("--apply", "Auto-apply each generated patch without [y/N] confirmation", false),
+    .option("-y, --yes", "Apply each generated patch without asking [y/N]", false),
 ).action(withUsageErrors(async (specPath: string | undefined, opts: DraftOptions) => {
   await ensureCcqaDir();
 
@@ -61,7 +61,7 @@ export const draftCommand = addLanguageOption(
 
 interface DraftOptions {
   instruction?: string;
-  apply?: boolean;
+  yes?: boolean;
   language?: string;
 }
 
@@ -115,7 +115,7 @@ async function runDraft(
       specName,
       existing,
       userInput: userInput.trim(),
-      autoApply: opts.apply === true,
+      autoApply: opts.yes === true,
       language: opts.language,
     });
 
@@ -396,7 +396,7 @@ async function proposeNaming(
   log.meta("proposed", `${final.featureName}/${final.specName}`);
   if (proposed.reason) log.meta("reason", proposed.reason);
 
-  if (oneShot || opts.apply === true) {
+  if (oneShot || opts.yes === true) {
     return { naming: final, intent: intent.trim() };
   }
 

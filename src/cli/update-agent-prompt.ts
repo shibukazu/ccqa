@@ -12,6 +12,8 @@ import * as log from "./logger.ts";
 export interface UpdateAgentPromptArgs {
   /** Which guidance pair to refresh — `<kind>.agent`. */
   kind: GuidanceKind;
+  /** The caller's flag, so messages name the flag the user actually typed. */
+  flag: string;
   /** Multi-line summary of the run, fed to the prompt as context. */
   runSummary: string;
   hubContext: HubContext | null;
@@ -28,16 +30,16 @@ export interface UpdateAgentPromptArgs {
  * so the run exit code is unaffected by this opt-in side step.
  */
 export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<void> {
-  const { kind, runSummary, hubContext, model, language } = args;
+  const { kind, flag, runSummary, hubContext, model, language } = args;
 
   const auth = driftAuthAvailable();
   if (!auth.ok) {
-    log.warn(`--update-agent-prompt skipped (${auth.reason})`);
+    log.warn(`${flag} skipped (${auth.reason})`);
     return;
   }
   if (!hubContext) {
     log.warn(
-      "--update-agent-prompt skipped (hub connection required; pass --hub-url/--hub-token or set CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+      `${flag} skipped (hub connection required; pass --hub-url/--hub-token or set CCQA_HUB_URL/CCQA_HUB_TOKEN)`,
     );
     return;
   }
@@ -55,7 +57,7 @@ export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<vo
     const systemPrompt = buildAgentUpdateSystemPrompt(promptInput);
     const userPrompt = buildAgentUpdateUserPrompt(promptInput);
 
-    log.info(`--update-agent-prompt: refreshing prompt "${promptName}" on the hub (project ${project})`);
+    log.info(`${flag}: refreshing prompt "${promptName}" on the hub (project ${project})`);
 
     // We don't expose a non-streaming wrapper today; use the streaming one with
     // a no-op event handler — `result` carries the full assistant text.
@@ -77,7 +79,7 @@ export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<vo
 
     if (isError || !result || result.trim().length === 0) {
       log.warn(
-        `--update-agent-prompt: Claude returned no usable output${isError ? " (SDK error)" : ""}; leaving prompt "${promptName}" unchanged`,
+        `${flag}: Claude returned no usable output${isError ? " (SDK error)" : ""}; leaving prompt "${promptName}" unchanged`,
       );
       return;
     }
@@ -85,18 +87,18 @@ export async function updateAgentPrompt(args: UpdateAgentPromptArgs): Promise<vo
     // The prompt contract: a run with nothing shortcut-worthy answers with the
     // NO_UPDATE sentinel (clean runs are the common case — not a failure).
     if (result.trim() === "NO_UPDATE") {
-      log.info(`--update-agent-prompt: no new learnings from this run; prompt "${promptName}" left unchanged`);
+      log.info(`${flag}: no new learnings from this run; prompt "${promptName}" left unchanged`);
       return;
     }
 
     const newText = stripCodeFences(result.trim()) + "\n";
     await hub.putPrompt(project, promptName, newText);
 
-    log.info(`--update-agent-prompt: updated prompt "${promptName}" on the hub`);
-    log.info("--update-agent-prompt: review it in the hub UI's Prompts tab");
+    log.info(`${flag}: updated prompt "${promptName}" on the hub`);
+    log.info(`${flag}: review it in the hub UI's Prompts tab`);
   } catch (err) {
     if (err instanceof HubApiError) {
-      log.warn(`--update-agent-prompt skipped (hub request failed: ${err.status} ${err.code}: ${err.message})`);
+      log.warn(`${flag} skipped (hub request failed: ${err.status} ${err.code}: ${err.message})`);
       return;
     }
     throw err;

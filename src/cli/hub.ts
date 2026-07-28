@@ -22,6 +22,7 @@ import { loadSpecInventory } from "../select/inventory.ts";
 import type { DeploySelection } from "../hub/contract/schema.ts";
 import { specKey } from "../store/index.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
+import { sessionCaptureCommand } from "./session.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { hubTokenOption, hubUrlOption, resolveHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
 import { detectBranch } from "./git-branch.ts";
@@ -174,6 +175,7 @@ const sessionRm = new Command("rm")
 
 const sessionCommand = new Command("session")
   .description("Manage browser sessions stored on the hub (fetched automatically by `ccqa run` / `ccqa record` at run time).")
+  .addCommand(sessionCaptureCommand)
   .addCommand(sessionPush)
   .addCommand(sessionLs)
   .addCommand(sessionRm);
@@ -522,16 +524,16 @@ const pushCommand = new Command("push")
     "Upload the report directory of a finished `ccqa run --report` to the hub as a run. " +
       "Run this after `ccqa run` (use `if: always()` in CI so failing runs are pushed too).",
   )
-  .option("--report <dir>", `Report directory to push. Default: ${DEFAULT_REPORT_DIR}/`)
+  .option("--report-dir <dir>", `Report directory to push. Default: ${DEFAULT_REPORT_DIR}/`)
   .option("--project <name>", "Logical project name for the run. Defaults to the current directory's name.")
   .option("--branch <name>", "Branch label. Defaults to $GITHUB_HEAD_REF / $GITHUB_REF_NAME / current git branch.")
   .option("--profile <name>", "Profile (environment) the run executed against. Recorded for display; runs are not scoped by profile.")
   .option(...hubUrlOption)
   .option(...hubTokenOption)
   .option("--cwd <path>", "Directory the report dir is resolved against (defaults to the current directory).")
-  .action(withHubErrors(async (opts: HubConnOptions & { report?: string; project?: string; branch?: string; profile?: string; cwd?: string }) => {
+  .action(withHubErrors(async (opts: HubConnOptions & { reportDir?: string; project?: string; branch?: string; profile?: string; cwd?: string }) => {
     const cwd = resolveCwd(opts.cwd);
-    const reportDir = join(cwd, opts.report ?? DEFAULT_REPORT_DIR);
+    const reportDir = join(cwd, opts.reportDir ?? DEFAULT_REPORT_DIR);
     const project = resolveProject(opts);
 
     let report: unknown;

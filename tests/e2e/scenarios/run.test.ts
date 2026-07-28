@@ -101,15 +101,15 @@ describe("ccqa run", () => {
     expect(occurrences.length).toBe(1);
   });
 
-  test("rejects --concurrency combined with multiple targets and --changed", async () => {
+  test("rejects a selection filter combined with explicit spec targets", async () => {
     project = await makeFakeProject("multi-spec", { linkCcqa: true });
-    const result = await runCcqa(["run", "alpha/one", "beta/two", "--changed"], {
+    const result = await runCcqa(["run", "alpha/one", "beta/two", "--only-affected-by", "HEAD~1"], {
       cwd: project.cwd,
       env: noColorEnv(),
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(2);
-    expect(combined).toMatch(/--changed and an explicit spec target cannot be combined/);
+    expect(combined).toMatch(/cannot be combined/);
   });
 
   test("--dry-run lists the selection and writes no report", async () => {

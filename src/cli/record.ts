@@ -25,14 +25,13 @@ interface RecordOptions {
   model?: string;
   language?: string;
   profile?: string;
-  validationMode?: ValidationMode;
+  traceValidation?: ValidationMode;
   autoFix?: AutoFixMode;
-  maxRetries?: string;
-  force?: boolean;
-  snapshot?: boolean;
-  skipTrace?: boolean;
-  skipCodegen?: boolean;
-  updateAgentPrompt?: boolean;
+  autoFixMaxRetries?: string;
+  overwrite?: boolean;
+  sessionPin?: boolean;
+  traceOnly?: boolean;
+  learnTracePrompt?: boolean;
   cwd?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -52,16 +51,17 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
         "a @playwright/test spec for the playwright target. Recording-backed targets only; spec-input " +
         "targets like runn have no trace step (use `ccqa generate`), and agent-browser live specs need no recording.",
     )
+    .optionsGroup("How to record:")
     .option(
       "-m, --model <name>",
       "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
     )
     .option(
-      "--validation-mode <mode>",
-      "Post-trace validation behaviour: 'lenient' (default) tags failing actions; 'strict' drops them.",
+      "--trace-validation <mode>",
+      "What to do with actions that fail post-trace validation: 'lenient' (default) tags them; 'strict' drops them.",
       (raw): ValidationMode => {
         if ((VALIDATION_MODES as readonly string[]).includes(raw)) return raw as ValidationMode;
-        throw new Error(`--validation-mode must be one of ${VALIDATION_MODES.join(" | ")}`);
+        throw new Error(`--trace-validation must be one of ${VALIDATION_MODES.join(" | ")}`);
       },
       "lenient" as ValidationMode,
     )
@@ -71,18 +71,20 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       parseAutoFixFlag,
       "interactive" as AutoFixMode,
     )
-    .option("--max-retries <n>", "Maximum number of auto-fix retries", "3")
-    .option("--force", "Overwrite an existing test.spec.ts without warning")
+    .option("--auto-fix-max-retries <n>", "Maximum number of auto-fix retries", "3")
+    .option("--trace-only", "Stop after the trace step; do not generate test code")
     .option(
-      "--no-snapshot",
+      "--no-session-pin",
       "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
     )
-    .option("--skip-trace", "Skip the trace step and run codegen against an existing ir.json")
-    .option("--skip-codegen", "Run only the trace step (do not generate test.spec.ts)")
+    .optionsGroup("What to do with the result:")
+    .option("--overwrite", "Replace an existing test.spec.ts without warning")
+    .optionsGroup("Learning:")
     .option(
-      "--update-agent-prompt",
+      "--learn-trace-prompt",
       "After the trace finishes, ask Claude to refresh the \"record.agent\" prompt on the hub from a summary of the run. Requires a hub connection.",
     )
+    .optionsGroup("Environment and connection:")
     .option(
       "--cwd <path>",
       "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
@@ -109,11 +111,6 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
 async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   const { featureName, specName } = parseSpecPath(specPath);
   const language = opts.language ?? DEFAULT_LANGUAGE;
-
-  if (opts.skipTrace && opts.skipCodegen) {
-    log.error("--skip-trace and --skip-codegen cannot be combined; nothing would run");
-    process.exit(2);
-  }
 
   const cwdForProfile = resolveCwd(opts.cwd);
 
@@ -173,20 +170,18 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
 
   let traceResult: RunTraceResult | null = null;
   try {
-    if (!opts.skipTrace) {
-      traceResult = await runTrace(featureName, specName, opts.model, opts.validationMode ?? "lenient", language, {
-        cwd: cwdForProfile,
-        hubContext,
-      });
-      log.blank();
-    }
+    traceResult = await runTrace(featureName, specName, opts.model, opts.traceValidation ?? "lenient", language, {
+      cwd: cwdForProfile,
+      hubContext,
+    });
+    log.blank();
 
-    if (!opts.skipCodegen) {
+    if (!opts.traceOnly) {
       await runGenerate(featureName, specName, {
-        maxRetries: parseInt(opts.maxRetries ?? "3", 10),
+        maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
         fixMode: toFixMode(opts.autoFix ?? "interactive"),
-        force: opts.force ?? false,
-        useSnapshot: opts.snapshot !== false,
+        force: opts.overwrite ?? false,
+        useSnapshot: opts.sessionPin !== false,
         language,
         model: opts.model,
         cwd: cwdForProfile,
@@ -197,13 +192,12 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
     await releaseLock();
   }
 
-  if (opts.updateAgentPrompt) {
-    if (traceResult === null) {
-      log.warn("--update-agent-prompt is ignored when --skip-trace is set (no run summary available)");
-    } else {
+  if (opts.learnTracePrompt && traceResult !== null) {
+    {
       log.blank();
       await updateAgentPrompt({
         kind: "record",
+        flag: "--learn-trace-prompt",
         runSummary: buildRecordRunSummary(featureName, specName, traceResult),
         hubContext,
         ...(opts.model ? { model: opts.model } : {}),

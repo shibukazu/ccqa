@@ -38,16 +38,16 @@ Non-2xx responses are always:
 ## Runs
 
 The hub never executes anything — a run is created when a client pushes the
-report directory of an already-finished `ccqa run --report` as a gzip tar
+report directory of an already-finished `ccqa run` as a gzip tar
 archive. Every field of the resulting `Run` is derived server-side from that
 report; a run is immutable once created (there is no update/patch).
 
 ```
 POST /api/v1/runs?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&deployedSha=<sha>
   Content-Type: application/gzip
-  body: gzip tar of a `ccqa run --report` output directory (must contain report.json)
+  body: gzip tar of a `ccqa run` output directory (must contain report.json)
   ?profile is optional — recorded on the Run for display; runs are not scoped by profile
-  ?kind is optional — "run" (default) or "drift"; "drift" is a `ccqa drift --push` audit, not an executed run
+  ?kind is optional — "run" (default) or "drift"; "drift" is a `ccqa audit --report-to-hub` audit, not an executed run
   ?deployedSha is optional — the commit the environment was running; overrides the deploy log's head
   → 201 Run
 
@@ -99,7 +99,7 @@ interface Run {
   profile: string | null;    // which profile/environment the run executed against; display-only
   branch: string | null;
   status: "passed" | "failed" | "running";
-  kind: "run" | "drift";     // "run" = ccqa run/live execution; "drift" = ccqa drift --push
+  kind: "run" | "drift";     // "run" = ccqa run/live execution; "drift" = ccqa audit --report-to-hub
   drift: { specs: number; testDrift: number; specChange: number; unknown: number } | null; // set only for kind: "drift"
   specs: { total: number; passed: number; failed: number };
   gitHead: string | null;
@@ -113,7 +113,7 @@ interface Run {
 }
 ```
 
-`branch` defaults from the pushing client (`ccqa hub push` / `ccqa drift --push`
+`branch` defaults from the pushing client (`ccqa hub push` / `ccqa audit --report-to-hub`
 resolve `$GITHUB_HEAD_REF` → `$GITHUB_REF_NAME` → the local git branch), and is
 `null` if the client sent none. `status` is `"passed"`, `"failed"`, or
 `"running"` — `running` never means the hub itself is executing anything;
@@ -206,7 +206,7 @@ interface SpecLedgerEntry {
 ```
 
 `last-green` serves the per-spec ledger behind
-`ccqa run --failure-analysis=last-green`: for each spec, the head sha of the
+`ccqa run --on-fail-explain`: for each spec, the head sha of the
 run in which it last passed. The hub advances the ledger whenever a
 `kind: "run"` run reaches a terminal state — every executed spec's entry
 moves to that run's `gitHead` (newest `at` wins). A **skipped** row did not
@@ -324,7 +324,7 @@ read across every branch of the profile.
 
 ## Drift ledger
 
-Every spec's last `ccqa drift --push` audit, so a project can be reviewed
+Every spec's last `ccqa audit --report-to-hub` audit, so a project can be reviewed
 without opening each drift run individually. Unlike `/rerun` and
 `/last-green` above, this endpoint takes **no `?profile=`**: drift asks
 whether a spec still describes the code, which has nothing to do with which

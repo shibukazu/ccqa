@@ -62,5 +62,5 @@ Findings with severity `WARN` or `ERROR` are shown in full; `OK` checks collapse
 ```
 ccqa draft [feature/spec]               # arg is optional; Claude proposes a name if omitted
   --instruction <text>                  # single-shot, non-interactive
-  --apply                               # auto-apply patches without [y/N] confirmation
+  --yes                                 # auto-apply patches without [y/N] confirmation
 ```

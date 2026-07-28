@@ -19,17 +19,17 @@ export interface ChangedSelection {
 
 export interface CollectChangedOptions {
   cwd: string;
-  base: string | true;
+  base: string;
   model?: string;
   /** Suppress progress lines. Set for machine-readable output, which shares stdout. */
   quiet?: boolean;
-  /** How this command spells "pass a base", for the no-base error. See `resolveAnalysisBase`. */
-  baseExample?: string;
+  /** How the calling command spells the flag, for error messages. */
+  flagName?: string;
 }
 
 /**
  * Filter specs to those a range of commits reaches. Powers `ccqa run
- * --changed <ref>`; `ccqa drift --changed` uses the same call.
+ * --only-affected-by <ref>`; `ccqa audit` uses the same call.
  *
  * The decision is made by `ccqa select-specs`, which reads the diff against
  * what each spec actually does. That costs one model call, against saving the
@@ -43,8 +43,8 @@ export async function collectChangedSpecs(
   specs: readonly SpecRef[],
   opts: CollectChangedOptions,
 ): Promise<ChangedSelection> {
-  const { cwd, base, model, quiet, baseExample } = opts;
-  const resolved = await resolveAnalysisBase(base, "--changed", cwd, baseExample);
+  const { cwd, base, model, quiet, flagName } = opts;
+  const resolved = await resolveAnalysisBase(base, flagName ?? "--only-affected-by", cwd);
   const meta = (key: string, value: string | number) => {
     if (!quiet) log.meta(key, value);
   };

@@ -5,7 +5,7 @@ import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
 import { noAuthEnv, stripAnsi, stubSecurityBinary } from "../_helpers/env.ts";
 
-describe("ccqa run --mode=deterministic --report", () => {
+describe("ccqa run (deterministic replay) report output", () => {
   let project: FakeProject | null = null;
 
   afterEach(async () => {
@@ -19,7 +19,7 @@ describe("ccqa run --mode=deterministic --report", () => {
     project = await makeFakeProject("failing-spec", { linkCcqa: true });
     // No --failure-analysis: classification is opt-in, so the row records
     // that it was off rather than attempting (and failing) an auth check.
-    const result = await runCcqa(["run", "demo/boom", "--report"], {
+    const result = await runCcqa(["run", "demo/boom"], {
       cwd: project.cwd,
       env: noAuthEnv(project.cwd),
       pathPrepend: [await stubSecurityBinary(project.cwd)],
@@ -38,7 +38,7 @@ describe("ccqa run --mode=deterministic --report", () => {
 
   test("passing spec: report is still written as a run summary, without the measurement panel", async () => {
     project = await makeFakeProject("passing-spec", { linkCcqa: true });
-    const result = await runCcqa(["run", "demo/smoke", "--report", "my-report"], {
+    const result = await runCcqa(["run", "demo/smoke", "--report-dir", "my-report"], {
       cwd: project.cwd,
       env: noAuthEnv(project.cwd),
       pathPrepend: [await stubSecurityBinary(project.cwd)],

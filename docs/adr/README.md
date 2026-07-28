@@ -33,6 +33,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0009](0009-incremental-run-push.md) | A run is mutable while running, immutable once terminal | accepted |
 | [0010](0010-rerun-selection-from-a-deploy-log.md) | "Needs re-run" is decided from a deploy log the hub is told about, never from a guessed ref | accepted (amended by 0011) |
 | [0011](0011-replace-relatedpaths-with-model-selection.md) | Replace `relatedPaths` glob matching with `ccqa select-specs` model selection | accepted |
+| [0012](0012-flag-names-carry-their-group.md) | Flag names carry their group, and one flag means one thing | accepted |
 
 ## Template
 

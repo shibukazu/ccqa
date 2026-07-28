@@ -6,9 +6,9 @@ import { executeRun } from "./pipeline.ts";
 import { RunUsageError } from "./errors.ts";
 
 /**
- * The `--changed=last-run` guards, at the entry point that owns them. All of
- * these must fail *before* any spec executes — the failure mode this feature
- * has to avoid is an unanswerable question quietly selecting nothing.
+ * The `--only-stale` guards, at the entry point that owns them. All of these
+ * must fail *before* any spec executes — the failure mode this feature has to
+ * avoid is an unanswerable question quietly selecting nothing.
  */
 
 let cwd: string;
@@ -26,33 +26,33 @@ afterEach(() => {
 });
 
 describe("executeRun selection guards", () => {
-  test("--changed cannot be combined with an explicit spec target", async () => {
-    await expect(executeRun(["f/s"], { changed: "last-run", cwd })).rejects.toThrow(
-      /--changed and an explicit spec target cannot be combined/,
+  test("a selection filter cannot be combined with an explicit spec target", async () => {
+    await expect(executeRun(["f/s"], { onlyStale: true, cwd })).rejects.toThrow(
+      /cannot be combined/,
     );
   });
 
-  test("--changed=last-run without --profile names the flag it needs", async () => {
-    const err = await executeRun([], { changed: "last-run", cwd }).catch((e: unknown) => e);
+  test("--only-stale without --profile names the flag it needs", async () => {
+    const err = await executeRun([], { onlyStale: true, cwd }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RunUsageError);
     expect((err as Error).message).toMatch(/--profile/);
   });
 
-  test("--changed=last-run without hub credentials fails on the profile the flag requires", async () => {
+  test("--only-stale without hub credentials fails on the profile the flag requires", async () => {
     vi.stubEnv("CCQA_HUB_URL", "");
     vi.stubEnv("CCQA_HUB_TOKEN", "");
-    await expect(executeRun([], { changed: "last-run", profile: "stg", cwd })).rejects.toThrow(
+    await expect(executeRun([], { onlyStale: true, profile: "stg", cwd })).rejects.toThrow(
       /hub URL and token are required/,
     );
   });
 
-  test("--changed=last-run --dry-run without hub credentials names the flag that needs one", async () => {
+  test("--only-stale --dry-run without hub credentials names the flag that needs one", async () => {
     // A dry run resolves no profile environment, so this is the path on which
     // the missing hub surfaces as last-run's own requirement.
     vi.stubEnv("CCQA_HUB_URL", "");
     vi.stubEnv("CCQA_HUB_TOKEN", "");
     await expect(
-      executeRun([], { changed: "last-run", profile: "stg", dryRun: true, cwd }),
-    ).rejects.toThrow(/--changed=last-run requires a hub connection/);
+      executeRun([], { onlyStale: true, profile: "stg", dryRun: true, cwd }),
+    ).rejects.toThrow(/--only-stale requires a hub connection/);
   });
 });
