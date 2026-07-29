@@ -82,6 +82,11 @@ export interface DeployStore {
   getLog(project: string, profile: string): Promise<DeployLog>;
   /** The newest entry, or null when nothing has been recorded for this profile. */
   head(project: string, profile: string): Promise<DeployEntry | null>;
+  /**
+   * Mark an entry's selection as recorded. Written only after the fold lands,
+   * so the flag never claims a selection the touch index does not hold.
+   */
+  confirmSelection(project: string, profile: string, index: number): Promise<void>;
   getTouchIndex(project: string, profile: string): Promise<SpecTouchIndex>;
   /** Serialized read-modify-write, so two concurrent deploys can't clobber each other's folds. */
   updateTouchIndex(

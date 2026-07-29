@@ -354,3 +354,17 @@ describe("computeRerun: a job already on the spec", () => {
     expect(verdict.verdict).toBe("verified");
   });
 });
+
+describe("a deploy whose selection was not stored", () => {
+  // The hub marks `hasSelection` only once the fold lands, so a lost fold
+  // leaves it false. Before that ordering the flag was set first, which closed
+  // the "no selection in range" escape hatch with the very flag that was
+  // supposed to open it — and the deploy read as `verified`.
+  test("reads as unanswerable, never as verified", () => {
+    const verdict = compute({
+      log: log(deploy(0), deploy(1, { hasSelection: false })),
+      drift: auditedAt(null, "sha-0"),
+    });
+    expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "noSelectionInRange" });
+  });
+});

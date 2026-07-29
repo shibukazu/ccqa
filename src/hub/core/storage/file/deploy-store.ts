@@ -19,6 +19,16 @@ export function createFileDeployStore(root: string): DeployStore {
       return log.entries[log.entries.length - 1]!;
     },
 
+    async confirmSelection(project, profile, index) {
+      await updateJson<DeployLog>(deployLogPath(root, project, profile), (current) => {
+        const log = current ?? emptyDeployLog();
+        return {
+          ...log,
+          entries: log.entries.map((e) => (e.index === index ? { ...e, hasSelection: true } : e)),
+        };
+      });
+    },
+
     getLog: readLog,
 
     async head(project, profile) {
