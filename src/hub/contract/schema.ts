@@ -486,6 +486,38 @@ export const SpecRerunSchema = z.object({
 });
 export type SpecRerun = z.infer<typeof SpecRerunSchema>;
 
+/**
+ * One spec's answer to "does this need auditing?".
+ *
+ * `because` is always carried so a CI log can say more than a count, and the
+ * three values are not interchangeable: `neverAudited` means there is no
+ * baseline at all (no diff can be consulted, so nothing narrows it away),
+ * `deployReached` means a deploy landed on code this spec covers, and
+ * `cannotTell` means the deploy log has a hole. All three audit — the audit is
+ * cheap, so it errs towards doing the work, where the run errs away from it.
+ */
+export const AuditNeedSchema = z.object({
+  needed: z.boolean(),
+  because: z.enum(["neverAudited", "deployReached", "cannotTell", "current"]),
+  /** Set only when `because === "cannotTell"`. */
+  reason: RerunUnknownReasonSchema.optional(),
+  /** The commit the last audit read, or null when there has never been one. */
+  auditedAt: z.string().nullable(),
+  /** The deploy that reached this spec. Set only when `because === "deployReached"`, and only when the log still retains it. */
+  touchedByDeploy: DeployRefSchema.optional(),
+});
+export type AuditNeed = z.infer<typeof AuditNeedSchema>;
+
+/** Body of `GET /projects/:project/audit-needed?profile=`: one answer per spec. */
+export const AuditNeedReportSchema = z.object({
+  project: z.string(),
+  profile: z.string(),
+  /** The profile's newest deploy, or null when nothing has been recorded. */
+  deployHead: DeployRefSchema.nullable(),
+  specs: z.record(z.string(), AuditNeedSchema),
+});
+export type AuditNeedReport = z.infer<typeof AuditNeedReportSchema>;
+
 /** Body of `GET /projects/:project/rerun?profile=`: one verdict per spec in the perspectives document. */
 export const RerunReportSchema = z.object({
   project: z.string(),

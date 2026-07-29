@@ -9,12 +9,14 @@ import { requireProfileParam, requireSafeSegment } from "../validate.ts";
 /**
  * GET /api/v1/projects/:project/rerun?profile=
  *
- * Per spec: is it worth running, and if not, why? Set arithmetic over the spec
- * ledger, the profile's deploy log and each deploy's per-spec touch verdicts
- * recorded by `ccqa select-specs` (ADR-0010, ADR-0011), plus the drift ledger —
- * a spec the audit rejected answers `blocked`, because re-running it cannot
- * clear what is wrong with it. The spec ledger is read across every branch: a
- * run exercises the deployed environment whatever branch its code came from.
+ * Per spec: what should happen to it next, and why? Set arithmetic over the
+ * spec ledger, the profile's deploy log and each deploy's per-spec touch
+ * verdicts recorded by `ccqa select-specs` (ADR-0010, ADR-0011), plus the
+ * drift ledger. The answer is derived from two axes the hub keeps apart — what
+ * the audit says about the deployed commit, and how the last run ended — so a
+ * red spec and one a deploy invalidated do not collapse into the same value.
+ * The spec ledger is read across every branch: a run exercises the deployed
+ * environment whatever branch its code came from.
  */
 export function createGetRerunHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {

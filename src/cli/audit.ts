@@ -16,7 +16,12 @@ import type { Format, SpecResult, SpecTarget, Threshold } from "../drift/types.t
 import { collectChangedSpecs } from "./changed-specs.ts";
 import { packDirToTarGz } from "../hub/core/tar.ts";
 import { HubApiError, type HubClient } from "../hub-client/index.ts";
-import { addLanguageOption } from "./options.ts";
+import { addLanguageOption, addProfileOption } from "./options.ts";
+import {
+  AuditSelectionError,
+  fetchAuditNeed,
+  selectSpecsNeedingAudit,
+} from "../drift/audit-selection.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { hubHeaderOption, hubTokenOption, hubUrlOption, resolveHubClient } from "./hub-conn.ts";
@@ -33,6 +38,8 @@ interface AuditOptions {
   model?: string;
   cwd?: string;
   onlyAffectedBy?: string;
+  onlyHubAuditNeeded?: boolean;
+  hubProfile?: string;
   language?: string;
   reportToHub?: boolean;
   project?: string;
@@ -43,7 +50,7 @@ interface AuditOptions {
 
 const DEFAULT_CONCURRENCY = 3;
 
-export const auditCommand = addLanguageOption(
+export const auditCommand = addProfileOption(addLanguageOption(
   new Command("audit")
     .argument(
       "[feature/spec]",
@@ -58,6 +65,10 @@ export const auditCommand = addLanguageOption(
       "--only-affected-by <ref>",
       "Only specs `ccqa select-specs` judges reached by the diff against <ref> (e.g. origin/main). In pull_request CI, pass $GITHUB_BASE_REF. Costs one model call; specs it cannot decide are audited rather than skipped.",
     )
+    .option(
+      "--only-hub-audit-needed",
+      "Only specs the hub says a deploy has landed on since the audit last read them. A spec that was never audited is always included: there is no baseline for a diff to narrow away. Specs the hub cannot answer for are audited rather than skipped — the audit is cheap. No git diff involved. Requires a hub connection and --hub-profile.",
+    )
     .optionsGroup("How to run it:")
     .option("--concurrency <n>", `Parallel spec checks (default: ${DEFAULT_CONCURRENCY})`)
     .option(
@@ -68,7 +79,7 @@ export const auditCommand = addLanguageOption(
     .option("--report-format <fmt>", "Output format: text | json | github", "text")
     .option(
       "--report-to-hub",
-      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger. A spec it finds drifted answers `blocked` to `ccqa run --only-hub-rerun-needed`, and is not run until the drift clears.",
+      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger. A spec it finds drifted answers `needsRepair` to `ccqa run --only-hub-rerun-needed`, and is not run until a person repairs it.",
     )
     .option(
       "--exit-on <level>",
@@ -84,7 +95,7 @@ export const auditCommand = addLanguageOption(
     .option(...hubUrlOption)
     .option(...hubTokenOption)
     .option(...hubHeaderOption),
-).action(withUsageErrors(async (specPath: string | undefined, opts: AuditOptions) => {
+)).action(withUsageErrors(async (specPath: string | undefined, opts: AuditOptions) => {
   await withCostTally(() => runAudit(specPath, opts));
 }));
 
@@ -98,6 +109,10 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
 
   if (opts.onlyAffectedBy && specPath) {
     log.error("--only-affected-by and an explicit spec id cannot be combined; it only applies to a full sweep");
+    process.exit(2);
+  }
+  if (opts.onlyHubAuditNeeded && specPath) {
+    log.error("--only-hub-audit-needed and an explicit spec id cannot be combined; it only applies to a full sweep");
     process.exit(2);
   }
 
@@ -130,6 +145,17 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     }
     if (targets.length === 0) {
       exitWithNoSpecs(format, "no specs intersect the changed file set; nothing to check");
+    }
+  }
+
+  if (opts.onlyHubAuditNeeded) {
+    const total = targets.length;
+    targets = await narrowToAuditNeeded(targets, opts, format);
+    if (format === "text") {
+      log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
+    }
+    if (targets.length === 0) {
+      exitWithNoSpecs(format, "every spec has been audited since the last deploy that reached it");
     }
   }
 
@@ -216,6 +242,47 @@ export async function pushDriftResults(
     }
     throw err;
   }
+}
+
+/**
+ * Narrow the sweep to what the hub says needs auditing. Every "I cannot ask"
+ * is an error, never an empty selection: an unanswerable question that
+ * silently audits nothing would let drift accumulate unseen, which is the one
+ * failure mode this flag exists to prevent.
+ */
+async function narrowToAuditNeeded(
+  targets: readonly { featureName: string; specName: string }[],
+  opts: AuditOptions,
+  format: Format,
+): Promise<{ featureName: string; specName: string }[]> {
+  const hub = resolveHubClient(opts);
+  if (!hub) {
+    log.error(
+      "--only-hub-audit-needed requires a hub connection: pass --hub-url/--hub-token (or set CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+    );
+    process.exit(2);
+  }
+  if (!opts.hubProfile) {
+    log.error(
+      "--only-hub-audit-needed requires --hub-profile <name>: the deploy log it reads is per-profile, " +
+        "so which specs a deploy has reached has no answer without one",
+    );
+    process.exit(2);
+  }
+  const project = resolveProject({ project: opts.project, cwd: resolveCwd(opts.cwd) });
+  let report;
+  try {
+    report = await fetchAuditNeed(hub, project, opts.hubProfile);
+  } catch (err) {
+    if (err instanceof AuditSelectionError) {
+      log.error(err.message);
+      process.exit(2);
+    }
+    throw err;
+  }
+  const selection = selectSpecsNeedingAudit(targets, report);
+  if (format === "text") log.meta("hub", selection.summary);
+  return selection.selected;
 }
 
 function exitWithNoSpecs(format: Format, message: string): never {

@@ -1,4 +1,5 @@
 import type {
+  AuditNeedReport,
   DeployEntry,
   DeployLogResponse,
   DriftLedgerResponse,
@@ -154,6 +155,13 @@ export interface HubClient {
    * "nothing to run".
    */
   getRerun(project: string, q: { profile: string }): Promise<RerunReport>;
+  /**
+   * Per spec of one project/profile: has a deploy landed on the code it covers
+   * since the audit last read it? Answers `ccqa audit
+   * --only-hub-audit-needed`. 404 on a project with no perspectives document,
+   * for the same reason `getRerun` does.
+   */
+  getAuditNeed(project: string, q: { profile: string }): Promise<AuditNeedReport>;
   /**
    * Every spec's last `ccqa audit --report-to-hub` result, keyed by "feature/spec". No
    * profile — drift asks whether a spec still describes the code, not
@@ -366,6 +374,11 @@ export function createHubClient(opts: HubClientOptions): HubClient {
 
     getRerun(project, q) {
       return json(`/api/v1/projects/${encodeURIComponent(project)}/rerun?${queryString({ profile: q.profile })}`);
+    },
+    getAuditNeed(project, q) {
+      return json(
+        `/api/v1/projects/${encodeURIComponent(project)}/audit-needed?${queryString({ profile: q.profile })}`,
+      );
     },
     getDriftLedger(project) {
       return json(`/api/v1/projects/${encodeURIComponent(project)}/drift`);

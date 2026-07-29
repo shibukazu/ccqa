@@ -1,8 +1,6 @@
 import type {
   AuditState,
-  DeployEntry,
   DeployLog,
-  DeployRef,
   DriftLedger,
   ExecutionState,
   RerunUnknownReason,
@@ -12,13 +10,12 @@ import type {
   SpecTouchIndex,
 } from "../contract/schema.ts";
 import type { DriftLabel } from "../../report/schema.ts";
+import { buildRange, freshness, type RangeLookup } from "./deploy-range.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 /**
  * "What should happen to this spec next?" — pure set arithmetic over data the
- * hub already stores (ADR-0010). Deliberately no wall clocks: a run that
- * started before a deploy and finished after it looks up to date by timestamp,
- * so the only ordering used here is position in the deploy log.
+ * hub already stores (ADR-0010).
  *
  * Two independent axes, one derived answer. The audit axis says whether the
  * spec still describes the deployed code; the execution axis says what
@@ -47,26 +44,7 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
     log.entries.length === 0 &&
     Object.keys(ledger.run).length === 0 &&
     Object.keys(ledger.green).length === 0;
-  // First occurrence wins: a sha deployed twice is genuinely ambiguous, and
-  // the earlier position widens the range, which errs towards a re-run.
-  const positionBySha = new Map<string, number>();
-  log.entries.forEach((entry, i) => {
-    if (!positionBySha.has(entry.sha)) positionBySha.set(entry.sha, i);
-  });
-  // Built once instead of re-scanned per spec: `entryByIndex` backs the
-  // `touchedByDeploy` lookup below, and `gapFromPos`/`noSelectionFromPos` are
-  // suffix flags ("does any entry from this position onward have a gap / lack
-  // a selection") so the range check is an array read instead of a slice+scan.
-  // Specs mostly share one baseline deploy, so this turns what was
-  // O(specs × log length) into O(log length).
-  const entryByIndex = new Map(log.entries.map((e) => [e.index, e]));
-  const gapFromPos: boolean[] = new Array(log.entries.length + 1).fill(false);
-  const noSelectionFromPos: boolean[] = new Array(log.entries.length + 1).fill(false);
-  for (let i = log.entries.length - 1; i >= 0; i--) {
-    gapFromPos[i] = gapFromPos[i + 1]! || log.entries[i]!.gapBefore;
-    noSelectionFromPos[i] = noSelectionFromPos[i + 1]! || !log.entries[i]!.hasSelection;
-  }
-  const range: RangeLookup = { entryByIndex, gapFromPos, noSelectionFromPos, log, positionBySha, touchIndex };
+  const range = buildRange(log, touchIndex);
 
   const out: Record<string, SpecRerun> = {};
   for (const spec of specs) {
@@ -102,7 +80,7 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
  * determined — folding that into `checking` would promise a resolution that
  * waiting will never bring.
  */
-function auditState(
+export function auditState(
   drift: DriftLedger,
   key: string,
   range: RangeLookup,
@@ -177,80 +155,6 @@ interface Coords {
   lastRed: SpecLedgerEntry | null;
 }
 
-/** Per-`computeRerun`-call lookups built once from the deploy log, not per spec. */
-interface RangeLookup {
-  entryByIndex: ReadonlyMap<number, DeployEntry>;
-  gapFromPos: readonly boolean[];
-  noSelectionFromPos: readonly boolean[];
-  log: DeployLog;
-  positionBySha: ReadonlyMap<string, number>;
-  touchIndex: SpecTouchIndex;
-}
-
-type Freshness =
-  | { kind: "current" }
-  | { kind: "touched"; touchedBy?: string[]; touchedByDeploy: DeployRef | null }
-  | { kind: "unanswerable"; reason: RerunUnknownReason };
-
-/**
- * Has any deploy since `baselineSha` reached this spec?
- *
- * Both axes ask this, differing only in where the baseline comes from: the
- * commit the audit read, or the deploy the last run exercised. Sharing it is
- * what keeps "does the audit still apply" and "does the result still apply"
- * from drifting apart as two near-copies of the same range arithmetic.
- */
-function freshness(baselineSha: string, key: string, range: RangeLookup): Freshness {
-  const { log, positionBySha, touchIndex } = range;
-  if (log.entries.length === 0) return unanswerableFreshness("noDeployLog");
-  const baselinePos = positionBySha.get(baselineSha);
-  if (baselinePos === undefined) return unanswerableFreshness("deployedShaNotInLog");
-  // `index` is the monotonic log position; `baselinePos` is where it sits in
-  // the retained array. The touch index stores the former, so compare in it.
-  const baselineIndex = log.entries[baselinePos]!.index;
-  const touch = touchIndex[key];
-
-  // A positive touch in range settles it, whatever else the range is missing:
-  // the spec is out of date regardless of what a hole would have said.
-  const touched = touch?.needed;
-  if (touched && touched.index > baselineIndex) {
-    // The index proves *that* a deploy in range reached the spec, by position.
-    // Naming *which* one takes the log entry itself: the log is the record of
-    // what shipped and the index only derived from it, so if the two disagree
-    // about what is retained, the deploy goes unnamed rather than asserted
-    // from a copy the record no longer backs.
-    const entry = range.entryByIndex.get(touched.index);
-    return {
-      kind: "touched",
-      ...(touched.matchedPaths.length > 0 ? { touchedBy: touched.matchedPaths } : {}),
-      touchedByDeploy: entry ? deployRef(entry) : null,
-    };
-  }
-
-  // Nothing reached it. Clearing the spec now claims the whole range was
-  // examined, so anything in it that was not disqualifies the claim. Order
-  // within the range has no meaning, so a precomputed "does the range from
-  // here on contain one" flag stands in for scanning it.
-  //
-  // Ordered by how much of the range each defect invalidates: missing deploys
-  // first, then deploys nobody judged, then a deploy that was judged and came
-  // back undecided for this spec.
-  if (range.gapFromPos[baselinePos + 1]) return unanswerableFreshness("gapInRange");
-  if (range.noSelectionFromPos[baselinePos + 1]) return unanswerableFreshness("noSelectionInRange");
-  if (touch?.undecidedIndex !== undefined && touch.undecidedIndex > baselineIndex) {
-    return unanswerableFreshness("selectionUnknown");
-  }
-  return { kind: "current" };
-}
-
-function deployRef(entry: DeployEntry): DeployRef {
-  return { index: entry.index, sha: entry.sha, at: entry.at };
-}
-
 function unanswerable(reason: RerunUnknownReason): { verdict: "unanswerable"; reason: RerunUnknownReason } {
   return { verdict: "unanswerable", reason };
-}
-
-function unanswerableFreshness(reason: RerunUnknownReason): Freshness {
-  return { kind: "unanswerable", reason };
 }
