@@ -182,7 +182,7 @@ const HTML_BODY = `
             </div>
           </div>
           <div class="tblcard"><div class="table-wrap"><table>
-            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th id="persp-th-run" data-i18n="perspectives.col.run" hidden>Execution</th><th id="persp-th-drift" data-i18n="perspectives.col.drift" hidden>Drift audit</th><th></th></tr></thead>
+            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th id="persp-th-verdict" data-i18n="perspectives.col.verdict" hidden>Next</th><th id="persp-th-audit" data-i18n="perspectives.col.audit" hidden>Audit</th><th id="persp-th-run" data-i18n="perspectives.col.run" hidden>Execution</th><th id="persp-th-drift" data-i18n="perspectives.col.drift" hidden>Drift audit</th><th></th></tr></thead>
             <tbody id="persp-tbody"></tbody>
           </table></div></div>
           <p class="empty-note" id="persp-no-hit" hidden data-i18n="perspectives.noHit">No matching cases.</p>
@@ -1067,7 +1067,13 @@ const CLIENT_JS = `
       "perspectives.filter.all": "All", "perspectives.filter.deterministic": "Deterministic",
       "perspectives.filter.live": "Live",
       "perspectives.filter.rerun": "Needs re-run only", "perspectives.filter.drift": "Drift found only",
+      "perspectives.col.verdict": "Next", "perspectives.col.audit": "Audit",
       "perspectives.col.run": "Execution", "perspectives.col.drift": "Drift audit",
+      "perspectives.audit.state.due": "Audit due",
+      "perspectives.audit.state.clean": "Describes the code",
+      "perspectives.audit.state.drifted": "Drifted",
+      "perspectives.audit.state.undecided": "Couldn't tell",
+      "perspectives.audit.state.cannotTell": "Can't tell",
       "perspectives.run.state.needed": "re-run needed", "perspectives.run.state.unknown": "can't tell",
       "perspectives.run.state.failed": "failed", "perspectives.run.state.passed": "passed",
       "perspectives.run.state.never": "never run",
@@ -1221,7 +1227,13 @@ const CLIENT_JS = `
       "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
       "perspectives.filter.live": "ライブ",
       "perspectives.filter.rerun": "要再実行のみ", "perspectives.filter.drift": "ズレありのみ",
+      "perspectives.col.verdict": "次にすること", "perspectives.col.audit": "監査",
       "perspectives.col.run": "実行", "perspectives.col.drift": "ドリフト監査",
+      "perspectives.audit.state.due": "監査待ち",
+      "perspectives.audit.state.clean": "ずれなし",
+      "perspectives.audit.state.drifted": "ずれあり",
+      "perspectives.audit.state.undecided": "判定不能",
+      "perspectives.audit.state.cannotTell": "判定できない",
       "perspectives.run.state.needed": "要再実行", "perspectives.run.state.unknown": "判定できない",
       "perspectives.run.state.failed": "失敗", "perspectives.run.state.passed": "合格",
       "perspectives.run.state.never": "未実行",
@@ -3475,21 +3487,62 @@ const CLIENT_JS = `
   // --only-hub-rerun-needed does not re-run it without --only-hub-rerun-needed-with-unknown. Showing
   // it as passed or failed would claim a confidence nothing supports.
   function perspRunState(rr) {
-    if (!rr) return null;
-    if (rr.verdict === "rerunNeeded") return "needed";
-    if (rr.verdict === "unanswerable") return "unknown";
-    var last = lastResult(rr);
-    if (!last || !last.status) return "never";
-    return last.status === "failed" ? "failed" : "passed";
+    if (!rr || !rr.execution) return null;
+    return rr.execution === "neverRun" ? "never" : rr.execution;
   }
 
   // Reuses the badge classes that already mean these things elsewhere rather
   // than minting a parallel palette: amber for "act on this", info for "cannot
   // say", and the run status colours for a result that still stands.
-  var RUN_STATE_BADGE = {
-    needed: "rr-needed", unknown: "rr-unknown",
-    failed: "failed", passed: "passed", never: "rr-none"
+  var RUN_STATE_BADGE = { failed: "failed", passed: "passed", never: "rr-none" };
+
+  // The primary column. The two axes beside it answer "why"; this one answers
+  // "who acts next", which is the only question a reader scanning a list of
+  // specs has. Exactly one value, needsRepair, asks for a person.
+  var VERDICT_BADGE = {
+    needsRepair: "rr-needed", rerunNeeded: "rr-needed", unanswerable: "rr-unknown",
+    inProgress: "rr-none", verified: "passed"
   };
+
+  function perspVerdictCell(rr) {
+    var td = el("td");
+    if (!rr || !rr.verdict) {
+      // In the document but not in the report — added since it was computed.
+      td.appendChild(el("span", "muted", "\u2014"));
+      return td;
+    }
+    var badge = el("span", "badge " + (VERDICT_BADGE[rr.verdict] || "rr-unknown"));
+    badge.appendChild(el("span", "d"));
+    badge.appendChild(document.createTextNode(" " + t("perspectives.rerun.state." + rr.verdict)));
+    td.appendChild(badge);
+    var why = rerunCellWhy(rr);
+    if (why) td.appendChild(el("span", "cellsub", why));
+    return td;
+  }
+
+  // Axis 1, as the hub derived it against the deployed commit — which is not
+  // the same as the raw drift ledger beside it, whose verdict may predate the
+  // deploy.
+  var AUDIT_BADGE = {
+    due: "rr-none", clean: "passed", drifted: "failed",
+    undecided: "rr-unknown", cannotTell: "rr-unknown"
+  };
+
+  function perspAuditCell(rr) {
+    var td = el("td");
+    if (!rr || !rr.audit) {
+      td.appendChild(el("span", "muted", "\u2014"));
+      return td;
+    }
+    var badge = el("span", "badge " + (AUDIT_BADGE[rr.audit] || "rr-unknown"));
+    badge.appendChild(el("span", "d"));
+    badge.appendChild(document.createTextNode(" " + t("perspectives.audit.state." + rr.audit)));
+    td.appendChild(badge);
+    if (rr.audit === "drifted" && rr.driftLabel) {
+      td.appendChild(el("span", "cellsub", labelText(rr.driftLabel)));
+    }
+    return td;
+  }
 
   function perspRunCell(rr) {
     var td = el("td");
@@ -3505,16 +3558,15 @@ const CLIENT_JS = `
     badge.appendChild(document.createTextNode(" " + t("perspectives.run.state." + runState)));
     td.appendChild(badge);
 
-    // The sub-line says why, not what: the reason a re-run is needed, or the
-    // coordinate of the result being reported.
-    if (runState === "needed" || runState === "unknown") {
-      var why = rerunCellWhy(rr);
-      if (why) td.appendChild(el("span", "cellsub", why));
-    } else if (runState !== "never") {
+    // The sub-line is the coordinate of the result being reported. Why it
+    // matters belongs to the verdict column, not here.
+    if (runState !== "never") {
       var last = lastResult(rr);
-      var sub = el("span", "cellsub");
-      sub.appendChild(ledgerLine(last.entry));
-      td.appendChild(sub);
+      if (last) {
+        var sub = el("span", "cellsub");
+        sub.appendChild(ledgerLine(last.entry));
+        td.appendChild(sub);
+      }
     }
     return td;
   }
@@ -3839,9 +3891,11 @@ const CLIENT_JS = `
     // exactly as it was on a hub that cannot answer the re-run/drift question.
     var showRerun = perspState.rerun != null;
     var showDrift = perspState.drift != null;
+    document.getElementById("persp-th-verdict").hidden = !showRerun;
+    document.getElementById("persp-th-audit").hidden = !showRerun;
     document.getElementById("persp-th-run").hidden = !showRerun;
     document.getElementById("persp-th-drift").hidden = !showDrift;
-    var cols = 3 + (showRerun ? 1 : 0) + (showDrift ? 1 : 0);
+    var cols = 3 + (showRerun ? 3 : 0) + (showDrift ? 1 : 0);
     var hits = 0;
     doc.features.forEach(function (feature) {
       var specs = feature.specs.filter(function (s) { return perspMatches(feature, s, perspState.f); });
@@ -3871,7 +3925,10 @@ const CLIENT_JS = `
         row.appendChild(modeTd);
 
         if (showRerun) {
-          row.appendChild(perspRunCell(ledgerEntryFor(perspState.rerun, feature, spec)));
+          var rr = ledgerEntryFor(perspState.rerun, feature, spec);
+          row.appendChild(perspVerdictCell(rr));
+          row.appendChild(perspAuditCell(rr));
+          row.appendChild(perspRunCell(rr));
         }
         if (showDrift) row.appendChild(perspDriftCell(ledgerEntryFor(perspState.drift, feature, spec)));
 

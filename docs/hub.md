@@ -137,9 +137,9 @@ all. Run it from the deploy job, after the deploy succeeds. Flags:
 - `--select` — also decide which specs this deploy reaches
   ([`ccqa select-specs`](./running.md#asking-the-question-on-its-own)) and
   submit the verdicts with the entry. **Pass it**: without a selection the
-  deploy is a hole in the range, and every spec behind it reports `unknown`
-  rather than `notNeeded` — the hub has no other way to know what the deploy
-  touched. Skipped when there is no previous deploy to diff against.
+  deploy is a hole in the range, and every spec behind it reports
+  `unanswerable` rather than `verified` — the hub has no other way to know what
+  the deploy touched. Skipped when there is no previous deploy to diff against.
 - `-m, --model <name>` — model for `--select`. A cheap one is enough; the
   selection costs a fraction of the runs it avoids.
 - `--project`, `--hub-url`, `--hub-token`, `--cwd` — as everywhere else.

@@ -113,8 +113,8 @@ vitest と agent-browser は既定ターゲットの peer dependency です。�
 
 `ccqa run --only-hub-rerun-needed` は、どの spec を走らせる価値があるかを
 hub に聞きます。走るのは、監査が通し、*かつ*デプロイが無効化したものだけ
-です。ずれた spec には `blocked` という答えが返り、実行されません。実行して
-も spec は直らないからです。
+です。ずれた spec と、前回落ちた spec には `needsRepair` が返り、実行され
+ません。どちらも実行しても直らず、それを知るのに数ドルかかるからです。
 
 それでも落ちた spec には、`--on-fail-explain` が誰の担当かのラベルを付け
 ます。`TEST_DRIFT`（テストのずれ）、`SPEC_CHANGE`（仕様変更）、
@@ -126,7 +126,8 @@ hub に聞きます。走るのは、監査が通し、*かつ*デプロイが�
 ```
 デプロイ完了
   ├─ ccqa hub deploy record --select   何が載ったか、どの spec に届くか
-  ├─ ccqa audit --report-to-hub        spec はまだ説明できているか
+  ├─ ccqa audit --only-hub-audit-needed --report-to-hub
+  │                                    spec はまだ説明できているか
   └─ ccqa run --only-hub-rerun-needed --on-fail-explain \
        --hub-profile ci --report-to-hub
 ```

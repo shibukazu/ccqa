@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { RerunUnknownReasonSchema, SpecVerdictSchema } from "../contract/schema.ts";
+import { AuditStateSchema, RerunUnknownReasonSchema, SpecVerdictSchema } from "../contract/schema.ts";
 import { renderHubUi } from "./index.ts";
 
 /**
@@ -150,6 +150,29 @@ describe("hub UI: needs re-run", () => {
         expect(dict[`perspectives.rerun.why.${reason}`]).toBeTruthy();
         expect(dict[`perspectives.rerun.fix.${reason}`]).toBeTruthy();
       }
+    }
+  });
+
+  test("every audit-axis value the hub can send has wording, in both languages", () => {
+    // The axis column renders these directly; a missing key would show the raw
+    // dotted path where a state name belongs.
+    const { en, ja } = dictionaries();
+    for (const state of AuditStateSchema.options) {
+      for (const dict of [en, ja]) {
+        expect(dict[`perspectives.audit.state.${state}`], state).toBeTruthy();
+      }
+    }
+  });
+
+  test("the verdict column is not the execution column", () => {
+    // They were one column before the axes were split. Sharing wording again
+    // would put "needs re-run" where "how the last run ended" belongs.
+    const { en, ja } = dictionaries();
+    for (const dict of [en, ja]) {
+      expect(dict["perspectives.col.verdict"]).toBeTruthy();
+      expect(dict["perspectives.col.audit"]).toBeTruthy();
+      expect(dict["perspectives.col.verdict"]).not.toBe(dict["perspectives.col.run"]);
+      expect(dict["perspectives.col.audit"]).not.toBe(dict["perspectives.col.run"]);
     }
   });
 

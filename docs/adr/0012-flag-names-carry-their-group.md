@@ -55,13 +55,19 @@ apply to one execution mode, `--learn-` writes a prompt back to the hub.
 left, so passing several ANDs them:
 
 ```
-ccqa run --only-hub-audited-clean --only-hub-stale
+ccqa run --only-affected-by origin/main --only-hub-rerun-needed
 ```
 
 Each is one condition, so the combination needs no new vocabulary.
 
+*(The two flags this example first used, `--only-hub-audited-clean` and
+`--only-hub-stale`, are gone. 1.15 folded the audit's answer into the re-run
+verdict, so one flag says "worth running" — see
+[ADR-0014](0014-two-axes-one-verdict.md). The naming rules below are unchanged;
+only the names they are demonstrated on have moved.)*
+
 **A flag that reads or writes the hub says so in its name**, and fails when it
-cannot reach one. `--only-hub-stale`, `--only-hub-audited-clean`,
+cannot reach one. `--only-hub-rerun-needed`, `--only-hub-audit-needed`,
 `--learn-hub-live-prompt`, `--report-to-hub`, `--hub-profile`: from the name
 alone you can tell which invocations need a hub running. None of them degrade
 — asking for hub-backed selection and silently getting an unfiltered run, or
@@ -76,9 +82,7 @@ what Claude does with nobody told.
 help confirms it.
 
 `drift` is renamed to `audit`. Every other command is a verb; `drift` was a
-noun, and the name of a *result* rather than the act of looking for it. The
-word stays where it names a result (`--only-hub-audited-clean` reads the
-drift ledger).
+noun, and the name of a *result* rather than the act of looking for it.
 
 Old names are not kept as aliases. The tool has few users today, and carrying
 both spellings would put the thing this ADR is fixing — two names for one

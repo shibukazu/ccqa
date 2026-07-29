@@ -36,12 +36,13 @@ Key flags (see `ccqa run --help` for the rest):
   select-specs` decides the git diff against `<ref>` reaches (below). The ref
   is always explicit: in a pull_request workflow pass `$GITHUB_BASE_REF`.
 - `--only-hub-rerun-needed` — restrict execution to the specs the hub answers
-  `needed` for: their last result no longer covers what is deployed. Specs the
-  audit rejected answer `blocked` and are never taken. Reads the deploy log and
-  the drift ledger, not a diff — see [Running only what needs a
+  `rerunNeeded` for: the audit cleared them, and their last result does not
+  cover what is deployed. Reads the deploy log and the drift ledger, not a diff
+  — see [Running only what needs a
   re-run](#running-only-what-needs-a-re-run).
-- `--only-hub-rerun-needed-with-unknown` — with `--only-hub-rerun-needed` only: also run the specs
-  whose re-run need the hub cannot answer, and the ones that have never run.
+- `--only-hub-rerun-needed-with-unknown` — with `--only-hub-rerun-needed` only:
+  also run the specs the hub cannot answer for at all (`unanswerable`, a hole
+  in the deploy log).
 - `--dry-run` — print the specs this invocation would run, then exit `0`
   without executing anything and without writing a report. Works with every
   selection flag.
@@ -283,7 +284,8 @@ When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
    block it includes, marks that spec `needed` — set membership, no model
    call. Everything left undecided is judged against the remaining
    (product-code) changes in one Claude call, which reads the diff and each
-   spec's steps and answers `needed` / `notNeeded` / `unknown`, using
+   spec's steps and answers `needed` / `notNeeded` / `unknown` (the
+   selector's own vocabulary, not the re-run verdict's), using
    Read/Grep/Glob to check the codebase. The model call is skipped
    entirely, and every remaining spec clears as `notNeeded`, when nothing
    outside `.ccqa/` changed.
@@ -294,6 +296,33 @@ When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
 Changes outside the cwd hosting `.ccqa/` are reported but never attributed
 to a spec — a sibling package's own `.ccqa/` names its own specs and blocks,
 not this project's.
+
+### Auditing only what the deploy reached
+
+`ccqa audit --only-hub-audit-needed` picks the sweep's targets from the hub
+instead of from a diff. Per spec: has a deploy landed on the code it covers
+since the audit last read it? It needs a hub connection and `--hub-profile`,
+for the same reason the run side does — the deploy log is per profile.
+
+A spec that has **never been audited** is always included, with no diff
+consulted. There is no baseline for one to narrow away, which is how a spec no
+deploy ever reached could otherwise stay un-audited forever — and an un-audited
+spec is never run, so it would sit outside the loop indefinitely.
+
+A spec the hub **cannot answer for** is audited rather than skipped. That is
+the opposite default to `--only-hub-rerun-needed`, and deliberately so: an
+audit costs cents where a live run costs dollars, so this side does the work
+when it cannot tell and the run side declines to.
+
+The sweep **claims** its specs while it works, so a second cycle starting
+before this one finishes does not audit the same specs and write the same
+ledger entries twice. Claims lapse on their own if the job dies.
+
+Both `--only-*` flags compose with AND, so passing this and
+`--only-affected-by` together means "the hub says it is due **and** the diff
+reaches it". That is rarely what a CI job wants: the diff can narrow the hub's
+answer to nothing, leaving the spec un-audited and, therefore, never run. Pick
+one.
 
 ### Asking the question on its own
 
@@ -346,22 +375,48 @@ the question unanswerable — no perspectives document, no deploy recorded for
 the profile, a hub too old to serve the endpoint — is an **error**, never an
 empty selection.
 
-By default only specs the hub reports as `needed` run. Specs whose need
-cannot be determined (`unknown`) and specs that have never run (`neverRun`)
-are left out; `--only-hub-rerun-needed-with-unknown` opts into running them too.
+The hub keeps two facts apart and derives one answer from them. **The audit
+axis** says whether the spec still describes the deployed code; **the execution
+axis** says how the last run ended. Neither determines the other — a spec can
+be clean and out of date, or drifted and freshly run — so collapsing them
+would lose exactly the case that matters.
 
-**A spec the audit rejected answers `blocked`, and no flag opts into it.**
-Re-running cannot repair a spec that no longer describes the code: it would
-fail for the reason the audit already gave, or pass while verifying something
-the product stopped doing. The state carries which repair it needs —
-`testDrift` for a stale recording, which `ccqa record` fixes, or `specChange`
-for a spec a human has to rewrite — because the two differ in who acts and how
-long it takes.
+| Verdict | Means | Who acts next |
+| --- | --- | --- |
+| `rerunNeeded` | Cleared by the audit, last result does not cover this deploy | CI runs it |
+| `needsRepair` | Drift, an audit that could not decide, or a failed run | **A person** |
+| `inProgress` | A job holds it, or the audit has not caught up with the deploy | Wait |
+| `verified` | Cleared by the audit, last run passed against this deploy | Nobody |
+| `unanswerable` | The hub lacks the data; a `reason` names what is missing | Fix the hole |
 
-A blocked spec is **not** passing and **not** failing. It is unverified, and
-the selection summary counts it as its own state so that never reads as an
-all-clear. See [ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md) and
+Only `rerunNeeded` runs. `--only-hub-rerun-needed-with-unknown` adds
+`unanswerable`; nothing opts into the other two.
+
+**A spec that has never run is `rerunNeeded`.** No result at all is as
+uncovered as a result a deploy invalidated, and the action is identical.
+
+**A failed spec is `needsRepair`, and no flag opts into it.** Re-running it
+teaches nothing until the code it exercises moves or the spec is fixed, and a
+live spec costs dollars a go. It leaves that state when a deploy reaches it
+again, or when the spec is updated.
+
+**A spec the audit rejected is `needsRepair` too.** Re-running cannot repair a
+spec that no longer describes the code: it would fail for the reason the audit
+already gave, or pass while verifying something the product stopped doing. The
+audit axis carries which repair it needs — `TEST_DRIFT` for a stale recording,
+which `ccqa record` fixes, or `SPEC_CHANGE` for a spec a human has to rewrite.
+
+None of these is passing or failing. They are unverified, and the selection
+summary counts each as its own verdict so that never reads as an all-clear. An
+empty selection with any of them outstanding **exits non-zero**: "nothing to
+run" must not be reported as a green run that verified nothing. See
+[ADR-0010](./adr/0010-rerun-selection-from-a-deploy-log.md) and
 [ADR-0013](./adr/0013-one-verification-environment.md).
+
+While a run is executing it **claims** its specs on the hub, so a second cycle
+starting before this one finishes skips what is already running rather than
+driving the same flow twice. A claim lapses on its own if the job dies, so
+there is nothing to clean up by hand.
 
 ## CI integration
 

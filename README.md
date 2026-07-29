@@ -114,8 +114,9 @@ re-recorded; a stale spec goes to a human and stays **unverified** —
 neither passing nor failing — until repaired.
 
 `ccqa run --only-hub-rerun-needed` asks the hub which specs are worth
-running: cleared by the audit *and* invalidated by a deploy. A drifted
-spec answers `blocked` and is never run — a run cannot repair a spec.
+running: cleared by the audit *and* invalidated by a deploy. A drifted spec —
+or one whose last run failed — answers `needsRepair` and is never run. A run
+repairs neither, and it costs dollars to learn that.
 
 When a clean spec still fails, `--on-fail-explain` labels whose problem
 it is: `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN`. You
@@ -126,7 +127,8 @@ grade the calls on the hub, and it learns from your grades.
 ```
 deploy lands
   ├─ ccqa hub deploy record --select   what shipped, which specs it reaches
-  ├─ ccqa audit --report-to-hub        does each spec still describe it?
+  ├─ ccqa audit --only-hub-audit-needed --report-to-hub
+  │                                    does each spec still describe it?
   └─ ccqa run --only-hub-rerun-needed --on-fail-explain \
        --hub-profile ci --report-to-hub
 ```

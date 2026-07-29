@@ -117,6 +117,12 @@ either a git ref or a per-spec coordinate the hub tracks.
 
 ### States, and refusing to overstate
 
+*(Superseded in 1.16 by [ADR-0014](0014-two-axes-one-verdict.md): the single
+state below is split into an audit axis and an execution axis, with one verdict
+derived from both. The deploy log, the ledger's three buckets, and the refusal
+to overstate are unchanged — what follows describes the value they were
+collapsed into.)*
+
 Five states, and the view distinguishes all of them:
 
 - `needed` — a deploy after the spec's last run touched its `relatedPaths`.
