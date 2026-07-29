@@ -318,11 +318,17 @@ The sweep **claims** its specs while it works, so a second cycle starting
 before this one finishes does not audit the same specs and write the same
 ledger entries twice. Claims lapse on their own if the job dies.
 
-Both `--only-*` flags compose with AND, so passing this and
-`--only-affected-by` together means "the hub says it is due **and** the diff
-reaches it". That is rarely what a CI job wants: the diff can narrow the hub's
-answer to nothing, leaving the spec un-audited and, therefore, never run. Pick
-one.
+This is the one `--only-*` pair that **cannot** be combined, and ccqa rejects
+it. Both narrow, so together they would mean "due **and** reached by the diff"
+— and a spec the hub says is due that the diff drops is never audited, so its
+recorded commit never advances and it is due again next time. The run side
+never runs it either. Pick the one that matches the job: the hub's answer after
+a deploy, the diff on a pull request.
+
+When there is nothing to audit, `--report-format json` says which of the four
+reasons it was (`{"specs": [], "skipped": "allCurrent"}`). They are not
+interchangeable: `allCurrent` is the happy path, while `noSpecsFound` usually
+means a wrong `--cwd` or a checkout that did not include the spec tree.
 
 ### Asking the question on its own
 

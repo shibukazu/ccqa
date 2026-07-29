@@ -140,6 +140,10 @@ all. Run it from the deploy job, after the deploy succeeds. Flags:
   deploy is a hole in the range, and every spec behind it reports
   `unanswerable` rather than `verified` — the hub has no other way to know what
   the deploy touched. Skipped when there is no previous deploy to diff against.
+  The hub marks the entry as carrying a selection only once it has stored one,
+  so a selection that was sent but could not be stored leaves the range
+  honestly unresolved; the command exits non-zero in that case, because nothing
+  fills the hole later.
 - `-m, --model <name>` — model for `--select`. A cheap one is enough; the
   selection costs a fraction of the runs it avoids.
 - `--project`, `--hub-url`, `--hub-token`, `--cwd` — as everywhere else.

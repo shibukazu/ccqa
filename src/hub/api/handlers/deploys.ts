@@ -40,11 +40,18 @@ export function createRecordDeployHandler(storage: HubStorage) {
       ...(ref ? { ref } : {}),
       ...(runUrl ? { runUrl } : {}),
       changedPaths: changedPaths ?? null,
-      hasSelection: selection !== undefined,
+      // Set below, once the fold has actually landed. Claiming it here is what
+      // made a lost fold read as `verified` instead of `unanswerable`: the flag
+      // is exactly what closes the "no selection in range" escape hatch.
+      hasSelection: false,
     });
-    if (selection !== undefined) await foldIntoTouchIndex(storage, project, profile, entry, selection);
+    const folded = selection !== undefined
+      && await foldIntoTouchIndex(storage, project, profile, entry, selection);
+    if (folded) {
+      await storage.deploys.confirmSelection(project, profile, entry.index);
+    }
 
-    sendJson(ctx.res, 201, entry);
+    sendJson(ctx.res, 201, { ...entry, hasSelection: folded === true });
   };
 }
 
@@ -52,11 +59,11 @@ export function createRecordDeployHandler(storage: HubStorage) {
  * Record what this deploy's selection decided, so a later read can answer each
  * spec's own range with two integer comparisons.
  *
- * Deliberately after the append, and it does not fail the request: the log is
- * the record of what shipped and has to land even if the fold cannot. A lost
- * fold shows up as specs reporting `unknown` rather than as a wrong `notNeeded`
- * — the entry is already marked `hasSelection`, so the read side knows the
- * range is unresolved either way.
+ * It does not fail the request: the log is the record of what shipped and has
+ * to land even if the fold cannot. What a lost fold must not do is *look* like
+ * a recorded one — so the caller only marks the entry `hasSelection` when this
+ * returns true, and the range reads as unresolved otherwise. The client is told
+ * by the entry it gets back.
  */
 async function foldIntoTouchIndex(
   storage: HubStorage,
@@ -64,15 +71,17 @@ async function foldIntoTouchIndex(
   profile: string,
   entry: DeployEntry,
   selection: DeploySelection,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await storage.deploys.updateTouchIndex(project, profile, (current) =>
       foldTouchIndex(current, entry, selection),
     );
+    return true;
   } catch (err) {
     console.error(
       `hub: touch-index fold failed for deploy "${entry.sha}" of "${project}/${profile}": ${errMsg(err)}`,
     );
+    return false;
   }
 }
 

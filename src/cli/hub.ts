@@ -430,8 +430,18 @@ const deployRecord = new Command("record")
     if (opts.select) log.meta("selection", describeSelection(selection, diff !== null));
     if (entry.gapBefore) {
       log.warn(
-        "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it report 'unknown' rather than 'not needed'",
+        "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it report 'unanswerable' rather than 'verified'",
       );
+    }
+    // The hub only marks the entry once the selection has actually landed. If
+    // we sent one and it did not, that range is a hole nothing fills later,
+    // which the job must not exit quietly on.
+    if (selection && !entry.hasSelection) {
+      log.error(
+        "the hub recorded this deploy but could not store its spec selection — the range answers " +
+          "'unanswerable' from here on, and nothing fills it in later. Re-record this deploy.",
+      );
+      process.exit(1);
     }
     log.info(`recorded deploy #${entry.index}`);
   }));

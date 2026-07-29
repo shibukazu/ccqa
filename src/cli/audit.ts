@@ -114,6 +114,19 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     log.error("--only-hub-audit-needed and an explicit spec id cannot be combined; it only applies to a full sweep");
     process.exit(2);
   }
+  // The one --only-* pair that cannot compose. Both narrow, so together they
+  // mean "due AND reached by the diff" — and a spec the hub says is due that
+  // the diff drops is never audited, so its recorded commit never advances and
+  // it is due again next time. The run side then never runs it either. Two
+  // jobs at exit 0, forever.
+  if (opts.onlyHubAuditNeeded && opts.onlyAffectedBy) {
+    log.error(
+      "--only-hub-audit-needed and --only-affected-by cannot be combined: a spec the hub says needs " +
+        "auditing that the diff drops is never audited, so it stays due forever. Pick the one that " +
+        "matches the job — the hub answer after a deploy, the diff on a pull request.",
+    );
+    process.exit(2);
+  }
 
   // Resolved before the sweep so a usage error costs nothing: --only-affected-by
   // below spends a model call, and finding out after it that --hub-profile is
@@ -137,7 +150,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
 
   let targets = await collectTargets(specPath, cwd);
   if (targets.length === 0) {
-    exitWithNoSpecs(format, "no test specs found under .ccqa/features/");
+    exitWithNoSpecs(format, "noSpecsFound", "no test specs found under .ccqa/features/");
   }
 
   if (format === "text") {
@@ -158,7 +171,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
       log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
     }
     if (targets.length === 0) {
-      exitWithNoSpecs(format, "every spec has been audited since the last deploy that reached it");
+      exitWithNoSpecs(format, "allCurrent", "every spec has been audited since the last deploy that reached it");
     }
 
     // Claim what is left, so a second cycle starting while this one runs does
@@ -170,7 +183,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     }
     targets = claimed;
     if (targets.length === 0) {
-      exitWithNoSpecs(format, "every spec that needs auditing is already being audited by another job");
+      exitWithNoSpecs(format, "allHeld", "every spec that needs auditing is already being audited by another job");
     }
   }
 
@@ -192,7 +205,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
       log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
     }
     if (targets.length === 0) {
-      exitWithNoSpecs(format, "no specs intersect the changed file set; nothing to check");
+      exitWithNoSpecs(format, "noDiffIntersection", "no specs intersect the changed file set; nothing to check");
     }
   }
 
@@ -329,12 +342,24 @@ export async function pushDriftResults(
   }
 }
 
-function exitWithNoSpecs(format: Format, message: string): never {
+/**
+ * Nothing to audit. The reason rides in the payload because the four are not
+ * interchangeable to a CI job reading the JSON: "every spec is current" is the
+ * happy path, while "no specs found" usually means a wrong --cwd or a checkout
+ * that did not include the spec tree, and both looked identical before.
+ */
+type NoSpecsReason = "noSpecsFound" | "allCurrent" | "allHeld" | "noDiffIntersection";
+
+function exitWithNoSpecs(format: Format, reason: NoSpecsReason, message: string): never {
   reportCost();
   if (format === "json") {
-    process.stdout.write(`${JSON.stringify({ specs: [] }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ specs: [], skipped: reason }, null, 2)}\n`);
   } else if (format === "text") {
     log.info(message);
+  } else if (format === "github" && reason === "noSpecsFound") {
+    // The one that is usually a mistake, in the one format that otherwise
+    // leaves no trace at all.
+    process.stdout.write(`::warning::${message}\n`);
   }
   process.exit(0);
 }
