@@ -11,7 +11,6 @@ import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOpt
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { resolveHubClient, type HubContext } from "./hub-conn.ts";
-import { syncSpecPerspectives } from "./perspectives-sync.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { ValidationMode } from "../runtime/replay-validate.ts";
 import type { Locator, ParsedStatusLine, RecordedAction } from "../types.ts";
@@ -213,12 +212,6 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
     }
   }
 
-  // Keep the hub's coverage inventory in step with what was just recorded.
-  await syncSpecPerspectives(hubContext, {
-    ref: { featureName, specName },
-    ...(language ? { language } : {}),
-    ...(opts.model ? { model: opts.model } : {}),
-  });
 }
 
 /**
