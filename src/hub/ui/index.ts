@@ -863,21 +863,18 @@ const CSS = `
   .rrleg span { display: inline-flex; align-items: center; gap: 6px; }
   .rrleg i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .rrleg b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
-  /* One class per re-run state, worn by both the bar segment and its legend
-     dot. "unknown" takes the info hue: it must never be mistaken for a pass,
-     and the two neutral states are two different greys so adjacent segments
-     stay separable. Drift's own three states share these colours (found=amber,
-     notAudited=muted grey, clean=pass green) rather than inventing a second
-     palette — same reasoning as the badge classes below. Careful writing in
-     here: a star followed by a slash closes the comment early and silently
-     eats the next rule, and a backtick ends the template literal this CSS
-     lives in. */
-  .sg-drift-found, .sg-needed { background: var(--amber-fill); }
-  .sg-blocked { background: var(--fail); }
-  .sg-unknown, .sg-drift-unknown { background: var(--info); }
-  .sg-drift-clean, .sg-notneeded { background: var(--pass); }
-  .sg-drift-none, .sg-neverrun { background: var(--muted-2); }
-  .sg-noteval { background: var(--muted); }
+  /* One class per verdict, worn by both the bar segment and its legend dot.
+     "unanswerable" takes the info hue: it must never be mistaken for a pass.
+     Drift's own three states share these colours rather than inventing a
+     second palette — same reasoning as the badge classes below. Careful
+     writing in here: a star followed by a slash closes the comment early and
+     silently eats the next rule, and a backtick ends the template literal this
+     CSS lives in. */
+  .sg-drift-found, .sg-rerunneeded { background: var(--amber-fill); }
+  .sg-needsrepair { background: var(--fail); }
+  .sg-unanswerable, .sg-drift-unknown { background: var(--info); }
+  .sg-drift-clean, .sg-verified { background: var(--pass); }
+  .sg-drift-none, .sg-inprogress { background: var(--muted-2); }
 
   .search { flex: 1; min-width: 200px; max-width: 340px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 10px; height: 32px; background: var(--surface); }
   .search svg { width: 15px; height: 15px; flex: none; color: var(--muted-2); }
@@ -3283,10 +3280,13 @@ const CLIENT_JS = `
   // Why the question cannot be answered, in the actionable phrasing the detail
   // panel wants: name the missing input and how to supply it. Only
   // "unanswerable" carries a machine-readable reason (ADR-0010).
+  // Every verdict that carries no evidence row explains itself here. A verdict
+  // a newer hub invented falls through to the fix lookup, so the row says the
+  // UI cannot read it rather than going blank — which looks like missing data.
   function rerunCannotJudge(rr) {
     if (rr.verdict === "unanswerable") return rerunReasonText("perspectives.rerun.fix.", rr.reason || "");
-    // A verdict a newer hub invented: say the UI cannot read it rather than
-    // leave the row blank, which would look like missing data.
+    if (rr.verdict === "needsRepair") return rerunReasonText("perspectives.rerun.repair.", rerunRepairCause(rr));
+    if (rr.verdict === "inProgress") return t("perspectives.rerun.inProgressHint");
     return rerunReasonText("perspectives.rerun.fix.", rr.verdict);
   }
 
@@ -3312,10 +3312,6 @@ const CLIENT_JS = `
       if (!head) return t("perspectives.rerun.noDeployHead");
       return t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
     }
-    if (rr.verdict === "needsRepair") {
-      return rerunReasonText("perspectives.rerun.repair.", rerunRepairCause(rr));
-    }
-    if (rr.verdict === "inProgress") return t("perspectives.rerun.inProgressHint");
     if (rr.verdict === "unanswerable") return rerunReasonText("perspectives.rerun.why.", rr.reason || "");
     return rerunCannotJudge(rr);
   }
@@ -3335,8 +3331,8 @@ const CLIENT_JS = `
   // clear", which is what ADR-0010 forbids.
   var RERUN_ORDER = ["needsRepair", "rerunNeeded", "unanswerable", "inProgress", "verified"];
   var RERUN_SEG_CLASS = {
-    needsRepair: "sg-blocked", rerunNeeded: "sg-needed", unanswerable: "sg-unknown",
-    inProgress: "sg-neverrun", verified: "sg-notneeded"
+    needsRepair: "sg-needsrepair", rerunNeeded: "sg-rerunneeded", unanswerable: "sg-unanswerable",
+    inProgress: "sg-inprogress", verified: "sg-verified"
   };
 
   // One verdict per case, bucketed. A case with no verdict at all — this hub

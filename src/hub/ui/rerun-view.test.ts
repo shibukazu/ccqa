@@ -255,6 +255,19 @@ describe("hub UI: needs re-run", () => {
     expect(HTML).not.toMatch(/<button class="fchip"[^>]*data-i18n=/);
   });
 
+  test("every verdict without an evidence row can still explain itself", () => {
+    // The detail panel falls back to `rerunCannotJudge` for these, and a
+    // missing key there renders as "this hub reported a reason this UI does
+    // not recognise" — on a spec whose state the UI knows perfectly well.
+    const { en, ja } = dictionaries();
+    for (const dict of [en, ja]) {
+      expect(dict["perspectives.rerun.inProgressHint"]).toBeTruthy();
+      for (const cause of ["testDrift", "specChange", "auditUndecided", "runFailed"]) {
+        expect(dict[`perspectives.rerun.repair.${cause}`], cause).toBeTruthy();
+      }
+    }
+  });
+
   test("the evidence row is labelled by what it holds, not by one label forced over both", () => {
     const { rerunEvidenceLabelKey } = detailLabels();
     // A verdict with evidence: the row shows what the deploy log holds since the

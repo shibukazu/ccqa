@@ -10,18 +10,17 @@ import type {
   SpecTouchIndex,
 } from "../contract/schema.ts";
 import type { DriftLabel } from "../../report/schema.ts";
-import { buildRange, freshness, type RangeLookup } from "./deploy-range.ts";
+import { auditNeed } from "./audit-need.ts";
+import { buildRange, freshness, type Freshness, type RangeLookup } from "./deploy-range.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 /**
  * "What should happen to this spec next?" — pure set arithmetic over data the
  * hub already stores (ADR-0010).
  *
- * Two independent axes, one derived answer. The audit axis says whether the
- * spec still describes the deployed code; the execution axis says what
- * happened the last time it ran. Neither determines the other — a spec can be
- * clean and stale, or drifted and freshly run — so collapsing them into one
- * value loses exactly the case that matters.
+ * Two independent axes, one derived answer. Neither axis determines the other
+ * — a spec can be clean and stale, or drifted and freshly run — so collapsing
+ * them into one value loses exactly the case that matters.
  */
 export interface RerunInput {
   /** Every spec in the project's perspectives document. */
@@ -36,15 +35,17 @@ export interface RerunInput {
 
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
   const { specs, ledger, log, touchIndex, drift } = input;
-  // Nothing has ever been recorded for this profile: neither a run nor a
-  // deploy. That is a different statement from "this spec has never run".
-  // `green` is checked separately from `run` because a pre-ledger document
-  // migrates as greens with no runs.
-  const notEvaluated =
+  const range = buildRange(log, touchIndex);
+  // Nothing recorded for this profile at all: neither a run nor a deploy. A
+  // profile-wide fact, so it replaces the derived answer without touching the
+  // axes — those stay per-spec, or the same spec would read differently
+  // depending on whether some *other* spec had a run. `green` is checked
+  // separately from `run` because a pre-ledger document migrates as greens
+  // with no runs.
+  const nothingRecorded =
     log.entries.length === 0 &&
     Object.keys(ledger.run).length === 0 &&
     Object.keys(ledger.green).length === 0;
-  const range = buildRange(log, touchIndex);
 
   const out: Record<string, SpecRerun> = {};
   for (const spec of specs) {
@@ -53,59 +54,55 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       lastGreen: ledger.green[spec.key] ?? null,
       lastRed: ledger.red[spec.key] ?? null,
     };
-    const { axis, dataProblem } = auditState(drift, spec.key, range);
+    const audit = auditState(drift, spec.key, range);
     const execution = executionState(coords);
-    out[spec.key] = {
-      ...decide(axis, execution, coords, spec.key, range, notEvaluated, dataProblem),
-      ...axis,
-      execution,
-      ...coords,
-    };
+    const derived = nothingRecorded
+      ? ({ verdict: "unanswerable", reason: "notEvaluated" } as const)
+      : decide(audit, execution, coords.lastRun, (sha) => freshness(sha, spec.key, range));
+    out[spec.key] = { ...derived, ...audit, execution, ...coords };
   }
   return out;
 }
 
 /**
- * Axis 1. What the audit says about the *deployed* commit, which is not the
- * same as what its last run said: an audit that read an older commit has not
- * spoken about the code running now, so it reads as `checking` until a deploy
- * that reached this spec has been audited again.
- *
- * A missing ledger entry and a stale one collapse to the same answer on
- * purpose. To a reader asking "does this spec describe what is deployed", the
- * audit has not answered in either case.
- *
- * `dataProblem` is separate from both. When the deploy log cannot say whether
- * the audit is current, the honest answer is that nothing here can be
- * determined — folding that into `checking` would promise a resolution that
- * waiting will never bring.
+ * Axis 1, derived from the same freshness answer `--only-hub-audit-needed`
+ * reads. The label only speaks once the audit is known to be current: a
+ * verdict about an older commit says nothing about the one running now.
  */
-export function auditState(
+function auditState(
   drift: DriftLedger,
   key: string,
   range: RangeLookup,
-): { axis: { audit: AuditState; driftLabel?: DriftLabel }; dataProblem: RerunUnknownReason | null } {
-  const entry = drift.specs[key];
-  if (!entry) return { axis: { audit: "checking" }, dataProblem: null };
-  const since = freshness(entry.gitHead, key, range);
-  if (since.kind === "unanswerable") {
-    return { axis: { audit: "checking" }, dataProblem: since.reason };
+): { audit: AuditState; driftLabel?: Exclude<DriftLabel, "UNKNOWN">; reason?: RerunUnknownReason } {
+  const need = auditNeed(drift, key, range);
+  switch (need.because) {
+    case "neverAudited":
+    case "deployReached":
+      return { audit: "checking" };
+    case "cannotTell":
+      return { audit: "cannotTell", ...(need.reason ? { reason: need.reason } : {}) };
+    case "current": {
+      const label = drift.specs[key]!.label;
+      if (label === null) return { audit: "clean" };
+      if (label === "UNKNOWN") return { audit: "undecided" };
+      return { audit: "drifted", driftLabel: label };
+    }
+    default: {
+      const unreachable: never = need.because;
+      throw new Error(`unhandled audit need: ${String(unreachable)}`);
+    }
   }
-  if (since.kind === "touched") return { axis: { audit: "checking" }, dataProblem: null };
-  if (entry.label === null) return { axis: { audit: "clean" }, dataProblem: null };
-  if (entry.label === "UNKNOWN") return { axis: { audit: "undecided" }, dataProblem: null };
-  return { axis: { audit: "drifted", driftLabel: entry.label }, dataProblem: null };
 }
 
 /**
- * Axis 2. The outcome of the last execution, with no notion of age — how old
- * that execution is belongs to the deploy log, not here.
- *
- * The red bucket is compared by run id rather than by timestamp because both
- * buckets advance from the same terminal-run trigger, so the run that wrote
- * `run` is the one that wrote exactly one of `green` or `red`.
+ * Axis 2. The red bucket is compared by run id rather than by timestamp
+ * because both buckets advance from the same terminal-run trigger, so the run
+ * that wrote `run` wrote exactly one of `green` or `red`.
  */
-function executionState(coords: Coords): ExecutionState {
+function executionState(coords: {
+  lastRun: SpecLedgerEntry | null;
+  lastRed: SpecLedgerEntry | null;
+}): ExecutionState {
   if (!coords.lastRun) return "neverRun";
   if (coords.lastRed && coords.lastRed.runId === coords.lastRun.runId) return "failed";
   return "passed";
@@ -114,45 +111,54 @@ function executionState(coords: Coords): ExecutionState {
 /**
  * The derived answer, evaluated in order. Order is the whole design: a failed
  * spec is answered before its age is considered, because re-running it teaches
- * nothing until the code it exercises moves — the failure is already current
- * information.
+ * nothing until the code it exercises moves.
  */
 function decide(
-  audit: { audit: AuditState },
+  audit: { audit: AuditState; reason?: RerunUnknownReason },
   execution: ExecutionState,
-  coords: Coords,
-  key: string,
-  range: RangeLookup,
-  notEvaluated: boolean,
-  auditDataProblem: RerunUnknownReason | null,
+  lastRun: SpecLedgerEntry | null,
+  since: (baselineSha: string) => Freshness,
 ): Pick<SpecRerun, "verdict" | "reason" | "touchedBy" | "touchedByDeploy"> {
-  if (notEvaluated) return { verdict: "unanswerable", reason: "notEvaluated" };
-  // Before anything else: if the deploy log cannot place the audit, no answer
-  // below it stands either — they all read the same log.
-  if (auditDataProblem) return unanswerable(auditDataProblem);
-  if (audit.audit === "checking" || execution === "running") return { verdict: "inProgress" };
-  if (audit.audit === "drifted" || audit.audit === "undecided" || execution === "failed") {
-    return { verdict: "needsRepair" };
+  // The deploy log could not place the audit, so it cannot place the run
+  // either — they read the same log.
+  switch (audit.audit) {
+    case "cannotTell":
+      return unanswerable(audit.reason!);
+    case "checking":
+      return { verdict: "inProgress" };
+    case "drifted":
+    case "undecided":
+      return { verdict: "needsRepair" };
+    case "clean":
+      break;
+    default: {
+      const unreachable: never = audit.audit;
+      throw new Error(`unhandled audit state: ${String(unreachable)}`);
+    }
   }
-  if (execution === "neverRun") return { verdict: "rerunNeeded" };
-
-  const lastRun = coords.lastRun!;
+  switch (execution) {
+    case "failed":
+      return { verdict: "needsRepair" };
+    case "passed":
+    case "neverRun":
+      break;
+    default: {
+      const unreachable: never = execution;
+      throw new Error(`unhandled execution state: ${String(unreachable)}`);
+    }
+  }
+  if (!lastRun) return { verdict: "rerunNeeded" };
   if (lastRun.deployedShaAmbiguous) return unanswerable("ambiguousDeployedSha");
   if (!lastRun.deployedSha) return unanswerable("unknownDeployedSha");
-  const since = freshness(lastRun.deployedSha, key, range);
-  if (since.kind === "unanswerable") return unanswerable(since.reason);
-  if (since.kind === "current") return { verdict: "verified" };
+
+  const answer = since(lastRun.deployedSha);
+  if (answer.kind === "unanswerable") return unanswerable(answer.reason);
+  if (answer.kind === "current") return { verdict: "verified" };
   return {
     verdict: "rerunNeeded",
-    ...(since.touchedBy ? { touchedBy: since.touchedBy } : {}),
-    touchedByDeploy: since.touchedByDeploy,
+    ...(answer.touchedBy ? { touchedBy: answer.touchedBy } : {}),
+    touchedByDeploy: answer.touchedByDeploy,
   };
-}
-
-interface Coords {
-  lastRun: SpecLedgerEntry | null;
-  lastGreen: SpecLedgerEntry | null;
-  lastRed: SpecLedgerEntry | null;
 }
 
 function unanswerable(reason: RerunUnknownReason): { verdict: "unanswerable"; reason: RerunUnknownReason } {

@@ -105,7 +105,7 @@ describe("fetchRerunReport", () => {
         throw new HubApiError(404, "not_found", "no route for GET /api/v1/projects/demo/rerun");
       },
     });
-    await expect(fetchRerunReport(ctx, "stg")).rejects.toThrow(/needs ccqa 1\.9 or newer/);
+    await expect(fetchRerunReport(ctx, "stg")).rejects.toThrow(/needs ccqa 1\.16 or newer/);
   });
 
   test("the handler's `no_perspectives` code points at `ccqa perspectives`", async () => {

@@ -69,8 +69,7 @@ function compute(overrides: Partial<RerunInput> = {}): ReturnType<typeof compute
   // case below would answer `inProgress` on the audit axis before the run axis
   // was ever consulted, which is correct behaviour but useless for isolating
   // the run side.
-  const newest = base.log.entries[base.log.entries.length - 1];
-  const drift = overrides.drift ?? (newest ? auditedAt(null, newest.sha) : { specs: {} });
+  const drift = overrides.drift ?? auditedAt(null, base.log.entries.at(-1)?.sha ?? "no-deploys");
   return computeRerun({ ...base, drift })["f/s"]!;
 }
 
@@ -138,9 +137,14 @@ describe("computeRerun: the run axis, with the audit already current", () => {
 
   describe("unanswerable, never `verified`", () => {
     test("notEvaluated: the profile has neither a run nor a deploy recorded", () => {
-      expect(compute({ ledger: ledgerWithRun(null), log: log() })).toMatchObject({
+      // A profile-wide fact, so it replaces the verdict without touching the
+      // axes — the same spec must not read differently because some *other*
+      // spec happens to have a run.
+      expect(compute({ ledger: ledgerWithRun(null), log: log(), drift: { specs: {} } })).toMatchObject({
         verdict: "unanswerable",
         reason: "notEvaluated",
+        audit: "checking",
+        execution: "neverRun",
       });
     });
 

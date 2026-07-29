@@ -365,18 +365,11 @@ export type SpecTouchIndex = z.infer<typeof SpecTouchIndexSchema>;
 
 /**
  * Axis 1: what the audit says about this spec *relative to what is deployed
- * now*. Not "what the last audit said" — an audit that read an older commit
- * says nothing about the one running today, so it reads as `checking` until it
- * runs again.
+ * now*. An audit that read an older commit says nothing about the one running
+ * today, which is why staleness is a state here rather than a footnote.
  */
 export const AuditStateSchema = z.enum([
-  /**
-   * The audit has not answered for the deployed commit. Covers the deploy
-   * whose spec selection is not recorded yet, the audit that is queued or in
-   * flight, and the spec that was never audited at all: to a reader asking
-   * about the code running now, "never looked" and "looked at an older commit"
-   * are the same answer.
-   */
+  /** No answer yet for the deployed commit: never audited, or audited older. Waiting resolves it. */
   "checking",
   /** The spec still describes the deployed code. */
   "clean",
@@ -384,6 +377,8 @@ export const AuditStateSchema = z.enum([
   "drifted",
   /** The audit read the code and could not decide. */
   "undecided",
+  /** The deploy log cannot place the audit, so its currency is unknowable. `reason` names the hole. */
+  "cannotTell",
 ]);
 export type AuditState = z.infer<typeof AuditStateSchema>;
 
@@ -393,7 +388,7 @@ export type AuditState = z.infer<typeof AuditStateSchema>;
  * (`lastRun.deployedSha`), and collapsing the two is what left the old
  * single-axis state unable to tell a red spec from an up-to-date one.
  */
-export const ExecutionStateSchema = z.enum(["running", "passed", "failed", "neverRun"]);
+export const ExecutionStateSchema = z.enum(["passed", "failed", "neverRun"]);
 export type ExecutionState = z.infer<typeof ExecutionStateSchema>;
 
 /**
@@ -463,8 +458,8 @@ export const SpecRerunSchema = z.object({
   verdict: SpecVerdictSchema,
   audit: AuditStateSchema,
   execution: ExecutionStateSchema,
-  /** Set only when `audit === "drifted"`. */
-  driftLabel: DriftLabelSchema.optional(),
+  /** Set only when `audit === "drifted"`. `UNKNOWN` belongs to `undecided`, so it cannot appear here. */
+  driftLabel: DriftLabelSchema.exclude(["UNKNOWN"]).optional(),
   /** Set only when `verdict === "unanswerable"`. */
   reason: RerunUnknownReasonSchema.optional(),
   lastRun: SpecLedgerEntrySchema.nullable(),
@@ -487,24 +482,14 @@ export const SpecRerunSchema = z.object({
 export type SpecRerun = z.infer<typeof SpecRerunSchema>;
 
 /**
- * One spec's answer to "does this need auditing?".
- *
- * `because` is always carried so a CI log can say more than a count, and the
- * three values are not interchangeable: `neverAudited` means there is no
- * baseline at all (no diff can be consulted, so nothing narrows it away),
- * `deployReached` means a deploy landed on code this spec covers, and
- * `cannotTell` means the deploy log has a hole. All three audit — the audit is
- * cheap, so it errs towards doing the work, where the run errs away from it.
+ * Why this spec does or does not need auditing. Everything but `current`
+ * audits: the audit is cheap, so it errs towards doing the work where the run
+ * errs away from it.
  */
 export const AuditNeedSchema = z.object({
-  needed: z.boolean(),
   because: z.enum(["neverAudited", "deployReached", "cannotTell", "current"]),
   /** Set only when `because === "cannotTell"`. */
   reason: RerunUnknownReasonSchema.optional(),
-  /** The commit the last audit read, or null when there has never been one. */
-  auditedAt: z.string().nullable(),
-  /** The deploy that reached this spec. Set only when `because === "deployReached"`, and only when the log still retains it. */
-  touchedByDeploy: DeployRefSchema.optional(),
 });
 export type AuditNeed = z.infer<typeof AuditNeedSchema>;
 
@@ -512,8 +497,6 @@ export type AuditNeed = z.infer<typeof AuditNeedSchema>;
 export const AuditNeedReportSchema = z.object({
   project: z.string(),
   profile: z.string(),
-  /** The profile's newest deploy, or null when nothing has been recorded. */
-  deployHead: DeployRefSchema.nullable(),
   specs: z.record(z.string(), AuditNeedSchema),
 });
 export type AuditNeedReport = z.infer<typeof AuditNeedReportSchema>;

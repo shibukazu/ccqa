@@ -57,11 +57,7 @@ describe("computeAuditNeed", () => {
     // The point of the flag: `ccqa select-specs` has nothing to narrow here,
     // because there is no baseline to diff from. A spec no deploy ever reached
     // would otherwise sit un-audited forever.
-    expect(compute({ drift: { specs: {} }, touchIndex: {} })).toEqual({
-      needed: true,
-      because: "neverAudited",
-      auditedAt: null,
-    });
+    expect(compute({ drift: { specs: {} }, touchIndex: {} })).toEqual({ because: "neverAudited" });
   });
 
   test("a spec in the sweep but not in the report is treated the same way", () => {
@@ -77,15 +73,12 @@ describe("computeAuditNeed", () => {
   });
 
   test("not needed when no deploy has reached it since the audit read it", () => {
-    expect(compute()).toMatchObject({ needed: false, because: "current", auditedAt: "sha-1" });
+    expect(compute()).toEqual({ because: "current" });
   });
 
-  test("needed when a deploy since the audit reached it, and the deploy is named", () => {
-    expect(compute({ drift: auditedAt(null, "sha-0"), touchIndex: touchedAt(1) })).toMatchObject({
-      needed: true,
+  test("needed when a deploy since the audit reached it", () => {
+    expect(compute({ drift: auditedAt(null, "sha-0"), touchIndex: touchedAt(1) })).toEqual({
       because: "deployReached",
-      auditedAt: "sha-0",
-      touchedByDeploy: { index: 1, sha: "sha-1" },
     });
   });
 
@@ -94,7 +87,7 @@ describe("computeAuditNeed", () => {
     // may be exactly what the deploy changed.
     expect(
       compute({ drift: auditedAt("SPEC_CHANGE", "sha-0"), touchIndex: touchedAt(1) }),
-    ).toMatchObject({ needed: true, because: "deployReached" });
+    ).toMatchObject({ because: "deployReached" });
   });
 
   test("a hole in the deploy log audits rather than skips", () => {
@@ -103,10 +96,9 @@ describe("computeAuditNeed", () => {
     // does the work here and declines it there.
     expect(
       compute({ drift: auditedAt(null, "sha-0"), log: log(deploy(0), deploy(1, { gapBefore: true })) }),
-    ).toMatchObject({ needed: true, because: "cannotTell", reason: "gapInRange" });
+    ).toMatchObject({ because: "cannotTell", reason: "gapInRange" });
 
     expect(compute({ drift: auditedAt(null, "sha-0"), log: log() })).toMatchObject({
-      needed: true,
       because: "cannotTell",
       reason: "noDeployLog",
     });

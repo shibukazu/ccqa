@@ -407,6 +407,7 @@ export async function executeRun(
   if (filtering) {
     const before = specs.length;
     let unanswerable = 0;
+    let inProgress = 0;
     // Each filter narrows what the previous one left, so passing both means
     // "stale AND affected". The hub verdicts run first because they are
     // already fetched: whatever they drop is one less spec for the selector
@@ -417,6 +418,7 @@ export async function executeRun(
       });
       specs = selection.selected;
       unanswerable = selection.excludedUnanswerable;
+      inProgress = selection.excludedInProgress;
       log.meta(
         "stale-base",
         `deploy ${rerunReport.deployHead.sha.slice(0, 12)} (profile ${rerunReport.profile})`,
@@ -439,12 +441,24 @@ export async function executeRun(
       `${specs.length} of ${before} spec${before === 1 ? "" : "s"}`,
     );
     // Selecting nothing is a real answer only when every spec was answered.
-    // Say so when it wasn't, or a project whose specs have never run reads
-    // "0 to run, exit 0" as "all good".
-    if (specs.length === 0 && unanswerable > 0) {
-      log.hint(
-        `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
-          `a re-run; pass --only-hub-rerun-needed-with-unknown to run them anyway`,
+    // Otherwise "0 to run, exit 0" reads as "all good", which is the one
+    // outcome this whole selection path exists to prevent.
+    if (specs.length === 0 && (unanswerable > 0 || inProgress > 0)) {
+      if (unanswerable > 0) {
+        log.hint(
+          `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
+            `a re-run; pass --only-hub-rerun-needed-with-unknown to run them anyway`,
+        );
+      }
+      if (inProgress > 0) {
+        log.hint(
+          `${inProgress} spec(s) were excluded because the audit has not answered for the deployed ` +
+            `commit yet; run \`ccqa audit --only-hub-audit-needed --report-to-hub\` first`,
+        );
+      }
+      throw new RunUsageError(
+        "nothing was selected and no spec was cleared to run: exiting non-zero rather than " +
+          "reporting a green run that verified nothing",
       );
     }
   }

@@ -1,9 +1,10 @@
 import type { RerunReport } from "../../contract/schema.ts";
-import { loadSpecTargets } from "../../core/perspectives-specs.ts";
+import { requireSpecTargets } from "../../core/perspectives-specs.ts";
+import { deployRef } from "../../core/deploy-range.ts";
 import { computeRerun } from "../../core/rerun.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
-import { HttpError, sendJson } from "../respond.ts";
+import { sendJson } from "../respond.ts";
 import { requireProfileParam, requireSafeSegment } from "../validate.ts";
 
 /**
@@ -24,7 +25,7 @@ export function createGetRerunHandler(storage: HubStorage) {
     const profile = requireProfileParam(ctx.url);
 
     const [specs, ledger, log, touchIndex, drift] = await Promise.all([
-      loadSpecTargets(storage.perspectives, project),
+      requireSpecTargets(storage.perspectives, project, "which specs need a re-run"),
       storage.ledger.getMerged(project, profile),
       storage.deploys.getLog(project, profile),
       storage.deploys.getTouchIndex(project, profile),
@@ -32,23 +33,12 @@ export function createGetRerunHandler(storage: HubStorage) {
       // question about the repository, not about an environment (ADR-0013).
       storage.driftLedger.getMerged(project),
     ]);
-    if (specs === null) {
-      // Distinct from the generic `not_found` an unrouted path returns: the
-      // route exists, the project's perspectives document does not. Clients
-      // tell "this hub is too old" from "push a perspectives document" by this
-      // code alone, with no second probe request.
-      throw new HttpError(
-        404,
-        "no_perspectives",
-        `no perspectives stored for project "${project}" — push one with \`ccqa perspectives\` before asking which specs need a re-run`,
-      );
-    }
     const head = log.entries[log.entries.length - 1];
 
     sendJson(ctx.res, 200, {
       project,
       profile,
-      deployHead: head ? { index: head.index, sha: head.sha, at: head.at } : null,
+      deployHead: head ? deployRef(head) : null,
       specs: computeRerun({ specs, ledger, log, touchIndex, drift }),
     } satisfies RerunReport);
   };

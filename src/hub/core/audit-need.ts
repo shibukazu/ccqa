@@ -1,26 +1,44 @@
-import type {
-  AuditNeed,
-  DeployLog,
-  DriftLedger,
-  SpecTouchIndex,
-} from "../contract/schema.ts";
-import { buildRange, freshness } from "./deploy-range.ts";
+import type { AuditNeed, DeployLog, DriftLedger, SpecTouchIndex } from "../contract/schema.ts";
+import { buildRange, freshness, type RangeLookup } from "./deploy-range.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 /**
- * "Does this spec need auditing?" — the same range arithmetic the re-run
- * verdict runs, started from the commit the audit read instead of the deploy
- * the last run exercised.
+ * "Does this spec need auditing?" — the freshness question the re-run verdict
+ * asks, started from the commit the audit read instead of the deploy the last
+ * run exercised.
  *
- * The two default in opposite directions, and the asymmetry is deliberate: an
- * audit costs cents and a live run costs dollars, so the audit does the work
- * when it cannot tell and the run declines to.
+ * A spec with no audit at all needs one unconditionally: there is no baseline
+ * to diff from, so `ccqa select-specs` has nothing to narrow it away with, and
+ * a spec no deploy ever reached would otherwise stay un-audited forever.
  *
- * A spec with no audit at all is needed unconditionally. There is no baseline
- * to diff from, so `ccqa select-specs` has nothing to say about it — which is
- * why a spec that no deploy ever reached could otherwise sit un-audited
- * forever.
+ * Everything but `current` audits. An audit costs cents where a live run costs
+ * dollars, so this side does the work when it cannot tell and the re-run
+ * verdict declines to.
  */
+export function auditNeed(drift: DriftLedger, key: string, range: RangeLookup): AuditNeed {
+  const entry = drift.specs[key];
+  if (!entry) return { because: "neverAudited" };
+
+  const since = freshness(entry.gitHead, key, range);
+  switch (since.kind) {
+    case "current":
+      return { because: "current" };
+    case "touched":
+      return { because: "deployReached" };
+    case "unanswerable":
+      return { because: "cannotTell", reason: since.reason };
+    default: {
+      const unreachable: never = since;
+      throw new Error(`unhandled freshness: ${String(unreachable)}`);
+    }
+  }
+}
+
+/** True for every answer but `current`. */
+export function needsAudit(need: AuditNeed): boolean {
+  return need.because !== "current";
+}
+
 export interface AuditNeedInput {
   /** Every spec in the project's perspectives document. */
   specs: SpecTarget[];
@@ -31,30 +49,8 @@ export interface AuditNeedInput {
 }
 
 export function computeAuditNeed(input: AuditNeedInput): Record<string, AuditNeed> {
-  const { specs, log, touchIndex, drift } = input;
-  const range = buildRange(log, touchIndex);
-
-  const out: Record<string, AuditNeed> = {};
-  for (const spec of specs) {
-    const entry = drift.specs[spec.key];
-    if (!entry) {
-      out[spec.key] = { needed: true, because: "neverAudited", auditedAt: null };
-      continue;
-    }
-    const since = freshness(entry.gitHead, spec.key, range);
-    const auditedAt = entry.gitHead;
-    if (since.kind === "current") {
-      out[spec.key] = { needed: false, because: "current", auditedAt };
-    } else if (since.kind === "touched") {
-      out[spec.key] = {
-        needed: true,
-        because: "deployReached",
-        auditedAt,
-        ...(since.touchedByDeploy ? { touchedByDeploy: since.touchedByDeploy } : {}),
-      };
-    } else {
-      out[spec.key] = { needed: true, because: "cannotTell", reason: since.reason, auditedAt };
-    }
-  }
-  return out;
+  const range = buildRange(input.log, input.touchIndex);
+  return Object.fromEntries(
+    input.specs.map((spec) => [spec.key, auditNeed(input.drift, spec.key, range)]),
+  );
 }

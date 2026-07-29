@@ -1,9 +1,9 @@
 import type { AuditNeedReport } from "../../contract/schema.ts";
 import { computeAuditNeed } from "../../core/audit-need.ts";
-import { loadSpecTargets } from "../../core/perspectives-specs.ts";
+import { requireSpecTargets } from "../../core/perspectives-specs.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
-import { HttpError, sendJson } from "../respond.ts";
+import { sendJson } from "../respond.ts";
 import { requireProfileParam, requireSafeSegment } from "../validate.ts";
 
 /**
@@ -22,24 +22,15 @@ export function createGetAuditNeedHandler(storage: HubStorage) {
     const profile = requireProfileParam(ctx.url);
 
     const [specs, log, touchIndex, drift] = await Promise.all([
-      loadSpecTargets(storage.perspectives, project),
+      requireSpecTargets(storage.perspectives, project, "which specs need auditing"),
       storage.deploys.getLog(project, profile),
       storage.deploys.getTouchIndex(project, profile),
       storage.driftLedger.getMerged(project),
     ]);
-    if (specs === null) {
-      throw new HttpError(
-        404,
-        "no_perspectives",
-        `no perspectives stored for project "${project}" — push one with \`ccqa perspectives\` before asking which specs need auditing`,
-      );
-    }
-    const head = log.entries[log.entries.length - 1];
 
     sendJson(ctx.res, 200, {
       project,
       profile,
-      deployHead: head ? { index: head.index, sha: head.sha, at: head.at } : null,
       specs: computeAuditNeed({ specs, log, touchIndex, drift }),
     } satisfies AuditNeedReport);
   };

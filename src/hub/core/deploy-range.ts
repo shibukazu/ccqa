@@ -7,13 +7,9 @@ import type {
 } from "../contract/schema.ts";
 
 /**
- * "Has any deploy since <commit> reached this spec?" — the one piece of range
- * arithmetic both ledgers ask, differing only in which commit they start from.
- *
- * The re-run verdict starts from the deploy its last run exercised; the audit
- * starts from the commit it read. Sharing the implementation is what keeps
- * "does the result still apply" and "does the audit still apply" from drifting
- * apart as two near-copies.
+ * "Has any deploy since <commit> reached this spec?" — asked by the re-run
+ * verdict from the deploy its last run exercised, and by the audit from the
+ * commit it read.
  *
  * Deliberately no wall clocks: a run that started before a deploy and finished
  * after it looks up to date by timestamp, so the only ordering used is
