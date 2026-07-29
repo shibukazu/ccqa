@@ -43,6 +43,8 @@ import type { ReportSpecResult } from "../report/schema.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import type { RunTeardown } from "./run-teardown.ts";
 import type { IncrementalReport } from "../run/incremental-report.ts";
+import type { ResourceLookup } from "../run/spec-catalog.ts";
+import type { SpecRef } from "../store/index.ts";
 
 /** Result of `driftAuthAvailable()`, hoisted once and shared across workers. */
 type DriftAuth = ReturnType<typeof driftAuthAvailable>;
@@ -61,6 +63,8 @@ export interface RunLiveOptions {
   diffProvider?: DiffProvider | null;
   cwd?: string;
   concurrency?: number;
+  /** See `RunnerOptions.resources`. Absent means no spec declares one. */
+  resources?: ResourceLookup;
   /** Active `--hub-profile` name; selects the sessions bucket for `spec.session`. */
   profile?: string;
   hubContext?: HubContext | null;
@@ -90,7 +94,7 @@ export type LiveSpecRun = {
  * analysis to produce report rows. Sibling of `runDeterministicSpecs`.
  */
 export async function runLiveSpecs(
-  specs: readonly { featureName: string; specName: string }[],
+  specs: readonly SpecRef[],
   opts: RunLiveOptions,
 ): Promise<LiveSpecRun> {
   if (specs.length === 0) return { reportResults: [], failedCount: 0 };
@@ -150,7 +154,7 @@ export async function runLiveSpecs(
       await opts.report?.upsert(row);
       return { outcome, row };
     });
-  });
+  }, { resources: opts.resources });
 
   const runs = built.map((b) => b.outcome);
   const failedCount = runs.filter(

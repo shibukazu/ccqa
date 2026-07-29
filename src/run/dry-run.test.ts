@@ -1,11 +1,12 @@
 import { describe, expect, test } from "vitest";
-import type { SpecWithMode } from "../cli/spec-mode.ts";
+import type { SpecWithMode } from "./spec-catalog.ts";
 import { formatDryRunLines } from "./dry-run.ts";
 import type { TargetDispatch } from "./target-dispatch.ts";
 
 type Routed = Parameters<typeof formatDryRunLines>[1];
 
 const nothingRouted: Routed = { external: [], skipped: [], unresolved: [] };
+const noResources = () => [];
 
 describe("formatDryRunLines", () => {
   test("tags each spec with the phase that would execute it", () => {
@@ -22,9 +23,12 @@ describe("formatDryRunLines", () => {
         } as TargetDispatch["external"][number],
       ],
     };
-    expect(formatDryRunLines(agentBrowser, routed)).toEqual([
+    // The `exclusive:` echo is the only feedback that a declaration was read,
+    // so a mistyped name shows up here rather than as a silent no-op.
+    const held = (s: { specName: string }) => (s.specName === "create" ? ["channel"] : []);
+    expect(formatDryRunLines(agentBrowser, routed, held)).toEqual([
       "  auth/login    deterministic",
-      "  tasks/create  live",
+      "  tasks/create  live  exclusive: channel",
       "  api/health    playwright",
     ]);
   });
@@ -35,13 +39,13 @@ describe("formatDryRunLines", () => {
       skipped: [{ featureName: "f", specName: "s", title: null, reason: "no runCommand", targetId: "runn" }],
       unresolved: [{ featureName: "f", specName: "u", title: null, reason: "unknown target", targetId: null }],
     };
-    expect(formatDryRunLines([], routed)).toEqual([
+    expect(formatDryRunLines([], routed, noResources)).toEqual([
       "  f/s  skipped — no runCommand",
       "  f/u  unresolved — unknown target",
     ]);
   });
 
   test("an empty selection prints nothing", () => {
-    expect(formatDryRunLines([], nothingRouted)).toEqual([]);
+    expect(formatDryRunLines([], nothingRouted, noResources)).toEqual([]);
   });
 });

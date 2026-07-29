@@ -125,6 +125,11 @@ run executes it claims its specs, so a cycle that starts before the last one
 finishes skips what is already running instead of driving the same flow
 twice.
 
+Specs that write to the same place outside your app — a chat channel, a
+shared inbox — name it with [`exclusive:`](./docs/spec.md#exclusive--shared-things-two-specs-must-not-both-write-to).
+The claim covers those names too, so `--concurrency` shortens a run without
+letting two specs read each other's effects, in this run or the next one.
+
 When a clean spec still fails, `--on-fail-explain` labels whose problem
 it is: `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN`. You
 grade the calls on the hub, and it learns from your grades.

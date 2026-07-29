@@ -48,6 +48,7 @@ function runnerOpts(
     cwd,
     reportDir: join(cwd, "report"),
     concurrency: 1,
+    resources: () => [],
     targetId: "ext-run",
     targetConfig: TargetConfigSchema.parse(runCommand !== undefined ? { runCommand } : {}),
     stepEvidence: { supported: false, reason: "test target" },

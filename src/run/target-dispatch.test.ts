@@ -8,6 +8,7 @@ import {
   type ExternalTargetGroup,
   type TargetDispatch,
 } from "./target-dispatch.ts";
+import { readSpecs } from "./spec-catalog.ts";
 import { createIncrementalReport, type ReportEnvelope } from "./incremental-report.ts";
 import { resolveTargetFrom } from "../targets/registry.ts";
 import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
@@ -73,11 +74,23 @@ function resolverWith(...plugins: TargetPlugin[]) {
   return (spec: TestSpec, config: ProjectConfig) => resolveTargetFrom(spec, config, registry);
 }
 
+/** Reads the specs off disk the way the pipeline does, then groups them. */
+async function dispatchOf(
+  specs: SpecRef[],
+  config: ProjectConfig,
+  resolve?: (spec: TestSpec, config: ProjectConfig) => TargetPlugin,
+) {
+  const catalog = await readSpecs(specs, cwd);
+  return resolve
+    ? groupSpecsByTarget(specs, catalog, config, resolve)
+    : groupSpecsByTarget(specs, catalog, config);
+}
+
 describe("groupSpecsByTarget", () => {
   it("routes agent-browser (default target) specs to the det/live path", async () => {
     const a = await writeSpec("demo", "a", specYaml());
     const b = await writeSpec("demo", "b", specYaml("target: agent-browser"));
-    const dispatch = await groupSpecsByTarget([a, b], ProjectConfigSchema.parse({}), cwd);
+    const dispatch = await dispatchOf([a, b], ProjectConfigSchema.parse({}));
     expect(dispatch.agentBrowser).toEqual([a, b]);
     expect(dispatch.external).toEqual([]);
     expect(dispatch.skipped).toEqual([]);
@@ -91,10 +104,9 @@ describe("groupSpecsByTarget", () => {
     const config = ProjectConfigSchema.parse({
       targets: { "ext-run": { runCommand: "echo {files}" } },
     });
-    const dispatch = await groupSpecsByTarget(
+    const dispatch = await dispatchOf(
       [ab, x, y],
       config,
-      cwd,
       resolverWith(fakePlugin("ext-run", noopRunner)),
     );
     expect(dispatch.agentBrowser).toEqual([ab]);
@@ -108,10 +120,9 @@ describe("groupSpecsByTarget", () => {
 
   it("skips generate-only targets (no runner)", async () => {
     const ref = await writeSpec("demo", "gen", specYaml("target: gen-only"));
-    const dispatch = await groupSpecsByTarget(
+    const dispatch = await dispatchOf(
       [ref],
       ProjectConfigSchema.parse({ targets: { "gen-only": { runCommand: "echo {files}" } } }),
-      cwd,
       resolverWith(fakePlugin("gen-only")),
     );
     expect(dispatch.external).toEqual([]);
@@ -121,10 +132,9 @@ describe("groupSpecsByTarget", () => {
 
   it("skips runner targets whose config has no runCommand", async () => {
     const ref = await writeSpec("demo", "norun", specYaml("target: ext-run"));
-    const dispatch = await groupSpecsByTarget(
+    const dispatch = await dispatchOf(
       [ref],
       ProjectConfigSchema.parse({}),
-      cwd,
       resolverWith(fakePlugin("ext-run", noopRunner)),
     );
     expect(dispatch.skipped).toHaveLength(1);
@@ -134,17 +144,21 @@ describe("groupSpecsByTarget", () => {
   it("records unknown-target specs as unresolved instead of throwing", async () => {
     const bad = await writeSpec("demo", "bad", specYaml("target: no-such-target"));
     const ok = await writeSpec("demo", "ok", specYaml());
-    const dispatch = await groupSpecsByTarget([bad, ok], ProjectConfigSchema.parse({}), cwd);
+    const dispatch = await dispatchOf([bad, ok], ProjectConfigSchema.parse({}));
     expect(dispatch.unresolved).toHaveLength(1);
     expect(dispatch.unresolved[0]!.reason).toContain('unknown target "no-such-target"');
     expect(dispatch.agentBrowser).toEqual([ok]);
   });
 
-  it("falls back to agent-browser when spec.yaml is missing or unparseable", async () => {
+  it("falls back to agent-browser when spec.yaml is missing, and reports it when it will not parse", async () => {
+    // A missing file is the recorder's problem to explain. An unparseable one
+    // would otherwise run as a spec that declares nothing — no `mode:`, no
+    // `exclusive:` — and drop out of the report with no row at all.
     const broken = await writeSpec("demo", "broken", "title: [unclosed");
     const missing: SpecRef = { featureName: "demo", specName: "missing" };
-    const dispatch = await groupSpecsByTarget([broken, missing], ProjectConfigSchema.parse({}), cwd);
-    expect(dispatch.agentBrowser).toEqual([broken, missing]);
+    const dispatch = await dispatchOf([broken, missing], ProjectConfigSchema.parse({}));
+    expect(dispatch.agentBrowser).toEqual([missing]);
+    expect(dispatch.unresolved.map((u) => u.specName)).toEqual(["broken"]);
   });
 });
 
@@ -216,6 +230,7 @@ describe("runExternalSpecs", () => {
       cwd,
       reportDir,
       concurrency: 1,
+      resources: () => [],
       report: createIncrementalReport(reportDir, ENVELOPE),
     });
 
@@ -239,7 +254,7 @@ describe("runExternalSpecs", () => {
 
   it("runs each group through its runner with targetId/targetConfig/stepEvidence and merges the rows", async () => {
     const reportDir = join(cwd, "report");
-    const seen: Array<{ specs: SpecRef[]; opts: RunnerOptions }> = [];
+    const seen: Array<{ specs: readonly SpecRef[]; opts: RunnerOptions }> = [];
     const runner = streamingRunner((s) =>
       emptySpecRow({ feature: s.featureName, spec: s.specName, title: null, status: "passed" }),
     );
@@ -251,12 +266,18 @@ describe("runExternalSpecs", () => {
     };
     const dispatch: TargetDispatch = {
       ...emptyDispatch(),
-      external: [{ ...group(wrapped, [{ featureName: "demo", specName: "x", title: "X" }]), stepEvidence: { supported: true } }],
+      external: [
+        {
+          ...group(wrapped, [{ featureName: "demo", specName: "x", title: "X" }]),
+          stepEvidence: { supported: true },
+        },
+      ],
     };
     const rows = await runExternalSpecs(dispatch, {
       cwd,
       reportDir,
       concurrency: 2,
+      resources: () => [],
       report: createIncrementalReport(reportDir, ENVELOPE),
     });
 
@@ -297,7 +318,7 @@ describe("runExternalSpecs", () => {
         ]),
       ],
     };
-    const rows = await runExternalSpecs(dispatch, { cwd, reportDir, concurrency: 1, report });
+    const rows = await runExternalSpecs(dispatch, { cwd, reportDir, concurrency: 1, resources: () => [], report });
 
     // x streamed through and survives; y (never reported) becomes a crash row.
     expect(rows.map((r) => `${r.spec}:${r.status}`)).toEqual(["x:passed", "y:failed"]);
@@ -321,7 +342,7 @@ describe("runExternalSpecs", () => {
       ...emptyDispatch(),
       skipped: [{ featureName: "demo", specName: "gen", title: null, reason: "generate-only", targetId: "gen-only" }],
     };
-    await runExternalSpecs(dispatch, { cwd, reportDir, concurrency: 1, report });
+    await runExternalSpecs(dispatch, { cwd, reportDir, concurrency: 1, resources: () => [], report });
     expect(pushed.map((r) => r.spec)).toEqual(["gen"]);
   });
 });

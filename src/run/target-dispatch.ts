@@ -1,6 +1,6 @@
-import { tryReadSpecFile, type SpecRef } from "../store/index.ts";
-import { tryParseTestSpec } from "../spec/parser.ts";
+import { specKey, type SpecRef } from "../store/index.ts";
 import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
+import type { ResourceLookup, SpecCatalog } from "./spec-catalog.ts";
 import {
   TargetConfigSchema,
   type ProjectConfig,
@@ -54,26 +54,34 @@ export interface TargetDispatch {
 }
 
 /**
- * Read each spec.yaml, resolve its target, and group. A spec whose YAML is
- * missing or unparseable keeps today's behaviour: it falls through to the
- * agent-browser path, whose runner surfaces the real error itself. A spec
- * whose target resolution throws (unknown target, agent-browser-only fields
- * on another target) is recorded per-spec instead of stopping the run.
- * `resolve` is injectable so tests can supply a registry of fake targets.
+ * Resolve each spec's target and group. A spec with no spec.yaml at all falls
+ * through to the agent-browser path, whose runner surfaces the real error
+ * itself. A spec whose file will not parse, or whose target resolution throws
+ * (unknown target, agent-browser-only fields on another target), is recorded
+ * per-spec instead of stopping the run. `resolve` is injectable so tests can
+ * supply a registry of fake targets.
  */
-export async function groupSpecsByTarget(
+export function groupSpecsByTarget(
   specs: readonly SpecRef[],
+  catalog: SpecCatalog,
   config: ProjectConfig,
-  cwd: string,
   resolve: (spec: TestSpec, config: ProjectConfig) => TargetPlugin = resolveTarget,
-): Promise<TargetDispatch> {
+): TargetDispatch {
   const agentBrowser: SpecRef[] = [];
   const externalById = new Map<string, ExternalTargetGroup>();
   const skipped: UnrunnableSpec[] = [];
   const unresolved: UnrunnableSpec[] = [];
 
   for (const ref of specs) {
-    const spec = tryParseTestSpec(await tryReadSpecFile(ref.featureName, ref.specName, cwd));
+    const read = catalog.get(specKey(ref));
+    // A present-but-unparseable spec.yaml is reported, not routed: everything
+    // read off it falls back to a default, so the det path would run it as a
+    // spec that declares nothing and drop it with no report row.
+    if (read?.error) {
+      unresolved.push({ ...ref, title: null, reason: read.error, targetId: null });
+      continue;
+    }
+    const spec = read?.spec ?? null;
     if (spec === null) {
       agentBrowser.push(ref);
       continue;
@@ -138,6 +146,8 @@ export interface ExternalRunContext {
   cwd: string;
   reportDir: string;
   concurrency: number;
+  /** See `RunnerOptions.resources`. */
+  resources: ResourceLookup;
   model?: string;
   language?: string;
   /** Rows land here as they finish (report.json flush + hub sink under --report-to-hub). */
@@ -201,6 +211,7 @@ export async function runExternalSpecs(
         cwd: ctx.cwd,
         reportDir: ctx.reportDir,
         concurrency: ctx.concurrency,
+        resources: ctx.resources,
         ...(ctx.model ? { model: ctx.model } : {}),
         ...(ctx.language ? { language: ctx.language } : {}),
         targetId: group.targetId,

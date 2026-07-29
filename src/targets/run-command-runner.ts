@@ -56,7 +56,7 @@ function shellQuote(s: string): string {
  * by an external tool (Playwright, runn, ...) set this as their `runner`.
  */
 export const runCommandRunner: TestRunner = {
-  async run(specs: SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]> {
+  async run(specs: readonly SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]> {
     const concurrency = Math.max(1, opts.concurrency);
     // Blocks are only needed for step-evidence captions, and only when the
     // target captures evidence — load them once for the whole group, not once
@@ -102,7 +102,7 @@ export const runCommandRunner: TestRunner = {
         log.warn(`${key}: could not report row incrementally: ${err instanceof Error ? err.message : String(err)}`);
       }
       return row;
-    });
+    }, { resources: opts.resources });
   },
 };
 

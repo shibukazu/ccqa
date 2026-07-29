@@ -59,7 +59,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     .optionsGroup("How to run them:")
     .option(
       "--concurrency <n>",
-      "Run up to N specs in parallel within each phase (deterministic / external-target / live), never across phases. Default 1 (sequential). Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
+      "Run up to N specs in parallel within each phase (deterministic / external-target / live), never across phases. Default 1 (sequential). Specs that declare the same `exclusive:` resource still take turns. Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
       parseConcurrency,
       1,
     )
@@ -167,20 +167,21 @@ async function runCliAction(targets: string[], opts: RunOptions): Promise<void> 
 
   const teardown = createRunTeardown();
   const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
+  let exitCode: number;
   try {
-    const result = await executeRun(targets, { ...opts, cwd, teardown });
-    // Reap tracked sessions on the normal exit path too — the signal handler
-    // only covers SIGINT/SIGTERM. run() is idempotent, so no risk of a
-    // double-reap if a signal arrives right around here.
-    await teardown.run();
-    process.exit(result.exitCode);
+    exitCode = (await executeRun(targets, { ...opts, cwd, teardown })).exitCode;
   } catch (err) {
-    if (err instanceof RunUsageError) {
-      log.error(err.message);
-      process.exit(err.exitCode);
-    }
-    throw err;
+    if (!(err instanceof RunUsageError)) throw err;
+    log.error(err.message);
+    exitCode = err.exitCode;
   } finally {
+    // Reap tracked sessions and drop hub claims on every exit path, not only
+    // the successful one: a usage error thrown after the claim would otherwise
+    // hold those specs until the claim's own TTL lapses. The signal handler
+    // covers SIGINT/SIGTERM; run() is idempotent, so neither can double-reap.
+    // This has to sit before process.exit — that call does not unwind.
+    await teardown.run();
     disposeSignalHandlers();
   }
+  process.exit(exitCode);
 }

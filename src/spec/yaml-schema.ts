@@ -44,43 +44,57 @@ export const SpecModeSchema = z.enum(["deterministic", "live"]);
 export type SpecMode = z.infer<typeof SpecModeSchema>;
 
 /**
- * A session name: the identifier of a saved browser session (cookies +
- * localStorage) to restore before the spec runs. Resolved to
- * `.ccqa/sessions/<profile>/<name>.json` at run time. Restricted to a safe
- * slug so the name can't escape the sessions directory.
+ * A name a spec chooses that ccqa only ever compares or resolves to a path.
+ * Restricted to a slug so it cannot escape a directory or collide with a key
+ * whose separator is `/` or `:`.
  */
-export const SessionNameSchema = z
-  .string()
-  .min(1)
-  .regex(
-    /^[a-z0-9][a-z0-9._-]*$/i,
-    "session name must be a slug (letters, digits, '.', '_', '-'; no path separators)",
-  );
+function slug(what: string) {
+  return z
+    .string()
+    .min(1)
+    .regex(
+      /^[a-z0-9][a-z0-9._-]*$/i,
+      `${what} must be a slug (letters, digits, '.', '_', '-'; no path separators)`,
+    );
+}
+
+/** A field written as one name or a non-empty list, always read back as a list. */
+function oneOrMany(name: z.ZodString) {
+  return z.union([name, z.array(name).min(1)]).transform((v) => (Array.isArray(v) ? v : [v]));
+}
 
 /**
- * Sessions to restore before a `mode: live` spec runs: a single name or a
- * list. Always normalized to an array. Each name maps to a saved
- * agent-browser state file; multiple names are merged (their cookies +
- * localStorage are unioned) and restored together, so a spec can start
- * signed-in to several providers at once.
+ * A saved browser session (cookies + localStorage) to restore before the spec
+ * runs, resolved to `.ccqa/sessions/<profile>/<name>.json` at run time.
  */
-export const SessionFieldSchema = z
-  .union([SessionNameSchema, z.array(SessionNameSchema).min(1)])
-  .transform((v) => (Array.isArray(v) ? v : [v]));
+export const SessionNameSchema = slug("session name");
+
+/**
+ * Sessions to restore before a `mode: live` spec runs. Multiple names are
+ * merged (their cookies + localStorage are unioned) and restored together, so
+ * a spec can start signed-in to several providers at once.
+ */
+export const SessionFieldSchema = oneOrMany(SessionNameSchema);
+
+/**
+ * Shared things this spec writes to, named. Two specs naming the same one
+ * never run at the same time; specs with no name in common run in parallel.
+ * The conflict is with the outside world, so this holds across targets and
+ * modes.
+ */
+export const ExclusiveFieldSchema = oneOrMany(slug("exclusive name")).transform((names) =>
+  // Compared, never resolved to a path, so `Channel` and `channel` naming the
+  // same thing must not become two locks that never collide.
+  names.map((n) => n.toLowerCase()),
+);
 
 /**
  * A generation-target id: which plugin turns this spec into runnable tests
- * (e.g. "agent-browser", "playwright", "runn"). The schema only enforces a
- * safe slug — whether the id names a registered target is the registry's
- * responsibility, so new targets don't require a schema change.
+ * (e.g. "agent-browser", "playwright", "runn"). Whether the id names a
+ * registered target is the registry's responsibility, so new targets don't
+ * require a schema change.
  */
-export const TargetIdSchema = z
-  .string()
-  .min(1)
-  .regex(
-    /^[a-z0-9][a-z0-9._-]*$/i,
-    "target must be a slug (letters, digits, '.', '_', '-'; no path separators)",
-  );
+export const TargetIdSchema = slug("target");
 
 /** The built-in recorder-backed target. `mode:` / `session:` only apply to it. */
 export const AGENT_BROWSER_TARGET = "agent-browser";
@@ -113,6 +127,8 @@ export const TestSpecSchema = z
      * omit `session` and do it in the steps.
      */
     session: SessionFieldSchema.optional(),
+    /** Shared resources this spec writes to (see ExclusiveFieldSchema). */
+    exclusive: ExclusiveFieldSchema.optional(),
     steps: z.array(StepSchema).min(1),
   })
   .strict()

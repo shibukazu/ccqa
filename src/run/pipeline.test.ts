@@ -2,8 +2,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { executeRun } from "./pipeline.ts";
+import { executeRun, holdSpecs } from "./pipeline.ts";
 import { RunUsageError } from "./errors.ts";
+import type { SpecCatalog } from "./spec-catalog.ts";
+import type { HubContext } from "../cli/hub-conn.ts";
 
 /**
  * The `--only-stale` guards, at the entry point that owns them. All of these
@@ -54,5 +56,60 @@ describe("executeRun selection guards", () => {
     await expect(
       executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd }),
     ).rejects.toThrow(/--only-hub-rerun-needed requires a hub connection/);
+  });
+});
+
+describe("claiming specs and the resources they share", () => {
+  const specs = [
+    { featureName: "f", specName: "post-a" },
+    { featureName: "f", specName: "post-b" },
+    { featureName: "f", specName: "read" },
+  ];
+  const catalog = new Map([
+    ["f/post-a", { spec: { exclusive: ["channel"] }, error: null }],
+    ["f/post-b", { spec: { exclusive: ["channel"] }, error: null }],
+    ["f/read", { spec: {}, error: null }],
+  ]) as unknown as SpecCatalog;
+
+  /** Grants every key asked for except those named, recording each request. */
+  function hubDenying(denied: string[], asked: string[][] = []) {
+    return {
+      asked,
+      ctx: {
+        project: "demo",
+        hub: {
+          acquireLocks: async (_p: string, _q: unknown, body: { specs: string[] }) => {
+            asked.push(body.specs);
+            return {
+              granted: body.specs.filter((k) => !denied.includes(k)),
+              denied: body.specs.filter((k) => denied.includes(k)),
+            };
+          },
+          releaseLocks: async () => {},
+        },
+      } as unknown as HubContext,
+    };
+  }
+
+  test("a resource another job holds drops every spec needing it, and is not claimed for them", async () => {
+    const { ctx, asked } = hubDenying(["resource:channel"]);
+    const held = await holdSpecs(ctx, "ci", specs, catalog, undefined);
+    expect(held).toEqual({ specs: [specs[2]], deniedResources: ["channel"] });
+    // Resources first, then only the survivors: holding a spec this run will
+    // not execute would read to every other job as covered when it is not.
+    expect(asked).toEqual([["resource:channel"], ["f/read"]]);
+  });
+
+  test("a hub that cannot serve claims fails the run when a resource was declared", async () => {
+    const ctx = {
+      project: "demo",
+      hub: { acquireLocks: async () => { throw new Error("410 gone"); } },
+    } as unknown as HubContext;
+    await expect(holdSpecs(ctx, "ci", specs, catalog, undefined)).rejects.toThrow(/exclusive/);
+
+    // With nothing declared there is no wrong verdict to cause, so it degrades.
+    const plain = [{ featureName: "f", specName: "read" }];
+    const held = await holdSpecs(ctx, "ci", plain, catalog, undefined);
+    expect(held).toEqual({ specs: plain, deniedResources: [] });
   });
 });
