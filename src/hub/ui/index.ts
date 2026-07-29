@@ -1093,12 +1093,11 @@ const CLIENT_JS = `
       "perspectives.d.cannotJudge": "Why this cannot be judged",
       "perspectives.result.openRun": "Open this run in the hub",
       "perspectives.result.ci": "CI",
-      "perspectives.rerun.state.needed": "Re-run needed",
-      "perspectives.rerun.state.notNeeded": "Not needed",
-      "perspectives.rerun.state.blocked": "Blocked by the audit",
-      "perspectives.rerun.state.unknown": "Can't tell",
-      "perspectives.rerun.state.neverRun": "Never run",
-      "perspectives.rerun.state.notEvaluated": "Not evaluated",
+      "perspectives.rerun.state.needsRepair": "Needs repair",
+      "perspectives.rerun.state.rerunNeeded": "Re-run needed",
+      "perspectives.rerun.state.unanswerable": "Can't tell",
+      "perspectives.rerun.state.inProgress": "In progress",
+      "perspectives.rerun.state.verified": "Verified",
       "perspectives.rerun.vsDeploy": "judged against deploy",
       "perspectives.rerun.noDeployHead": "no deploy recorded for this profile",
       "perspectives.rerun.changedByDeploy": "deploy {sha} changed files matched to this case",
@@ -1106,10 +1105,12 @@ const CLIENT_JS = `
       "perspectives.rerun.changesNone": "none (as of deploy {sha})",
       "perspectives.rerun.touchedCount": "{n} deployed path(s) matched this case",
       "perspectives.rerun.touchedUnknown": "a deploy since the last run matched this case",
-      "perspectives.rerun.neverRunHint": "no result recorded for this profile yet",
-      "perspectives.rerun.notEvaluatedHint": "no run and no deploy has ever been recorded for this profile",
-      "perspectives.rerun.blocked.testDrift": "the generated test no longer matches the code — re-record it",
-      "perspectives.rerun.blocked.specChange": "the spec describes something the code no longer does — a human decides",
+      "perspectives.rerun.inProgressHint": "an audit or a run is still going, or the audit has not caught up with the deploy",
+      "perspectives.rerun.repair.testDrift": "the generated test no longer matches the code — re-record it",
+      "perspectives.rerun.repair.specChange": "the spec describes something the code no longer does — a human decides",
+      "perspectives.rerun.repair.auditUndecided": "the audit read the code and could not decide — a human looks",
+      "perspectives.rerun.repair.runFailed": "the last run failed — re-running it changes nothing until the cause is fixed",
+      "perspectives.rerun.why.notEvaluated": "no run and no deploy has ever been recorded for this profile",
       "perspectives.rerun.why.noSelectionInRange": "a deploy in range was recorded without a spec selection",
       "perspectives.rerun.why.selectionUnknown": "the selector could not tell whether this case was affected",
       "perspectives.rerun.why.noDeployLog": "no deploy log for this profile",
@@ -1118,6 +1119,7 @@ const CLIENT_JS = `
       "perspectives.rerun.why.deployedShaNotInLog": "the last run's commit predates the retained deploy log",
       "perspectives.rerun.why.gapInRange": "deploys are missing from the range",
       "perspectives.rerun.why.unrecognized": "this hub reported a reason this UI does not recognise",
+      "perspectives.rerun.fix.notEvaluated": "Nothing has been recorded for this profile at all. Wire ccqa hub deploy record into the deploy job and push a run report, so there is something to compare against.",
       "perspectives.rerun.fix.noSelectionInRange": "A deploy in range was recorded without a spec selection, so nothing says whether it affected this case. Run ccqa select-specs in the deploy job and send its verdict with the deploy.",
       "perspectives.rerun.fix.selectionUnknown": "A deploy in range was judged, but the selector could not decide this case. Re-run it to get a clean baseline.",
       "perspectives.rerun.fix.noDeployLog": "Nothing has been recorded in this profile's deploy log. Wire ccqa hub deploy record into the deploy job for this environment so ccqa knows what shipped.",
@@ -1245,12 +1247,11 @@ const CLIENT_JS = `
       "perspectives.d.cannotJudge": "判定できない理由",
       "perspectives.result.openRun": "ハブでこの実行を開く",
       "perspectives.result.ci": "CI",
-      "perspectives.rerun.state.needed": "要再実行",
-      "perspectives.rerun.state.notNeeded": "不要",
-      "perspectives.rerun.state.blocked": "監査で保留",
-      "perspectives.rerun.state.unknown": "判定できない",
-      "perspectives.rerun.state.neverRun": "未実行",
-      "perspectives.rerun.state.notEvaluated": "未評価",
+      "perspectives.rerun.state.needsRepair": "修正待ち",
+      "perspectives.rerun.state.rerunNeeded": "要再実行",
+      "perspectives.rerun.state.unanswerable": "判定できない",
+      "perspectives.rerun.state.inProgress": "進行中",
+      "perspectives.rerun.state.verified": "検証済み",
       "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
       "perspectives.rerun.noDeployHead": "このプロファイルにはデプロイの記録がありません",
       "perspectives.rerun.changedByDeploy": "デプロイ {sha} がこのケースに一致するファイルを変更",
@@ -1258,10 +1259,12 @@ const CLIENT_JS = `
       "perspectives.rerun.changesNone": "なし（デプロイ {sha} 時点）",
       "perspectives.rerun.touchedCount": "このケースに一致したデプロイ差分 {n} 件",
       "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイがこのケースに一致する変更を行っています",
-      "perspectives.rerun.neverRunHint": "このプロファイルでの実行記録がまだありません",
-      "perspectives.rerun.notEvaluatedHint": "このプロファイルには実行もデプロイも記録がありません",
-      "perspectives.rerun.blocked.testDrift": "生成されたテストが古くなっています。録り直してください",
-      "perspectives.rerun.blocked.specChange": "spec がコードのやめた動作を書いています。人が判断します",
+      "perspectives.rerun.inProgressHint": "監査か実行がまだ走っているか、監査がデプロイに追いついていません",
+      "perspectives.rerun.repair.testDrift": "生成されたテストが古くなっています。録り直してください",
+      "perspectives.rerun.repair.specChange": "spec がコードのやめた動作を書いています。人が判断します",
+      "perspectives.rerun.repair.auditUndecided": "監査がコードを読んだうえで判定できませんでした。人が見ます",
+      "perspectives.rerun.repair.runFailed": "最後の実行が落ちています。原因を直すまで再実行しても変わりません",
+      "perspectives.rerun.why.notEvaluated": "このプロファイルには実行もデプロイも記録がありません",
       "perspectives.rerun.why.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあります",
       "perspectives.rerun.why.selectionUnknown": "影響の有無を判定できませんでした",
       "perspectives.rerun.why.noDeployLog": "このプロファイルのデプロイ記録がありません",
@@ -1270,6 +1273,7 @@ const CLIENT_JS = `
       "perspectives.rerun.why.deployedShaNotInLog": "前回実行のcommitが保持中のデプロイログより古いです",
       "perspectives.rerun.why.gapInRange": "対象範囲のデプロイ記録が欠けています",
       "perspectives.rerun.why.unrecognized": "このUIが認識できない理由がハブから返されました",
+      "perspectives.rerun.fix.notEvaluated": "このプロファイルには何も記録がありません。デプロイジョブに ccqa hub deploy record を組み込み、実行レポートを送ってください。比較する対象がそこで初めて生まれます。",
       "perspectives.rerun.fix.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあり、このケースに影響したかどうかを示すものがありません。デプロイジョブで ccqa select-specs を実行し、判定をデプロイと一緒に送ってください。",
       "perspectives.rerun.fix.selectionUnknown": "対象範囲のデプロイは判定されましたが、このケースについては判断がつきませんでした。再実行して基準を取り直してください。",
       "perspectives.rerun.fix.noDeployLog": "このプロファイルのデプロイログに記録がありません。何がデプロイされたかをccqaに伝えるため、この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
@@ -3277,33 +3281,42 @@ const CLIENT_JS = `
   }
 
   // Why the question cannot be answered, in the actionable phrasing the detail
-  // panel wants: name the missing input and how to supply it. Only "unknown"
-  // carries a machine-readable reason (ADR-0010); the other two are states of
-  // the ledger, not gaps in the inputs.
+  // panel wants: name the missing input and how to supply it. Only
+  // "unanswerable" carries a machine-readable reason (ADR-0010).
   function rerunCannotJudge(rr) {
-    if (rr.state === "unknown") return rerunReasonText("perspectives.rerun.fix.", rr.reason || "");
-    if (rr.state === "neverRun") return t("perspectives.rerun.neverRunHint");
-    if (rr.state === "notEvaluated") return t("perspectives.rerun.notEvaluatedHint");
-    // A state a newer hub invented: say the UI cannot read it rather than leave
-    // the row blank, which would look like missing data.
-    return rerunReasonText("perspectives.rerun.fix.", rr.state);
+    if (rr.verdict === "unanswerable") return rerunReasonText("perspectives.rerun.fix.", rr.reason || "");
+    // A verdict a newer hub invented: say the UI cannot read it rather than
+    // leave the row blank, which would look like missing data.
+    return rerunReasonText("perspectives.rerun.fix.", rr.verdict);
+  }
+
+  // Which axis put this case in "needs repair". The three go to different
+  // people — a re-record, a spec rewrite, a look at the failure — so the badge
+  // must not stop at "needs repair".
+  function rerunRepairCause(rr) {
+    if (rr.audit === "drifted") return rr.driftLabel === "SPEC_CHANGE" ? "specChange" : "testDrift";
+    if (rr.audit === "undecided") return "auditUndecided";
+    return "runFailed";
   }
 
   // The short justification a table cell carries under its badge. Nothing here
-  // may collapse to a bare "up to date" — notNeeded names the deploy it was
-  // judged against, and unknown names the missing input.
+  // may collapse to a bare "up to date" — verified names the deploy it was
+  // judged against, and unanswerable names the missing input.
   function rerunCellWhy(rr) {
     var head = perspState.rerun && perspState.rerun.deployHead;
-    if (rr.state === "needed") {
+    if (rr.verdict === "rerunNeeded") {
       if (!rr.touchedBy || !rr.touchedBy.length) return t("perspectives.rerun.touchedUnknown");
       return t("perspectives.rerun.touchedCount").replace("{n}", String(rr.touchedBy.length));
     }
-    if (rr.state === "notNeeded") {
+    if (rr.verdict === "verified") {
       if (!head) return t("perspectives.rerun.noDeployHead");
       return t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
     }
-    if (rr.state === "blocked") return rerunReasonText("perspectives.rerun.blocked.", rr.blockedReason || "");
-    if (rr.state === "unknown") return rerunReasonText("perspectives.rerun.why.", rr.reason || "");
+    if (rr.verdict === "needsRepair") {
+      return rerunReasonText("perspectives.rerun.repair.", rerunRepairCause(rr));
+    }
+    if (rr.verdict === "inProgress") return t("perspectives.rerun.inProgressHint");
+    if (rr.verdict === "unanswerable") return rerunReasonText("perspectives.rerun.why.", rr.reason || "");
     return rerunCannotJudge(rr);
   }
 
@@ -3314,35 +3327,36 @@ const CLIENT_JS = `
   // is where an overstatement would do the most damage and the suite has no
   // browser to click through.
 
-  // Bar segments in drawing order: what to act on first, then what needs no
-  // action, then what was never measured. "blocked" leads because it is the
-  // only state a run cannot clear — someone has to repair the spec. "unknown"
-  // keeps its own place and its own colour: folding it into "notNeeded" would
-  // turn "we cannot say" into "all clear", which is what ADR-0010 forbids.
-  var RERUN_ORDER = ["blocked", "needed", "unknown", "notNeeded", "neverRun", "notEvaluated"];
+  // Bar segments in drawing order: what a person must act on first, then what
+  // the pipeline still owes, then what needs nothing. "needsRepair" leads
+  // because it is the only verdict a run cannot clear — someone has to repair
+  // the spec or the product. "unanswerable" keeps its own place and its own
+  // colour: folding it into "verified" would turn "we cannot say" into "all
+  // clear", which is what ADR-0010 forbids.
+  var RERUN_ORDER = ["needsRepair", "rerunNeeded", "unanswerable", "inProgress", "verified"];
   var RERUN_SEG_CLASS = {
-    blocked: "sg-blocked", needed: "sg-needed", unknown: "sg-unknown", notNeeded: "sg-notneeded",
-    neverRun: "sg-neverrun", notEvaluated: "sg-noteval"
+    needsRepair: "sg-blocked", rerunNeeded: "sg-needed", unanswerable: "sg-unknown",
+    inProgress: "sg-neverrun", verified: "sg-notneeded"
   };
 
   // One verdict per case, bucketed. A case with no verdict at all — this hub
   // does not answer the question, the fetch failed, or the case was added
-  // after the report was computed — is not evaluated, never "not needed". A
-  // state this UI does not know reads as unknown for the same reason: an
+  // after the report was computed — is unanswerable, never "verified". A
+  // verdict this UI does not know reads the same way for the same reason: an
   // answer we cannot interpret is not evidence that nothing is needed.
   function rerunComposition(verdicts) {
-    var counts = { blocked: 0, needed: 0, unknown: 0, notNeeded: 0, neverRun: 0, notEvaluated: 0 };
+    var counts = { needsRepair: 0, rerunNeeded: 0, unanswerable: 0, inProgress: 0, verified: 0 };
     verdicts.forEach(function (rr) {
-      if (!rr || !rr.state) { counts.notEvaluated += 1; return; }
-      var known = Object.prototype.hasOwnProperty.call(counts, rr.state);
-      counts[known ? rr.state : "unknown"] += 1;
+      if (!rr || !rr.verdict) { counts.unanswerable += 1; return; }
+      var known = Object.prototype.hasOwnProperty.call(counts, rr.verdict);
+      counts[known ? rr.verdict : "unanswerable"] += 1;
     });
     return counts;
   }
 
-  // Only states with cases in them get drawn, which keeps the legend short and
-  // stops an empty state from reading as a verdict: a "needs re-run 0" printed
-  // for a profile nothing has been evaluated on is exactly that misreading.
+  // Only verdicts with cases in them get drawn, which keeps the legend short
+  // and stops an empty one from reading as a verdict: a "needs re-run 0"
+  // printed for a profile nothing has been evaluated on is that misreading.
   function rerunSegments(counts) {
     var out = [];
     RERUN_ORDER.forEach(function (key) {
@@ -3466,8 +3480,8 @@ const CLIENT_JS = `
   // it as passed or failed would claim a confidence nothing supports.
   function perspRunState(rr) {
     if (!rr) return null;
-    if (rr.state === "needed") return "needed";
-    if (rr.state === "unknown") return "unknown";
+    if (rr.verdict === "rerunNeeded") return "needed";
+    if (rr.verdict === "unanswerable") return "unknown";
     var last = lastResult(rr);
     if (!last || !last.status) return "never";
     return last.status === "failed" ? "failed" : "passed";
@@ -3660,7 +3674,7 @@ const CLIENT_JS = `
       var rr = ledgerEntryFor(perspState.rerun, feature, spec);
       // Only "needed": "unknown" is not a weaker "probably needed", and
       // folding it in here would be exactly the overstatement ADR-0010 forbids.
-      if (!rr || rr.state !== "needed") return false;
+      if (!rr || rr.verdict !== "rerunNeeded") return false;
     }
     // Same asymmetry: an unaudited spec is not a quiet "probably clean", so it
     // does not belong under a chip that claims to list what drifted.
@@ -3692,7 +3706,7 @@ const CLIENT_JS = `
   // only a missing input to name — a different kind of content, and forcing one
   // label over both would make one of the two read as a lie.
   function rerunEvidenceLabelKey(rerunState) {
-    return rerunState === "needed" || rerunState === "notNeeded"
+    return rerunState === "rerunNeeded" || rerunState === "verified"
       ? "perspectives.d.changedSince"
       : "perspectives.d.cannotJudge";
   }
@@ -3713,11 +3727,11 @@ const CLIENT_JS = `
   // "at" is set only when the line names a cause, so the caller knows whether a
   // timestamp belongs on it.
   function rerunChangeLine(rr, deployHead) {
-    var cause = rr.state === "needed" && rr.touchedByDeploy ? rr.touchedByDeploy : null;
+    var cause = rr.verdict === "rerunNeeded" && rr.touchedByDeploy ? rr.touchedByDeploy : null;
     if (cause && cause.sha) return { key: "perspectives.rerun.changedByDeploy", sha: cause.sha, at: cause.at };
     if (!deployHead) return { key: "perspectives.rerun.noDeployHead", sha: null, at: null };
     return {
-      key: rr.state === "needed" ? "perspectives.rerun.changesSome" : "perspectives.rerun.changesNone",
+      key: rr.verdict === "rerunNeeded" ? "perspectives.rerun.changesSome" : "perspectives.rerun.changesNone",
       sha: deployHead.sha,
       at: null,
     };
@@ -3730,7 +3744,7 @@ const CLIENT_JS = `
   // The label already states the timeframe, so the value never repeats it.
   function rerunEvidenceValue(rr) {
     var wrap = el("div");
-    if (rr.state !== "needed" && rr.state !== "notNeeded") {
+    if (rr.verdict !== "rerunNeeded" && rr.verdict !== "verified") {
       wrap.appendChild(el("div", "d-prose", rerunCannotJudge(rr)));
       return wrap;
     }
@@ -3743,7 +3757,7 @@ const CLIENT_JS = `
     wrap.appendChild(el("div", "d-prose", text));
     // A touch the index proved but cannot enumerate leaves no paths to list;
     // the line above still says a change landed, which is all that is known.
-    if (rr.state === "needed" && rr.touchedBy && rr.touchedBy.length) {
+    if (rr.verdict === "rerunNeeded" && rr.touchedBy && rr.touchedBy.length) {
       wrap.appendChild(pathCodes(rr.touchedBy));
     }
     return wrap;
@@ -3781,7 +3795,7 @@ const CLIENT_JS = `
 
     var rr = ledgerEntryFor(perspState.rerun, feature, spec);
     if (rr) {
-      row(rerunEvidenceLabelKey(rr.state), rerunEvidenceValue(rr));
+      row(rerunEvidenceLabelKey(rr.verdict), rerunEvidenceValue(rr));
       if (rerunHasFailure(rr)) row("perspectives.d.lastRed", ledgerLine(rr.lastRed));
     }
     frag.appendChild(dl);

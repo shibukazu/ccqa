@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { RerunStateSchema, RerunUnknownReasonSchema } from "../contract/schema.ts";
+import { RerunUnknownReasonSchema, SpecVerdictSchema } from "../contract/schema.ts";
 import { renderHubUi } from "./index.ts";
 
 /**
@@ -41,7 +41,7 @@ interface Segment {
 
 function composition(): {
   RERUN_ORDER: string[];
-  rerunComposition: (verdicts: ({ state?: string } | null)[]) => Record<string, number>;
+  rerunComposition: (verdicts: ({ verdict?: string } | null)[]) => Record<string, number>;
   rerunSegments: (counts: Record<string, number>) => Segment[];
 } {
   const src = clientScript();
@@ -73,7 +73,7 @@ function detailLabels(): {
   rerunEvidenceLabelKey: (state: string) => string;
   rerunHasFailure: (rr: { lastRed?: unknown } | null) => boolean;
   rerunChangeLine: (
-    rr: { state: string; touchedByDeploy?: { sha: string; at: string } | null },
+    rr: { verdict: string; touchedByDeploy?: { sha: string; at: string } | null },
     deployHead: { sha: string; at: string } | null,
   ) => ChangeLine;
 } {
@@ -141,7 +141,7 @@ describe("hub UI: needs re-run", () => {
 
   test("every state and unknown-reason the hub can send has wording", () => {
     const { en, ja } = dictionaries();
-    for (const state of RerunStateSchema.options) {
+    for (const state of SpecVerdictSchema.options) {
       for (const dict of [en, ja]) expect(dict[`perspectives.rerun.state.${state}`]).toBeTruthy();
     }
     for (const reason of RerunUnknownReasonSchema.options) {
@@ -153,22 +153,22 @@ describe("hub UI: needs re-run", () => {
     }
   });
 
-  test("unknown never reads like notNeeded, and is worded the same wherever it appears", () => {
+  test("unanswerable never reads like verified, and is worded the same wherever it appears", () => {
     const { en, ja } = dictionaries();
-    expect(ja["perspectives.rerun.state.needed"]).toBe("要再実行");
-    expect(ja["perspectives.rerun.state.notNeeded"]).toBe("不要");
-    expect(ja["perspectives.rerun.state.neverRun"]).toBe("未実行");
+    expect(ja["perspectives.rerun.state.rerunNeeded"]).toBe("要再実行");
+    expect(ja["perspectives.rerun.state.verified"]).toBe("検証済み");
+    expect(ja["perspectives.rerun.state.needsRepair"]).toBe("修正待ち");
     for (const dict of [en, ja]) {
-      expect(dict["perspectives.rerun.state.unknown"]).not.toBe(dict["perspectives.rerun.state.notNeeded"]);
+      expect(dict["perspectives.rerun.state.unanswerable"]).not.toBe(dict["perspectives.rerun.state.verified"]);
       // "We cannot say" appears on the summary bar, in the table cell, and on
       // the drift axis. Three wordings for one state reads as three states.
       for (const key of ["perspectives.run.state.unknown", "perspectives.drift.state.unknown"]) {
-        expect(dict[key]!.toLowerCase()).toBe(dict["perspectives.rerun.state.unknown"]!.toLowerCase());
+        expect(dict[key]!.toLowerCase()).toBe(dict["perspectives.rerun.state.unanswerable"]!.toLowerCase());
       }
     }
   });
 
-  test("notNeeded names what it was judged against, and noDeployLog is actionable", () => {
+  test("verified names what it was judged against, and noDeployLog is actionable", () => {
     const { en, ja } = dictionaries();
     // A bare "up to date" would hide the baseline the verdict rests on.
     expect(en["perspectives.rerun.vsDeploy"]).toMatch(/deploy/i);
@@ -191,42 +191,44 @@ describe("hub UI: needs re-run", () => {
     }
   });
 
-  test("a profile with no re-run data reads as not evaluated, never as an all-clear", () => {
+  test("a profile with no re-run data reads as unanswerable, never as an all-clear", () => {
     const { rerunComposition, rerunSegments } = composition();
     // Three cases, no verdict for any of them: an older hub, a failed fetch, or
     // a profile nothing has been recorded on.
     const segments = rerunSegments(rerunComposition([null, null, null]));
-    expect(segments.map((s) => s.state)).toEqual(["notEvaluated"]);
+    expect(segments.map((s) => s.state)).toEqual(["unanswerable"]);
     expect(segments[0]!.count).toBe(3);
     // The damaging render is a zero-count "needs re-run" segment sitting next
-    // to a full "not needed" one — it reads as "nothing to do here".
-    for (const state of ["needed", "notNeeded"]) {
+    // to a full "verified" one — it reads as "nothing to do here".
+    for (const state of ["rerunNeeded", "verified"]) {
       expect(segments.some((s) => s.state === state)).toBe(false);
     }
   });
 
-  test("unknown keeps its own segment and colour — it is never folded into notNeeded", () => {
+  test("unanswerable keeps its own segment and colour — never folded into verified", () => {
     const { rerunComposition, rerunSegments } = composition();
-    const counts = rerunComposition([{ state: "unknown" }, { state: "notNeeded" }, { state: "unknown" }]);
-    expect(counts).toMatchObject({ unknown: 2, notNeeded: 1, needed: 0 });
+    const counts = rerunComposition([
+      { verdict: "unanswerable" }, { verdict: "verified" }, { verdict: "unanswerable" },
+    ]);
+    expect(counts).toMatchObject({ unanswerable: 2, verified: 1, rerunNeeded: 0 });
     const cls = Object.fromEntries(rerunSegments(counts).map((s) => [s.state, s.cls]));
-    expect(cls.unknown).not.toBe(cls.notNeeded);
-    // And it must not be painted like a pass: notNeeded owns --pass, unknown
-    // takes the info hue. `[^{}]*` rather than `\s*` so the class may share its
-    // rule with others (drift's unknown reuses this one) — it cannot cross a
-    // rule boundary, since braces are excluded.
+    expect(cls.unanswerable).not.toBe(cls.verified);
+    // And it must not be painted like a pass: verified owns --pass,
+    // unanswerable takes the info hue. `[^{}]*` rather than `\s*` so the class
+    // may share its rule with others (drift's unknown reuses this one) — it
+    // cannot cross a rule boundary, since braces are excluded.
     const rule = (c: string, v: string) => new RegExp(`\\.${c}[^{}]*\\{[^}]*var\\(--${v}\\)`);
-    expect(HTML).toMatch(rule(cls.unknown!, "info"));
-    expect(HTML).not.toMatch(rule(cls.unknown!, "pass"));
-    expect(HTML).toMatch(rule(cls.notNeeded!, "pass"));
+    expect(HTML).toMatch(rule(cls.unanswerable!, "info"));
+    expect(HTML).not.toMatch(rule(cls.unanswerable!, "pass"));
+    expect(HTML).toMatch(rule(cls.verified!, "pass"));
   });
 
   test("every state the hub can send has a segment, and an unrecognised one is not an all-clear", () => {
     const { RERUN_ORDER, rerunComposition } = composition();
-    for (const state of RerunStateSchema.options) expect(RERUN_ORDER).toContain(state);
-    // A state a newer hub invents cannot be counted as "no action needed".
-    const counts = rerunComposition([{ state: "somethingANewerHubSends" }]);
-    expect(counts).toMatchObject({ unknown: 1, notNeeded: 0, notEvaluated: 0 });
+    for (const state of SpecVerdictSchema.options) expect(RERUN_ORDER).toContain(state);
+    // A verdict a newer hub invents cannot be counted as "no action needed".
+    const counts = rerunComposition([{ verdict: "somethingANewerHubSends" }]);
+    expect(counts).toMatchObject({ unanswerable: 1, verified: 0, inProgress: 0 });
   });
 
   test("the summary is inventory + composition; the mode counts moved to the chips", () => {
@@ -257,12 +259,12 @@ describe("hub UI: needs re-run", () => {
     const { rerunEvidenceLabelKey } = detailLabels();
     // A verdict with evidence: the row shows what the deploy log holds since the
     // last run, so the label states that timeframe.
-    for (const state of ["needed", "notNeeded"]) {
+    for (const state of ["rerunNeeded", "verified"]) {
       expect(rerunEvidenceLabelKey(state)).toBe("perspectives.d.changedSince");
     }
     // No evidence exists for these — the row names the missing input instead,
     // which is a different kind of content and must not wear the other label.
-    for (const state of ["unknown", "neverRun", "notEvaluated"]) {
+    for (const state of ["unanswerable", "needsRepair", "inProgress"]) {
       expect(rerunEvidenceLabelKey(state)).toBe("perspectives.d.cannotJudge");
     }
     const { en, ja } = dictionaries();
@@ -282,7 +284,7 @@ describe("hub UI: needs re-run", () => {
     const { rerunChangeLine } = detailLabels();
     const head = { sha: "9999999999", at: "2026-07-25T00:00:00Z" };
     const line = rerunChangeLine(
-      { state: "needed", touchedByDeploy: { sha: "abcdef0123", at: "2026-07-20T00:00:00Z" } },
+      { verdict: "rerunNeeded", touchedByDeploy: { sha: "abcdef0123", at: "2026-07-20T00:00:00Z" } },
       head,
     );
     // The cause, not the head the judgement was made at, and with the time it
@@ -299,22 +301,22 @@ describe("hub UI: needs re-run", () => {
     // An older hub omits the field; a hub that could not confirm the entry
     // sends null. Neither may be dressed up as a cause, and neither takes a
     // timestamp — the head's time is not when the change landed.
-    for (const rr of [{ state: "needed" }, { state: "needed", touchedByDeploy: null }]) {
+    for (const rr of [{ verdict: "rerunNeeded" }, { verdict: "rerunNeeded", touchedByDeploy: null }]) {
       expect(rerunChangeLine(rr, head)).toEqual({
         key: "perspectives.rerun.changesSome",
         sha: head.sha,
         at: null,
       });
     }
-    // notNeeded has no touching deploy at all, so naming the head as the
+    // verified has no touching deploy at all, so naming the head as the
     // judgement point stays correct there.
-    expect(rerunChangeLine({ state: "notNeeded" }, head)).toEqual({
+    expect(rerunChangeLine({ verdict: "verified" }, head)).toEqual({
       key: "perspectives.rerun.changesNone",
       sha: head.sha,
       at: null,
     });
     // A report with no deploy head contradicts both states; say that instead.
-    expect(rerunChangeLine({ state: "notNeeded" }, null)).toEqual({
+    expect(rerunChangeLine({ verdict: "verified" }, null)).toEqual({
       key: "perspectives.rerun.noDeployHead",
       sha: null,
       at: null,

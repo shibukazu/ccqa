@@ -1,6 +1,6 @@
 import type { HubContext } from "../cli/hub-conn.ts";
 import { HubApiError } from "../hub-client/index.ts";
-import type { RerunReport, RerunState } from "../hub/contract/schema.ts";
+import type { RerunReport, SpecVerdict } from "../hub/contract/schema.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
 import { errMessage, RunUsageError } from "./errors.ts";
 
@@ -85,26 +85,26 @@ function explainNotFound(hubCtx: HubContext, err: HubApiError): string {
   );
 }
 
-/** States the summary line reports, worst-known-first. */
-const SUMMARY_ORDER: readonly RerunState[] = [
-  "blocked",
-  "needed",
-  "unknown",
-  "neverRun",
-  "notNeeded",
-  "notEvaluated",
+/** Verdicts the summary line reports, worst-known-first. */
+const SUMMARY_ORDER: readonly SpecVerdict[] = [
+  "needsRepair",
+  "rerunNeeded",
+  "unanswerable",
+  "inProgress",
+  "verified",
 ];
 
-/** States that mean "the hub has no verdict", as opposed to a verdict of "no". */
-// `blocked` is not in here: it is an answer, and a definite one — the audit
-// looked and rejected the spec. Counting it as unanswerable would offer
+/** The one verdict that means "the hub has no answer", as opposed to an answer of "no". */
+// `needsRepair` and `inProgress` are not in here: both are answers, and
+// definite ones — the audit found something, or something is still running.
+// Counting either as unanswerable would offer
 // --only-hub-rerun-needed-with-unknown as the fix, and running a spec the
-// audit rejected is exactly what that state exists to prevent.
-const UNANSWERABLE = new Set<RerunState>(["unknown", "neverRun", "notEvaluated"]);
+// audit rejected is exactly what that verdict exists to prevent.
+const UNANSWERABLE = new Set<SpecVerdict>(["unanswerable"]);
 
 export interface RerunSelection {
   selected: SpecRef[];
-  /** "3 needed, 1 unknown, 12 notNeeded" — every offered spec accounted for. */
+  /** "3 rerunNeeded, 1 unanswerable, 12 verified" — every offered spec accounted for. */
   summary: string;
   /**
    * Specs left out only because the hub could not answer for them. Non-zero
@@ -117,29 +117,33 @@ export interface RerunSelection {
 /**
  * Narrow `specs` to the ones the hub says are worth running.
  *
- * `needed` is always selected. `unknown` and `neverRun` are "the question
- * cannot be answered", so they are excluded by default and opted into with
- * `--only-hub-rerun-needed-with-unknown` — fail-open on request, never silently. `notNeeded` and
- * `notEvaluated` are never selected.
+ * `rerunNeeded` is always selected, and a spec that has never run is part of
+ * it — a spec with no result at all is as uncovered as one whose result a
+ * deploy invalidated. `unanswerable` is "the question cannot be answered", so
+ * it is excluded by default and opted into with
+ * `--only-hub-rerun-needed-with-unknown` — fail-open on request, never
+ * silently. `needsRepair`, `inProgress` and `verified` are never selected:
+ * running them repairs nothing, races something already in flight, or repeats
+ * work that is still current.
  */
 export function selectSpecsNeedingRerun(
   specs: readonly SpecRef[],
   report: RerunReport,
   opts: { includeUnknown: boolean },
 ): RerunSelection {
-  const selectable = new Set<RerunState>(
-    opts.includeUnknown ? ["needed", "unknown", "neverRun"] : ["needed"],
+  const selectable = new Set<SpecVerdict>(
+    opts.includeUnknown ? ["rerunNeeded", "unanswerable"] : ["rerunNeeded"],
   );
-  const counts = new Map<RerunState, number>();
+  const counts = new Map<SpecVerdict, number>();
   const selected: SpecRef[] = [];
   let excludedUnanswerable = 0;
   for (const spec of specs) {
     // A spec the perspectives document does not list has no verdict at all,
-    // which is the same "cannot answer" as `unknown` — never "not needed".
-    const state = report.specs[specKey(spec)]?.state ?? "unknown";
-    counts.set(state, (counts.get(state) ?? 0) + 1);
-    if (selectable.has(state)) selected.push(spec);
-    else if (UNANSWERABLE.has(state)) excludedUnanswerable++;
+    // which is the same "cannot answer" — never "verified".
+    const verdict = report.specs[specKey(spec)]?.verdict ?? "unanswerable";
+    counts.set(verdict, (counts.get(verdict) ?? 0) + 1);
+    if (selectable.has(verdict)) selected.push(spec);
+    else if (UNANSWERABLE.has(verdict)) excludedUnanswerable++;
   }
   const summary = SUMMARY_ORDER.filter((s) => counts.has(s))
     .map((s) => `${counts.get(s)} ${s}`)

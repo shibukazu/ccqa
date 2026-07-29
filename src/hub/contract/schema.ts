@@ -364,34 +364,66 @@ export const SpecTouchIndexSchema = z.record(z.string(), SpecTouchSchema);
 export type SpecTouchIndex = z.infer<typeof SpecTouchIndexSchema>;
 
 /**
- * Whether a spec's last result is still trustworthy. Deliberately named for
- * the action rather than for a freshness adjective: "needs re-run" (mechanical,
- * no model call) is a different question from drift (does the spec still
- * describe the product), and the two must not be conflated — see ADR-0010.
+ * Axis 1: what the audit says about this spec *relative to what is deployed
+ * now*. Not "what the last audit said" — an audit that read an older commit
+ * says nothing about the one running today, so it reads as `checking` until it
+ * runs again.
  */
-export const RerunStateSchema = z.enum(["needed", "notNeeded", "blocked", "unknown", "neverRun", "notEvaluated"]);
-export type RerunState = z.infer<typeof RerunStateSchema>;
-
-/**
- * Why a spec is `blocked`. Always carried: the two answers differ in who
- * repairs them and how long that takes — a stale recording is re-recorded
- * automatically within minutes, a changed spec waits for a human — so a view
- * that showed only "blocked" would hide the distinction that matters most.
- */
-export const RerunBlockedReasonSchema = z.enum([
-  /** The audit found the generated test code stale. `ccqa record` repairs it. */
-  "testDrift",
-  /** The audit found the spec itself describes something the code no longer does. A human repairs it. */
-  "specChange",
+export const AuditStateSchema = z.enum([
+  /**
+   * The audit has not answered for the deployed commit. Covers the deploy
+   * whose spec selection is not recorded yet, the audit that is queued or in
+   * flight, and the spec that was never audited at all: to a reader asking
+   * about the code running now, "never looked" and "looked at an older commit"
+   * are the same answer.
+   */
+  "checking",
+  /** The spec still describes the deployed code. */
+  "clean",
+  /** The audit found drift. `driftLabel` names which kind. */
+  "drifted",
+  /** The audit read the code and could not decide. */
+  "undecided",
 ]);
-export type RerunBlockedReason = z.infer<typeof RerunBlockedReasonSchema>;
+export type AuditState = z.infer<typeof AuditStateSchema>;
 
 /**
- * Why a spec is `unknown`. Always carried, so the view can name the missing
- * input ("no deploy log for this profile") instead of shrugging. `unknown` is
- * never rendered as "not needed".
+ * Axis 2: what happened the last time this spec ran. Deliberately has no
+ * "stale pass" value — *which* deploy a run covered is a separate fact
+ * (`lastRun.deployedSha`), and collapsing the two is what left the old
+ * single-axis state unable to tell a red spec from an up-to-date one.
+ */
+export const ExecutionStateSchema = z.enum(["running", "passed", "failed", "neverRun"]);
+export type ExecutionState = z.infer<typeof ExecutionStateSchema>;
+
+/**
+ * The one answer derived from the two axes above, listed in the order they are
+ * evaluated. Named for who acts next, because that is what a reader scanning a
+ * list of specs is looking for: exactly one value, `needsRepair`, asks for a
+ * person.
+ */
+export const SpecVerdictSchema = z.enum([
+  /** An audit or a run is in flight, or the audit has not caught up with the deploy. Wait. */
+  "inProgress",
+  /** A person must repair something: drift, an audit that could not decide, or a failed run. */
+  "needsRepair",
+  /** Cleared by the audit, and the last result does not cover what is deployed. */
+  "rerunNeeded",
+  /** Cleared by the audit, and the last run passed against what is deployed. */
+  "verified",
+  /** The hub lacks the data to answer. `unanswerableReason` names what is missing. */
+  "unanswerable",
+]);
+export type SpecVerdict = z.infer<typeof SpecVerdictSchema>;
+
+/**
+ * Why a spec is `unanswerable`. Always carried, so the view can name the
+ * missing input ("no deploy log for this profile") instead of shrugging.
+ * `unanswerable` is never rendered as `verified`.
  */
 export const RerunUnknownReasonSchema = z.enum([
+  /** Nothing at all has been recorded for this profile: no deploy, no run. */
+  "notEvaluated",
   /** A deploy in range was recorded without a spec selection, so its effect on this spec is unrecorded. */
   "noSelectionInRange",
   /** A selection in range answered `unknown` for this spec — the selector could not tell. */
@@ -418,24 +450,30 @@ export const DeployRefSchema = z.object({
 export type DeployRef = z.infer<typeof DeployRefSchema>;
 
 /**
- * One spec's re-run verdict plus the three ledger coordinates the view shows
- * alongside it. The coordinates are always present (null when the spec has no
- * such entry); `reason`, `touchedBy` and `touchedByDeploy` appear only in the
- * states named below.
+ * One spec's verdict, the two axes it was derived from, and the three ledger
+ * coordinates the view shows alongside them. The coordinates are always
+ * present (null when the spec has no such entry); the optional fields appear
+ * only in the states named below.
+ *
+ * Both axes ship alongside the verdict rather than being recomputed by
+ * readers: the verdict answers "who acts next", and the axes answer "why",
+ * which is the question every reader asks second.
  */
 export const SpecRerunSchema = z.object({
-  state: RerunStateSchema,
-  /** Set only when `state === "unknown"`. */
+  verdict: SpecVerdictSchema,
+  audit: AuditStateSchema,
+  execution: ExecutionStateSchema,
+  /** Set only when `audit === "drifted"`. */
+  driftLabel: DriftLabelSchema.optional(),
+  /** Set only when `verdict === "unanswerable"`. */
   reason: RerunUnknownReasonSchema.optional(),
-  /** Set only when `state === "blocked"`. */
-  blockedReason: RerunBlockedReasonSchema.optional(),
   lastRun: SpecLedgerEntrySchema.nullable(),
   lastGreen: SpecLedgerEntrySchema.nullable(),
   lastRed: SpecLedgerEntrySchema.nullable(),
-  /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `state === "needed"`. */
+  /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `verdict === "rerunNeeded"`. */
   touchedBy: z.array(z.string()).optional(),
   /**
-   * The deploy that made this spec `needed`: the newest entry *within the
+   * The deploy that made this spec `rerunNeeded`: the newest entry *within the
    * verdict's range* whose changes matched it. Distinct from the report's
    * `deployHead`, which is only the point the judgement was made at.
    *

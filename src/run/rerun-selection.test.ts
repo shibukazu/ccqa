@@ -9,8 +9,10 @@ import {
   selectSpecsNeedingRerun,
 } from "./rerun-selection.ts";
 
-function spec(state: SpecRerun["state"]): SpecRerun {
-  return { state, lastRun: null, lastGreen: null, lastRed: null };
+function spec(verdict: SpecRerun["verdict"]): SpecRerun {
+  // The axes are carried for the view; selection reads only the verdict, so
+  // they are pinned to a value that could not itself change the outcome.
+  return { verdict, audit: "clean", execution: "passed", lastRun: null, lastGreen: null, lastRed: null };
 }
 
 function report(specs: Record<string, SpecRerun>, deployHead: RerunReport["deployHead"] = {
@@ -38,31 +40,33 @@ describe("requireRerunProfile", () => {
 
 describe("selectSpecsNeedingRerun", () => {
   const specs = [
-    { featureName: "f", specName: "needed" },
-    { featureName: "f", specName: "notNeeded" },
-    { featureName: "f", specName: "unknown" },
-    { featureName: "f", specName: "neverRun" },
-    { featureName: "f", specName: "notEvaluated" },
+    { featureName: "f", specName: "rerunNeeded" },
+    { featureName: "f", specName: "verified" },
+    { featureName: "f", specName: "unanswerable" },
+    { featureName: "f", specName: "needsRepair" },
+    { featureName: "f", specName: "inProgress" },
   ];
   const verdicts = report({
-    "f/needed": spec("needed"),
-    "f/notNeeded": spec("notNeeded"),
-    "f/unknown": spec("unknown"),
-    "f/neverRun": spec("neverRun"),
-    "f/notEvaluated": spec("notEvaluated"),
+    "f/rerunNeeded": spec("rerunNeeded"),
+    "f/verified": spec("verified"),
+    "f/unanswerable": spec("unanswerable"),
+    "f/needsRepair": spec("needsRepair"),
+    "f/inProgress": spec("inProgress"),
   });
 
-  test("selects only `needed` by default", () => {
+  test("selects only `rerunNeeded` by default", () => {
     const { selected } = selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: false });
-    expect(selected.map((s) => s.specName)).toEqual(["needed"]);
+    expect(selected.map((s) => s.specName)).toEqual(["rerunNeeded"]);
   });
 
-  test("--include-unknown adds unknown and neverRun, but never notNeeded/notEvaluated", () => {
+  test("--with-unknown adds unanswerable, but never needsRepair or inProgress", () => {
+    // Running a spec the audit rejected is exactly what `needsRepair` exists
+    // to prevent, and `inProgress` would race whatever is already holding it.
     const { selected } = selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: true });
-    expect(selected.map((s) => s.specName)).toEqual(["needed", "unknown", "neverRun"]);
+    expect(selected.map((s) => s.specName)).toEqual(["rerunNeeded", "unanswerable"]);
   });
 
-  test("a spec absent from the perspectives document counts as unknown, not as notNeeded", () => {
+  test("a spec absent from the perspectives document counts as unanswerable, not as verified", () => {
     const local = [{ featureName: "f", specName: "brand-new" }];
     expect(selectSpecsNeedingRerun(local, report({}), { includeUnknown: false }).selected).toEqual([]);
     expect(
@@ -72,25 +76,26 @@ describe("selectSpecsNeedingRerun", () => {
 
   test("the summary accounts for every offered spec", () => {
     const { summary } = selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: false });
-    expect(summary).toBe("1 needed, 1 unknown, 1 neverRun, 1 notNeeded, 1 notEvaluated");
+    expect(summary).toBe("1 needsRepair, 1 rerunNeeded, 1 unanswerable, 1 inProgress, 1 verified");
   });
 
   test("counts the specs held back only because the hub could not answer", () => {
-    // notNeeded is an answer, so it is not counted; the other three are not.
-    expect(selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: false }).excludedUnanswerable).toBe(3);
-    expect(selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: true }).excludedUnanswerable).toBe(1);
+    // Only `unanswerable` counts. `needsRepair` and `inProgress` are answers,
+    // and offering --with-unknown as their fix would be wrong advice.
+    expect(selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: false }).excludedUnanswerable).toBe(1);
+    expect(selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: true }).excludedUnanswerable).toBe(0);
   });
 });
 
 describe("fetchRerunReport", () => {
   test("returns the report when the profile has a deploy head", async () => {
-    const ctx = hubCtx({ getRerun: async () => report({ "f/s": spec("needed") }) });
+    const ctx = hubCtx({ getRerun: async () => report({ "f/s": spec("rerunNeeded") }) });
     const got = await fetchRerunReport(ctx, "stg");
     expect(got.deployHead.sha).toBe("a".repeat(40));
   });
 
   test("a profile with no deploy log is an error, not an empty selection", async () => {
-    const ctx = hubCtx({ getRerun: async () => report({ "f/s": spec("neverRun") }, null) });
+    const ctx = hubCtx({ getRerun: async () => report({ "f/s": spec("rerunNeeded") }, null) });
     await expect(fetchRerunReport(ctx, "stg")).rejects.toThrow(/no deploy has been recorded/);
   });
 

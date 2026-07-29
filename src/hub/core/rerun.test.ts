@@ -7,6 +7,7 @@ import type {
   SpecLedgerEntry,
   SpecTouchIndex,
 } from "../contract/schema.ts";
+import type { DriftLabel } from "../../report/schema.ts";
 import { computeRerun, type RerunInput } from "./rerun.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
@@ -37,6 +38,11 @@ function ledgerWithRun(entry: SpecLedgerEntry | null): SpecLedger {
   return { green: {}, run: entry ? { "f/s": entry } : {}, red: {} };
 }
 
+/** A ledger whose last run failed: the run and red buckets hold the same entry. */
+function ledgerWithFailedRun(entry: SpecLedgerEntry): SpecLedger {
+  return { green: {}, run: { "f/s": entry }, red: { "f/s": entry } };
+}
+
 /** A touch index where deploy `index` is the newest one that needed the spec. */
 function touchedAt(index: number, matchedPaths: string[] = ["src/a.ts"]): SpecTouchIndex {
   return {
@@ -44,44 +50,61 @@ function touchedAt(index: number, matchedPaths: string[] = ["src/a.ts"]): SpecTo
   };
 }
 
+/** A drift ledger holding one audit verdict, read at `gitHead`. */
+function auditedAt(label: DriftLabel | null, gitHead: string): DriftLedger {
+  return {
+    specs: { "f/s": { label, gitHead, runId: "drift-1", at: "2026-07-26T00:00:00Z" } },
+  };
+}
+
 function compute(overrides: Partial<RerunInput> = {}): ReturnType<typeof computeRerun>[string] {
-  const result = computeRerun({
+  const base = {
     specs: [SPEC],
     ledger: ledgerWithRun(ranAt("sha-0")),
     log: log(deploy(0)),
     touchIndex: {},
-    drift: { specs: {} },
     ...overrides,
-  });
-  return result["f/s"]!;
+  };
+  // Default the audit to "clean, read at the newest deploy". Without it every
+  // case below would answer `inProgress` on the audit axis before the run axis
+  // was ever consulted, which is correct behaviour but useless for isolating
+  // the run side.
+  const newest = base.log.entries[base.log.entries.length - 1];
+  const drift = overrides.drift ?? (newest ? auditedAt(null, newest.sha) : { specs: {} });
+  return computeRerun({ ...base, drift })["f/s"]!;
 }
 
-describe("computeRerun", () => {
-  test("needed when the touch index records a needed touch after the baseline", () => {
+describe("computeRerun: the run axis, with the audit already current", () => {
+  test("rerunNeeded when the touch index records a touch after the baseline", () => {
     const verdict = compute({
       log: log(deploy(0), deploy(1)),
       touchIndex: touchedAt(1, ["src/a.ts", "src/b.ts"]),
     });
-    expect(verdict.state).toBe("needed");
+    expect(verdict.verdict).toBe("rerunNeeded");
+    expect(verdict.execution).toBe("passed");
     expect(verdict.touchedBy).toEqual(["src/a.ts", "src/b.ts"]);
   });
 
-  test("notNeeded when nothing in range needed it", () => {
+  test("verified when nothing in range reached it", () => {
     const verdict = compute({ log: log(deploy(0), deploy(1)) });
-    expect(verdict.state).toBe("notNeeded");
+    expect(verdict.verdict).toBe("verified");
+    expect(verdict.audit).toBe("clean");
     expect(verdict.touchedByDeploy).toBeUndefined();
   });
 
   test("a touch at the baseline itself does not count against it", () => {
-    expect(compute({ touchIndex: touchedAt(0) }).state).toBe("notNeeded");
+    expect(compute({ touchIndex: touchedAt(0) }).verdict).toBe("verified");
   });
 
   test("a sha deployed twice resolves to its earliest position, widening the range", () => {
     const verdict = compute({
       log: log(deploy(0), deploy(1), deploy(2, { sha: "sha-0" })),
       touchIndex: touchedAt(1),
+      // Pinned to the touch's own deploy so the audit is current and the run
+      // side is what the case is testing.
+      drift: auditedAt(null, "sha-1"),
     });
-    expect(verdict.state).toBe("needed");
+    expect(verdict.verdict).toBe("rerunNeeded");
   });
 
   test("touchedBy and touchedByDeploy come from the touch index's needed entry", () => {
@@ -91,21 +114,6 @@ describe("computeRerun", () => {
     });
     expect(verdict.touchedBy).toEqual(["src/new.ts"]);
     expect(verdict.touchedByDeploy).toEqual({ index: 2, sha: "sha-2", at: "2026-07-22T00:00:00Z" });
-  });
-
-  test("a touch the log still retains is named; one it has evicted is not", () => {
-    const short = log(deploy(0), deploy(1));
-    expect(compute({ log: short, touchIndex: touchedAt(1) })).toMatchObject({
-      state: "needed",
-      touchedByDeploy: { index: 1, sha: "sha-1" },
-    });
-
-    // The touch index points at a deploy the ring buffer has since evicted:
-    // the position still proves a touch in range, but no entry backs the
-    // sha, so none is claimed.
-    const verdict = compute({ log: short, touchIndex: touchedAt(9) });
-    expect(verdict.state).toBe("needed");
-    expect(verdict.touchedByDeploy).toBeNull();
   });
 
   test("the three ledger coordinates ride along with every verdict", () => {
@@ -119,45 +127,54 @@ describe("computeRerun", () => {
     expect(verdict.lastRed).toEqual(run);
   });
 
-  test("neverRun when the spec has no run entry but the profile has data", () => {
-    expect(compute({ ledger: ledgerWithRun(null) }).state).toBe("neverRun");
+  test("a spec that has never run is rerunNeeded, not a category of its own", () => {
+    // No result at all is as uncovered as a result a deploy invalidated, and
+    // the action is identical: run it. A separate state only meant new specs
+    // sat out every cycle until someone opted them in by hand.
+    const verdict = compute({ ledger: ledgerWithRun(null) });
+    expect(verdict.execution).toBe("neverRun");
+    expect(verdict.verdict).toBe("rerunNeeded");
   });
 
-  test("notEvaluated when the profile has neither a run nor a deploy recorded", () => {
-    expect(compute({ ledger: ledgerWithRun(null), log: log() }).state).toBe("notEvaluated");
-  });
+  describe("unanswerable, never `verified`", () => {
+    test("notEvaluated: the profile has neither a run nor a deploy recorded", () => {
+      expect(compute({ ledger: ledgerWithRun(null), log: log() })).toMatchObject({
+        verdict: "unanswerable",
+        reason: "notEvaluated",
+      });
+    });
 
-  describe("unknown, never `notNeeded`", () => {
     test("noDeployLog: the profile's deploy job is not wired up", () => {
-      const verdict = compute({ log: log(), ledger: ledgerWithRun(ranAt("sha-0")) });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "noDeployLog" });
+      // The spec has both a run and an audit; what is missing is the log that
+      // would position either of them.
+      const verdict = compute({
+        log: log(),
+        ledger: ledgerWithRun(ranAt("sha-0")),
+        drift: auditedAt(null, "sha-0"),
+      });
+      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "noDeployLog" });
     });
 
     test("unknownDeployedSha: the run was never attributed to a deploy", () => {
       const verdict = compute({ ledger: ledgerWithRun(ranAt(null)) });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "unknownDeployedSha" });
+      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "unknownDeployedSha" });
     });
 
     test("ambiguousDeployedSha: the run straddled a deploy", () => {
       const verdict = compute({
         ledger: ledgerWithRun(ranAt("sha-0", { deployedShaAmbiguous: true })),
       });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "ambiguousDeployedSha" });
+      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "ambiguousDeployedSha" });
     });
 
     test("deployedShaNotInLog: the baseline is older than the retained log", () => {
       const verdict = compute({ ledger: ledgerWithRun(ranAt("sha-evicted")) });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "deployedShaNotInLog" });
+      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "deployedShaNotInLog" });
     });
 
     test("gapInRange: deploys are missing between the baseline and now", () => {
       const verdict = compute({ log: log(deploy(0), deploy(1, { gapBefore: true })) });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "gapInRange" });
-    });
-
-    test("noSelectionInRange: a deploy in range was recorded without a spec selection", () => {
-      const verdict = compute({ log: log(deploy(0), deploy(1, { hasSelection: false })) });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "noSelectionInRange" });
+      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "gapInRange" });
     });
 
     test("selectionUnknown: a selection in range answered unknown for this spec", () => {
@@ -165,15 +182,15 @@ describe("computeRerun", () => {
         log: log(deploy(0), deploy(1)),
         touchIndex: { "f/s": { undecidedIndex: 1 } },
       });
-      expect(verdict).toMatchObject({ state: "unknown", reason: "selectionUnknown" });
+      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "selectionUnknown" });
     });
 
-    test("needed in range outranks a gap or a missing selection later in the range", () => {
+    test("a touch in range outranks a gap later in the range", () => {
       const verdict = compute({
-        log: log(deploy(0), deploy(1), deploy(2, { gapBefore: true, hasSelection: false })),
+        log: log(deploy(0), deploy(1), deploy(2, { gapBefore: true })),
         touchIndex: touchedAt(1),
       });
-      expect(verdict.state).toBe("needed");
+      expect(verdict.verdict).toBe("rerunNeeded");
     });
   });
 
@@ -181,56 +198,116 @@ describe("computeRerun", () => {
     // A log whose oldest entries were evicted: the baseline sits at array
     // offset 0 but log position 40, and a touch recorded at position 40 is at
     // the baseline, not after it.
-    const evicted = log(deploy(40, { gapBefore: true }), deploy(41, { hasSelection: false }));
+    const evicted = log(deploy(40, { gapBefore: true }), deploy(41));
     expect(
-      compute({ log: evicted, ledger: ledgerWithRun(ranAt("sha-40")), touchIndex: touchedAt(40) }),
-    ).toMatchObject({ state: "unknown", reason: "noSelectionInRange" });
+      compute({
+        log: evicted,
+        ledger: ledgerWithRun(ranAt("sha-40")),
+        touchIndex: touchedAt(40),
+        drift: auditedAt(null, "sha-41"),
+      }).verdict,
+    ).toBe("verified");
     expect(
-      compute({ log: evicted, ledger: ledgerWithRun(ranAt("sha-40")), touchIndex: touchedAt(41) }).state,
-    ).toBe("needed");
+      compute({
+        log: evicted,
+        ledger: ledgerWithRun(ranAt("sha-40")),
+        touchIndex: touchedAt(41),
+        drift: auditedAt(null, "sha-41"),
+      }).verdict,
+    ).toBe("rerunNeeded");
   });
 });
 
-/** A drift ledger holding one audit verdict for the spec under test. */
-function audited(label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN" | null): DriftLedger {
-  return {
-    specs: {
-      "f/s": { label, gitHead: "head", runId: "drift-1", at: "2026-07-26T00:00:00Z" },
-    },
-  };
-}
-
-describe("a spec the audit rejected", () => {
-  test("is blocked, and carries which repair it needs", () => {
-    // The two reasons differ in who repairs them and how long that takes, so
-    // collapsing them into a bare "blocked" would hide what matters most.
-    expect(compute({ drift: audited("TEST_DRIFT") })).toMatchObject({
-      state: "blocked",
-      blockedReason: "testDrift",
-    });
-    expect(compute({ drift: audited("SPEC_CHANGE") })).toMatchObject({
-      state: "blocked",
-      blockedReason: "specChange",
-    });
+describe("computeRerun: the audit axis", () => {
+  test("a spec never audited is checking, and its verdict is inProgress", () => {
+    // Not `needsRepair`: nobody has found anything. Not `rerunNeeded` either —
+    // running before the audit has spoken is what the whole ordering exists to
+    // prevent.
+    const verdict = compute({ drift: { specs: {} } });
+    expect(verdict.audit).toBe("checking");
+    expect(verdict.verdict).toBe("inProgress");
   });
 
-  test("stays blocked even when it would otherwise need a re-run", () => {
-    // Blocking has to win: re-running cannot repair a spec that no longer
-    // describes the code, so offering it as `needed` would spend a run to
-    // rediscover what the audit already said.
+  test("an audit that read an older commit is checking, not clean", () => {
+    // The audit answered about a commit a later deploy has already replaced
+    // for this spec, so it says nothing about what is running now.
     const verdict = compute({
-      drift: audited("SPEC_CHANGE"),
       log: log(deploy(0), deploy(1)),
       touchIndex: touchedAt(1),
+      drift: auditedAt(null, "sha-0"),
     });
-    expect(verdict.state).toBe("blocked");
+    expect(verdict.audit).toBe("checking");
+    expect(verdict.verdict).toBe("inProgress");
   });
 
-  test("a clean, unknown or absent verdict does not block", () => {
-    // "never audited" and "the audit could not tell" are not findings. Treating
-    // either as one would stop every newly written spec from ever running.
-    expect(compute({ drift: audited(null) }).state).not.toBe("blocked");
-    expect(compute({ drift: audited("UNKNOWN") }).state).not.toBe("blocked");
-    expect(compute({ drift: { specs: {} } }).state).not.toBe("blocked");
+  test("an audit whose commit no deploy reached since still stands", () => {
+    const verdict = compute({ log: log(deploy(0), deploy(1)), drift: auditedAt(null, "sha-0") });
+    expect(verdict.audit).toBe("clean");
+    expect(verdict.verdict).toBe("verified");
+  });
+
+  test("drift and an undecided audit both need a person, and carry which", () => {
+    // The label rides along because the three repairs go to different people:
+    // a re-record, a spec rewrite, and a look at why the audit could not tell.
+    expect(compute({ drift: auditedAt("TEST_DRIFT", "sha-0") })).toMatchObject({
+      verdict: "needsRepair",
+      audit: "drifted",
+      driftLabel: "TEST_DRIFT",
+    });
+    expect(compute({ drift: auditedAt("SPEC_CHANGE", "sha-0") })).toMatchObject({
+      verdict: "needsRepair",
+      audit: "drifted",
+      driftLabel: "SPEC_CHANGE",
+    });
+    expect(compute({ drift: auditedAt("UNKNOWN", "sha-0") })).toMatchObject({
+      verdict: "needsRepair",
+      audit: "undecided",
+    });
+  });
+
+  test("drift outranks a needed re-run", () => {
+    // Re-running cannot repair a spec that no longer describes the code, so
+    // offering it would spend a run to rediscover what the audit already said.
+    const verdict = compute({
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1),
+      drift: auditedAt("SPEC_CHANGE", "sha-1"),
+    });
+    expect(verdict.verdict).toBe("needsRepair");
+  });
+});
+
+describe("computeRerun: a failed run", () => {
+  test("is needsRepair, and is not offered for a re-run", () => {
+    // Re-running a red spec teaches nothing until the code it exercises moves
+    // or the spec is fixed, and a live spec costs dollars a go.
+    const verdict = compute({ ledger: ledgerWithFailedRun(ranAt("sha-0")) });
+    expect(verdict.execution).toBe("failed");
+    expect(verdict.verdict).toBe("needsRepair");
+  });
+
+  test("stays needsRepair even when a later deploy reached the spec", () => {
+    // The order is deliberate: a red result is current information, so its age
+    // is not the question. What clears it is a repair, and the repair shows up
+    // as a new run.
+    const verdict = compute({
+      ledger: ledgerWithFailedRun(ranAt("sha-0")),
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1),
+      drift: auditedAt(null, "sha-1"),
+    });
+    expect(verdict.verdict).toBe("needsRepair");
+  });
+
+  test("a spec whose last run passed after an earlier failure is not failed", () => {
+    // Both buckets hold entries; only the one naming the same run as `run`
+    // describes the last execution.
+    const failed = ranAt("sha-0", { runId: "run-0", at: "2026-07-01T00:00:00Z" });
+    const passed = ranAt("sha-0", { runId: "run-1" });
+    const verdict = compute({
+      ledger: { green: { "f/s": passed }, run: { "f/s": passed }, red: { "f/s": failed } },
+    });
+    expect(verdict.execution).toBe("passed");
+    expect(verdict.verdict).toBe("verified");
   });
 });
