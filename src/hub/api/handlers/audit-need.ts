@@ -21,17 +21,18 @@ export function createGetAuditNeedHandler(storage: HubStorage) {
     const project = requireSafeSegment(ctx.params.project!, "project");
     const profile = requireProfileParam(ctx.url);
 
-    const [specs, log, touchIndex, drift] = await Promise.all([
+    const [specs, log, touchIndex, drift, locks] = await Promise.all([
       requireSpecTargets(storage.perspectives, project, "which specs need auditing"),
       storage.deploys.getLog(project, profile),
       storage.deploys.getTouchIndex(project, profile),
       storage.driftLedger.getMerged(project),
+      storage.locks.get(project, profile),
     ]);
 
     sendJson(ctx.res, 200, {
       project,
       profile,
-      specs: computeAuditNeed({ specs, log, touchIndex, drift }),
+      specs: computeAuditNeed({ specs, log, touchIndex, drift, locks, now: new Date() }),
     } satisfies AuditNeedReport);
   };
 }

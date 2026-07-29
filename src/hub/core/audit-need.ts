@@ -1,5 +1,12 @@
-import type { AuditNeed, DeployLog, DriftLedger, SpecTouchIndex } from "../contract/schema.ts";
+import type {
+  AuditNeed,
+  DeployLog,
+  DriftLedger,
+  SpecLocks,
+  SpecTouchIndex,
+} from "../contract/schema.ts";
 import { buildRange, freshness, type RangeLookup } from "./deploy-range.ts";
+import { heldBy } from "./locks.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 /**
@@ -15,7 +22,17 @@ import type { SpecTarget } from "./perspectives-specs.ts";
  * dollars, so this side does the work when it cannot tell and the re-run
  * verdict declines to.
  */
-export function auditNeed(drift: DriftLedger, key: string, range: RangeLookup): AuditNeed {
+/**
+ * The freshness half of the answer. `held` is not here: whether a job is on
+ * the spec is a fact about locks, added by the caller that reads them, and
+ * keeping it out lets `auditState` switch over exactly the values this can
+ * return.
+ */
+export type AuditFreshness = AuditNeed & {
+  because: Exclude<AuditNeed["because"], "held">;
+};
+
+export function auditNeed(drift: DriftLedger, key: string, range: RangeLookup): AuditFreshness {
   const entry = drift.specs[key];
   if (!entry) return { because: "neverAudited" };
 
@@ -46,11 +63,21 @@ export interface AuditNeedInput {
   touchIndex: SpecTouchIndex;
   /** The project's drift ledger. Carries the commit each audit read. */
   drift: DriftLedger;
+  /** Who is working on what right now. A held spec is not offered again. */
+  locks: SpecLocks;
+  now: Date;
 }
 
 export function computeAuditNeed(input: AuditNeedInput): Record<string, AuditNeed> {
   const range = buildRange(input.log, input.touchIndex);
   return Object.fromEntries(
-    input.specs.map((spec) => [spec.key, auditNeed(input.drift, spec.key, range)]),
+    input.specs.map((spec) => [
+      spec.key,
+      // A job already on this spec answers for it. Offering it again would
+      // have two audits writing the same ledger entry.
+      heldBy(input.locks, spec.key, input.now)
+        ? ({ because: "held" } satisfies AuditNeed)
+        : auditNeed(input.drift, spec.key, range),
+    ]),
   );
 }

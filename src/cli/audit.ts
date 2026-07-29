@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import {
   loadAvailableBlocks,
   parseSpecPath,
 } from "../store/index.ts";
+import { errMessage } from "../run/errors.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
 import { renderDrift } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
@@ -118,6 +120,9 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   // missing would bill for the mistake.
   let hub: HubClient | null = null;
   let hubProject: string | null = null;
+  // Set only on the --only-hub-audit-needed path, which is also the only one
+  // that resolves `hub` and `hubProject`.
+  let holder: string | null = null;
   if (opts.onlyHubAuditNeeded) {
     hub = resolveHubClient(opts);
     if (!hub) {
@@ -155,6 +160,18 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     if (targets.length === 0) {
       exitWithNoSpecs(format, "every spec has been audited since the last deploy that reached it");
     }
+
+    // Claim what is left, so a second cycle starting while this one runs does
+    // not audit the same specs and write the same ledger entries twice.
+    holder = randomUUID();
+    const claimed = await claimSpecs(hub!, hubProject!, opts.hubProfile!, targets, holder);
+    if (claimed.length < targets.length && format === "text") {
+      log.meta("held-elsewhere", `${targets.length - claimed.length} spec(s) another job is auditing`);
+    }
+    targets = claimed;
+    if (targets.length === 0) {
+      exitWithNoSpecs(format, "every spec that needs auditing is already being audited by another job");
+    }
   }
 
   let baseRef: string | null = null;
@@ -180,6 +197,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   }
 
   const blocks = await loadAvailableBlocks(cwd);
+  try {
   const results = await analyzeDrift({
     targets,
     cwd,
@@ -200,6 +218,53 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
 
   reportCost();
   process.exit(determineExitCode(results, threshold));
+  } finally {
+    // `process.exit` above skips this, so the release happens first: the
+    // claim is dropped whether the audit finished, threw, or is exiting.
+    if (holder) await releaseSpecs(hub!, hubProject!, opts.hubProfile!, holder);
+  }
+}
+
+/** Longer than the audit's own timeout, so a sweep cannot outlive its claim. */
+const AUDIT_LOCK_TTL_SECONDS = 90 * 60;
+
+/**
+ * Take the specs this sweep is about to audit. Best-effort against the hub:
+ * one too old to serve claims must not stop an audit that would otherwise run.
+ */
+async function claimSpecs(
+  hub: HubClient,
+  project: string,
+  profile: string,
+  targets: readonly SpecTarget[],
+  holder: string,
+): Promise<SpecTarget[]> {
+  try {
+    const res = await hub.acquireLocks(project, { profile }, {
+      specs: targets.map((t) => `${t.featureName}/${t.specName}`),
+      kind: "audit",
+      holder,
+      ttlSeconds: AUDIT_LOCK_TTL_SECONDS,
+    });
+    const granted = new Set(res.granted);
+    return targets.filter((t) => granted.has(`${t.featureName}/${t.specName}`));
+  } catch (err) {
+    log.warn(`could not claim specs on the hub, auditing without exclusion: ${errMessage(err)}`);
+    return [...targets];
+  }
+}
+
+async function releaseSpecs(
+  hub: HubClient,
+  project: string,
+  profile: string,
+  holder: string,
+): Promise<void> {
+  try {
+    await hub.releaseLocks(project, { profile }, holder);
+  } catch (err) {
+    log.warn(`could not release the spec claims: ${errMessage(err)}`);
+  }
 }
 
 /**

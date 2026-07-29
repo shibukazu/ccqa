@@ -43,7 +43,7 @@ export interface AuditSelection {
 
 /** Worst-known-first, so the line leads with what has never been looked at. */
 const SUMMARY_ORDER = rankedOrder<AuditNeed["because"]>({
-  neverAudited: 0, cannotTell: 1, deployReached: 2, current: 3,
+  neverAudited: 0, cannotTell: 1, deployReached: 2, held: 3, current: 4,
 });
 
 export function selectSpecsNeedingAudit(

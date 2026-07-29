@@ -1,4 +1,6 @@
 import type {
+  AcquireLocksRequest,
+  AcquireLocksResponse,
   AuditNeedReport,
   DeployEntry,
   DeployLogResponse,
@@ -162,6 +164,13 @@ export interface HubClient {
    * for the same reason `getRerun` does.
    */
   getAuditNeed(project: string, q: { profile: string }): Promise<AuditNeedReport>;
+  /**
+   * Take the specs that are free, so a second job does not start on one this
+   * run is already working. `denied` is part of the answer, not an error.
+   */
+  acquireLocks(project: string, q: { profile: string }, body: AcquireLocksRequest): Promise<AcquireLocksResponse>;
+  /** Drop everything `runId` holds. Safe to call when it holds nothing. */
+  releaseLocks(project: string, q: { profile: string }, holder: string): Promise<void>;
   /**
    * Every spec's last `ccqa audit --report-to-hub` result, keyed by "feature/spec". No
    * profile — drift asks whether a spec still describes the code, not
@@ -375,6 +384,20 @@ export function createHubClient(opts: HubClientOptions): HubClient {
     getRerun(project, q) {
       return json(`/api/v1/projects/${encodeURIComponent(project)}/rerun?${queryString({ profile: q.profile })}`);
     },
+    acquireLocks(project, q, body) {
+      return json(`${locksPath(project)}?${queryString({ profile: q.profile })}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    },
+    async releaseLocks(project, q, holder) {
+      await request(`${locksPath(project)}?${queryString({ profile: q.profile })}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ holder }),
+      });
+    },
     getAuditNeed(project, q) {
       return json(
         `/api/v1/projects/${encodeURIComponent(project)}/audit-needed?${queryString({ profile: q.profile })}`,
@@ -489,6 +512,10 @@ function promptsPath(project: string): string {
 /** The deploy log is per project, selected by a `?profile=` query param: `/api/v1/projects/<project>/deploys`. */
 function deploysPath(project: string): string {
   return `/api/v1/projects/${encodeURIComponent(project)}/deploys`;
+}
+
+function locksPath(project: string): string {
+  return `/api/v1/projects/${encodeURIComponent(project)}/locks`;
 }
 
 /** Perspectives are one document per project: `/api/v1/projects/<project>/perspectives`. */

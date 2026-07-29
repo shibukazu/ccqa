@@ -7,6 +7,7 @@ import type {
   Run,
   RunStatus,
   SpecLedger,
+  SpecLocks,
   SpecTouchIndex,
 } from "../../contract/schema.ts";
 
@@ -34,6 +35,7 @@ export interface HubStorage {
   ledger: SpecLedgerStore;
   driftLedger: DriftLedgerStore;
   deploys: DeployStore;
+  locks: LockStore;
 }
 
 /**
@@ -87,6 +89,21 @@ export interface DeployStore {
     profile: string,
     mutate: (current: SpecTouchIndex) => SpecTouchIndex,
   ): Promise<void>;
+}
+
+/**
+ * Per (project, profile), which job is working on which spec. Profile-scoped
+ * because a job targets one deployed environment, even though the drift
+ * verdict it produces is not (ADR-0013).
+ */
+export interface LockStore {
+  get(project: string, profile: string): Promise<SpecLocks>;
+  /** Serialized read-modify-write, so two jobs cannot both win the same spec. */
+  update(
+    project: string,
+    profile: string,
+    mutate: (current: SpecLocks) => SpecLocks,
+  ): Promise<SpecLocks>;
 }
 
 export interface RunStore {

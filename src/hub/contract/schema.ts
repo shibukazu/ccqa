@@ -369,8 +369,12 @@ export type SpecTouchIndex = z.infer<typeof SpecTouchIndexSchema>;
  * today, which is why staleness is a state here rather than a footnote.
  */
 export const AuditStateSchema = z.enum([
-  /** No answer yet for the deployed commit: never audited, or audited older. Waiting resolves it. */
-  "checking",
+  /**
+   * The audit owes an answer for the deployed commit: never audited, or
+   * audited at an older one. Not "an audit is running" — work in flight is a
+   * lock, which has a lifetime the axes do not.
+   */
+  "due",
   /** The spec still describes the deployed code. */
   "clean",
   /** The audit found drift. `driftLabel` names which kind. */
@@ -445,6 +449,59 @@ export const DeployRefSchema = z.object({
 export type DeployRef = z.infer<typeof DeployRefSchema>;
 
 /**
+ * A job holding a spec so a second one does not start on it.
+ *
+ * Not a value on either axis. The axes are derived from durable ledgers and
+ * describe recorded facts; a lock describes work in flight, which needs a
+ * lifetime the axes have no reason to carry. It also spans both jobs — one
+ * mechanism rather than a parallel value in each enum.
+ */
+export const SpecLockSchema = z.object({
+  kind: z.enum(["audit", "run"]),
+  /** Opaque id of the job holding it. Only that job may release it. */
+  holder: z.string(),
+  /**
+   * When the hold lapses. Evaluated on read, so a job that died without
+   * releasing clears itself with no reaper — at the cost of holding its specs
+   * until this passes. This is the one place wall-clock time is used; ordering
+   * against deploys still goes by log position (ADR-0010).
+   */
+  expiresAt: z.string(),
+});
+export type SpecLock = z.infer<typeof SpecLockSchema>;
+
+/** The per-(project, profile) lock document: "feature/spec" → who holds it. */
+export const SpecLocksSchema = z.object({
+  specs: z.record(z.string(), SpecLockSchema).default({}),
+});
+export type SpecLocks = z.infer<typeof SpecLocksSchema>;
+
+/** Body of `POST /projects/:project/locks?profile=`. */
+export const AcquireLocksRequestSchema = z.object({
+  specs: z.array(z.string()).min(1),
+  kind: z.enum(["audit", "run"]),
+  holder: z.string().min(1),
+  ttlSeconds: z.number().int().positive(),
+});
+export type AcquireLocksRequest = z.infer<typeof AcquireLocksRequestSchema>;
+
+/**
+ * Which specs the caller may work on. `denied` is not an error: another job got
+ * there first, and skipping those is the whole point.
+ */
+export const AcquireLocksResponseSchema = z.object({
+  granted: z.array(z.string()),
+  denied: z.array(z.string()),
+});
+export type AcquireLocksResponse = z.infer<typeof AcquireLocksResponseSchema>;
+
+/** Body of `DELETE /projects/:project/locks?profile=`. */
+export const ReleaseLocksRequestSchema = z.object({
+  holder: z.string().min(1),
+});
+export type ReleaseLocksRequest = z.infer<typeof ReleaseLocksRequestSchema>;
+
+/**
  * One spec's verdict, the two axes it was derived from, and the three ledger
  * coordinates the view shows alongside them. The coordinates are always
  * present (null when the spec has no such entry); the optional fields appear
@@ -462,6 +519,8 @@ export const SpecRerunSchema = z.object({
   driftLabel: DriftLabelSchema.exclude(["UNKNOWN"]).optional(),
   /** Set only when `verdict === "unanswerable"`. */
   reason: RerunUnknownReasonSchema.optional(),
+  /** The job working on this spec right now, or null. Expired holds read as null. */
+  heldBy: SpecLockSchema.nullable(),
   lastRun: SpecLedgerEntrySchema.nullable(),
   lastGreen: SpecLedgerEntrySchema.nullable(),
   lastRed: SpecLedgerEntrySchema.nullable(),
@@ -482,12 +541,13 @@ export const SpecRerunSchema = z.object({
 export type SpecRerun = z.infer<typeof SpecRerunSchema>;
 
 /**
- * Why this spec does or does not need auditing. Everything but `current`
- * audits: the audit is cheap, so it errs towards doing the work where the run
- * errs away from it.
+ * Why this spec does or does not need auditing. Everything but `current` and
+ * `held` audits: the audit is cheap, so it errs towards doing the work where
+ * the run errs away from it. `held` is not an answer about freshness at all —
+ * another job is on it, so this one skips it and asks again next cycle.
  */
 export const AuditNeedSchema = z.object({
-  because: z.enum(["neverAudited", "deployReached", "cannotTell", "current"]),
+  because: z.enum(["neverAudited", "deployReached", "cannotTell", "held", "current"]),
   /** Set only when `because === "cannotTell"`. */
   reason: RerunUnknownReasonSchema.optional(),
 });

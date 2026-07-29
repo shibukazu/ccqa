@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,6 +10,7 @@ import {
   resolveSpecTargets,
   specKey,
   tryReadSpecFile,
+  type SpecRef,
 } from "../store/index.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
 import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
@@ -201,6 +203,52 @@ function dedupeSpecs(
     out.push(s);
   }
   return out;
+}
+
+/**
+ * How long a claim lasts before it lapses. Longer than this command's own
+ * timeout, so a live run cannot outlive its claim. A job that dies without
+ * releasing blocks its specs for this long, which is the price of expiring on
+ * read rather than running a reaper.
+ */
+const LOCK_TTL_SECONDS = 3 * 60 * 60;
+
+/**
+ * Claim the specs this run is about to execute, and arrange for the claim to
+ * be dropped. Best-effort against the hub: one too old to serve claims must
+ * not stop a run that would otherwise work.
+ */
+async function holdSpecs(
+  hubCtx: HubContext,
+  profile: string,
+  specs: SpecRef[],
+  teardown: RunTeardown | undefined,
+): Promise<SpecRef[]> {
+  const holder = randomUUID();
+  let granted: Set<string>;
+  try {
+    const res = await hubCtx.hub.acquireLocks(hubCtx.project, { profile }, {
+      specs: specs.map(specKey),
+      kind: "run",
+      holder,
+      ttlSeconds: LOCK_TTL_SECONDS,
+    });
+    granted = new Set(res.granted);
+  } catch (err) {
+    log.warn(`could not claim specs on the hub, running without exclusion: ${errMessage(err)}`);
+    return specs;
+  }
+  const release = async () => {
+    try {
+      await hubCtx.hub.releaseLocks(hubCtx.project, { profile }, holder);
+    } catch (err) {
+      log.warn(`could not release the spec claims: ${errMessage(err)}`);
+    }
+  };
+  // The teardown runs on SIGINT/SIGTERM as well as on the normal path, which
+  // is where a cancelled CI job lands.
+  teardown?.onFinalize(release);
+  return specs.filter((spec) => granted.has(specKey(spec)));
 }
 
 /**
@@ -466,6 +514,22 @@ export async function executeRun(
   if (specs.length === 0) {
     log.warn("no specs to run");
     return { exitCode: 0, report: null, reportDir: null };
+  }
+
+  // Take the specs before executing them, so a second cycle starting while
+  // this one is still going skips what is already being run rather than
+  // driving the same browser flow twice. Released on the way out, including on
+  // SIGINT/SIGTERM; a hard kill is covered by the hold's own expiry.
+  if (hubCtx && rerunProfile !== null) {
+    const held = await holdSpecs(hubCtx, rerunProfile, specs, opts.teardown);
+    if (held.length < specs.length) {
+      log.meta("held-elsewhere", `${specs.length - held.length} spec(s) another job is already running`);
+    }
+    specs = held;
+    if (specs.length === 0) {
+      log.warn("every selected spec is already being run by another job");
+      return { exitCode: 0, report: null, reportDir: null };
+    }
   }
 
   // Split specs by generation target: agent-browser specs keep the det/live

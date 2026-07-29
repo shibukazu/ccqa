@@ -6,12 +6,15 @@ import type {
   RerunUnknownReason,
   SpecLedger,
   SpecLedgerEntry,
+  SpecLock,
+  SpecLocks,
   SpecRerun,
   SpecTouchIndex,
 } from "../contract/schema.ts";
 import type { DriftLabel } from "../../report/schema.ts";
 import { auditNeed } from "./audit-need.ts";
 import { buildRange, freshness, type Freshness, type RangeLookup } from "./deploy-range.ts";
+import { heldBy } from "./locks.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 /**
@@ -31,10 +34,14 @@ export interface RerunInput {
   touchIndex: SpecTouchIndex;
   /** The project's drift ledger, keyed by spec. Carries the commit each audit read. */
   drift: DriftLedger;
+  /** Who is working on what right now. Expired holds read as free. */
+  locks: SpecLocks;
+  /** Compared against each hold's expiry. Passed in so the answer is reproducible in tests. */
+  now: Date;
 }
 
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
-  const { specs, ledger, log, touchIndex, drift } = input;
+  const { specs, ledger, log, touchIndex, drift, locks, now } = input;
   const range = buildRange(log, touchIndex);
   // Nothing recorded for this profile at all: neither a run nor a deploy. A
   // profile-wide fact, so it replaces the derived answer without touching the
@@ -56,10 +63,11 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
     };
     const audit = auditState(drift, spec.key, range);
     const execution = executionState(coords);
+    const held = heldBy(locks, spec.key, now);
     const derived = nothingRecorded
       ? ({ verdict: "unanswerable", reason: "notEvaluated" } as const)
-      : decide(audit, execution, coords.lastRun, (sha) => freshness(sha, spec.key, range));
-    out[spec.key] = { ...derived, ...audit, execution, ...coords };
+      : decide(audit, execution, held, coords.lastRun, (sha) => freshness(sha, spec.key, range));
+    out[spec.key] = { ...derived, ...audit, execution, heldBy: held, ...coords };
   }
   return out;
 }
@@ -78,7 +86,7 @@ function auditState(
   switch (need.because) {
     case "neverAudited":
     case "deployReached":
-      return { audit: "checking" };
+      return { audit: "due" };
     case "cannotTell":
       return { audit: "cannotTell", ...(need.reason ? { reason: need.reason } : {}) };
     case "current": {
@@ -116,15 +124,19 @@ function executionState(coords: {
 function decide(
   audit: { audit: AuditState; reason?: RerunUnknownReason },
   execution: ExecutionState,
+  held: SpecLock | null,
   lastRun: SpecLedgerEntry | null,
   since: (baselineSha: string) => Freshness,
 ): Pick<SpecRerun, "verdict" | "reason" | "touchedBy" | "touchedByDeploy"> {
+  // A job already has this spec. Nothing below is worth asking: whatever the
+  // answer, acting on it would race the job that is on it.
+  if (held) return { verdict: "inProgress" };
   // The deploy log could not place the audit, so it cannot place the run
   // either — they read the same log.
   switch (audit.audit) {
     case "cannotTell":
       return unanswerable(audit.reason!);
-    case "checking":
+    case "due":
       return { verdict: "inProgress" };
     case "drifted":
     case "undecided":

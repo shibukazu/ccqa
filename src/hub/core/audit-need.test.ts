@@ -7,9 +7,11 @@ import type {
 } from "../contract/schema.ts";
 import type { DriftLabel } from "../../report/schema.ts";
 import { computeAuditNeed, type AuditNeedInput } from "./audit-need.ts";
+import { emptyLocks } from "./locks.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 const SPEC: SpecTarget = { key: "f/s" };
+const NOW = new Date("2026-07-26T00:00:00Z");
 
 function deploy(index: number, overrides: Partial<DeployEntry> = {}): DeployEntry {
   return {
@@ -48,6 +50,8 @@ function compute(overrides: Partial<AuditNeedInput> = {}) {
     log: log(deploy(0), deploy(1)),
     touchIndex: {},
     drift: auditedAt(null, "sha-1"),
+    locks: emptyLocks(),
+    now: NOW,
     ...overrides,
   })["f/s"]!;
 }
@@ -68,6 +72,8 @@ describe("computeAuditNeed", () => {
       log: log(deploy(0)),
       touchIndex: {},
       drift: { specs: {} },
+      locks: emptyLocks(),
+      now: NOW,
     });
     expect(out["f/s"]).toBeUndefined();
   });
@@ -88,6 +94,16 @@ describe("computeAuditNeed", () => {
     expect(
       compute({ drift: auditedAt("SPEC_CHANGE", "sha-0"), touchIndex: touchedAt(1) }),
     ).toMatchObject({ because: "deployReached" });
+  });
+
+  test("a spec another job is auditing is not offered again", () => {
+    // Two audits writing the same ledger entry is the race this prevents.
+    expect(
+      compute({
+        drift: { specs: {} },
+        locks: { specs: { "f/s": { kind: "audit", holder: "a-1", expiresAt: "2026-07-26T01:00:00Z" } } },
+      }),
+    ).toEqual({ because: "held" });
   });
 
   test("a hole in the deploy log audits rather than skips", () => {

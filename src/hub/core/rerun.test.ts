@@ -5,13 +5,17 @@ import type {
   DriftLedger,
   SpecLedger,
   SpecLedgerEntry,
+  SpecLocks,
   SpecTouchIndex,
 } from "../contract/schema.ts";
 import type { DriftLabel } from "../../report/schema.ts";
+import { emptyLocks } from "./locks.ts";
 import { computeRerun, type RerunInput } from "./rerun.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 const SPEC: SpecTarget = { key: "f/s" };
+/** Fixed so a hold's expiry is compared against a known point, not the clock. */
+const NOW = new Date("2026-07-26T00:00:00Z");
 
 function deploy(index: number, overrides: Partial<DeployEntry> = {}): DeployEntry {
   return {
@@ -63,6 +67,8 @@ function compute(overrides: Partial<RerunInput> = {}): ReturnType<typeof compute
     ledger: ledgerWithRun(ranAt("sha-0")),
     log: log(deploy(0)),
     touchIndex: {},
+    locks: emptyLocks(),
+    now: NOW,
     ...overrides,
   };
   // Default the audit to "clean, read at the newest deploy". Without it every
@@ -143,7 +149,7 @@ describe("computeRerun: the run axis, with the audit already current", () => {
       expect(compute({ ledger: ledgerWithRun(null), log: log(), drift: { specs: {} } })).toMatchObject({
         verdict: "unanswerable",
         reason: "notEvaluated",
-        audit: "checking",
+        audit: "due",
         execution: "neverRun",
       });
     });
@@ -228,7 +234,7 @@ describe("computeRerun: the audit axis", () => {
     // running before the audit has spoken is what the whole ordering exists to
     // prevent.
     const verdict = compute({ drift: { specs: {} } });
-    expect(verdict.audit).toBe("checking");
+    expect(verdict.audit).toBe("due");
     expect(verdict.verdict).toBe("inProgress");
   });
 
@@ -240,7 +246,7 @@ describe("computeRerun: the audit axis", () => {
       touchIndex: touchedAt(1),
       drift: auditedAt(null, "sha-0"),
     });
-    expect(verdict.audit).toBe("checking");
+    expect(verdict.audit).toBe("due");
     expect(verdict.verdict).toBe("inProgress");
   });
 
@@ -312,6 +318,39 @@ describe("computeRerun: a failed run", () => {
       ledger: { green: { "f/s": passed }, run: { "f/s": passed }, red: { "f/s": failed } },
     });
     expect(verdict.execution).toBe("passed");
+    expect(verdict.verdict).toBe("verified");
+  });
+});
+
+describe("computeRerun: a job already on the spec", () => {
+  function heldLocks(expiresAt: string): SpecLocks {
+    return { specs: { "f/s": { kind: "run", holder: "run-9", expiresAt } } };
+  }
+
+  test("is inProgress, whatever the axes would otherwise say", () => {
+    // Acting on any other answer would race the job that is on it.
+    const verdict = compute({
+      locks: heldLocks("2026-07-26T01:00:00Z"),
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1),
+    });
+    expect(verdict.verdict).toBe("inProgress");
+    expect(verdict.heldBy).toMatchObject({ kind: "run", holder: "run-9" });
+  });
+
+  test("outranks even a repair the audit found", () => {
+    const verdict = compute({
+      locks: heldLocks("2026-07-26T01:00:00Z"),
+      drift: auditedAt("SPEC_CHANGE", "sha-0"),
+    });
+    expect(verdict.verdict).toBe("inProgress");
+  });
+
+  test("a lapsed hold reads as free, with no reaper having run", () => {
+    // The job died without releasing. Nothing swept the document; the expiry
+    // is simply compared on read.
+    const verdict = compute({ locks: heldLocks("2026-07-25T23:59:00Z") });
+    expect(verdict.heldBy).toBeNull();
     expect(verdict.verdict).toBe("verified");
   });
 });

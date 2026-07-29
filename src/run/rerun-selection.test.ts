@@ -12,7 +12,10 @@ import {
 function spec(verdict: SpecRerun["verdict"]): SpecRerun {
   // The axes are carried for the view; selection reads only the verdict, so
   // they are pinned to a value that could not itself change the outcome.
-  return { verdict, audit: "clean", execution: "passed", lastRun: null, lastGreen: null, lastRed: null };
+  return {
+    verdict, audit: "clean", execution: "passed", heldBy: null,
+    lastRun: null, lastGreen: null, lastRed: null,
+  };
 }
 
 function report(specs: Record<string, SpecRerun>, deployHead: RerunReport["deployHead"] = {
