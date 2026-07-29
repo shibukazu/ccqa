@@ -256,7 +256,48 @@ GET /api/v1/projects/:project/rerun?profile=<name>
       specs: { "<feature>/<spec>": SpecRerun },
     }
   | 404 (the project has no perspectives document)
+
+GET /api/v1/projects/:project/audit-needed?profile=<name>
+  → 200 {
+      project, profile,
+      specs: { "<feature>/<spec>": AuditNeed },
+    }
+  | 404 (the project has no perspectives document)
+
+POST /api/v1/projects/:project/locks?profile=<name>
+  { specs: string[], kind: "audit" | "run", holder: string, ttlSeconds: number }
+  → 200 { granted: string[], denied: string[] }
+
+DELETE /api/v1/projects/:project/locks?profile=<name>
+  { holder: string }
+  → 204
 ```
+
+```ts
+interface AuditNeed {
+  because: "neverAudited"    // no baseline at all, so no diff can narrow it away
+         | "deployReached"   // a deploy landed on code this spec covers
+         | "cannotTell"      // the deploy log has a hole; `reason` names it
+         | "held"            // another job is auditing it right now
+         | "current";        // audited at the deployed commit, nothing since
+  reason?: /* same set as SpecRerun.reason */;   // set only when because is "cannotTell"
+}
+```
+
+`--only-hub-audit-needed` audits everything but `current` and `held`. That is
+the opposite default to `--only-hub-rerun-needed`, and deliberately so: an
+audit costs cents where a live run costs dollars, so this side does the work
+when it cannot tell and the run side declines to.
+
+A **claim** stops a second job starting on a spec the first is still working.
+It is not a value on either axis — the axes describe recorded facts, work in
+flight needs a lifetime, and the same mechanism covers both jobs. A claim
+lapses rather than being reaped: `expiresAt` is compared on every read, so a
+job killed without releasing frees its specs by itself, at the cost of holding
+them until it passes. Pick `ttlSeconds` from how long the caller's own work can
+take. Re-asking with the same `holder` extends the claim; releases are keyed by
+holder, so a late one from a lapsed job cannot take a claim the next job has
+since acquired.
 
 ```ts
 interface DeployEntry {
@@ -278,20 +319,51 @@ interface DeploySelectionEntry {
 }
 
 interface SpecRerun {
-  state: "needed" | "notNeeded" | "unknown" | "neverRun" | "notEvaluated";
-  reason?: "noSelectionInRange" | "selectionUnknown" | "noDeployLog"
+  // The one answer, derived from the two axes below. Named for who acts next.
+  verdict: "inProgress"     // a job holds it, or the audit has not caught up
+         | "needsRepair"    // a person: drift, an undecided audit, or a failed run
+         | "rerunNeeded"    // cleared by the audit, and the last result is out of date
+         | "verified"       // cleared by the audit, and the last run passed against this deploy
+         | "unanswerable";  // the hub lacks the data; `reason` names what is missing
+
+  // Axis 1 — what the audit says about the *deployed* commit.
+  audit: "due"          // owed an answer: never audited, or audited at an older commit
+       | "clean"
+       | "drifted"      // `driftLabel` names which kind
+       | "undecided"    // the audit read the code and could not decide
+       | "cannotTell";  // the deploy log cannot place the audit; `reason` names the hole
+  driftLabel?: "TEST_DRIFT" | "SPEC_CHANGE";   // set only when audit is "drifted"
+
+  // Axis 2 — how the last execution ended. No "stale pass": which deploy a run
+  // covered is `lastRun.deployedSha`, not a value here.
+  execution: "passed" | "failed" | "neverRun";
+
+  // The job working on it right now, or null. An expired hold reads as null.
+  heldBy: { kind: "audit" | "run", holder: string, expiresAt: string } | null;
+
+  reason?: "notEvaluated" | "noSelectionInRange" | "selectionUnknown" | "noDeployLog"
          | "unknownDeployedSha" | "ambiguousDeployedSha" | "deployedShaNotInLog"
-         | "gapInRange";                            // set only when state is "unknown"
+         | "gapInRange";     // set when verdict is "unanswerable" or audit is "cannotTell"
   lastRun: SpecLedgerEntry | null;
   lastGreen: SpecLedgerEntry | null;
   lastRed: SpecLedgerEntry | null;
-  touchedBy?: string[];       // up to 10 matched paths; set only when state is "needed"
-  touchedByDeploy?: { index, sha, at } | null;  // the deploy that caused "needed"
+  touchedBy?: string[];       // up to 10 matched paths; set only when verdict is "rerunNeeded"
+  touchedByDeploy?: { index, sha, at } | null;  // the deploy that caused "rerunNeeded"
 }
 ```
 
+Neither axis determines the other — a spec can be clean and out of date, or
+drifted and freshly run — so they are carried apart and the verdict is derived
+from both. Exactly one verdict, `needsRepair`, asks for a person; a reader
+scanning a list of specs only has to look for that one.
+
+A failed spec is `needsRepair` and is never offered for a re-run: repeating it
+teaches nothing until the code it exercises moves or the spec is fixed, and a
+live spec costs dollars a go. A spec that has never run is `rerunNeeded` — no
+result at all is as uncovered as a result a deploy invalidated.
+
 `touchedByDeploy` names the newest deploy *in the verdict's range* whose
-changes matched the spec — the deploy that made it `needed`, which is not the
+changes matched the spec — the deploy that made it `rerunNeeded`, which is not the
 same coordinate as `deployHead` (only the point the judgement was made at). It
 is additive and optional: an older hub omits it. It is null when the entry that
 proves the touch is no longer retained in the log — the verdict still stands on
@@ -311,10 +383,10 @@ Pass `?deployedSha=` on `POST /runs` or `POST /runs/open` to assert it
 instead — a single-shot push reaches the hub only after the run is over, so
 a deploy that landed mid-run would otherwise read as that run's baseline.
 
-`unknown` is never rendered as "not needed"; it always carries a reason. A
+`unanswerable` is never rendered as `verified`; it always carries a reason. A
 deploy recorded without a selection (`hasSelection: false`) is a hole in the
 range — fail-open and self-limiting: specs whose baseline sits behind it read
-`unknown` rather than `notNeeded`, until a later deploy resolves them.
+`unanswerable` rather than `verified`, until a later deploy resolves them.
 `changedPaths` is record-only and plays no part in this. `profile` is part
 of the scope key and defaults to `"default"`: a spec run under one value set
 says nothing about another, so "needs re-run" has no profile-free answer.

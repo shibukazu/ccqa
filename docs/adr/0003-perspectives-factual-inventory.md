@@ -121,11 +121,13 @@ What changes (the *storage and freshness* of the inventory, not its scope):
   versions when it runs, and it now requires a hub connection.
 - The Markdown views are replaced by the hub UI's **Perspectives** view
   (summary strip, one feature-grouped table, expandable per-case detail).
-- The document stays fresh incrementally: a successful `ccqa record` /
-  `ccqa generate` upserts that one spec's entry (mechanical facts recomputed,
-  descriptive fields rewritten by a single-spec Claude call, `note`
-  preserved). The full command remains the way to build the document
-  initially and to prune deleted specs.
+- The document is rebuilt by `ccqa perspectives` alone. *(Superseded in
+  1.16: `ccqa record` / `ccqa generate` used to upsert their one spec's entry
+  as well. Two write paths could not agree — the incremental one could not
+  prune deleted specs and never ran for `mode: live` specs, which skip
+  codegen — and it made the inventory depend on whether the machine that ran
+  `record` happened to have a hub configured. The command now runs from CI on
+  a change to the spec tree, so the inventory tracks the default branch.)*
 - `note` — still the only human-authored field — is edited in the hub UI
   (`PATCH .../perspectives`, a serialized read-modify-write), since there is
   no local file left to hand-edit.
@@ -136,8 +138,7 @@ schema) is unchanged.
 ## More information
 
 - Schema: `src/spec/perspectives-schema.ts`
-- Command: `src/cli/perspectives.ts`, prompt: `src/prompts/perspectives.ts`,
-  incremental sync: `src/cli/perspectives-sync.ts`
+- Command: `src/cli/perspectives.ts`, prompt: `src/prompts/perspectives.ts`
 - Hub endpoints: `src/hub/api/handlers/perspectives.ts`
   (see `docs/hub-api.md#perspectives`)
 - Related: ADR-0001 (lenient over strict — preserve human-load-bearing data

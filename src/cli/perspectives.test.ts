@@ -8,7 +8,6 @@ import {
   withoutGeneratedAt,
   type SummaryEntry,
 } from "./perspectives.ts";
-import { upsertSpec } from "./perspectives-sync.ts";
 import { PerspectivesSchema, type PerspectiveFeature, type Perspectives, type PerspectiveSpec } from "../types.ts";
 
 const skeleton: PerspectiveFeature[] = [
@@ -321,41 +320,6 @@ describe("extractNotes (round-trip note preservation)", () => {
     expect(extractNotes(undefined).size).toBe(0);
     expect(extractNotes("not an object").size).toBe(0);
     expect(extractNotes({ features: [{ bogus: true }] }).size).toBe(0);
-  });
-});
-
-describe("upsertSpec (incremental record/generate sync)", () => {
-  const entry = (specName: string): PerspectiveSpec => ({
-    specName,
-    title: "t",
-    summary: "s",
-    status: { mode: "deterministic", traced: true, generated: true },
-  });
-
-  test("replaces an existing spec entry in place", () => {
-    const doc: Perspectives = {
-      features: [{ featureName: "tasks", specs: [{ ...entry("search-tasks"), summary: "old", note: "keep me" }] }],
-    };
-    upsertSpec(doc, "tasks", { ...entry("search-tasks"), note: "keep me" });
-    expect(doc.features[0]?.specs).toHaveLength(1);
-    expect(doc.features[0]?.specs[0]?.summary).toBe("s");
-    expect(doc.features[0]?.specs[0]?.note).toBe("keep me");
-  });
-
-  test("inserts a new spec name-sorted within its feature", () => {
-    const doc: Perspectives = {
-      features: [{ featureName: "tasks", specs: [entry("a-spec"), entry("z-spec")] }],
-    };
-    upsertSpec(doc, "tasks", entry("m-spec"));
-    expect(doc.features[0]?.specs.map((s) => s.specName)).toEqual(["a-spec", "m-spec", "z-spec"]);
-  });
-
-  test("creates a missing feature and keeps features name-sorted", () => {
-    const doc: Perspectives = {
-      features: [{ featureName: "auth", specs: [entry("login")] }, { featureName: "tasks", specs: [entry("a")] }],
-    };
-    upsertSpec(doc, "notifications", entry("assign"));
-    expect(doc.features.map((f) => f.featureName)).toEqual(["auth", "notifications", "tasks"]);
   });
 });
 

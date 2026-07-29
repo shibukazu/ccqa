@@ -154,3 +154,7 @@ export function deployLogPath(root: string, project: string, profile: string): s
 export function deployTouchIndexPath(root: string, project: string, profile: string): string {
   return join(deployScopeDir(root, project, profile), "touch.json");
 }
+
+export function specLocksPath(root: string, project: string, profile: string): string {
+  return join(root, "locks", project, profile, "locks.json");
+}

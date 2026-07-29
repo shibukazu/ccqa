@@ -1,3 +1,4 @@
+import { HttpError } from "../api/respond.ts";
 import type { PerspectivesStore } from "./storage/types.ts";
 
 /**
@@ -57,4 +58,27 @@ export async function loadSpecTargets(
     // hub never wrote it — the CLI pushes it verbatim.
     return null;
   }
+}
+
+/**
+ * The same, but throwing the 404 both selection endpoints answer with. The
+ * code is distinct from the generic `not_found` an unrouted path returns: the
+ * route exists, the project's perspectives document does not. Clients tell
+ * "this hub is too old" from "push a perspectives document" by this code
+ * alone, with no second probe request.
+ */
+export async function requireSpecTargets(
+  perspectives: PerspectivesStore,
+  project: string,
+  question: string,
+): Promise<SpecTarget[]> {
+  const specs = await loadSpecTargets(perspectives, project);
+  if (specs === null) {
+    throw new HttpError(
+      404,
+      "no_perspectives",
+      `no perspectives stored for project "${project}" — push one with \`ccqa perspectives\` before asking ${question}`,
+    );
+  }
+  return specs;
 }

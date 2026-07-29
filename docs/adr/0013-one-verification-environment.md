@@ -66,14 +66,21 @@ The consequence for the audit is that it reads the commit the verification
 environment is running, not the tip of the default branch. Auditing the tip
 answers a question about code nobody is running yet.
 
-The consequence for the run is a third answer. A spec the audit rejected is
-`blocked`, alongside `needed` and `notNeeded`, and no flag opts into running
-it: re-running cannot repair a spec that no longer describes the code. The
-state carries which repair it needs, because `testDrift` clears itself within
-minutes (`ccqa record`) and `specChange` waits for a human — treating them
-alike would hide the one that accumulates. Only a finding blocks: a spec never
-audited, or one the audit could not judge, is not withheld, or no newly written
-spec would ever run.
+The consequence for the run is that the audit's answer now bears on it. A spec
+the audit rejected is not offered for a re-run: re-running cannot repair a spec
+that no longer describes the code. Which repair it needs is carried along,
+because a stale recording clears itself within minutes (`ccqa record`) where a
+changed spec waits for a human, and treating them alike would hide the one that
+accumulates.
+
+*(Amended in 1.16 by [ADR-0014](0014-two-axes-one-verdict.md). This paragraph
+first described the answer as a third state, `blocked`, alongside `needed` and
+`notNeeded`, and said that only a finding withholds a run — a spec never
+audited was not withheld, or no newly written spec would ever run. Both are
+superseded. The audit became its own axis, so "rejected" and "has not answered
+for this deploy" are different values rather than one state's presence or
+absence; a spec the audit has not cleared for the deployed commit is not run,
+and a newly written spec is audited first instead of being run un-audited.)*
 
 ## Consequences
 

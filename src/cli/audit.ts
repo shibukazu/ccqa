@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import {
   loadAvailableBlocks,
   parseSpecPath,
 } from "../store/index.ts";
+import { errMessage } from "../run/errors.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
 import { renderDrift } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
@@ -16,7 +18,9 @@ import type { Format, SpecResult, SpecTarget, Threshold } from "../drift/types.t
 import { collectChangedSpecs } from "./changed-specs.ts";
 import { packDirToTarGz } from "../hub/core/tar.ts";
 import { HubApiError, type HubClient } from "../hub-client/index.ts";
-import { addLanguageOption } from "./options.ts";
+import { addLanguageOption, addProfileOption } from "./options.ts";
+import { fetchAuditNeed, selectSpecsNeedingAudit } from "../drift/audit-selection.ts";
+import { requireHubProfile } from "../run/hub-selection.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { hubHeaderOption, hubTokenOption, hubUrlOption, resolveHubClient } from "./hub-conn.ts";
@@ -33,6 +37,8 @@ interface AuditOptions {
   model?: string;
   cwd?: string;
   onlyAffectedBy?: string;
+  onlyHubAuditNeeded?: boolean;
+  hubProfile?: string;
   language?: string;
   reportToHub?: boolean;
   project?: string;
@@ -43,7 +49,7 @@ interface AuditOptions {
 
 const DEFAULT_CONCURRENCY = 3;
 
-export const auditCommand = addLanguageOption(
+export const auditCommand = addProfileOption(addLanguageOption(
   new Command("audit")
     .argument(
       "[feature/spec]",
@@ -58,6 +64,10 @@ export const auditCommand = addLanguageOption(
       "--only-affected-by <ref>",
       "Only specs `ccqa select-specs` judges reached by the diff against <ref> (e.g. origin/main). In pull_request CI, pass $GITHUB_BASE_REF. Costs one model call; specs it cannot decide are audited rather than skipped.",
     )
+    .option(
+      "--only-hub-audit-needed",
+      "Only specs the hub says a deploy has landed on since the audit last read them. A spec that was never audited is always included, and one the hub cannot answer for is audited rather than skipped. No git diff involved. Requires a hub connection and --hub-profile.",
+    )
     .optionsGroup("How to run it:")
     .option("--concurrency <n>", `Parallel spec checks (default: ${DEFAULT_CONCURRENCY})`)
     .option(
@@ -68,7 +78,7 @@ export const auditCommand = addLanguageOption(
     .option("--report-format <fmt>", "Output format: text | json | github", "text")
     .option(
       "--report-to-hub",
-      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger. A spec it finds drifted answers `blocked` to `ccqa run --only-hub-rerun-needed`, and is not run until the drift clears.",
+      "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger. A spec it finds drifted answers `needsRepair` to `ccqa run --only-hub-rerun-needed`, and is not run until a person repairs it.",
     )
     .option(
       "--exit-on <level>",
@@ -84,7 +94,7 @@ export const auditCommand = addLanguageOption(
     .option(...hubUrlOption)
     .option(...hubTokenOption)
     .option(...hubHeaderOption),
-).action(withUsageErrors(async (specPath: string | undefined, opts: AuditOptions) => {
+)).action(withUsageErrors(async (specPath: string | undefined, opts: AuditOptions) => {
   await withCostTally(() => runAudit(specPath, opts));
 }));
 
@@ -100,6 +110,30 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     log.error("--only-affected-by and an explicit spec id cannot be combined; it only applies to a full sweep");
     process.exit(2);
   }
+  if (opts.onlyHubAuditNeeded && specPath) {
+    log.error("--only-hub-audit-needed and an explicit spec id cannot be combined; it only applies to a full sweep");
+    process.exit(2);
+  }
+
+  // Resolved before the sweep so a usage error costs nothing: --only-affected-by
+  // below spends a model call, and finding out after it that --hub-profile is
+  // missing would bill for the mistake.
+  let hub: HubClient | null = null;
+  let hubProject: string | null = null;
+  // Set only on the --only-hub-audit-needed path, which is also the only one
+  // that resolves `hub` and `hubProject`.
+  let holder: string | null = null;
+  if (opts.onlyHubAuditNeeded) {
+    hub = resolveHubClient(opts);
+    if (!hub) {
+      log.error(
+        "--only-hub-audit-needed requires a hub connection: pass --hub-url/--hub-token (or set CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+      );
+      process.exit(2);
+    }
+    requireHubProfile("--only-hub-audit-needed", opts.hubProfile, "which specs a deploy has reached");
+    hubProject = resolveProject({ project: opts.project, cwd });
+  }
 
   let targets = await collectTargets(specPath, cwd);
   if (targets.length === 0) {
@@ -109,6 +143,35 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   if (format === "text") {
     log.header("audit", specPath ?? `${targets.length} spec${targets.length > 1 ? "s" : ""}`);
     if (opts.cwd) log.meta("cwd", cwd);
+  }
+
+  // Ahead of --only-affected-by: the two compose with AND, and this side is
+  // one HTTP round trip where that one is a model call. Narrowing here shrinks
+  // the prompt, and skips it entirely when nothing is left to audit.
+  if (opts.onlyHubAuditNeeded) {
+    const total = targets.length;
+    const report = await fetchAuditNeed({ hub: hub!, project: hubProject! }, opts.hubProfile!);
+    const selection = selectSpecsNeedingAudit(targets, report);
+    targets = selection.selected;
+    if (format === "text") {
+      log.meta("hub", selection.summary);
+      log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
+    }
+    if (targets.length === 0) {
+      exitWithNoSpecs(format, "every spec has been audited since the last deploy that reached it");
+    }
+
+    // Claim what is left, so a second cycle starting while this one runs does
+    // not audit the same specs and write the same ledger entries twice.
+    holder = randomUUID();
+    const claimed = await claimSpecs(hub!, hubProject!, opts.hubProfile!, targets, holder);
+    if (claimed.length < targets.length && format === "text") {
+      log.meta("held-elsewhere", `${targets.length - claimed.length} spec(s) another job is auditing`);
+    }
+    targets = claimed;
+    if (targets.length === 0) {
+      exitWithNoSpecs(format, "every spec that needs auditing is already being audited by another job");
+    }
   }
 
   let baseRef: string | null = null;
@@ -134,6 +197,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   }
 
   const blocks = await loadAvailableBlocks(cwd);
+  try {
   const results = await analyzeDrift({
     targets,
     cwd,
@@ -154,6 +218,53 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
 
   reportCost();
   process.exit(determineExitCode(results, threshold));
+  } finally {
+    // `process.exit` above skips this, so the release happens first: the
+    // claim is dropped whether the audit finished, threw, or is exiting.
+    if (holder) await releaseSpecs(hub!, hubProject!, opts.hubProfile!, holder);
+  }
+}
+
+/** Longer than the audit's own timeout, so a sweep cannot outlive its claim. */
+const AUDIT_LOCK_TTL_SECONDS = 90 * 60;
+
+/**
+ * Take the specs this sweep is about to audit. Best-effort against the hub:
+ * one too old to serve claims must not stop an audit that would otherwise run.
+ */
+async function claimSpecs(
+  hub: HubClient,
+  project: string,
+  profile: string,
+  targets: readonly SpecTarget[],
+  holder: string,
+): Promise<SpecTarget[]> {
+  try {
+    const res = await hub.acquireLocks(project, { profile }, {
+      specs: targets.map((t) => `${t.featureName}/${t.specName}`),
+      kind: "audit",
+      holder,
+      ttlSeconds: AUDIT_LOCK_TTL_SECONDS,
+    });
+    const granted = new Set(res.granted);
+    return targets.filter((t) => granted.has(`${t.featureName}/${t.specName}`));
+  } catch (err) {
+    log.warn(`could not claim specs on the hub, auditing without exclusion: ${errMessage(err)}`);
+    return [...targets];
+  }
+}
+
+async function releaseSpecs(
+  hub: HubClient,
+  project: string,
+  profile: string,
+  holder: string,
+): Promise<void> {
+  try {
+    await hub.releaseLocks(project, { profile }, holder);
+  } catch (err) {
+    log.warn(`could not release the spec claims: ${errMessage(err)}`);
+  }
 }
 
 /**

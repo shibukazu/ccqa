@@ -1,22 +1,29 @@
 import type {
-  DeployEntry,
+  AuditState,
   DeployLog,
-  DeployRef,
   DriftLedger,
-  RerunBlockedReason,
+  ExecutionState,
   RerunUnknownReason,
   SpecLedger,
   SpecLedgerEntry,
+  SpecLock,
+  SpecLocks,
   SpecRerun,
   SpecTouchIndex,
 } from "../contract/schema.ts";
+import type { DriftLabel } from "../../report/schema.ts";
+import { auditNeed } from "./audit-need.ts";
+import { buildRange, freshness, type Freshness, type RangeLookup } from "./deploy-range.ts";
+import { heldBy } from "./locks.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 /**
- * "Is this spec's last result still trustworthy?" — pure set arithmetic over
- * data the hub already stores (ADR-0010). Deliberately no wall clocks: a run
- * that started before a deploy and finished after it looks up to date by
- * timestamp, so the only ordering used here is position in the deploy log.
+ * "What should happen to this spec next?" — pure set arithmetic over data the
+ * hub already stores (ADR-0010).
+ *
+ * Two independent axes, one derived answer. Neither axis determines the other
+ * — a spec can be clean and stale, or drifted and freshly run — so collapsing
+ * them into one value loses exactly the case that matters.
  */
 export interface RerunInput {
   /** Every spec in the project's perspectives document. */
@@ -25,40 +32,27 @@ export interface RerunInput {
   ledger: SpecLedger;
   log: DeployLog;
   touchIndex: SpecTouchIndex;
-  /** The project's drift ledger. A spec the audit found drifted is `blocked`. */
+  /** The project's drift ledger, keyed by spec. Carries the commit each audit read. */
   drift: DriftLedger;
+  /** Who is working on what right now. Expired holds read as free. */
+  locks: SpecLocks;
+  /** Compared against each hold's expiry. Passed in so the answer is reproducible in tests. */
+  now: Date;
 }
 
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
-  const { specs, ledger, log, touchIndex, drift } = input;
-  // Nothing has ever been recorded for this profile: neither a run nor a
-  // deploy. That is a different statement from "this spec has never run".
-  // `green` is checked separately from `run` because a pre-ledger document
-  // migrates as greens with no runs.
-  const notEvaluated =
+  const { specs, ledger, log, touchIndex, drift, locks, now } = input;
+  const range = buildRange(log, touchIndex);
+  // Nothing recorded for this profile at all: neither a run nor a deploy. A
+  // profile-wide fact, so it replaces the derived answer without touching the
+  // axes — those stay per-spec, or the same spec would read differently
+  // depending on whether some *other* spec had a run. `green` is checked
+  // separately from `run` because a pre-ledger document migrates as greens
+  // with no runs.
+  const nothingRecorded =
     log.entries.length === 0 &&
     Object.keys(ledger.run).length === 0 &&
     Object.keys(ledger.green).length === 0;
-  // First occurrence wins: a sha deployed twice is genuinely ambiguous, and
-  // the earlier position widens the range, which errs towards `needed`.
-  const positionBySha = new Map<string, number>();
-  log.entries.forEach((entry, i) => {
-    if (!positionBySha.has(entry.sha)) positionBySha.set(entry.sha, i);
-  });
-  // Built once instead of re-scanned per spec: `entryByIndex` backs the
-  // `needed.index` lookup below, and `gapFromPos`/`noSelectionFromPos` are
-  // suffix flags ("does any entry from this position onward have a gap / lack
-  // a selection") so `verdict`'s range check is an array read instead of a
-  // slice+scan. Specs mostly share one baseline deploy, so this turns what
-  // was O(specs × log length) into O(log length).
-  const entryByIndex = new Map(log.entries.map((e) => [e.index, e]));
-  const gapFromPos: boolean[] = new Array(log.entries.length + 1).fill(false);
-  const noSelectionFromPos: boolean[] = new Array(log.entries.length + 1).fill(false);
-  for (let i = log.entries.length - 1; i >= 0; i--) {
-    gapFromPos[i] = gapFromPos[i + 1]! || log.entries[i]!.gapBefore;
-    noSelectionFromPos[i] = noSelectionFromPos[i + 1]! || !log.entries[i]!.hasSelection;
-  }
-  const range: RangeLookup = { entryByIndex, gapFromPos, noSelectionFromPos };
 
   const out: Record<string, SpecRerun> = {};
   for (const spec of specs) {
@@ -67,109 +61,118 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       lastGreen: ledger.green[spec.key] ?? null,
       lastRed: ledger.red[spec.key] ?? null,
     };
-    // Blocking wins over every other answer, including `neverRun`. Re-running
-    // a spec the audit rejected cannot clear it: what is wrong is the spec, not
-    // the age of its last result.
-    const blocked = blockedBy(drift, spec.key);
-    out[spec.key] = blocked
-      ? { state: "blocked", blockedReason: blocked, ...coords }
-      : notEvaluated
-        ? { state: "notEvaluated", ...coords }
-        : { ...verdict(spec, coords.lastRun, log, positionBySha, touchIndex, range), ...coords };
+    const audit = auditState(drift, spec.key, range);
+    const execution = executionState(coords);
+    const held = heldBy(locks, spec.key, now);
+    const derived = nothingRecorded
+      ? ({ verdict: "unanswerable", reason: "notEvaluated" } as const)
+      : decide(audit, execution, held, coords.lastRun, (sha) => freshness(sha, spec.key, range));
+    out[spec.key] = { ...derived, ...audit, execution, heldBy: held, ...coords };
   }
   return out;
 }
 
 /**
- * Why the audit rejects this spec, or null when it does not.
- *
- * Only a finding blocks. A spec with no ledger entry was never audited, and a
- * `UNKNOWN` entry is the audit saying it could not tell — neither is a reason
- * to withhold a run, and treating them as one would stop every newly written
- * spec from ever executing.
+ * Axis 1, derived from the same freshness answer `--only-hub-audit-needed`
+ * reads. The label only speaks once the audit is known to be current: a
+ * verdict about an older commit says nothing about the one running now.
  */
-function blockedBy(drift: DriftLedger, key: string): RerunBlockedReason | null {
-  switch (drift.specs[key]?.label) {
-    case "TEST_DRIFT":
-      return "testDrift";
-    case "SPEC_CHANGE":
-      return "specChange";
-    default:
-      return null;
-  }
-}
-
-/** Per-`computeRerun`-call lookups built once from the deploy log, not per spec. */
-interface RangeLookup {
-  entryByIndex: ReadonlyMap<number, DeployEntry>;
-  gapFromPos: readonly boolean[];
-  noSelectionFromPos: readonly boolean[];
-}
-
-type Verdict =
-  | { state: "needed"; touchedBy?: string[]; touchedByDeploy: DeployRef | null }
-  | { state: "notNeeded" }
-  | { state: "neverRun" }
-  | { state: "unknown"; reason: RerunUnknownReason };
-
-function verdict(
-  spec: SpecTarget,
-  lastRun: SpecLedgerEntry | null,
-  log: DeployLog,
-  positionBySha: ReadonlyMap<string, number>,
-  touchIndex: SpecTouchIndex,
+function auditState(
+  drift: DriftLedger,
+  key: string,
   range: RangeLookup,
-): Verdict {
-  if (!lastRun) return { state: "neverRun" };
-  if (log.entries.length === 0) return unknown("noDeployLog");
-  if (lastRun.deployedShaAmbiguous) return unknown("ambiguousDeployedSha");
-  const deployedSha = lastRun.deployedSha ?? null;
-  if (!deployedSha) return unknown("unknownDeployedSha");
-
-  const baselinePos = positionBySha.get(deployedSha);
-  if (baselinePos === undefined) return unknown("deployedShaNotInLog");
-  // `index` is the monotonic log position; `baselinePos` is where it sits in
-  // the retained array. The touch index stores the former, so compare in it.
-  const baselineIndex = log.entries[baselinePos]!.index;
-  const touch = touchIndex[spec.key];
-
-  // A positive `needed` in range settles it, whatever else the range is
-  // missing: the spec has to re-run regardless of what a hole would have said.
-  const needed = touch?.needed;
-  if (needed && needed.index > baselineIndex) {
-    // The index proves *that* a deploy in range needed the spec, by position.
-    // Naming *which* one takes the log entry itself: the log is the record of
-    // what shipped and the index only derived from it, so if the two disagree
-    // about what is retained, the deploy goes unnamed rather than asserted
-    // from a copy the record no longer backs.
-    const entry = range.entryByIndex.get(needed.index);
-    return {
-      state: "needed",
-      ...(needed.matchedPaths.length > 0 ? { touchedBy: needed.matchedPaths } : {}),
-      touchedByDeploy: entry ? deployRef(entry) : null,
-    };
+): { audit: AuditState; driftLabel?: Exclude<DriftLabel, "UNKNOWN">; reason?: RerunUnknownReason } {
+  const need = auditNeed(drift, key, range);
+  switch (need.because) {
+    case "neverAudited":
+    case "deployReached":
+      return { audit: "due" };
+    case "cannotTell":
+      return { audit: "cannotTell", ...(need.reason ? { reason: need.reason } : {}) };
+    case "current": {
+      const label = drift.specs[key]!.label;
+      if (label === null) return { audit: "clean" };
+      if (label === "UNKNOWN") return { audit: "undecided" };
+      return { audit: "drifted", driftLabel: label };
+    }
+    default: {
+      const unreachable: never = need.because;
+      throw new Error(`unhandled audit need: ${String(unreachable)}`);
+    }
   }
-
-  // Nothing needed it. Clearing the spec now claims the whole range was
-  // examined, so anything in it that was not disqualifies the claim. Order
-  // within the range has no meaning, so a precomputed "does the range from
-  // here on contain one" flag stands in for scanning it.
-  //
-  // Ordered by how much of the range each defect invalidates: missing deploys
-  // first, then deploys nobody judged, then a deploy that was judged and came
-  // back undecided for this spec.
-  if (range.gapFromPos[baselinePos + 1]) return unknown("gapInRange");
-  if (range.noSelectionFromPos[baselinePos + 1]) return unknown("noSelectionInRange");
-  if (touch?.undecidedIndex !== undefined && touch.undecidedIndex > baselineIndex) {
-    return unknown("selectionUnknown");
-  }
-  return { state: "notNeeded" };
 }
 
-function deployRef(entry: DeployEntry): DeployRef {
-  return { index: entry.index, sha: entry.sha, at: entry.at };
+/**
+ * Axis 2. The red bucket is compared by run id rather than by timestamp
+ * because both buckets advance from the same terminal-run trigger, so the run
+ * that wrote `run` wrote exactly one of `green` or `red`.
+ */
+function executionState(coords: {
+  lastRun: SpecLedgerEntry | null;
+  lastRed: SpecLedgerEntry | null;
+}): ExecutionState {
+  if (!coords.lastRun) return "neverRun";
+  if (coords.lastRed && coords.lastRed.runId === coords.lastRun.runId) return "failed";
+  return "passed";
 }
 
-function unknown(reason: RerunUnknownReason): Verdict {
-  return { state: "unknown", reason };
+/**
+ * The derived answer, evaluated in order. Order is the whole design: a failed
+ * spec is answered before its age is considered, because re-running it teaches
+ * nothing until the code it exercises moves.
+ */
+function decide(
+  audit: { audit: AuditState; reason?: RerunUnknownReason },
+  execution: ExecutionState,
+  held: SpecLock | null,
+  lastRun: SpecLedgerEntry | null,
+  since: (baselineSha: string) => Freshness,
+): Pick<SpecRerun, "verdict" | "reason" | "touchedBy" | "touchedByDeploy"> {
+  // A job already has this spec. Nothing below is worth asking: whatever the
+  // answer, acting on it would race the job that is on it.
+  if (held) return { verdict: "inProgress" };
+  // The deploy log could not place the audit, so it cannot place the run
+  // either — they read the same log.
+  switch (audit.audit) {
+    case "cannotTell":
+      return unanswerable(audit.reason!);
+    case "due":
+      return { verdict: "inProgress" };
+    case "drifted":
+    case "undecided":
+      return { verdict: "needsRepair" };
+    case "clean":
+      break;
+    default: {
+      const unreachable: never = audit.audit;
+      throw new Error(`unhandled audit state: ${String(unreachable)}`);
+    }
+  }
+  switch (execution) {
+    case "failed":
+      return { verdict: "needsRepair" };
+    case "passed":
+    case "neverRun":
+      break;
+    default: {
+      const unreachable: never = execution;
+      throw new Error(`unhandled execution state: ${String(unreachable)}`);
+    }
+  }
+  if (!lastRun) return { verdict: "rerunNeeded" };
+  if (lastRun.deployedShaAmbiguous) return unanswerable("ambiguousDeployedSha");
+  if (!lastRun.deployedSha) return unanswerable("unknownDeployedSha");
+
+  const answer = since(lastRun.deployedSha);
+  if (answer.kind === "unanswerable") return unanswerable(answer.reason);
+  if (answer.kind === "current") return { verdict: "verified" };
+  return {
+    verdict: "rerunNeeded",
+    ...(answer.touchedBy ? { touchedBy: answer.touchedBy } : {}),
+    touchedByDeploy: answer.touchedByDeploy,
+  };
+}
+
+function unanswerable(reason: RerunUnknownReason): { verdict: "unanswerable"; reason: RerunUnknownReason } {
+  return { verdict: "unanswerable", reason };
 }

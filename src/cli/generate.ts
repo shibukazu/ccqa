@@ -14,7 +14,6 @@ import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOpt
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { resolveHubClient, type HubContext } from "./hub-conn.ts";
-import { syncSpecPerspectives } from "./perspectives-sync.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import { buildGenerateRunSummary } from "./build-generate-run-summary.ts";
 import * as log from "./logger.ts";
@@ -355,10 +354,4 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     throw e;
   }
 
-  // Keep the hub's coverage inventory in step with what was just generated.
-  await syncSpecPerspectives(hubContext, {
-    ref: { featureName, specName },
-    ...(language ? { language } : {}),
-    ...(opts.model ? { model: opts.model } : {}),
-  });
 }));

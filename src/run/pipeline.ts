@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -9,6 +10,7 @@ import {
   resolveSpecTargets,
   specKey,
   tryReadSpecFile,
+  type SpecRef,
 } from "../store/index.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
 import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
@@ -201,6 +203,52 @@ function dedupeSpecs(
     out.push(s);
   }
   return out;
+}
+
+/**
+ * How long a claim lasts before it lapses. Longer than this command's own
+ * timeout, so a live run cannot outlive its claim. A job that dies without
+ * releasing blocks its specs for this long, which is the price of expiring on
+ * read rather than running a reaper.
+ */
+const LOCK_TTL_SECONDS = 3 * 60 * 60;
+
+/**
+ * Claim the specs this run is about to execute, and arrange for the claim to
+ * be dropped. Best-effort against the hub: one too old to serve claims must
+ * not stop a run that would otherwise work.
+ */
+async function holdSpecs(
+  hubCtx: HubContext,
+  profile: string,
+  specs: SpecRef[],
+  teardown: RunTeardown | undefined,
+): Promise<SpecRef[]> {
+  const holder = randomUUID();
+  let granted: Set<string>;
+  try {
+    const res = await hubCtx.hub.acquireLocks(hubCtx.project, { profile }, {
+      specs: specs.map(specKey),
+      kind: "run",
+      holder,
+      ttlSeconds: LOCK_TTL_SECONDS,
+    });
+    granted = new Set(res.granted);
+  } catch (err) {
+    log.warn(`could not claim specs on the hub, running without exclusion: ${errMessage(err)}`);
+    return specs;
+  }
+  const release = async () => {
+    try {
+      await hubCtx.hub.releaseLocks(hubCtx.project, { profile }, holder);
+    } catch (err) {
+      log.warn(`could not release the spec claims: ${errMessage(err)}`);
+    }
+  };
+  // The teardown runs on SIGINT/SIGTERM as well as on the normal path, which
+  // is where a cancelled CI job lands.
+  teardown?.onFinalize(release);
+  return specs.filter((spec) => granted.has(specKey(spec)));
 }
 
 /**
@@ -407,6 +455,7 @@ export async function executeRun(
   if (filtering) {
     const before = specs.length;
     let unanswerable = 0;
+    let inProgress = 0;
     // Each filter narrows what the previous one left, so passing both means
     // "stale AND affected". The hub verdicts run first because they are
     // already fetched: whatever they drop is one less spec for the selector
@@ -417,6 +466,7 @@ export async function executeRun(
       });
       specs = selection.selected;
       unanswerable = selection.excludedUnanswerable;
+      inProgress = selection.excludedInProgress;
       log.meta(
         "stale-base",
         `deploy ${rerunReport.deployHead.sha.slice(0, 12)} (profile ${rerunReport.profile})`,
@@ -439,12 +489,24 @@ export async function executeRun(
       `${specs.length} of ${before} spec${before === 1 ? "" : "s"}`,
     );
     // Selecting nothing is a real answer only when every spec was answered.
-    // Say so when it wasn't, or a project whose specs have never run reads
-    // "0 to run, exit 0" as "all good".
-    if (specs.length === 0 && unanswerable > 0) {
-      log.hint(
-        `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
-          `a re-run; pass --only-hub-rerun-needed-with-unknown to run them anyway`,
+    // Otherwise "0 to run, exit 0" reads as "all good", which is the one
+    // outcome this whole selection path exists to prevent.
+    if (specs.length === 0 && (unanswerable > 0 || inProgress > 0)) {
+      if (unanswerable > 0) {
+        log.hint(
+          `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
+            `a re-run; pass --only-hub-rerun-needed-with-unknown to run them anyway`,
+        );
+      }
+      if (inProgress > 0) {
+        log.hint(
+          `${inProgress} spec(s) were excluded because the audit has not answered for the deployed ` +
+            `commit yet; run \`ccqa audit --only-hub-audit-needed --report-to-hub\` first`,
+        );
+      }
+      throw new RunUsageError(
+        "nothing was selected and no spec was cleared to run: exiting non-zero rather than " +
+          "reporting a green run that verified nothing",
       );
     }
   }
@@ -452,6 +514,22 @@ export async function executeRun(
   if (specs.length === 0) {
     log.warn("no specs to run");
     return { exitCode: 0, report: null, reportDir: null };
+  }
+
+  // Take the specs before executing them, so a second cycle starting while
+  // this one is still going skips what is already being run rather than
+  // driving the same browser flow twice. Released on the way out, including on
+  // SIGINT/SIGTERM; a hard kill is covered by the hold's own expiry.
+  if (hubCtx && rerunProfile !== null) {
+    const held = await holdSpecs(hubCtx, rerunProfile, specs, opts.teardown);
+    if (held.length < specs.length) {
+      log.meta("held-elsewhere", `${specs.length - held.length} spec(s) another job is already running`);
+    }
+    specs = held;
+    if (specs.length === 0) {
+      log.warn("every selected spec is already being run by another job");
+      return { exitCode: 0, report: null, reportDir: null };
+    }
   }
 
   // Split specs by generation target: agent-browser specs keep the det/live

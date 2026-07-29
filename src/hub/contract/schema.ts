@@ -364,34 +364,65 @@ export const SpecTouchIndexSchema = z.record(z.string(), SpecTouchSchema);
 export type SpecTouchIndex = z.infer<typeof SpecTouchIndexSchema>;
 
 /**
- * Whether a spec's last result is still trustworthy. Deliberately named for
- * the action rather than for a freshness adjective: "needs re-run" (mechanical,
- * no model call) is a different question from drift (does the spec still
- * describe the product), and the two must not be conflated — see ADR-0010.
+ * Axis 1: what the audit says about this spec *relative to what is deployed
+ * now*. An audit that read an older commit says nothing about the one running
+ * today, which is why staleness is a state here rather than a footnote.
  */
-export const RerunStateSchema = z.enum(["needed", "notNeeded", "blocked", "unknown", "neverRun", "notEvaluated"]);
-export type RerunState = z.infer<typeof RerunStateSchema>;
-
-/**
- * Why a spec is `blocked`. Always carried: the two answers differ in who
- * repairs them and how long that takes — a stale recording is re-recorded
- * automatically within minutes, a changed spec waits for a human — so a view
- * that showed only "blocked" would hide the distinction that matters most.
- */
-export const RerunBlockedReasonSchema = z.enum([
-  /** The audit found the generated test code stale. `ccqa record` repairs it. */
-  "testDrift",
-  /** The audit found the spec itself describes something the code no longer does. A human repairs it. */
-  "specChange",
+export const AuditStateSchema = z.enum([
+  /**
+   * The audit owes an answer for the deployed commit: never audited, or
+   * audited at an older one. Not "an audit is running" — work in flight is a
+   * lock, which has a lifetime the axes do not.
+   */
+  "due",
+  /** The spec still describes the deployed code. */
+  "clean",
+  /** The audit found drift. `driftLabel` names which kind. */
+  "drifted",
+  /** The audit read the code and could not decide. */
+  "undecided",
+  /** The deploy log cannot place the audit, so its currency is unknowable. `reason` names the hole. */
+  "cannotTell",
 ]);
-export type RerunBlockedReason = z.infer<typeof RerunBlockedReasonSchema>;
+export type AuditState = z.infer<typeof AuditStateSchema>;
 
 /**
- * Why a spec is `unknown`. Always carried, so the view can name the missing
- * input ("no deploy log for this profile") instead of shrugging. `unknown` is
- * never rendered as "not needed".
+ * Axis 2: what happened the last time this spec ran. Deliberately has no
+ * "stale pass" value — *which* deploy a run covered is a separate fact
+ * (`lastRun.deployedSha`), and collapsing the two is what left the old
+ * single-axis state unable to tell a red spec from an up-to-date one.
+ */
+export const ExecutionStateSchema = z.enum(["passed", "failed", "neverRun"]);
+export type ExecutionState = z.infer<typeof ExecutionStateSchema>;
+
+/**
+ * The one answer derived from the two axes above, listed in the order they are
+ * evaluated. Named for who acts next, because that is what a reader scanning a
+ * list of specs is looking for: exactly one value, `needsRepair`, asks for a
+ * person.
+ */
+export const SpecVerdictSchema = z.enum([
+  /** An audit or a run is in flight, or the audit has not caught up with the deploy. Wait. */
+  "inProgress",
+  /** A person must repair something: drift, an audit that could not decide, or a failed run. */
+  "needsRepair",
+  /** Cleared by the audit, and the last result does not cover what is deployed. */
+  "rerunNeeded",
+  /** Cleared by the audit, and the last run passed against what is deployed. */
+  "verified",
+  /** The hub lacks the data to answer. `unanswerableReason` names what is missing. */
+  "unanswerable",
+]);
+export type SpecVerdict = z.infer<typeof SpecVerdictSchema>;
+
+/**
+ * Why a spec is `unanswerable`. Always carried, so the view can name the
+ * missing input ("no deploy log for this profile") instead of shrugging.
+ * `unanswerable` is never rendered as `verified`.
  */
 export const RerunUnknownReasonSchema = z.enum([
+  /** Nothing at all has been recorded for this profile: no deploy, no run. */
+  "notEvaluated",
   /** A deploy in range was recorded without a spec selection, so its effect on this spec is unrecorded. */
   "noSelectionInRange",
   /** A selection in range answered `unknown` for this spec — the selector could not tell. */
@@ -418,24 +449,85 @@ export const DeployRefSchema = z.object({
 export type DeployRef = z.infer<typeof DeployRefSchema>;
 
 /**
- * One spec's re-run verdict plus the three ledger coordinates the view shows
- * alongside it. The coordinates are always present (null when the spec has no
- * such entry); `reason`, `touchedBy` and `touchedByDeploy` appear only in the
- * states named below.
+ * A job holding a spec so a second one does not start on it.
+ *
+ * Not a value on either axis. The axes are derived from durable ledgers and
+ * describe recorded facts; a lock describes work in flight, which needs a
+ * lifetime the axes have no reason to carry. It also spans both jobs — one
+ * mechanism rather than a parallel value in each enum.
+ */
+export const SpecLockSchema = z.object({
+  kind: z.enum(["audit", "run"]),
+  /** Opaque id of the job holding it. Only that job may release it. */
+  holder: z.string(),
+  /**
+   * When the hold lapses. Evaluated on read, so a job that died without
+   * releasing clears itself with no reaper — at the cost of holding its specs
+   * until this passes. This is the one place wall-clock time is used; ordering
+   * against deploys still goes by log position (ADR-0010).
+   */
+  expiresAt: z.string(),
+});
+export type SpecLock = z.infer<typeof SpecLockSchema>;
+
+/** The per-(project, profile) lock document: "feature/spec" → who holds it. */
+export const SpecLocksSchema = z.object({
+  specs: z.record(z.string(), SpecLockSchema).default({}),
+});
+export type SpecLocks = z.infer<typeof SpecLocksSchema>;
+
+/** Body of `POST /projects/:project/locks?profile=`. */
+export const AcquireLocksRequestSchema = z.object({
+  specs: z.array(z.string()).min(1),
+  kind: z.enum(["audit", "run"]),
+  holder: z.string().min(1),
+  ttlSeconds: z.number().int().positive(),
+});
+export type AcquireLocksRequest = z.infer<typeof AcquireLocksRequestSchema>;
+
+/**
+ * Which specs the caller may work on. `denied` is not an error: another job got
+ * there first, and skipping those is the whole point.
+ */
+export const AcquireLocksResponseSchema = z.object({
+  granted: z.array(z.string()),
+  denied: z.array(z.string()),
+});
+export type AcquireLocksResponse = z.infer<typeof AcquireLocksResponseSchema>;
+
+/** Body of `DELETE /projects/:project/locks?profile=`. */
+export const ReleaseLocksRequestSchema = z.object({
+  holder: z.string().min(1),
+});
+export type ReleaseLocksRequest = z.infer<typeof ReleaseLocksRequestSchema>;
+
+/**
+ * One spec's verdict, the two axes it was derived from, and the three ledger
+ * coordinates the view shows alongside them. The coordinates are always
+ * present (null when the spec has no such entry); the optional fields appear
+ * only in the states named below.
+ *
+ * Both axes ship alongside the verdict rather than being recomputed by
+ * readers: the verdict answers "who acts next", and the axes answer "why",
+ * which is the question every reader asks second.
  */
 export const SpecRerunSchema = z.object({
-  state: RerunStateSchema,
-  /** Set only when `state === "unknown"`. */
+  verdict: SpecVerdictSchema,
+  audit: AuditStateSchema,
+  execution: ExecutionStateSchema,
+  /** Set only when `audit === "drifted"`. `UNKNOWN` belongs to `undecided`, so it cannot appear here. */
+  driftLabel: DriftLabelSchema.exclude(["UNKNOWN"]).optional(),
+  /** Set only when `verdict === "unanswerable"`. */
   reason: RerunUnknownReasonSchema.optional(),
-  /** Set only when `state === "blocked"`. */
-  blockedReason: RerunBlockedReasonSchema.optional(),
+  /** The job working on this spec right now, or null. Expired holds read as null. */
+  heldBy: SpecLockSchema.nullable(),
   lastRun: SpecLedgerEntrySchema.nullable(),
   lastGreen: SpecLedgerEntrySchema.nullable(),
   lastRed: SpecLedgerEntrySchema.nullable(),
-  /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `state === "needed"`. */
+  /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `verdict === "rerunNeeded"`. */
   touchedBy: z.array(z.string()).optional(),
   /**
-   * The deploy that made this spec `needed`: the newest entry *within the
+   * The deploy that made this spec `rerunNeeded`: the newest entry *within the
    * verdict's range* whose changes matched it. Distinct from the report's
    * `deployHead`, which is only the point the judgement was made at.
    *
@@ -447,6 +539,27 @@ export const SpecRerunSchema = z.object({
   touchedByDeploy: DeployRefSchema.nullable().optional(),
 });
 export type SpecRerun = z.infer<typeof SpecRerunSchema>;
+
+/**
+ * Why this spec does or does not need auditing. Everything but `current` and
+ * `held` audits: the audit is cheap, so it errs towards doing the work where
+ * the run errs away from it. `held` is not an answer about freshness at all —
+ * another job is on it, so this one skips it and asks again next cycle.
+ */
+export const AuditNeedSchema = z.object({
+  because: z.enum(["neverAudited", "deployReached", "cannotTell", "held", "current"]),
+  /** Set only when `because === "cannotTell"`. */
+  reason: RerunUnknownReasonSchema.optional(),
+});
+export type AuditNeed = z.infer<typeof AuditNeedSchema>;
+
+/** Body of `GET /projects/:project/audit-needed?profile=`: one answer per spec. */
+export const AuditNeedReportSchema = z.object({
+  project: z.string(),
+  profile: z.string(),
+  specs: z.record(z.string(), AuditNeedSchema),
+});
+export type AuditNeedReport = z.infer<typeof AuditNeedReportSchema>;
 
 /** Body of `GET /projects/:project/rerun?profile=`: one verdict per spec in the perspectives document. */
 export const RerunReportSchema = z.object({

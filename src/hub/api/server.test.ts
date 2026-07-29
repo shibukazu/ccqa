@@ -149,6 +149,47 @@ function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
   return packTarGz(entries);
 }
 
+/**
+ * A `kind: "drift"` archive whose every row is clean, read at `gitHead`. The
+ * re-run verdict now asks the audit first, so a fixture that exercises the run
+ * axis has to say the audit already answered for the deployed commit —
+ * otherwise every spec is `inProgress` and the run side is never reached.
+ */
+function makeCleanAuditTarGz(gitHead: string, specs: readonly string[]): Uint8Array {
+  const report: RunReportData = {
+    schemaVersion: 1,
+    kind: "drift",
+    createdAt: new Date().toISOString(),
+    runId: null,
+    git: { head: gitHead, base: null },
+    model: null,
+    language: null,
+    promptVersion: "1",
+    customPromptVersion: null,
+    results: specs.map((key) => ({
+      feature: key.split("/")[0]!,
+      spec: key.split("/")[1]!,
+      title: null,
+      status: "passed" as const,
+      testCounts: null,
+      durationMs: null,
+      assertions: null,
+      analysis: null,
+      analysisSkipped: null,
+      driftAudit: null,
+      failureLogExcerpt: null,
+      diffExcerpt: null,
+      specYaml: null,
+      evidence: null,
+      liveRun: null,
+    })),
+  };
+  return packTarGz([
+    { path: "report.json", content: new TextEncoder().encode(JSON.stringify(report)), mode: 0o644 },
+    { path: "index.html", content: new TextEncoder().encode("<html></html>"), mode: 0o644 },
+  ]);
+}
+
 /** A minimal valid `ReportSpecResult` row, as used by the incremental-run PATCH tests below. */
 function makeRow(overrides: Partial<ReportSpecResult> = {}): ReportSpecResult {
   return {
@@ -884,17 +925,31 @@ describe("hub API server", () => {
       return fetch(`${baseUrl}/api/v1/projects/${PROJECT}/rerun`, authed()).then(json);
     }
 
+    /** Say the audit has already cleared these specs at the given commit. */
+    async function auditClean(gitHead: string, specs: readonly string[] = ALL_SPECS): Promise<void> {
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=${PROJECT}&kind=drift&branch=main`, authed({
+        method: "POST",
+        headers: { "Content-Type": "application/gzip" },
+        body: makeCleanAuditTarGz(gitHead, specs),
+      }));
+      expect(res.status).toBe(201);
+    }
+
+    const ALL_SPECS = ["f/a", "f/b", "f/unscoped"] as const;
+
     /** The shared starting point: one deploy, and a run of spec `f/b` that observed it. */
     async function baselineRun(): Promise<void> {
       await putPerspectives();
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
       const opened = await openRun();
       await finishRun(opened.id, [makeRow({ feature: "f", spec: "b", status: "passed" })]);
+      await auditClean("d1");
     }
 
-    test("a deploy's selection turns a spec needed, notNeeded, or unknown — independently per spec", async () => {
+    test("a deploy's selection turns a spec rerunNeeded, verified, or unanswerable — independently per spec", async () => {
       await putPerspectives();
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: ["src/a/x.ts"] });
+      await auditClean("d1");
 
       const opened = await openRun();
       expect(opened.deployedSha).toBe("d1");
@@ -907,9 +962,9 @@ describe("hub API server", () => {
 
       const settled = await getRerun();
       expect(settled.deployHead).toMatchObject({ index: 0, sha: "d1" });
-      expect(settled.specs["f/a"].state).toBe("notNeeded");
-      expect(settled.specs["f/b"].state).toBe("notNeeded");
-      expect(settled.specs["f/unscoped"].state).toBe("notNeeded");
+      expect(settled.specs["f/a"].verdict).toBe("verified");
+      expect(settled.specs["f/b"].verdict).toBe("verified");
+      expect(settled.specs["f/unscoped"].verdict).toBe("verified");
 
       await recordDeploy({
         sha: "d2",
@@ -921,58 +976,67 @@ describe("hub API server", () => {
           "f/unscoped": { verdict: "unknown", reason: "could not tell" },
         },
       });
+      // The audit has to catch up with d2 before the run axis is consulted:
+      // until then every spec these deploys reached reads `inProgress`.
+      expect((await getRerun()).specs["f/a"].verdict).toBe("inProgress");
+      await auditClean("d2");
+
       const after = await getRerun();
       // The verdict names the deploy that caused it, not just the head.
       expect(after.specs["f/a"]).toMatchObject({
-        state: "needed",
+        verdict: "rerunNeeded",
         touchedBy: ["src/a/y.ts"],
         touchedByDeploy: { index: 1, sha: "d2" },
       });
-      expect(after.specs["f/b"].state).toBe("notNeeded");
-      expect(after.specs["f/unscoped"]).toMatchObject({ state: "unknown", reason: "selectionUnknown" });
+      expect(after.specs["f/b"].verdict).toBe("verified");
+      expect(after.specs["f/unscoped"]).toMatchObject({ verdict: "unanswerable", reason: "selectionUnknown" });
       expect(after.specs["f/a"].lastGreen.gitHead).toBe("e".repeat(40));
     });
 
-    test("a deploy that does not chain onto the head leaves affected specs unknown, not notNeeded", async () => {
+    test("a deploy that does not chain onto the head leaves affected specs unanswerable, not verified", async () => {
       await baselineRun();
       const broken = await recordDeploy({ sha: "d9", previousSha: "never-seen", changedPaths: [] });
       expect(broken.gapBefore).toBe(true);
-      expect((await getRerun()).specs["f/b"]).toMatchObject({ state: "unknown", reason: "gapInRange" });
+      expect((await getRerun()).specs["f/b"]).toMatchObject({ verdict: "unanswerable", reason: "gapInRange" });
     });
 
-    test("a deploy recorded without a selection leaves affected specs unknown, not notNeeded", async () => {
+    test("a deploy recorded without a selection leaves affected specs unanswerable, not verified", async () => {
       await baselineRun();
       await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/b/z.ts"] });
-      expect((await getRerun()).specs["f/b"]).toMatchObject({ state: "unknown", reason: "noSelectionInRange" });
+      expect((await getRerun()).specs["f/b"]).toMatchObject({ verdict: "unanswerable", reason: "noSelectionInRange" });
     });
 
-    test("a run that straddles a deploy is unknown rather than credited with either commit", async () => {
+    test("a run that straddles a deploy is unanswerable rather than credited with either commit", async () => {
       await putPerspectives();
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
       const opened = await openRun();
       await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["docs/z.md"] });
       const finished = await finishRun(opened.id, [makeRow({ feature: "f", spec: "b", status: "passed" })]);
+      await auditClean("d2");
 
       expect(finished.deployedShaAmbiguous).toBe(true);
       expect((await getRerun()).specs["f/b"]).toMatchObject({
-        state: "unknown",
+        verdict: "unanswerable",
         reason: "ambiguousDeployedSha",
       });
     });
 
-    test("specs that have never run report neverRun; a profile with no data at all reports notEvaluated", async () => {
+    test("a spec that has never run is rerunNeeded; a profile with no data at all is unanswerable", async () => {
       await putPerspectives();
       const untouched = await getRerun();
-      expect(untouched.specs["f/a"].state).toBe("notEvaluated");
+      expect(untouched.specs["f/a"]).toMatchObject({ verdict: "unanswerable", reason: "notEvaluated" });
       expect(untouched.deployHead).toBeNull();
 
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: ["src/a/x.ts"] });
       const opened = await openRun();
       await finishRun(opened.id, [makeRow({ feature: "f", spec: "a", status: "passed" })]);
+      await auditClean("d1");
 
       const partial = await getRerun();
-      expect(partial.specs["f/a"].state).toBe("notNeeded");
-      expect(partial.specs["f/b"].state).toBe("neverRun");
+      expect(partial.specs["f/a"].verdict).toBe("verified");
+      // No result at all is as uncovered as one a deploy invalidated, so it is
+      // offered for a run rather than parked in a state of its own.
+      expect(partial.specs["f/b"]).toMatchObject({ verdict: "rerunNeeded", execution: "neverRun" });
     });
 
     test("re-run selection 404s when the project has no perspectives document", async () => {

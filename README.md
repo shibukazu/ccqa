@@ -101,7 +101,7 @@ So ccqa asks the cheap question before the expensive one:
       still describes it ───┴─── no longer describes it
               │                            │
               ▼                            ▼
-           run it                   repair the spec
+           run it              a person repairs it
                                            │
                                   re-audited next round;
                                   unverified until then
@@ -114,8 +114,16 @@ re-recorded; a stale spec goes to a human and stays **unverified** —
 neither passing nor failing — until repaired.
 
 `ccqa run --only-hub-rerun-needed` asks the hub which specs are worth
-running: cleared by the audit *and* invalidated by a deploy. A drifted
-spec answers `blocked` and is never run — a run cannot repair a spec.
+running: cleared by the audit *and* invalidated by a deploy. A drifted spec —
+or one whose last run failed — answers `needsRepair` and is never run. A run
+repairs neither, and it costs dollars to learn that.
+
+Selecting nothing is only an answer when every spec was answered. If any spec
+is waiting on the audit, or the hub could not judge it, the run **exits
+non-zero** rather than report a green run that verified nothing. And while a
+run executes it claims its specs, so a cycle that starts before the last one
+finishes skips what is already running instead of driving the same flow
+twice.
 
 When a clean spec still fails, `--on-fail-explain` labels whose problem
 it is: `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN`. You
@@ -126,14 +134,15 @@ grade the calls on the hub, and it learns from your grades.
 ```
 deploy lands
   ├─ ccqa hub deploy record --select   what shipped, which specs it reaches
-  ├─ ccqa audit --report-to-hub        does each spec still describe it?
+  ├─ ccqa audit --only-hub-audit-needed --report-to-hub
+  │                                    does each spec still describe it?
   └─ ccqa run --only-hub-rerun-needed --on-fail-explain \
        --hub-profile ci --report-to-hub
 ```
 
 The audit costs cents; a live spec costs dollars. Filtering first leaves
 a run whose failures are worth reading. Record every deploy with
-`--select` — a range recorded without it answers `unknown` forever, and
+`--select` — a range recorded without it answers `unanswerable` forever, and
 nothing fills the hole later.
 
 | Job | Trigger | Question it answers |

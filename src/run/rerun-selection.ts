@@ -1,8 +1,9 @@
 import type { HubContext } from "../cli/hub-conn.ts";
 import { HubApiError } from "../hub-client/index.ts";
-import type { RerunReport, RerunState } from "../hub/contract/schema.ts";
+import { RerunReportSchema, type RerunReport, type SpecVerdict } from "../hub/contract/schema.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
 import { errMessage, RunUsageError } from "./errors.ts";
+import { explainHubNotFound, formatCounts, rankedOrder, requireHubProfile } from "./hub-selection.ts";
 
 /**
  * `ccqa run --only-hub-rerun-needed`: select specs from the hub's re-run verdicts
@@ -15,27 +16,15 @@ import { errMessage, RunUsageError } from "./errors.ts";
  * that makes the whole feature dangerous.
  */
 
-/** First ccqa release whose hub serves `GET /projects/:project/rerun`. */
-const RERUN_MIN_HUB_VERSION = "1.9";
+const FLAG = "--only-hub-rerun-needed";
 
 /** A report that carries a deploy head — the only shape a verdict can be trusted from. */
 export type RerunBaseline = RerunReport & {
   deployHead: NonNullable<RerunReport["deployHead"]>;
 };
 
-/**
- * The profile `--only-hub-rerun-needed` asks about. Mandatory: two environments sit
- * at different commits and the deploy log is per-profile, so "needs re-run"
- * has no profile-free answer.
- */
 export function requireRerunProfile(profile: string | undefined): string {
-  if (profile === undefined) {
-    throw new RunUsageError(
-      `--only-hub-rerun-needed requires --hub-profile <name>: the deploy log it reads is per-profile, ` +
-        `so which specs need a re-run has no answer without one`,
-    );
-  }
-  return profile;
+  return requireHubProfile(FLAG, profile, "which specs need a re-run");
 }
 
 /**
@@ -51,12 +40,26 @@ export async function fetchRerunReport(
     report = await hubCtx.hub.getRerun(hubCtx.project, { profile });
   } catch (err) {
     if (err instanceof HubApiError && err.status === 404) {
-      throw new RunUsageError(explainNotFound(hubCtx, err));
+      throw new RunUsageError(
+        explainHubNotFound(FLAG, hubCtx.project, err, "which specs need a re-run"),
+      );
     }
     throw new RunUsageError(
       `--only-hub-rerun-needed: could not ask the hub which specs need a re-run: ${errMessage(err)}`,
     );
   }
+  // The wire shape changed with the two-axis verdict, and nothing else on this
+  // path validates it: an older hub answers 200 with the previous field names,
+  // every verdict reads `undefined`, and the run would exit 0 having selected
+  // nothing. Parse before trusting.
+  const parsed = RerunReportSchema.safeParse(report);
+  if (!parsed.success) {
+    throw new RunUsageError(
+      `${FLAG}: this hub's re-run answer is not in a shape this ccqa understands — it is likely ` +
+        `older than this CLI. Upgrade the hub, or select with --only-affected-by <ref> instead.`,
+    );
+  }
+  report = parsed.data;
   if (report.deployHead === null) {
     throw new RunUsageError(
       `--only-hub-rerun-needed: no deploy has been recorded for profile "${profile}" of project ` +
@@ -67,82 +70,67 @@ export async function fetchRerunReport(
   return { ...report, deployHead: report.deployHead };
 }
 
-/**
- * Which of the two 404s this was. The handler answers `no_perspectives` when
- * the route exists but the project has no document; any other code on a 404
- * means the hub does not serve this route at all.
- */
-function explainNotFound(hubCtx: HubContext, err: HubApiError): string {
-  if (err.code === "no_perspectives") {
-    return (
-      `--only-hub-rerun-needed: project "${hubCtx.project}" has no perspectives document on the hub, ` +
-      `so no spec is registered to compare against a deploy. Run \`ccqa perspectives\` first.`
-    );
-  }
-  return (
-    `--only-hub-rerun-needed: this hub does not serve re-run verdicts — it needs ccqa ` +
-    `${RERUN_MIN_HUB_VERSION} or newer. Upgrade the hub, or select with --only-affected-by <ref> instead.`
-  );
-}
-
-/** States the summary line reports, worst-known-first. */
-const SUMMARY_ORDER: readonly RerunState[] = [
-  "blocked",
-  "needed",
-  "unknown",
-  "neverRun",
-  "notNeeded",
-  "notEvaluated",
-];
-
-/** States that mean "the hub has no verdict", as opposed to a verdict of "no". */
-// `blocked` is not in here: it is an answer, and a definite one — the audit
-// looked and rejected the spec. Counting it as unanswerable would offer
-// --only-hub-rerun-needed-with-unknown as the fix, and running a spec the
-// audit rejected is exactly what that state exists to prevent.
-const UNANSWERABLE = new Set<RerunState>(["unknown", "neverRun", "notEvaluated"]);
+const SUMMARY_ORDER = rankedOrder<SpecVerdict>({
+  needsRepair: 0, rerunNeeded: 1, unanswerable: 2, inProgress: 3, verified: 4,
+});
 
 export interface RerunSelection {
   selected: SpecRef[];
-  /** "3 needed, 1 unknown, 12 notNeeded" — every offered spec accounted for. */
+  /** "3 rerunNeeded, 1 unanswerable, 12 verified" — every offered spec accounted for. */
   summary: string;
   /**
-   * Specs left out only because the hub could not answer for them. Non-zero
-   * with an empty selection means "nothing to run" is really "nothing I can
-   * vouch for", which the caller must say out loud rather than exit quietly on.
+   * Specs left out because the hub has no answer *yet*, split by which kind.
+   * Non-zero with an empty selection means "nothing to run" is really "nothing
+   * I can vouch for", which the caller must say out loud rather than exit
+   * quietly on.
    */
   excludedUnanswerable: number;
+  /**
+   * Specs the audit has not caught up with. Counted apart from
+   * `excludedUnanswerable` because the fix differs — one waits for the audit,
+   * the other opts in with a flag — but it is the same failure to exit 0 on.
+   */
+  excludedInProgress: number;
 }
 
 /**
  * Narrow `specs` to the ones the hub says are worth running.
  *
- * `needed` is always selected. `unknown` and `neverRun` are "the question
- * cannot be answered", so they are excluded by default and opted into with
- * `--only-hub-rerun-needed-with-unknown` — fail-open on request, never silently. `notNeeded` and
- * `notEvaluated` are never selected.
+ * `rerunNeeded` is always selected, and a spec that has never run is part of
+ * it — a spec with no result at all is as uncovered as one whose result a
+ * deploy invalidated. `unanswerable` is "the question cannot be answered", so
+ * it is excluded by default and opted into with
+ * `--only-hub-rerun-needed-with-unknown` — fail-open on request, never
+ * silently. `needsRepair`, `inProgress` and `verified` are never selected:
+ * running them repairs nothing, races something already in flight, or repeats
+ * work that is still current.
  */
 export function selectSpecsNeedingRerun(
   specs: readonly SpecRef[],
   report: RerunReport,
   opts: { includeUnknown: boolean },
 ): RerunSelection {
-  const selectable = new Set<RerunState>(
-    opts.includeUnknown ? ["needed", "unknown", "neverRun"] : ["needed"],
-  );
-  const counts = new Map<RerunState, number>();
+  const counts = new Map<SpecVerdict, number>();
   const selected: SpecRef[] = [];
   let excludedUnanswerable = 0;
+  let excludedInProgress = 0;
   for (const spec of specs) {
     // A spec the perspectives document does not list has no verdict at all,
-    // which is the same "cannot answer" as `unknown` — never "not needed".
-    const state = report.specs[specKey(spec)]?.state ?? "unknown";
-    counts.set(state, (counts.get(state) ?? 0) + 1);
-    if (selectable.has(state)) selected.push(spec);
-    else if (UNANSWERABLE.has(state)) excludedUnanswerable++;
+    // which is the same "cannot answer" — never "verified".
+    const verdict = report.specs[specKey(spec)]?.verdict ?? "unanswerable";
+    counts.set(verdict, (counts.get(verdict) ?? 0) + 1);
+    if (verdict === "rerunNeeded" || (opts.includeUnknown && verdict === "unanswerable")) {
+      selected.push(spec);
+    } else if (verdict === "unanswerable") {
+      excludedUnanswerable++;
+    } else if (verdict === "inProgress") {
+      excludedInProgress++;
+    }
   }
-  const summary = SUMMARY_ORDER.filter((s) => counts.has(s))
-    .map((s) => `${counts.get(s)} ${s}`)
-    .join(", ");
-  return { selected, summary, excludedUnanswerable };
+  return {
+    selected,
+    summary: formatCounts(SUMMARY_ORDER, counts),
+    excludedUnanswerable,
+    excludedInProgress,
+  };
 }

@@ -23,6 +23,8 @@ import { createListProfilesHandler, createListProjectsHandler } from "./handlers
 import { createGetLastGreenHandler } from "./handlers/last-green.ts";
 import { createGetDriftLedgerHandler } from "./handlers/drift-ledger.ts";
 import { createGetDeployLogHandler, createRecordDeployHandler } from "./handlers/deploys.ts";
+import { createGetAuditNeedHandler } from "./handlers/audit-need.ts";
+import { createAcquireLocksHandler, createReleaseLocksHandler } from "./handlers/locks.ts";
 import { createGetRerunHandler } from "./handlers/rerun.ts";
 import {
   createDeletePromptHandler,
@@ -203,6 +205,9 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.post("/api/v1/projects/:project/deploys", createRecordDeployHandler(storage));
   router.get("/api/v1/projects/:project/deploys", createGetDeployLogHandler(storage));
   router.get("/api/v1/projects/:project/rerun", createGetRerunHandler(storage));
+  router.get("/api/v1/projects/:project/audit-needed", createGetAuditNeedHandler(storage));
+  router.post("/api/v1/projects/:project/locks", createAcquireLocksHandler(storage));
+  router.delete("/api/v1/projects/:project/locks", createReleaseLocksHandler(storage));
 
   const sessionConfig = { store: storage.sessions, encryptionKey: config.encryptionKey };
   router.put("/api/v1/projects/:project/sessions/:profile/:name", createPutSessionHandler(sessionConfig));
