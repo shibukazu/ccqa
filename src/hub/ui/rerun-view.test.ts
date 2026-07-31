@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { AuditStateSchema, RerunUnknownReasonSchema, SpecVerdictSchema } from "../contract/schema.ts";
+import {
+  AuditStateSchema,
+  ExecutionStateSchema,
+  RerunUnknownReasonSchema,
+  SpecVerdictSchema,
+} from "../contract/schema.ts";
 import { renderHubUi } from "./index.ts";
 
 /**
@@ -41,6 +46,7 @@ interface Segment {
 
 function composition(): {
   RERUN_ORDER: string[];
+  rerunVerdictOf: (rr: { verdict?: string } | null) => string;
   rerunComposition: (verdicts: ({ verdict?: string } | null)[]) => Record<string, number>;
   rerunSegments: (counts: Record<string, number>) => Segment[];
 } {
@@ -50,7 +56,7 @@ function composition(): {
   expect(start, "the pure re-run composition region is missing").toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return new Function(
-    `${src.slice(start, end)}\nreturn { RERUN_ORDER: RERUN_ORDER, rerunComposition: rerunComposition, rerunSegments: rerunSegments };`,
+    `${src.slice(start, end)}\nreturn { RERUN_ORDER: RERUN_ORDER, rerunVerdictOf: rerunVerdictOf, rerunComposition: rerunComposition, rerunSegments: rerunSegments };`,
   )();
 }
 
@@ -70,7 +76,7 @@ interface ChangeLine {
 }
 
 function detailLabels(): {
-  rerunEvidenceLabelKey: (state: string) => string;
+  rerunEvidenceLabelKey: (rr: { verdict: string; executionAssumedReached?: string }) => string;
   rerunHasFailure: (rr: { lastRed?: unknown } | null) => boolean;
   rerunChangeLine: (
     rr: { verdict: string; touchedByDeploy?: { sha: string; at: string } | null },
@@ -84,6 +90,57 @@ function detailLabels(): {
   expect(end).toBeGreaterThan(start);
   return new Function(
     `${src.slice(start, end)}\nreturn { rerunEvidenceLabelKey: rerunEvidenceLabelKey, rerunHasFailure: rerunHasFailure, rerunChangeLine: rerunChangeLine };`,
+  )();
+}
+
+/**
+ * The execution column's value mapping, lifted the same way: what the axis
+ * calls a state is not what the column calls it, and a new axis value with no
+ * wording would render as a raw dotted path.
+ */
+const RUN_STATE_START = "// --- pure: run-state labels";
+const RUN_STATE_END = "// --- end pure: run-state labels";
+
+function runStateLabels(): {
+  perspRunState: (rr: { execution?: string } | null) => string | null;
+  RUN_STATE_BADGE: Record<string, string>;
+} {
+  const src = clientScript();
+  const start = src.indexOf(RUN_STATE_START);
+  const end = src.indexOf(RUN_STATE_END);
+  expect(start, "the pure run-state region is missing").toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return new Function(
+    `${src.slice(start, end)}\nreturn { perspRunState: perspRunState, RUN_STATE_BADGE: RUN_STATE_BADGE };`,
+  )();
+}
+
+/**
+ * Which profile the Perspectives tab opens into on a project's first visit,
+ * lifted the same way: candidate ordering/dedup, and which candidate wins
+ * once their deploy logs have been probed, are plain functions worth pinning
+ * without mocking a fetch.
+ */
+const DATA_PROFILE_START = "// --- pure: data-profile pick";
+const DATA_PROFILE_END = "// --- end pure: data-profile pick";
+
+function dataProfilePick(): {
+  pickDataProfile: (current: string, dataProfiles: string[]) => string;
+  dataProfileCandidates: (current: string, dataProfiles: string[], projectProfiles: string[]) => string[];
+  pickFirstWithDeployLog: (
+    candidates: string[],
+    hasLog: boolean[],
+    current: string,
+    dataProfiles: string[],
+  ) => string;
+} {
+  const src = clientScript();
+  const start = src.indexOf(DATA_PROFILE_START);
+  const end = src.indexOf(DATA_PROFILE_END);
+  expect(start, "the pure data-profile-pick region is missing").toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return new Function(
+    `${src.slice(start, end)}\nreturn { pickDataProfile: pickDataProfile, dataProfileCandidates: dataProfileCandidates, pickFirstWithDeployLog: pickFirstWithDeployLog };`,
   )();
 }
 
@@ -164,6 +221,22 @@ describe("hub UI: needs re-run", () => {
     }
   });
 
+  test("every execution-axis value the hub can send has a badge and wording", () => {
+    const { perspRunState, RUN_STATE_BADGE } = runStateLabels();
+    const { en, ja } = dictionaries();
+    for (const execution of ExecutionStateSchema.options) {
+      const key = perspRunState({ execution })!;
+      expect(key, execution).toBeTruthy();
+      expect(RUN_STATE_BADGE[key], key).toBeTruthy();
+      for (const dict of [en, ja]) expect(dict[`perspectives.run.state.${key}`], key).toBeTruthy();
+    }
+    // ADR-0010 reserves the freshness adjectives for drift, so the axis value
+    // and the word the column prints are deliberately not the same.
+    expect(perspRunState({ execution: "stale" })).not.toBe("stale");
+    // A case the report does not mention is not a statement about its runs.
+    expect(perspRunState({})).toBeNull();
+  });
+
   test("the verdict column is not the execution column", () => {
     // They were one column before the axes were split. Sharing wording again
     // would put "needs re-run" where "how the last run ended" belongs.
@@ -176,17 +249,23 @@ describe("hub UI: needs re-run", () => {
     }
   });
 
-  test("unanswerable never reads like verified, and is worded the same wherever it appears", () => {
+  test("the retired 'cannot tell' vocabulary is gone from both axes, not left dangling", () => {
     const { en, ja } = dictionaries();
     expect(ja["perspectives.rerun.state.rerunNeeded"]).toBe("要再実行");
     expect(ja["perspectives.rerun.state.verified"]).toBe("検証済み");
     expect(ja["perspectives.rerun.state.needsRepair"]).toBe("修正待ち");
+    // One wording appeared twice meaning two different things — a verdict and
+    // an audit state. Both are gone; a hole in the log is now an annotation on
+    // a spec that is already pending, never a state of its own.
     for (const dict of [en, ja]) {
-      expect(dict["perspectives.rerun.state.unanswerable"]).not.toBe(dict["perspectives.rerun.state.verified"]);
-      // "We cannot say" appears on the summary bar, in the table cell, and on
-      // the drift axis. Three wordings for one state reads as three states.
-      for (const key of ["perspectives.run.state.unknown", "perspectives.drift.state.unknown"]) {
-        expect(dict[key]!.toLowerCase()).toBe(dict["perspectives.rerun.state.unanswerable"]!.toLowerCase());
+      for (const key of [
+        "perspectives.rerun.state.unanswerable",
+        "perspectives.audit.state.cannotTell",
+        "perspectives.run.state.unknown",
+        "perspectives.rerun.why.notEvaluated",
+        "perspectives.rerun.fix.notEvaluated",
+      ]) {
+        expect(dict[key], `${key} is unused and should be gone`).toBeUndefined();
       }
     }
   });
@@ -214,36 +293,31 @@ describe("hub UI: needs re-run", () => {
     }
   });
 
-  test("a profile with no re-run data reads as unanswerable, never as an all-clear", () => {
+  test("a case with no verdict counts as work, never as an all-clear", () => {
     const { rerunComposition, rerunSegments } = composition();
-    // Three cases, no verdict for any of them: an older hub, a failed fetch, or
-    // a profile nothing has been recorded on.
+    // Three cases the report does not mention — added since it was computed.
     const segments = rerunSegments(rerunComposition([null, null, null]));
-    expect(segments.map((s) => s.state)).toEqual(["unanswerable"]);
+    expect(segments.map((s) => s.state)).toEqual(["rerunNeeded"]);
     expect(segments[0]!.count).toBe(3);
-    // The damaging render is a zero-count "needs re-run" segment sitting next
-    // to a full "verified" one — it reads as "nothing to do here".
-    for (const state of ["rerunNeeded", "verified"]) {
-      expect(segments.some((s) => s.state === state)).toBe(false);
-    }
+    // The damaging render is a "verified" segment covering cases nothing was
+    // said about — it reads as "nothing to do here".
+    expect(segments.some((s) => s.state === "verified")).toBe(false);
   });
 
-  test("unanswerable keeps its own segment and colour — never folded into verified", () => {
+  test("work is never painted like a pass", () => {
     const { rerunComposition, rerunSegments } = composition();
-    const counts = rerunComposition([
-      { verdict: "unanswerable" }, { verdict: "verified" }, { verdict: "unanswerable" },
-    ]);
-    expect(counts).toMatchObject({ unanswerable: 2, verified: 1, rerunNeeded: 0 });
+    const counts = rerunComposition([null, { verdict: "verified" }, { verdict: "rerunNeeded" }]);
+    expect(counts).toMatchObject({ rerunNeeded: 2, verified: 1 });
     const cls = Object.fromEntries(rerunSegments(counts).map((s) => [s.state, s.cls]));
-    expect(cls.unanswerable).not.toBe(cls.verified);
-    // And it must not be painted like a pass: verified owns --pass,
-    // unanswerable takes the info hue. `[^{}]*` rather than `\s*` so the class
-    // may share its rule with others (drift's unknown reuses this one) — it
-    // cannot cross a rule boundary, since braces are excluded.
+    expect(cls.rerunNeeded).not.toBe(cls.verified);
+    // `[^{}]*` rather than `\s*` so the class may share its rule with others
+    // (drift's own states reuse these) — it cannot cross a rule boundary,
+    // since braces are excluded.
     const rule = (c: string, v: string) => new RegExp(`\\.${c}[^{}]*\\{[^}]*var\\(--${v}\\)`);
-    expect(HTML).toMatch(rule(cls.unanswerable!, "info"));
-    expect(HTML).not.toMatch(rule(cls.unanswerable!, "pass"));
+    expect(HTML).not.toMatch(rule(cls.rerunNeeded!, "pass"));
     expect(HTML).toMatch(rule(cls.verified!, "pass"));
+    // The retired verdict's colour went with it.
+    expect(HTML).not.toContain("sg-unanswerable");
   });
 
   test("every state the hub can send has a segment, and an unrecognised one is not an all-clear", () => {
@@ -251,7 +325,28 @@ describe("hub UI: needs re-run", () => {
     for (const state of SpecVerdictSchema.options) expect(RERUN_ORDER).toContain(state);
     // A verdict a newer hub invents cannot be counted as "no action needed".
     const counts = rerunComposition([{ verdict: "somethingANewerHubSends" }]);
-    expect(counts).toMatchObject({ unanswerable: 1, verified: 0, inProgress: 0 });
+    expect(counts).toMatchObject({ rerunNeeded: 1, verified: 0, inProgress: 0 });
+  });
+
+  test("the verdict chips and the summary bar read an unrecognised verdict the same way", () => {
+    const { rerunVerdictOf, rerunComposition } = composition();
+    // rerunComposition is built from rerunVerdictOf (asserted below), so this
+    // pins the one rule both the bar and perspMatches' chip filter answer to.
+    for (const rr of [null, {}, { verdict: "somethingANewerHubSends" }] as ({ verdict?: string } | null)[]) {
+      expect(rerunVerdictOf(rr)).toBe("rerunNeeded");
+    }
+    expect(rerunVerdictOf({ verdict: "verified" })).toBe("verified");
+    expect(rerunComposition([{ verdict: "somethingANewerHubSends" }])).toMatchObject({ rerunNeeded: 1 });
+    // perspMatches lives outside the pure region (it closes over perspState),
+    // so pin at the source level that it defers to rerunVerdictOf rather than
+    // keeping its own copy of the fallback — which is exactly how the two
+    // drifted apart before this fix.
+    const src = clientScript();
+    const start = src.indexOf("function perspMatches");
+    const end = src.indexOf("function perspFilterCount");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(src.slice(start, end)).toContain("rerunVerdictOf(");
   });
 
   test("the summary is inventory + composition; the mode counts moved to the chips", () => {
@@ -274,7 +369,9 @@ describe("hub UI: needs re-run", () => {
     }
     // Every filter chip has a count slot, and none carries data-i18n on the
     // button itself — applyStaticI18n's textContent swap would delete it.
-    expect(HTML.match(/class="fcount"/g)).toHaveLength(5);
+    // Three mode chips (all/deterministic/live) plus four verdict chips —
+    // one per SpecVerdictSchema option, same words as the 判定 column.
+    expect(HTML.match(/class="fcount"/g)).toHaveLength(7);
     expect(HTML).not.toMatch(/<button class="fchip"[^>]*data-i18n=/);
   });
 
@@ -285,26 +382,51 @@ describe("hub UI: needs re-run", () => {
     const { en, ja } = dictionaries();
     for (const dict of [en, ja]) {
       expect(dict["perspectives.rerun.inProgressHint"]).toBeTruthy();
+      expect(dict["perspectives.rerun.heldHint"]).toBeTruthy();
       for (const cause of ["testDrift", "specChange", "auditUndecided", "runFailed"]) {
         expect(dict[`perspectives.rerun.repair.${cause}`], cause).toBeTruthy();
       }
     }
   });
 
+  test("a held spec is explained by the hold, not by an audit-log hole", () => {
+    // rerunWhyVerdict isn't in a pure region (it closes over t()), so pin the
+    // ordering at the source level: decide() (rerun.ts) returns "inProgress"
+    // for a held spec before it even looks at the audit axis, so heldBy must
+    // be checked before auditAssumedReached is reached for.
+    const src = clientScript();
+    const start = src.indexOf("function rerunWhyVerdict");
+    const end = src.indexOf("function rerunRepairCause");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = src.slice(start, end);
+    const heldIdx = body.indexOf("rr.heldBy");
+    const auditHoleIdx = body.indexOf("rr.auditAssumedReached");
+    expect(heldIdx).toBeGreaterThan(-1);
+    expect(auditHoleIdx).toBeGreaterThan(-1);
+    expect(heldIdx).toBeLessThan(auditHoleIdx);
+  });
+
   test("the evidence row is labelled by what it holds, not by one label forced over both", () => {
     const { rerunEvidenceLabelKey } = detailLabels();
     // A verdict with evidence: the row shows what the deploy log holds since the
     // last run, so the label states that timeframe.
-    for (const state of ["rerunNeeded", "verified"]) {
-      expect(rerunEvidenceLabelKey(state)).toBe("perspectives.d.changedSince");
+    for (const verdict of ["rerunNeeded", "verified"]) {
+      expect(rerunEvidenceLabelKey({ verdict })).toBe("perspectives.d.changedSince");
     }
-    // No evidence exists for these — the row names the missing input instead,
-    // which is a different kind of content and must not wear the other label.
-    for (const state of ["unanswerable", "needsRepair", "inProgress"]) {
-      expect(rerunEvidenceLabelKey(state)).toBe("perspectives.d.cannotJudge");
+    // No evidence exists for these — the row names why the verdict landed
+    // instead, which is a different kind of content and must not wear the
+    // other label. A re-run assumed rather than observed is one of them: the
+    // log could not be read, so there is nothing to show from it.
+    for (const rr of [
+      { verdict: "needsRepair" },
+      { verdict: "inProgress" },
+      { verdict: "rerunNeeded", executionAssumedReached: "gapInRange" },
+    ]) {
+      expect(rerunEvidenceLabelKey(rr), rr.verdict).toBe("perspectives.d.whyVerdict");
     }
     const { en, ja } = dictionaries();
-    for (const key of ["perspectives.d.changedSince", "perspectives.d.cannotJudge"]) {
+    for (const key of ["perspectives.d.changedSince", "perspectives.d.whyVerdict"]) {
       expect(en[key]).toBeTruthy();
       expect(ja[key]).toBeTruthy();
     }
@@ -400,7 +522,7 @@ describe("hub UI: needs re-run", () => {
   });
 
   test("the re-run surface starts hidden, so an older hub degrades to the current view", () => {
-    for (const id of ["persp-th-run", "persp-chip-rerun"]) {
+    for (const id of ["persp-th-run", "persp-verdict-chips"]) {
       const tag = HTML.match(new RegExp(`<[^>]*id="${id}"[^>]*>`));
       expect(tag, `${id} is missing from the markup`).toBeTruthy();
       expect(tag![0]).toContain("hidden");
@@ -408,5 +530,31 @@ describe("hub UI: needs re-run", () => {
     // Needs re-run is profile-scoped, so this tab carries its own selector.
     expect(HTML).toContain('id="persp-profile-switch"');
     expect(HTML).toContain('id="persp-profile-current"');
+  });
+
+  test("a profile with deploys but no runs is a reachable candidate for the first-open pick", () => {
+    // The run index alone only knows "ci" here; "stg" only shows up once the
+    // project's full profile set (dataProfileCandidates' third tier) is
+    // folded in — that gap is exactly what let a deploy-only profile go
+    // unoffered.
+    const { dataProfileCandidates } = dataProfilePick();
+    const candidates = dataProfileCandidates("default", ["ci"], ["default", "ci", "stg"]);
+    expect(candidates).toEqual(["default", "ci", "stg"]);
+    // No duplicates even when a name appears in every tier.
+    expect(dataProfileCandidates("ci", ["ci"], ["ci"])).toEqual(["ci"]);
+  });
+
+  test("the first-open pick is decided by candidate order, not by which probe answers first", () => {
+    const { pickFirstWithDeployLog } = dataProfilePick();
+    const candidates = ["default", "ci", "stg"];
+    // Only "stg" (index 2) actually has deploy data — it must win even though
+    // it is neither the current profile nor a run-index profile.
+    expect(pickFirstWithDeployLog(candidates, [false, false, true], "default", ["ci"])).toBe("stg");
+    // Earlier candidates win ties, so a merely-plausible run-index profile
+    // never bumps one probed and confirmed ahead of it in preference order.
+    expect(pickFirstWithDeployLog(candidates, [false, true, true], "default", ["ci"])).toBe("ci");
+    // Nothing confirms: fall back to the old run-index-only heuristic rather
+    // than leaving the pick undefined.
+    expect(pickFirstWithDeployLog(candidates, [false, false, false], "default", ["ci"])).toBe("ci");
   });
 });

@@ -86,7 +86,9 @@ describe("computeRerun: the run axis, with the audit already current", () => {
       touchIndex: touchedAt(1, ["src/a.ts", "src/b.ts"]),
     });
     expect(verdict.verdict).toBe("rerunNeeded");
-    expect(verdict.execution).toBe("passed");
+    expect(verdict.execution).toBe("stale");
+    // A deploy proved the touch, so nothing was assumed.
+    expect(verdict.executionAssumedReached).toBeUndefined();
     expect(verdict.touchedBy).toEqual(["src/a.ts", "src/b.ts"]);
   });
 
@@ -141,14 +143,22 @@ describe("computeRerun: the run axis, with the audit already current", () => {
     expect(verdict.verdict).toBe("rerunNeeded");
   });
 
-  describe("unanswerable, never `verified`", () => {
-    test("notEvaluated: the profile has neither a run nor a deploy recorded", () => {
-      // A profile-wide fact, so it replaces the verdict without touching the
-      // axes — the same spec must not read differently because some *other*
-      // spec happens to have a run.
+  test("never run and invalidated share a verdict but not an axis value", () => {
+    // Both run, so the verdict is the same. A list that merged them could not
+    // tell a spec added yesterday from one a deploy overtook.
+    const never = compute({ ledger: ledgerWithRun(null) });
+    const stale = compute({ log: log(deploy(0), deploy(1)), touchIndex: touchedAt(1) });
+    expect(never.verdict).toBe(stale.verdict);
+    expect(never.execution).not.toBe(stale.execution);
+    expect([never.execution, stale.execution]).toEqual(["neverRun", "stale"]);
+  });
+
+  describe("a run the deploy log cannot place is stale, never `verified`", () => {
+    test("the profile has neither a run nor a deploy recorded", () => {
+      // Nothing to place anything against: the audit owes an answer, so the
+      // verdict waits for it rather than being a question mark of its own.
       expect(compute({ ledger: ledgerWithRun(null), log: log(), drift: { specs: {} } })).toMatchObject({
-        verdict: "unanswerable",
-        reason: "notEvaluated",
+        verdict: "inProgress",
         audit: "due",
         execution: "neverRun",
       });
@@ -156,35 +166,60 @@ describe("computeRerun: the run axis, with the audit already current", () => {
 
     test("noDeployLog: the profile's deploy job is not wired up", () => {
       // The spec has both a run and an audit; what is missing is the log that
-      // would position either of them.
+      // would position either of them. Both are assumed reached, and the audit
+      // owes the first answer.
       const verdict = compute({
         log: log(),
         ledger: ledgerWithRun(ranAt("sha-0")),
         drift: auditedAt(null, "sha-0"),
       });
-      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "noDeployLog" });
+      expect(verdict).toMatchObject({
+        verdict: "inProgress",
+        audit: "due",
+        auditAssumedReached: "noDeployLog",
+        execution: "stale",
+        executionAssumedReached: "noDeployLog",
+      });
     });
 
     test("unknownDeployedSha: the run was never attributed to a deploy", () => {
       const verdict = compute({ ledger: ledgerWithRun(ranAt(null)) });
-      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "unknownDeployedSha" });
+      expect(verdict).toMatchObject({
+        verdict: "rerunNeeded",
+        execution: "stale",
+        executionAssumedReached: "unknownDeployedSha",
+      });
+      // The result is not deleted, only invalidated.
+      expect(verdict.lastRun).not.toBeNull();
     });
 
     test("ambiguousDeployedSha: the run straddled a deploy", () => {
       const verdict = compute({
         ledger: ledgerWithRun(ranAt("sha-0", { deployedShaAmbiguous: true })),
       });
-      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "ambiguousDeployedSha" });
+      expect(verdict).toMatchObject({
+        verdict: "rerunNeeded",
+        execution: "stale",
+        executionAssumedReached: "ambiguousDeployedSha",
+      });
     });
 
     test("deployedShaNotInLog: the baseline is older than the retained log", () => {
       const verdict = compute({ ledger: ledgerWithRun(ranAt("sha-evicted")) });
-      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "deployedShaNotInLog" });
+      expect(verdict).toMatchObject({
+        verdict: "rerunNeeded",
+        execution: "stale",
+        executionAssumedReached: "deployedShaNotInLog",
+      });
     });
 
     test("gapInRange: deploys are missing between the baseline and now", () => {
       const verdict = compute({ log: log(deploy(0), deploy(1, { gapBefore: true })) });
-      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "gapInRange" });
+      expect(verdict).toMatchObject({
+        verdict: "rerunNeeded",
+        execution: "stale",
+        executionAssumedReached: "gapInRange",
+      });
     });
 
     test("selectionUnknown: a selection in range answered unknown for this spec", () => {
@@ -192,7 +227,11 @@ describe("computeRerun: the run axis, with the audit already current", () => {
         log: log(deploy(0), deploy(1)),
         touchIndex: { "f/s": { undecidedIndex: 1 } },
       });
-      expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "selectionUnknown" });
+      expect(verdict).toMatchObject({
+        verdict: "rerunNeeded",
+        execution: "stale",
+        executionAssumedReached: "selectionUnknown",
+      });
     });
 
     test("a touch in range outranks a gap later in the range", () => {
@@ -306,6 +345,7 @@ describe("computeRerun: a failed run", () => {
       touchIndex: touchedAt(1),
       drift: auditedAt(null, "sha-1"),
     });
+    expect(verdict.execution).toBe("failed");
     expect(verdict.verdict).toBe("needsRepair");
   });
 
@@ -360,11 +400,34 @@ describe("a deploy whose selection was not stored", () => {
   // leaves it false. Before that ordering the flag was set first, which closed
   // the "no selection in range" escape hatch with the very flag that was
   // supposed to open it — and the deploy read as `verified`.
-  test("reads as unanswerable, never as verified", () => {
+  test("reads as stale, never as verified", () => {
+    const verdict = compute({
+      log: log(deploy(0), deploy(1, { hasSelection: false })),
+      // Pinned past the unjudged deploy so the audit is current and the run
+      // axis is what this case tests.
+      drift: auditedAt(null, "sha-1"),
+    });
+    expect(verdict).toMatchObject({
+      verdict: "rerunNeeded",
+      audit: "clean",
+      execution: "stale",
+      executionAssumedReached: "noSelectionInRange",
+    });
+  });
+
+  test("holds the audit back too when the audit's own baseline sits behind it", () => {
+    // One hole swallows both baselines: the audit is due and the run is stale,
+    // and each says so on its own axis.
     const verdict = compute({
       log: log(deploy(0), deploy(1, { hasSelection: false })),
       drift: auditedAt(null, "sha-0"),
     });
-    expect(verdict).toMatchObject({ verdict: "unanswerable", reason: "noSelectionInRange" });
+    expect(verdict).toMatchObject({
+      verdict: "inProgress",
+      audit: "due",
+      auditAssumedReached: "noSelectionInRange",
+      execution: "stale",
+      executionAssumedReached: "noSelectionInRange",
+    });
   });
 });

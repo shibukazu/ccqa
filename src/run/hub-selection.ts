@@ -9,12 +9,13 @@ import { RunUsageError } from "./errors.ts";
  */
 
 /**
- * The release whose hub serves these endpoints in their current shape. Both
- * were reshaped together, so one number covers both — an older hub either
- * 404s (audit-need, which did not exist) or answers a shape the caller now
- * rejects (re-run, whose fields were renamed).
+ * The release whose hub serves these endpoints in their current shape — the
+ * newest reshape of either, since one number is what a reader can act on. An
+ * older hub either 404s (audit-need, which did not exist before 1.16) or
+ * answers a vocabulary the caller now rejects (re-run, whose verdict values
+ * changed in 1.20).
  */
-const MIN_HUB_VERSION = "1.16";
+const MIN_HUB_VERSION = "1.20";
 
 /**
  * Which of the two 404s this was. The handlers answer `no_perspectives` when
@@ -63,7 +64,7 @@ export function rankedOrder<T extends string>(rank: Record<T, number>): readonly
   return (Object.keys(rank) as T[]).sort((a, b) => rank[a] - rank[b]);
 }
 
-/** "3 rerunNeeded, 1 unanswerable, 12 verified" — every offered spec accounted for. */
+/** "3 rerunNeeded, 1 inProgress, 12 verified" — every offered spec accounted for. */
 export function formatCounts<T extends string>(
   order: readonly T[],
   counts: ReadonlyMap<T, number>,

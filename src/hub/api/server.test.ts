@@ -1108,7 +1108,7 @@ describe("hub API server", () => {
       await auditClean("d1");
     }
 
-    test("a deploy's selection turns a spec rerunNeeded, verified, or unanswerable — independently per spec", async () => {
+    test("a deploy's selection turns a spec rerunNeeded or verified — independently per spec", async () => {
       await putPerspectives();
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: ["src/a/x.ts"] });
       await auditClean("d1");
@@ -1151,24 +1151,44 @@ describe("hub API server", () => {
         touchedByDeploy: { index: 1, sha: "d2" },
       });
       expect(after.specs["f/b"].verdict).toBe("verified");
-      expect(after.specs["f/unscoped"]).toMatchObject({ verdict: "unanswerable", reason: "selectionUnknown" });
+      // The selector could not tell, so the deploy is assumed to have reached
+      // it — with the hole named, not folded into the verdict.
+      expect(after.specs["f/unscoped"]).toMatchObject({
+        verdict: "rerunNeeded",
+        execution: "stale",
+        executionAssumedReached: "selectionUnknown",
+      });
       expect(after.specs["f/a"].lastGreen.gitHead).toBe("e".repeat(40));
     });
 
-    test("a deploy that does not chain onto the head leaves affected specs unanswerable, not verified", async () => {
+    test("a deploy that does not chain onto the head leaves affected specs stale, not verified", async () => {
       await baselineRun();
       const broken = await recordDeploy({ sha: "d9", previousSha: "never-seen", changedPaths: [] });
       expect(broken.gapBefore).toBe(true);
-      expect((await getRerun()).specs["f/b"]).toMatchObject({ verdict: "unanswerable", reason: "gapInRange" });
+      // One hole swallows both baselines: the audit owes an answer and the
+      // result is stale, and each axis names the same cause.
+      expect((await getRerun()).specs["f/b"]).toMatchObject({
+        verdict: "inProgress",
+        audit: "due",
+        auditAssumedReached: "gapInRange",
+        execution: "stale",
+        executionAssumedReached: "gapInRange",
+      });
     });
 
-    test("a deploy recorded without a selection leaves affected specs unanswerable, not verified", async () => {
+    test("a deploy recorded without a selection leaves affected specs stale, not verified", async () => {
       await baselineRun();
       await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/b/z.ts"] });
-      expect((await getRerun()).specs["f/b"]).toMatchObject({ verdict: "unanswerable", reason: "noSelectionInRange" });
+      expect((await getRerun()).specs["f/b"]).toMatchObject({
+        verdict: "inProgress",
+        audit: "due",
+        auditAssumedReached: "noSelectionInRange",
+        execution: "stale",
+        executionAssumedReached: "noSelectionInRange",
+      });
     });
 
-    test("a run that straddles a deploy is unanswerable rather than credited with either commit", async () => {
+    test("a run that straddles a deploy is stale rather than credited with either commit", async () => {
       await putPerspectives();
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
       const opened = await openRun();
@@ -1178,15 +1198,21 @@ describe("hub API server", () => {
 
       expect(finished.deployedShaAmbiguous).toBe(true);
       expect((await getRerun()).specs["f/b"]).toMatchObject({
-        verdict: "unanswerable",
-        reason: "ambiguousDeployedSha",
+        verdict: "rerunNeeded",
+        execution: "stale",
+        executionAssumedReached: "ambiguousDeployedSha",
       });
     });
 
-    test("a spec that has never run is rerunNeeded; a profile with no data at all is unanswerable", async () => {
+    test("a spec that has never run is rerunNeeded; a profile with no data at all waits for its audit", async () => {
       await putPerspectives();
       const untouched = await getRerun();
-      expect(untouched.specs["f/a"]).toMatchObject({ verdict: "unanswerable", reason: "notEvaluated" });
+      // Nothing to place anything against, so the audit owes the first answer.
+      expect(untouched.specs["f/a"]).toMatchObject({
+        verdict: "inProgress",
+        audit: "due",
+        execution: "neverRun",
+      });
       expect(untouched.deployHead).toBeNull();
 
       await recordDeploy({ sha: "d1", previousSha: null, changedPaths: ["src/a/x.ts"] });

@@ -46,11 +46,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option(
       "--only-hub-rerun-needed",
-      "Only specs the hub answers `rerunNeeded` for: the audit cleared them, and their last result does not cover what is deployed. A spec whose audit has not caught up answers `inProgress`, and one the audit rejected or whose last run failed answers `needsRepair`; neither is taken, because running them races the audit or repairs nothing. No git diff involved. Requires a hub connection and --hub-profile.",
-    )
-    .option(
-      "--only-hub-rerun-needed-with-unknown",
-      "With --only-hub-rerun-needed: also take specs the hub cannot answer for at all ('unanswerable' — a hole in the deploy log). Off by default: an unanswerable question is reported, not guessed.",
+      "Only specs the hub answers `rerunNeeded` for: the audit cleared them, and their last result does not cover what is deployed — including every spec the deploy log cannot place, which is assumed reached rather than skipped. A spec whose audit has not caught up answers `inProgress`, and one the audit rejected or whose last run failed answers `needsRepair`; neither is taken, because running them races the audit or repairs nothing. No git diff involved. Requires a hub connection and --hub-profile.",
     )
     .option(
       "--dry-run",

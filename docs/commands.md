@@ -44,7 +44,7 @@ look before letting a selection decide what a paid run covers.
 | `ccqa serve` | Start the hub. See [Hub](./hub.md#starting-a-hub). |
 | `ccqa hub push --report-dir <dir>` | Upload a finished report. Prefer `ccqa run --report-to-hub`, which streams as the run executes. See [`ccqa hub push`](./hub.md#ccqa-hub-push). |
 | `ccqa hub var set / ls / rm` | Manage the variables `${…}` in a spec resolve to at run time. See [Sharing sessions and variables](./hub.md#sharing-sessions-and-variables-via-the-hub). |
-| `ccqa hub deploy record --profile <p> --sha <sha>` | Tell the hub what a deploy shipped, and which specs it reaches. `--no-select-specs` skips the second half, leaving a hole `--only-hub-rerun-needed` can only answer `unanswerable`. See [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record). |
+| `ccqa hub deploy record --profile <p> --sha <sha>` | Tell the hub what a deploy shipped, and which specs it reaches. `--no-select-specs` skips the second half, so every spec behind it is assumed reached instead of cleared. See [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record). |
 | `ccqa hub prompt push / ls / rm` | Manage per-flow guidance and learned prompts. See [Triage learning](./hub.md#triage-learning). |
 
 ## Environment variables

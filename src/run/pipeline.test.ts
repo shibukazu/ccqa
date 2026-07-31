@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
@@ -6,6 +6,7 @@ import { executeRun, holdSpecs } from "./pipeline.ts";
 import { RunUsageError } from "./errors.ts";
 import type { GroupLookup } from "./serial-groups.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
+import { withSink } from "../cli/logger.ts";
 
 /**
  * The `--only-stale` guards, at the entry point that owns them. All of these
@@ -109,5 +110,81 @@ describe("claiming specs and the resources they share", () => {
     const plain = [{ featureName: "f", specName: "read" }];
     const held = await holdSpecs(ctx, "ci", plain, inGroup, undefined);
     expect(held).toEqual({ specs: plain, deniedResources: [] });
+  });
+});
+
+describe("the ADR-0014 invariant: an empty selection with `inProgress` outstanding exits non-zero", () => {
+  let adrCwd: string;
+
+  beforeAll(async () => {
+    adrCwd = await mkdtemp(join(tmpdir(), "ccqa-pipeline-adr014-"));
+    const specDir = join(adrCwd, ".ccqa", "features", "f", "test-cases", "s");
+    await mkdir(specDir, { recursive: true });
+    await writeFile(
+      join(specDir, "spec.yaml"),
+      "title: f/s\nsteps:\n  - instruction: noop\n    expected: noop\n",
+    );
+  });
+
+  afterAll(async () => {
+    await rm(adrCwd, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Stubs the hub connection and answers `getRerun` with `f/s`'s one entry. */
+  function stubRerunReport(specEntry: Record<string, unknown>) {
+    vi.stubEnv("CCQA_HUB_URL", "https://hub.invalid");
+    vi.stubEnv("CCQA_HUB_TOKEN", "tok");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        if (!String(url).includes("/rerun")) {
+          throw new Error(`unexpected fetch in this test: ${String(url)}`);
+        }
+        return new Response(
+          JSON.stringify({
+            project: "demo",
+            profile: "stg",
+            deployHead: { index: 0, sha: "a".repeat(40), at: "2026-01-01T00:00:00.000Z" },
+            specs: { "f/s": specEntry },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }),
+    );
+  }
+
+  test("a lone `inProgress` spec selects nothing, and the run fails rather than reporting green", async () => {
+    stubRerunReport({
+      verdict: "inProgress", audit: "due", execution: "neverRun",
+      heldBy: null, lastRun: null, lastGreen: null, lastRed: null,
+    });
+    await expect(
+      executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd: adrCwd }),
+    ).rejects.toThrow(/nothing was selected and no spec was cleared to run/);
+  });
+
+  test("names the hole when the excluded spec is stuck on an unplaceable audit baseline, instead of pointing at a re-audit that cannot help", async () => {
+    stubRerunReport({
+      verdict: "inProgress", audit: "due", execution: "neverRun",
+      auditAssumedReached: "deployedShaNotInLog",
+      heldBy: null, lastRun: null, lastGreen: null, lastRed: null,
+    });
+    const lines: string[] = [];
+    const err = await withSink({ write: (t) => lines.push(t) }, () =>
+      executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd: adrCwd }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RunUsageError);
+    const output = lines.join("");
+    expect(output).toMatch(/deployedShaNotInLog/);
+    expect(output).toMatch(/ccqa hub deploy record/);
+    expect(output).toMatch(/--only-affected-by/);
+    // The old hint re-runs the audit at the same unplaceable commit, which
+    // reproduces the same hole rather than closing it — it must not appear
+    // once the real cause is known.
+    expect(output).not.toMatch(/--only-hub-audit-needed --report-to-hub/);
   });
 });

@@ -148,10 +148,8 @@ export interface RunOptions {
   liveArtifactsDir?: string;
   /** Take only the specs a diff against this ref reaches. */
   onlyAffectedBy?: string;
-  /** Take only the specs the hub answers `needed` for. */
+  /** Take only the specs the hub answers `rerunNeeded` for. */
   onlyHubRerunNeeded?: boolean;
-  /** With `onlyHubRerunNeeded`: also take specs whose re-run need is unknown / that never ran. */
-  onlyHubRerunNeededWithUnknown?: boolean;
   /** Print the selected specs and stop — no execution, no report, no hub writes. */
   dryRun?: boolean;
   learnHubLivePrompt?: boolean;
@@ -330,9 +328,6 @@ export async function executeRun(
   // diff, so its two inputs (a profile, and further down a hub connection)
   // are checked before anything else runs.
   const rerunProfile = opts.onlyHubRerunNeeded === true ? requireRerunProfile(opts.hubProfile) : null;
-  if (opts.onlyHubRerunNeededWithUnknown && rerunProfile === null) {
-    log.warn("--only-hub-rerun-needed-with-unknown is ignored: it only applies to --only-hub-rerun-needed");
-  }
   // A dry run answers "which specs would run?" and stops. It never resolves a
   // `${VAR}`, classifies a failure or writes a report, so every input that
   // exists only to serve execution — the profile environment, the analysis
@@ -460,14 +455,19 @@ export async function executeRun(
     forExecution ? fetchTriageUserPrompt(hubCtx) : null,
     forExecution && ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.hubProfile, cwd) : null,
     rerunProfile !== null && hubCtx ? fetchRerunReport(hubCtx, rerunProfile) : null,
-    // Skipped when the re-run report is being fetched: that response already
-    // carries the profile's deploy head, so asking twice would be a second
-    // round trip for one value — and two reads that a deploy between them
-    // could make disagree.
+    // Only reached with no checkout to assert from. Skipped when the re-run
+    // report is being fetched too: that response already carries the profile's
+    // deploy head, so asking twice would be a second round trip for one value
+    // — and two reads that a deploy between them could make disagree.
     forExecution && hubCtx && opts.hubProfile && rerunProfile === null
       ? tryDeployHeadSha(hubCtx, opts.hubProfile)
       : null,
   ]).catch(asHubReadError);
+  // Asserted, so the hub pins it instead of re-reading its log head when the
+  // run finishes — which is what a deploy landing mid-run would otherwise make
+  // ambiguous. It is the log head rather than `git.head` on purpose: a
+  // checkout that is not a recorded deploy has no position, so asserting it
+  // would leave the run permanently unplaceable instead of merely imprecise.
   const deployedSha = rerunReport?.deployHead.sha ?? fetchedDeployHead;
   if (ledgerEntries) {
     diffProvider = createDiffProvider({
@@ -512,19 +512,21 @@ export async function executeRun(
 
   if (filtering) {
     const before = specs.length;
-    let unanswerable = 0;
     let inProgress = 0;
+    let unknownToHub = 0;
+    let assumedReached = 0;
+    let assumedReachedReasons: string[] = [];
     // Each filter narrows what the previous one left, so passing both means
     // "stale AND affected". The hub verdicts run first because they are
     // already fetched: whatever they drop is one less spec for the selector
     // below to spend model tokens reasoning about.
     if (rerunReport) {
-      const selection = selectSpecsNeedingRerun(specs, rerunReport, {
-        includeUnknown: opts.onlyHubRerunNeededWithUnknown === true,
-      });
+      const selection = selectSpecsNeedingRerun(specs, rerunReport);
       specs = selection.selected;
-      unanswerable = selection.excludedUnanswerable;
       inProgress = selection.excludedInProgress;
+      unknownToHub = selection.excludedUnknownToHub;
+      assumedReached = selection.excludedAssumedReached;
+      assumedReachedReasons = selection.excludedAssumedReachedReasons;
       log.meta(
         "stale-base",
         `deploy ${rerunReport.deployHead.sha.slice(0, 12)} (profile ${rerunReport.profile})`,
@@ -549,17 +551,31 @@ export async function executeRun(
     // Selecting nothing is a real answer only when every spec was answered.
     // Otherwise "0 to run, exit 0" reads as "all good", which is the one
     // outcome this whole selection path exists to prevent.
-    if (specs.length === 0 && (unanswerable > 0 || inProgress > 0)) {
-      if (unanswerable > 0) {
+    if (specs.length === 0 && inProgress > 0) {
+      // The two named causes get a hint that closes the actual hole; the
+      // generic hint below only applies to what neither one explains — a
+      // held spec, or an ordinary "never audited yet".
+      if (unknownToHub > 0) {
         log.hint(
-          `${unanswerable} spec(s) were excluded because the hub could not tell whether they need ` +
-            `a re-run; pass --only-hub-rerun-needed-with-unknown to run them anyway`,
+          `${unknownToHub} spec(s) were excluded because the hub's perspectives document has ` +
+            `never heard of them; run \`ccqa perspectives\` to register them`,
         );
       }
-      if (inProgress > 0) {
+      if (assumedReached > 0) {
         log.hint(
-          `${inProgress} spec(s) were excluded because the audit has not answered for the deployed ` +
-            `commit yet; run \`ccqa audit --only-hub-audit-needed --report-to-hub\` first`,
+          `${assumedReached} spec(s) were excluded because the audit ran at a commit the deploy ` +
+            `log cannot place (${assumedReachedReasons.join(", ")}); re-running ` +
+            `\`ccqa audit --only-hub-audit-needed\` at the same commit will not clear it — record ` +
+            `the deploy (\`ccqa hub deploy record\`) so the log can place it, or select with ` +
+            `--only-affected-by <ref> to make progress meanwhile`,
+        );
+      }
+      const explained = unknownToHub + assumedReached;
+      if (explained < inProgress) {
+        log.hint(
+          `${inProgress - explained} spec(s) were excluded because the audit has not answered ` +
+            `for the deployed commit yet; run \`ccqa audit --only-hub-audit-needed --report-to-hub\` ` +
+            `first`,
         );
       }
       throw new RunUsageError(
