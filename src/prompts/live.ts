@@ -1,15 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
 
-/**
- * Unique agent-browser session name. The runId is millisecond-precision wall
- * clock, so under `--concurrency > 1` two specs can start in the same
- * millisecond and collide; a random suffix guarantees each spec gets its own
- * Chrome session and state never bleeds across parallel runs.
- */
+/** Unique agent-browser session name, so parallel specs never share a Chrome. */
 export function generateLiveSessionName(): string {
-  return `ccqa-live-${buildRunId()}-${randomUUID().slice(0, 8)}`;
+  return `ccqa-live-${buildRunId()}`;
 }
 
 export interface LiveSystemPromptPrefixInput {

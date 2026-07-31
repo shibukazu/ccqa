@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 export interface StepArtifactPaths {
@@ -7,13 +8,22 @@ export interface StepArtifactPaths {
 }
 
 /**
- * Build a sortable run id from the current wall-clock time. ISO8601 with
- * `:` / `.` replaced so it's filename-safe. Caller is expected to mkdir the
- * directory once and pass `runDir = <baseDir>/<runId>` to the path helpers
- * below.
+ * Build a sortable, unique run id. ISO8601 with `:` / `.` replaced so it's
+ * filename-safe, timestamp first so run directories still sort by time, and a
+ * random suffix because the timestamp alone does not separate two specs.
+ *
+ * The pool launches specs back-to-back, so at `--concurrency > 1` two of them
+ * land in the same millisecond. A spec that puts `${CCQA_RUN_ID}` in the name
+ * of something it creates would then share that name with its neighbour, and
+ * each would find — and delete — the other's row. Nothing fails; the
+ * assertions just read the wrong state.
+ *
+ * Caller is expected to mkdir the directory once and pass
+ * `runDir = <baseDir>/<runId>` to the path helpers below.
  */
 export function buildRunId(): string {
-  return new Date().toISOString().replace(/[:.]/g, "-");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${stamp}-${randomUUID().slice(0, 8)}`;
 }
 
 /**
