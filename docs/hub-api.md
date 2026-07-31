@@ -231,15 +231,20 @@ GET /api/v1/projects/:project/profiles
 
 GET /api/v1/projects/:project/last-green?profile=<name>&branch=<branch>&fallbackBranch=<branch>
   → 200 {
-      entries: { "<feature>/<spec>": SpecLedgerEntry },   // last green — unchanged meaning
-      lastRun: { "<feature>/<spec>": SpecLedgerEntry },   // last non-skipped execution
-      lastRed:  { "<feature>/<spec>": SpecLedgerEntry },  // last failure
+      entries: { "<feature>/<spec>": SpecLedgerEntry },      // last green — unchanged meaning
+      lastRun: { "<feature>/<spec>": SpecLedgerEntry },      // last non-skipped execution
+      lastRed:  { "<feature>/<spec>": SpecRedLedgerEntry },  // last failure
     }
 
 interface SpecLedgerEntry {
   gitHead: string; runId: string; at: string;
   deployedSha?: string | null;        // the commit the environment was running (see Deploys)
   deployedShaAmbiguous?: boolean;     // the run straddled a deploy
+}
+
+interface SpecRedLedgerEntry extends SpecLedgerEntry {
+  label?: "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG" | "ENVIRONMENT" | "UNKNOWN";
+  headline?: string;                  // the analysis' single-sentence conclusion
 }
 ```
 
@@ -260,6 +265,16 @@ working; `lastRun` and `lastRed` are siblings, not a redefinition.
 `lastRun` — not `lastGreen` — is the baseline for re-run selection: a red
 spec's information is already current, so re-running it teaches nothing
 until related code moves.
+
+Only the red bucket carries a cause: `label` and `headline` are copied from
+the run report's failure analysis, so a reader learns why a spec is red
+without fetching a report per spec. A pass has no cause, which is why the
+other two buckets do not carry the fields. Both are optional and absent for
+the same reason — nothing is on record: the run was made without
+`--on-fail-explain` (analysis is opt-in), the analysis produced no headline,
+or the entry was written before these fields existed. Ledgers written by an
+older hub keep working untouched: the fields appear on red entries written
+from then on, and nothing rewrites the ones already stored.
 
 ## Deploys and re-run selection
 
@@ -403,7 +418,9 @@ interface SpecRerun {
                             "unknownDeployedSha" | "ambiguousDeployedSha";
   lastRun: SpecLedgerEntry | null;
   lastGreen: SpecLedgerEntry | null;
-  lastRed: SpecLedgerEntry | null;
+  // Carries the failure's `label`/`headline` when one was recorded, so
+  // `execution: "failed"` can be shown with its cause (see `last-green`).
+  lastRed: SpecRedLedgerEntry | null;
   touchedBy?: string[];       // up to 10 matched paths; set only when execution is "stale"
   touchedByDeploy?: { index, sha, at } | null;  // the deploy that made it "stale"
 }
