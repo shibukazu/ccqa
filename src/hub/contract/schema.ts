@@ -253,6 +253,26 @@ export const SpecLedgerEntrySchema = LastGreenEntrySchema.extend({
 export type SpecLedgerEntry = z.infer<typeof SpecLedgerEntrySchema>;
 
 /**
+ * A red-bucket entry: where the failure happened, plus what it was. The cause
+ * is copied off the run report's `analysis` so a reader learns why a spec is
+ * red without fetching the report of every red spec.
+ *
+ * Only the red bucket carries it. A pass has no cause, so putting these on
+ * `SpecLedgerEntry` would invite writing them where they cannot exist.
+ *
+ * Both fields are optional and mean the same thing by their absence — nothing
+ * is on record. Failure analysis is opt-in (`--on-fail-explain`), and entries
+ * written before this release have neither field.
+ */
+export const SpecRedLedgerEntrySchema = SpecLedgerEntrySchema.extend({
+  /** The failure analysis' verdict. */
+  label: PredictedLabelSchema.optional(),
+  /** Its single-sentence conclusion, as shown at the top of the report's diagnosis. */
+  headline: z.string().optional(),
+});
+export type SpecRedLedgerEntry = z.infer<typeof SpecRedLedgerEntrySchema>;
+
+/**
  * The per-(project, profile, branch) spec ledger: three buckets over the same
  * "feature/spec" keys, all advanced by the same terminal-run trigger.
  *
@@ -261,14 +281,15 @@ export type SpecLedgerEntry = z.infer<typeof SpecLedgerEntrySchema>;
  *   `green`, is the baseline for "needs re-run": a red spec's information is
  *   already current, so re-running it teaches nothing until related code moves.
  * - `red` — the spec's last failure, so the view can show outcome and re-run
- *   need as the orthogonal axes they are.
+ *   need as the orthogonal axes they are. Alone among the three it also carries
+ *   the cause (`SpecRedLedgerEntry`).
  *
  * A skipped row did not execute and advances no bucket.
  */
 export const SpecLedgerSchema = z.object({
   green: z.record(z.string(), SpecLedgerEntrySchema).default({}),
   run: z.record(z.string(), SpecLedgerEntrySchema).default({}),
-  red: z.record(z.string(), SpecLedgerEntrySchema).default({}),
+  red: z.record(z.string(), SpecRedLedgerEntrySchema).default({}),
 });
 export type SpecLedger = z.infer<typeof SpecLedgerSchema>;
 
@@ -595,7 +616,8 @@ export const SpecRerunSchema = z.object({
   heldBy: SpecLockSchema.nullable(),
   lastRun: SpecLedgerEntrySchema.nullable(),
   lastGreen: SpecLedgerEntrySchema.nullable(),
-  lastRed: SpecLedgerEntrySchema.nullable(),
+  /** Carries the failure's `label`/`headline` when the run recorded an analysis. */
+  lastRed: SpecRedLedgerEntrySchema.nullable(),
   /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `execution === "stale"`. */
   touchedBy: z.array(z.string()).optional(),
   /**
@@ -687,7 +709,7 @@ export type DeployLogResponse = z.infer<typeof DeployLogResponseSchema>;
 export const LedgerResponseSchema = z.object({
   entries: z.record(z.string(), SpecLedgerEntrySchema),
   lastRun: z.record(z.string(), SpecLedgerEntrySchema).default({}),
-  lastRed: z.record(z.string(), SpecLedgerEntrySchema).default({}),
+  lastRed: z.record(z.string(), SpecRedLedgerEntrySchema).default({}),
 });
 export type LedgerResponse = z.infer<typeof LedgerResponseSchema>;
 

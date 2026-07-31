@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry } from "../../contract/schema.ts";
+import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry, type SpecRedLedgerEntry } from "../../contract/schema.ts";
 import { GitEnvelopeSchema, ReportCostSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { DriftLabel } from "../../../drift/types.ts";
 import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
@@ -249,7 +249,7 @@ async function updateSpecLedger(
     const key = `${row.feature}/${row.spec}`;
     ledger.run[key] = entry;
     if (row.status === "passed") ledger.green[key] = entry;
-    else ledger.red[key] = entry;
+    else ledger.red[key] = redEntry(entry, row);
   }
   if (Object.keys(ledger.run).length === 0) return;
   try {
@@ -257,6 +257,24 @@ async function updateSpecLedger(
   } catch (err) {
     console.error(`hub: spec ledger update failed for run "${run.id}": ${errMsg(err)}`);
   }
+}
+
+/**
+ * The red bucket's entry: the coordinate every bucket carries, plus what the
+ * failure analysis concluded, so a reader of the ledger learns why a spec is
+ * red without fetching its report.
+ *
+ * A field with nothing behind it is left out rather than written empty:
+ * `analysis` is null when the run did not ask for one (`--on-fail-explain` is
+ * opt-in), and a model that answered with no headline leaves `headline` "".
+ */
+function redEntry(entry: SpecLedgerEntry, row: ReportSpecResult): SpecRedLedgerEntry {
+  if (!row.analysis) return entry;
+  return {
+    ...entry,
+    label: row.analysis.label,
+    ...(row.analysis.headline ? { headline: row.analysis.headline } : {}),
+  };
 }
 
 /**

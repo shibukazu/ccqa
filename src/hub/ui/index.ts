@@ -3671,6 +3671,17 @@ const CLIENT_JS = `
     badge.appendChild(document.createTextNode(" " + t("perspectives.run.state." + runState)));
     td.appendChild(badge);
 
+    // What the failure was, as the run's analysis called it — the same place
+    // the audit column names its drift label. Absent on a red entry the run
+    // never analyzed, and on entries written before the ledger carried it.
+    if (runState === "failed" && rr.lastRed && rr.lastRed.label) {
+      var cause = el("span", "cellsub", labelText(rr.lastRed.label));
+      // The one-line conclusion, for a pointer. The detail panel shows it in
+      // full, so nothing here depends on finding it.
+      if (rr.lastRed.headline) cause.title = rr.lastRed.headline;
+      td.appendChild(cause);
+    }
+
     // The sub-line is the coordinate of the result being reported — the same
     // "when is this from" evidence the audit column carries above, so the two
     // axes read as siblings. Why the currency matters belongs to the verdict
@@ -3889,6 +3900,21 @@ const CLIENT_JS = `
     return wrap;
   }
 
+  // The failure: which run it was, then what the analysis concluded. The
+  // headline is model output, already localized server-side, so it is shown as
+  // written. A run made without failure analysis carries neither field, and the
+  // row is then the coordinate alone — what it has always been.
+  function rerunFailureValue(entry) {
+    var wrap = el("div");
+    wrap.appendChild(ledgerLine(entry));
+    if (entry.label) {
+      var line = el("div", "d-prose", labelText(entry.label));
+      if (entry.headline) line.appendChild(document.createTextNode(" · " + entry.headline));
+      wrap.appendChild(line);
+    }
+    return wrap;
+  }
+
   // Detail row: a definition list of the case's fields plus the note editor.
   // Built with createElement/textContent throughout — every field here is
   // API-derived, so none of it may go through innerHTML.
@@ -3922,7 +3948,7 @@ const CLIENT_JS = `
     var rr = ledgerEntryFor(perspState.rerun, feature, spec);
     if (rr) {
       row(rerunEvidenceLabelKey(rr), rerunEvidenceValue(rr));
-      if (rerunHasFailure(rr)) row("perspectives.d.lastRed", ledgerLine(rr.lastRed));
+      if (rerunHasFailure(rr)) row("perspectives.d.lastRed", rerunFailureValue(rr.lastRed));
     }
     frag.appendChild(dl);
 

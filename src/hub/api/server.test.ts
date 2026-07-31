@@ -972,7 +972,7 @@ describe("hub API server", () => {
     function getLedger(q: string): Promise<{
       entries: Record<string, { gitHead: string }>;
       lastRun: Record<string, { gitHead: string }>;
-      lastRed: Record<string, { gitHead: string }>;
+      lastRed: Record<string, { gitHead: string; label?: string; headline?: string }>;
     }> {
       return fetch(`${baseUrl}/api/v1/projects/lg/last-green?${q}`, authed()).then(json);
     }
@@ -994,6 +994,41 @@ describe("hub API server", () => {
       expect(Object.keys(ledger.lastRun).sort()).toEqual(["f/green", "f/red"]);
       expect(Object.keys(ledger.lastRed)).toEqual(["f/red"]);
       expect(ledger.lastRun["f/red"]?.gitHead).toBe(sha);
+    });
+
+    test("a red entry carries the failure's cause, and carries none when the run did not analyze it", async () => {
+      await openAndFinish({
+        branch: "cause",
+        gitHead: "e".repeat(40),
+        rows: [
+          makeRow({
+            feature: "f",
+            spec: "analyzed",
+            status: "failed",
+            analysis: {
+              label: "PRODUCT_BUG",
+              confidence: 0.9,
+              headline: "the Submit button answers 500",
+              recommendation: "r",
+              evidence: [],
+              reasoning: "",
+            },
+          }),
+          makeRow({ feature: "f", spec: "unanalyzed", status: "failed" }),
+        ],
+      });
+
+      const ledger = await getLedger("branch=cause");
+      expect(ledger.lastRed["f/analyzed"]).toMatchObject({
+        label: "PRODUCT_BUG",
+        headline: "the Submit button answers 500",
+      });
+      // Absent, not blank: `--on-fail-explain` is opt-in, and an empty string
+      // would read as an analysis that concluded nothing.
+      const unanalyzed = ledger.lastRed["f/unanalyzed"]!;
+      expect(unanalyzed.gitHead).toBe("e".repeat(40));
+      expect(unanalyzed).not.toHaveProperty("label");
+      expect(unanalyzed).not.toHaveProperty("headline");
     });
 
     test("a finalized run advances passed specs only; branch overlays fallbackBranch", async () => {

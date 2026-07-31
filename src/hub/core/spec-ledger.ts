@@ -1,4 +1,4 @@
-import type { SpecLedger, SpecLedgerEntry } from "../contract/schema.ts";
+import type { SpecLedger, SpecLedgerEntry, SpecRedLedgerEntry } from "../contract/schema.ts";
 
 /**
  * Pure spec-ledger format rules: the empty document, the read-time shape
@@ -8,6 +8,7 @@ import type { SpecLedger, SpecLedgerEntry } from "../contract/schema.ts";
  */
 
 type Bucket = Record<string, SpecLedgerEntry>;
+type RedBucket = Record<string, SpecRedLedgerEntry>;
 
 const BUCKET_NAMES = ["green", "run", "red"] as const;
 
@@ -29,19 +30,23 @@ export function toLedger(raw: unknown): SpecLedger {
   return {
     green: (doc["green"] as Bucket | undefined) ?? {},
     run: (doc["run"] as Bucket | undefined) ?? {},
-    red: (doc["red"] as Bucket | undefined) ?? {},
+    red: (doc["red"] as RedBucket | undefined) ?? {},
   };
 }
 
 /** Fold `from` into `into` in place, per bucket and key, newest `at` winning. */
 export function mergeLedgerInto(into: SpecLedger, from: SpecLedger): SpecLedger {
-  for (const name of BUCKET_NAMES) {
-    for (const [key, entry] of Object.entries(from[name])) {
-      const prev = into[name][key];
-      // Only advance: a late-finalizing older run must not move a baseline
-      // backwards past a newer one.
-      if (!prev || prev.at <= entry.at) into[name][key] = entry;
-    }
-  }
+  mergeBucket(into.green, from.green);
+  mergeBucket(into.run, from.run);
+  mergeBucket(into.red, from.red);
   return into;
+}
+
+function mergeBucket<T extends SpecLedgerEntry>(into: Record<string, T>, from: Record<string, T>): void {
+  for (const [key, entry] of Object.entries(from)) {
+    const prev = into[key];
+    // Only advance: a late-finalizing older run must not move a baseline
+    // backwards past a newer one.
+    if (!prev || prev.at <= entry.at) into[key] = entry;
+  }
 }
