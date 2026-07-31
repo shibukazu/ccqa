@@ -43,42 +43,16 @@ Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/` and
 | `target` | no | Generation-target plugin. Defaults to `defaultTarget` in `.ccqa/config.yaml`, then `agent-browser`. See [Generation targets](./targets.md). |
 | `mode` | no | `deterministic` (default) or `live`. agent-browser only. |
 | `session` | no | Saved session name(s) to restore before step 1. agent-browser `mode: live` only. See [Saved sessions](./sessions.md). |
-| `exclusive` | no | Name(s) of shared things this spec writes to. Two specs naming the same one never run at the same time. See below. |
 
 `mode:` and `session:` only apply to the `agent-browser` target. Setting
 either on a spec whose `target:` resolves to anything else is a validation
 error ("only applies to the agent-browser target — remove it or drop
 `target: ...`").
 
-### `exclusive` — shared things two specs must not both write to
-
-Raising `--concurrency` runs specs at the same time, which is safe until two
-of them write to the same place outside your app: a chat channel, a shared
-inbox, a single seeded account. The failure that follows does not look like a
-failure — each spec asserts on what it posted and finds the other one's, so
-the run goes green or red at random and gets written off as flake.
-
-Name the thing rather than the specs that collide, and the declaration stays
-one line per spec however many there are:
-
-```yaml
-exclusive: notification-channel      # or a list: [notification-channel, shared-inbox]
-```
-
-Specs with no name in common still run in parallel. The name is yours to
-choose (letters, digits, `.`, `_`, `-`, compared case-insensitively) and only
-has to match between the specs that conflict; it applies to every target and
-both modes, because the conflict is with the outside world rather than with
-how the spec is driven. Nothing checks that a name is spelled the same in two
-places, so confirm what was read with `ccqa run --dry-run`.
-
-Within one run, `ccqa run` serialises specs sharing a name. Across runs — with
-`--only-hub-rerun-needed`, which is where the hub and profile are resolved —
-the name is claimed on the hub alongside the specs themselves, so a second
-cycle starting while the first is still going leaves those specs for next time
-instead of running them into each other. That claim is per profile, so two
-profiles reaching the same external service need the distinction in the name
-(`tenant-a.notification-channel`).
+Specs that write to the same place outside your app — a chat channel, a
+shared inbox, a single seeded account — are not declared here. That
+constraint is a project-wide list in `.ccqa/config.yaml`; see
+[`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time).
 
 ## Steps
 

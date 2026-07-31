@@ -43,7 +43,7 @@ import type { ReportSpecResult } from "../report/schema.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import type { RunTeardown } from "./run-teardown.ts";
 import type { IncrementalReport } from "../run/incremental-report.ts";
-import type { ResourceLookup } from "../run/spec-catalog.ts";
+import type { GroupLookup } from "../run/serial-groups.ts";
 import type { SpecRef } from "../store/index.ts";
 
 /** Result of `driftAuthAvailable()`, hoisted once and shared across workers. */
@@ -64,7 +64,7 @@ export interface RunLiveOptions {
   cwd?: string;
   concurrency?: number;
   /** See `RunnerOptions.resources`. Absent means no spec declares one. */
-  resources?: ResourceLookup;
+  resources?: GroupLookup;
   /** Active `--hub-profile` name; selects the sessions bucket for `spec.session`. */
   profile?: string;
   hubContext?: HubContext | null;

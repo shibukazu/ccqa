@@ -65,6 +65,23 @@ export const TargetConfigSchema = z
 export type TargetConfig = z.infer<typeof TargetConfigSchema>;
 
 /**
+ * Specs that must not run at the same time, grouped by the thing they share.
+ *
+ * The key names the shared thing (a chat channel, a seeded account, a tenant);
+ * the list names the specs that write to it. `ccqa run` never runs two members
+ * of one group concurrently, and specs sharing no group still run in parallel.
+ *
+ * Kept here rather than on each spec so there is one place to read the whole
+ * picture, and so a mistyped member is a spec key that does not resolve —
+ * caught — rather than a resource name that silently matches nothing.
+ */
+export const SerialGroupsSchema = z.record(
+  z.string().min(1),
+  z.array(z.string().min(1)).min(1),
+);
+export type SerialGroups = z.infer<typeof SerialGroupsSchema>;
+
+/**
  * Top-level `.ccqa/config.yaml` schema. `defaultTarget` is used by specs
  * with no `target:` of their own. Both defaults make a missing config file
  * equivalent to "agent-browser only, no extra settings".
@@ -73,6 +90,7 @@ export const ProjectConfigSchema = z
   .object({
     defaultTarget: TargetIdSchema.default(AGENT_BROWSER_TARGET),
     targets: z.record(TargetIdSchema, TargetConfigSchema).default({}),
+    serialGroups: SerialGroupsSchema.default({}),
   })
   .strict();
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;

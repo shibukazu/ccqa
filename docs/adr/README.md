@@ -36,7 +36,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0012](0012-flag-names-carry-their-group.md) | Flag names carry their group, and one flag means one thing | accepted |
 | [0013](0013-one-verification-environment.md) | One verification environment; a profile is a value set, not an environment | accepted |
 | [0014](0014-two-axes-one-verdict.md) | Two axes, one verdict; work in flight is a claim, not a state | accepted |
-| [0015](0015-name-the-shared-resource.md) | Specs declare the shared resource they write to, by name | accepted |
+| [0015](0015-serial-groups-in-one-place.md) | Serial groups live in one place: `.ccqa/config.yaml`, not each spec | accepted |
 
 ## Template
 

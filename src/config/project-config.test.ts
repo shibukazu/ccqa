@@ -19,13 +19,13 @@ describe("loadProjectConfig", () => {
   it("returns defaults when the config file is missing", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "ccqa-config-"));
     const config = await loadProjectConfig(cwd);
-    expect(config).toEqual({ defaultTarget: "agent-browser", targets: {} });
+    expect(config).toEqual({ defaultTarget: "agent-browser", targets: {}, serialGroups: {} });
   });
 
   it("returns defaults for an empty config file", async () => {
     const cwd = await writeConfig("");
     const config = await loadProjectConfig(cwd);
-    expect(config).toEqual({ defaultTarget: "agent-browser", targets: {} });
+    expect(config).toEqual({ defaultTarget: "agent-browser", targets: {}, serialGroups: {} });
   });
 
   it("loads a full config", async () => {

@@ -133,6 +133,46 @@ directory:
 `ccqa run` executes only the `kind: "test"` files; `support` files ride
 along with hashes so drift in them is detectable.
 
+### `serialGroups` — specs that must not run at the same time
+
+Raising `--concurrency` runs specs at the same time, which is safe until two
+of them write to the same place outside your app: a chat channel, a shared
+inbox, a single seeded account. The failure that follows does not look like a
+failure — each spec asserts on what it posted and finds the other one's, so
+the run goes green or red at random and gets written off as flake.
+
+`serialGroups` is a top-level key in `.ccqa/config.yaml`, sitting alongside
+`defaultTarget` and `targets`. The key names the shared thing; the list names
+the specs that write to it:
+
+```yaml
+serialGroups:
+  notification-channel:
+    - notifications/post-message
+    - notifications/reply-thread
+```
+
+`ccqa run` never runs two members of one group at the same time. Specs
+sharing no group still run in parallel, so the cost of protecting a few
+specs is not paid by the rest. It applies to every target and both modes,
+because the conflict is with the outside world rather than with how the spec
+is driven.
+
+Every member is validated against the project's spec inventory: a name that
+does not resolve to a real `<feature>/<spec>` is a hard error at run time,
+not a silently shrunk group. `ccqa run --dry-run` echoes the groups it read
+as `serial: <group-name(s)>` on each affected spec's line, which is how you
+confirm a group was read rather than mistyped into silence.
+
+Within one run, `ccqa run` serialises specs sharing a group. Across runs —
+with `--only-hub-rerun-needed`, which is where the hub and profile are
+resolved — the group is claimed on the hub alongside the specs themselves,
+so a second cycle starting while the first is still going leaves those specs
+for next time instead of running them into each other. That claim is per
+profile, so two profiles reaching the same external service need the
+distinction inside the group name (`tenant-a.notification-channel`). See
+[ADR-0015](./adr/0015-serial-groups-in-one-place.md).
+
 ## `runCommand` — how `ccqa run` executes a target
 
 If a target's config sets `runCommand`, `ccqa run` executes its generated

@@ -123,10 +123,11 @@ spec を確保するので、前の周が終わる前に次が始まっても、
 走らせることはありません。
 
 アプリの外の同じ場所（チャットのチャンネル、共有の受信箱）に書き込む spec
-には、その名前を [`exclusive:`](./spec.md#exclusive--shared-things-two-specs-must-not-both-write-to)
-で宣言します。確保の対象はこの名前にも及ぶので、`--concurrency` で実行時間
-を縮めても、2 つの spec が互いの結果を読んでしまうことはありません。同じ
-実行の中でも、次の周との間でもです。
+は、`.ccqa/config.yaml` の
+[`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time)
+に加えます。確保の対象はこのグループにも及ぶので、`--concurrency` で実行
+時間を縮めても、2 つの spec が互いの結果を読んでしまうことはありません。
+同じ実行の中でも、次の周との間でもです。
 
 それでも落ちた spec には、`--on-fail-explain` が誰の担当かのラベルを付け
 ます。`TEST_DRIFT`（テストのずれ）、`SPEC_CHANGE`（仕様変更）、

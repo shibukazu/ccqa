@@ -77,18 +77,6 @@ export const SessionNameSchema = slug("session name");
 export const SessionFieldSchema = oneOrMany(SessionNameSchema);
 
 /**
- * Shared things this spec writes to, named. Two specs naming the same one
- * never run at the same time; specs with no name in common run in parallel.
- * The conflict is with the outside world, so this holds across targets and
- * modes.
- */
-export const ExclusiveFieldSchema = oneOrMany(slug("exclusive name")).transform((names) =>
-  // Compared, never resolved to a path, so `Channel` and `channel` naming the
-  // same thing must not become two locks that never collide.
-  names.map((n) => n.toLowerCase()),
-);
-
-/**
  * A generation-target id: which plugin turns this spec into runnable tests
  * (e.g. "agent-browser", "playwright", "runn"). Whether the id names a
  * registered target is the registry's responsibility, so new targets don't
@@ -127,8 +115,6 @@ export const TestSpecSchema = z
      * omit `session` and do it in the steps.
      */
     session: SessionFieldSchema.optional(),
-    /** Shared resources this spec writes to (see ExclusiveFieldSchema). */
-    exclusive: ExclusiveFieldSchema.optional(),
     steps: z.array(StepSchema).min(1),
   })
   .strict()

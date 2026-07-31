@@ -31,6 +31,7 @@ import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.
 import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
 import { tryDeployHeadSha } from "./deploy-head.ts";
 import { formatDryRunLines } from "./dry-run.ts";
+import { resolveSerialGroups, type GroupLookup } from "./serial-groups.ts";
 import {
   fetchRerunReport,
   requireRerunProfile,
@@ -48,9 +49,7 @@ import { HubApiError } from "../hub-client/index.ts";
 import { resolveProjectOrThrow, ProjectNameError } from "../cli/resolve-project.ts";
 import {
   readSpecs,
-  resourceLookup,
   resolveSpecsModes,
-  type ResourceLookup,
   type SpecCatalog,
   type SpecWithMode,
 } from "./spec-catalog.ts";
@@ -221,8 +220,8 @@ function dedupeSpecs(
 const LOCK_TTL_SECONDS = 3 * 60 * 60;
 
 /**
- * A spec's `exclusive:` name as a lock key. The `:` keeps it out of reach of
- * spec keys, which are always `feature/spec`.
+ * A serial group's name as a lock key. The `:` keeps it out of reach of spec
+ * keys, which are always `feature/spec`.
  */
 function resourceKey(name: string): string {
   return `resource:${name}`;
@@ -251,11 +250,10 @@ export async function holdSpecs(
   hubCtx: HubContext,
   profile: string,
   specs: SpecRef[],
-  catalog: SpecCatalog,
+  needed: GroupLookup,
   teardown: RunTeardown | undefined,
 ): Promise<SpecHold> {
   const holder = randomUUID();
-  const needed = resourceLookup(catalog);
   const resources = [...new Set(specs.flatMap(needed))];
   const take = async (keys: string[]): Promise<Set<string>> => {
     const res = await hubCtx.hub.acquireLocks(hubCtx.project, { profile }, {
@@ -297,8 +295,8 @@ export async function holdSpecs(
     if (resources.length > 0) {
       throw new RunUsageError(
         `could not claim ${resources.join(", ")} on the hub: ${errMessage(err)} — these specs ` +
-          `declare \`exclusive:\`, so running without the claim risks two jobs writing to the ` +
-          `same thing. Upgrade the hub, or drop \`exclusive:\` to run them unprotected`,
+          `are in a \`serialGroups\` entry, so running without the claim risks two jobs writing ` +
+          `to the same thing. Upgrade the hub, or drop the group to run them unprotected`,
       );
     }
     log.warn(`could not claim specs on the hub, running without exclusion: ${errMessage(err)}`);
@@ -582,13 +580,14 @@ export async function executeRun(
   // driving the same browser flow twice. Released on the way out, including on
   // SIGINT/SIGTERM; a hard kill is covered by the hold's own expiry.
   const catalog = await readSpecs(specs, cwd);
-  const resources = resourceLookup(catalog);
+  const projectConfig = await loadProjectConfig(cwd);
+  const resources = await resolveSerialGroups(projectConfig.serialGroups, cwd);
 
   const declared = [...new Set(specs.flatMap(resources))];
-  if (declared.length > 0) log.meta("exclusive", declared.join(", "));
+  if (declared.length > 0) log.meta("serial groups", declared.join(", "));
 
   if (hubCtx && rerunProfile !== null) {
-    const held = await holdSpecs(hubCtx, rerunProfile, specs, catalog, opts.teardown);
+    const held = await holdSpecs(hubCtx, rerunProfile, specs, resources, opts.teardown);
     // Two different facts, and holdSpecs already named the resources — so
     // count only the specs another job is actually running.
     const waiting = specs.filter((s) =>
@@ -619,7 +618,7 @@ export async function executeRun(
   // silently dropping out of the run.
   let dispatch: TargetDispatch;
   try {
-    dispatch = groupSpecsByTarget(specs, catalog, await loadProjectConfig(cwd));
+    dispatch = groupSpecsByTarget(specs, catalog, projectConfig);
   } catch (err) {
     // A present-but-broken .ccqa/config.yaml is a usage error, like a bad flag.
     throw new RunUsageError(errMessage(err));
@@ -989,7 +988,7 @@ async function runDeterministicSpecs(
   opts: RunOptions,
   cwd: string,
   reportDirAbs: string,
-  resources: ResourceLookup,
+  resources: GroupLookup,
 ): Promise<RunDeterministicResult> {
   if (specs.length === 0) return { summaries: [], exitCode: 0 };
 

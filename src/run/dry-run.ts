@@ -1,4 +1,5 @@
-import type { ResourceLookup, SpecWithMode } from "./spec-catalog.ts";
+import type { SpecWithMode } from "./spec-catalog.ts";
+import type { GroupLookup } from "./serial-groups.ts";
 import { specKey } from "../store/index.ts";
 import type { TargetDispatch } from "./target-dispatch.ts";
 
@@ -23,7 +24,7 @@ export function formatDryRunLines(
   // pre-mode-resolution version of the first argument, and picking the wrong
   // one would silently label every spec "deterministic".
   routed: Pick<TargetDispatch, "external" | "skipped" | "unresolved">,
-  resources: ResourceLookup,
+  resources: GroupLookup,
 ): string[] {
   const tagged = [
     ...agentBrowser.map((s) => ({ key: specKey(s), tag: s.mode, held: resources(s) })),
@@ -34,10 +35,11 @@ export function formatDryRunLines(
     ...routed.unresolved.map((s) => ({ key: specKey(s), tag: `unresolved — ${s.reason}`, held: [] })),
   ];
   const width = Math.max(0, ...tagged.map((t) => t.key.length));
-  // `exclusive:` is easy to mistype into silence, so echo what was read.
+  // Group membership lives in config, not in the spec, so echo it here:
+  // otherwise nothing on the spec's own row says it takes turns.
   return tagged.map(
     (t) =>
       `  ${t.key.padEnd(width)}  ${t.tag}` +
-      (t.held.length > 0 ? `  exclusive: ${t.held.join(", ")}` : ""),
+      (t.held.length > 0 ? `  serial: ${t.held.join(", ")}` : ""),
   );
 }

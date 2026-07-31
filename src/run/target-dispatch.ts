@@ -1,6 +1,7 @@
 import { specKey, type SpecRef } from "../store/index.ts";
 import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
-import type { ResourceLookup, SpecCatalog } from "./spec-catalog.ts";
+import type { SpecCatalog } from "./spec-catalog.ts";
+import type { GroupLookup } from "./serial-groups.ts";
 import {
   TargetConfigSchema,
   type ProjectConfig,
@@ -147,7 +148,7 @@ export interface ExternalRunContext {
   reportDir: string;
   concurrency: number;
   /** See `RunnerOptions.resources`. */
-  resources: ResourceLookup;
+  resources: GroupLookup;
   model?: string;
   language?: string;
   /** Rows land here as they finish (report.json flush + hub sink under --report-to-hub). */

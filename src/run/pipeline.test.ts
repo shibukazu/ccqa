@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { executeRun, holdSpecs } from "./pipeline.ts";
 import { RunUsageError } from "./errors.ts";
-import type { SpecCatalog } from "./spec-catalog.ts";
+import type { GroupLookup } from "./serial-groups.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
 
 /**
@@ -65,11 +65,9 @@ describe("claiming specs and the resources they share", () => {
     { featureName: "f", specName: "post-b" },
     { featureName: "f", specName: "read" },
   ];
-  const catalog = new Map([
-    ["f/post-a", { spec: { exclusive: ["channel"] }, error: null }],
-    ["f/post-b", { spec: { exclusive: ["channel"] }, error: null }],
-    ["f/read", { spec: {}, error: null }],
-  ]) as unknown as SpecCatalog;
+  // The group lookup the config resolves to: two posters share one group.
+  const inGroup: GroupLookup = (ref) =>
+    ref.specName.startsWith("post") ? ["channel"] : [];
 
   /** Grants every key asked for except those named, recording each request. */
   function hubDenying(denied: string[], asked: string[][] = []) {
@@ -93,23 +91,23 @@ describe("claiming specs and the resources they share", () => {
 
   test("a resource another job holds drops every spec needing it, and is not claimed for them", async () => {
     const { ctx, asked } = hubDenying(["resource:channel"]);
-    const held = await holdSpecs(ctx, "ci", specs, catalog, undefined);
+    const held = await holdSpecs(ctx, "ci", specs, inGroup, undefined);
     expect(held).toEqual({ specs: [specs[2]], deniedResources: ["channel"] });
     // Resources first, then only the survivors: holding a spec this run will
     // not execute would read to every other job as covered when it is not.
     expect(asked).toEqual([["resource:channel"], ["f/read"]]);
   });
 
-  test("a hub that cannot serve claims fails the run when a resource was declared", async () => {
+  test("a hub that cannot serve claims fails the run when a serial group applies", async () => {
     const ctx = {
       project: "demo",
       hub: { acquireLocks: async () => { throw new Error("410 gone"); } },
     } as unknown as HubContext;
-    await expect(holdSpecs(ctx, "ci", specs, catalog, undefined)).rejects.toThrow(/exclusive/);
+    await expect(holdSpecs(ctx, "ci", specs, inGroup, undefined)).rejects.toThrow(/serialGroups/);
 
     // With nothing declared there is no wrong verdict to cause, so it degrades.
     const plain = [{ featureName: "f", specName: "read" }];
-    const held = await holdSpecs(ctx, "ci", plain, catalog, undefined);
+    const held = await holdSpecs(ctx, "ci", plain, inGroup, undefined);
     expect(held).toEqual({ specs: plain, deniedResources: [] });
   });
 });

@@ -267,8 +267,8 @@ GET /api/v1/projects/:project/audit-needed?profile=<name>
 POST /api/v1/projects/:project/locks?profile=<name>
   { specs: string[], kind: "audit" | "run", holder: string, ttlSeconds: number }
   → 200 { granted: string[], denied: string[] }
-  # keys are "<feature>/<spec>", or "resource:<name>" for a spec.yaml
-  # `exclusive:` name — the same claim, over a thing rather than a spec
+  # keys are "<feature>/<spec>", or "resource:<name>" for a `serialGroups`
+  # name — the same claim, over a thing rather than a spec
 
 DELETE /api/v1/projects/:project/locks?profile=<name>
   { holder: string }
@@ -302,7 +302,7 @@ holder, so a late one from a lapsed job cannot take a claim the next job has
 since acquired.
 
 A claim key is usually a spec, but `ccqa run` also claims a `resource:<name>`
-key for every `exclusive:` name its specs declare, so two jobs running
+key for every `serialGroups` entry its specs belong to, so two jobs running
 *different* specs still take turns on the thing both write to (ADR-0015). A
 denied resource drops every spec needing it from that cycle.
 

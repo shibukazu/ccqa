@@ -102,24 +102,6 @@ describe("TestSpecSchema", () => {
     ).toThrow();
   });
 
-  it("normalizes a single exclusive name to a lowercased list, and rejects a path separator", () => {
-    // Case matters only to a reader: two spellings of one name must not become
-    // two locks that never collide.
-    const parsed = TestSpecSchema.parse({
-      title: "x",
-      exclusive: "Shared-Inbox",
-      steps: [{ instruction: "i", expected: "e" }],
-    });
-    expect(parsed.exclusive).toEqual(["shared-inbox"]);
-    expect(() =>
-      TestSpecSchema.parse({
-        title: "x",
-        exclusive: ["a/b"],
-        steps: [{ instruction: "i", expected: "e" }],
-      }),
-    ).toThrow();
-  });
-
   it("accepts a target slug", () => {
     const parsed = TestSpecSchema.parse({
       title: "x",

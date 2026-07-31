@@ -46,13 +46,14 @@ Key flags (see `ccqa run --help` for the rest):
 - `--dry-run` — print the specs this invocation would run, then exit `0`
   without executing anything and without writing a report. Works with every
   selection flag. Each line names the phase that would run the spec, and any
-  `exclusive:` names it declared — which is how you confirm a declaration was
-  read rather than mistyped into silence.
+  [`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time)
+  it belongs to — which is how you confirm a group was read rather than
+  mistyped into silence.
 - `--concurrency <n>` — run up to N specs in parallel **within each phase**
-  (never across phases). Default 1. Specs that declare the same
-  [`exclusive:`](./spec.md#exclusive--shared-things-two-specs-must-not-both-write-to)
-  resource still take turns, so raising this does not put two specs on the
-  same chat channel or shared account at once.
+  (never across phases). Default 1. Specs in the same
+  [`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time)
+  entry still take turns, so raising this does not put two specs on the same
+  chat channel or shared account at once.
 - `--replay-skip-evidence` — skip the step-boundary screenshots of deterministic
   specs.
 - `--on-fail-explain` — classify each failure, on any target, against the

@@ -6,7 +6,7 @@ import { errMessage } from "./errors.ts";
 /**
  * One spec.yaml as read. `spec` is null both when the file is absent and when
  * it would not parse; `error` separates the two, because everything read off
- * the file (`mode:`, `exclusive:`) silently falls back to its default when
+ * the file (`mode:`) silently falls back to its default when
  * parsing fails, which must not look like a spec that declares nothing.
  */
 export interface CatalogEntry {
@@ -30,17 +30,6 @@ export async function readSpecs(refs: readonly SpecRef[], cwd: string): Promise<
     }),
   );
   return new Map(entries);
-}
-
-/**
- * Which shared resources a spec declares. Passed to whatever schedules specs
- * rather than copied onto them, so the catalog stays the only place the answer
- * comes from.
- */
-export type ResourceLookup = (ref: SpecRef) => readonly string[];
-
-export function resourceLookup(catalog: SpecCatalog): ResourceLookup {
-  return (ref) => catalog.get(specKey(ref))?.spec?.exclusive ?? [];
 }
 
 export type SpecWithMode = SpecRef & { mode: SpecMode };

@@ -23,12 +23,12 @@ describe("formatDryRunLines", () => {
         } as TargetDispatch["external"][number],
       ],
     };
-    // The `exclusive:` echo is the only feedback that a declaration was read,
-    // so a mistyped name shows up here rather than as a silent no-op.
+    // Group membership lives in config, so this echo is the only place a
+    // spec's own row says it takes turns with something.
     const held = (s: { specName: string }) => (s.specName === "create" ? ["channel"] : []);
     expect(formatDryRunLines(agentBrowser, routed, held)).toEqual([
       "  auth/login    deterministic",
-      "  tasks/create  live  exclusive: channel",
+      "  tasks/create  live  serial: channel",
       "  api/health    playwright",
     ]);
   });
