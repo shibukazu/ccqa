@@ -131,6 +131,22 @@ export function resolveEndpointEnv(): Record<string, string> {
 }
 
 /**
+ * Drop endpoint variables that are present but empty, so an empty value never
+ * reaches the Claude Code process as an override. "Set to nothing" is how a
+ * caller that cannot omit the key says "use the default" — a CI job wiring
+ * `ANTHROPIC_BASE_URL` from an unset repository variable, most of all.
+ */
+export function withoutEmptyEndpointVars(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const out = { ...env };
+  for (const key of ENDPOINT_ENV_KEYS) {
+    if (out[key] === "") delete out[key];
+  }
+  return out;
+}
+
+/**
  * Per-invocation cost + usage record extracted from the SDK's `result` message.
  * All fields are `null` when the SDK didn't surface a `result` message (e.g.
  * the mock replay shim used in unit tests).
@@ -215,10 +231,16 @@ export async function invokeClaudeStreaming(
   // environment and layer the caller's overrides on top, so those variables are
   // always carried through. When none is set and the caller passes no env, we
   // leave `env` unset and let the SDK use its own default.
+  //
+  // An endpoint variable that is set but EMPTY is dropped rather than passed
+  // on. CI cannot omit a key conditionally — an unset repository variable
+  // still renders as `""` — so without this, wiring the variable once to make
+  // the endpoint switchable would hand the CLI an empty base URL on every run
+  // that did not set it.
   const hasEndpointEnv = Object.keys(resolveEndpointEnv()).length > 0;
   const mergedEnv =
     env || hasEndpointEnv
-      ? ({ ...process.env, ...env } as Record<string, string | undefined>)
+      ? (withoutEmptyEndpointVars({ ...process.env, ...env }) as Record<string, string | undefined>)
       : undefined;
 
   // Track the last agent-browser tool_use_id so the post-tool hooks can roll

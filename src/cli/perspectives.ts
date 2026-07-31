@@ -38,6 +38,7 @@ import { resolveProject } from "./resolve-project.ts";
 import { formatToolSummary, printUnifiedDiff, prompt } from "./draft.ts";
 import { addHubOptions, addLanguageOption, languageDirective, useJapanesePrompts } from "./options.ts";
 import * as log from "./logger.ts";
+import { withCostReporting } from "./cost-line.ts";
 
 interface PerspectivesOptions extends HubConnOptions {
   instruction?: string;
@@ -63,11 +64,7 @@ export const perspectivesCommand = addHubOptions(addLanguageOption(
     .option("-m, --model <name>", "Claude model alias ('sonnet'|'opus'|'haiku') or full ID")
     .option("--project <name>", "Hub project to store the document under (default: cwd directory name)"),
 )).action(withHubErrors(async (opts: PerspectivesOptions) => {
-  if (opts.verify) {
-    await runPerspectivesCheck(opts);
-  } else {
-    await runPerspectives(opts);
-  }
+  await withCostReporting("perspectives", () => (opts.verify ? runPerspectivesCheck(opts) : runPerspectives(opts)));
 }));
 
 /**

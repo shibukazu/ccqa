@@ -17,6 +17,7 @@ function sampleData(): RunReportData {
     language: null,
     promptVersion: "1",
     customPromptVersion: null,
+    cost: null,
     results: [
       {
         feature: "tasks",

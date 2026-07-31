@@ -14,6 +14,7 @@ import { addHubOptions, addLanguageOption, addProfileOption } from "./options.ts
 import { resolveCwd } from "./resolve-cwd.ts";
 import { createRunTeardown, installTeardownSignalHandlers } from "./run-teardown.ts";
 import * as log from "./logger.ts";
+import { withCostReporting } from "./cost-line.ts";
 
 export {
   buildFailureLog,
@@ -161,23 +162,27 @@ async function runCliAction(targets: string[], opts: RunOptions): Promise<void> 
 
   const cwd = resolveCwd(opts.cwd);
 
-  const teardown = createRunTeardown();
-  const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
-  let exitCode: number;
-  try {
-    exitCode = (await executeRun(targets, { ...opts, cwd, teardown })).exitCode;
-  } catch (err) {
-    if (!(err instanceof RunUsageError)) throw err;
-    log.error(err.message);
-    exitCode = err.exitCode;
-  } finally {
-    // Reap tracked sessions and drop hub claims on every exit path, not only
-    // the successful one: a usage error thrown after the claim would otherwise
-    // hold those specs until the claim's own TTL lapses. The signal handler
-    // covers SIGINT/SIGTERM; run() is idempotent, so neither can double-reap.
-    // This has to sit before process.exit — that call does not unwind.
-    await teardown.run();
-    disposeSignalHandlers();
-  }
+  // The tally covers the whole run — spec selection, live browsing, failure
+  // triage — and the teardown after it, so nothing billed goes uncounted. The
+  // cost line therefore lands before `process.exit` below, which sits outside.
+  const exitCode = await withCostReporting("run", async () => {
+    const teardown = createRunTeardown();
+    const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
+    try {
+      return (await executeRun(targets, { ...opts, cwd, teardown })).exitCode;
+    } catch (err) {
+      if (!(err instanceof RunUsageError)) throw err;
+      log.error(err.message);
+      return err.exitCode;
+    } finally {
+      // Reap tracked sessions and drop hub claims on every exit path, not only
+      // the successful one: a usage error thrown after the claim would otherwise
+      // hold those specs until the claim's own TTL lapses. The signal handler
+      // covers SIGINT/SIGTERM; run() is idempotent, so neither can double-reap.
+      // This has to sit before process.exit — that call does not unwind.
+      await teardown.run();
+      disposeSignalHandlers();
+    }
+  });
   process.exit(exitCode);
 }

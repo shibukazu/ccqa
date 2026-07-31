@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
+import type { ReportCost, ReportSpecResult, RunReportData } from "../report/schema.ts";
 
 /**
  * The report envelope fields that don't change spec-to-spec — everything in
@@ -53,6 +53,12 @@ export function createIncrementalReport(
   reportDir: string,
   envelope: ReportEnvelope,
   sink?: ReportSink,
+  /**
+   * Re-read the run's Claude spend at flush time. The envelope is captured
+   * once, but cost keeps accruing while the run executes, so a captured value
+   * would report whatever had been billed before the first spec started.
+   */
+  costNow?: () => ReportCost | null,
 ): IncrementalReport {
   const byKey = new Map<string, ReportSpecResult>();
   const reportPath = join(reportDir, "report.json");
@@ -62,7 +68,14 @@ export function createIncrementalReport(
 
   const key = (r: ReportSpecResult) => `${r.feature}/${r.spec}`;
 
-  const buildData = (): RunReportData => ({ ...envelope, results: [...byKey.values()] });
+  // Re-spreading `cost` keeps its position: the key already exists in the
+  // envelope, so the overwrite updates the value in place rather than moving it
+  // after `results`.
+  const buildData = (): RunReportData => ({
+    ...envelope,
+    ...(costNow ? { cost: costNow() } : {}),
+    results: [...byKey.values()],
+  });
 
   const doFlush = async (): Promise<void> => {
     const data = buildData();

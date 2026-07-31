@@ -5,8 +5,7 @@ import { loadSpecInventory, type SpecDescription } from "../select/inventory.ts"
 import { specsToRun, type SelectReport, type SelectVerdict } from "../select/types.ts";
 import * as log from "./logger.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
-import { withCostTally } from "../claude/cost-tally.ts";
-import { reportCost } from "./cost-line.ts";
+import { withCostReporting } from "./cost-line.ts";
 
 interface SelectSpecsOptions {
   /** requiredOption — commander exits before the action runs if this is missing. */
@@ -38,7 +37,7 @@ export const selectSpecsCommand = new Command("select-specs")
   )
   .option("--format <fmt>", "Output format: text | json", "text")
   .action(async (opts: SelectSpecsOptions) => {
-    await withCostTally(() => runSelectSpecs(opts));
+    await withCostReporting("select-specs", () => runSelectSpecs(opts));
   });
 
 async function runSelectSpecs(opts: SelectSpecsOptions): Promise<void> {
@@ -94,7 +93,6 @@ async function runSelectSpecs(opts: SelectSpecsOptions): Promise<void> {
   });
 
   process.stdout.write(format === "json" ? `${JSON.stringify(report, null, 2)}\n` : renderText(report));
-  reportCost();
   process.exit(0);
 }
 

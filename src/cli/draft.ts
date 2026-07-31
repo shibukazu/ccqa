@@ -31,6 +31,7 @@ import {
   type DraftReport,
 } from "../types.ts";
 import * as log from "./logger.ts";
+import { withCostReporting } from "./cost-line.ts";
 
 const CATEGORY_LABEL = DRAFT_CATEGORY_LABEL;
 
@@ -41,6 +42,10 @@ export const draftCommand = addLanguageOption(
     .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
     .option("-y, --yes", "Apply each generated patch without asking [y/N]", false),
 ).action(withUsageErrors(async (specPath: string | undefined, opts: DraftOptions) => {
+  await withCostReporting("draft", () => runDraftCli(specPath, opts));
+}));
+
+async function runDraftCli(specPath: string | undefined, opts: DraftOptions): Promise<void> {
   await ensureCcqaDir();
 
   let featureName: string;
@@ -57,7 +62,7 @@ export const draftCommand = addLanguageOption(
   }
 
   await runDraft(featureName, specName, opts, prefilledIntent);
-}));
+}
 
 interface DraftOptions {
   instruction?: string;

@@ -249,6 +249,26 @@ export const ReportArtifactSchema = z.object({
 export type ReportArtifact = z.infer<typeof ReportArtifactSchema>;
 
 /**
+ * Per-step / per-run cost+usage record, pulled from the SDK's `result` message.
+ * Every numeric field is nullable so the report can carry partial telemetry
+ * (e.g. when the SDK omits a field, or when a step was skipped).
+ *
+ * `models` is the union of model ids the SDK reported using; usually a
+ * single element, but the SDK can fan out across models in some modes.
+ */
+export const ReportCostSchema = z.object({
+  totalCostUsd: z.number().nullable(),
+  durationApiMs: z.number().nullable(),
+  numTurns: z.number().nullable(),
+  inputTokens: z.number().nullable(),
+  cacheCreationInputTokens: z.number().nullable(),
+  cacheReadInputTokens: z.number().nullable(),
+  outputTokens: z.number().nullable(),
+  models: z.array(z.string()),
+});
+export type ReportCost = z.infer<typeof ReportCostSchema>;
+
+/**
  * Per-step row for a live-mode run (spec.yaml `mode: live`). Mirrors the
  * structure produced by `src/runtime/live-executor.ts:LiveStepResult` but
  * encoded against the report schema so the HTML renderer can carry both
@@ -262,26 +282,6 @@ export type ReportArtifact = z.infer<typeof ReportArtifactSchema>;
  * self-contained: it can be archived and shipped on its own (e.g. a hub
  * push) without also bundling the `.ccqa` runs dir.
  */
-/**
- * Per-step / per-run cost+usage record, pulled from the SDK's `result` message.
- * Every numeric field is nullable so the report can carry partial telemetry
- * (e.g. when the SDK omits a field, or when a step was skipped).
- *
- * `models` is the union of model ids the SDK reported using; usually a
- * single element, but the SDK can fan out across models in some modes.
- */
-export const LiveReportCostSchema = z.object({
-  totalCostUsd: z.number().nullable(),
-  durationApiMs: z.number().nullable(),
-  numTurns: z.number().nullable(),
-  inputTokens: z.number().nullable(),
-  cacheCreationInputTokens: z.number().nullable(),
-  cacheReadInputTokens: z.number().nullable(),
-  outputTokens: z.number().nullable(),
-  models: z.array(z.string()),
-});
-export type LiveReportCost = z.infer<typeof LiveReportCostSchema>;
-
 export const LiveReportStepSchema = z.object({
   stepId: z.string(),
   source: z.string(),
@@ -292,7 +292,7 @@ export const LiveReportStepSchema = z.object({
   beforePng: z.string().nullable(),
   afterPng: z.string().nullable(),
   durationMs: z.number(),
-  cost: LiveReportCostSchema,
+  cost: ReportCostSchema,
   /**
    * agent-browser commands Claude issued on the accepted attempt (tail-trimmed).
    * Optional for backward compatibility with reports written before this field
@@ -309,7 +309,7 @@ export const LiveReportRunSchema = z.object({
   startedAt: z.string(),
   durationMs: z.number(),
   steps: z.array(LiveReportStepSchema),
-  cost: LiveReportCostSchema,
+  cost: ReportCostSchema,
 });
 export type LiveReportRun = z.infer<typeof LiveReportRunSchema>;
 
@@ -500,6 +500,20 @@ export const RunReportDataSchema = z.object({
    * before this field existed.
    */
   deployedSha: z.string().optional(),
+  /**
+   * What this invocation spent on Claude, as of the moment report.json was
+   * written. Every call counts: live browsing, failure triage, the drift audit
+   * a failure triggers, and spec selection. It is therefore a superset of the
+   * per-spec `results[].liveRun.cost`, not a sum of them.
+   *
+   * "Nothing was billed" is `totalCostUsd: null` inside this object, NOT a
+   * null object — a deterministic run that passes still carries a `cost` whose
+   * every numeric field is null. The object itself is null only for a report
+   * built outside a cost scope (a library caller of `executeRun`, a test) and
+   * for report.json written before this field, which `.default(null)` keeps
+   * valid. Read the total, not the object's presence.
+   */
+  cost: ReportCostSchema.nullable().default(null),
   results: z.array(ReportSpecResultSchema),
 });
 export type RunReportData = z.infer<typeof RunReportDataSchema>;

@@ -27,6 +27,7 @@ import { resolveProject } from "./resolve-project.ts";
 import { hubTokenOption, hubUrlOption, resolveHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
 import { detectBranch } from "./git-branch.ts";
 import * as log from "./logger.ts";
+import { withCostReporting } from "./cost-line.ts";
 
 /**
  * `ccqa hub` — the client side of the ccqa hub (a results/secret control
@@ -399,59 +400,63 @@ const deployRecord = new Command("record")
   .option("--project <name>", "Project whose deploy log this entry joins. Defaults to the current directory's name.")
   .option("--cwd <path>", "Directory the git diff and the default --project name are resolved against.")
   .action(withHubErrors(async (opts: DeployRecordOptions) => {
-    const cwd = resolveCwd(opts.cwd);
-    const project = resolveProject(opts);
-    const hub = connect(opts);
-
-    // Without an explicit predecessor, the hub's own head is the only honest
-    // answer to "what did this replace" — ccqa never guesses a baseline. When
-    // there is no head yet (the first ever deploy), there is nothing to diff
-    // against: changedPaths stays null (record-only; re-run verdicts are
-    // decided from `hasSelection`, not from it) rather than an empty change set.
-    const previous = opts.previous ?? (await deployHeadSha(hub, project, opts.profile));
-    const runUrl = githubRunUrl();
-    // One diff for the whole range, shared below by `changedPaths` and
-    // the selection — they used to each run their own git diff over it.
-    const diff = previous === null ? null : await diffOrNull(previous, opts.sha, cwd);
-    const changedPaths = diff ? capDeployPaths(diff.map((f) => f.path)) : null;
-    const selection = opts.selectSpecs !== false && previous !== null && diff !== null
-      ? await selectionForDeploy(diff, previous, opts.sha, cwd, opts.model)
-      : undefined;
-
-    const entry = await hub.recordDeploy(project, opts.profile, {
-      sha: opts.sha,
-      previousSha: previous,
-      changedPaths,
-      ...(selection ? { selection } : {}),
-      ...(opts.ref ? { ref: opts.ref } : {}),
-      // Same source `ccqa run` uses, so a deploy recorded from Actions links
-      // back to its job with no extra flag.
-      ...(runUrl ? { runUrl } : {}),
-    });
-
-    log.header("hub deploy record", entry.sha.slice(0, 12));
-    log.meta("project", project);
-    log.meta("profile", opts.profile);
-    log.meta("previous", previous ? previous.slice(0, 12) : "(none)");
-    log.meta("changed paths", changedPaths === null ? "(not reported)" : String(changedPaths.length));
-    if (opts.selectSpecs !== false) log.meta("selection", describeSelection(selection, diff !== null));
-    if (entry.gapBefore) {
-      log.warn(
-        "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it are assumed reached rather than cleared to 'verified'",
-      );
-    }
-    // The hub only marks the entry once the selection has actually landed. If
-    // we sent one and it did not, that range is a hole nothing fills later,
-    // which the job must not exit quietly on.
-    if (selection && !entry.hasSelection) {
-      log.error(
-        "the hub recorded this deploy but could not store its spec selection — every spec behind it " +
-          "is assumed reached from here on, and nothing fills it in later. Re-record this deploy.",
-      );
-      process.exit(1);
-    }
-    log.info(`recorded deploy #${entry.index}`);
+    await withCostReporting("hub deploy record", () => runDeployRecord(opts));
   }));
+
+async function runDeployRecord(opts: DeployRecordOptions): Promise<void> {
+  const cwd = resolveCwd(opts.cwd);
+  const project = resolveProject(opts);
+  const hub = connect(opts);
+
+  // Without an explicit predecessor, the hub's own head is the only honest
+  // answer to "what did this replace" — ccqa never guesses a baseline. When
+  // there is no head yet (the first ever deploy), there is nothing to diff
+  // against: changedPaths stays null (record-only; re-run verdicts are
+  // decided from `hasSelection`, not from it) rather than an empty change set.
+  const previous = opts.previous ?? (await deployHeadSha(hub, project, opts.profile));
+  const runUrl = githubRunUrl();
+  // One diff for the whole range, shared below by `changedPaths` and
+  // the selection — they used to each run their own git diff over it.
+  const diff = previous === null ? null : await diffOrNull(previous, opts.sha, cwd);
+  const changedPaths = diff ? capDeployPaths(diff.map((f) => f.path)) : null;
+  const selection = opts.selectSpecs !== false && previous !== null && diff !== null
+    ? await selectionForDeploy(diff, previous, opts.sha, cwd, opts.model)
+    : undefined;
+
+  const entry = await hub.recordDeploy(project, opts.profile, {
+    sha: opts.sha,
+    previousSha: previous,
+    changedPaths,
+    ...(selection ? { selection } : {}),
+    ...(opts.ref ? { ref: opts.ref } : {}),
+    // Same source `ccqa run` uses, so a deploy recorded from Actions links
+    // back to its job with no extra flag.
+    ...(runUrl ? { runUrl } : {}),
+  });
+
+  log.header("hub deploy record", entry.sha.slice(0, 12));
+  log.meta("project", project);
+  log.meta("profile", opts.profile);
+  log.meta("previous", previous ? previous.slice(0, 12) : "(none)");
+  log.meta("changed paths", changedPaths === null ? "(not reported)" : String(changedPaths.length));
+  if (opts.selectSpecs !== false) log.meta("selection", describeSelection(selection, diff !== null));
+  if (entry.gapBefore) {
+    log.warn(
+      "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it are assumed reached rather than cleared to 'verified'",
+    );
+  }
+  // The hub only marks the entry once the selection has actually landed. If
+  // we sent one and it did not, that range is a hole nothing fills later,
+  // which the job must not exit quietly on.
+  if (selection && !entry.hasSelection) {
+    log.error(
+      "the hub recorded this deploy but could not store its spec selection — every spec behind it " +
+        "is assumed reached from here on, and nothing fills it in later. Re-record this deploy.",
+    );
+    process.exit(1);
+  }
+  log.info(`recorded deploy #${entry.index}`);
+}
 
 /**
  * Decide which specs this deploy reaches, in the shape the hub stores.

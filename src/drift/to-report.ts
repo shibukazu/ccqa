@@ -1,4 +1,5 @@
 import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
+import { currentReportCost } from "../report/run-cost.ts";
 import { DRIFT_PROMPT_VERSION } from "../prompts/drift.ts";
 import { driftSeverity, type SpecResult, type Threshold } from "./types.ts";
 
@@ -80,6 +81,9 @@ export function driftResultsToReport(
     // (src/run/pipeline.ts's buildReportEnvelope) so report.json keeps its
     // historical shape when no `audit.user` guidance was active.
     ...(meta.triageUserPromptHash ? { triageUserPromptHash: meta.triageUserPromptHash } : {}),
+    // What the sweep spent reading the specs. Read from the command's tally
+    // rather than passed in: every caller is inside `ccqa audit`'s scope.
+    cost: currentReportCost(),
     results: specResults,
   };
 }

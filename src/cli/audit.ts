@@ -43,8 +43,7 @@ import {
 import { detectBranch, getGitHead } from "./git-branch.ts";
 import { withUsageErrors } from "./usage-errors.ts";
 import * as log from "./logger.ts";
-import { withCostTally } from "../claude/cost-tally.ts";
-import { reportCost } from "./cost-line.ts";
+import { withCostReporting } from "./cost-line.ts";
 
 interface AuditOptions {
   reportFormat?: Format;
@@ -111,7 +110,7 @@ export const auditCommand = addProfileOption(addLanguageOption(
     .option(...hubTokenOption)
     .option(...hubHeaderOption),
 )).action(withUsageErrors(async (specPath: string | undefined, opts: AuditOptions) => {
-  await withCostTally(() => runAudit(specPath, opts));
+  await withCostReporting("audit", () => runAudit(specPath, opts));
 }));
 
 async function runAudit(specPath: string | undefined, opts: AuditOptions): Promise<void> {
@@ -263,7 +262,6 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     await pushDriftResults({ results, threshold, cwd, opts, format, baseRef, promptCtx });
   }
 
-  reportCost();
   process.exit(determineExitCode(results, threshold));
 }
 
@@ -466,7 +464,6 @@ function asHubReadError(err: unknown): never {
 type NoSpecsReason = "noSpecsFound" | "allCurrent" | "allHeld" | "noDiffIntersection";
 
 function exitWithNoSpecs(format: Format, reason: NoSpecsReason, message: string): never {
-  reportCost();
   if (format === "json") {
     process.stdout.write(`${JSON.stringify({ specs: [], skipped: reason }, null, 2)}\n`);
   } else if (format === "text") {

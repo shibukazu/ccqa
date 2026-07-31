@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry } from "../../contract/schema.ts";
-import { GitEnvelopeSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
+import { GitEnvelopeSchema, ReportCostSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { DriftLabel } from "../../../drift/types.ts";
 import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
@@ -86,6 +86,7 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
         specs: { total, passed: total - failed, failed },
         gitHead: report.git.head,
         promptVersion: report.promptVersion,
+        costUsd: report.cost?.totalCostUsd ?? null,
         ciRunId: report.runId,
         runUrl: report.runUrl ?? null,
         reportCreatedAt: report.createdAt,
@@ -145,6 +146,8 @@ export function createOpenRunHandler(config: OpenRunHandlerConfig) {
       specs: { total: 0, passed: 0, failed: 0 },
       gitHead: gitHead || null,
       promptVersion: "",
+      // Nothing has been spent yet; the PATCHes that follow refresh it.
+      costUsd: null,
       ciRunId: ciRunId || null,
       runUrl: runUrl || null,
       reportCreatedAt: now,
@@ -177,6 +180,7 @@ const PatchRunRequestSchema = z.object({
       customPromptVersion: z.string().nullable().optional(),
       runUrl: z.string().nullable().optional(),
       triageUserPromptHash: z.string().optional(),
+      cost: ReportCostSchema.nullable().optional(),
     })
     .partial()
     .optional(),
@@ -378,6 +382,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
     // the Run record and (on `done`) the spec ledger.
     let specs = run.specs;
     let mergedResults: ReportSpecResult[] = [];
+    let costUsd = run.costUsd ?? null;
     await config.storage.artifacts.updateJsonFile<RunReportData>(id, "report.json", (current) => {
       // The per-spec patches created report.json early with provisional
       // metadata (git=null, model=null — the diff isn't known until failure
@@ -395,6 +400,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
         language: null,
         promptVersion: "",
         customPromptVersion: null,
+        cost: null,
       };
       const envelope: ReportEnvelope = {
         ...base,
@@ -414,10 +420,14 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
         ...(reportMeta?.customPromptVersion !== undefined ? { customPromptVersion: reportMeta.customPromptVersion } : {}),
         ...(reportMeta?.runUrl !== undefined ? { runUrl: reportMeta.runUrl } : {}),
         ...(reportMeta?.triageUserPromptHash !== undefined ? { triageUserPromptHash: reportMeta.triageUserPromptHash } : {}),
+        ...(reportMeta?.cost !== undefined ? { cost: reportMeta.cost } : {}),
       };
       const merged = mergeResults(current?.results ?? [], rows);
       specs = countSpecs(merged);
       mergedResults = merged;
+      // Tracked off the merged envelope, not off this patch: a patch that
+      // carries no cost keeps what the report already recorded.
+      costUsd = envelope.cost?.totalCostUsd ?? null;
       return { ...envelope, results: merged };
     });
 
@@ -431,6 +441,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
       ? {
           status: finalStatus ?? (specs.failed > 0 ? "failed" : "passed"),
           specs,
+          costUsd,
           // The single-shot push derives this at create time from the whole
           // report. Here the rows only exist once the run is sealed, so it is
           // derived at the same point — otherwise a drift run pushed
@@ -442,7 +453,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
           ...(reportMeta?.promptVersion ? { promptVersion: reportMeta.promptVersion } : {}),
           ...((await deployHeadMovedDuringRun(config.storage, run)) ? { deployedShaAmbiguous: true } : {}),
         }
-      : { specs };
+      : { specs, costUsd };
     const updated = await config.storage.runs.update(id, patch);
     if (done) {
       await updateSpecLedger(config.storage, updated, mergedResults);

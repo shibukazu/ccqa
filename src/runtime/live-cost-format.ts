@@ -5,17 +5,25 @@ type Cost = LiveRunResult["cost"];
 /**
  * Compact one-line cost summary. Format:
  *   "$0.1234 · 4 turns · 42 in / 6,511 out · 2.0M cached · sonnet"
- * Returns null when no cost data is available (mock runs / SDK errors).
+ * Returns null only when the invocation reported nothing at all (a mock run,
+ * an SDK error, or a command that never called a model).
+ *
+ * The price is one segment among several, not a precondition. An endpoint the
+ * SDK has no pricing table for — any Anthropic-compatible gateway in front of
+ * a third-party model — reports usage but no `total_cost_usd`, and dropping
+ * the whole line there would hide real consumption behind silence. Tokens come
+ * from the API response rather than a price list, so they survive that case
+ * and become the signal to read.
  *
  * `compact: false` (default for CLI logs) keeps raw numbers and adds a
  * `model=...` segment. `compact: true` (HTML chip) thousand-separates fresh
  * tokens, abbreviates cache-read with K/M, drops the `model=` prefix.
  */
 export function formatLiveCost(cost: Cost, options: { compact: boolean }): string | null {
-  if (cost.totalCostUsd === null) return null;
   const compact = options.compact;
   const sep = compact ? " · " : " / ";
-  const parts: string[] = [`$${cost.totalCostUsd.toFixed(4)}`];
+  const parts: string[] = [];
+  if (cost.totalCostUsd !== null) parts.push(`$${cost.totalCostUsd.toFixed(4)}`);
   if (cost.numTurns !== null) parts.push(`${cost.numTurns} turns`);
   if (cost.inputTokens !== null || cost.outputTokens !== null) {
     const i = cost.inputTokens ?? 0;
@@ -34,32 +42,7 @@ export function formatLiveCost(cost: Cost, options: { compact: boolean }): strin
     );
   }
   if (!compact && cost.models.length > 0) parts.push(`model=${cost.models.join(",")}`);
-  return parts.join(sep);
-}
-
-/**
- * Sum of per-spec costs for a batch. Used only by the CLI batch summary.
- * Returns null when no spec has cost data.
- */
-export function formatLiveBatchCost(costs: readonly Cost[]): string | null {
-  let totalUsd = 0;
-  let seen = false;
-  let totalIn = 0;
-  let totalOut = 0;
-  let totalCacheRead = 0;
-  for (const c of costs) {
-    if (c.totalCostUsd !== null) {
-      totalUsd += c.totalCostUsd;
-      seen = true;
-    }
-    totalIn += c.inputTokens ?? 0;
-    totalOut += c.outputTokens ?? 0;
-    totalCacheRead += c.cacheReadInputTokens ?? 0;
-  }
-  if (!seen) return null;
-  const parts = [`$${totalUsd.toFixed(4)}`, `${totalIn}+${totalOut} tokens`];
-  if (totalCacheRead > 0) parts.push(`${totalCacheRead} cache-read`);
-  return parts.join(" / ");
+  return parts.length > 0 ? parts.join(sep) : null;
 }
 
 /** Thousand-separated count for token figures. */

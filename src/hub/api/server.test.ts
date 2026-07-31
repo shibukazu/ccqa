@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createFileHubStorage } from "../core/storage/file/index.ts";
 import type { HubStorage } from "../core/storage/types.ts";
 import { packTarGz, type TarEntry } from "../core/tar.ts";
-import type { ReportSpecResult, RunReportData } from "../../report/schema.ts";
+import type { ReportCost, ReportSpecResult, RunReportData } from "../../report/schema.ts";
 import { createHubServer } from "./server.ts";
 
 // This server builds its own triage-learning worker internally with no
@@ -25,12 +25,26 @@ async function json(res: Response): Promise<any> {
   return res.json();
 }
 
+/** A report cost carrying only the total — the single field `Run.costUsd` is derived from. */
+function makeCost(totalCostUsd: number): ReportCost {
+  return {
+    totalCostUsd,
+    durationApiMs: null,
+    numTurns: null,
+    inputTokens: null,
+    cacheCreationInputTokens: null,
+    cacheReadInputTokens: null,
+    outputTokens: null,
+    models: [],
+  };
+}
+
 /**
  * Build a minimal valid pushed-report archive: a `report.json` satisfying
  * `RunReportDataSchema` plus a stub `index.html`, packed as a tar.gz — the
  * exact shape `POST /api/v1/runs` expects.
  */
-function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; runUrl?: string } = {}): Uint8Array {
+function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; runUrl?: string; costUsd?: number } = {}): Uint8Array {
   const report: RunReportData = {
     schemaVersion: 1,
     kind: "run",
@@ -42,6 +56,7 @@ function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; r
     language: null,
     promptVersion: "1",
     customPromptVersion: null,
+    cost: opts.costUsd === undefined ? null : makeCost(opts.costUsd),
     results: opts.status
       ? [
           {
@@ -98,6 +113,7 @@ function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
     language: null,
     promptVersion: "1",
     customPromptVersion: null,
+    cost: null,
     results: [
       {
         ...baseResult,
@@ -162,6 +178,7 @@ function makeCleanAuditTarGz(gitHead: string, specs: readonly string[]): Uint8Ar
     language: null,
     promptVersion: "1",
     customPromptVersion: null,
+    cost: null,
     results: specs.map((key) => ({
       feature: key.split("/")[0]!,
       spec: key.split("/")[1]!,
@@ -408,6 +425,16 @@ describe("hub API server", () => {
       expect(res.status).toBe(400);
       const body = await json(res);
       expect(body.error.code).toBe("invalid_report");
+    });
+
+    test("a pushed report's total cost is derived onto the run", async () => {
+      // Server-side from the report, never a client-supplied number — the same
+      // rule every other field of a Run follows.
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=demo`, authed({
+        method: "POST",
+        body: makeReportTarGz({ status: "passed", costUsd: 1.25 }),
+      }));
+      expect((await json(res)).costUsd).toBe(1.25);
     });
 
     test("a pushed run is listable, filterable by branch, and its report.json is fetchable", async () => {
@@ -662,6 +689,19 @@ describe("hub API server", () => {
       expect(report.model).toBe("opus");
       expect(report.promptVersion).toBe("7");
       expect(report.results).toHaveLength(1);
+    });
+
+    test("a run opened with no cost has it refreshed by the seal PATCH's reportMeta", async () => {
+      const run = await openRun();
+      expect(run.costUsd).toBeNull();
+      const sealed = await json(
+        await patch(run.id as string, {
+          rows: [makeRow({ status: "passed" })],
+          done: true,
+          reportMeta: { cost: makeCost(0.5) },
+        }),
+      );
+      expect(sealed.costUsd).toBe(0.5);
     });
 
     test("PATCH on a nonexistent run returns 404", async () => {

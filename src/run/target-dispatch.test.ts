@@ -172,6 +172,7 @@ const ENVELOPE: ReportEnvelope = {
   language: null,
   promptVersion: "test",
   customPromptVersion: null,
+  cost: null,
 };
 
 function emptyDispatch(): TargetDispatch {

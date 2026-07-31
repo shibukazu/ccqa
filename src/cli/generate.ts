@@ -17,6 +17,7 @@ import { resolveHubClient, type HubContext } from "./hub-conn.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import { buildGenerateRunSummary } from "./build-generate-run-summary.ts";
 import * as log from "./logger.ts";
+import { withCostReporting } from "./cost-line.ts";
 
 const AUTO_FIX_MODES = ["interactive", "auto", "skip"] as const;
 export type AutoFixMode = (typeof AUTO_FIX_MODES)[number];
@@ -302,6 +303,10 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Project name for the hub. Defaults to the current directory's name.",
     ),
 ))).action(withUsageErrors(async (specPath: string, opts: GenerateCliOptions) => {
+  await withCostReporting("generate", () => runGenerateCli(specPath, opts));
+}));
+
+async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promise<void> {
   const { featureName, specName } = parseSpecPath(specPath);
   const language = opts.language ?? DEFAULT_LANGUAGE;
 
@@ -353,5 +358,4 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     }
     throw e;
   }
-
-}));
+}
