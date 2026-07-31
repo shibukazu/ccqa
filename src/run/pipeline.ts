@@ -31,6 +31,7 @@ import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.
 import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
 import { tryDeployHeadSha } from "./deploy-head.ts";
 import { formatDryRunLines } from "./dry-run.ts";
+import { resolveSerialGroups, type GroupLookup } from "./serial-groups.ts";
 import {
   fetchRerunReport,
   requireRerunProfile,
@@ -46,7 +47,12 @@ import { resolveProfileEnv } from "../cli/options.ts";
 import { resolveHubContext, HubConnectionError, type HubContext } from "../cli/hub-conn.ts";
 import { HubApiError } from "../hub-client/index.ts";
 import { resolveProjectOrThrow, ProjectNameError } from "../cli/resolve-project.ts";
-import { resolveSpecsModes } from "../cli/spec-mode.ts";
+import {
+  readSpecs,
+  resolveSpecsModes,
+  type SpecCatalog,
+  type SpecWithMode,
+} from "./spec-catalog.ts";
 import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
@@ -214,41 +220,94 @@ function dedupeSpecs(
 const LOCK_TTL_SECONDS = 3 * 60 * 60;
 
 /**
- * Claim the specs this run is about to execute, and arrange for the claim to
- * be dropped. Best-effort against the hub: one too old to serve claims must
- * not stop a run that would otherwise work.
+ * A serial group's name as a lock key. The `:` keeps it out of reach of spec
+ * keys, which are always `feature/spec`.
  */
-async function holdSpecs(
+function resourceKey(name: string): string {
+  return `resource:${name}`;
+}
+
+/**
+ * What the hub let this run take. `deniedResources` is reported separately
+ * from the specs because the two denials mean opposite things: a denied spec
+ * is one another job is covering, a denied resource is one nobody is.
+ */
+export interface SpecHold {
+  specs: SpecRef[];
+  deniedResources: string[];
+}
+
+/**
+ * Claim what this run is about to execute, and arrange for the claim to be
+ * dropped. Resources first, then only the specs that survived them: a spec
+ * held but not run reads to every other job as covered when it is not.
+ *
+ * Best-effort against a hub too old to serve claims — but only when nothing
+ * declares a resource. Running a declared spec unprotected trades a wrong
+ * verdict for a completed run, which is the wrong way round.
+ */
+export async function holdSpecs(
   hubCtx: HubContext,
   profile: string,
   specs: SpecRef[],
+  needed: GroupLookup,
   teardown: RunTeardown | undefined,
-): Promise<SpecRef[]> {
+): Promise<SpecHold> {
   const holder = randomUUID();
-  let granted: Set<string>;
-  try {
+  const resources = [...new Set(specs.flatMap(needed))];
+  const take = async (keys: string[]): Promise<Set<string>> => {
     const res = await hubCtx.hub.acquireLocks(hubCtx.project, { profile }, {
-      specs: specs.map(specKey),
+      specs: keys,
       kind: "run",
       holder,
       ttlSeconds: LOCK_TTL_SECONDS,
     });
-    granted = new Set(res.granted);
-  } catch (err) {
-    log.warn(`could not claim specs on the hub, running without exclusion: ${errMessage(err)}`);
-    return specs;
-  }
+    return new Set(res.granted);
+  };
   const release = async () => {
     try {
       await hubCtx.hub.releaseLocks(hubCtx.project, { profile }, holder);
     } catch (err) {
-      log.warn(`could not release the spec claims: ${errMessage(err)}`);
+      log.warn(
+        `could not release this run's claims: ${errMessage(err)} — they stay held for up to ` +
+          `${LOCK_TTL_SECONDS / 3600}h, so other jobs will skip these specs until then`,
+      );
     }
   };
-  // The teardown runs on SIGINT/SIGTERM as well as on the normal path, which
-  // is where a cancelled CI job lands.
+
+  // Registered before the first call: whatever it takes has to come back even
+  // if this run stops between the two.
   teardown?.onFinalize(release);
-  return specs.filter((spec) => granted.has(specKey(spec)));
+
+  let runnable = specs;
+  let deniedResources: string[] = [];
+  try {
+    if (resources.length > 0) {
+      const granted = await take(resources.map(resourceKey));
+      deniedResources = resources.filter((name) => !granted.has(resourceKey(name)));
+      runnable = specs.filter((spec) => needed(spec).every((n) => !deniedResources.includes(n)));
+    }
+    if (runnable.length > 0) {
+      const granted = await take(runnable.map(specKey));
+      runnable = runnable.filter((spec) => granted.has(specKey(spec)));
+    }
+  } catch (err) {
+    if (resources.length > 0) {
+      throw new RunUsageError(
+        `could not claim ${resources.join(", ")} on the hub: ${errMessage(err)} — these specs ` +
+          `are in a \`serialGroups\` entry, so running without the claim risks two jobs writing ` +
+          `to the same thing. Upgrade the hub, or drop the group to run them unprotected`,
+      );
+    }
+    log.warn(`could not claim specs on the hub, running without exclusion: ${errMessage(err)}`);
+    return { specs, deniedResources: [] };
+  }
+
+  if (deniedResources.length > 0) {
+    // Named, because "held by another job" reads as a spec-level clash.
+    log.warn(`another job holds ${deniedResources.join(", ")}; the specs needing them wait`);
+  }
+  return { specs: runnable, deniedResources };
 }
 
 /**
@@ -520,14 +579,41 @@ export async function executeRun(
   // this one is still going skips what is already being run rather than
   // driving the same browser flow twice. Released on the way out, including on
   // SIGINT/SIGTERM; a hard kill is covered by the hold's own expiry.
+  const catalog = await readSpecs(specs, cwd);
+  const projectConfig = await loadProjectConfig(cwd);
+  const resources = await resolveSerialGroups(projectConfig.serialGroups, cwd);
+
+  const declared = [...new Set(specs.flatMap(resources))];
+  if (declared.length > 0) log.meta("serial groups", declared.join(", "));
+
+  // Specs dropped because another job holds their serial group. They still get
+  // a report row: this run was asked to cover them and did not, and a silent
+  // drop reports a green run that verified less than it selected.
+  let waitingOnGroup: Array<{ spec: SpecRef; groups: string[] }> = [];
+
   if (hubCtx && rerunProfile !== null) {
-    const held = await holdSpecs(hubCtx, rerunProfile, specs, opts.teardown);
-    if (held.length < specs.length) {
-      log.meta("held-elsewhere", `${specs.length - held.length} spec(s) another job is already running`);
-    }
-    specs = held;
+    const held = await holdSpecs(hubCtx, rerunProfile, specs, resources, opts.teardown);
+    // Two different facts, and holdSpecs already named the resources — so
+    // count only the specs another job is actually running.
+    waitingOnGroup = specs.flatMap((spec) => {
+      const groups = resources(spec).filter((n) => held.deniedResources.includes(n));
+      return groups.length > 0 ? [{ spec, groups }] : [];
+    });
+    const claimed = specs.length - held.specs.length - waitingOnGroup.length;
+    if (claimed > 0) log.warn(`${claimed} spec(s) another job is already running`);
+    specs = held.specs;
     if (specs.length === 0) {
-      log.warn("every selected spec is already being run by another job");
+      // A spec another job holds is one that job is covering; a resource it
+      // holds leaves these specs uncovered this cycle, so the two cannot share
+      // an exit code.
+      if (held.deniedResources.length > 0) {
+        throw new RunUsageError(
+          `every selected spec waits on a shared resource another job holds ` +
+            `(${held.deniedResources.join(", ")}): exiting non-zero rather than reporting a ` +
+            `green run that verified nothing`,
+        );
+      }
+      log.warn("every selected spec is claimed by another job");
       return { exitCode: 0, report: null, reportDir: null };
     }
   }
@@ -538,7 +624,15 @@ export async function executeRun(
   // silently dropping out of the run.
   let dispatch: TargetDispatch;
   try {
-    dispatch = await groupSpecsByTarget(specs, await loadProjectConfig(cwd), cwd);
+    dispatch = groupSpecsByTarget(specs, catalog, projectConfig);
+    for (const { spec, groups } of waitingOnGroup) {
+      dispatch.skipped.push({
+        ...spec,
+        title: catalog.get(specKey(spec))?.spec?.title ?? null,
+        reason: `waiting on ${groups.join(", ")}, held by another job`,
+        targetId: null,
+      });
+    }
   } catch (err) {
     // A present-but-broken .ccqa/config.yaml is a usage error, like a bad flag.
     throw new RunUsageError(errMessage(err));
@@ -546,7 +640,7 @@ export async function executeRun(
 
   // Agent-browser det specs run first under vitest, then external targets,
   // then live ones via Claude; results merge into a single report.json.
-  const withMode = await resolveSpecsModes(dispatch.agentBrowser, cwd);
+  const withMode = resolveSpecsModes(dispatch.agentBrowser, catalog);
   const detSpecs = withMode.filter((s) => s.mode === "deterministic");
   const liveSpecs = withMode.filter((s) => s.mode === "live");
   log.meta(
@@ -585,13 +679,13 @@ export async function executeRun(
   // been executed and nothing has been written yet, which is exactly where a
   // dry run stops.
   if (opts.dryRun) {
-    for (const line of formatDryRunLines(withMode, dispatch)) log.emitRaw(line + "\n");
+    for (const line of formatDryRunLines(withMode, dispatch, resources)) log.emitRaw(line + "\n");
     log.blank();
     log.info("dry run: nothing was executed and no report was written");
     return { exitCode: 0, report: null, reportDir: null };
   }
 
-  const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDir);
+  const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDir, resources);
 
   // Incremental hub push: when --report-to-hub is set and a hub is configured,
   // open a "running" run up front so each finished spec can be PATCHed to the
@@ -701,6 +795,7 @@ export async function executeRun(
     cwd,
     reportDir,
     concurrency: opts.concurrency ?? 1,
+    resources,
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
     report: incrementalReport,
@@ -714,6 +809,7 @@ export async function executeRun(
     reportDir,
     ...(typeof opts.liveStepRetry === "number" ? { retry: opts.liveStepRetry } : {}),
     concurrency: opts.concurrency ?? 1,
+    resources,
     ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
     diffProvider,
     hubContext: hubCtx,
@@ -902,10 +998,11 @@ type RunDeterministicResult = {
  * when enabled.
  */
 async function runDeterministicSpecs(
-  specs: readonly { featureName: string; specName: string }[],
+  specs: readonly SpecWithMode[],
   opts: RunOptions,
   cwd: string,
   reportDirAbs: string,
+  resources: GroupLookup,
 ): Promise<RunDeterministicResult> {
   if (specs.length === 0) return { summaries: [], exitCode: 0 };
 
@@ -931,10 +1028,14 @@ async function runDeterministicSpecs(
   };
 
   try {
-    const settled = await runPool(specs, concurrency, (spec, i) =>
-      log.withBuffer(`${spec.featureName}/${spec.specName}`, concurrency > 1, () =>
-        runOneDeterministicSpec(spec, i, ctx),
-      ),
+    const settled = await runPool(
+      specs,
+      concurrency,
+      (spec, i) =>
+        log.withBuffer(`${spec.featureName}/${spec.specName}`, concurrency > 1, () =>
+          runOneDeterministicSpec(spec, i, ctx),
+        ),
+      { resources },
     );
     // runPool preserves input order, so summaries stay stable for the report.
     const summaries = settled.filter((s): s is SpecRunSummary => s !== null);

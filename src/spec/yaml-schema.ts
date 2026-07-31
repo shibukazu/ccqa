@@ -44,23 +44,28 @@ export const SpecModeSchema = z.enum(["deterministic", "live"]);
 export type SpecMode = z.infer<typeof SpecModeSchema>;
 
 /**
- * A session name: the identifier of a saved browser session (cookies +
- * localStorage) to restore before the spec runs. Resolved to
- * `.ccqa/sessions/<profile>/<name>.json` at run time. Restricted to a safe
- * slug so the name can't escape the sessions directory.
+ * A name a spec chooses that ccqa resolves to a path or looks up in a
+ * registry. Restricted to a slug so it cannot escape a directory.
  */
-export const SessionNameSchema = z
-  .string()
-  .min(1)
-  .regex(
-    /^[a-z0-9][a-z0-9._-]*$/i,
-    "session name must be a slug (letters, digits, '.', '_', '-'; no path separators)",
-  );
+function slug(what: string) {
+  return z
+    .string()
+    .min(1)
+    .regex(
+      /^[a-z0-9][a-z0-9._-]*$/i,
+      `${what} must be a slug (letters, digits, '.', '_', '-'; no path separators)`,
+    );
+}
 
 /**
- * Sessions to restore before a `mode: live` spec runs: a single name or a
- * list. Always normalized to an array. Each name maps to a saved
- * agent-browser state file; multiple names are merged (their cookies +
+ * A saved browser session (cookies + localStorage) to restore before the spec
+ * runs, resolved to `.ccqa/sessions/<profile>/<name>.json` at run time.
+ */
+export const SessionNameSchema = slug("session name");
+
+/**
+ * Sessions to restore before a `mode: live` spec runs: one name or a list,
+ * always read back as a list. Multiple names are merged (their cookies +
  * localStorage are unioned) and restored together, so a spec can start
  * signed-in to several providers at once.
  */
@@ -70,17 +75,11 @@ export const SessionFieldSchema = z
 
 /**
  * A generation-target id: which plugin turns this spec into runnable tests
- * (e.g. "agent-browser", "playwright", "runn"). The schema only enforces a
- * safe slug — whether the id names a registered target is the registry's
- * responsibility, so new targets don't require a schema change.
+ * (e.g. "agent-browser", "playwright", "runn"). Whether the id names a
+ * registered target is the registry's responsibility, so new targets don't
+ * require a schema change.
  */
-export const TargetIdSchema = z
-  .string()
-  .min(1)
-  .regex(
-    /^[a-z0-9][a-z0-9._-]*$/i,
-    "target must be a slug (letters, digits, '.', '_', '-'; no path separators)",
-  );
+export const TargetIdSchema = slug("target");
 
 /** The built-in recorder-backed target. `mode:` / `session:` only apply to it. */
 export const AGENT_BROWSER_TARGET = "agent-browser";

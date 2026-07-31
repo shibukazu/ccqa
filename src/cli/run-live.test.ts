@@ -213,7 +213,7 @@ describe("runLiveSpecs drift audit gating", () => {
         fileDiff: () => null,
       })),
     };
-    await runLiveSpecs([specA, specB], { out: outDir, diffProvider });
+    await runLiveSpecs([specA, specB], { out: outDir, diffProvider, resources: () => [] });
 
     expect(analyzeDrift).toHaveBeenCalledTimes(1);
     expect(analyzeDrift).toHaveBeenCalledWith(
@@ -227,7 +227,7 @@ describe("runLiveSpecs drift audit gating", () => {
     const specA = { featureName: "feature-a", specName: "spec-pass" };
     const specB = { featureName: "feature-b", specName: "spec-fail" };
 
-    await runLiveSpecs([specA, specB], { out: outDir });
+    await runLiveSpecs([specA, specB], { out: outDir, resources: () => [] });
 
     expect(analyzeDrift).not.toHaveBeenCalled();
   });

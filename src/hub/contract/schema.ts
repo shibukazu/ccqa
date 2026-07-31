@@ -470,7 +470,11 @@ export const SpecLockSchema = z.object({
 });
 export type SpecLock = z.infer<typeof SpecLockSchema>;
 
-/** The per-(project, profile) lock document: "feature/spec" → who holds it. */
+/**
+ * The per-(project, profile) lock document: key → who holds it. A key is a
+ * spec ("feature/spec") or a shared resource ("resource:<name>", ADR-0015);
+ * the separators keep the two apart.
+ */
 export const SpecLocksSchema = z.object({
   specs: z.record(z.string(), SpecLockSchema).default({}),
 });

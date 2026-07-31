@@ -1,4 +1,5 @@
-import type { SpecWithMode } from "../cli/spec-mode.ts";
+import type { SpecWithMode } from "./spec-catalog.ts";
+import type { GroupLookup } from "./serial-groups.ts";
 import { specKey } from "../store/index.ts";
 import type { TargetDispatch } from "./target-dispatch.ts";
 
@@ -23,13 +24,22 @@ export function formatDryRunLines(
   // pre-mode-resolution version of the first argument, and picking the wrong
   // one would silently label every spec "deterministic".
   routed: Pick<TargetDispatch, "external" | "skipped" | "unresolved">,
+  resources: GroupLookup,
 ): string[] {
-  const tagged: Array<{ key: string; tag: string }> = [
-    ...agentBrowser.map((s) => ({ key: specKey(s), tag: s.mode })),
-    ...routed.external.flatMap((g) => g.specs.map((s) => ({ key: specKey(s), tag: g.targetId }))),
-    ...routed.skipped.map((s) => ({ key: specKey(s), tag: `skipped — ${s.reason}` })),
-    ...routed.unresolved.map((s) => ({ key: specKey(s), tag: `unresolved — ${s.reason}` })),
+  const tagged = [
+    ...agentBrowser.map((s) => ({ key: specKey(s), tag: s.mode, held: resources(s) })),
+    ...routed.external.flatMap((g) =>
+      g.specs.map((s) => ({ key: specKey(s), tag: g.targetId, held: resources(s) })),
+    ),
+    ...routed.skipped.map((s) => ({ key: specKey(s), tag: `skipped — ${s.reason}`, held: [] })),
+    ...routed.unresolved.map((s) => ({ key: specKey(s), tag: `unresolved — ${s.reason}`, held: [] })),
   ];
   const width = Math.max(0, ...tagged.map((t) => t.key.length));
-  return tagged.map((t) => `  ${t.key.padEnd(width)}  ${t.tag}`);
+  // Group membership lives in config, not in the spec, so echo it here:
+  // otherwise nothing on the spec's own row says it takes turns.
+  return tagged.map(
+    (t) =>
+      `  ${t.key.padEnd(width)}  ${t.tag}` +
+      (t.held.length > 0 ? `  serial: ${t.held.join(", ")}` : ""),
+  );
 }

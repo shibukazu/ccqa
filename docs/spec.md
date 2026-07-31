@@ -49,6 +49,11 @@ either on a spec whose `target:` resolves to anything else is a validation
 error ("only applies to the agent-browser target — remove it or drop
 `target: ...`").
 
+Specs that write to the same place outside your app — a chat channel, a
+shared inbox, a single seeded account — are not declared here. That
+constraint is a project-wide list in `.ccqa/config.yaml`; see
+[`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time).
+
 ## Steps
 
 An **action step** is an `instruction` / `expected` pair, both required and

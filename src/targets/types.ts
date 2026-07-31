@@ -4,6 +4,7 @@ import type { Conventions, ResourceRef, TargetConfig } from "../config/project-c
 import type { HubContext } from "../cli/hub-conn.ts";
 import type { FixMode } from "../diagnose/loop.ts";
 import type { SpecRef } from "../store/index.ts";
+import type { GroupLookup } from "../run/serial-groups.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 
@@ -152,6 +153,12 @@ export interface RunnerOptions {
   reportDir: string;
   /** Max specs executed in parallel. */
   concurrency: number;
+  /**
+   * A spec's serial-group names, from `.ccqa/config.yaml`. A runner executing
+   * specs in parallel must not overlap two that share one — see `runPool`'s
+   * `resources` option.
+   */
+  resources: GroupLookup;
   model?: string;
   language?: string;
   /** Registry id of the target being executed, for log labels and messages. */
@@ -180,5 +187,5 @@ export interface RunnerOptions {
  * runner's results plug into the pipeline without translation.
  */
 export interface TestRunner {
-  run(specs: SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]>;
+  run(specs: readonly SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]>;
 }

@@ -122,6 +122,13 @@ hub に聞きます。走るのは、監査が通し、*かつ*デプロイが�
 spec を確保するので、前の周が終わる前に次が始まっても、同じ spec を二度
 走らせることはありません。
 
+アプリの外の同じ場所（チャットのチャンネル、共有の受信箱）に書き込む spec
+は、`.ccqa/config.yaml` の
+[`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time)
+に加えます。確保の対象はこのグループにも及ぶので、`--concurrency` で実行
+時間を縮めても、2 つの spec が互いの結果を読んでしまうことはありません。
+同じ実行の中でも、次の周との間でもです。
+
 それでも落ちた spec には、`--on-fail-explain` が誰の担当かのラベルを付け
 ます。`TEST_DRIFT`（テストのずれ）、`SPEC_CHANGE`（仕様変更）、
 `PRODUCT_BUG`（プロダクトの不具合）、判断できなければ `UNKNOWN` です。
