@@ -349,10 +349,10 @@ one-sentence reason, and — for `needed` — the changed paths the decision
 rests on. A spec whose `spec.yaml` cannot be parsed is a hard error rather
 than a spec judged without reading it.
 
-The deploy job runs the same decision via
-[`ccqa hub deploy record --select`](./hub.md#ccqa-hub-deploy-record), which
-submits the verdicts with the deploy so the hub can answer
-`--only-hub-rerun-needed` later.
+The deploy job runs the same decision as part of
+[`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record), which submits the
+verdicts with the deploy so the hub can answer `--only-hub-rerun-needed`
+later.
 
 ### Running only what needs a re-run
 
@@ -370,7 +370,7 @@ git ref — positioned against the deploy log the deploy job feeds the hub
 with [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record). A spec is
 selected when a deploy after that point was recorded as reaching it — the
 verdict `ccqa select-specs` made against that deploy's diff, submitted
-alongside it (`--select`, see [Deploys and re-run
+alongside it (see [Deploys and re-run
 selection](./hub-api.md#deploys-and-re-run-selection)). No git diff runs
 locally, and nothing is guessed: the verdict is either recorded or the
 answer is `unknown`.

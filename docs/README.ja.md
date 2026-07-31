@@ -131,7 +131,7 @@ spec を確保するので、前の周が終わる前に次が始まっても、
 
 ```
 デプロイ完了
-  ├─ ccqa hub deploy record --select   何が載ったか、どの spec に届くか
+  ├─ ccqa hub deploy record            何が載ったか、どの spec に届くか
   ├─ ccqa audit --only-hub-audit-needed --report-to-hub
   │                                    spec はまだ説明できているか
   └─ ccqa run --only-hub-rerun-needed --on-fail-explain \
@@ -139,8 +139,9 @@ spec を確保するので、前の周が終わる前に次が始まっても、
 ```
 
 監査は数セント、live の spec は数ドルです。先に絞れば、読む価値のある失敗
-だけが残ります。デプロイは必ず `--select` 付きで記録してください。無しで
-記録した範囲は永久に `unanswerable` と答え、後から埋める手段がありません。
+だけが残ります。`deploy record` は、どの spec に届くかも既定で判定します
+（`--no-select-specs` で省けます）。判定なしで記録した範囲は永久に
+`unanswerable` と答え、後から埋める手段がありません。
 
 | ジョブ | きっかけ | 答える問い |
 |---|---|---|
