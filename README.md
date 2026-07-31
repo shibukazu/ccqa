@@ -133,7 +133,7 @@ grade the calls on the hub, and it learns from your grades.
 
 ```
 deploy lands
-  ├─ ccqa hub deploy record --select   what shipped, which specs it reaches
+  ├─ ccqa hub deploy record            what shipped, which specs it reaches
   ├─ ccqa audit --only-hub-audit-needed --report-to-hub
   │                                    does each spec still describe it?
   └─ ccqa run --only-hub-rerun-needed --on-fail-explain \
@@ -141,9 +141,10 @@ deploy lands
 ```
 
 The audit costs cents; a live spec costs dollars. Filtering first leaves
-a run whose failures are worth reading. Record every deploy with
-`--select` — a range recorded without it answers `unanswerable` forever, and
-nothing fills the hole later.
+a run whose failures are worth reading. `deploy record` decides which specs
+the range reaches unless you pass `--no-select-specs`; a range recorded
+without that decision answers `unanswerable` forever, and nothing fills the
+hole later.
 
 | Job | Trigger | Question it answers |
 |---|---|---|

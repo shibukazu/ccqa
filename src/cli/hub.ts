@@ -357,7 +357,8 @@ interface DeployRecordOptions extends HubConnOptions {
   sha: string;
   previous?: string;
   ref?: string;
-  select?: boolean;
+  /** Commander sets this from `--no-select-specs`: true unless the flag is passed. */
+  selectSpecs?: boolean;
   model?: string;
 }
 
@@ -375,17 +376,19 @@ const deployRecord = new Command("record")
   .requiredOption("--sha <sha>", "Commit that was deployed.")
   .option(
     "--previous <sha>",
-    "Commit this deploy replaced. Defaults to the profile's current deploy-log head on the hub. With neither, there's nothing to diff against: changedPaths is unset and --select is skipped.",
+    "Commit this deploy replaced. Defaults to the profile's current deploy-log head on the hub. With neither, there's nothing to diff against: changedPaths is unset and the spec selection is skipped.",
   )
   .option("--ref <ref>", "Ref that was deployed (branch or tag). Recorded for display only.")
   .option(
-    "--select",
-    "Also decide which specs this deploy reaches (`ccqa select-specs`) and send the verdict with it. " +
-      "Without it the deploy is a hole in the range: specs behind it report 'unknown' rather than 'not needed'.",
+    "--no-select-specs",
+    "Record the deploy without deciding which specs it reaches. The entry then becomes a hole in the " +
+      "range — every spec behind it answers 'unanswerable' rather than being cleared, and nothing can " +
+      "fill it in later, since the hub has no checkout to diff. Only pass this when no Claude " +
+      "credential is available; it costs one model call to leave the log answerable.",
   )
   .option(
     "-m, --model <name>",
-    "Model for --select. Claude alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+    "Model for the spec selection. Claude alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
   )
   .option(...hubUrlOption)
   .option(...hubTokenOption)
@@ -404,10 +407,10 @@ const deployRecord = new Command("record")
     const previous = opts.previous ?? (await deployHeadSha(hub, project, opts.profile));
     const runUrl = githubRunUrl();
     // One diff for the whole range, shared below by `changedPaths` and
-    // `--select` — they used to each run their own git diff over it.
+    // the selection — they used to each run their own git diff over it.
     const diff = previous === null ? null : await diffOrNull(previous, opts.sha, cwd);
     const changedPaths = diff ? capDeployPaths(diff.map((f) => f.path)) : null;
-    const selection = opts.select && previous !== null && diff !== null
+    const selection = opts.selectSpecs !== false && previous !== null && diff !== null
       ? await selectionForDeploy(diff, previous, opts.sha, cwd, opts.model)
       : undefined;
 
@@ -427,7 +430,7 @@ const deployRecord = new Command("record")
     log.meta("profile", opts.profile);
     log.meta("previous", previous ? previous.slice(0, 12) : "(none)");
     log.meta("changed paths", changedPaths === null ? "(not reported)" : String(changedPaths.length));
-    if (opts.select) log.meta("selection", describeSelection(selection, diff !== null));
+    if (opts.selectSpecs !== false) log.meta("selection", describeSelection(selection, diff !== null));
     if (entry.gapBefore) {
       log.warn(
         "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it report 'unanswerable' rather than 'verified'",
@@ -496,7 +499,7 @@ async function selectionForDeploy(
 /**
  * The two-dot diff for this deploy's range, or `null` when git can't produce
  * one (a shallow checkout that never fetched `previous`, a rolled-back sha
- * that isn't local). Shared by `changedPaths` and `--select`'s input, so a
+ * that isn't local). Shared by `changedPaths` and the selection's input, so a
  * diff failure skips both rather than each attempting — and separately
  * failing — its own git call.
  */
@@ -512,7 +515,7 @@ async function diffOrNull(previous: string, sha: string, cwd: string): Promise<C
   }
 }
 
-/** The `--select` summary line: verdict counts, or why there isn't one. */
+/** The selection summary line: verdict counts, or why there isn't one. */
 function describeSelection(selection: DeploySelection | undefined, diffAvailable: boolean): string {
   if (!selection) {
     return diffAvailable ? "(skipped — see warning above)" : "(skipped — no diff to select against)";

@@ -134,18 +134,18 @@ all. Run it from the deploy job, after the deploy succeeds. Flags:
   the entry is recorded with no selection, so every spec behind it reads
   `unknown` until a later deploy resolves it.
 - `--ref <ref>` — the branch or tag deployed, recorded for display.
-- `--select` — also decide which specs this deploy reaches
-  ([`ccqa select-specs`](./running.md#asking-the-question-on-its-own)) and
-  submit the verdicts with the entry. **Pass it**: without a selection the
-  deploy is a hole in the range, and every spec behind it reports
-  `unanswerable` rather than `verified` — the hub has no other way to know what
-  the deploy touched. Skipped when there is no previous deploy to diff against.
-  The hub marks the entry as carrying a selection only once it has stored one,
-  so a selection that was sent but could not be stored leaves the range
-  honestly unresolved; the command exits non-zero in that case, because nothing
-  fills the hole later.
-- `-m, --model <name>` — model for `--select`. A cheap one is enough; the
-  selection costs a fraction of the runs it avoids.
+- `--no-select-specs` — record the deploy **without** deciding which specs it
+  reaches. Deciding ([`ccqa select-specs`](./running.md#asking-the-question-on-its-own))
+  is the default, because an entry recorded without it is a hole in the range:
+  every spec behind it reports `unanswerable` rather than `verified`, and the
+  hub has no checkout to work it out afterwards. Only pass this when the job
+  has no Claude credential. The selection is skipped anyway when there is no
+  previous deploy to diff against. The hub marks the entry as carrying a
+  selection only once it has stored one, so a selection that was sent but could
+  not be stored leaves the range honestly unresolved; the command exits
+  non-zero in that case, because nothing fills the hole later.
+- `-m, --model <name>` — model for the selection. A cheap one is enough; it
+  costs a fraction of the runs it avoids.
 - `--project`, `--hub-url`, `--hub-token`, `--cwd` — as everywhere else.
 
 The changed paths come from a **two-dot** `git diff <previous> <sha>`,
