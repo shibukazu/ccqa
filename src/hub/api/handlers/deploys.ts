@@ -41,7 +41,7 @@ export function createRecordDeployHandler(storage: HubStorage) {
       ...(runUrl ? { runUrl } : {}),
       changedPaths: changedPaths ?? null,
       // Set below, once the fold has actually landed. Claiming it here is what
-      // made a lost fold read as `verified` instead of `unanswerable`: the flag
+      // made a lost fold read as `verified` instead of assumed-reached: the flag
       // is exactly what closes the "no selection in range" escape hatch.
       hasSelection: false,
     });

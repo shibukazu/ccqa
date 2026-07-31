@@ -376,15 +376,19 @@ const deployRecord = new Command("record")
   .requiredOption("--sha <sha>", "Commit that was deployed.")
   .option(
     "--previous <sha>",
-    "Commit this deploy replaced. Defaults to the profile's current deploy-log head on the hub. With neither, there's nothing to diff against: changedPaths is unset and the spec selection is skipped.",
+    "Commit this deploy replaced. Omit it and the hub's current log head is used — the normal case, " +
+      "recording no discontinuity. Pass a sha that differs from the head and the hub records one " +
+      "(gapBefore) in the chain: use this for a first record with a real baseline, or to re-anchor a " +
+      "head that no longer matches reality. With no head and nothing passed, there's nothing to diff " +
+      "against: changedPaths is unset and the spec selection is skipped.",
   )
   .option("--ref <ref>", "Ref that was deployed (branch or tag). Recorded for display only.")
   .option(
     "--no-select-specs",
     "Record the deploy without deciding which specs it reaches. The entry then becomes a hole in the " +
-      "range — every spec behind it answers 'unanswerable' rather than being cleared, and nothing can " +
+      "range — every spec behind it is assumed reached rather than being cleared, and nothing can " +
       "fill it in later, since the hub has no checkout to diff. Only pass this when no Claude " +
-      "credential is available; it costs one model call to leave the log answerable.",
+      "credential is available; it costs one model call to leave the range clearable.",
   )
   .option(
     "-m, --model <name>",
@@ -433,7 +437,7 @@ const deployRecord = new Command("record")
     if (opts.selectSpecs !== false) log.meta("selection", describeSelection(selection, diff !== null));
     if (entry.gapBefore) {
       log.warn(
-        "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it report 'unanswerable' rather than 'verified'",
+        "this deploy does not chain onto the log head, so a gap is recorded — specs whose baseline sits behind it are assumed reached rather than cleared to 'verified'",
       );
     }
     // The hub only marks the entry once the selection has actually landed. If
@@ -441,8 +445,8 @@ const deployRecord = new Command("record")
     // which the job must not exit quietly on.
     if (selection && !entry.hasSelection) {
       log.error(
-        "the hub recorded this deploy but could not store its spec selection — the range answers " +
-          "'unanswerable' from here on, and nothing fills it in later. Re-record this deploy.",
+        "the hub recorded this deploy but could not store its spec selection — every spec behind it " +
+          "is assumed reached from here on, and nothing fills it in later. Re-record this deploy.",
       );
       process.exit(1);
     }

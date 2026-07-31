@@ -37,12 +37,10 @@ Key flags (see `ccqa run --help` for the rest):
   is always explicit: in a pull_request workflow pass `$GITHUB_BASE_REF`.
 - `--only-hub-rerun-needed` — restrict execution to the specs the hub answers
   `rerunNeeded` for: the audit cleared them, and their last result does not
-  cover what is deployed. Reads the deploy log and the drift ledger, not a diff
-  — see [Running only what needs a
+  cover what is deployed — including every spec the deploy log cannot place,
+  which is assumed reached rather than skipped. Reads the deploy log and the
+  drift ledger, not a diff — see [Running only what needs a
   re-run](#running-only-what-needs-a-re-run).
-- `--only-hub-rerun-needed-with-unknown` — with `--only-hub-rerun-needed` only:
-  also run the specs the hub cannot answer for at all (`unanswerable`, a hole
-  in the deploy log).
 - `--dry-run` — print the specs this invocation would run, then exit `0`
   without executing anything and without writing a report. Works with every
   selection flag. Each line names the phase that would run the spec, and any
@@ -359,10 +357,12 @@ consulted. There is no baseline for one to narrow away, which is how a spec no
 deploy ever reached could otherwise stay un-audited forever — and an un-audited
 spec is never run, so it would sit outside the loop indefinitely.
 
-A spec the hub **cannot answer for** is audited rather than skipped. That is
-the opposite default to `--only-hub-rerun-needed`, and deliberately so: an
-audit costs cents where a live run costs dollars, so this side does the work
-when it cannot tell and the run side declines to.
+A spec the hub **cannot answer for** is audited rather than skipped. This used
+to default the opposite way from `--only-hub-rerun-needed` on a hole in the
+deploy log — audit costs cents, a live run costs dollars, so the audit did
+the work and the run declined it. That gap is closed now: both treat an
+unplaceable range as reached (ADR-0014), so the two differ in wording, not in
+what they select.
 
 The sweep **claims** its specs while it works, so a second cycle starting
 before this one finishes does not audit the same specs and write the same
@@ -412,7 +412,6 @@ diffing a ref:
 ```bash
 ccqa run --only-hub-rerun-needed --hub-profile stg
 ccqa run --only-hub-rerun-needed --hub-profile stg --dry-run     # check the selection first
-ccqa run --only-hub-rerun-needed --hub-profile stg --only-hub-rerun-needed-with-unknown
 ```
 
 Each spec's baseline is **its own last run** — not its last green, and not a
@@ -422,20 +421,23 @@ selected when a deploy after that point was recorded as reaching it — the
 verdict `ccqa select-specs` made against that deploy's diff, submitted
 alongside it (see [Deploys and re-run
 selection](./hub-api.md#deploys-and-re-run-selection)). No git diff runs
-locally, and nothing is guessed: the verdict is either recorded or the
-answer is `unknown`.
+locally. There is no `unknown` verdict: when the deploy log cannot place a
+spec's baseline, the hub guesses by design — it assumes the deploy reached
+the spec (see below) — rather than answering "I don't know".
 
 It needs a hub connection and `--hub-profile` (the deploy log is per profile —
-a spec run under one value set says nothing about another). Anything that makes
-the question unanswerable — no perspectives document, no deploy recorded for
-the profile, a hub too old to serve the endpoint — is an **error**, never an
-empty selection.
+a spec run under one value set says nothing about another). Anything that
+leaves the hub without the data to decide at all — no perspectives document,
+no deploy recorded for the profile, a hub too old to serve the endpoint — is
+an **error**, never an empty selection.
 
 The hub keeps two facts apart and derives one answer from them. **The audit
 axis** says whether the spec still describes the deployed code; **the execution
-axis** says how the last run ended. Neither determines the other — a spec can
-be clean and out of date, or drifted and freshly run — so collapsing them
-would lose exactly the case that matters.
+axis** says how the last run ended, and whether that result still covers what
+is deployed (`stale` if a deploy has reached the spec since, or if the hub
+can't place the run against the deploy log). Neither axis determines the
+other — a spec can be clean and stale, or drifted and freshly run — so
+collapsing them would lose exactly the case that matters.
 
 | Verdict | Means | Who acts next |
 | --- | --- | --- |
@@ -443,10 +445,21 @@ would lose exactly the case that matters.
 | `needsRepair` | Drift, an audit that could not decide, or a failed run | **A person** |
 | `inProgress` | A job holds it, or the audit has not caught up with the deploy | Wait |
 | `verified` | Cleared by the audit, last run passed against this deploy | Nobody |
-| `unanswerable` | The hub lacks the data; a `reason` names what is missing | Fix the hole |
 
-Only `rerunNeeded` runs. `--only-hub-rerun-needed-with-unknown` adds
-`unanswerable`; nothing opts into the other two.
+Only `rerunNeeded` runs; nothing opts into the other three.
+
+**When the hub cannot tell whether a deploy reached a spec, it assumes it
+did.** An old run that predates deploy-sha tracking, a run that straddled a
+deploy, a deploy recorded without a selection — none of these leaves a hole to
+shrug at; each becomes `rerunNeeded` (or `inProgress`, when it's the audit
+that can't place it), the same as any other stale spec. That is the safe
+direction: a spec run needlessly costs a run, a spec skipped silently costs
+the release. The cost is real, though — a deploy recorded without a
+selection, or a missed deploy record, means a full audit sweep and a full run
+of every spec behind it, and running the audit first does not reduce that,
+because the execution axis stays stale regardless of what the audit answers.
+`ccqa hub deploy record` should carry `--previous` and a selection every
+time.
 
 **A spec that has never run is `rerunNeeded`.** No result at all is as
 uncovered as a result a deploy invalidated, and the action is identical.

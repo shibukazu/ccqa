@@ -6,8 +6,8 @@ import { SelectVerdictSchema } from "../hub/contract/schema.ts";
  *
  * Named for the action, matching the re-run vocabulary the hub already uses:
  * the question is "is the last result still trustworthy", not "how fresh is
- * this spec". `neverRun` / `notEvaluated` are ledger states and have no
- * meaning here — a diff alone cannot know whether a spec has ever run.
+ * this spec". The execution axis's own values have no meaning here — a diff
+ * alone cannot know whether a spec has ever run.
  *
  * Re-exported from the hub contract rather than declared here: this is the
  * same value the CLI serializes into `DeploySelectionEntry` when it reports a

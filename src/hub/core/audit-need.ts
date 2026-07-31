@@ -18,9 +18,10 @@ import type { SpecTarget } from "./perspectives-specs.ts";
  * to diff from, so `ccqa select-specs` has nothing to narrow it away with, and
  * a spec no deploy ever reached would otherwise stay un-audited forever.
  *
- * Everything but `current` audits. An audit costs cents where a live run costs
- * dollars, so this side does the work when it cannot tell and the re-run
- * verdict declines to.
+ * Everything but `current` audits, including a baseline the deploy log cannot
+ * place: an unplaceable range is treated as reached on both sides now
+ * (ADR-0014), so this and the re-run verdict differ in wording, not in what
+ * they select.
  */
 /**
  * The freshness half of the answer. `held` is not here: whether a job is on

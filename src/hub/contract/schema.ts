@@ -102,7 +102,8 @@ export const RunSchema = z.object({
   /**
    * True when the deploy-log head moved between opening and finalizing this
    * run: the run straddled a deploy, so which commit it actually exercised is
-   * not knowable. Re-run selection reports `unknown` rather than guessing.
+   * not knowable. Re-run selection treats the result as `stale` rather than
+   * crediting it with either commit.
    */
   deployedShaAmbiguous: z.boolean().optional(),
 });
@@ -377,7 +378,7 @@ export const SpecTouchSchema = z.object({
   /**
    * Position of the newest deploy whose selection answered `unknown` here.
    * Kept apart from `needed` so an undecided deploy cannot read as a clean
-   * one: a baseline behind it reports `unknown`, never `notNeeded`.
+   * one: a baseline behind it is assumed reached, never cleared.
    */
   undecidedIndex: z.number().int().nonnegative().optional(),
 });
@@ -394,9 +395,11 @@ export type SpecTouchIndex = z.infer<typeof SpecTouchIndexSchema>;
  */
 export const AuditStateSchema = z.enum([
   /**
-   * The audit owes an answer for the deployed commit: never audited, or
-   * audited at an older one. Not "an audit is running" — work in flight is a
-   * lock, which has a lifetime the axes do not.
+   * The audit owes an answer for the deployed commit: never audited, audited
+   * at an older one, or audited at a commit the deploy log cannot place —
+   * unplaceable is treated as reached (ADR-0014), and
+   * `auditAssumedReached` names which hole. Not "an audit is running" — work
+   * in flight is a lock, which has a lifetime the axes do not.
    */
   "due",
   /** The spec still describes the deployed code. */
@@ -405,18 +408,31 @@ export const AuditStateSchema = z.enum([
   "drifted",
   /** The audit read the code and could not decide. */
   "undecided",
-  /** The deploy log cannot place the audit, so its currency is unknowable. `reason` names the hole. */
-  "cannotTell",
 ]);
 export type AuditState = z.infer<typeof AuditStateSchema>;
 
 /**
- * Axis 2: what happened the last time this spec ran. Deliberately has no
- * "stale pass" value — *which* deploy a run covered is a separate fact
- * (`lastRun.deployedSha`), and collapsing the two is what left the old
- * single-axis state unable to tell a red spec from an up-to-date one.
+ * Axis 2: what happened the last time this spec ran, and whether that result
+ * still covers what is deployed.
  */
-export const ExecutionStateSchema = z.enum(["passed", "failed", "neverRun"]);
+export const ExecutionStateSchema = z.enum([
+  /** The last run passed, against the commit deployed now. */
+  "passed",
+  /** The last run failed. Stated whatever has deployed since: a red result is current information. */
+  "failed",
+  /**
+   * The last run finished, but a deploy has reached this spec since — or the
+   * log cannot place the run, which is treated the same way and named by
+   * `executionAssumedReached`. The result is kept; only its currency is void.
+   */
+  "stale",
+  /**
+   * No run at all. Kept apart from `stale` even though both lead to
+   * `rerunNeeded`: merging them loses the difference between a spec added
+   * yesterday and one a deploy invalidated.
+   */
+  "neverRun",
+]);
 export type ExecutionState = z.infer<typeof ExecutionStateSchema>;
 
 /**
@@ -434,19 +450,16 @@ export const SpecVerdictSchema = z.enum([
   "rerunNeeded",
   /** Cleared by the audit, and the last run passed against what is deployed. */
   "verified",
-  /** The hub lacks the data to answer. `unanswerableReason` names what is missing. */
-  "unanswerable",
 ]);
 export type SpecVerdict = z.infer<typeof SpecVerdictSchema>;
 
 /**
- * Why a spec is `unanswerable`. Always carried, so the view can name the
- * missing input ("no deploy log for this profile") instead of shrugging.
- * `unanswerable` is never rendered as `verified`.
+ * Which hole in the deploy log made the hub assume a deploy reached this spec
+ * (ADR-0014). Not a state: the verdict is already decided by the time one of
+ * these is attached, and it exists so the view can say *why* a spec is pending
+ * instead of leaving the reader to guess.
  */
 export const RerunUnknownReasonSchema = z.enum([
-  /** Nothing at all has been recorded for this profile: no deploy, no run. */
-  "notEvaluated",
   /** A deploy in range was recorded without a spec selection, so its effect on this spec is unrecorded. */
   "noSelectionInRange",
   /** A selection in range answered `unknown` for this spec — the selector could not tell. */
@@ -457,7 +470,12 @@ export const RerunUnknownReasonSchema = z.enum([
   "unknownDeployedSha",
   /** The last run straddled a deploy, so which commit it exercised is not knowable. */
   "ambiguousDeployedSha",
-  /** The last run's deployed sha is older than the retained log, so its position is lost. */
+  /**
+   * The last run's deployed sha does not appear in the retained log. Usually
+   * a deploy that was never recorded, or a sha asserted from a different
+   * profile's log; the log's own bounded retention can also evict it, but
+   * that is the rarer case.
+   */
   "deployedShaNotInLog",
   /** A deploy in range did not chain onto its predecessor, so deploys are missing from the range. */
   "gapInRange",
@@ -545,18 +563,29 @@ export const SpecRerunSchema = z.object({
   execution: ExecutionStateSchema,
   /** Set only when `audit === "drifted"`. `UNKNOWN` belongs to `undecided`, so it cannot appear here. */
   driftLabel: DriftLabelSchema.exclude(["UNKNOWN"]).optional(),
-  /** Set only when `verdict === "unanswerable"`. */
-  reason: RerunUnknownReasonSchema.optional(),
+  /**
+   * Set when `audit === "due"` only because the log could not place the audit.
+   * Absent when it is due for the ordinary reasons — never audited, or a
+   * deploy demonstrably reached it.
+   */
+  auditAssumedReached: RerunUnknownReasonSchema.optional(),
+  /**
+   * Set when `execution === "stale"` only because the log could not place the
+   * run. Absent when a deploy demonstrably reached the spec, which
+   * `touchedBy`/`touchedByDeploy` name instead. Both fields can be set at
+   * once: one hole can swallow both baselines.
+   */
+  executionAssumedReached: RerunUnknownReasonSchema.optional(),
   /** The job working on this spec right now, or null. Expired holds read as null. */
   heldBy: SpecLockSchema.nullable(),
   lastRun: SpecLedgerEntrySchema.nullable(),
   lastGreen: SpecLedgerEntrySchema.nullable(),
   lastRed: SpecLedgerEntrySchema.nullable(),
-  /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `verdict === "rerunNeeded"`. */
+  /** A bounded sample (`MAX_TOUCHED_BY`) of the deployed paths that matched. Set only when `execution === "stale"`. */
   touchedBy: z.array(z.string()).optional(),
   /**
-   * The deploy that made this spec `rerunNeeded`: the newest entry *within the
-   * verdict's range* whose changes matched it. Distinct from the report's
+   * The deploy that made this spec `stale`: the newest entry *within the
+   * run's range* whose changes matched it. Distinct from the report's
    * `deployHead`, which is only the point the judgement was made at.
    *
    * ADDITIVE and optional, so a report from an older hub — and a client older
@@ -570,9 +599,10 @@ export type SpecRerun = z.infer<typeof SpecRerunSchema>;
 
 /**
  * Why this spec does or does not need auditing. Everything but `current` and
- * `held` audits: the audit is cheap, so it errs towards doing the work where
- * the run errs away from it. `held` is not an answer about freshness at all —
- * another job is on it, so this one skips it and asks again next cycle.
+ * `held` audits. `held` is not an answer about freshness at all — another job
+ * is on it, so this one skips it and asks again next cycle. `cannotTell`
+ * survives here because it is a real explanation of why an audit is owed; the
+ * re-run axis folds it into `due` (ADR-0014).
  */
 export const AuditNeedSchema = z.object({
   because: z.enum(["neverAudited", "deployReached", "cannotTell", "held", "current"]),
@@ -604,7 +634,8 @@ export const RecordDeployRequestSchema = z.object({
   sha: z.string().min(1),
   /**
    * The commit being replaced. Supply it: without it the hub cannot verify the
-   * log is contiguous and records a gap, which makes affected specs `unknown`.
+   * log is contiguous, so it records a gap and every spec behind it is treated
+   * as reached — correct, but it costs a full sweep.
    */
   previousSha: z.string().min(1).nullable().optional(),
   /**
@@ -616,9 +647,9 @@ export const RecordDeployRequestSchema = z.object({
    */
   changedPaths: z.array(z.string()).nullable().optional(),
   /**
-   * Which specs this deploy reaches, from `ccqa select-specs`. Omit it and the
-   * deploy becomes a hole in the range: specs behind it report `unknown`
-   * rather than `notNeeded`, because nothing recorded what it touched.
+   * Which specs this deploy reaches, from `ccqa select-specs`. It narrows;
+   * omitting it narrows nothing, so every spec behind the entry is treated as
+   * reached. Safe, and the reason a missed selection costs a full sweep.
    */
   selection: DeploySelectionSchema.optional(),
   ref: z.string().optional(),

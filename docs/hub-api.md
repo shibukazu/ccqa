@@ -302,14 +302,16 @@ interface AuditNeed {
          | "cannotTell"      // the deploy log has a hole; `reason` names it
          | "held"            // another job is auditing it right now
          | "current";        // audited at the deployed commit, nothing since
-  reason?: /* same set as SpecRerun.reason */;   // set only when because is "cannotTell"
+  reason?: /* same set as SpecRerun.auditAssumedReached */;   // set only when because is "cannotTell"
 }
 ```
 
-`--only-hub-audit-needed` audits everything but `current` and `held`. That is
-the opposite default to `--only-hub-rerun-needed`, and deliberately so: an
-audit costs cents where a live run costs dollars, so this side does the work
-when it cannot tell and the run side declines to.
+`--only-hub-audit-needed` audits everything but `current` and `held`. It used
+to default the opposite way from `--only-hub-rerun-needed` on a hole in the
+deploy log — audit costs cents, a live run costs dollars, so the audit did the
+work and the run declined it. That gap is closed now: both treat an
+unplaceable range as reached (ADR-0014), so the two differ in wording, not in
+what they select.
 
 A **claim** stops a second job starting on a spec the first is still working.
 It is not a value on either axis — the axes describe recorded facts, work in
@@ -346,40 +348,50 @@ interface DeploySelectionEntry {
 }
 
 interface SpecRerun {
-  // The one answer, derived from the two axes below. Named for who acts next.
-  verdict: "inProgress"     // a job holds it, or the audit has not caught up
+  // The one answer, derived from the two axes below plus whether a claim is
+  // held. Named for who acts next.
+  verdict: "inProgress"     // a claim is held, or the audit has not caught up
          | "needsRepair"    // a person: drift, an undecided audit, or a failed run
          | "rerunNeeded"    // cleared by the audit, and the last result is out of date
-         | "verified"       // cleared by the audit, and the last run passed against this deploy
-         | "unanswerable";  // the hub lacks the data; `reason` names what is missing
+         | "verified";      // cleared by the audit, and the last run passed against this deploy
 
   // Axis 1 — what the audit says about the *deployed* commit.
-  audit: "due"          // owed an answer: never audited, or audited at an older commit
+  audit: "due"          // owed an answer: never audited, audited at an older
+                         // commit, or the log can't place the audit — an
+                         // unplaceable range is assumed reached (see below)
        | "clean"
        | "drifted"      // `driftLabel` names which kind
-       | "undecided"    // the audit read the code and could not decide
-       | "cannotTell";  // the deploy log cannot place the audit; `reason` names the hole
+       | "undecided";   // the audit read the code and could not decide
   driftLabel?: "TEST_DRIFT" | "SPEC_CHANGE";   // set only when audit is "drifted"
 
-  // Axis 2 — how the last execution ended. No "stale pass": which deploy a run
-  // covered is `lastRun.deployedSha`, not a value here.
-  execution: "passed" | "failed" | "neverRun";
+  // Axis 2 — how the last execution ended, and whether it still covers what
+  // is deployed.
+  execution: "passed"    // the last run passed, against the commit deployed now
+           | "failed"    // the last run failed
+           | "stale"     // a deploy has reached the spec since the last run —
+                         // or the log can't place the run; same treatment
+           | "neverRun"; // no run at all
 
   // The job working on it right now, or null. An expired hold reads as null.
   heldBy: { kind: "audit" | "run", holder: string, expiresAt: string } | null;
 
-  reason?: "notEvaluated" | "noSelectionInRange" | "selectionUnknown" | "noDeployLog"
-         | "unknownDeployedSha" | "ambiguousDeployedSha" | "deployedShaNotInLog"
-         | "gapInRange";     // set when verdict is "unanswerable" or audit is "cannotTell"
+  // Set only when `audit`/`execution` landed on "due"/"stale" because the log
+  // couldn't place the audit/run, not for the ordinary reasons. Both can be
+  // set at once. `unknownDeployedSha`/`ambiguousDeployedSha` describe the
+  // *run's* deployed sha, so only `executionAssumedReached` carries them.
+  auditAssumedReached?: "noSelectionInRange" | "selectionUnknown" | "noDeployLog"
+                       | "deployedShaNotInLog" | "gapInRange";
+  executionAssumedReached?: /* same set as auditAssumedReached, plus */
+                            "unknownDeployedSha" | "ambiguousDeployedSha";
   lastRun: SpecLedgerEntry | null;
   lastGreen: SpecLedgerEntry | null;
   lastRed: SpecLedgerEntry | null;
-  touchedBy?: string[];       // up to 10 matched paths; set only when verdict is "rerunNeeded"
-  touchedByDeploy?: { index, sha, at } | null;  // the deploy that caused "rerunNeeded"
+  touchedBy?: string[];       // up to 10 matched paths; set only when execution is "stale"
+  touchedByDeploy?: { index, sha, at } | null;  // the deploy that made it "stale"
 }
 ```
 
-Neither axis determines the other — a spec can be clean and out of date, or
+Neither axis determines the other — a spec can be clean and stale, or
 drifted and freshly run — so they are carried apart and the verdict is derived
 from both. Exactly one verdict, `needsRepair`, asks for a person; a reader
 scanning a list of specs only has to look for that one.
@@ -389,8 +401,8 @@ teaches nothing until the code it exercises moves or the spec is fixed, and a
 live spec costs dollars a go. A spec that has never run is `rerunNeeded` — no
 result at all is as uncovered as a result a deploy invalidated.
 
-`touchedByDeploy` names the newest deploy *in the verdict's range* whose
-changes matched the spec — the deploy that made it `rerunNeeded`, which is not the
+`touchedByDeploy` names the newest deploy *in the run's range* whose
+changes matched the spec — the deploy that made it `stale`, which is not the
 same coordinate as `deployHead` (only the point the judgement was made at). It
 is additive and optional: an older hub omits it. It is null when the entry that
 proves the touch is no longer retained in the log — the verdict still stands on
@@ -410,10 +422,13 @@ Pass `?deployedSha=` on `POST /runs` or `POST /runs/open` to assert it
 instead — a single-shot push reaches the hub only after the run is over, so
 a deploy that landed mid-run would otherwise read as that run's baseline.
 
-`unanswerable` is never rendered as `verified`; it always carries a reason. A
-deploy recorded without a selection (`hasSelection: false`) is a hole in the
-range — fail-open and self-limiting: specs whose baseline sits behind it read
-`unanswerable` rather than `verified`, until a later deploy resolves them.
+A deploy recorded without a selection (`hasSelection: false`) is a hole in the
+range: specs whose baseline sits behind it are assumed reached — `stale`, not
+`verified` — until a later deploy resolves them. That is the safe default (a
+spec run needlessly costs a run, a spec skipped silently costs the release),
+but the cost is real: it takes a full audit sweep and a full run of every spec
+behind the hole to close it, and auditing first does not shrink that, because
+the execution axis stays `stale` regardless of what the audit answers.
 `changedPaths` is record-only and plays no part in this. `profile` is part
 of the scope key and defaults to `"default"`: a spec run under one value set
 says nothing about another, so "needs re-run" has no profile-free answer.

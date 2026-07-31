@@ -160,17 +160,30 @@ const HTML_BODY = `
         <div id="persp-body" hidden>
           <div class="ov" id="persp-ov"></div>
           <div class="note info persp-note" id="persp-rerun-note" hidden></div>
-          <div class="note info persp-note" id="persp-drift-note" hidden></div>
           <div class="toolbar">
             <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="persp-q" type="search" data-i18n-ph="perspectives.search" aria-label="Search cases"></label>
             <!-- Each chip carries the count of what it would leave behind, so
                  data-i18n sits on the inner label span: applyStaticI18n swaps
-                 textContent, which on the button would delete the count. -->
-            <button class="fchip" data-f="all" aria-pressed="true" type="button"><span data-i18n="perspectives.filter.all">All</span><span class="fcount"></span></button>
-            <button class="fchip" data-f="deterministic" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.deterministic">Deterministic</span><span class="fcount"></span></button>
-            <button class="fchip" data-f="live" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.live">Live</span><span class="fcount"></span></button>
-            <button class="fchip" id="persp-chip-rerun" data-f="rerun" aria-pressed="false" type="button" hidden><span data-i18n="perspectives.filter.rerun">Needs re-run only</span><span class="fcount"></span></button>
-            <button class="fchip" id="persp-chip-drift" data-f="drift" aria-pressed="false" type="button" hidden><span data-i18n="perspectives.filter.drift">Drift found only</span><span class="fcount"></span></button>
+                 textContent, which on the button would delete the count. Two
+                 labelled groups rather than one row: mode and verdict are
+                 different questions, and mixing their chips together read as
+                 one. -->
+            <div class="fgroup">
+              <span class="fgroup-label" data-i18n="perspectives.filter.group.mode">Mode</span>
+              <button class="fchip" data-f="all" aria-pressed="true" type="button"><span data-i18n="perspectives.filter.all">All</span><span class="fcount"></span></button>
+              <button class="fchip" data-f="deterministic" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.deterministic">Deterministic</span><span class="fcount"></span></button>
+              <button class="fchip" data-f="live" aria-pressed="false" type="button"><span data-i18n="perspectives.filter.live">Live</span><span class="fcount"></span></button>
+            </div>
+            <!-- Same words as the 判定 column (perspectives.rerun.state.*) and
+                 the same group label as its header (perspectives.col.verdict)
+                 — a filter chip must never coin its own name for a verdict. -->
+            <div class="fgroup" id="persp-verdict-chips" hidden>
+              <span class="fgroup-label" data-i18n="perspectives.col.verdict">Verdict</span>
+              <button class="fchip" id="persp-chip-needsrepair" data-f="needsRepair" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.needsRepair">Needs repair</span><span class="fcount"></span></button>
+              <button class="fchip" id="persp-chip-rerunneeded" data-f="rerunNeeded" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.rerunNeeded">Re-run needed</span><span class="fcount"></span></button>
+              <button class="fchip" id="persp-chip-inprogress" data-f="inProgress" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.inProgress">In progress</span><span class="fcount"></span></button>
+              <button class="fchip" id="persp-chip-verified" data-f="verified" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.verified">Verified</span><span class="fcount"></span></button>
+            </div>
             <div class="spacer"></div>
             <span class="muted persp-head" id="persp-deploy-head" hidden></span>
             <div class="sw-wrap" id="persp-profile-wrap">
@@ -182,7 +195,7 @@ const HTML_BODY = `
             </div>
           </div>
           <div class="tblcard"><div class="table-wrap"><table>
-            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th id="persp-th-verdict" data-i18n="perspectives.col.verdict" hidden>Next</th><th id="persp-th-audit" data-i18n="perspectives.col.audit" hidden>Audit</th><th id="persp-th-run" data-i18n="perspectives.col.run" hidden>Execution</th><th id="persp-th-drift" data-i18n="perspectives.col.drift" hidden>Drift audit</th><th></th></tr></thead>
+            <thead><tr><th data-i18n="perspectives.col.case">Case</th><th data-i18n="perspectives.col.mode">Mode</th><th id="persp-th-verdict" data-i18n="perspectives.col.verdict" hidden>Verdict</th><th id="persp-th-run" data-i18n="perspectives.col.run" hidden>Execution</th><th id="persp-th-audit" data-i18n="perspectives.col.audit" hidden>Audit</th><th></th></tr></thead>
             <tbody id="persp-tbody"></tbody>
           </table></div></div>
           <p class="empty-note" id="persp-no-hit" hidden data-i18n="perspectives.noHit">No matching cases.</p>
@@ -854,13 +867,15 @@ const CSS = `
      existing badge/chip primitives above, so no new tokens are needed.
 
      The summary row answers the question this tab exists for — which cases
-     need re-running — as one inventory line plus one bar segmented by re-run
-     state. The mode and recorded-ness counts moved onto the filter chips,
-     which is where a count says something actionable. */
+     need attention — as one inventory line plus one bar per axis: verdict,
+     execution, audit, the same three groupings the table's columns show. The
+     mode and recorded-ness counts moved onto the filter chips, which is
+     where a count says something actionable. */
   .ov { display: flex; flex-direction: column; gap: 10px; padding: 14px 18px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); margin-bottom: 16px; }
   .ov-inv { font-size: 13px; color: var(--muted); }
   .ov-inv b { color: var(--fg); font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
-  /* One row per overview axis (re-run, drift): a short label above its own bar+legend. */
+  /* One row per overview axis (verdict, execution, audit): a short label —
+     reusing that axis's own column header text — above its own bar+legend. */
   .ov-axis { display: flex; flex-direction: column; gap: 4px; }
   .ov-axis-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted-2); }
   .rrbar { height: 8px; border-radius: 999px; overflow: hidden; display: flex; background: var(--surface-3); }
@@ -868,22 +883,25 @@ const CSS = `
   .rrleg span { display: inline-flex; align-items: center; gap: 6px; }
   .rrleg i { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .rrleg b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
-  /* One class per verdict, worn by both the bar segment and its legend dot.
-     "unanswerable" takes the info hue: it must never be mistaken for a pass.
-     Drift's own three states share these colours rather than inventing a
-     second palette — same reasoning as the badge classes below. Careful
-     writing in here: a star followed by a slash closes the comment early and
-     silently eats the next rule, and a backtick ends the template literal this
-     CSS lives in. */
-  .sg-drift-found, .sg-rerunneeded { background: var(--amber-fill); }
-  .sg-needsrepair { background: var(--fail); }
-  .sg-unanswerable, .sg-drift-unknown { background: var(--info); }
-  .sg-drift-clean, .sg-verified { background: var(--pass); }
-  .sg-drift-none, .sg-inprogress { background: var(--muted-2); }
+  /* One class per state, worn by both the bar segment and its legend dot.
+     The execution and audit axes share these colours with the verdict axis
+     rather than inventing two more palettes — same reasoning as the badge
+     classes below. Careful writing in here: a star followed by a slash
+     closes the comment early and silently eats the next rule, and a
+     backtick ends the template literal this CSS lives in. */
+  .sg-rerunneeded, .sg-exec-stale { background: var(--amber-fill); }
+  .sg-needsrepair, .sg-audit-drifted, .sg-exec-failed { background: var(--fail); }
+  .sg-audit-undecided { background: var(--info); }
+  .sg-verified, .sg-audit-clean, .sg-exec-passed { background: var(--pass); }
+  .sg-inprogress, .sg-audit-due, .sg-exec-never { background: var(--muted-2); }
 
   .search { flex: 1; min-width: 200px; max-width: 340px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 10px; height: 32px; background: var(--surface); }
   .search svg { width: 15px; height: 15px; flex: none; color: var(--muted-2); }
   .search input { border: none; outline: none; font: inherit; font-size: 13px; width: 100%; background: transparent; color: var(--fg); }
+  /* A labelled cluster of chips (mode, verdict) rather than one flat row —
+     the label says what question the chips beside it answer. */
+  .fgroup { display: inline-flex; align-items: center; gap: 6px; }
+  .fgroup-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted-2); margin-right: 2px; }
   .fchip { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 999px; padding: 5px 12px; font-size: 12.5px; color: var(--muted); }
   .fchip[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
   .fchip .fcount { margin-left: 6px; font-variant-numeric: tabular-nums; color: var(--muted-2); }
@@ -895,35 +913,24 @@ const CSS = `
   .badge.norec { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
   .badge.norec .d { background: var(--amber); }
 
-  /* "Needs re-run" (ADR-0010). Four distinct looks on purpose: rr-unknown must
-     never be mistaken for rr-notneeded, so it takes the info hue rather than a
-     dimmed green, and every badge is paired with a .cellsub saying what the
-     verdict rests on.
-
-     The drift column (dr-*) answers a different question — does the spec
-     still describe the code, not whether the last result is stale — but
-     reuses these same three hues so the two columns read as siblings rather
-     than inventing a fourth palette: dr-found (a diagnosis exists) shares
-     rr-needed's amber, dr-clean (audited, no drift) shares rr-notneeded's
-     green, dr-none (never audited) shares rr-none's grey. */
-  .badge.rr-needed, .badge.dr-found { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
-  .badge.rr-needed .d, .badge.dr-found .d { background: var(--amber); }
-  .badge.rr-notneeded, .badge.dr-clean { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
-  .badge.rr-notneeded .d, .badge.dr-clean .d { background: var(--pass); }
-  /* Same blue on both axes: "we cannot say" means the same thing whether the
-     question is re-run or drift, and a reader should not have to relearn it. */
-  .badge.rr-unknown, .badge.dr-unknown { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
-  .badge.rr-unknown .d, .badge.dr-unknown .d { background: var(--info); }
-  .badge.rr-none, .badge.dr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
-  .badge.rr-none .d, .badge.dr-none .d { background: var(--muted); }
+  /* Shared by the verdict and audit columns (ADR-0010, ADR-0014): rr-unknown
+     must never be mistaken for a clean rr-none, so it takes the info hue
+     rather than a dimmed grey, and every badge is paired with a .cellsub
+     saying what it rests on. */
+  .badge.rr-needed { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+  .badge.rr-needed .d { background: var(--amber); }
+  .badge.rr-unknown { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
+  .badge.rr-unknown .d { background: var(--info); }
+  .badge.rr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
+  .badge.rr-none .d { background: var(--muted); }
   .cellsub { display: block; margin-top: 3px; max-width: 260px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
   .graded-mark { color: var(--fg-dim); font-weight: 600; }
   .cellsub a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--border-strong); }
   .cellsub a:hover { color: var(--fg); }
   .persp-note { margin-bottom: 12px; }
   .persp-head { font-size: 12px; white-space: nowrap; }
-  /* The Perspectives toolbar carries search + five chips + the profile
-     selector, so it wraps instead of overflowing on a narrow window. */
+  /* The Perspectives toolbar carries search + two filter-chip groups + the
+     profile selector, so it wraps instead of overflowing on a narrow window. */
   #view-perspectives .toolbar { flex-wrap: wrap; }
   .proj-menu.right { left: auto; right: 0; }
   .d-note { margin-top: 12px; max-width: 900px; }
@@ -1085,15 +1092,14 @@ const CLIENT_JS = `
       "perspectives.search": "Search cases…",
       "perspectives.filter.all": "All", "perspectives.filter.deterministic": "Deterministic",
       "perspectives.filter.live": "Live",
-      "perspectives.filter.rerun": "Needs re-run only", "perspectives.filter.drift": "Drift found only",
-      "perspectives.col.verdict": "Next", "perspectives.col.audit": "Audit",
-      "perspectives.col.run": "Execution", "perspectives.col.drift": "Drift audit",
+      "perspectives.filter.group.mode": "Mode",
+      "perspectives.col.verdict": "Verdict", "perspectives.col.audit": "Audit",
+      "perspectives.col.run": "Execution",
       "perspectives.audit.state.due": "Audit due",
       "perspectives.audit.state.clean": "Describes the code",
       "perspectives.audit.state.drifted": "Drifted",
       "perspectives.audit.state.undecided": "Couldn't tell",
-      "perspectives.audit.state.cannotTell": "Can't tell",
-      "perspectives.run.state.needed": "re-run needed", "perspectives.run.state.unknown": "can't tell",
+      "perspectives.run.state.superseded": "pending",
       "perspectives.run.state.failed": "failed", "perspectives.run.state.passed": "passed",
       "perspectives.run.state.never": "never run",
       "perspectives.col.case": "Case", "perspectives.col.mode": "Mode",
@@ -1103,7 +1109,6 @@ const CLIENT_JS = `
       "perspectives.loadFailed": "Loading perspectives failed",
       "perspectives.mode.deterministic": "deterministic", "perspectives.mode.live": "live",
       "perspectives.ov.cases": "cases", "perspectives.ov.features": "features",
-      "perspectives.ov.axis.rerun": "Re-run", "perspectives.ov.axis.drift": "Drift",
       "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
       "perspectives.d.testCondition": "Condition", "perspectives.d.spec": "spec",
       "perspectives.note.label": "Note",
@@ -1112,12 +1117,11 @@ const CLIENT_JS = `
       "perspectives.note.error": "Could not save — retry",
       "perspectives.d.lastRed": "Most recent failure",
       "perspectives.d.changedSince": "Changes since the last run",
-      "perspectives.d.cannotJudge": "Why this cannot be judged",
+      "perspectives.d.whyVerdict": "Why this verdict",
       "perspectives.result.openRun": "Open this run in the hub",
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needsRepair": "Needs repair",
       "perspectives.rerun.state.rerunNeeded": "Re-run needed",
-      "perspectives.rerun.state.unanswerable": "Can't tell",
       "perspectives.rerun.state.inProgress": "In progress",
       "perspectives.rerun.state.verified": "Verified",
       "perspectives.rerun.vsDeploy": "judged against deploy",
@@ -1128,11 +1132,11 @@ const CLIENT_JS = `
       "perspectives.rerun.touchedCount": "{n} deployed path(s) matched this case",
       "perspectives.rerun.touchedUnknown": "a deploy since the last run matched this case",
       "perspectives.rerun.inProgressHint": "an audit or a run is still going, or the audit has not caught up with the deploy",
+      "perspectives.rerun.heldHint": "another job already holds this spec — acting on it now would race that job",
       "perspectives.rerun.repair.testDrift": "the generated test no longer matches the code — re-record it",
       "perspectives.rerun.repair.specChange": "the spec describes something the code no longer does — a human decides",
       "perspectives.rerun.repair.auditUndecided": "the audit read the code and could not decide — a human looks",
       "perspectives.rerun.repair.runFailed": "the last run failed — re-running it changes nothing until the cause is fixed",
-      "perspectives.rerun.why.notEvaluated": "no run and no deploy has ever been recorded for this profile",
       "perspectives.rerun.why.noSelectionInRange": "a deploy in range was recorded without a spec selection",
       "perspectives.rerun.why.selectionUnknown": "the selector could not tell whether this case was affected",
       "perspectives.rerun.why.noDeployLog": "no deploy log for this profile",
@@ -1141,7 +1145,6 @@ const CLIENT_JS = `
       "perspectives.rerun.why.deployedShaNotInLog": "the last run's commit predates the retained deploy log",
       "perspectives.rerun.why.gapInRange": "deploys are missing from the range",
       "perspectives.rerun.why.unrecognized": "this hub reported a reason this UI does not recognise",
-      "perspectives.rerun.fix.notEvaluated": "Nothing has been recorded for this profile at all. Wire ccqa hub deploy record into the deploy job and push a run report, so there is something to compare against.",
       "perspectives.rerun.fix.noSelectionInRange": "A deploy in range was recorded without a spec selection, so nothing says whether it affected this case. Run ccqa select-specs in the deploy job and send its verdict with the deploy.",
       "perspectives.rerun.fix.selectionUnknown": "A deploy in range was judged, but the selector could not decide this case. Re-run it to get a clean baseline.",
       "perspectives.rerun.fix.noDeployLog": "Nothing has been recorded in this profile's deploy log. Wire ccqa hub deploy record into the deploy job for this environment so ccqa knows what shipped.",
@@ -1154,12 +1157,7 @@ const CLIENT_JS = `
       "perspectives.rerun.loadFailed": "Loading re-run data failed",
       "perspectives.rerun.noDeployLogBanner": "No deploy has been recorded for profile {profile}, so no case can be judged. Wire ccqa hub deploy record into the deploy job for this environment.",
       "perspectives.rerun.deployHead": "deploy head",
-      "perspectives.drift.state.notAudited": "Not audited",
-      "perspectives.drift.state.clean": "No drift",
-      "perspectives.drift.state.found": "Drift found", "perspectives.drift.state.unknown": "Can't tell",
       "perspectives.drift.graded": "confirmed",
-      "perspectives.drift.unsupported": "This hub does not report drift audit results. Upgrade the hub to enable it.",
-      "perspectives.drift.loadFailed": "Loading drift data failed",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.playwright": "Playwright test generation",
@@ -1251,15 +1249,14 @@ const CLIENT_JS = `
       "perspectives.search": "ケースを検索…",
       "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
       "perspectives.filter.live": "ライブ",
-      "perspectives.filter.rerun": "要再実行のみ", "perspectives.filter.drift": "ズレありのみ",
-      "perspectives.col.verdict": "次にすること", "perspectives.col.audit": "監査",
-      "perspectives.col.run": "実行", "perspectives.col.drift": "ドリフト監査",
+      "perspectives.filter.group.mode": "モード",
+      "perspectives.col.verdict": "判定", "perspectives.col.audit": "監査",
+      "perspectives.col.run": "実行",
       "perspectives.audit.state.due": "監査待ち",
-      "perspectives.audit.state.clean": "ずれなし",
-      "perspectives.audit.state.drifted": "ずれあり",
+      "perspectives.audit.state.clean": "ズレなし",
+      "perspectives.audit.state.drifted": "ズレあり",
       "perspectives.audit.state.undecided": "判定不能",
-      "perspectives.audit.state.cannotTell": "判定できない",
-      "perspectives.run.state.needed": "要再実行", "perspectives.run.state.unknown": "判定できない",
+      "perspectives.run.state.superseded": "実行待ち",
       "perspectives.run.state.failed": "失敗", "perspectives.run.state.passed": "合格",
       "perspectives.run.state.never": "未実行",
       "perspectives.col.case": "ケース", "perspectives.col.mode": "モード",
@@ -1269,7 +1266,6 @@ const CLIENT_JS = `
       "perspectives.loadFailed": "テスト観点の読み込みに失敗しました",
       "perspectives.mode.deterministic": "決定的", "perspectives.mode.live": "ライブ",
       "perspectives.ov.cases": "ケース", "perspectives.ov.features": "機能",
-      "perspectives.ov.axis.rerun": "実行", "perspectives.ov.axis.drift": "ドリフト",
       "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
       "perspectives.d.testCondition": "実行条件", "perspectives.d.spec": "spec",
       "perspectives.note.label": "note",
@@ -1278,12 +1274,11 @@ const CLIENT_JS = `
       "perspectives.note.error": "保存に失敗しました — 再試行してください",
       "perspectives.d.lastRed": "直近の失敗",
       "perspectives.d.changedSince": "前回実行以降の変更",
-      "perspectives.d.cannotJudge": "判定できない理由",
+      "perspectives.d.whyVerdict": "この判定の理由",
       "perspectives.result.openRun": "ハブでこの実行を開く",
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needsRepair": "修正待ち",
       "perspectives.rerun.state.rerunNeeded": "要再実行",
-      "perspectives.rerun.state.unanswerable": "判定できない",
       "perspectives.rerun.state.inProgress": "進行中",
       "perspectives.rerun.state.verified": "検証済み",
       "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
@@ -1294,11 +1289,11 @@ const CLIENT_JS = `
       "perspectives.rerun.touchedCount": "このケースに一致したデプロイ差分 {n} 件",
       "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイがこのケースに一致する変更を行っています",
       "perspectives.rerun.inProgressHint": "監査か実行がまだ走っているか、監査がデプロイに追いついていません",
+      "perspectives.rerun.heldHint": "このスペックは既に別のジョブが保持しています。今操作するとそのジョブと競合します",
       "perspectives.rerun.repair.testDrift": "生成されたテストが古くなっています。録り直してください",
       "perspectives.rerun.repair.specChange": "spec がコードのやめた動作を書いています。人が判断します",
       "perspectives.rerun.repair.auditUndecided": "監査がコードを読んだうえで判定できませんでした。人が見ます",
       "perspectives.rerun.repair.runFailed": "最後の実行が落ちています。原因を直すまで再実行しても変わりません",
-      "perspectives.rerun.why.notEvaluated": "このプロファイルには実行もデプロイも記録がありません",
       "perspectives.rerun.why.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあります",
       "perspectives.rerun.why.selectionUnknown": "影響の有無を判定できませんでした",
       "perspectives.rerun.why.noDeployLog": "このプロファイルのデプロイ記録がありません",
@@ -1307,7 +1302,6 @@ const CLIENT_JS = `
       "perspectives.rerun.why.deployedShaNotInLog": "前回実行のcommitが保持中のデプロイログより古いです",
       "perspectives.rerun.why.gapInRange": "対象範囲のデプロイ記録が欠けています",
       "perspectives.rerun.why.unrecognized": "このUIが認識できない理由がハブから返されました",
-      "perspectives.rerun.fix.notEvaluated": "このプロファイルには何も記録がありません。デプロイジョブに ccqa hub deploy record を組み込み、実行レポートを送ってください。比較する対象がそこで初めて生まれます。",
       "perspectives.rerun.fix.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあり、このケースに影響したかどうかを示すものがありません。デプロイジョブで ccqa select-specs を実行し、判定をデプロイと一緒に送ってください。",
       "perspectives.rerun.fix.selectionUnknown": "対象範囲のデプロイは判定されましたが、このケースについては判断がつきませんでした。再実行して基準を取り直してください。",
       "perspectives.rerun.fix.noDeployLog": "このプロファイルのデプロイログに記録がありません。何がデプロイされたかをccqaに伝えるため、この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
@@ -1320,12 +1314,7 @@ const CLIENT_JS = `
       "perspectives.rerun.loadFailed": "再実行の要否の読み込みに失敗しました",
       "perspectives.rerun.noDeployLogBanner": "プロファイル {profile} にデプロイの記録がないため、どのケースも判定できません。この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
       "perspectives.rerun.deployHead": "最新デプロイ",
-      "perspectives.drift.state.notAudited": "未監査",
-      "perspectives.drift.state.clean": "ズレなし",
-      "perspectives.drift.state.found": "ズレあり", "perspectives.drift.state.unknown": "判定できない",
       "perspectives.drift.graded": "人が確認",
-      "perspectives.drift.unsupported": "このハブはdrift監査結果を返しません。利用するにはハブを更新してください。",
-      "perspectives.drift.loadFailed": "drift監査結果の読み込みに失敗しました",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.playwright": "Playwrightテスト生成",
@@ -3187,13 +3176,14 @@ const CLIENT_JS = `
 
   // "rerun" is the RerunReport for the currently selected profile, or null when
   // this hub can't answer (older hub, or the fetch failed) — in which case the
-  // two re-run columns are dropped rather than filled with blanks.
+  // three re-run columns are dropped rather than filled with blanks.
   // "rerunSupported" is tri-state: null until the first answer, then whether
   // this hub answers at all. Chip visibility follows it rather than the report,
   // so switching profile doesn't drop the filter while the next one loads.
   // "drift" is the DriftLedgerResponse, or null when unanswered (older hub, or
   // a failed fetch) — not profile-scoped, so it does not reset when the
-  // profile switcher changes (unlike "rerun" above).
+  // profile switcher changes (unlike "rerun" above). Only feeds the audit
+  // column's "audited at" line now; its own finding is superseded by rr.audit.
   var perspState = {
     doc: null, q: "", f: "all",
     rerun: null, rerunSupported: null, runUrls: {}, rerunProfiles: [],
@@ -3230,11 +3220,11 @@ const CLIENT_JS = `
       "/rerun?profile=" + encodeURIComponent(state.profile);
   }
 
-  // Shared by rerun and drift, which differ only in path and i18n prefix.
   // Resolves { report } or { note } and never rejects: a hub that predates
-  // the endpoint costs only that column, not the whole tab. A 404 here can
-  // only mean "no such route" — the endpoint's own 404 is "the project has no
-  // perspectives document", and this runs only after that document loaded.
+  // the endpoint costs only the columns it feeds, not the whole tab. A 404
+  // here can only mean "no such route" — the endpoint's own 404 is "the
+  // project has no perspectives document", and this runs only after that
+  // document loaded.
   function fetchLedgerColumn(path, i18nPrefix) {
     return fetch(path, { headers: { Authorization: "Bearer " + state.token } }).then(function (res) {
       if (res.status === 404) return { note: t(i18nPrefix + "unsupported"), kind: "info" };
@@ -3249,7 +3239,10 @@ const CLIENT_JS = `
 
   // ── perspectives: drift ledger ────────────────────────────────────────
   // Not profile-scoped (see perspState.drift above), so unlike rerunPath this
-  // takes no ?profile=.
+  // takes no ?profile=. Its own finding is superseded by the audit axis in
+  // the /rerun report (ADR-0014); what survives into the view is only its
+  // coordinate — when a spec was last audited — folded into the audit
+  // column's evidence line (perspAuditCell).
 
   function driftPath() {
     return "/api/v1/projects/" + encodeURIComponent(state.project) + "/drift";
@@ -3301,16 +3294,25 @@ const CLIENT_JS = `
     return text === prefix + reason ? t(prefix + "unrecognized") : text;
   }
 
-  // Why the question cannot be answered, in the actionable phrasing the detail
-  // panel wants: name the missing input and how to supply it. Only
-  // "unanswerable" carries a machine-readable reason (ADR-0010).
-  // Every verdict that carries no evidence row explains itself here. A verdict
-  // a newer hub invented falls through to the fix lookup, so the row says the
-  // UI cannot read it rather than going blank — which looks like missing data.
-  function rerunCannotJudge(rr) {
-    if (rr.verdict === "unanswerable") return rerunReasonText("perspectives.rerun.fix.", rr.reason || "");
+  // Every verdict that carries no evidence row explains itself here, in the
+  // actionable phrasing the detail panel wants. decide() checks heldBy before
+  // the audit axis, so a spec another job already holds must be explained by
+  // that hold, not by the audit-hole annotation below — which only applies to
+  // an "inProgress" verdict that decide() reached by falling through to a due
+  // audit (ADR-0014). A verdict a newer hub invented falls through to the fix
+  // lookup, so the row says the UI cannot read it rather than going blank —
+  // which looks like missing data.
+  function rerunWhyVerdict(rr) {
     if (rr.verdict === "needsRepair") return rerunReasonText("perspectives.rerun.repair.", rerunRepairCause(rr));
-    if (rr.verdict === "inProgress") return t("perspectives.rerun.inProgressHint");
+    if (rr.verdict === "rerunNeeded" && rr.executionAssumedReached) {
+      return rerunReasonText("perspectives.rerun.fix.", rr.executionAssumedReached);
+    }
+    if (rr.verdict === "inProgress") {
+      if (rr.heldBy) return t("perspectives.rerun.heldHint");
+      return rr.auditAssumedReached
+        ? rerunReasonText("perspectives.rerun.fix.", rr.auditAssumedReached)
+        : t("perspectives.rerun.inProgressHint");
+    }
     return rerunReasonText("perspectives.rerun.fix.", rr.verdict);
   }
 
@@ -3325,10 +3327,12 @@ const CLIENT_JS = `
 
   // The short justification a table cell carries under its badge. Nothing here
   // may collapse to a bare "up to date" — verified names the deploy it was
-  // judged against, and unanswerable names the missing input.
+  // judged against, and a spec assumed reached names the hole that made it so
+  // rather than claiming a deploy matched it.
   function rerunCellWhy(rr) {
     var head = perspState.rerun && perspState.rerun.deployHead;
     if (rr.verdict === "rerunNeeded") {
+      if (rr.executionAssumedReached) return rerunReasonText("perspectives.rerun.why.", rr.executionAssumedReached);
       if (!rr.touchedBy || !rr.touchedBy.length) return t("perspectives.rerun.touchedUnknown");
       return t("perspectives.rerun.touchedCount").replace("{n}", String(rr.touchedBy.length));
     }
@@ -3336,8 +3340,7 @@ const CLIENT_JS = `
       if (!head) return t("perspectives.rerun.noDeployHead");
       return t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
     }
-    if (rr.verdict === "unanswerable") return rerunReasonText("perspectives.rerun.why.", rr.reason || "");
-    return rerunCannotJudge(rr);
+    return rerunWhyVerdict(rr);
   }
 
 
@@ -3350,27 +3353,26 @@ const CLIENT_JS = `
   // Bar segments in drawing order: what a person must act on first, then what
   // the pipeline still owes, then what needs nothing. "needsRepair" leads
   // because it is the only verdict a run cannot clear — someone has to repair
-  // the spec or the product. "unanswerable" keeps its own place and its own
-  // colour: folding it into "verified" would turn "we cannot say" into "all
-  // clear", which is what ADR-0010 forbids.
-  var RERUN_ORDER = ["needsRepair", "rerunNeeded", "unanswerable", "inProgress", "verified"];
+  // the spec or the product.
+  var RERUN_ORDER = ["needsRepair", "rerunNeeded", "inProgress", "verified"];
   var RERUN_SEG_CLASS = {
-    needsRepair: "sg-needsrepair", rerunNeeded: "sg-rerunneeded", unanswerable: "sg-unanswerable",
+    needsRepair: "sg-needsrepair", rerunNeeded: "sg-rerunneeded",
     inProgress: "sg-inprogress", verified: "sg-verified"
   };
 
-  // One verdict per case, bucketed. A case with no verdict at all — this hub
-  // does not answer the question, the fetch failed, or the case was added
-  // after the report was computed — is unanswerable, never "verified". A
-  // verdict this UI does not know reads the same way for the same reason: an
-  // answer we cannot interpret is not evidence that nothing is needed.
+  // The one rule the summary bar and the verdict filter chips both answer
+  // to: a case with no verdict, or a verdict a newer hub invented, counts as
+  // needing a run — unanswered means unverified (ADR-0014). Both call this
+  // rather than each keeping its own copy of the fallback.
+  function rerunVerdictOf(rr) {
+    var v = rr && rr.verdict;
+    return v && RERUN_ORDER.indexOf(v) !== -1 ? v : "rerunNeeded";
+  }
+
+  // One verdict per case, bucketed, via rerunVerdictOf above.
   function rerunComposition(verdicts) {
-    var counts = { needsRepair: 0, rerunNeeded: 0, unanswerable: 0, inProgress: 0, verified: 0 };
-    verdicts.forEach(function (rr) {
-      if (!rr || !rr.verdict) { counts.unanswerable += 1; return; }
-      var known = Object.prototype.hasOwnProperty.call(counts, rr.verdict);
-      counts[known ? rr.verdict : "unanswerable"] += 1;
-    });
+    var counts = { needsRepair: 0, rerunNeeded: 0, inProgress: 0, verified: 0 };
+    verdicts.forEach(function (rr) { counts[rerunVerdictOf(rr)] += 1; });
     return counts;
   }
 
@@ -3386,52 +3388,69 @@ const CLIENT_JS = `
   }
   // --- end pure: rerun composition -----------------------------------------
 
-  // --- pure: drift composition ----------------------------------------------
-  // Same shape as rerun composition above, and self-contained for the same
-  // reason: drift-overview.test.ts lifts this region out and runs it directly.
-  // Unlike rerun, drift does not split by label at the overview level — each
-  // spec carries at most one diagnosis already. UNKNOWN is the exception, and
-  // it earns its own state rather than a label: it is the audit saying it could
-  // not tell, so counting it as "drift found" would assert a mismatch nobody
-  // established, and counting it as clean would hide one. Four states, three of
-  // which the ledger distinguishes structurally:
-  //
-  //   no entry      → never audited
-  //   null label    → audited, nothing found
-  //   UNKNOWN label → audited, could not tell
-  //   other label   → audited, drift found
-  function driftState(entry) {
-    if (!entry) return "notAudited";
-    if (!entry.label) return "clean";
-    return entry.label === "UNKNOWN" ? "unknown" : "found";
-  }
-
-  // Drawing order: what needs a look first, then what could not be judged, then
-  // what was never audited, then confirmed clean — same reasoning as
-  // RERUN_ORDER above.
-  var DRIFT_ORDER = ["found", "unknown", "notAudited", "clean"];
-  var DRIFT_SEG_CLASS = {
-    found: "sg-drift-found",
-    unknown: "sg-drift-unknown",
-    notAudited: "sg-drift-none",
-    clean: "sg-drift-clean",
+  // --- pure: execution composition ------------------------------------------
+  // Same shape as rerun composition above, self-contained for the same
+  // reason, and read from the same rr records: bucketed by the execution
+  // axis rather than the derived verdict. The mapping duplicates
+  // perspRunState's two renames (neverRun -> never, stale -> superseded)
+  // rather than calling it, so this region stays independently liftable.
+  var EXEC_ORDER = ["failed", "superseded", "never", "passed"];
+  var EXEC_SEG_CLASS = {
+    failed: "sg-exec-failed", superseded: "sg-exec-stale",
+    never: "sg-exec-never", passed: "sg-exec-passed"
   };
 
-  function driftComposition(entries) {
-    var counts = { found: 0, unknown: 0, notAudited: 0, clean: 0 };
-    entries.forEach(function (entry) { counts[driftState(entry)] += 1; });
+  // A case with no verdict at all reads as never run — same "unanswered
+  // means unverified" rule rerunComposition applies, and the safe direction:
+  // it never inflates "passed".
+  function executionComposition(records) {
+    var counts = { failed: 0, superseded: 0, never: 0, passed: 0 };
+    records.forEach(function (rr) {
+      var exec = rr && rr.execution;
+      var key = !exec || exec === "neverRun" ? "never" : exec === "stale" ? "superseded" : exec;
+      counts[Object.prototype.hasOwnProperty.call(counts, key) ? key : "never"] += 1;
+    });
     return counts;
   }
 
   // Only states with cases in them get drawn — see rerunSegments' comment above.
-  function driftSegments(counts) {
+  function executionSegments(counts) {
     var out = [];
-    DRIFT_ORDER.forEach(function (key) {
-      if (counts[key] > 0) out.push({ state: key, count: counts[key], cls: DRIFT_SEG_CLASS[key] });
+    EXEC_ORDER.forEach(function (key) {
+      if (counts[key] > 0) out.push({ state: key, count: counts[key], cls: EXEC_SEG_CLASS[key] });
     });
     return out;
   }
-  // --- end pure: drift composition -------------------------------------------
+  // --- end pure: execution composition --------------------------------------
+
+  // --- pure: audit composition -----------------------------------------------
+  // Same shape again, bucketed by the audit axis (ADR-0014).
+  var AUDIT_ORDER = ["drifted", "undecided", "due", "clean"];
+  var AUDIT_SEG_CLASS = {
+    drifted: "sg-audit-drifted", undecided: "sg-audit-undecided",
+    due: "sg-audit-due", clean: "sg-audit-clean"
+  };
+
+  // A case with no audit axis at all reads as due — the same "unanswered
+  // means not yet cleared" rule as the other two axes.
+  function auditComposition(records) {
+    var counts = { drifted: 0, undecided: 0, due: 0, clean: 0 };
+    records.forEach(function (rr) {
+      var key = (rr && rr.audit) || "due";
+      counts[Object.prototype.hasOwnProperty.call(counts, key) ? key : "due"] += 1;
+    });
+    return counts;
+  }
+
+  // Only states with cases in them get drawn — see rerunSegments' comment above.
+  function auditSegments(counts) {
+    var out = [];
+    AUDIT_ORDER.forEach(function (key) {
+      if (counts[key] > 0) out.push({ state: key, count: counts[key], cls: AUDIT_SEG_CLASS[key] });
+    });
+    return out;
+  }
+  // --- end pure: audit composition --------------------------------------------
 
   // One ledger entry as "<short sha> · <when>", linking to the hub's run detail
   // and, when that run recorded one, to the CI run. Clicks must not bubble: the
@@ -3489,30 +3508,34 @@ const CLIENT_JS = `
   // still true" are two faces of one question, so the row answers it once and
   // the detail panel keeps the coordinates.
   //
-  // A needed re-run outranks a recorded failure: once the last result is known
-  // to be stale it is no longer a verdict, and what to do next is the same
-  // either way — run it. Reporting "failed" there would be describing a result
-  // nobody should still be acting on.
+  // --- pure: run-state labels ----------------------------------------------
+  // Self-contained (no DOM, no closures) so rerun-view.test.ts can lift it and
+  // check that every execution value the hub can send has a badge and wording.
+
+  // A recorded failure outranks the deploy that landed after it: a red result
+  // is current information, and repeating it teaches nothing until someone
+  // repairs it.
   //
-  // "unknown" keeps its own state rather than folding into the last result:
-  // it means the hub cannot say whether that result still holds, and
-  // --only-hub-rerun-needed does not re-run it without --only-hub-rerun-needed-with-unknown. Showing
-  // it as passed or failed would claim a confidence nothing supports.
+  // The wording keys are not the axis values: ADR-0010 reserves the freshness
+  // adjectives for drift, so what the schema calls "stale" is shown as what it
+  // means for this case — it has not run since the deploy.
   function perspRunState(rr) {
     if (!rr || !rr.execution) return null;
-    return rr.execution === "neverRun" ? "never" : rr.execution;
+    if (rr.execution === "neverRun") return "never";
+    return rr.execution === "stale" ? "superseded" : rr.execution;
   }
 
   // Reuses the badge classes that already mean these things elsewhere rather
-  // than minting a parallel palette: amber for "act on this", info for "cannot
-  // say", and the run status colours for a result that still stands.
-  var RUN_STATE_BADGE = { failed: "failed", passed: "passed", never: "rr-none" };
+  // than minting a parallel palette: amber for "act on this", and the run
+  // status colours for a result that still stands.
+  var RUN_STATE_BADGE = { failed: "failed", passed: "passed", superseded: "rr-needed", never: "rr-none" };
+  // --- end pure: run-state labels -------------------------------------------
 
   // The primary column. The two axes beside it answer "why"; this one answers
   // "who acts next", which is the only question a reader scanning a list of
   // specs has. Exactly one value, needsRepair, asks for a person.
   var VERDICT_BADGE = {
-    needsRepair: "rr-needed", rerunNeeded: "rr-needed", unanswerable: "rr-unknown",
+    needsRepair: "rr-needed", rerunNeeded: "rr-needed",
     inProgress: "rr-none", verified: "passed"
   };
 
@@ -3532,15 +3555,28 @@ const CLIENT_JS = `
     return td;
   }
 
-  // Axis 1, as the hub derived it against the deployed commit — which is not
-  // the same as the raw drift ledger beside it, whose verdict may predate the
-  // deploy.
+  // A reason that pinned a spec to a pending state without a demonstrable
+  // deploy touch (ADR-0014, auditAssumedReached / executionAssumedReached).
+  // The short form is always visible as a .cellsub; the title attribute
+  // carries the longer, actionable form for hover, so what closes the hole
+  // is available without depending on a pointer to find it.
+  function assumedReachedSub(reason) {
+    var sub = el("span", "cellsub", rerunReasonText("perspectives.rerun.why.", reason));
+    sub.title = rerunReasonText("perspectives.rerun.fix.", reason);
+    return sub;
+  }
+
+  // Axis 1, as the hub derived it against the deployed commit — fresher than
+  // the raw drift ledger, whose entry may predate the deploy. The ledger
+  // survives here only as the "audited at" coordinate (ledgerLine below):
+  // its own finding is superseded by rr.audit/rr.driftLabel above, so
+  // showing both would repeat one answer in two vocabularies — the bug this
+  // column used to have paired with a since-removed fourth column.
   var AUDIT_BADGE = {
-    due: "rr-none", clean: "passed", drifted: "failed",
-    undecided: "rr-unknown", cannotTell: "rr-unknown"
+    due: "rr-none", clean: "passed", drifted: "failed", undecided: "rr-unknown"
   };
 
-  function perspAuditCell(rr) {
+  function perspAuditCell(rr, driftEntry) {
     var td = el("td");
     if (!rr || !rr.audit) {
       td.appendChild(el("span", "muted", "\u2014"));
@@ -3552,6 +3588,23 @@ const CLIENT_JS = `
     td.appendChild(badge);
     if (rr.audit === "drifted" && rr.driftLabel) {
       td.appendChild(el("span", "cellsub", labelText(rr.driftLabel)));
+    } else if (rr.auditAssumedReached) {
+      // Due because the log could not place the audit, not because a deploy
+      // demonstrably reached it. Say which, or the whole column reads "due"
+      // with no cause anywhere on the page.
+      td.appendChild(assumedReachedSub(rr.auditAssumedReached));
+    }
+    // "audited at sha · when" — the same freshness evidence the execution
+    // column gives its own last result, below. SpecRerun does not carry the
+    // audit's own coordinate, so it comes from the drift ledger.
+    if (driftEntry) {
+      var sub = el("span", "cellsub");
+      sub.appendChild(ledgerLine(driftEntry));
+      if (driftEntry.graded) {
+        sub.appendChild(document.createTextNode(" · "));
+        sub.appendChild(el("span", "graded-mark", t("perspectives.drift.graded")));
+      }
+      td.appendChild(sub);
     }
     return td;
   }
@@ -3562,7 +3615,7 @@ const CLIENT_JS = `
     // No verdict at all: this case is in the document but not in the report
     // (added since it was computed). Not the same statement as "never run".
     if (!runState) {
-      td.appendChild(el("span", "muted", "—"));
+      td.appendChild(el("span", "muted", "\u2014"));
       return td;
     }
     var badge = el("span", "badge " + RUN_STATE_BADGE[runState]);
@@ -3570,8 +3623,11 @@ const CLIENT_JS = `
     badge.appendChild(document.createTextNode(" " + t("perspectives.run.state." + runState)));
     td.appendChild(badge);
 
-    // The sub-line is the coordinate of the result being reported. Why it
-    // matters belongs to the verdict column, not here.
+    // The sub-line is the coordinate of the result being reported — the same
+    // "when is this from" evidence the audit column carries above, so the two
+    // axes read as siblings. Why the currency matters belongs to the verdict
+    // column, except for the hole that pinned this to "pending" with no
+    // deploy to point at.
     if (runState !== "never") {
       var last = lastResult(rr);
       if (last) {
@@ -3580,53 +3636,7 @@ const CLIENT_JS = `
         td.appendChild(sub);
       }
     }
-    return td;
-  }
-
-  // ── perspectives: drift ledger ────────────────────────────────────────
-  // "Does this case still describe the product?" — a different question from
-  // re-run above, and shown as its own column rather than folded into it.
-  // Unlike re-run, drift carries no profile: an audit is a property of the
-  // code at a commit, not of an environment, so this column never changes
-  // when the profile switcher above it does.
-
-  var DRIFT_BADGE_CLASS = { notAudited: "dr-none", clean: "dr-clean", found: "dr-found", unknown: "dr-unknown" };
-
-  // driftState() lives with driftComposition/driftSegments above (the "pure:
-  // drift composition" region) — the badge must not collapse "never audited"
-  // and "audited, no drift found" into one grey, same reasoning either way.
-  function driftBadge(state) {
-    var span = el("span", "badge " + (DRIFT_BADGE_CLASS[state] || "dr-none"));
-    span.appendChild(el("span", "d"));
-    span.appendChild(document.createTextNode(" " + t("perspectives.drift.state." + state)));
-    return span;
-  }
-
-  function perspDriftCell(entry) {
-    var td = el("td");
-    td.appendChild(driftBadge(driftState(entry)));
-    if (entry) {
-      var sub = el("span", "cellsub");
-      // The label and surface go here only when they add to the badge. A clean
-      // audit has neither. An UNKNOWN one has both on paper, but the badge
-      // already says "could not tell" — repeating it as a label says the same
-      // thing in a second wording, and naming the surface it could not judge
-      // claims more than the audit found.
-      if (entry.label && driftState(entry) === "found") {
-        sub.appendChild(document.createTextNode(
-          labelText(entry.label) + (entry.surface ? " (" + t("diag.surface." + entry.surface) + ")" : "") + " · ",
-        ));
-      }
-      sub.appendChild(ledgerLine(entry));
-      // A verdict someone has looked at is worth more than one nobody has, in
-      // both directions: a confirmed finding is real, and a confirmed clean is
-      // not just "the audit found nothing".
-      if (entry.graded) {
-        sub.appendChild(document.createTextNode(" · "));
-        sub.appendChild(el("span", "graded-mark", t("perspectives.drift.graded")));
-      }
-      td.appendChild(sub);
-    }
+    if (rr.executionAssumedReached) td.appendChild(assumedReachedSub(rr.executionAssumedReached));
     return td;
   }
 
@@ -3680,45 +3690,47 @@ const CLIENT_JS = `
     return row;
   }
 
-  // Summary: the inventory as one line, then one row per axis — the two
-  // questions this tab answers, needs-re-run and drift, each segmented on its
-  // own bar rather than blended into one. The mode and recorded-ness counts
-  // are not lost; they moved onto the filter chips, where a count states what
-  // that filter would leave behind.
+  // Summary: the inventory as one line, then one row per axis — verdict,
+  // execution, audit, the same three groupings the table's columns show, so
+  // the bars and the table never disagree about what a word means. The mode
+  // and recorded-ness counts are not lost; they moved onto the filter chips,
+  // where a count states what that filter would leave behind.
   //
   // With no re-run data (an older hub, a failed fetch, or a profile nothing
-  // has been recorded on) every case is "not evaluated" and the bar says so in
-  // one neutral segment, rather than showing a composition that reads as
-  // "nothing to do". Drift has no profile and loads separately (loadDrift):
-  // when it hasn't (older hub, failed fetch), its row is omitted entirely
-  // rather than drawn as "all not audited" — that would read as a finding
-  // instead of missing data.
+  // has been recorded on) every case is "not evaluated" and all three bars
+  // are omitted together, rather than showing a composition that reads as
+  // "nothing to do".
   function renderPerspOverview(doc) {
     var host = document.getElementById("persp-ov");
     clear(host);
-    var verdicts = [];
-    var driftEntries = perspState.drift ? [] : null;
+    var records = [];
     doc.features.forEach(function (feature) {
       feature.specs.forEach(function (spec) {
-        verdicts.push(ledgerEntryFor(perspState.rerun, feature, spec));
-        if (driftEntries) driftEntries.push(ledgerEntryFor(perspState.drift, feature, spec));
+        records.push(ledgerEntryFor(perspState.rerun, feature, spec));
       });
     });
 
     var inv = el("div", "ov-inv");
-    inv.appendChild(el("b", null, String(verdicts.length)));
+    inv.appendChild(el("b", null, String(records.length)));
     inv.appendChild(document.createTextNode(" " + t("perspectives.ov.cases") + " / "));
     inv.appendChild(el("b", null, String(doc.features.length)));
     inv.appendChild(document.createTextNode(" " + t("perspectives.ov.features")));
     host.appendChild(inv);
-    if (!verdicts.length) return;
+    if (!records.length) return;
 
-    host.appendChild(ovAxisRow(
-      t("perspectives.ov.axis.rerun"), rerunSegments(rerunComposition(verdicts)), "perspectives.rerun.state.", verdicts.length,
-    ));
-    if (driftEntries) {
+    // Gated on the report as a whole: with none, none of the three axes has
+    // anything to compose, and an un-composed bar would paint every case as
+    // needing work — an overstatement about the hub rather than about the
+    // specs.
+    if (perspState.rerun) {
       host.appendChild(ovAxisRow(
-        t("perspectives.ov.axis.drift"), driftSegments(driftComposition(driftEntries)), "perspectives.drift.state.", driftEntries.length,
+        t("perspectives.col.verdict"), rerunSegments(rerunComposition(records)), "perspectives.rerun.state.", records.length,
+      ));
+      host.appendChild(ovAxisRow(
+        t("perspectives.col.run"), executionSegments(executionComposition(records)), "perspectives.run.state.", records.length,
+      ));
+      host.appendChild(ovAxisRow(
+        t("perspectives.col.audit"), auditSegments(auditComposition(records)), "perspectives.audit.state.", records.length,
       ));
     }
   }
@@ -3730,15 +3742,16 @@ const CLIENT_JS = `
   function perspMatches(feature, spec, f) {
     if (f === "deterministic" && perspMode(spec) !== "deterministic") return false;
     if (f === "live" && perspMode(spec) !== "live") return false;
-    if (f === "rerun") {
+    // The verdict chips (same words as RERUN_ORDER/the 判定 column) share
+    // rerunVerdictOf with the summary bar, so an unrecognised verdict is
+    // "rerunNeeded" in both places rather than matching no chip. With no
+    // report at all there is nothing to filter on, so every chip yields
+    // nothing.
+    if (RERUN_ORDER.indexOf(f) !== -1) {
+      if (!perspState.rerun) return false;
       var rr = ledgerEntryFor(perspState.rerun, feature, spec);
-      // Only "needed": "unknown" is not a weaker "probably needed", and
-      // folding it in here would be exactly the overstatement ADR-0010 forbids.
-      if (!rr || rr.verdict !== "rerunNeeded") return false;
+      if (rerunVerdictOf(rr) !== f) return false;
     }
-    // Same asymmetry: an unaudited spec is not a quiet "probably clean", so it
-    // does not belong under a chip that claims to list what drifted.
-    if (f === "drift" && driftState(ledgerEntryFor(perspState.drift, feature, spec)) !== "found") return false;
     if (perspState.q) {
       var hay = (spec.title + " " + (spec.summary || "") + " " + spec.specName).toLowerCase();
       if (hay.indexOf(perspState.q) === -1) return false;
@@ -3761,14 +3774,19 @@ const CLIENT_JS = `
   // lift this region out of the rendered page and run it: which label the
   // panel's evidence row wears, and whether it has a failure row at all.
 
-  // needed/notNeeded put evidence in that row, so it is labelled by the
-  // timeframe the evidence covers. The other three have no evidence to show,
-  // only a missing input to name — a different kind of content, and forcing one
-  // label over both would make one of the two read as a lie.
-  function rerunEvidenceLabelKey(rerunState) {
-    return rerunState === "rerunNeeded" || rerunState === "verified"
-      ? "perspectives.d.changedSince"
-      : "perspectives.d.cannotJudge";
+  // The deploy log answered for this case: the row can show what it holds.
+  // A case the log could not place has no evidence to show even though its
+  // verdict is the same — the assumption is the answer, not a finding.
+  function rerunHasEvidence(rr) {
+    if (rr.verdict === "verified") return true;
+    return rr.verdict === "rerunNeeded" && !rr.executionAssumedReached;
+  }
+
+  // Evidence is labelled by the timeframe it covers; everything else names why
+  // the verdict landed — a different kind of content, and forcing one label
+  // over both would make one of the two read as a lie.
+  function rerunEvidenceLabelKey(rr) {
+    return rerunHasEvidence(rr) ? "perspectives.d.changedSince" : "perspectives.d.whyVerdict";
   }
 
   // The failure row points at a run. With no failure there is nothing to point
@@ -3804,8 +3822,8 @@ const CLIENT_JS = `
   // The label already states the timeframe, so the value never repeats it.
   function rerunEvidenceValue(rr) {
     var wrap = el("div");
-    if (rr.verdict !== "rerunNeeded" && rr.verdict !== "verified") {
-      wrap.appendChild(el("div", "d-prose", rerunCannotJudge(rr)));
+    if (!rerunHasEvidence(rr)) {
+      wrap.appendChild(el("div", "d-prose", rerunWhyVerdict(rr)));
       return wrap;
     }
     // Both states require a non-empty deploy log, so a head-less report
@@ -3855,7 +3873,7 @@ const CLIENT_JS = `
 
     var rr = ledgerEntryFor(perspState.rerun, feature, spec);
     if (rr) {
-      row(rerunEvidenceLabelKey(rr.verdict), rerunEvidenceValue(rr));
+      row(rerunEvidenceLabelKey(rr), rerunEvidenceValue(rr));
       if (rerunHasFailure(rr)) row("perspectives.d.lastRed", ledgerLine(rr.lastRed));
     }
     frag.appendChild(dl);
@@ -3900,14 +3918,12 @@ const CLIENT_JS = `
     var tbody = document.getElementById("persp-tbody");
     clear(tbody);
     // Hiding the <th>s (rather than emitting empty cells) leaves the table
-    // exactly as it was on a hub that cannot answer the re-run/drift question.
+    // exactly as it was on a hub that cannot answer the re-run question.
     var showRerun = perspState.rerun != null;
-    var showDrift = perspState.drift != null;
     document.getElementById("persp-th-verdict").hidden = !showRerun;
     document.getElementById("persp-th-audit").hidden = !showRerun;
     document.getElementById("persp-th-run").hidden = !showRerun;
-    document.getElementById("persp-th-drift").hidden = !showDrift;
-    var cols = 3 + (showRerun ? 3 : 0) + (showDrift ? 1 : 0);
+    var cols = 3 + (showRerun ? 3 : 0);
     var hits = 0;
     doc.features.forEach(function (feature) {
       var specs = feature.specs.filter(function (s) { return perspMatches(feature, s, perspState.f); });
@@ -3939,10 +3955,9 @@ const CLIENT_JS = `
         if (showRerun) {
           var rr = ledgerEntryFor(perspState.rerun, feature, spec);
           row.appendChild(perspVerdictCell(rr));
-          row.appendChild(perspAuditCell(rr));
           row.appendChild(perspRunCell(rr));
+          row.appendChild(perspAuditCell(rr, ledgerEntryFor(perspState.drift, feature, spec)));
         }
-        if (showDrift) row.appendChild(perspDriftCell(ledgerEntryFor(perspState.drift, feature, spec)));
 
         var chevTd = el("td", "c-chev");
         chevTd.appendChild(el("span", "chev-i", "\\u25b6"));
@@ -3985,21 +4000,17 @@ const CLIENT_JS = `
     renderPerspTable(doc);
   }
 
-  // The needs-re-run chip only exists while the hub answers the question;
-  // otherwise it would filter everything away. Drop back to "all" if it was
-  // the active filter when the answer came back "not supported".
+  // The verdict chip group only exists while the hub answers the re-run
+  // question; otherwise every one of them would filter everything away. Drop
+  // back to "all" if one was the active filter when the answer came back
+  // "not supported".
   //
   // Each chip also carries what it would yield — the mode breakdown the
   // summary row used to spend four tiles on.
   function syncPerspChips() {
-    var chip = document.getElementById("persp-chip-rerun");
-    chip.hidden = perspState.rerunSupported !== true;
-    if (perspState.rerunSupported === false && perspState.f === "rerun") perspState.f = "all";
-    // Same rule as the drift column: no ledger, no chip. A chip reading "0"
-    // would say "nothing drifted" when the hub was never asked.
-    var driftChip = document.getElementById("persp-chip-drift");
-    driftChip.hidden = perspState.drift == null;
-    if (perspState.drift == null && perspState.f === "drift") perspState.f = "all";
+    var group = document.getElementById("persp-verdict-chips");
+    group.hidden = perspState.rerunSupported !== true;
+    if (perspState.rerunSupported !== true && RERUN_ORDER.indexOf(perspState.f) !== -1) perspState.f = "all";
     document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
       var f = b.getAttribute("data-f");
       b.setAttribute("aria-pressed", String(f === perspState.f));
@@ -4007,7 +4018,8 @@ const CLIENT_JS = `
     });
   }
 
-  // Shared by the rerun and drift notes, which differ only in which box they fill.
+  // boxId is a parameter rather than hardcoded so a future note box can reuse
+  // this without copying it — today only "persp-rerun-note" calls it.
   function setPerspNote(boxId, text, kind) {
     var box = document.getElementById(boxId);
     box.hidden = !text;
@@ -4043,7 +4055,6 @@ const CLIENT_JS = `
     setPerspDeployHead(null);
     perspState.rerun = null;
     perspState.rerunSupported = null;
-    setPerspNote("persp-drift-note", "");
     perspState.drift = null;
     syncPerspChips();
     fetchPerspectives()
@@ -4066,9 +4077,9 @@ const CLIENT_JS = `
           loadRerun().catch(function (err) {
             setPerspNote("persp-rerun-note", t("perspectives.rerun.loadFailed") + ": " + err.message, "warn");
           }),
-          loadDrift().catch(function (err) {
-            setPerspNote("persp-drift-note", t("perspectives.drift.loadFailed") + ": " + err.message, "warn");
-          }),
+          // Evidence-only (the "audited at" line in the audit column) — a
+          // failed or unsupported fetch just omits that line, no banner.
+          loadDrift().catch(function () {}),
         ]);
       })
       .catch(function (err) {
@@ -4081,6 +4092,82 @@ const CLIENT_JS = `
     return state.project + "/" + state.profile;
   }
 
+  // --- pure: data-profile pick ---------------------------------------------
+  // Self-contained on purpose (no DOM, no closures): the network probing this
+  // feeds is what makes "has deploy data" answerable at all, but which
+  // candidate wins from the results is a plain function worth pinning without
+  // mocking a fetch.
+
+  // "default" is always offered (the API guarantees it) but usually holds no
+  // deploys, so opening straight into it reads as broken: every row pending,
+  // a "no deploy log" banner. Fallback for when no candidate's deploy log can
+  // be confirmed (a fresh project): prefer a profile the run index shows has
+  // runs, with exactly one such profile the only reasonable pick.
+  function pickDataProfile(current, dataProfiles) {
+    if (!dataProfiles.length || dataProfiles.indexOf(current) !== -1) return current;
+    return dataProfiles.length === 1 ? dataProfiles[0] : dataProfiles.slice().sort()[0];
+  }
+
+  // Every profile worth checking for deploy data, in preference order: the
+  // current profile first (so an already-fine pick is left alone), then
+  // run-index profiles (a profile with runs is a maintained environment),
+  // then the project's full profile set. That last tier is what makes a
+  // profile deploys are recorded under but nothing has ever run against
+  // reachable at all — the run index alone has no way to see it.
+  function dataProfileCandidates(current, dataProfiles, projectProfiles) {
+    var seen = {};
+    var out = [];
+    [current].concat(dataProfiles, projectProfiles).forEach(function (p) {
+      if (p && !seen[p]) { seen[p] = true; out.push(p); }
+    });
+    return out;
+  }
+
+  // The deterministic half of resolveDataProfile below: given which
+  // candidates actually have a deploy log (probed in parallel, so answers can
+  // arrive in any order), pick the first by candidate order, not by response
+  // order — the result must not depend on network timing. Falls back to
+  // pickDataProfile's answer when nothing confirms (no project has deploy
+  // data yet), leaving that case's behaviour unchanged.
+  function pickFirstWithDeployLog(candidates, hasLog, current, dataProfiles) {
+    for (var i = 0; i < candidates.length; i++) {
+      if (hasLog[i]) return candidates[i];
+    }
+    return pickDataProfile(current, dataProfiles);
+  }
+  // --- end pure: data-profile pick ------------------------------------------
+
+  // Confirms a candidate actually has a deploy log, rather than merely being
+  // known to the run index or the secrets tab — the two facts pickDataProfile
+  // used to conflate (a profile can hold runs, or secrets, with no deploy log
+  // at all). limit=1 makes this a cheap existence check.
+  function hasDeployLog(profile) {
+    return apiFetch(
+      "/api/v1/projects/" + encodeURIComponent(state.project) + "/deploys?profile=" + encodeURIComponent(profile) + "&limit=1",
+    ).then(function (data) { return !!(data && data.entries && data.entries.length); })
+      .catch(function () { return false; });
+  }
+
+  // The candidate set from /profiles is broader than the run index (see
+  // dataProfileCandidates), so probe every candidate's deploy log in
+  // parallel before letting pickFirstWithDeployLog decide.
+  function resolveDataProfile(current, dataProfiles, projectProfiles) {
+    var candidates = dataProfileCandidates(current, dataProfiles, projectProfiles);
+    return Promise.all(candidates.map(hasDeployLog))
+      .then(function (hasLog) { return pickFirstWithDeployLog(candidates, hasLog, current, dataProfiles); });
+  }
+
+  // The full profile set (secrets tab's universe) is broader than the run
+  // index: a profile deploys are recorded under but nothing has ever run
+  // against is invisible to fetchRunIndex. Fetched independently from
+  // loadProfiles, which mutates knownProfiles/state.profile as a side effect
+  // the Secrets tab depends on and this must not trigger.
+  function fetchProjectProfiles() {
+    return apiFetch("/api/v1/projects/" + encodeURIComponent(state.project) + "/profiles")
+      .then(function (data) { return (data && data.profiles) || []; })
+      .catch(function () { return []; });
+  }
+
   // Project-scoped (see fetchRunIndex) — never rejects, so this always
   // re-renders once the run index settles, whichever of the three loads in
   // loadPerspectives is slowest.
@@ -4088,7 +4175,22 @@ const CLIENT_JS = `
     return fetchRunIndex().then(function (result) {
       perspState.runUrls = result.urls;
       perspState.rerunProfiles = result.profiles;
-      renderPerspectives();
+      if (storedProfileForProject(state.project)) {
+        renderPerspectives();
+        return;
+      }
+      // Never overrides a choice the user made explicitly (the check above)
+      // — this only fills in the very first, unopinionated default.
+      return fetchProjectProfiles()
+        .then(function (projectProfiles) { return resolveDataProfile(state.profile, result.profiles, projectProfiles); })
+        .then(function (pick) {
+          if (pick !== state.profile) {
+            setProfile(pick);
+            renderPerspectives();
+            return reloadRerun();
+          }
+          renderPerspectives();
+        });
     });
   }
 
@@ -4104,8 +4206,9 @@ const CLIENT_JS = `
       if (rerun.note) {
         setPerspNote("persp-rerun-note", rerun.note, rerun.kind);
       } else if (perspState.rerun && !perspState.rerun.deployHead) {
-        // Every case is "unknown" in this state, so say once, at the top, what
-        // is missing and how to supply it, rather than only per row.
+        // With no deploy log nothing can be placed, so every case is assumed
+        // reached. Say once, at the top, what is missing and how to supply it,
+        // rather than repeating it on every row.
         setPerspNote("persp-rerun-note", t("perspectives.rerun.noDeployLogBanner").replace("{profile}", state.profile), "warn");
       } else {
         setPerspNote("persp-rerun-note", "");
@@ -4115,13 +4218,18 @@ const CLIENT_JS = `
   }
 
   // Loaded once per project open — never re-run on a profile switch, since
-  // drift carries no profile (unlike loadRerun/reloadRerun below).
+  // drift carries no profile (unlike loadRerun/reloadRerun below). Only the
+  // ledger's own coordinate (when a spec was last audited) survives into the
+  // view now — its finding is superseded by the fresher, deploy-aware audit
+  // axis in the /rerun report — so there is nothing here worth a banner on
+  // an older or unreachable hub.
   function loadDrift() {
-    return fetchLedgerColumn(driftPath(), "perspectives.drift.").then(function (result) {
-      perspState.drift = result.report || null;
-      setPerspNote("persp-drift-note", result.note || "", result.kind);
-      renderPerspectives();
-    });
+    return fetch(driftPath(), { headers: { Authorization: "Bearer " + state.token } })
+      .then(function (res) { return res.ok ? res.json() : null; }, function () { return null; })
+      .then(function (report) {
+        perspState.drift = report || null;
+        renderPerspectives();
+      });
   }
 
   // Switching profile re-asks only the profile-scoped question: the

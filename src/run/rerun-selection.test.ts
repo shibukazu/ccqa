@@ -9,12 +9,14 @@ import {
   selectSpecsNeedingRerun,
 } from "./rerun-selection.ts";
 
-function spec(verdict: SpecRerun["verdict"]): SpecRerun {
-  // The axes are carried for the view; selection reads only the verdict, so
-  // they are pinned to a value that could not itself change the outcome.
+function spec(verdict: SpecRerun["verdict"], extra: Partial<SpecRerun> = {}): SpecRerun {
+  // The axes are carried for the view; selection reads only the verdict (and,
+  // for `inProgress`, `auditAssumedReached`), so the rest is pinned to a value
+  // that could not itself change the outcome.
   return {
     verdict, audit: "clean", execution: "passed", heldBy: null,
     lastRun: null, lastGreen: null, lastRed: null,
+    ...extra,
   };
 }
 
@@ -45,48 +47,63 @@ describe("selectSpecsNeedingRerun", () => {
   const specs = [
     { featureName: "f", specName: "rerunNeeded" },
     { featureName: "f", specName: "verified" },
-    { featureName: "f", specName: "unanswerable" },
     { featureName: "f", specName: "needsRepair" },
     { featureName: "f", specName: "inProgress" },
   ];
   const verdicts = report({
     "f/rerunNeeded": spec("rerunNeeded"),
     "f/verified": spec("verified"),
-    "f/unanswerable": spec("unanswerable"),
     "f/needsRepair": spec("needsRepair"),
     "f/inProgress": spec("inProgress"),
   });
 
-  test("selects only `rerunNeeded` by default", () => {
-    const { selected } = selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: false });
+  test("selects `rerunNeeded`, and nothing the other three answer for", () => {
+    // Running a spec the audit rejected is exactly what `needsRepair` exists
+    // to prevent, and `inProgress` would race whatever is already holding it.
+    const { selected } = selectSpecsNeedingRerun(specs, verdicts);
     expect(selected.map((s) => s.specName)).toEqual(["rerunNeeded"]);
   });
 
-  test("--with-unknown adds unanswerable, but never needsRepair or inProgress", () => {
-    // Running a spec the audit rejected is exactly what `needsRepair` exists
-    // to prevent, and `inProgress` would race whatever is already holding it.
-    const { selected } = selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: true });
-    expect(selected.map((s) => s.specName)).toEqual(["rerunNeeded", "unanswerable"]);
-  });
-
-  test("a spec absent from the perspectives document counts as unanswerable, not as verified", () => {
+  test("a spec absent from the perspectives document is excluded as `inProgress`, not run uncleared", () => {
+    // ADR-0014: running a spec the audit has not cleared is what this whole
+    // selection path exists to stop. A spec the hub has never heard of has
+    // not been cleared, so it must not run just because it is also not
+    // "verified" — the two used to point the same way and no longer do.
     const local = [{ featureName: "f", specName: "brand-new" }];
-    expect(selectSpecsNeedingRerun(local, report({}), { includeUnknown: false }).selected).toEqual([]);
-    expect(
-      selectSpecsNeedingRerun(local, report({}), { includeUnknown: true }).selected,
-    ).toEqual(local);
+    const selection = selectSpecsNeedingRerun(local, report({}));
+    expect(selection.selected).toEqual([]);
+    expect(selection.excludedInProgress).toBe(1);
+    expect(selection.excludedUnknownToHub).toBe(1);
   });
 
   test("the summary accounts for every offered spec", () => {
-    const { summary } = selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: false });
-    expect(summary).toBe("1 needsRepair, 1 rerunNeeded, 1 unanswerable, 1 inProgress, 1 verified");
+    expect(selectSpecsNeedingRerun(specs, verdicts).summary).toBe(
+      "1 needsRepair, 1 rerunNeeded, 1 inProgress, 1 verified",
+    );
   });
 
-  test("counts the specs held back only because the hub could not answer", () => {
-    // Only `unanswerable` counts. `needsRepair` and `inProgress` are answers,
-    // and offering --with-unknown as their fix would be wrong advice.
-    expect(selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: false }).excludedUnanswerable).toBe(1);
-    expect(selectSpecsNeedingRerun(specs, verdicts, { includeUnknown: true }).excludedUnanswerable).toBe(0);
+  test("counts the specs held back only because the audit has not answered", () => {
+    // `needsRepair` and `verified` are decisions; `inProgress` is the only
+    // verdict that keeps a spec out while nobody has decided anything.
+    expect(selectSpecsNeedingRerun(specs, verdicts).excludedInProgress).toBe(1);
+  });
+
+  test("an `inProgress` spec known to the hub is not counted as unknown to it", () => {
+    expect(selectSpecsNeedingRerun(specs, verdicts).excludedUnknownToHub).toBe(0);
+  });
+
+  test("names the hole behind an `inProgress` spec the audit could not place", () => {
+    // The audit's own baseline was unplaceable (ADR-0014's "assumed reached"),
+    // so re-running the audit at the same commit would not clear it — the
+    // caller needs the reason to point at a fix that actually helps.
+    const holed = [{ featureName: "f", specName: "stuck" }];
+    const verdict = report({
+      "f/stuck": spec("inProgress", { auditAssumedReached: "deployedShaNotInLog" }),
+    });
+    const selection = selectSpecsNeedingRerun(holed, verdict);
+    expect(selection.excludedAssumedReached).toBe(1);
+    expect(selection.excludedAssumedReachedReasons).toEqual(["deployedShaNotInLog"]);
+    expect(selection.excludedUnknownToHub).toBe(0);
   });
 });
 
@@ -108,7 +125,16 @@ describe("fetchRerunReport", () => {
         throw new HubApiError(404, "not_found", "no route for GET /api/v1/projects/demo/rerun");
       },
     });
-    await expect(fetchRerunReport(ctx, "stg")).rejects.toThrow(/needs ccqa 1\.16 or newer/);
+    await expect(fetchRerunReport(ctx, "stg")).rejects.toThrow(/needs ccqa 1\.20 or newer/);
+  });
+
+  test("a hub still answering the old vocabulary is rejected, not read as nothing to run", async () => {
+    // A 1.19 hub answers 200 with `unanswerable`; taking it at face value
+    // would drop those specs silently, which is the one outcome this path
+    // exists to prevent.
+    const stale = { verdict: "unanswerable", reason: "gapInRange" } as unknown as SpecRerun;
+    const ctx = hubCtx({ getRerun: async () => report({ "f/s": stale }) });
+    await expect(fetchRerunReport(ctx, "stg")).rejects.toThrow(/older than this CLI/);
   });
 
   test("the handler's `no_perspectives` code points at `ccqa perspectives`", async () => {
