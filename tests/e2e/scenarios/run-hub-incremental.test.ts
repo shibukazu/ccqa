@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Server } from "node:http";
+import { createServer, type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
@@ -144,6 +144,133 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
     // Whichever hub read reaches the dead port first — the point is that one
     // of them stops the run instead of degrading to a local-only report.
     expect(combined).toMatch(/could not read from the hub|could not open a run on the hub/);
+  }, 120_000);
+
+  test("a hub that rejects every row fails the run rather than exiting on the test result", async () => {
+    // Hub/CLI version skew looks exactly like this: the open succeeds (no
+    // labels on the wire yet) and every row PATCH is rejected, so without a
+    // guard the run exits on the *test* result and CI reads green while the
+    // hub holds a run stuck "running" with no rows.
+    project = await makeFakeProject("passing-spec", { linkCcqa: true });
+    const proxy = createServer((req, res) => {
+      if (req.method === "PATCH") {
+        res.writeHead(400, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "invalid_request", message: "unknown label" }));
+        req.resume();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        void fetch(`${baseUrl}${req.url ?? "/"}`, {
+          method: req.method,
+          headers: { ...(req.headers as Record<string, string>), host: "" },
+          ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+        })
+          .then(async (upstream) => {
+            res.writeHead(upstream.status, { "content-type": "application/json" });
+            res.end(Buffer.from(await upstream.arrayBuffer()));
+          })
+          .catch(() => {
+            res.writeHead(502).end();
+          });
+      });
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const proxyAddress = proxy.address();
+    if (proxyAddress === null || typeof proxyAddress === "string") throw new Error("expected a bound port");
+
+    try {
+      const result = await runCcqa(
+        ["run", "demo/smoke", "--project", "demo-proj", "--report-to-hub"],
+        {
+          cwd: project.cwd,
+          env: {
+            ...noColorEnv(),
+            CCQA_HUB_URL: `http://127.0.0.1:${proxyAddress.port}`,
+            CCQA_HUB_TOKEN: TOKEN,
+          },
+          timeoutMs: 90_000,
+        },
+      );
+      const combined = stripAnsi(result.stdout + result.stderr);
+      // The spec itself passes; only the publishing is broken.
+      expect(result.exitCode, combined).not.toBe(0);
+      expect(combined).toMatch(/version skew|left "running" on the hub/);
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>((r) => proxy.close(() => r()));
+    }
+  }, 120_000);
+
+  test("a mid-run PATCH failure that heals by the seal PATCH exits 0, not 1", async () => {
+    // Simulates a hub that 502s once (e.g. mid-roll) and recovers. The seal
+    // PATCH at the end resends every row, so the hub ends up holding a
+    // complete, correct, terminal run even though the first per-row PATCH
+    // failed — CI must not fail a run the hub actually holds correctly.
+    project = await makeFakeProject("run-live-stub", { linkCcqa: true });
+    await installFakeAgentBrowser(project.cwd);
+    const mockPath = join(project.cwd, "claude-mock.jsonl");
+    await writeMockMessages(mockPath, [...mockStepMessages("step-01")]);
+
+    let patchCount = 0;
+    const proxy = createServer((req, res) => {
+      if (req.method === "PATCH") {
+        patchCount += 1;
+        if (patchCount === 1) {
+          res.writeHead(502, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "bad_gateway", message: "hub rolling" }));
+          req.resume();
+          return;
+        }
+      }
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        void fetch(`${baseUrl}${req.url ?? "/"}`, {
+          method: req.method,
+          headers: { ...(req.headers as Record<string, string>), host: "" },
+          ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+        })
+          .then(async (upstream) => {
+            res.writeHead(upstream.status, { "content-type": "application/json" });
+            res.end(Buffer.from(await upstream.arrayBuffer()));
+          })
+          .catch(() => {
+            res.writeHead(502).end();
+          });
+      });
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const proxyAddress = proxy.address();
+    if (proxyAddress === null || typeof proxyAddress === "string") throw new Error("expected a bound port");
+
+    try {
+      const result = await runCcqa(
+        ["run", "demo/x", "--project", "demo-proj", "--report-to-hub"],
+        {
+          cwd: project.cwd,
+          env: {
+            ...noColorEnv(),
+            CCQA_CLAUDE_MOCK_FILE: mockPath,
+            CCQA_HUB_URL: `http://127.0.0.1:${proxyAddress.port}`,
+            CCQA_HUB_TOKEN: TOKEN,
+          },
+          timeoutMs: 90_000,
+        },
+      );
+      const combined = stripAnsi(result.stdout + result.stderr);
+      expect(result.exitCode, combined).toBe(0);
+      expect(combined).toMatch(/incremental push failed/);
+      expect(combined).toMatch(/incremental run finalized/);
+
+      const runs = await listRuns();
+      expect(runs).toHaveLength(1);
+      expect(runs[0]!.status).toBe("passed");
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>((r) => proxy.close(() => r()));
+    }
   }, 120_000);
 
   // Gate on hub-run creation: a run is opened on the hub ONLY when both

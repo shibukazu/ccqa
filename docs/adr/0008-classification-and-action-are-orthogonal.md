@@ -1,6 +1,6 @@
 # 0008. Classification and action are orthogonal
 
-- Status: accepted
+- Status: accepted (Axis A's label set amended by 0016)
 - Date: 2026-07-07
 
 ## Context and problem statement
@@ -42,10 +42,16 @@ the hub (ADR-0007 Axis 2). ADR-0008 only retires the fixed pairing.
 
 ### Two axes
 
-- **Axis A — classify.** `ccqa run` labels each failed spec
-  `TEST_DRIFT | SPEC_CHANGE | PRODUCT_BUG | UNKNOWN` and writes it into
+- **Axis A — classify.** `ccqa run` labels each failed spec and writes it into
   `report.json` (already there: `FailureAnalysis.label` per
   `ReportSpecResult`). Unchanged by this ADR.
+  *(Amended by ADR-0016: the run's label set is
+  `TEST_DRIFT | SPEC_CHANGE | PRODUCT_BUG | ENVIRONMENT | UNKNOWN` — the
+  same four causes plus the honest refusal. `TEST_DRIFT` and `SPEC_CHANGE`
+  never left the run; a consumer routing on them keeps matching. What
+  changed is that `PRODUCT_BUG` is joined by `ENVIRONMENT` — a failure a
+  consumer used to see labelled `PRODUCT_BUG` may now come back
+  `ENVIRONMENT` instead.)*
 - **Axis B — act.** A new `ccqa act <verb>` family (`fix`, `propose`,
   `notify`, and future verbs) takes classified failures as *input* and
   produces a side effect. An action does **not** hard-code a label. It is

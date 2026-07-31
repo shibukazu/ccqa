@@ -12,10 +12,12 @@ import type { GradedCase } from "./custom-prompt.ts";
 
 export const LEARNING_SYSTEM_PROMPT = `You distill human-graded failure classifications into a short calibration note for a downstream failure-analysis classifier.
 
-The classifier decides, for a failing E2E test after a source change, which of three causes applies:
-- TEST_DRIFT: the test drifted from the source (selector/timing/over-assertion); the intended behaviour is unchanged.
-- SPEC_CHANGE: the verified behaviour itself changed on purpose.
-- PRODUCT_BUG: an unintended regression.
+The classifier decides why an E2E test failed, from the failure evidence plus
+its own reading of the source. Each cause names what has to change:
+- TEST_DRIFT: the generated test code. The flow still exists; the test reaches for it wrongly.
+- SPEC_CHANGE: the spec. What it verifies was deliberately redesigned or removed.
+- PRODUCT_BUG: the product. Behaviour nobody intended.
+- ENVIRONMENT: nothing in the repository — a service, a credential, seeded data, timing.
 
 You are given cases a human already graded — the model's prediction and the human's ground-truth label. Your job: write 3-6 sentences of calibration guidance that would help the classifier match this project's human judgements next time. Focus on the patterns where the model tended to be WRONG (prediction != actual). Be concrete about the project's conventions, but do NOT invent facts beyond the cases shown.
 

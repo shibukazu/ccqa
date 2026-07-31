@@ -203,7 +203,7 @@ describe("HubStorage (file backend)", () => {
     });
 
     test("get returns null for an unknown name", async () => {
-      expect(await storage.prompts.get("demo", "analysis-custom-prompt")).toBeNull();
+      expect(await storage.prompts.get("demo", "triage.agent")).toBeNull();
     });
 
     test("list returns every stored name in a scope", async () => {

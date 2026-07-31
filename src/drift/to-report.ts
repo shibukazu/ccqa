@@ -26,9 +26,8 @@ function specStatus(result: SpecResult, threshold: Threshold): "passed" | "faile
  * which is why `mode` is carried separately: nothing ran, but which surfaces
  * were audited is still a fact about the row.
  *
- * Each result's diagnosis goes into `analysis` (not `driftAudit`, which is a
- * normal run's OWN audit evidence) — for a `kind: "drift"` report the
- * diagnosis IS the row's verdict, so it renders through the same diagnosis
+ * Each result's diagnosis goes into `analysis`: for a `kind: "drift"` report
+ * the diagnosis IS the row's verdict, so it renders through the same diagnosis
  * card a failed `ccqa run` spec does. `reasoning` has no drift-audit
  * equivalent (the audit gives one headline, not a deliberation) so it is
  * filled with an empty string to satisfy `FailureAnalysisSchema`.
@@ -43,6 +42,10 @@ export function driftResultsToReport(
     model?: string | null;
     language?: string | null;
     promptVersion?: string;
+    /** `audit.agent` version applied to this sweep, or null when none was active. */
+    customPromptVersion?: string | null;
+    /** Content hash of the `audit.user` guidance applied to this sweep, or null when none was active. */
+    triageUserPromptHash?: string | null;
   },
 ): RunReportData {
   const specResults: ReportSpecResult[] = results.map((result) => ({
@@ -56,7 +59,6 @@ export function driftResultsToReport(
     assertions: null,
     analysis: result.drift ? result.drift : null,
     analysisSkipped: null,
-    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,
@@ -73,7 +75,11 @@ export function driftResultsToReport(
     model: meta.model ?? null,
     language: meta.language ?? null,
     promptVersion: meta.promptVersion ?? DRIFT_REPORT_PROMPT_VERSION,
-    customPromptVersion: null,
+    customPromptVersion: meta.customPromptVersion ?? null,
+    // Omitted (not null) when inactive — same convention `ccqa run` uses
+    // (src/run/pipeline.ts's buildReportEnvelope) so report.json keeps its
+    // historical shape when no `audit.user` guidance was active.
+    ...(meta.triageUserPromptHash ? { triageUserPromptHash: meta.triageUserPromptHash } : {}),
     results: specResults,
   };
 }

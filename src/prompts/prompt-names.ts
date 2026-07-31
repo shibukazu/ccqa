@@ -7,13 +7,19 @@ import { join } from "node:path";
  * the names without a circular import.
  *
  * Two kinds share one namespace:
- *  - "guidance": the record/live prompt bundle — `.user.md` (human-maintained)
- *    and `.agent.md` (auto-rewritten by `ccqa run --learn-hub-live-prompt`) —
- *    plus `triage.user`, the human-maintained guidance injected into the
- *    failure-analysis (triage) prompt.
- *  - "custom-prompt": `analysis-custom-prompt` — Claude-written calibration guidance
- *    learned from graded triage cases, injected into the failure-analysis
- *    prompt at run time.
+ *  - "guidance": Markdown — every `.user.md` file, plus the record/live/
+ *    playwright/runn `.agent.md` notes (despite the "agent" name, these are
+ *    plain prose, not the learned JSON below).
+ *  - "custom-prompt": JSON Claude writes — only `triage.agent` and
+ *    `audit.agent`, calibration distilled from graded cases and injected at
+ *    run time.
+ *
+ * `triage.*` belongs to `ccqa run`'s failure classification and `audit.*` to
+ * `ccqa audit`. They are two prompts because they answer two questions in one
+ * shared vocabulary: the audit decides whether a spec still describes the
+ * code (from the source alone), and the run decides why it failed, using the
+ * execution evidence — the two commands run independently, neither gating the
+ * other (ADR-0016).
  *
  * Hub names are extensionless (`record.agent`), local files keep their real
  * extensions; `PROMPT_LOCAL_PATHS` is the single mapping every caller (push,
@@ -29,7 +35,9 @@ export const PROMPT_NAMES = [
   "runn.user",
   "runn.agent",
   "triage.user",
-  "analysis-custom-prompt",
+  "triage.agent",
+  "audit.user",
+  "audit.agent",
 ] as const;
 
 /**
@@ -37,9 +45,8 @@ export const PROMPT_NAMES = [
  * flow loads its own pair (`loadPromptBundleFromHub`): record/live for the
  * agent-browser flows, one pair per LLM-generation target otherwise.
  *
- * "triage" is deliberately NOT a guidance kind: it has a `.user` prompt but no
- * `.agent` counterpart — the learned overlay for triage still lives as
- * `analysis-custom-prompt` (a future migration may rename it `triage.agent`).
+ * "triage" and "audit" are deliberately NOT guidance kinds: they are prompts a
+ * command injects, not bundles a generation flow loads.
  */
 export const GUIDANCE_KINDS = ["record", "live", "playwright", "runn"] as const;
 
@@ -52,9 +59,12 @@ export function isPromptName(value: string): value is PromptName {
   return (PROMPT_NAMES as readonly string[]).includes(value);
 }
 
-/** Which of the two kinds a name belongs to (drives UI grouping and meta). */
+/**
+ * Which of the two kinds a name belongs to (drives UI grouping and meta).
+ * Read off the local path so the extension and the kind cannot disagree.
+ */
 export function promptKind(name: PromptName): "guidance" | "custom-prompt" {
-  return name === "analysis-custom-prompt" ? "custom-prompt" : "guidance";
+  return PROMPT_LOCAL_PATHS[name].endsWith(".json") ? "custom-prompt" : "guidance";
 }
 
 /** Local path (relative to a `.ccqa` tree) each hub prompt restores to. */
@@ -68,7 +78,9 @@ export const PROMPT_LOCAL_PATHS: Record<PromptName, string> = {
   "runn.user": ".ccqa/prompts/runn.user.md",
   "runn.agent": ".ccqa/prompts/runn.agent.md",
   "triage.user": ".ccqa/prompts/triage.user.md",
-  "analysis-custom-prompt": ".ccqa/prompts/analysis-custom-prompt.json",
+  "triage.agent": ".ccqa/prompts/triage.agent.json",
+  "audit.user": ".ccqa/prompts/audit.user.md",
+  "audit.agent": ".ccqa/prompts/audit.agent.json",
 };
 
 /** Absolute local path a hub prompt pulls down to, under `cwd` (default `process.cwd()`). */

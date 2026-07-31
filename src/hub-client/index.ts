@@ -5,6 +5,7 @@ import type {
   DeployEntry,
   DeployLogResponse,
   DriftLedgerResponse,
+  ImportActualCausesResponse,
   LastGreenEntry,
   PutActualCauseRequest,
   RecordDeployRequest,
@@ -134,7 +135,7 @@ export interface HubClient {
     v: PutActualCauseRequest,
   ): Promise<TriageCase>;
   deleteActualCause(id: string, c: { feature: string; spec: string }): Promise<void>;
-  importActualCauses(id: string, labels: LabelsExport): Promise<{ imported: number }>;
+  importActualCauses(id: string, labels: LabelsExport): Promise<ImportActualCausesResponse>;
 
   /** Every project the hub knows (from runs and stored secrets). */
   listProjects(): Promise<string[]>;

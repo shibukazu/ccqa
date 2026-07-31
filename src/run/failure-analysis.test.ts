@@ -8,6 +8,8 @@ import type { DiffProvider, SpecDiffResult } from "./diff-provider.ts";
 import type { FailureAnalysisDeps } from "./failure-analysis.ts";
 
 vi.mock("../report/analyze.ts", () => ({ analyzeFailure: vi.fn() }));
+// Spied, not stubbed: the point of the assertions below is that the run never
+// reaches for the audit at all, which a stub would hide behind a mock return.
 vi.mock("../drift/analyze.ts", () => ({ analyzeDrift: vi.fn() }));
 
 const { analyzeFailure } = await import("../report/analyze.ts");
@@ -24,7 +26,7 @@ async function analyze(
   const failed = rows
     .filter((r) => r.status === "failed" && r.analysisSkipped === null)
     .map((r) => ({ featureName: r.feature, specName: r.spec }));
-  const run = await beginFailureAnalysis(failed, d);
+  const run = beginFailureAnalysis(failed, d);
   return analyzeExternalRows(rows, run);
 }
 
@@ -92,6 +94,7 @@ function deps(overrides: Partial<FailureAnalysisDeps> = {}): FailureAnalysisDeps
     auth: { ok: true },
     cwd,
     reportDir: join(cwd, "report"),
+    blocks: [],
     customPrompt: null,
     triageUserPrompt: null,
     ...overrides,
@@ -108,27 +111,9 @@ const ANALYSIS = {
   reasoning: "",
 };
 
-const DRIFT_DIAGNOSIS = {
-  label: "TEST_DRIFT" as const,
-  confidence: 0.7,
-  surface: "generated" as const,
-  subDiagnosis: "SELECTOR_DRIFT" as const,
-  headline: "label gone",
-  recommendation: "",
-  evidence: [],
-  reasoning: "",
-};
-
 describe("analyzeExternalRows", () => {
-  it("classifies a failed row with the drift audit and generated test as evidence", async () => {
+  it("classifies a failed row from the generated test in ONE call, with no separate audit", async () => {
     await writeGeneratedTest();
-    vi.mocked(analyzeDrift).mockResolvedValue([
-      {
-        target: { featureName: "demo", specName: "x" },
-        ok: true,
-        drift: DRIFT_DIAGNOSIS,
-      },
-    ]);
     vi.mocked(analyzeFailure).mockResolvedValue({ analysis: ANALYSIS, raw: "", sdkError: false });
 
     const passed = emptySpecRow({ feature: "demo", spec: "ok", title: null, status: "passed" });
@@ -141,7 +126,6 @@ describe("analyzeExternalRows", () => {
     expect(analyzed.analysisSkipped).toBeNull();
     expect(analyzed.analysisBase).toEqual({ ref: "origin/main", sha: "abc123" });
     expect(analyzed.diffExcerpt).toBe(RESOLVED_DIFF.patch);
-    expect(analyzed.driftAudit).toEqual(DRIFT_DIAGNOSIS);
     expect(rows.find((r) => r.spec === "ok")).toBe(passed);
     // A pre-execution failure keeps its recorded reason and is never classified.
     expect(rows.find((r) => r.spec === "crashed")).toBe(crashed);
@@ -149,19 +133,44 @@ describe("analyzeExternalRows", () => {
     // Only the manifest's `kind: "test"` files feed the prompt's script block,
     // and the spec's artifacts dir is named so the model can read run context.
     expect(vi.mocked(analyzeFailure)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analyzeDrift)).not.toHaveBeenCalled();
     const promptInput = vi.mocked(analyzeFailure).mock.calls[0]![0];
     expect(promptInput.script).toContain(GENERATED_TEST);
     expect(promptInput.script).not.toContain("helper.ts");
     expect(promptInput.failureLog).toBe("command failed (exit 1)");
-    expect(promptInput.driftAudit).toEqual(DRIFT_DIAGNOSIS);
     expect(promptInput.artifactsDir).toBe("report/artifacts/demo__x");
+    // An external-target row always ran generated code, whether or not that
+    // code could be read this time — see hasGeneratedSurface on the prompt.
+    expect(promptInput.hasGeneratedSurface).toBe(true);
+  });
+
+  it("declares a generated surface even when the generated file could not be read", async () => {
+    // No writeGeneratedTest(): the manifest is missing, so readGeneratedTestSources
+    // resolves script to "". Without an explicit hasGeneratedSurface flag the
+    // prompt would read that as "this spec has no generated code" — the bug
+    // this covers is that a row which *ran* generated code (it's how it
+    // executed) must still declare the surface even when this run couldn't
+    // read the file back.
+    vi.mocked(analyzeFailure).mockResolvedValue({ analysis: ANALYSIS, raw: "", sdkError: false });
+    await analyze([failedRow("x")], deps());
+
+    const promptInput = vi.mocked(analyzeFailure).mock.calls[0]![0];
+    expect(promptInput.script).toBe("");
+    expect(promptInput.hasGeneratedSurface).toBe(true);
+  });
+
+  it("passes the project's blocks so the prompt can validate `include:` steps", async () => {
+    await writeGeneratedTest();
+    vi.mocked(analyzeFailure).mockResolvedValue({ analysis: ANALYSIS, raw: "", sdkError: false });
+    const blocks = [{ name: "login", title: "Log in", params: [] }];
+    await analyze([failedRow("x")], deps({ blocks }));
+
+    const promptInput = vi.mocked(analyzeFailure).mock.calls[0]![0];
+    expect(promptInput.blocks).toBe(blocks);
   });
 
   it("classifies without a baseline: no diff evidence, no analysisBase on the row", async () => {
     await writeGeneratedTest();
-    vi.mocked(analyzeDrift).mockResolvedValue([
-      { target: { featureName: "demo", specName: "x" }, ok: true, drift: null },
-    ]);
     vi.mocked(analyzeFailure).mockResolvedValue({ analysis: ANALYSIS, raw: "", sdkError: false });
     const [row] = await analyze(
       [failedRow("x")],

@@ -132,9 +132,9 @@ entry in `.ccqa/config.yaml`. The claim covers those groups too, so
 `--concurrency` shortens a run without letting two specs read each other's
 effects, in this run or the next one.
 
-When a clean spec still fails, `--on-fail-explain` labels whose problem
-it is: `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, or `UNKNOWN`. You
-grade the calls on the hub, and it learns from your grades.
+When a clean spec still fails, `--on-fail-explain` labels what has to
+change: `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, `ENVIRONMENT`, or
+`UNKNOWN`. You grade the calls on the hub, and it learns from your grades.
 
 ## In CI
 

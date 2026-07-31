@@ -6,7 +6,6 @@ const BASE_INPUT: FailureAnalysisPromptInput = {
   diffPatch: null,
   changedFiles: null,
   baseRef: null,
-  driftAudit: null,
 };
 
 const USER_HEADING = "## Project triage guidance (human-maintained)";
@@ -113,35 +112,78 @@ describe("buildFailureAnalysisPrompt no-baseline mode (v8)", () => {
   });
 });
 
-describe("buildFailureAnalysisPrompt drift audit framing (v10)", () => {
-  test("renders no drift-audit section when driftAudit is null", () => {
+describe("buildFailureAnalysisPrompt four-cause framing (v13)", () => {
+  test("offers all four causes and the question that separates a stale test case from a bug", () => {
     const prompt = buildFailureAnalysisPrompt(BASE_INPUT);
+    for (const label of ["TEST_DRIFT", "SPEC_CHANGE", "PRODUCT_BUG", "ENVIRONMENT", "UNKNOWN"]) {
+      expect(prompt).toContain(label);
+    }
+    // The rejected two-stage design called a product bug SPEC_CHANGE because
+    // the spec and the code disagreed. This sentence is what forbids that.
+    expect(prompt).toContain("does NOT by itself mean the test case is stale");
+    expect(prompt).toContain("is the code's current behavior what the product intends?");
+    // No audit runs first, so nothing may be deferred to.
     expect(prompt).not.toContain("Spec↔code drift audit");
+    expect(prompt).not.toContain("second stage");
   });
 
-  test("renders the diagnosis and warns against deferring to it", () => {
+  test("a spec with generated code can be blamed on either surface", () => {
+    const prompt = buildFailureAnalysisPrompt({ ...BASE_INPUT, script: "await page.click('Submit');" });
+    expect(prompt).toContain("the `generated` surface");
+    expect(prompt).toContain("If both are stale, answer `spec`");
+  });
+
+  test("with no generated code the only surface offered is `spec`", () => {
+    const prompt = buildFailureAnalysisPrompt({ ...BASE_INPUT, liveTranscriptExcerpt: "step 1 failed" });
+    expect(prompt).toContain('Answer `"surface": "spec"`');
+    expect(prompt).not.toContain("If both are stale, answer `spec`");
+  });
+});
+
+describe("buildFailureAnalysisPrompt hasGeneratedSurface vs an unreadable script", () => {
+  test("a surface that should exist but couldn't be read says so, not that there is none", () => {
+    const prompt = buildFailureAnalysisPrompt({ ...BASE_INPUT, hasGeneratedSurface: true, script: "" });
+    expect(prompt).toContain("could not be read");
+    expect(prompt).not.toContain("this spec has none");
+    expect(prompt).not.toContain("There is no generated code for this spec");
+  });
+
+  test("without an explicit flag, an empty script still infers no surface (backward compatibility)", () => {
+    const prompt = buildFailureAnalysisPrompt(BASE_INPUT);
+    expect(prompt).toBe(buildFailureAnalysisPrompt({ ...BASE_INPUT, script: "" }));
+    expect(prompt).toContain("this spec has none");
+    expect(prompt).toContain('Answer `"surface": "spec"`');
+  });
+
+  test("hasGeneratedSurface: true with real content behaves as before (surface choice offered)", () => {
     const prompt = buildFailureAnalysisPrompt({
       ...BASE_INPUT,
-      driftAudit: {
-        label: "TEST_DRIFT",
-        confidence: 0.8,
-        surface: "generated",
-        subDiagnosis: "SELECTOR_DRIFT",
-        headline: "the Submit button's aria-label was renamed",
-        recommendation: "Update the selector",
-        evidence: [{ file: "src/app.tsx:12", detail: "aria-label is now 'Send'" }],
-        reasoning: "",
-      },
+      hasGeneratedSurface: true,
+      script: "await page.click('Submit');",
     });
-    expect(prompt).toContain("TEST_DRIFT");
-    expect(prompt).toContain("the Submit button's aria-label was renamed");
-    expect(prompt).toContain("src/app.tsx:12");
-    // It cannot itself be PRODUCT_BUG evidence and must not be deferred to.
-    expect(prompt).toContain("cannot answer PRODUCT_BUG");
-    expect(prompt).toContain("Weigh this as one more piece of evidence — do not defer to it.");
-    // The audit's surface travels too: the classifier's own TEST_DRIFT is
-    // always about generated code, which isn't the same claim as `spec`.
-    expect(prompt).toContain("surface: generated");
-    expect(prompt).toContain("never the spec's prose");
+    expect(prompt).toContain("the `generated` surface");
+    expect(prompt).not.toContain("could not be read");
+  });
+});
+
+describe("buildFailureAnalysisPrompt Available blocks (include: validation)", () => {
+  test("renders the project's blocks and the include-validation instruction", () => {
+    const prompt = buildFailureAnalysisPrompt({
+      ...BASE_INPUT,
+      blocks: [{ name: "login", title: "Log in", params: [{ name: "user", required: true, secret: false }] }],
+    });
+    expect(prompt).toContain("## Available blocks");
+    expect(prompt).toContain("`login`");
+    expect(prompt).toContain("Confirm the block exists under");
+  });
+
+  test("no blocks defined renders the same empty-state text the audit uses", () => {
+    const prompt = buildFailureAnalysisPrompt(BASE_INPUT);
+    expect(prompt).toContain("no blocks defined yet");
+  });
+
+  test("SPEC_CHANGE names a removed include block, mirroring the audit", () => {
+    const prompt = buildFailureAnalysisPrompt(BASE_INPUT);
+    expect(prompt).toContain("an `include:` step points at a block that no longer exists");
   });
 });

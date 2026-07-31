@@ -21,7 +21,7 @@ authoritative for flags.
 | `ccqa run [feature/spec…]` | Replay specs and write a report. See [Running specs](./running.md#ccqa-run). |
 | `ccqa run --only-affected-by <ref>` | Replay only the specs the diff against `<ref>` reaches. See [Scoping with `--only-affected-by`](./running.md#scoping-with---only-affected-by). |
 | `ccqa run --only-hub-rerun-needed` | Replay only the specs the hub answers `rerunNeeded` for: cleared by the audit, and out of date. A spec the audit rejected, or whose last run failed, answers `needsRepair` and is never taken. See [Running only what needs a re-run](./running.md#running-only-what-needs-a-re-run). |
-| `ccqa run --on-fail-explain` | Give every failing spec a root-cause label and a drift audit. See [Failure triage](./running.md#failure-triage). |
+| `ccqa run --on-fail-explain` | Give every failing spec a root-cause label across all four causes, in one call. See [Failure triage](./running.md#failure-triage). |
 | `ccqa audit [feature/spec]` | Audit specs against the codebase without running a browser. See [Drift detection](./running.md#drift-detection). |
 | `ccqa audit --only-hub-audit-needed` | Audit only the specs a deploy has reached since the audit last read them, plus every spec never audited. See [Auditing only what the deploy reached](./running.md#auditing-only-what-the-deploy-reached). |
 | `ccqa select-specs --base <ref>` | Answer which specs a range reaches, and nothing else — the machinery behind `--only-affected-by`, usable on its own. See [Asking the question on its own](./running.md#asking-the-question-on-its-own). |

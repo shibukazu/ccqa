@@ -9,7 +9,10 @@ import {
   type FailureAnalysisPromptInput,
 } from "./prompt.ts";
 import {
-  PREDICTED_LABELS,
+  ACTUAL_CAUSES,
+  DRIFT_FAILURE_CAUSES,
+  DriftSurfaceSchema,
+  predictedForKind,
   SUB_DIAGNOSES,
   type FailureAnalysis,
   type FailureEvidence,
@@ -64,10 +67,11 @@ function buildDiffMcpServer(getFileDiff: (path: string) => string | null) {
 }
 
 /**
- * Classify one failing spec into TEST_DRIFT / SPEC_CHANGE / PRODUCT_BUG /
- * UNKNOWN. Same resilience contract as diagnose(): read-only tools, JSON-only
- * final message, and any parse failure degrades to UNKNOWN with confidence 0
- * rather than throwing — the report must always render.
+ * Classify one failing spec into all four causes (plus UNKNOWN) in a single
+ * call: it holds the execution evidence AND reads the source itself, so no
+ * separate audit runs first. Same resilience contract as diagnose(): read-only
+ * tools, JSON-only final message, and any parse failure degrades to UNKNOWN
+ * with confidence 0 rather than throwing — the report must always render.
  */
 export async function analyzeFailure(
   input: FailureAnalysisPromptInput,
@@ -97,6 +101,11 @@ export async function analyzeFailure(
     };
   }
 
+  // Tracks whether any candidate at least parsed as JSON, so the fall-through
+  // message below can tell "the model never produced JSON" apart from "it did,
+  // but nothing in it normalised to a usable analysis" — the latter used to be
+  // misreported as the former (see normaliseFailureAnalysis's NO_DRIFT case).
+  let sawParseableJson = false;
   for (const candidate of extractJsonCandidates(raw)) {
     let parsed: unknown;
     try {
@@ -104,13 +113,16 @@ export async function analyzeFailure(
     } catch {
       continue;
     }
+    sawParseableJson = true;
     const normalised = normaliseFailureAnalysis(parsed);
     if (normalised) return { analysis: normalised, raw, sdkError: false };
   }
 
   return {
     analysis: unknownAnalysis(
-      `analysis returned no parseable JSON: ${truncate(raw, 500)}`,
+      sawParseableJson
+        ? `no candidate produced a usable analysis: ${truncate(raw, 500)}`
+        : `analysis returned no parseable JSON: ${truncate(raw, 500)}`,
     ),
     raw,
     sdkError: false,
@@ -137,8 +149,14 @@ function unknownAnalysis(reasoning: string): FailureAnalysis {
  */
 export const MAX_EVIDENCE_ITEMS = 3;
 
-const LABELS: ReadonlySet<string> = new Set(PREDICTED_LABELS);
+const LABELS: ReadonlySet<string> = new Set(predictedForKind("run"));
 const SUB_SET: ReadonlySet<string> = new Set(SUB_DIAGNOSES);
+/** `surface` says how a stale test case is repaired; no other cause has one. */
+const SURFACED_LABELS: ReadonlySet<string> = new Set(DRIFT_FAILURE_CAUSES);
+/** Vocabulary words a run may not answer with: NO_DRIFT is a human grade, not a cause. */
+const NON_ANSWERS: ReadonlySet<string> = new Set(
+  ACTUAL_CAUSES.filter((c) => !LABELS.has(c)),
+);
 
 /**
  * Manual, lenient normalisation (mirrors diagnose's normaliseResult): a
@@ -148,7 +166,20 @@ const SUB_SET: ReadonlySet<string> = new Set(SUB_DIAGNOSES);
 export function normaliseFailureAnalysis(parsed: unknown): FailureAnalysis | null {
   if (!isObject(parsed)) return null;
   const label = parsed["label"];
-  if (typeof label !== "string" || !LABELS.has(label)) return null;
+  if (typeof label !== "string") return null;
+  if (!LABELS.has(label)) {
+    // A word from the grading vocabulary is not unparseable — it is a model
+    // answering with something only a human may record. Reporting it as "no
+    // parseable JSON" hides the real cause and drops the label itself past
+    // the reasoning's truncation.
+    if (NON_ANSWERS.has(label)) {
+      log.warn(`analysis answered "${label}", a human grade rather than a cause — degrading to UNKNOWN`);
+      return unknownAnalysis(
+        `the classifier answered ${label}, which only a human grading the row may record — it is not a cause the analysis may report`,
+      );
+    }
+    return null;
+  }
 
   const confidence =
     typeof parsed["confidence"] === "number" ? clamp(parsed["confidence"], 0, 1) : 0;
@@ -174,6 +205,12 @@ export function normaliseFailureAnalysis(parsed: unknown): FailureAnalysis | nul
     }
   }
 
+  // Dropped for the causes that are not about the test case, so a stray
+  // surface can't make PRODUCT_BUG render as if it named a half to repair.
+  const surface = SURFACED_LABELS.has(label)
+    ? DriftSurfaceSchema.safeParse(parsed["surface"])
+    : null;
+
   return {
     label: label as PredictedLabel,
     confidence,
@@ -182,5 +219,6 @@ export function normaliseFailureAnalysis(parsed: unknown): FailureAnalysis | nul
     recommendation,
     evidence,
     reasoning,
+    ...(surface?.success ? { surface: surface.data } : {}),
   };
 }

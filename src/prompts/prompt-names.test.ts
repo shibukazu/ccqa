@@ -15,12 +15,27 @@ describe("prompt name registry", () => {
     }
   });
 
-  test("triage.user is a registered guidance prompt without an .agent pair", () => {
-    expect(isPromptName("triage.user")).toBe(true);
-    expect(promptKind("triage.user")).toBe("guidance");
-    // The learned triage overlay still lives under its legacy name.
-    expect(isPromptName("triage.agent")).toBe(false);
-    expect(promptKind("analysis-custom-prompt")).toBe("custom-prompt");
+  test("a generation flow's .agent note is guidance (markdown), not custom-prompt (json)", () => {
+    // record.agent/live.agent/playwright.agent/runn.agent are plain prose the
+    // model writes, unlike triage.agent/audit.agent below — same kind as
+    // their .user counterpart, despite the "agent" name.
+    for (const kind of GUIDANCE_KINDS) {
+      expect(promptKind(`${kind}.agent`)).toBe("guidance");
+      expect(PROMPT_LOCAL_PATHS[`${kind}.agent`]).toMatch(/\.md$/);
+    }
+  });
+
+  test("the run and the audit each get a .user/.agent pair of their own", () => {
+    // Two prompts because they answer two questions: the audit decides whether
+    // a spec still describes the code, the run decides why it failed anyway.
+    for (const name of ["triage.user", "audit.user"] as const) {
+      expect(isPromptName(name)).toBe(true);
+      expect(promptKind(name)).toBe("guidance");
+    }
+    for (const name of ["triage.agent", "audit.agent"] as const) {
+      expect(isPromptName(name)).toBe(true);
+      expect(promptKind(name)).toBe("custom-prompt");
+    }
   });
 
   test("every prompt name maps to a local path (push/pull never drift)", () => {

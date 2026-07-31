@@ -1,4 +1,4 @@
-import { FAILURE_LABELS, PREDICTED_LABELS } from "../../report/schema.ts";
+import { causesForKind, predictedForKind, PREDICTED_LABELS } from "../../report/schema.ts";
 import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
 import { GUIDANCE_KINDS } from "../../prompts/prompt-names.ts";
 
@@ -588,6 +588,7 @@ const CSS = `
   .lbl.TEST_DRIFT { color: var(--info); border-color: var(--info-border); background: var(--info-bg); }
   .lbl.SPEC_CHANGE { color: var(--amber); border-color: var(--amber-border); background: var(--amber-bg); }
   .lbl.PRODUCT_BUG { color: var(--fail); border-color: var(--fail-border); background: var(--fail-bg); }
+  .lbl.ENVIRONMENT { color: var(--violet); border-color: var(--violet-border); background: var(--violet-bg); }
   .lbl.UNKNOWN, .lbl.none { color: var(--muted); }
   .conf { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
@@ -690,10 +691,14 @@ const CSS = `
   .grade-seg .seg[aria-pressed="true"].TEST_DRIFT  { color: var(--info); background: var(--info-bg); }
   .grade-seg .seg[aria-pressed="true"].SPEC_CHANGE { color: var(--amber); background: var(--amber-bg); }
   .grade-seg .seg[aria-pressed="true"].PRODUCT_BUG { color: var(--fail); background: var(--fail-bg); }
+  .grade-seg .seg[aria-pressed="true"].ENVIRONMENT { color: var(--violet); background: var(--violet-bg); }
   .grade-seg .seg[disabled] { opacity: 0.6; pointer-events: none; }
   .grade-status { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 500; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); border-style: dashed; }
   .grade-status.saved-match { color: var(--pass); background: var(--pass-bg); border-color: var(--pass-border); border-style: solid; }
   .grade-status.saved-corrected { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); border-style: solid; }
+  /* Dashed (not solid, unlike saved-corrected) — this isn't a settled answer,
+     it's a grade whose cause this row's kind rejects, needing a regrade. */
+  .grade-status.saved-invalid { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); border-style: dashed; }
   .grade-status.saving { color: var(--muted); border-style: solid; }
   .grade-status.err { color: var(--fail); background: var(--fail-bg); border-color: var(--fail-border); border-style: solid; }
 
@@ -982,8 +987,10 @@ const CSS = `
 // Vanilla JS, no build step: fetch()-only against /api/v1. Runs are immutable
 // once pushed, so there is nothing to poll. The URL hash routes between views
 // (#/runs/<id> deep-links a run — the URL `ccqa hub push` prints — and
-// #/secrets opens the secrets manager). FAILURE_LABELS / PREDICTED_LABELS are
-// injected below so the browser doesn't need to re-derive them from anywhere.
+// #/secrets opens the secrets manager). RUN_CAUSES / DRIFT_CAUSES / RUN_LABELS
+// / DRIFT_LABELS come from report/schema.ts's causesForKind / predictedForKind
+// (and PREDICTED_LABELS, the full wire union) and are injected below so the
+// browser doesn't need to re-derive them from anywhere.
 //
 // Blocks, in order: token/auth gate, fetch/dom helpers, view routing,
 // projects list, runs list, run detail (spec cards + evidence images),
@@ -992,11 +999,20 @@ const CSS = `
 // ─────────────────────────────────────────────────────────────────────────
 const CLIENT_JS = `
 (function () {
-  var FAILURE_LABELS = ${JSON.stringify(FAILURE_LABELS)};
-  // Rows of the confusion matrix: the three actual labels plus UNKNOWN, since
-  // the model can predict UNKNOWN. Columns (actual causes) are FAILURE_LABELS
-  // only (a human never records UNKNOWN as the ground-truth cause). A drift run
-  // narrows both axes — see DRIFT_LABELS / DRIFT_CAUSES.
+  // The four per-kind sets a person is shown, sourced from report/schema.ts's
+  // causesForKind / predictedForKind so a label can never be added there and
+  // missed here. RUN_LABELS / DRIFT_LABELS are confusion-matrix ROWS (what
+  // ccqa predicted — UNKNOWN included, since the model can say it); RUN_CAUSES
+  // / DRIFT_CAUSES are its COLUMNS (what a human may record as the ground
+  // truth — UNKNOWN is never offered as a grade).
+  var RUN_CAUSES = ${JSON.stringify(causesForKind("run"))};
+  var DRIFT_CAUSES = ${JSON.stringify(causesForKind("drift"))};
+  var RUN_LABELS = ${JSON.stringify(predictedForKind("run"))};
+  var DRIFT_LABELS = ${JSON.stringify(predictedForKind("drift"))};
+  // The full wire union (every predicted label, either side, plus UNKNOWN) —
+  // used only where a label must be recognised independent of which side
+  // produced it (labelChip's "known" check). Never shown to a person as a
+  // set; use the per-kind sets above for that.
   var PREDICTED_LABELS = ${JSON.stringify(PREDICTED_LABELS)};
   var AGENT_BROWSER_TARGET = ${JSON.stringify(AGENT_BROWSER_TARGET)};
   var GUIDANCE_KINDS = ${JSON.stringify(GUIDANCE_KINDS)};
@@ -1036,7 +1052,7 @@ const CLIENT_JS = `
       "diag.cause": "Cause", "diag.fix": "Fix",
       "diag.surface": "Surface", "diag.surface.spec": "spec", "diag.surface.generated": "generated code",
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
-      "acc.assertions": "Assertions", "acc.drift": "Drift audit",
+      "acc.assertions": "Assertions",
       "acc.artifacts": "Artifacts",
       "art.open": "Open", "art.loadFailed": "could not load (it may have been omitted from the push)",
       "acc.assertions.hint": "Test cases from the recorded spec run",
@@ -1049,14 +1065,17 @@ const CLIENT_JS = `
       "status.passed": "passed", "status.failed": "failed", "status.skipped": "skipped", "status.running": "running",
       "drift.run.found": "drift found", "drift.run.clean": "no drift", "drift.run.unknown": "can't tell",
       "drift.spec.found": "drift", "drift.spec.clean": "no drift", "drift.spec.unknown": "can't tell",
-      "grade.question": "What was the real cause?",
+      "grade.question.run": "What actually caused the failure?",
+      "grade.question.drift": "Was the drift the audit reported real?",
       "grade.ungraded": "ungraded", "grade.matches": "saved · matches",
       "grade.corrected": "saved · corrected", "grade.saving": "saving…",
       "grade.error": "couldn't save — retry",
+      "grade.invalidRegrade": "not a valid cause for this row — regrade",
       "matrix.empty": "No grades yet. Pick the real cause on a failed spec's diagnosis card below and it is tallied here.",
       "matrix.axis.predicted": "ccqa predicted", "matrix.axis.actual": "you graded it",
       "matrix.accuracy": "Accuracy",
       "matrix.accSuffix": "of graded cases match the prediction", "matrix.graded": "graded",
+      "matrix.invalidExcluded": "{n} excluded, not a valid cause for their row",
       "matrix.target.all": "All targets",
       "learn.cta.title": "Learn from these grades",
       "learn.cta.desc": "Learn from what you graded so ccqa classifies failure causes the same way next time.",
@@ -1145,7 +1164,8 @@ const CLIENT_JS = `
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.playwright": "Playwright test generation",
       "prompt.card.runn": "runn runbook generation",
-      "prompt.card.customPrompt": "Failure-cause classification",
+      "prompt.card.triage": "Why a test failed (ccqa run)",
+      "prompt.card.audit": "Whether a spec still describes the code (ccqa audit)",
       "prompt.sub.user": "Your instructions", "prompt.sub.agent": "Learned by ccqa",
       "prompt.recordUser.hint": "Rules you write for how a test is recorded — what to click, what to ignore. Applied whenever you record a new test.",
       "prompt.recordAgent.hint": "Notes ccqa keeps for itself while recording, refined automatically as it runs. Read-only — ccqa regenerates it.",
@@ -1155,8 +1175,10 @@ const CLIENT_JS = `
       "prompt.playwrightAgent.hint": "Notes ccqa keeps for itself while generating Playwright tests, refined automatically. Read-only — ccqa regenerates it.",
       "prompt.runnUser.hint": "Rules you write for how a runn runbook is generated — endpoint conventions, shared runbooks to include. Applied when a runn-target spec is generated.",
       "prompt.runnAgent.hint": "Notes ccqa keeps for itself while generating runn runbooks, refined automatically. Read-only — ccqa regenerates it.",
-      "prompt.triageUser.hint": "Rules you write for how failure causes are classified — e.g. which kinds of changes count as a spec change on this project. Applied on every failure analysis.",
-      "prompt.customPrompt.hint": "Learned from your triage grades to make ccqa classify failure causes the way you do. Read-only — a learning job creates it.",
+      "prompt.triageUser.hint": "Rules you write for reading a run failure — e.g. which services count as an environment problem, or which errors are known product bugs, on this project. Applied on every failure analysis.",
+      "prompt.triageAgent.hint": "Learned from your grades on run failures, so ccqa reads them the way you do. Read-only — a learning job creates it.",
+      "prompt.auditUser.hint": "Rules you write for the audit — e.g. which parts of the source are the ones to check a spec against on this project. Applied on every audit.",
+      "prompt.auditAgent.hint": "Reserved for calibration learned from your audit grades. No learning job writes this yet, so it stays empty — read-only either way.",
       "prompt.customPrompt.fallback": "Un-scoped (fallback)",
       "prompt.readonly": "read-only",
       "prompt.notSet": "Not set. Type guidance and Save to store it on the hub.",
@@ -1196,7 +1218,7 @@ const CLIENT_JS = `
       "diag.cause": "原因", "diag.fix": "対処",
       "diag.surface": "対象", "diag.surface.spec": "spec", "diag.surface.generated": "生成コード",
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
-      "acc.assertions": "アサーション", "acc.drift": "ドリフト監査",
+      "acc.assertions": "アサーション",
       "acc.artifacts": "成果物",
       "art.open": "開く", "art.loadFailed": "読み込めませんでした（push時に省略された可能性があります）",
       "acc.assertions.hint": "記録したスペック実行のテストケース",
@@ -1209,14 +1231,17 @@ const CLIENT_JS = `
       "status.passed": "合格", "status.failed": "失敗", "status.skipped": "スキップ", "status.running": "実行中",
       "drift.run.found": "ズレあり", "drift.run.clean": "ズレなし", "drift.run.unknown": "判定できない",
       "drift.spec.found": "ズレあり", "drift.spec.clean": "ズレなし", "drift.spec.unknown": "判定できない",
-      "grade.question": "実際の原因は何でしたか？",
+      "grade.question.run": "実際の原因は何でしたか？",
+      "grade.question.drift": "監査が報告したズレは実在しましたか？",
       "grade.ungraded": "未評価", "grade.matches": "保存済み · 一致",
       "grade.corrected": "保存済み · 修正", "grade.saving": "保存中…",
       "grade.error": "保存に失敗 — 再試行",
+      "grade.invalidRegrade": "この行の種別には無効な原因です — 再採点してください",
       "matrix.empty": "まだ採点がありません。下の失敗スペックの診断カードで実際の原因を選ぶと、ここに集計されます。",
       "matrix.axis.predicted": "ccqa の予測", "matrix.axis.actual": "人の採点",
       "matrix.accuracy": "正解率",
       "matrix.accSuffix": "件の採点が予測と一致", "matrix.graded": "採点済み",
+      "matrix.invalidExcluded": "{n}件は行の種別に無効な原因のため除外",
       "matrix.target.all": "すべてのターゲット",
       "learn.cta.title": "この採点から学習",
       "learn.cta.desc": "採点した内容をもとに、ccqaが次回から同じように失敗の原因を分類できるよう学習します。",
@@ -1305,7 +1330,8 @@ const CLIENT_JS = `
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.playwright": "Playwrightテスト生成",
       "prompt.card.runn": "runnランブック生成",
-      "prompt.card.customPrompt": "失敗原因の分類",
+      "prompt.card.triage": "テストが落ちた理由（ccqa run）",
+      "prompt.card.audit": "spec がまだコードを説明できているか（ccqa audit）",
       "prompt.sub.user": "あなたの指示", "prompt.sub.agent": "ccqaの学習",
       "prompt.recordUser.hint": "テストを記録するときのルールを自分で書きます（何をクリックするか、何を無視するか）。新しいテストを記録するたびに適用されます。",
       "prompt.recordAgent.hint": "記録中にccqaが自分用に書き留め、実行のたびに自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
@@ -1315,8 +1341,10 @@ const CLIENT_JS = `
       "prompt.playwrightAgent.hint": "Playwrightテスト生成中にccqaが自分用に書き留め、自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
       "prompt.runnUser.hint": "runnランブックを生成するときのルールを自分で書きます（エンドポイントの規約、includeする共有ランブック）。runnターゲットの生成時に適用されます。",
       "prompt.runnAgent.hint": "runnランブック生成中にccqaが自分用に書き留め、自動で洗練していくメモです。読み取り専用 — ccqaが再生成します。",
-      "prompt.triageUser.hint": "失敗原因を分類するときのルールを自分で書きます（例: どの変更をこのプロジェクトで仕様変更として扱うか）。失敗分析のたびに適用されます。",
-      "prompt.customPrompt.hint": "あなたの採点から学習し、ccqaがあなたと同じように失敗の原因を分類できるようにします。読み取り専用 — 学習ジョブが生成します。",
+      "prompt.triageUser.hint": "実行の失敗をどう読むかのルールを自分で書きます（例: このプロジェクトでどのサービスを環境の問題として扱うか、どのエラーを既知のプロダクトバグとして扱うか）。失敗分析のたびに適用されます。",
+      "prompt.triageAgent.hint": "実行の失敗に対するあなたの採点から学習し、ccqaが同じように読めるようにします。読み取り専用 — 学習ジョブが生成します。",
+      "prompt.auditUser.hint": "監査のルールを自分で書きます（例: このプロジェクトで spec を突き合わせるべきソースの範囲）。監査のたびに適用されます。",
+      "prompt.auditAgent.hint": "監査の採点から学習する校正用に予約されています。現時点ではこれを生成する学習ジョブが無いため常に空です — いずれにせよ読み取り専用です。",
       "prompt.customPrompt.fallback": "共通（フォールバック）",
       "prompt.readonly": "読み取り専用",
       "prompt.notSet": "未設定。指示を入力して保存するとハブに保存されます。",
@@ -1335,7 +1363,7 @@ const CLIENT_JS = `
       "jobs.failed": "学習ジョブが失敗しました。", "jobs.newCustomPrompt": "新しいカスタムプロンプト:", "jobs.empty": "まだ学習ジョブがありません。実行の失敗スペックを採点してから学習してください。"
     }
   };
-  var FAILURE_LABEL_JA = { TEST_DRIFT: "テストずれ", SPEC_CHANGE: "仕様変更", PRODUCT_BUG: "プロダクト不具合", UNKNOWN: "不明", NO_DRIFT: "ズレなし" };
+  var FAILURE_LABEL_JA = { TEST_DRIFT: "テストずれ", SPEC_CHANGE: "仕様変更", PRODUCT_BUG: "プロダクト不具合", ENVIRONMENT: "環境の問題", UNKNOWN: "不明", NO_DRIFT: "ズレなし" };
 
   function loadLang() {
     try { return window.localStorage.getItem(LANG_KEY) || "en"; } catch (e) { return "en"; }
@@ -1550,7 +1578,7 @@ const CLIENT_JS = `
   }
 
   function labelChip(label) {
-    var known = FAILURE_LABELS.indexOf(label) !== -1 || label === "UNKNOWN";
+    var known = PREDICTED_LABELS.indexOf(label) !== -1;
     // class carries the English value (for color); text shows the localized name.
     return el("span", "lbl " + (known ? label : "none"), labelText(label));
   }
@@ -1589,14 +1617,12 @@ const CLIENT_JS = `
   // vocabulary the diagnosis card uses — so a run's summary never disagrees
   // with its own spec cards. A zero-count label is omitted, same reasoning as
   // rerunSegments below: a "0" chip next to a real count reads as a finding.
-  var DRIFT_LABELS = ["TEST_DRIFT", "SPEC_CHANGE", "UNKNOWN"];
-  // A drift audit opens no browser: it only ever compares the test case against
-  // the source. PRODUCT_BUG is therefore not a cause it can predict *or* be
-  // corrected to, so it is absent from both axes of the matrix and from the
-  // grading control. Offering it in one place but not the other would let a
-  // grade land in a cell that does not exist.
-  var DRIFT_CAUSES = ["TEST_DRIFT", "SPEC_CHANGE", "NO_DRIFT"];
-  function causeLabels(isDrift) { return isDrift ? DRIFT_CAUSES : FAILURE_LABELS; }
+  // DRIFT_LABELS / DRIFT_CAUSES / RUN_CAUSES are declared above, sourced from
+  // causesForKind / predictedForKind. The two sides overlap but are not equal:
+  // an audit opens no browser (no PRODUCT_BUG/ENVIRONMENT) and NO_DRIFT is not
+  // an answer about a run. Offering one side's label in the other's control
+  // would let a grade land in a cell that does not exist.
+  function causeLabels(isDrift) { return isDrift ? DRIFT_CAUSES : RUN_CAUSES; }
   var DRIFT_LABEL_COUNT_KEY = { TEST_DRIFT: "testDrift", SPEC_CHANGE: "specChange", UNKNOWN: "unknown" };
   // A run stored by an older hub carries the previous drift summary shape
   // (issue/severity counts). The read path returns runs as stored, so the
@@ -2047,8 +2073,8 @@ const CLIENT_JS = `
     head.appendChild(el("span", "conf", Math.round(a.confidence * 100) + "%"));
     wrap.appendChild(head);
     var kv = el("div", "analysis-kv");
-    // a.surface only exists on a drift diagnosis (kind: "drift" rows reuse this
-    // section for their own verdict); a run's failure analysis has no surface.
+    // Set only when the verdict blames the test case (TEST_DRIFT/SPEC_CHANGE),
+    // on both kinds of row — it names the half that has to be repaired.
     if (a.surface) {
       kv.appendChild(el("div", "k", t("diag.surface")));
       kv.appendChild(el("div", "v", t("diag.surface." + a.surface)));
@@ -2065,10 +2091,7 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  // 根拠: the model's own evidence items (file + what it proves). The drift
-  // audit (r.driftAudit) is a separate static opinion now, not a list of
-  // findings to fold in here — see driftAuditCard, rendered as its own
-  // supplementary card beside this one.
+  // 根拠: the model's own evidence items (file + what it proves).
   function analysisEvidenceSection(r) {
     var wrap = el("div");
     var count = 0;
@@ -2283,47 +2306,6 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  // A normal run's OWN drift audit (r.driftAudit): a single static diagnosis
-  // in the same label vocabulary as the triage card, shown as a supplementary
-  // opinion — never the row's own verdict, so it gets its own compact card
-  // rather than folding into analysisSection's grading/reasoning affordances.
-  function driftAuditCard(d) {
-    var wrap = el("div", "analysis-box");
-    var head = el("div", "analysis-head");
-    head.appendChild(labelChip(d.label));
-    head.appendChild(el("span", "conf", Math.round(d.confidence * 100) + "%"));
-    wrap.appendChild(head);
-    var kv = el("div", "analysis-kv");
-    if (d.surface) {
-      kv.appendChild(el("div", "k", t("diag.surface")));
-      kv.appendChild(el("div", "v", t("diag.surface." + d.surface)));
-    }
-    if (d.headline) {
-      kv.appendChild(el("div", "k", t("diag.cause")));
-      kv.appendChild(el("div", "v headline", d.headline));
-    }
-    if (d.recommendation) {
-      kv.appendChild(el("div", "k", t("diag.fix")));
-      kv.appendChild(el("div", "v", d.recommendation));
-    }
-    if (kv.childNodes.length > 0) wrap.appendChild(kv);
-    if (d.evidence && d.evidence.length > 0) {
-      var ev = el("div");
-      d.evidence.forEach(function (e) {
-        var row = el("div", "drift-row");
-        if (e.file) {
-          var evHead = el("div", "drift-head");
-          evHead.appendChild(el("code", "ev-file", e.file));
-          row.appendChild(evHead);
-        }
-        row.appendChild(el("div", "drift-msg", e.detail));
-        ev.appendChild(row);
-      });
-      wrap.appendChild(detailsBlock(t("acc.evidence"), d.evidence.length, ev));
-    }
-    return wrap;
-  }
-
   // A rotating chevron; the CSS rotates it 0->90deg when the <details> is open.
   function chevron() {
     var svg = svgIcon();
@@ -2347,15 +2329,21 @@ const CLIENT_JS = `
     return det;
   }
 
-  // The grading action: an explicit question ("What was the real cause?"), a
-  // segmented single-select over the failure labels, and a status chip
-  // (ungraded / saved·matches / saved·corrected). One tap grades it.
-  // Optimistic PUT with rollback; on success it refreshes the confusion
-  // matrix. The English label value is what's sent and stored; the segment
-  // just shows its localized name.
-  function triageGradeControl(runId, r, triageState) {
+  // The grading action: an explicit question, a segmented single-select over
+  // that side's causes, and a status chip (ungraded / saved·matches /
+  // saved·corrected). One tap grades it. The question is side-aware: a run
+  // row asks what actually caused the failure (grade.question.run); a drift
+  // row asks whether the drift the audit reported was real
+  // (grade.question.drift), since that side grades against NO_DRIFT rather
+  // than a cause. Optimistic PUT with rollback; on success it refreshes the
+  // confusion matrix. The English label value is what's sent and stored; the
+  // segment just shows its localized name.
+  // isDrift comes from the run, not from triageState: the first paint happens
+  // before loadTriage resolves, and reading it off the empty state would offer
+  // one side's causes on the other side's row for a frame.
+  function triageGradeControl(runId, r, triageState, isDrift) {
     var key = r.feature + "/" + r.spec;
-    var causes = causeLabels(triageState.isDrift);
+    var causes = causeLabels(isDrift);
     var predicted = r.analysis ? r.analysis.label : "UNKNOWN";
 
     var wrap = el("div", "grade");
@@ -2363,7 +2351,7 @@ const CLIENT_JS = `
     // No "predicted →" chip here: the control lives inside the diagnosis
     // card, directly under the prediction it grades — repeating it is noise.
     var top = el("div", "grade-top");
-    top.appendChild(el("span", "grade-q", t("grade.question")));
+    top.appendChild(el("span", "grade-q", t(isDrift ? "grade.question.drift" : "grade.question.run")));
     wrap.appendChild(top);
 
     var bottom = el("div", "grade-bottom");
@@ -2372,13 +2360,22 @@ const CLIENT_JS = `
     var segByLabel = {};
 
     // Reflect the current selection (colour + check) and the status chip.
-    function paint(selected) {
+    // invalid marks a grade whose cause this row's kind cannot produce:
+    // selected is then a value causes does not contain, so no segment lights
+    // up, and it must never read as "matches" — that would assert an
+    // agreement nobody measured.
+    function paint(selected, invalid) {
       causes.forEach(function (lbl) {
         var b = segByLabel[lbl];
         b.setAttribute("aria-pressed", String(lbl === selected));
         b.firstChild.textContent = (lbl === selected ? "✓ " : "") + labelText(lbl);
       });
       status.className = "grade-status";
+      if (invalid) {
+        status.classList.add("saved-invalid");
+        status.textContent = labelText(selected) + " — " + t("grade.invalidRegrade");
+        return;
+      }
       if (!selected) { status.textContent = t("grade.ungraded"); return; }
       if (selected === predicted) { status.classList.add("saved-match"); status.textContent = t("grade.matches"); }
       else { status.classList.add("saved-corrected"); status.textContent = t("grade.corrected"); }
@@ -2386,6 +2383,7 @@ const CLIENT_JS = `
 
     var existing = triageState.byKey[key];
     var current = existing && existing.actual ? existing.actual.cause : "";
+    var currentInvalid = !!(existing && existing.actual && existing.actual.invalidForKind);
 
     causes.forEach(function (lbl) {
       var b = el("button", "seg " + lbl);
@@ -2393,26 +2391,28 @@ const CLIENT_JS = `
       b.appendChild(el("span", null, labelText(lbl))); // text node the paint() updates
       b.setAttribute("aria-pressed", "false");
       b.addEventListener("click", function () {
-        if (lbl === current) return; // no-op re-click
+        if (lbl === current) return; // no-op re-click; lbl only ranges over causes, so an invalid current never matches
         var prev = current;
+        var prevInvalid = currentInvalid;
         causes.forEach(function (l) { segByLabel[l].disabled = true; });
-        paint(lbl);
+        paint(lbl, false);
         status.className = "grade-status saving";
         status.textContent = t("grade.saving");
         putActualCause(runId, r.feature, r.spec, lbl)
           .then(function () {
             current = lbl;
+            currentInvalid = false;
             if (!triageState.byKey[key]) {
               triageState.byKey[key] = { feature: r.feature, spec: r.spec, predicted: r.analysis, actual: null };
             }
             triageState.byKey[key].actual = { cause: lbl };
-            paint(lbl); // clears .saving, sets final matches/corrected
+            paint(lbl, false); // clears .saving, sets final matches/corrected
             renderMatrix(triageState);
           })
           .catch(function (err) {
-            paint(prev); // roll back the optimistic selection
+            paint(prev, prevInvalid); // roll back the optimistic selection
             status.className = "grade-status err";
-            status.textContent = t("grade.error");
+            status.textContent = t("grade.error") + (err && err.message ? ": " + err.message : "");
           })
           .then(function () {
             causes.forEach(function (l) { segByLabel[l].disabled = false; });
@@ -2425,7 +2425,7 @@ const CLIENT_JS = `
     bottom.appendChild(seg);
     bottom.appendChild(status);
     wrap.appendChild(bottom);
-    paint(current); // restore saved state on (re)render
+    paint(current, currentInvalid); // restore saved state on (re)render
     return wrap;
   }
 
@@ -2502,20 +2502,11 @@ const CLIENT_JS = `
       // classification itself — "it called this TEST_DRIFT; it was really a
       // SPEC_CHANGE" — which is exactly the measurement that has to exist
       // before a wrong label is allowed to drive an automatic fix.
-      box.appendChild(triageGradeControl(runId, r, triageState));
+      box.appendChild(triageGradeControl(runId, r, triageState, isDrift));
       body.appendChild(box);
       any = true;
     } else if (r.status === "failed" && r.analysisSkipped) {
       body.appendChild(el("div", "muted", "Analysis skipped: " + r.analysisSkipped));
-      any = true;
-    }
-
-    // A normal run's OWN drift audit: a supplementary static opinion shown
-    // beside the triage card above, never a sibling verdict. Drift-kind rows
-    // never set this (their diagnosis is analysis itself, rendered above).
-    if (!isDrift && r.driftAudit) {
-      body.appendChild(el("div", "section-label", t("acc.drift")));
-      body.appendChild(driftAuditCard(r.driftAudit));
       any = true;
     }
 
@@ -2577,20 +2568,29 @@ const CLIENT_JS = `
   // pre-target grades still land under a real segment.
   function caseTarget(c) { return c.target || AGENT_BROWSER_TARGET; }
 
+  // " (N excluded, not a valid cause for their row)", or "" when nothing is excluded.
+  function invalidSuffix(n) {
+    return n > 0 ? " (" + t("matrix.invalidExcluded").replace("{n}", String(n)) + ")" : "";
+  }
+
   function renderMatrix(triageState) {
     var card = document.getElementById("matrix-card");
     clear(card);
     var wrap = el("div", "matrix-wrap");
-    var graded = Object.keys(triageState.byKey).map(function (k) { return triageState.byKey[k]; })
-      .filter(function (c) { return c.predicted && c.actual; });
+    var all = Object.keys(triageState.byKey).map(function (k) { return triageState.byKey[k]; });
+    // A row can carry a grade under a cause its kind does not offer (the
+    // other kind's, most commonly). Excluded from the matrix and the
+    // "graded" denominator — never silently; the header shows the count.
+    var graded = all.filter(function (c) { return c.predicted && c.actual && !c.actual.invalidForKind; });
+    var invalidForKind = all.filter(function (c) { return c.predicted && c.actual && c.actual.invalidForKind; });
 
     // The "graded m / n" counter in the header is the single progress
     // readout — recomputed here so it stays in sync after each grade.
-    var total = typeof triageState.total === "number" ? triageState.total : Object.keys(triageState.byKey).length;
+    var total = typeof triageState.total === "number" ? triageState.total : all.length;
     var summary = document.getElementById("triage-summary");
 
     if (graded.length === 0) {
-      if (summary) summary.textContent = t("matrix.graded") + " 0 / " + total;
+      if (summary) summary.textContent = t("matrix.graded") + " 0 / " + total + invalidSuffix(invalidForKind.length);
       wrap.appendChild(el("div", "muted", t("matrix.empty")));
       card.appendChild(wrap);
       return;
@@ -2613,10 +2613,12 @@ const CLIENT_JS = `
       ? graded
       : graded.filter(function (c) { return caseTarget(c) === filter; });
 
-    // A drift audit cannot answer PRODUCT_BUG on either axis, so a row and a
-    // column for it would sit at zero forever and read as "it never predicted
-    // a product bug" — an accuracy claim, when it is only a definition.
-    var predictedRows = triageState.isDrift ? DRIFT_LABELS : PREDICTED_LABELS;
+    // A drift audit opens no browser, so it never answers PRODUCT_BUG or
+    // ENVIRONMENT, and NO_DRIFT is not an answer about a run. A row or column
+    // for a label this kind cannot produce would sit at zero forever and read
+    // as "it never predicted this" — an accuracy claim, when it is only a
+    // definition.
+    var predictedRows = triageState.isDrift ? DRIFT_LABELS : RUN_LABELS;
     var actualCols = causeLabels(triageState.isDrift);
     var matrix = {};
     predictedRows.forEach(function (p) {
@@ -2673,16 +2675,21 @@ const CLIENT_JS = `
     wrap.appendChild(accEl);
 
     // Header must not mix populations: when a target filter is active, the
-    // count, denominator, and accuracy all describe that target only.
+    // count, denominator, accuracy, and excluded count all describe that
+    // target only.
     var headerGraded = graded.length;
     var headerTotal = total;
+    var headerInvalid = invalidForKind.length;
     if (filter !== "all") {
       headerGraded = cases.length;
+      headerInvalid = invalidForKind.filter(function (c) { return caseTarget(c) === filter; }).length;
       headerTotal = Object.keys(triageState.byKey).reduce(function (n, k) {
         return caseTarget(triageState.byKey[k]) === filter ? n + 1 : n;
       }, 0);
     }
-    if (summary) summary.textContent = t("matrix.graded") + " " + headerGraded + " / " + headerTotal + " · " + accuracy + "%";
+    if (summary) {
+      summary.textContent = t("matrix.graded") + " " + headerGraded + " / " + headerTotal + " · " + accuracy + "%" + invalidSuffix(headerInvalid);
+    }
 
     card.appendChild(wrap);
 
@@ -3019,24 +3026,29 @@ const CLIENT_JS = `
 
   // ── prompts ────────────────────────────────────────────────────────────
   // Prompt cards (names mirror src/prompts/prompt-names.ts). Each ".user" slot
-  // is editable; the ".agent" slots and the custom prompt are ccqa-generated
-  // and read-only. Each slot names its sub-label (Your instructions / Learned
-  // by ccqa) and a "when to use" hint.
-  var CUSTOM_PROMPT_NAME = "analysis-custom-prompt";
+  // is editable; every ".agent" slot is ccqa-generated and read-only. Each slot
+  // names its sub-label (Your instructions / Learned by ccqa) and a "when to
+  // use" hint. Of the ".agent" slots, only these two are stored as JSON rather
+  // than prose, so they alone need customPromptDisplayText below.
+  var LEARNED_PROMPT_NAMES = ["triage.agent", "audit.agent"];
   // The guidance cards are uniform — an editable <kind>.user slot plus a
   // read-only <kind>.agent slot — so derive them from GUIDANCE_KINDS rather
   // than hand-listing each; a new target's card then follows from adding its
   // i18n prose keys (prompt.card.<kind>, prompt.<kind>User/Agent.hint). The
-  // triage/custom-prompt card is shaped differently and stays explicit.
+  // triage and audit cards are shaped differently and stay explicit.
   var PROMPT_CARDS = GUIDANCE_KINDS.map(function (kind) {
     return { titleKey: "prompt.card." + kind, slots: [
       { name: kind + ".user", subKey: "prompt.sub.user", hintKey: "prompt." + kind + "User.hint", agent: false },
       { name: kind + ".agent", subKey: "prompt.sub.agent", hintKey: "prompt." + kind + "Agent.hint", agent: true },
     ] };
   }).concat([
-    { titleKey: "prompt.card.customPrompt", slots: [
+    { titleKey: "prompt.card.triage", slots: [
       { name: "triage.user", subKey: "prompt.sub.user", hintKey: "prompt.triageUser.hint", agent: false },
-      { name: CUSTOM_PROMPT_NAME, subKey: "prompt.sub.agent", hintKey: "prompt.customPrompt.hint", agent: true },
+      { name: "triage.agent", subKey: "prompt.sub.agent", hintKey: "prompt.triageAgent.hint", agent: true },
+    ] },
+    { titleKey: "prompt.card.audit", slots: [
+      { name: "audit.user", subKey: "prompt.sub.user", hintKey: "prompt.auditUser.hint", agent: false },
+      { name: "audit.agent", subKey: "prompt.sub.agent", hintKey: "prompt.auditAgent.hint", agent: true },
     ] },
   ]);
   // Flat list of every slot, for loadPrompts to fill via its _ta handle.
@@ -4168,7 +4180,12 @@ const CLIENT_JS = `
       if (!slot._ta) return;
       fetchPromptText(slot.name)
         .then(function (text) {
-          slot._ta.value = slot.name === CUSTOM_PROMPT_NAME ? customPromptDisplayText(text) : (text == null ? "" : text);
+          slot._ta.value =
+            LEARNED_PROMPT_NAMES.indexOf(slot.name) !== -1
+              ? customPromptDisplayText(text)
+              : text == null
+                ? ""
+                : text;
         })
         .catch(function (err) { setPromptsStatus('Loading "' + slot.name + '" failed: ' + err.message); });
     });

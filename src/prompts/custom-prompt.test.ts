@@ -1,4 +1,5 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
+import * as log from "../cli/logger.ts";
 import type { HubClient } from "../hub-client/index.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
 import {
@@ -34,6 +35,15 @@ describe("buildCustomPromptBlock", () => {
     expect(block).toContain("Calibration guidance from human-graded past failures");
     expect(block).toContain("Prefer PRODUCT_BUG when the DOM is intact.");
   });
+
+  test("names audits, not failures, when rendered for the audit side", () => {
+    const block = buildCustomPromptBlock(
+      { schemaVersion: 1, basePromptVersion: "4", customPromptVersion: "v", generatedAt: "t", guidance: "Selector-only renames are TEST_DRIFT." },
+      "audit.agent",
+    );
+    expect(block).toContain("Calibration guidance from human-graded past audits");
+    expect(block).not.toContain("past failures");
+  });
 });
 
 describe("fetchCustomPrompt", () => {
@@ -68,8 +78,20 @@ describe("fetchCustomPrompt", () => {
   });
 
   test("returns null when the stored value doesn't match the schema", async () => {
+    const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
     const hub = fakeHubClient(async () => JSON.stringify({ schemaVersion: 2 }));
     expect(await fetchCustomPrompt({ hub, project: "demo" })).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("does not match the expected shape"));
+    warnSpy.mockRestore();
+  });
+
+  test("a corrupt/truncated blob warns (naming the prompt and project) instead of throwing or failing silently", async () => {
+    const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const hub = fakeHubClient(async () => '{"schemaVersion": 1, "guidance": "unterminated');
+    expect(await fetchCustomPrompt({ hub, project: "demo" }, "audit.agent")).toBeNull();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("audit.agent"));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("demo"));
+    warnSpy.mockRestore();
   });
 });
 
@@ -140,6 +162,13 @@ describe("buildTriageUserPromptBlock", () => {
     expect(block).toContain("Project triage guidance (human-maintained)");
     expect(block).toContain("Treat wording changes on the settings screen as SPEC_CHANGE.");
   });
+
+  test("names audit.user, not triage.user, when rendered for the audit side", () => {
+    const block = buildTriageUserPromptBlock("Always re-check block includes first.", "audit.user");
+    expect(block).toContain("Project audit guidance (human-maintained)");
+    expect(block).toContain("`audit.user`");
+    expect(block).not.toContain("triage.user");
+  });
 });
 
 describe("fetchTriageUserPrompt", () => {
@@ -156,10 +185,23 @@ describe("fetchTriageUserPrompt", () => {
   });
 
   test("returns the trimmed stored markdown", async () => {
-    const hub = fakeHubClient(async () => "  Prefer TEST_DRIFT for selector-only changes.\n");
+    const hub = fakeHubClient(async () => "  Prefer PRODUCT_BUG when the DOM is intact.\n");
+    expect(await fetchTriageUserPrompt({ hub, project: "demo" })).toBe(
+      "Prefer PRODUCT_BUG when the DOM is intact.",
+    );
+  });
+
+  test("guidance naming TEST_DRIFT/SPEC_CHANGE passes through unwarned — the run answers those again", async () => {
+    const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const hub = fakeHubClient(async () => "Prefer TEST_DRIFT for selector-only changes.");
     expect(await fetchTriageUserPrompt({ hub, project: "demo" })).toBe(
       "Prefer TEST_DRIFT for selector-only changes.",
     );
+    expect(await fetchTriageUserPrompt({ hub, project: "demo" }, "audit.user")).toBe(
+      "Prefer TEST_DRIFT for selector-only changes.",
+    );
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 });
 

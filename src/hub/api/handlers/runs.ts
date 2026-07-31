@@ -257,10 +257,9 @@ async function updateSpecLedger(
 
 /**
  * Advance the drift ledger from a terminal `kind: "drift"` run: each row's
- * `analysis` (the diagnosis `driftResultsToReport` put there — see
- * `ReportSpecResultSchema.driftAudit`'s comment) becomes that spec's newest
- * audit entry. No profile — drift asks whether the spec still describes the
- * code, not whether an environment is stale.
+ * `analysis` (the diagnosis `driftResultsToReport` put there) becomes that
+ * spec's newest audit entry. No profile — drift asks whether the spec still
+ * describes the code, not whether an environment is stale.
  *
  * `analysis: null` still advances the entry, as `label: null` — a completed
  * audit that found no drift. A skipped row did not execute and advances
@@ -560,11 +559,11 @@ async function getRunOr404(storage: HubStorage, id: string): Promise<Run> {
 }
 
 /**
- * Tally a `kind: "drift"` report's per-spec diagnoses (carried in `analysis`,
- * not `driftAudit` — see ReportSpecResultSchema) into the `Run.drift` summary
- * counters, by label rather than by derived severity. A row with no
- * `analysis` was audited and found clean (see `driftResultsToReport`), so it
- * counts toward `specs` but none of the three labels.
+ * Tally a `kind: "drift"` report's per-spec diagnoses (carried in `analysis`)
+ * into the `Run.drift` summary counters, by label rather than by derived
+ * severity. A row with no `analysis` was audited and found clean (see
+ * `driftResultsToReport`), so it counts toward `specs` but none of the three
+ * labels.
  */
 function summarizeDrift(results: ReportSpecResult[]): { specs: number; testDrift: number; specChange: number; unknown: number } {
   let specs = 0;

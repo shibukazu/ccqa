@@ -1,13 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
-import { analyzeDrift } from "../drift/analyze.ts";
 import { analyzeFailure } from "../report/analyze.ts";
-import type { SpecResult } from "../drift/types.ts";
-import type { DriftDiagnosis, ReportSpecResult } from "../report/schema.ts";
+import type { ReportSpecResult } from "../report/schema.ts";
 import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
-import { loadAvailableBlocks, specKey, type SpecRef } from "../store/index.ts";
+import type { AvailableBlock, SpecRef } from "../store/index.ts";
 import { specArtifactsDir } from "../targets/run-artifacts.ts";
 import { loadGeneratedManifest } from "../targets/llm-engine.ts";
 import { C } from "../cli/colors.ts";
@@ -18,15 +16,16 @@ import type { DiffProvider } from "./diff-provider.ts";
  * `ccqa run`'s failure-analysis phase, shared by the script-driven execution
  * paths: the built-in deterministic (vitest) path and external targets running
  * through their `runCommand`. Both hand the classifier the same evidence —
- * generated test source, failure log, spec.yaml, the spec-scoped source diff,
- * and the drift audit — so report rows and CI logs look the same whichever
- * target a project's specs use.
+ * generated test source, failure log, spec.yaml and the spec-scoped source
+ * diff — so report rows and CI logs look the same whichever target a
+ * project's specs use.
  *
- * It is one *phase*, not one call per path: `beginFailureAnalysis` runs the
- * audit for every failing spec of the run at once and hands back the shared
- * state, so a mixed run prints one `failure analysis` banner in one place
- * rather than one per execution path. It runs after every spec has executed,
- * so no Claude turn is spent on triage while tests are still running.
+ * One Claude call per failing spec, which reads the source itself rather than
+ * deferring to a drift audit run beforehand. It is still one *phase*:
+ * `beginFailureAnalysis` hands back the state every path shares, so a mixed
+ * run prints one `failure analysis` banner in one place rather than one per
+ * execution path. It runs after every spec has executed, so no Claude turn is
+ * spent on triage while tests are still running.
  *
  * The live path builds its evidence from a Claude transcript instead of a
  * script, so it keeps its own caller in `cli/run-live.ts`; only the
@@ -43,14 +42,15 @@ export type ClaudeAuth = { ok: true } | { ok: false; reason: string };
 export interface FailureAnalysisDeps {
   /**
    * Per-spec source-diff resolver, present exactly when `--on-fail-explain`
-   * was requested. Null disables both the classification and the drift audit —
-   * they are one unit, since the audit's findings feed the classifier prompt.
+   * was requested. Null turns the classification off entirely.
    */
   diffProvider: DiffProvider | null;
   auth: ClaudeAuth;
   cwd: string;
   /** Absolute report directory — locates a spec's run artifacts for the prompt. */
   reportDir: string;
+  /** Blocks under `.ccqa/blocks/`, so the prompt can check an `include:` step's target still exists. */
+  blocks: AvailableBlock[];
   model?: string;
   language?: string;
   /**
@@ -76,7 +76,6 @@ export interface SpecFailureInput {
   specYaml: string | null;
   /** This spec's generation target — selects the custom-prompt overlay to apply. */
   target: string;
-  driftAudit: DriftDiagnosis | null;
   /**
    * cwd-relative directory holding this spec's run artifacts, when it has one
    * the classifier's read-only tools can reach. Named in the prompt so the
@@ -153,6 +152,11 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
       const outcome = await analyzeFailure(
         {
           script: await input.readScript(),
+          // Both paths sharing this pass (det, external-target) always run
+          // code `ccqa generate` produced; only `mode: live` (a different
+          // caller, cli/run-live.ts) has no generated surface.
+          hasGeneratedSurface: true,
+          blocks: deps.blocks,
           specYaml: input.specYaml,
           failureLog: input.failureLog,
           diffPatch: specDiff?.patch ?? null,
@@ -161,7 +165,6 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
           baseSource: specDiff?.base.source ?? null,
           range: specDiff?.range ?? null,
           ...(baselineMissing ? { baselineMissing } : {}),
-          driftAudit: input.driftAudit,
           ...(input.artifactsDir ? { artifactsDir: input.artifactsDir } : {}),
           ...(deps.language ? { outputLanguage: deps.language } : {}),
           ...(deps.triageUserPrompt ? { triageUserPrompt: deps.triageUserPrompt } : {}),
@@ -205,75 +208,25 @@ function printAnalysis(
   if (recommendation) log.emitRaw(`  ${C.dim}→ ${recommendation}${C.reset}\n`);
 }
 
-/**
- * Audit the failing specs against the current source, as evidence for their
- * classification. Returns `specKey → diagnosis`, null both for a clean audit
- * (no drift found) and for one that errored — the audit is advisory, so a
- * failure warns and never aborts the run, and either way the row simply
- * carries no drift evidence.
- *
- * Target-agnostic by construction — it compares `spec.yaml` against the
- * codebase (Read/Grep/Glob) and never looks at generated test code — so
- * external-target specs get the same evidence as agent-browser ones.
- *
- * One deliberate difference from the earlier deterministic-only pass: every
- * failing spec is audited. It used to build its target list from the feature
- * tree, so a failed spec missing from that walk was silently skipped.
- */
-export async function runDriftAudit(
-  specs: readonly SpecRef[],
-  deps: FailureAnalysisDeps,
-): Promise<Map<string, DriftDiagnosis | null>> {
-  const byKey = new Map<string, DriftDiagnosis | null>();
-  if (specs.length === 0 || deps.diffProvider === null || !deps.auth.ok) return byKey;
-
-  let results: SpecResult[];
-  try {
-    results = await analyzeDrift({
-      targets: specs.map((s) => ({ featureName: s.featureName, specName: s.specName })),
-      cwd: deps.cwd,
-      blocks: await loadAvailableBlocks(deps.cwd),
-      concurrency: Math.min(3, specs.length),
-      ...(deps.model ? { model: deps.model } : {}),
-      ...(deps.language ? { language: deps.language } : {}),
-      onSpecStart: (t) => log.info(`drift audit: ${t.featureName}/${t.specName}`),
-    });
-  } catch (err) {
-    log.warn(`drift audit failed: ${err instanceof Error ? err.message : String(err)}`);
-    return byKey;
-  }
-
-  for (const r of results) {
-    if (!r.ok) log.warn(`drift audit failed for ${specKey(r.target)}: ${r.error ?? "no result"}`);
-    byKey.set(specKey(r.target), r.ok ? r.drift : null);
-  }
-  return byKey;
-}
-
 /** Run-level state every path of one run's analysis phase shares. */
 export interface FailureAnalysisRun {
   deps: FailureAnalysisDeps;
   pass: FailureAnalysisPass;
-  driftByKey: Map<string, DriftDiagnosis | null>;
 }
 
 /**
  * Open the run's single analysis phase over every spec that failed, whatever
- * executed it: one auth notice, one drift audit (batched across paths), and
- * one `failure analysis` banner for the rows that follow.
+ * executed it: one auth notice, and one `failure analysis` banner for the rows
+ * that follow.
  */
-export async function beginFailureAnalysis(
+export function beginFailureAnalysis(
   failedSpecs: readonly SpecRef[],
   deps: FailureAnalysisDeps,
-): Promise<FailureAnalysisRun> {
+): FailureAnalysisRun {
   if (deps.diffProvider !== null && !deps.auth.ok && failedSpecs.length > 0) {
     log.info(`failure analysis skipped (${deps.auth.reason})`);
   }
-  return {
-    deps,
-    pass: createFailureAnalysisPass(deps),
-    driftByKey: await runDriftAudit(failedSpecs, deps),
-  };
+  return { deps, pass: createFailureAnalysisPass(deps) };
 }
 
 /** True for a failed row the classifier should look at. See `analyzeExternalRows`. */
@@ -296,7 +249,7 @@ export async function analyzeExternalRows(
   rows: readonly ReportSpecResult[],
   run: FailureAnalysisRun,
 ): Promise<ReportSpecResult[]> {
-  const { deps, pass, driftByKey } = run;
+  const { deps, pass } = run;
   const out: ReportSpecResult[] = [];
   for (const row of rows) {
     if (!needsAnalysis(row)) {
@@ -304,20 +257,18 @@ export async function analyzeExternalRows(
       continue;
     }
     const ref: SpecRef = { featureName: row.feature, specName: row.spec };
-    const driftAudit = driftByKey.get(specKey(ref)) ?? null;
     const fields = await pass.analyze({
       ...ref,
       readScript: () => readGeneratedTestSources(ref, deps.cwd),
       failureLog: row.failureLogExcerpt ?? "",
       specYaml: row.specYaml,
       target: row.target ?? AGENT_BROWSER_TARGET,
-      driftAudit,
       artifactsDir: readableArtifactsDir(ref, deps),
     });
     // `fields` only carries customPromptVersion when an overlay was applied
     // (optional, never present-with-undefined), so the plain spread is enough —
     // same as analysisBase above.
-    out.push({ ...row, ...fields, driftAudit });
+    out.push({ ...row, ...fields });
   }
   return out;
 }

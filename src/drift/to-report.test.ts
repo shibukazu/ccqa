@@ -52,15 +52,29 @@ describe("driftResultsToReport", () => {
     expect(underWarn.results[0]!.status).toBe("failed");
   });
 
-  test("the diagnosis is carried through in `analysis`, not `driftAudit`", () => {
+  test("the diagnosis is carried through as the row's own verdict, in `analysis`", () => {
     const d = diagnosis();
     const report = driftResultsToReport([result({ drift: d })], meta);
     expect(report.results[0]!.analysis).toEqual({ ...d, reasoning: "" });
-    expect(report.results[0]!.driftAudit).toBeNull();
   });
 
   test("a spec with a call error is failed regardless of the diagnosis", () => {
     const report = driftResultsToReport([result({ error: "claude call failed" })], meta);
     expect(report.results[0]!.status).toBe("failed");
+  });
+
+  test("customPromptVersion and triageUserPromptHash carry the audit's hub guidance provenance", () => {
+    const withGuidance = driftResultsToReport([result()], {
+      ...meta,
+      customPromptVersion: "2026-07-01-c3",
+      triageUserPromptHash: "abc123",
+    });
+    expect(withGuidance.customPromptVersion).toBe("2026-07-01-c3");
+    expect(withGuidance.triageUserPromptHash).toBe("abc123");
+
+    // Omitted (not null) when inactive, matching `ccqa run`'s envelope.
+    const withoutGuidance = driftResultsToReport([result()], meta);
+    expect(withoutGuidance.customPromptVersion).toBeNull();
+    expect(withoutGuidance.triageUserPromptHash).toBeUndefined();
   });
 });

@@ -58,9 +58,10 @@ Key flags (see `ccqa run --help` for the rest):
   specs.
 - `--on-fail-explain` — classify each failure, on any target, against the
   source diff since the commit where that spec last passed (per-spec
-  baselines from the hub). Off by default: no Claude calls without it. The
-  spec↔code drift audit always runs with it — its findings are an input to
-  the classification (and standalone via `ccqa audit`).
+  baselines from the hub). Off by default: no Claude calls without it. One
+  call holds the execution evidence and reads the source itself, with
+  tools, and answers all four causes below — see [Failure
+  triage](#failure-triage).
 - `--on-fail-explain-base <ref>` — diff against one shared ref instead of each
   spec's last green. Use it when there is no hub to hold the baselines.
 - `--report-format <fmt>` — `text` (default), `json` (print report.json), `github`
@@ -139,30 +140,61 @@ Per spec, the report contains:
   files / 32 MB per spec; dropped files are named in a warning. The hub UI
   renders images inline, previews small text/JSON, and links the rest.
 - **Failure analysis** — for failing specs, the root-cause call described
-  next, plus the drift-audit findings, the failure log excerpt, the scoped
-  source diff, and the spec.yaml.
+  next, the failure log excerpt, the scoped source diff, and the spec.yaml.
 
 ## Failure triage
 
-With `--on-fail-explain`, each failing spec gets a **root-cause
-call** made by Claude with the source diff since the baseline as context:
+With `--on-fail-explain`, each failing spec gets a **root-cause call** made
+by Claude in a single pass: it holds the execution evidence (script,
+failure log, or live transcript) and reads the source itself, with tools,
+so the question is never split across two calls. It names what has to
+change:
 
-- `TEST_DRIFT` — what the spec verifies is unchanged; only the test code
-  drifted from the source (selector rename, timing, over-assertion).
-- `SPEC_CHANGE` — the thing being verified itself changed (UI redesign,
-  spec change); the diff hunk is cited as evidence.
-- `PRODUCT_BUG` — neither of the above explains the failure.
+- `TEST_DRIFT` — the generated test code. What the spec verifies is
+  unchanged; only the way the test reaches it went stale — a renamed
+  selector, an over-tight assertion, a timing assumption. Fixed by
+  re-recording.
+- `SPEC_CHANGE` — the spec. The thing being verified itself changed — a
+  redesigned flow, a removed feature. A human re-drafts it.
+- `PRODUCT_BUG` — the product: an error response, a missing side effect,
+  wrong data, a flow that no longer completes.
+- `ENVIRONMENT` — nothing in the repository: a service that's down, a
+  missing or expired credential, absent seeded data, a timing race. The
+  cause must be named concretely; "probably flaky" is `UNKNOWN`, not
+  `ENVIRONMENT`.
 - `UNKNOWN` — evidence too weak to choose.
+
+For `TEST_DRIFT` and `SPEC_CHANGE` the analysis also sets `surface`
+(`spec` or `generated`) — which half of the test case is stale, and
+therefore how it gets fixed: `spec` means `spec.yaml` itself has to be
+rewritten (and the code regenerated after); `generated` means only the
+generated code drifted, so a regeneration alone is enough.
+
+This is the **same vocabulary** `ccqa audit` uses (see [Drift
+detection](#drift-detection)) — the same words mean the same things
+whichever way the diagnosis was reached. The two differ only in what they
+can answer: the audit never opens a browser, so it can say `TEST_DRIFT` or
+`SPEC_CHANGE` but not that the product broke or the environment failed. A
+run holds execution evidence too, so it answers all four.
+
+**If a workflow of yours switches on these labels, here is what changed.**
+`TEST_DRIFT` and `SPEC_CHANGE` still come out of a run's `--on-fail-explain`
+— a plain `ccqa run <spec>` is never gated on the audit clearing it first;
+that gating is opt-in via `--only-hub-rerun-needed` (below). What changed
+for a consumer routing on labels is that `PRODUCT_BUG` is now joined by
+`ENVIRONMENT`: a failure a prior version would have called `PRODUCT_BUG`
+may now come back `ENVIRONMENT` instead.
 
 Alongside the label come a confidence score, a sub-diagnosis, evidence, and
 reasoning. The analysis classifies; it never modifies anything.
 
-**Any target.** The classification and the drift audit are target-agnostic.
-A spec run by an external `runCommand` is analyzed from its generated test
-files, the command's exit code and output tail, and its `spec.yaml` — the
-same shape a vitest replay is analyzed from, and live specs supply their
-Claude transcript instead. Report rows and the CI log block look identical
-whichever target the spec uses.
+**Any target.** The classification is target-agnostic, whether it runs
+inside `ccqa run` or standalone as `ccqa audit`. A spec run by an external
+`runCommand` is analyzed from its generated test files, the command's exit
+code and output tail, and its `spec.yaml` — the same shape a vitest replay
+is analyzed from, and live specs supply their Claude transcript instead.
+Report rows and the CI log block look identical whichever target the spec
+uses.
 
 **Diff context.** The baseline is the flag's value (`--on-fail-explain
 <ref>`); without a value it comes from `GITHUB_BASE_REF` (set on
@@ -174,9 +206,9 @@ truncated to keep the prompt bounded; the full changed-file list is always
 present, and any file's hunk dropped or cut by truncation is one tool call
 away. The prompt also adapts its decision guidance to the baseline: under
 `last-green` the range strictly covers the passing→failing window, so a
-failure that no in-range change explains leans UNKNOWN (external cause)
-rather than PRODUCT_BUG, and the range's width (commits/days) is stated so
-wide baselines get a higher evidence bar.
+failure that no in-range change explains leans ENVIRONMENT (when nameable)
+or UNKNOWN rather than PRODUCT_BUG, and the range's width (commits/days) is
+stated so wide baselines get a higher evidence bar.
 
 Truncation only bounds the *seed* — what is pasted into the prompt up
 front. The classifier itself runs agentically with read-only tools (`Read`
@@ -210,31 +242,38 @@ analysis is skipped, with the reason recorded per spec.
 
 The root-cause call is known to be hard, so ccqa is built
 measurement-first. In the [hub UI](./hub.md#the-bundled-ui), pick the true
-cause for each failing spec you review; a confusion matrix (predicted x
-actual) and accuracy update live, keyed to the analysis prompt version so
-prompt iterations are never mixed. Grades feed the hub's
+cause — `TEST_DRIFT`, `SPEC_CHANGE`, `PRODUCT_BUG`, or `ENVIRONMENT` — for
+each failing spec you review; a confusion matrix (predicted x actual) and
+accuracy update live, keyed to the analysis prompt version so prompt
+iterations are never mixed. Grades feed the hub's
 [triage-learning](./hub.md#triage-learning) job, which writes a calibration
 note that future runs fetch automatically.
 
+A grade whose cause is not valid for its row's kind — for example `NO_DRIFT`
+on a `kind: "run"` row — is excluded from the confusion matrix and from
+learning rather than converted; nothing chose that cause for this row's
+kind, so folding it in would put words in the grader's mouth. The excluded
+count is shown next to the kept one, so a reader sees how much stopped
+counting instead of watching accuracy fall for no stated reason. The hub UI
+asks for a regrade rather than hide it.
+
 Standing, human-maintained classification guidance lives in the
-`triage.user` prompt (e.g. "wording changes on the settings screen count as
-SPEC_CHANGE"). Write it in the hub UI's Prompts tab, or edit
+`triage.user` prompt (e.g. "a stale seed-data fixture on staging always
+counts as ENVIRONMENT"). Write it in the hub UI's Prompts tab, or edit
 `.ccqa/prompts/triage.user.md` locally and upload it with
 `ccqa hub prompt push triage.user`; `ccqa run` fetches it at run time and
 injects it ahead of the learned calibration note.
 
 ## Drift detection
 
-Drift analysis asks Claude whether a test case is still in sync with the
-current codebase — renamed aria-labels, removed routes, missing blocks,
-assertions about UI that no longer exists. It is read-only: no browser, no
-patches. It runs in two places:
-
-1. **Inside `ccqa run`** — each failing spec's report row carries its own
-   audit as `driftAudit`, fed to the root-cause call above as evidence it
-   weighs, never a verdict it defers to.
-2. **Standalone `ccqa audit`** — a full audit without running any tests,
-   for scheduled jobs or pre-merge sweeps.
+Drift analysis asks whether a test case is still in sync with the current
+codebase — renamed aria-labels, removed routes, missing blocks, assertions
+about UI that no longer exists. It is read-only: no browser, no patches.
+Standalone, this is `ccqa audit` — a full sweep without running any tests,
+for scheduled jobs or pre-merge sweeps. The same check is also two of the
+four causes `ccqa run --on-fail-explain`'s root-cause call can reach for
+(see [Failure triage](#failure-triage)) — not a separate pass, the same
+question asked with more evidence available.
 
 A `deterministic` spec is two artifacts, and the audit reads both: the
 `spec.yaml` a human wrote, and the test code `ccqa generate` compiled from
@@ -243,17 +282,22 @@ concrete selectors and strings the generated code holds, not only the prose
 in `spec.yaml`. A `mode: live` spec has no generated code — the spec itself
 is what runs — so only `spec.yaml` is audited there.
 
-Each audited spec gets **at most one diagnosis**, in the same vocabulary
-`--on-fail-explain` uses: `TEST_DRIFT` (the test drifted from the source) or
-`SPEC_CHANGE` (the thing being verified changed), never `PRODUCT_BUG` — a
-static read can't tell a dropped side effect from a working one — plus
-`UNKNOWN` when the evidence is too weak to call. The diagnosis carries a
-confidence, a headline, a recommendation, cited evidence, and a `surface`
-that decides how to fix it: `spec` means `spec.yaml` itself has to be
-rewritten (and the code regenerated after); `generated` means only the
-generated code drifted, so a regeneration alone is enough. No finding at all
-means the spec still matches the code (`drift: null`), not a passing "check"
-to enumerate.
+Each audited spec gets **at most one diagnosis**: `TEST_DRIFT` (the test
+drifted from the source), `SPEC_CHANGE` (the thing being verified changed),
+or `UNKNOWN` when the evidence is too weak to call. Never `PRODUCT_BUG` — a
+static read can't tell a dropped side effect from a working one, so the
+audit can't reach that far even though a run can (see [Failure
+triage](#failure-triage)). The diagnosis carries a confidence, a headline,
+a recommendation, cited evidence, and a `surface` that decides how to fix
+it: `spec` means `spec.yaml` itself has to be rewritten (and the code
+regenerated after); `generated` means only the generated code drifted, so
+a regeneration alone is enough. No finding at all means the spec still
+matches the code (`drift: null`), not a passing "check" to enumerate.
+
+Standing guidance for the audit lives in the `audit.user` / `audit.agent`
+prompts, the audit's counterpart to `triage.user` / `triage.agent` above
+(see [Fetching sessions, variables, and prompts at run
+time](./hub.md#fetching-sessions-variables-and-prompts-at-run-time)).
 
 ```bash
 ccqa audit                              # check every spec under .ccqa/features/

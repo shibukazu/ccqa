@@ -8,6 +8,9 @@ import { SESSION_VERIFY_URL_KEY, type SessionRestoreCheck } from "../runtime/ses
 
 vi.mock("./preflight.ts", () => ({ preflightAgentBrowserCommand: vi.fn(async () => undefined) }));
 vi.mock("../drift/analyze.ts", () => ({ analyzeDrift: vi.fn() }));
+// Pinned: without it these assertions read the machine's own Claude login, so
+// they pass on a developer's laptop and fail on CI, which has none.
+vi.mock("../drift/auth.ts", () => ({ driftAuthAvailable: vi.fn(() => ({ ok: true })) }));
 vi.mock("../report/analyze.ts", () => ({ analyzeFailure: vi.fn() }));
 vi.mock("../report/live-transcript-excerpt.ts", () => ({
   buildLiveTranscriptExcerpt: vi.fn(async () => null),
@@ -38,6 +41,8 @@ vi.mock("../diagnose/snapshot.ts", async (importOriginal) => {
 const SAMPLE_SPEC_YAML = `title: sample spec\nsteps:\n  - instruction: click Submit\n    expected: form is submitted\n`;
 
 const { analyzeDrift } = await import("../drift/analyze.ts");
+const { analyzeFailure } = await import("../report/analyze.ts");
+const { buildLiveTranscriptExcerpt } = await import("../report/live-transcript-excerpt.ts");
 const { runLiveExecutor } = await import("../runtime/live-executor.ts");
 const { resolveSessionState, runLiveSpecs } = await import("./run-live.ts");
 
@@ -177,15 +182,26 @@ function fakeLiveRunResult(status: "passed" | "failed") {
   };
 }
 
-describe("runLiveSpecs drift audit gating", () => {
+describe("runLiveSpecs failure-analysis gating", () => {
   let outDir: string;
 
   beforeEach(async () => {
     outDir = await mkdtemp(join(tmpdir(), "ccqa-run-live-test-"));
     vi.mocked(analyzeDrift).mockClear();
-    vi.mocked(analyzeDrift).mockResolvedValue([
-      { target: { featureName: "x", specName: "y" }, ok: true, drift: null },
-    ]);
+    vi.mocked(buildLiveTranscriptExcerpt).mockResolvedValue("step 1 failed");
+    vi.mocked(analyzeFailure).mockReset().mockResolvedValue({
+      analysis: {
+        label: "PRODUCT_BUG",
+        confidence: 0.8,
+        subDiagnosis: "NONE",
+        headline: "h",
+        recommendation: "r",
+        evidence: [],
+        reasoning: "",
+      },
+      raw: "",
+      sdkError: false,
+    });
     vi.mocked(runLiveExecutor)
       .mockReset()
       .mockResolvedValueOnce(fakeLiveRunResult("passed"))
@@ -193,15 +209,16 @@ describe("runLiveSpecs drift audit gating", () => {
   });
 
   afterEach(async () => {
+    vi.mocked(buildLiveTranscriptExcerpt).mockResolvedValue(null);
     await rm(outDir, { recursive: true, force: true });
   });
 
-  test("analyzeDrift runs only for the failed spec, not the passing one", async () => {
+  test("one classification call for the failed spec only, and no separate drift audit", async () => {
     const specA = { featureName: "feature-a", specName: "spec-pass" };
     const specB = { featureName: "feature-b", specName: "spec-fail" };
 
-    // Audit + analysis are opt-in: they only run when the pipeline resolved a
-    // --failure-analysis baseline and passed a provider down.
+    // Analysis is opt-in: it only runs when the pipeline resolved a
+    // --on-fail-explain baseline and passed a provider down.
     const diffProvider = {
       forSpec: vi.fn(async () => ({
         ok: true as const,
@@ -215,20 +232,21 @@ describe("runLiveSpecs drift audit gating", () => {
     };
     await runLiveSpecs([specA, specB], { out: outDir, diffProvider, resources: () => [] });
 
-    expect(analyzeDrift).toHaveBeenCalledTimes(1);
-    expect(analyzeDrift).toHaveBeenCalledWith(
-      expect.objectContaining({
-        targets: [{ featureName: specB.featureName, specName: specB.specName }],
-      }),
-    );
+    expect(analyzeFailure).toHaveBeenCalledTimes(1);
+    expect(diffProvider.forSpec).toHaveBeenCalledExactlyOnceWith(specB);
+    expect(analyzeDrift).not.toHaveBeenCalled();
+    // A `mode: live` spec has no compiled surface at all — declared
+    // explicitly rather than inferred from the absent `script` field.
+    expect(vi.mocked(analyzeFailure).mock.calls[0]![0].hasGeneratedSurface).toBe(false);
   });
 
-  test("no diffProvider (analysis not requested) leaves the audit off", async () => {
+  test("no diffProvider (analysis not requested) makes no Claude call at all", async () => {
     const specA = { featureName: "feature-a", specName: "spec-pass" };
     const specB = { featureName: "feature-b", specName: "spec-fail" };
 
     await runLiveSpecs([specA, specB], { out: outDir, resources: () => [] });
 
+    expect(analyzeFailure).not.toHaveBeenCalled();
     expect(analyzeDrift).not.toHaveBeenCalled();
   });
 });

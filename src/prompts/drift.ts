@@ -1,5 +1,6 @@
 import type { SpecArtifacts } from "../drift/artifacts.ts";
 import { formatBlockList, type AvailableBlock } from "./draft.ts";
+import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
 
 /**
  * The prompt behind `ccqa audit`.
@@ -11,14 +12,29 @@ import { formatBlockList, type AvailableBlock } from "./draft.ts";
  * that answer a different question than the one CI asks.
  *
  * The vocabulary is failure analysis's vocabulary (`src/report/prompt.ts`),
- * deliberately: the same three words mean the same three things whether the
- * conclusion was reached by running the spec or by reading the code.
+ * deliberately: there are four causes, of which a static read can answer only
+ * two (TEST_DRIFT, SPEC_CHANGE) — but those two mean the same thing whether
+ * the conclusion was reached by running the spec or by reading the code.
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "4";
+export const DRIFT_PROMPT_VERSION = "5";
 
-export function buildDriftSystemPrompt(blocks: AvailableBlock[]): string {
+/**
+ * Project guidance injected into the audit, in the same order the run's
+ * classification uses: the human's standing rules first, then the calibration
+ * distilled from graded audits. Empty strings when a project has neither,
+ * which is the default and must change nothing.
+ */
+export interface DriftGuidance {
+  userPromptBlock?: string;
+  customPromptBlock?: string;
+}
+
+export function buildDriftSystemPrompt(
+  blocks: AvailableBlock[],
+  guidance: DriftGuidance = {},
+): string {
   return `You audit whether a ccqa test spec still describes the product's code correctly.
 
 You are given one test case and read-only access to the codebase. You do not run anything and no browser is involved: your evidence is what the source says today.
@@ -46,7 +62,7 @@ Does the spec still describe the code? If yes, report no drift. If not, say whic
 
 These are the same definitions failure analysis uses on a spec that actually failed. Use them the same way.
 
-**You may not answer PRODUCT_BUG.** It is a real label there and not available here, because you are not running anything: a static read cannot tell a dropped side effect from a working one. If you suspect the product is broken but the spec matches the source, that is not drift — report no drift and say so in the headline.
+**You may not answer PRODUCT_BUG or ENVIRONMENT.** Both are real labels there and not available here, because you are not running anything: a static read cannot tell a dropped side effect from a working one, or a flaky service from a working one. If you suspect the product is broken, or the failure would be environmental, but the spec matches the source, that is not drift — report no drift and say so in the headline.
 
 ## What separates TEST_DRIFT from SPEC_CHANGE
 
@@ -63,14 +79,13 @@ A renamed button is TEST_DRIFT. A button that no longer exists because the flow 
 
 Say where the drift is, because it decides the repair:
 
-- **\`spec\`** — the spec.yaml itself asks about something the source no longer has. The spec has to be rewritten, and the code regenerated after.
-- **\`generated\`** — the spec still describes the product correctly, but the generated code reaches for a selector or string the source no longer has. Only a regeneration is needed; nobody has to rewrite the spec.
+${surfaceDefinitionBlock()}
 
-If both are stale, answer \`spec\`: it is the root, and fixing it regenerates the code. For a \`mode: live\` spec there is no generated surface, so always \`spec\`.
+For a \`mode: live\` spec there is no generated surface, so always \`spec\`.
 
 **Audit each surface on its own terms. One being right does not excuse the other.** The generated code being correct does not make a stale spec acceptable, and a correct spec does not make stale generated code acceptable. They are wrong in different ways and cost different things: generated code that names a string the product no longer renders fails the next replay, while a spec that quotes a string the product no longer shows misleads every human who reads it and will be regenerated from — reintroducing the error. Do not reason "the test would still pass, so there is no drift": whether a replay passes is not the question. The question is whether the test case still describes the product.
 
-This is a separate axis from the label. A renamed selector that only the generated code names is \`TEST_DRIFT\` on the \`generated\` surface; a spec whose \`expected\` quotes a string the product renamed is \`TEST_DRIFT\` on the \`spec\` surface.
+${surfaceAxisAside("`TEST_DRIFT`")}
 
 ## Earning each answer
 
@@ -86,7 +101,7 @@ This is a separate axis from the label. A renamed selector that only the generat
 3. For \`include\` steps, confirm the block exists under \`.ccqa/blocks/<name>/spec.yaml\` and that every \`params\` key is declared on it.
 4. When a string is missing, look for what replaced it before concluding. Where it went is what decides the label.
 
-## Output (STRICT)
+${guidance.userPromptBlock ?? ""}${guidance.customPromptBlock ?? ""}## Output (STRICT)
 
 Output exactly ONE fenced \`\`\`json code block and nothing else — no prose before or after.
 

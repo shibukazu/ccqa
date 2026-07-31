@@ -29,7 +29,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0005](0005-session-restore-model.md) | Restore browser sessions by name, not by spec-embedded path | accepted |
 | [0006](0006-hub-results-control-plane.md) | Hub is a results/sessions/variables control plane, not a remote executor | accepted |
 | [0007](0007-cli-hub-responsibility-split.md) | Where a capability lives: the CLI executes and touches the repo, the hub holds shared state | accepted |
-| [0008](0008-classification-and-action-are-orthogonal.md) | Classification and action are orthogonal: `run` classifies, `act` responds, the workflow maps label→action | accepted |
+| [0008](0008-classification-and-action-are-orthogonal.md) | Classification and action are orthogonal: `run` classifies, `act` responds, the workflow maps label→action | accepted (label set amended by 0016) |
 | [0009](0009-incremental-run-push.md) | A run is mutable while running, immutable once terminal | accepted |
 | [0010](0010-rerun-selection-from-a-deploy-log.md) | "Needs re-run" is decided from a deploy log the hub is told about, never from a guessed ref | accepted (amended by 0011, state model superseded by 0014) |
 | [0011](0011-replace-relatedpaths-with-model-selection.md) | Replace `relatedPaths` glob matching with `ccqa select-specs` model selection | accepted |
@@ -37,6 +37,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0013](0013-one-verification-environment.md) | One verification environment; a profile is a value set, not an environment | accepted |
 | [0014](0014-two-axes-one-verdict.md) | Two axes, one verdict; work in flight is a claim, not a state | accepted |
 | [0015](0015-serial-groups-in-one-place.md) | Serial groups live in one place: `.ccqa/config.yaml`, not each spec | accepted |
+| [0016](0016-one-vocabulary-two-answerable-subsets.md) | One vocabulary, two answerable subsets: the run answers all four causes, the audit only two | accepted |
 
 ## Template
 

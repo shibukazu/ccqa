@@ -32,8 +32,8 @@ export interface AnalysisBase {
  * head of every run, green or red, analyzed or not.
  *
  * `base` is null exactly when failure analysis was not requested: the
- * three-way classification is defined in terms of a source diff (TEST_DRIFT /
- * SPEC_CHANGE must cite it, PRODUCT_BUG claims it explains nothing), so
+ * classification is defined in terms of a source diff (PRODUCT_BUG cites the
+ * change that broke it, TEST_DRIFT the one that renamed what the test names), so
  * analysis is opt-in via `--on-fail-explain` and a baseline that
  * cannot be resolved is a startup usage error, never a silent fallback.
  */
