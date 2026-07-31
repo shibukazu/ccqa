@@ -586,14 +586,20 @@ export async function executeRun(
   const declared = [...new Set(specs.flatMap(resources))];
   if (declared.length > 0) log.meta("serial groups", declared.join(", "));
 
+  // Specs dropped because another job holds their serial group. They still get
+  // a report row: this run was asked to cover them and did not, and a silent
+  // drop reports a green run that verified less than it selected.
+  let waitingOnGroup: Array<{ spec: SpecRef; groups: string[] }> = [];
+
   if (hubCtx && rerunProfile !== null) {
     const held = await holdSpecs(hubCtx, rerunProfile, specs, resources, opts.teardown);
     // Two different facts, and holdSpecs already named the resources — so
     // count only the specs another job is actually running.
-    const waiting = specs.filter((s) =>
-      resources(s).some((n) => held.deniedResources.includes(n)),
-    ).length;
-    const claimed = specs.length - held.specs.length - waiting;
+    waitingOnGroup = specs.flatMap((spec) => {
+      const groups = resources(spec).filter((n) => held.deniedResources.includes(n));
+      return groups.length > 0 ? [{ spec, groups }] : [];
+    });
+    const claimed = specs.length - held.specs.length - waitingOnGroup.length;
     if (claimed > 0) log.warn(`${claimed} spec(s) another job is already running`);
     specs = held.specs;
     if (specs.length === 0) {
@@ -619,6 +625,14 @@ export async function executeRun(
   let dispatch: TargetDispatch;
   try {
     dispatch = groupSpecsByTarget(specs, catalog, projectConfig);
+    for (const { spec, groups } of waitingOnGroup) {
+      dispatch.skipped.push({
+        ...spec,
+        title: catalog.get(specKey(spec))?.spec?.title ?? null,
+        reason: `waiting on ${groups.join(", ")}, held by another job`,
+        targetId: null,
+      });
+    }
   } catch (err) {
     // A present-but-broken .ccqa/config.yaml is a usage error, like a bad flag.
     throw new RunUsageError(errMessage(err));

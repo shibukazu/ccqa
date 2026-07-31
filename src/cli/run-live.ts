@@ -63,8 +63,9 @@ export interface RunLiveOptions {
   diffProvider?: DiffProvider | null;
   cwd?: string;
   concurrency?: number;
-  /** See `RunnerOptions.resources`. Absent means no spec declares one. */
-  resources?: GroupLookup;
+  /** See `RunnerOptions.resources`. Required: an omitted lookup would drop
+   * serialisation silently. */
+  resources: GroupLookup;
   /** Active `--hub-profile` name; selects the sessions bucket for `spec.session`. */
   profile?: string;
   hubContext?: HubContext | null;

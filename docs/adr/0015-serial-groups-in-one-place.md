@@ -149,9 +149,13 @@ limitation of the wiring rather than the model.
 Claims are per `(project, profile)`. That is the wrong boundary whenever two
 profiles are two *roles* against one deployment — ADR-0013's own reading of a
 profile — because both reach the same channel. Naming the tenant inside the
-resource key (`tenant-a.notification-channel` — group names are unrestricted
-strings) covers it today, and moving the claim to project scope later only
-serialises more, so deferring is safe.
+group name (`tenant-a.notification-channel`; the slug charset allows `.`)
+covers it today, and moving the claim to project scope later only serialises
+more, so deferring is safe.
+
+Group names are slugs. Nothing about the mechanism needs that — the name is
+only ever compared — but `"g "` and `"g"` as two groups is a typo the check
+above cannot catch, since both are strings and neither names a spec.
 
 ### It applies to every target and both modes
 

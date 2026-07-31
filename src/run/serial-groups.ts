@@ -37,7 +37,9 @@ export async function resolveSerialGroups(
           `serialGroups.${name} lists "${member}", which is not a spec in this project`,
         );
       }
-      bySpec.set(member, [...(bySpec.get(member) ?? []), name]);
+      const list = bySpec.get(member);
+      if (list) list.push(name);
+      else bySpec.set(member, [name]);
     }
   }
   return (ref) => bySpec.get(specKey(ref)) ?? [];

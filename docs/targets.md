@@ -142,8 +142,8 @@ failure — each spec asserts on what it posted and finds the other one's, so
 the run goes green or red at random and gets written off as flake.
 
 `serialGroups` is a top-level key in `.ccqa/config.yaml`, sitting alongside
-`defaultTarget` and `targets`. The key names the shared thing; the list names
-the specs that write to it:
+`defaultTarget` and `targets`. The key names the shared thing (a slug: letters,
+digits, `.`, `_`, `-`); the list names the specs that write to it:
 
 ```yaml
 serialGroups:

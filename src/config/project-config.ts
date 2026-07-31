@@ -76,7 +76,14 @@ export type TargetConfig = z.infer<typeof TargetConfigSchema>;
  * caught — rather than a resource name that silently matches nothing.
  */
 export const SerialGroupsSchema = z.record(
-  z.string().min(1),
+  // A slug, so `"g "` and `"g"` cannot be two groups and the name stays
+  // distinguishable from a spec key once both are hub lock keys.
+  z
+    .string()
+    .regex(
+      /^[a-z0-9][a-z0-9._-]*$/i,
+      "serial group name must be a slug (letters, digits, '.', '_', '-')",
+    ),
   z.array(z.string().min(1)).min(1),
 );
 export type SerialGroups = z.infer<typeof SerialGroupsSchema>;

@@ -39,6 +39,17 @@ describe("runPool", () => {
     expect(started).toEqual([1, 2]);
   });
 
+  test("an fn that throws synchronously rejects rather than spinning", async () => {
+    // The body is registered before it can delete itself; inline, a sync throw
+    // would delete an entry that was never set and the pool would never settle.
+    await expect(
+      runPool([1, 2], 1, ((n: number) => {
+        if (n === 1) throw new Error("sync boom");
+        return Promise.resolve(n);
+      }) as (n: number) => Promise<number>),
+    ).rejects.toThrow("sync boom");
+  });
+
   test("two failures are reported together, not decided by timing", async () => {
     const err = await runPool([1, 2], 2, async (n) => {
       throw new Error(`boom-${n}`);

@@ -28,7 +28,11 @@ export async function runPool<T, R>(
   const start = (idx: number): void => {
     queued.delete(idx);
     for (const name of needs[idx]!) busy.add(name);
-    inFlight.set(idx, (async () => {
+    // Deferred to a microtask so the registration below always precedes the
+    // `finally`'s delete. Called inline, an `fn` that throws synchronously
+    // would delete before it was ever set, leaving the entry — and its
+    // resource names — held forever while the loop spins.
+    inFlight.set(idx, Promise.resolve().then(async () => {
       try {
         results[idx] = await fn(items[idx]!, idx);
       } catch (err) {
@@ -39,7 +43,7 @@ export async function runPool<T, R>(
         for (const name of needs[idx]!) busy.delete(name);
         inFlight.delete(idx);
       }
-    })());
+    }));
   };
 
   while (queued.size > 0 || inFlight.size > 0) {

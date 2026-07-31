@@ -44,9 +44,8 @@ export const SpecModeSchema = z.enum(["deterministic", "live"]);
 export type SpecMode = z.infer<typeof SpecModeSchema>;
 
 /**
- * A name a spec chooses that ccqa only ever compares or resolves to a path.
- * Restricted to a slug so it cannot escape a directory or collide with a key
- * whose separator is `/` or `:`.
+ * A name a spec chooses that ccqa resolves to a path or looks up in a
+ * registry. Restricted to a slug so it cannot escape a directory.
  */
 function slug(what: string) {
   return z
@@ -58,11 +57,6 @@ function slug(what: string) {
     );
 }
 
-/** A field written as one name or a non-empty list, always read back as a list. */
-function oneOrMany(name: z.ZodString) {
-  return z.union([name, z.array(name).min(1)]).transform((v) => (Array.isArray(v) ? v : [v]));
-}
-
 /**
  * A saved browser session (cookies + localStorage) to restore before the spec
  * runs, resolved to `.ccqa/sessions/<profile>/<name>.json` at run time.
@@ -70,11 +64,14 @@ function oneOrMany(name: z.ZodString) {
 export const SessionNameSchema = slug("session name");
 
 /**
- * Sessions to restore before a `mode: live` spec runs. Multiple names are
- * merged (their cookies + localStorage are unioned) and restored together, so
- * a spec can start signed-in to several providers at once.
+ * Sessions to restore before a `mode: live` spec runs: one name or a list,
+ * always read back as a list. Multiple names are merged (their cookies +
+ * localStorage are unioned) and restored together, so a spec can start
+ * signed-in to several providers at once.
  */
-export const SessionFieldSchema = oneOrMany(SessionNameSchema);
+export const SessionFieldSchema = z
+  .union([SessionNameSchema, z.array(SessionNameSchema).min(1)])
+  .transform((v) => (Array.isArray(v) ? v : [v]));
 
 /**
  * A generation-target id: which plugin turns this spec into runnable tests

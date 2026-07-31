@@ -59,7 +59,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     .optionsGroup("How to run them:")
     .option(
       "--concurrency <n>",
-      "Run up to N specs in parallel within each phase (deterministic / external-target / live), never across phases. Default 1 (sequential). Specs that declare the same `exclusive:` resource still take turns. Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
+      "Run up to N specs in parallel within each phase (deterministic / external-target / live), never across phases. Default 1 (sequential). Specs in the same `serialGroups` entry of .ccqa/config.yaml still take turns. Live specs each get an isolated agent-browser session; high values spawn many headed Chrome instances.",
       parseConcurrency,
       1,
     )

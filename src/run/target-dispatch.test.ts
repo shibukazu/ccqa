@@ -153,7 +153,7 @@ describe("groupSpecsByTarget", () => {
   it("falls back to agent-browser when spec.yaml is missing, and reports it when it will not parse", async () => {
     // A missing file is the recorder's problem to explain. An unparseable one
     // would otherwise run as a spec that declares nothing — no `mode:`, no
-    // `exclusive:` — and drop out of the report with no row at all.
+    // its serial group — and drop out of the report with no row at all.
     const broken = await writeSpec("demo", "broken", "title: [unclosed");
     const missing: SpecRef = { featureName: "demo", specName: "missing" };
     const dispatch = await dispatchOf([broken, missing], ProjectConfigSchema.parse({}));

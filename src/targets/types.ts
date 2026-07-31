@@ -154,8 +154,9 @@ export interface RunnerOptions {
   /** Max specs executed in parallel. */
   concurrency: number;
   /**
-   * A spec's `exclusive:` names. A runner executing specs in parallel must not
-   * overlap two that share one — see `runPool`'s `resources` option.
+   * A spec's serial-group names, from `.ccqa/config.yaml`. A runner executing
+   * specs in parallel must not overlap two that share one — see `runPool`'s
+   * `resources` option.
    */
   resources: GroupLookup;
   model?: string;
