@@ -4,6 +4,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
+import { toReportCost } from "../claude/to-report-cost.ts";
 import * as log from "../cli/logger.ts";
 import { languageDirective } from "../prompts/language.ts";
 import {
@@ -301,16 +302,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       );
       isError = result.isError;
       errorDetail = result.errorDetail;
-      cost = {
-        totalCostUsd: result.cost.totalCostUsd,
-        durationApiMs: result.cost.durationApiMs,
-        numTurns: result.cost.numTurns,
-        inputTokens: result.cost.inputTokens,
-        cacheCreationInputTokens: result.cost.cacheCreationInputTokens,
-        cacheReadInputTokens: result.cost.cacheReadInputTokens,
-        outputTokens: result.cost.outputTokens,
-        models: result.cost.models,
-      };
+      cost = toReportCost(result.cost);
     } catch (err) {
       isError = true;
       errorDetail = err instanceof Error ? err.message : String(err);

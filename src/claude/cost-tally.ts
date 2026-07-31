@@ -30,8 +30,8 @@ export async function withCostTally<T>(fn: () => Promise<T>): Promise<T> {
  * The active scope's total so far, or null outside one.
  *
  * Read rather than pushed at the caller because commands end in
- * `process.exit`, which never reaches a `finally`. Each one reports the
- * total itself, at the point it knows it is done.
+ * `process.exit`, which never reaches a `finally`; whoever opened the scope
+ * reads the total on the way out (see `withCostReporting`).
  *
  * Fields stay `null` when no invocation reported them, so a caller can tell
  * "nothing was billed" from "the SDK didn't say" (mock runs, SDK errors).

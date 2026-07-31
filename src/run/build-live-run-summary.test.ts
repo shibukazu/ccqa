@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
 import { buildLiveRunSummary } from "./pipeline.ts";
-import type { LiveReportCost, LiveReportStep, ReportSpecResult } from "../report/schema.ts";
+import type { ReportCost, LiveReportStep, ReportSpecResult } from "../report/schema.ts";
 
-function cost(overrides: Partial<LiveReportCost> = {}): LiveReportCost {
+function cost(overrides: Partial<ReportCost> = {}): ReportCost {
   return {
     totalCostUsd: 0.0123,
     durationApiMs: 1000,

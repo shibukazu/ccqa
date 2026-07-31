@@ -44,6 +44,7 @@ import { fetchCustomPrompt, fetchTriageUserPrompt, hashTriageUserPrompt } from "
 import { buildStepDescriptions, loadEvidenceForSpec, specEvidenceDir } from "../report/evidence.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import type { LiveReportStep, ReportSpecResult, RunReportData } from "../report/schema.ts";
+import { currentReportCost } from "../report/run-cost.ts";
 import { resolveProfileEnv } from "../cli/options.ts";
 import { resolveHubContextOrNull, HubConnectionError, type HubContext } from "../cli/hub-conn.ts";
 import { HubApiError } from "../hub-client/index.ts";
@@ -754,7 +755,9 @@ export async function executeRun(
         onUpsert: async (row) => {
           try {
             const evidence = await readRowFilesBase64(row, reportDir);
-            await hubCtx.hub.patchRun(runId, { rows: [row], evidence });
+            // Cost rides along per row so a run still in flight shows what it
+            // has spent so far, not just what it cost once it ended.
+            await hubCtx.hub.patchRun(runId, { rows: [row], evidence, reportMeta: { cost: currentReportCost() } });
             hubPatchEverSucceeded = true;
           } catch (err) {
             if (!hubPatchEverSucceeded) {
@@ -801,6 +804,7 @@ export async function executeRun(
       opts,
     }),
     hubSink,
+    currentReportCost,
   );
   // On SIGINT/SIGTERM, flush whatever rows finished so an interrupt leaves a
   // valid partial report. Skipped once the run completes normally: the final
@@ -820,7 +824,16 @@ export async function executeRun(
     // "failed" — the run was interrupted, not a clean pass. Best-effort.
     if (hubRunId && hubCtx) {
       try {
-        await hubCtx.hub.patchRun(hubRunId, { rows: incrementalReport.rows(), done: true, finalStatus: "failed" });
+        await hubCtx.hub.patchRun(hubRunId, {
+          rows: incrementalReport.rows(),
+          done: true,
+          finalStatus: "failed",
+          // The per-row sink above already refreshed cost as each spec landed,
+          // so this is not that. It is the spend of the spec that was killed
+          // mid-flight, which no completed row carries and which nothing else
+          // would ever send.
+          reportMeta: { cost: currentReportCost() },
+        });
       } catch (err) {
         log.warn(`hub: could not finalize interrupted run ${hubRunId}: ${errMessage(err)}`);
       }
@@ -1329,6 +1342,9 @@ function buildReportEnvelope(args: {
     // Same omission rule. Read back by `ccqa hub push` to assert the baseline
     // the run actually exercised — see tryDeployHeadSha.
     ...(deployedSha !== null ? { deployedSha } : {}),
+    // Always present (unlike the fields above), so the incremental writer can
+    // refresh it on each flush without moving the key ahead of `results`.
+    cost: currentReportCost(),
   };
 }
 

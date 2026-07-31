@@ -23,6 +23,7 @@ function fakeRun(overrides: Partial<Run> = {}): Run {
     specs: { total: 1, passed: 1, failed: 0 },
     gitHead: null,
     promptVersion: "1",
+    costUsd: null,
     ciRunId: null,
     reportCreatedAt: "2024-01-01T00:00:00.000Z",
     createdAt: "2024-01-01T00:00:00.000Z",

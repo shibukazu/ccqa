@@ -15,8 +15,7 @@ import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { ValidationMode } from "../runtime/replay-validate.ts";
 import type { Locator, ParsedStatusLine, RecordedAction } from "../types.ts";
 import * as log from "./logger.ts";
-import { withCostTally } from "../claude/cost-tally.ts";
-import { reportCost } from "./cost-line.ts";
+import { withCostReporting } from "./cost-line.ts";
 
 const VALIDATION_MODES = ["lenient", "strict"] as const;
 
@@ -97,13 +96,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     withUsageErrors(async (specPath: string, opts: RecordOptions) => {
       // record calls Claude several times (browser trace, codegen cleanup, one
       // diagnosis per auto-fix retry). Report the total, not each piece.
-      await withCostTally(async () => {
-        try {
-          await runRecord(specPath, opts);
-        } finally {
-          reportCost();
-        }
-      });
+      await withCostReporting("record", () => runRecord(specPath, opts));
     }),
   );
 

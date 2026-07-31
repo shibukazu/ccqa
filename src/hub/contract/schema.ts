@@ -78,6 +78,21 @@ export const RunSchema = z.object({
   gitHead: z.string().nullable(),
   /** Analysis prompt version, carried through for cross-run triage comparison. */
   promptVersion: z.string(),
+  /**
+   * The run's total Claude spend, copied from the pushed report's
+   * `cost.totalCostUsd` — derived server-side like every other field here, so a
+   * client cannot assert its own number. Refreshed on every incremental PATCH
+   * rather than written once, so a run killed mid-flight still says what it
+   * burned.
+   *
+   * Null when the run billed nothing (a deterministic run that passed calls
+   * Claude at no point), and absent on runs stored before this field existed.
+   * Optional rather than defaulted for that second case: run records are read
+   * back as stored and never re-parsed, so a default would erase the marker
+   * from the type without ever running, leaving `undefined` where a reader was
+   * promised a number.
+   */
+  costUsd: z.number().nullable().optional(),
   /** The CI run id from the report (e.g. GITHUB_RUN_ID); null when run locally. */
   ciRunId: z.string().nullable(),
   /**

@@ -131,6 +131,7 @@ const HTML_BODY = `
     <section id="view-runs">
       <div class="page-bar">
         <h1 data-i18n="runs.title">Runs</h1>
+        <span class="total" id="runs-total-cost" hidden></span>
         <div class="spacer"></div>
         ${refreshButton("runs-refresh")}
       </div>
@@ -138,7 +139,7 @@ const HTML_BODY = `
         <div class="card" id="runs-card">
           <div class="table-wrap">
             <table>
-              <thead><tr><th data-i18n="runs.col.run">Run</th><th data-i18n="runs.col.branch">Branch</th><th data-i18n="meta.profile">Profile</th><th data-i18n="runs.col.status">Status</th><th data-i18n="runs.col.specs">Specs</th><th data-i18n="runs.col.created">Created</th></tr></thead>
+              <thead><tr><th data-i18n="runs.col.run">Run</th><th data-i18n="runs.col.branch">Branch</th><th data-i18n="meta.profile">Profile</th><th data-i18n="runs.col.status">Status</th><th data-i18n="runs.col.specs">Specs</th><th data-i18n="runs.col.cost">Cost</th><th data-i18n="runs.col.created">Created</th></tr></thead>
               <tbody id="runs-tbody"></tbody>
             </table>
           </div>
@@ -495,6 +496,7 @@ const CSS = `
   .page-bar .back:hover { color: var(--fg); }
   .page-bar .back svg { width: 15px; height: 15px; }
   .page-bar .filters { display: flex; gap: 8px; margin-left: 8px; }
+  .page-bar .total { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .page-bar .spacer { flex: 1; }
   .content { padding: 18px 24px 48px; }
 
@@ -1051,11 +1053,12 @@ const CLIENT_JS = `
       "runs.title": "Runs", "runs.empty": "Select a project to see its runs.",
       "runs.none": "No runs yet for this project.", "projects.none": "No projects yet. Create one to get started.", "projects.noneShort": "No projects yet",
       "runs.col.run": "Run", "runs.col.branch": "Branch", "runs.col.status": "Status",
-      "runs.col.specs": "Specs", "runs.col.created": "Created",
+      "runs.col.specs": "Specs", "runs.col.cost": "Cost", "runs.col.created": "Created",
+      "runs.totalCost": "Cost of these {n}:",
       "detail.back": "Runs", "detail.specs": "Specs",
       "detail.download": "Download artifacts",
       "detail.triage": "Triage",
-      "meta.branch": "Branch", "meta.specs": "Specs",
+      "meta.branch": "Branch", "meta.specs": "Specs", "meta.cost": "Cost",
       "meta.created": "Created", "meta.passed": "passed", "meta.profile": "Profile",
       "meta.drift": "Drift",
       "diag.cause": "Cause", "diag.fix": "Fix",
@@ -1208,11 +1211,12 @@ const CLIENT_JS = `
       "runs.title": "実行", "runs.empty": "プロジェクトを選択すると実行一覧が表示されます。",
       "runs.none": "このプロジェクトにはまだ実行がありません。", "projects.none": "まだプロジェクトがありません。作成して始めましょう。", "projects.noneShort": "プロジェクトなし",
       "runs.col.run": "実行", "runs.col.branch": "ブランチ", "runs.col.status": "ステータス",
-      "runs.col.specs": "スペック", "runs.col.created": "作成",
+      "runs.col.specs": "スペック", "runs.col.cost": "コスト", "runs.col.created": "作成",
+      "runs.totalCost": "この {n} 件のコスト:",
       "detail.back": "実行", "detail.specs": "スペック",
       "detail.download": "アーティファクトをダウンロード",
       "detail.triage": "トリアージ",
-      "meta.branch": "ブランチ", "meta.specs": "スペック",
+      "meta.branch": "ブランチ", "meta.specs": "スペック", "meta.cost": "コスト",
       "meta.created": "作成", "meta.passed": "合格", "meta.profile": "プロファイル",
       "meta.drift": "ドリフト",
       "diag.cause": "原因", "diag.fix": "対処",
@@ -1604,6 +1608,11 @@ const CLIENT_JS = `
     return run.kind === "drift" ? driftFoundBadge(driftRunState(run), "drift.run.") : statusBadge(run.status);
   }
 
+  // A run's Claude spend, in the same $x.xxxx form as the per-step badge.
+  // A run that billed nothing, and one stored before costs were recorded, both
+  // arrive as a non-number — printing $0.0000 would claim a measured zero.
+  function costText(usd) { return typeof usd === "number" ? "$" + usd.toFixed(4) : "—"; }
+
   // One chip per non-zero drift label, worded via labelText — the same
   // vocabulary the diagnosis card uses — so a run's summary never disagrees
   // with its own spec cards. A zero-count label is omitted, same reasoning as
@@ -1822,9 +1831,38 @@ const CLIENT_JS = `
 
   // ── runs list ────────────────────────────────────────────────────────
 
+  // What the listed runs cost together — the accumulating number an operator
+  // reads to decide how often CI should run, so it follows whatever filter
+  // produced the list. Hidden when no listed run carries a cost at all, since
+  // a "$0.0000" total would read as "CI is free" rather than "nothing measured".
+  //
+  // The label names the run count on purpose. The list is capped (limit=50), so
+  // an unqualified "total" would quietly under-report a project's spend the
+  // moment it has more runs than that — the one number this feature exists to
+  // get right.
+  function renderRunsTotalCost(runs) {
+    var span = document.getElementById("runs-total-cost");
+    // null until the first measured run, which is what distinguishes "nothing
+    // was measured" from "the measured total happens to be zero".
+    var total = null;
+    // The runs that actually contributed, not the runs on screen. Runs stored
+    // before costs were recorded carry nothing, so counting the list would
+    // credit the sum to rows that gave it nothing — the exact misreading the
+    // count is here to prevent.
+    var measured = 0;
+    runs.forEach(function (r) {
+      if (typeof r.costUsd === "number") { total = (total || 0) + r.costUsd; measured++; }
+    });
+    span.hidden = total === null;
+    if (total !== null) {
+      span.textContent = t("runs.totalCost").replace("{n}", measured) + " " + costText(total);
+    }
+  }
+
   function renderRunsList(runs) {
     var tbody = document.getElementById("runs-tbody");
     clear(tbody);
+    renderRunsTotalCost(runs);
     var empty = document.getElementById("runs-empty");
     if (runs.length === 0) {
       empty.hidden = false;
@@ -1887,6 +1925,7 @@ const CLIENT_JS = `
       specsCell.appendChild(specsWrap);
       tr.appendChild(specsCell);
 
+      tr.appendChild(el("td", "muted num", costText(r.costUsd)));
       tr.appendChild(el("td", "muted num", relTime(r.createdAt)));
       tbody.appendChild(tr);
     });
@@ -1899,6 +1938,7 @@ const CLIENT_JS = `
       .then(function (data) { renderRunsList(data.runs); })
       .catch(function (err) {
         clear(document.getElementById("runs-tbody"));
+        renderRunsTotalCost([]);
         empty.hidden = false;
         empty.textContent = "Error loading runs: " + err.message;
       });
@@ -1958,6 +1998,9 @@ const CLIENT_JS = `
     } else {
       metaItem(t("meta.specs"), run.specs.passed + " / " + run.specs.total + " " + t("meta.passed"));
     }
+    // Everything this run spent on Claude — live browsing, triage, the audit a
+    // failure triggers, spec selection — not the sum of the per-step badges.
+    metaItem(t("meta.cost"), costText(run.costUsd));
     metaItem(t("meta.created"), relTime(run.createdAt));
     head.appendChild(meta);
 
@@ -2241,7 +2284,7 @@ const CLIENT_JS = `
     steps.forEach(function (s, i) {
       var built = stepCard(s.status, "#" + (i + 1), s.instruction, s.expected, s.reasoning);
       if (s.cost && s.cost.totalCostUsd != null) {
-        built.head.appendChild(el("span", "cost", "$" + s.cost.totalCostUsd.toFixed(4)));
+        built.head.appendChild(el("span", "cost", costText(s.cost.totalCostUsd)));
       }
       if (s.beforePng || s.afterPng) {
         var frames = el("div", "step-frames");

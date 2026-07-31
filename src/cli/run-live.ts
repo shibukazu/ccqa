@@ -35,7 +35,7 @@ import {
   type StorageState,
 } from "../runtime/session-state.ts";
 import { runPool } from "../runtime/pool.ts";
-import { formatLiveBatchCost, formatLiveCost } from "../runtime/live-cost-format.ts";
+import { formatLiveCost } from "../runtime/live-cost-format.ts";
 import { runLiveExecutor, type LiveRunResult, type LiveStepResult } from "../runtime/live-executor.ts";
 import { generateLiveSessionName } from "../prompts/live.ts";
 import { liveRunToReportResult } from "../report/live-adapter.ts";
@@ -171,7 +171,6 @@ export async function runLiveSpecs(
     "live-summary",
     `${runs.length - failedCount} passed / ${failedCount} failed`,
   );
-  logBatchCost(runs);
 
   return {
     failedCount,
@@ -476,12 +475,6 @@ async function runOneSpec(args: {
     // it lingers as an orphaned daemon process.
     await closeSession(sessionName);
   }
-}
-
-function logBatchCost(runs: SpecRunOutcome[]): void {
-  const costs = runs.flatMap((r) => (r.kind === "run" ? [r.result.cost] : []));
-  const line = formatLiveBatchCost(costs);
-  if (line) log.meta("total-cost", line);
 }
 
 type LiveFailureAnalysis = {

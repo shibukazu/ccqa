@@ -104,6 +104,7 @@ interface Run {
   specs: { total: number; passed: number; failed: number };
   gitHead: string | null;
   promptVersion: string;
+  costUsd?: number | null;   // total Claude spend, from the report's cost.totalCostUsd
   ciRunId: string | null;    // from the report, e.g. GITHUB_RUN_ID; null when run locally
   reportCreatedAt: string;   // when the underlying `ccqa run` actually executed
   createdAt: string;         // when the hub accepted the push
@@ -123,6 +124,23 @@ this run record via `POST /api/v1/runs/open` and `PATCH /api/v1/runs/:id`.
 for `kind: "drift"` runs, where each row's `analysis` is a labelled
 `TEST_DRIFT`/`SPEC_CHANGE`/`UNKNOWN` diagnosis rather than a triage call) and
 is `null` for `kind: "run"`.
+
+`costUsd` is what the run spent on Claude, taken from the pushed report's
+`cost.totalCostUsd`. It counts everything the invocation billed — live
+browsing, failure triage, the drift audit a failure triggers, and spec
+selection — so it is a superset of the per-step costs inside `results[]`, not
+a sum of them. Like every other field it is derived server-side from the
+report; a client-supplied number is never trusted. It is `null` when the run
+billed nothing (a deterministic run that passes calls Claude nowhere), and
+absent on runs stored before this field existed — which is why it is optional.
+On an incrementally-streamed run it is refreshed from every `PATCH` whose
+`reportMeta` carries `cost`, which is what lets a run killed mid-flight still
+report what it burned.
+
+One call falls outside it: `ccqa run --learn-hub-live-prompt` refreshes the
+prompt after the run is sealed, so that spend reaches the client's `[cost]`
+line but never this field. A run that used the flag is understated here by
+one prompt-learning call.
 
 A run opened via `POST /api/v1/runs/open` accepts repeated `PATCH` calls
 while it's `running`: each one upserts spec rows (by feature/spec) and adds

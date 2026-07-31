@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { createIncrementalReport, type ReportEnvelope } from "./incremental-report.ts";
-import { RunReportDataSchema, type ReportSpecResult } from "../report/schema.ts";
+import { RunReportDataSchema, type ReportCost, type ReportSpecResult } from "../report/schema.ts";
 
 const ENVELOPE: ReportEnvelope = {
   schemaVersion: 1,
@@ -16,6 +16,7 @@ const ENVELOPE: ReportEnvelope = {
   language: null,
   promptVersion: "1",
   customPromptVersion: null,
+  cost: null,
 };
 
 function row(feature: string, spec: string, status: "passed" | "failed" = "passed"): ReportSpecResult {
@@ -111,6 +112,31 @@ describe("createIncrementalReport", () => {
     });
     await report.upsert(row("f", "a"));
     expect(flushedWhenSinkRan).toBe(1);
+  });
+
+  test("each flush re-reads the cost, which accrues after the writer is created", async () => {
+    let cost: ReportCost | null = null;
+    const report = createIncrementalReport(dir, ENVELOPE, undefined, () => cost);
+
+    await report.flush();
+    expect((await readReport()).cost).toBeNull();
+
+    cost = {
+      totalCostUsd: 0.5,
+      durationApiMs: null,
+      numTurns: 2,
+      inputTokens: null,
+      cacheCreationInputTokens: null,
+      cacheReadInputTokens: null,
+      outputTokens: null,
+      models: ["sonnet"],
+    };
+    await report.upsert(row("f", "a"));
+    const data = await readReport();
+    expect(data.cost.totalCostUsd).toBe(0.5);
+    // The refresh must overwrite `cost` in place, not append it: report.json's
+    // key order is compared byte-for-byte by the e2e goldens.
+    expect(Object.keys(data)).toEqual([...Object.keys(ENVELOPE), "results"]);
   });
 
   test("a throwing sink is best-effort: the flush chain and later rows survive", async () => {

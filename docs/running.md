@@ -140,6 +140,23 @@ Per spec, the report contains:
 - **Failure analysis** — for failing specs, the root-cause call described
   next, the failure log excerpt, the scoped source diff, and the spec.yaml.
 
+Run-wide, `report.json` also carries a `cost` object: what this invocation
+spent on Claude, in the same fields as the `[cost]` line (see [Command and
+environment reference](./commands.md#what-a-command-cost)). It covers every
+call the run made — spec selection, live browsing, failure triage — so it is
+a superset of the per-spec `results[].liveRun.cost`, not a sum of them.
+
+Read the total, not the object. A deterministic run that passed calls no
+model, but it still carries a `cost` whose every numeric field is `null`;
+`cost` itself is null only in a report written before this field existed.
+`jq '.cost.totalCostUsd'` answers "what did this run bill"; `.cost != null`
+does not.
+
+It is rewritten on every incremental flush rather than stamped once at the
+end, so a run killed by a CI timeout still says what it burned. The one
+thing outside it is `--learn-hub-live-prompt`, which runs after the report is
+written; the `[cost]` line on stderr is the true total for the invocation.
+
 ## Failure triage
 
 With `--on-fail-explain`, each failing spec gets a **root-cause call** made

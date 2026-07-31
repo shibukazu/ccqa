@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression } from "./invoke.ts";
+import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, withoutEmptyEndpointVars } from "./invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 describe("extractAbActionFromBashCommand", () => {
@@ -619,5 +619,22 @@ describe("extractInvocationCost", () => {
       outputTokens: null,
       models: [],
     });
+  });
+});
+
+describe("withoutEmptyEndpointVars", () => {
+  // CI cannot omit an env key conditionally: an unset repository variable
+  // still renders as "". Passing that through would override the CLI's own
+  // default endpoint with nothing.
+  test("drops an endpoint variable that is set but empty", () => {
+    const out = withoutEmptyEndpointVars({
+      ANTHROPIC_BASE_URL: "",
+      ANTHROPIC_API_KEY: "sk-real",
+      PATH: "",
+    });
+    expect("ANTHROPIC_BASE_URL" in out).toBe(false);
+    expect(out["ANTHROPIC_API_KEY"]).toBe("sk-real");
+    // Only endpoint keys are filtered; an unrelated empty var is not ours to judge.
+    expect(out["PATH"]).toBe("");
   });
 });
