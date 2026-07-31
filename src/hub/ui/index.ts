@@ -919,6 +919,8 @@ const CSS = `
      saying what it rests on. */
   .badge.rr-needed { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
   .badge.rr-needed .d { background: var(--amber); }
+  .badge.rr-repair { background: var(--fail-bg); color: var(--fail); border-color: var(--fail-border); }
+  .badge.rr-repair .d { background: var(--fail); }
   .badge.rr-unknown { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
   .badge.rr-unknown .d { background: var(--info); }
   .badge.rr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
@@ -3534,8 +3536,11 @@ const CLIENT_JS = `
   // The primary column. The two axes beside it answer "why"; this one answers
   // "who acts next", which is the only question a reader scanning a list of
   // specs has. Exactly one value, needsRepair, asks for a person.
+  // Same colours the summary bar uses, so a row and the bar above it cannot
+  // disagree. needsRepair is the only verdict that asks for a person, so it
+  // takes the attention colour and re-running — machine work — does not.
   var VERDICT_BADGE = {
-    needsRepair: "rr-needed", rerunNeeded: "rr-needed",
+    needsRepair: "rr-repair", rerunNeeded: "rr-needed",
     inProgress: "rr-none", verified: "passed"
   };
 
