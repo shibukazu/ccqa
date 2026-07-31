@@ -57,7 +57,7 @@ describe("createHubClient retry behavior", () => {
     const fetchImpl = vi.fn().mockResolvedValue(fakeResponse(404, { error: { code: "not_found" } }));
     const hub = createHubClient({ baseUrl: "https://hub.example", token: "t", fetchImpl });
 
-    await expect(hub.getPrompt("demo", "analysis-custom-prompt")).resolves.toBeNull();
+    await expect(hub.getPrompt("demo", "triage.agent")).resolves.toBeNull();
   });
 
   test("openRun POSTs to /runs/open with the project query and does not retry", async () => {
@@ -125,7 +125,7 @@ describe("createHubClient custom headers", () => {
       fetchImpl,
     });
 
-    await hub.putPrompt("demo", "analysis-custom-prompt", "body");
+    await hub.putPrompt("demo", "triage.agent", "body");
 
     const [, init] = fetchImpl.mock.calls[0]!;
     expect((init as RequestInit).headers).toMatchObject({ "Content-Type": "text/markdown; charset=utf-8" });

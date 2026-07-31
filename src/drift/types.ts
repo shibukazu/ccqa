@@ -8,10 +8,9 @@ import {
 } from "../report/schema.ts";
 
 // DriftLabelSchema / DriftSubDiagnosisSchema / DriftDiagnosisSchema live in
-// report/schema.ts (not here) to avoid a schema cycle: ReportSpecResult's
-// `driftAudit` field needs DriftDiagnosisSchema, and this module already
-// imports FailureEvidenceSchema/PredictedLabelSchema/SUB_DIAGNOSES from
-// there. Re-exported so existing callers of this module are unaffected.
+// report/schema.ts (not here): they are narrowings of the failure-cause
+// vocabulary this module already imports from there. Re-exported so existing
+// callers of this module are unaffected.
 export { DriftDiagnosisSchema, DriftLabelSchema, DriftSubDiagnosisSchema };
 export type { DriftDiagnosis, DriftLabel };
 

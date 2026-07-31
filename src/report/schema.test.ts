@@ -29,7 +29,6 @@ function sampleData(): RunReportData {
         assertions: [{ name: "creates a task", status: "passed", durationMs: 1500 }],
         analysis: null,
         analysisSkipped: null,
-        driftAudit: null,
         failureLogExcerpt: null,
         diffExcerpt: null,
         specYaml: null,
@@ -55,16 +54,6 @@ function sampleData(): RunReportData {
           reasoning: "selector renamed in the diff",
         },
         analysisSkipped: null,
-        driftAudit: {
-          label: "TEST_DRIFT",
-          confidence: 0.6,
-          surface: "spec",
-          subDiagnosis: "SELECTOR_DRIFT",
-          headline: "step asserts removed copy",
-          recommendation: "",
-          evidence: [],
-          reasoning: "",
-        },
         failureLogExcerpt: "FAIL test > step",
         diffExcerpt: "diff --git a/x b/x",
         specYaml: "title: t",
@@ -118,6 +107,13 @@ describe("RunReportDataSchema", () => {
   test("accepts kind: \"drift\"", () => {
     const data = { ...sampleData(), kind: "drift" as const };
     expect(RunReportDataSchema.parse(data).kind).toBe("drift");
+  });
+
+  test("a report written before the audit stage was merged in still parses, minus its `driftAudit`", () => {
+    const legacy = JSON.parse(JSON.stringify(sampleData()));
+    legacy.results[1].driftAudit = { label: "TEST_DRIFT", confidence: 0.6, surface: "spec", headline: "h", evidence: [] };
+    const parsed = RunReportDataSchema.parse(legacy);
+    expect(parsed.results[1]).not.toHaveProperty("driftAudit");
   });
 
   test("artifacts stay optional (row 1 omits them) and reject an unknown kind", () => {

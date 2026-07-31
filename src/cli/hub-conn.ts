@@ -128,6 +128,23 @@ export function resolveHubContext(
 }
 
 /**
+ * Best-effort `resolveHubContext`: an unresolvable project degrades to null
+ * like "no hub configured" does, instead of throwing. For callers (the audit
+ * sweep, the run pipeline's failure-analysis prompts) that treat the hub as
+ * optional. `resolveHubContext` itself keeps the throw — `src/cli/record.ts`
+ * relies on it to route a bad --project through its own error mode.
+ */
+export function resolveHubContextOrNull(
+  opts: HubConnOptions & { project?: string; cwd?: string },
+): HubContext | null {
+  try {
+    return resolveHubContext(opts);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Wrap a subcommand action so a `HubApiError` (hub request failed, e.g. a
  * 503 when the hub has no encryption key configured) prints a clean message
  * and exits 2, instead of surfacing as an unhandled rejection with a stack

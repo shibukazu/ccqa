@@ -130,6 +130,12 @@ export const TriageCaseSchema = z.object({
       cause: ActualCauseSchema,
       note: z.string().optional(),
       recordedAt: z.string(),
+      /**
+       * True when `cause` is not one of the causes this row's kind accepts
+       * (e.g. `NO_DRIFT` on `kind: "run"`). Excluded from the confusion
+       * matrix and learning input; nothing converts it — regrade instead.
+       */
+      invalidForKind: z.boolean().optional(),
     })
     .nullable(),
 });
@@ -139,8 +145,10 @@ export const RunTriageSchema = z.object({
   runId: z.string(),
   promptVersion: z.string(),
   cases: z.array(TriageCaseSchema),
-  /** Count of cases with a non-null `actual` — drives the UI's progress readout. */
+  /** Count of cases with a non-null `actual` that is valid for this row's kind. Excludes `recordedInvalidForKind`. */
   recorded: z.number(),
+  /** Of the graded cases, how many carry `invalidForKind: true` — excluded from `recorded`, the confusion matrix, and learning. */
+  recordedInvalidForKind: z.number(),
   total: z.number(),
 });
 export type RunTriage = z.infer<typeof RunTriageSchema>;
@@ -150,6 +158,22 @@ export const PutActualCauseRequestSchema = z.object({
   note: z.string().optional(),
 });
 export type PutActualCauseRequest = z.infer<typeof PutActualCauseRequestSchema>;
+
+/** One entry `PUT /runs/:id/triage/actual-causes` could not import, and why. */
+export const ImportActualCauseRejectionSchema = z.object({
+  feature: z.string(),
+  spec: z.string(),
+  reason: z.string(),
+});
+export type ImportActualCauseRejection = z.infer<typeof ImportActualCauseRejectionSchema>;
+
+/** Response of `PUT /runs/:id/triage/actual-causes`. */
+export const ImportActualCausesResponseSchema = z.object({
+  imported: z.number(),
+  /** Entries skipped — no matching row, or a cause invalid for this row's kind — so a caller can tell nothing silently vanished. */
+  rejected: z.array(ImportActualCauseRejectionSchema),
+});
+export type ImportActualCausesResponse = z.infer<typeof ImportActualCausesResponseSchema>;
 
 export const SecretMetaSchema = z.object({
   name: z.string(),
@@ -692,8 +716,10 @@ export const LearningJobSchema = z.object({
   /** What the run scanned, filled in as the worker learns. */
   input: z.object({
     runLimit: z.number(),
-    /** How many graded cases were found across the scanned runs (0 fails the job). */
+    /** How many graded cases fed the learning prompt. 0 always fails the job; `casesExcluded`, if any, explains why in the error message. */
     casesConsidered: z.number(),
+    /** Of the scanned rows, how many were skipped because their recorded cause is not valid for that row's kind. Optional: absent on jobs recorded before this field existed. */
+    casesExcluded: z.number().optional(),
   }),
   /** Present only on success: the new custom prompt's version plus the fully-rendered prompt before and after. */
   result: z

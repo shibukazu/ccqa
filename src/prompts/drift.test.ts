@@ -4,9 +4,9 @@ import { buildDriftSystemPrompt, buildDriftUserPrompt } from "./drift.ts";
 const NO_BLOCKS: Parameters<typeof buildDriftSystemPrompt>[0] = [];
 
 describe("buildDriftSystemPrompt", () => {
-  test("excludes PRODUCT_BUG — a static read never observes a product regression", () => {
+  test("excludes PRODUCT_BUG and ENVIRONMENT — a static read never observes a run", () => {
     const out = buildDriftSystemPrompt(NO_BLOCKS);
-    expect(out).toMatch(/You may not answer PRODUCT_BUG/);
+    expect(out).toMatch(/You may not answer PRODUCT_BUG or ENVIRONMENT/);
     expect(out).toMatch(/a static read cannot tell a dropped side effect from a working one/);
   });
 

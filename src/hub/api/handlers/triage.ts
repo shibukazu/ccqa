@@ -1,6 +1,17 @@
 import type { ActualCause, DriftLabel, FailureAnalysis } from "../../../report/schema.ts";
-import { LabelsExportSchema, NO_DRIFT_CAUSE, RunReportDataSchema, type RunReportData } from "../../../report/schema.ts";
-import { PutActualCauseRequestSchema, type RunTriage, type TriageCase } from "../../contract/schema.ts";
+import {
+  causesForKind,
+  LabelsExportSchema,
+  NO_DRIFT_CAUSE,
+  RunReportDataSchema,
+  type RunReportData,
+} from "../../../report/schema.ts";
+import {
+  type ImportActualCauseRejection,
+  PutActualCauseRequestSchema,
+  type RunTriage,
+  type TriageCase,
+} from "../../contract/schema.ts";
 import { gradedDriftEntry } from "../../core/drift-ledger.ts";
 import type { HubStorage, TriageRecord } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
@@ -36,6 +47,15 @@ export function createPutActualCauseHandler(storage: HubStorage) {
       throw new HttpError(400, "invalid_request", parsed.error.issues[0]?.message ?? "invalid request body");
     }
 
+    const allowedCauses = causesForKind(report.kind);
+    if (!allowedCauses.includes(parsed.data.cause)) {
+      throw new HttpError(
+        400,
+        "invalid_request",
+        `"${parsed.data.cause}" is not a valid actual cause for a ${report.kind} run (expected one of ${allowedCauses.join(", ")})`,
+      );
+    }
+
     const record = buildTriageRecord(feature!, spec!, result.analysis, report.promptVersion, {
       cause: parsed.data.cause,
       note: parsed.data.note,
@@ -44,7 +64,7 @@ export function createPutActualCauseHandler(storage: HubStorage) {
     await storage.triage.putActualCause(runId!, record);
     await applyGradeToDriftLedger(storage, runId!, feature!, spec!, parsed.data.cause);
 
-    sendJson(ctx.res, 200, toTriageCase(feature!, spec!, result.analysis, result.target, record));
+    sendJson(ctx.res, 200, toTriageCase(feature!, spec!, result.analysis, result.target, record, allowedCauses));
   };
 }
 
@@ -70,10 +90,26 @@ export function createImportActualCausesHandler(storage: HubStorage) {
       throw new HttpError(400, "invalid_request", parsed.error.issues[0]?.message ?? "invalid LabelsExport body");
     }
 
+    // Same per-kind check as the single PUT (:45) — a bulk import must not be
+    // able to write a cause invalid for the target row's kind, which would
+    // manufacture a fresh invalid-for-kind grade on the spot.
+    const allowedCauses = causesForKind(report.kind);
     let imported = 0;
+    const rejected: ImportActualCauseRejection[] = [];
     for (const entry of parsed.data.labels) {
       const result = report.results.find((r) => r.feature === entry.feature && r.spec === entry.spec);
-      if (!result?.analysis) continue;
+      if (!result?.analysis) {
+        rejected.push({ feature: entry.feature, spec: entry.spec, reason: `no triage case "${entry.feature}/${entry.spec}" in this run's report` });
+        continue;
+      }
+      if (!allowedCauses.includes(entry.label)) {
+        rejected.push({
+          feature: entry.feature,
+          spec: entry.spec,
+          reason: `"${entry.label}" is not a valid actual cause for a ${report.kind} run (expected one of ${allowedCauses.join(", ")})`,
+        });
+        continue;
+      }
       const record = buildTriageRecord(entry.feature, entry.spec, result.analysis, parsed.data.promptVersion, {
         cause: entry.label,
         note: entry.note,
@@ -82,7 +118,7 @@ export function createImportActualCausesHandler(storage: HubStorage) {
       await storage.triage.putActualCause(runId, record);
       imported++;
     }
-    sendJson(ctx.res, 200, { imported });
+    sendJson(ctx.res, 200, { imported, rejected });
   };
 }
 
@@ -127,8 +163,9 @@ async function applyGradeToDriftLedger(
 }
 
 function buildRunTriage(runId: string, report: RunReportData | null, records: TriageRecord[]): RunTriage {
-  if (!report) return { runId, promptVersion: "", cases: [], recorded: 0, total: 0 };
+  if (!report) return { runId, promptVersion: "", cases: [], recorded: 0, recordedInvalidForKind: 0, total: 0 };
 
+  const allowedCauses = causesForKind(report.kind);
   const recordByKey = new Map(records.map((r) => [`${r.feature}/${r.spec}`, r]));
   const cases: TriageCase[] = [];
   for (const result of report.results) {
@@ -136,13 +173,19 @@ function buildRunTriage(runId: string, report: RunReportData | null, records: Tr
     const record = recordByKey.get(`${result.feature}/${result.spec}`);
     // The report row is the authoritative target; a record written before the
     // field existed falls back to it too.
-    cases.push(toTriageCase(result.feature, result.spec, result.analysis, result.target, record));
+    cases.push(toTriageCase(result.feature, result.spec, result.analysis, result.target, record, allowedCauses));
   }
+  const graded = cases.filter((c) => c.actual !== null);
+  // invalidForKind rows are graded, but under a cause this row's kind does
+  // not offer — split out so a caller can tell "done" from "needs a regrade"
+  // instead of one number quietly absorbing both.
+  const invalidForKind = graded.filter((c) => c.actual?.invalidForKind).length;
   return {
     runId,
     promptVersion: report.promptVersion,
     cases,
-    recorded: cases.filter((c) => c.actual !== null).length,
+    recorded: graded.length - invalidForKind,
+    recordedInvalidForKind: invalidForKind,
     total: cases.length,
   };
 }
@@ -177,6 +220,7 @@ function toTriageCase(
   analysis: FailureAnalysis,
   target: string | undefined,
   record: TriageRecord | undefined,
+  allowedCauses: readonly ActualCause[],
 ): TriageCase {
   // Prefer the current report row's target; fall back to the stored grade's
   // recorded target for a row that lacks one (e.g. the report was replaced by a
@@ -197,6 +241,10 @@ function toTriageCase(
           cause: record.actualCause as ActualCause,
           ...(record.note ? { note: record.note } : {}),
           recordedAt: record.recordedAt,
+          // A grade whose cause this row's kind does not accept (e.g.
+          // NO_DRIFT on a kind:"run" row). Never remapped — that would
+          // fabricate a claim nobody made — so it's flagged for a regrade.
+          ...(allowedCauses.includes(record.actualCause as ActualCause) ? {} : { invalidForKind: true }),
         }
       : null,
   };

@@ -98,7 +98,7 @@ describe("createLearningWorker", () => {
     const job = await storage.jobs.get("job-1");
     expect(job?.status).toBe("succeeded");
     expect(job?.input.casesConsidered).toBe(1);
-    const stored = await storage.prompts.get("demo", "analysis-custom-prompt");
+    const stored = await storage.prompts.get("demo", "triage.agent");
     const customPrompt = AnalysisCustomPromptSchema.parse(JSON.parse(new TextDecoder().decode(stored!.blob)));
     expect(customPrompt.guidance).toContain("Prefer PRODUCT_BUG");
     // before = base-only (no prior custom prompt); after includes the guidance block.
@@ -131,8 +131,25 @@ describe("createLearningWorker", () => {
 
   test("no graded cases throws with a clear reason", async () => {
     const empty = createFileHubStorage(await mkdtemp(join(tmpdir(), "ccqa-learn-empty-")));
+    await empty.jobs.create(makeJob());
     const worker = createLearningWorker({ storage: empty, invoke: vi.fn(), authCheck: () => ({ ok: true }) });
     await expect(worker(makeJob())).rejects.toThrow(/no graded triage cases/);
+  });
+
+  test("cases found but all under an unlearnable cause throws naming the count, and records casesExcluded", async () => {
+    // Fresh storage: only an audit-only cause (NO_DRIFT) on a kind:"run" row,
+    // so the learnable case count is 0 but the drop is not silent.
+    const invalidOnly = createFileHubStorage(await mkdtemp(join(tmpdir(), "ccqa-learn-invalid-")));
+    await invalidOnly.runs.create(makeRun("run-invalid", "demo"));
+    await invalidOnly.triage.putActualCause("run-invalid", makeRecord({ actualCause: "NO_DRIFT" }));
+    await invalidOnly.jobs.create(makeJob());
+
+    const worker = createLearningWorker({ storage: invalidOnly, invoke: vi.fn(), authCheck: () => ({ ok: true }) });
+    await expect(worker(makeJob())).rejects.toThrow(/1 graded triage case was recorded under a cause invalid for a run/);
+
+    const job = await invalidOnly.jobs.get("job-1");
+    expect(job?.input.casesConsidered).toBe(0);
+    expect(job?.input.casesExcluded).toBe(1);
   });
 
   test("groups graded cases by target — one overlay per target, no-target feeds the fallback", async () => {
@@ -155,7 +172,7 @@ describe("createLearningWorker", () => {
     // One Claude call per group: fallback + agent-browser + playwright.
     expect(invoke).toHaveBeenCalledTimes(3);
 
-    const stored = await storage.prompts.get("demo", "analysis-custom-prompt");
+    const stored = await storage.prompts.get("demo", "triage.agent");
     const cp = AnalysisCustomPromptSchema.parse(JSON.parse(new TextDecoder().decode(stored!.blob)));
     // A per-target overlay for each target, versioned with the target name.
     expect(Object.keys(cp.byTarget ?? {}).sort()).toEqual(["agent-browser", "playwright"]);
@@ -171,5 +188,29 @@ describe("createLearningWorker", () => {
     expect(pwPrompt).toBeDefined();
     expect(pwPrompt).not.toContain("ab-headline");
     expect(pwPrompt).not.toContain("button not found");
+  });
+
+  test("excludes a grade under a cause this row's kind cannot produce from its learning input", async () => {
+    // NO_DRIFT is an audit-only grade — "nothing is wrong" is not an answer
+    // about a run, where ENVIRONMENT says it instead.
+    await storage.triage.putActualCause("run-1", makeRecord({
+      feature: "checkout",
+      spec: "invalid",
+      predicted: { label: "PRODUCT_BUG", confidence: 0.6, headline: "excluded-headline" },
+      actualCause: "NO_DRIFT",
+    }));
+
+    const invoke = vi.fn(async () => okResult("learned note"));
+    const worker = createLearningWorker({ storage, invoke, authCheck: () => ({ ok: true }) });
+    await storage.jobs.create(makeJob());
+    await worker(makeJob());
+
+    // Only the beforeEach-seeded PRODUCT_BUG case counts; the NO_DRIFT one is
+    // a grade this row's kind cannot produce.
+    const job = await storage.jobs.get("job-1");
+    expect(job?.input.casesConsidered).toBe(1);
+    expect(job?.input.casesExcluded).toBe(1);
+    const prompts = (invoke.mock.calls as unknown as Array<[{ prompt: string }]>).map((c) => c[0].prompt);
+    expect(prompts.some((p) => p.includes("excluded-headline"))).toBe(false);
   });
 });

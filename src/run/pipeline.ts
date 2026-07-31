@@ -7,6 +7,7 @@ import {
   getTestScript,
   listAllSpecsWithSpecFile,
   loadAllBlocks,
+  loadAvailableBlocks,
   resolveSpecTargets,
   specKey,
   tryReadSpecFile,
@@ -44,7 +45,7 @@ import { buildStepDescriptions, loadEvidenceForSpec, specEvidenceDir } from "../
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import type { LiveReportStep, ReportSpecResult, RunReportData } from "../report/schema.ts";
 import { resolveProfileEnv } from "../cli/options.ts";
-import { resolveHubContext, HubConnectionError, type HubContext } from "../cli/hub-conn.ts";
+import { resolveHubContextOrNull, HubConnectionError, type HubContext } from "../cli/hub-conn.ts";
 import { HubApiError } from "../hub-client/index.ts";
 import { resolveProjectOrThrow, ProjectNameError } from "../cli/resolve-project.ts";
 import {
@@ -404,18 +405,13 @@ export async function executeRun(
   // above, which does throw RunUsageError). The project is resolved again here
   // rather than being threaded down from the profile block — that block is
   // skipped entirely without --profile, and on a dry run.
-  let hubCtx: HubContext | null = null;
-  try {
-    hubCtx = resolveHubContext({
-      hubUrl: opts.hubUrl,
-      hubToken: opts.hubToken,
-      hubHeader: opts.hubHeader,
-      project: opts.project,
-      cwd,
-    });
-  } catch {
-    hubCtx = null;
-  }
+  const hubCtx: HubContext | null = resolveHubContextOrNull({
+    hubUrl: opts.hubUrl,
+    hubToken: opts.hubToken,
+    hubHeader: opts.hubHeader,
+    project: opts.project,
+    cwd,
+  });
 
   // last-green baselines live on the hub, so the ledger fetch has to wait for
   // hubCtx — but it still happens before any spec executes, keeping the
@@ -497,6 +493,9 @@ export async function executeRun(
     auth: diffProvider ? driftAuthAvailable() : { ok: false, reason: "skipped by flags" },
     cwd,
     reportDir,
+    // So the prompt can check an `include:` step's target still exists —
+    // mirrors what the audit is given (src/prompts/drift.ts).
+    blocks: await loadAvailableBlocks(cwd),
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
     customPrompt,
@@ -697,6 +696,13 @@ export async function executeRun(
   // to local-report-only.
   let hubRunId: string | null = null;
   let hubSink: ReportSink | undefined;
+  // Flips the process exit code below (see overallExitCode) when this run's
+  // hub publish is known broken: the first PATCH ever failed, or the closing
+  // seal PATCH failed. Either leaves the hub's record of this run wrong (not
+  // merely missing), which must not exit clean just because the local tests
+  // passed. A successful seal PATCH clears it — it resends every row, so it
+  // heals an earlier mid-run failure into a complete, correct, terminal run.
+  let hubPublishBroken = false;
   if (hubCtx != null && opts.reportToHub) {
     try {
       const branch = await detectBranch(cwd);
@@ -718,13 +724,32 @@ export async function executeRun(
       hubRunId = opened.id;
       log.info(`hub: incremental run opened (${opened.id})`);
       const runId = opened.id;
+      // `openRun` above carries no row/label data, so an old hub accepts it
+      // even when it can't accept this release's report shape — there is no
+      // hub-side release number to probe for that ahead of time (the health
+      // endpoint reports an API shape number, not a ccqa version; see hub-conn
+      // and health.ts, which this doesn't edit). The first PATCH is therefore
+      // the earliest available signal: version skew (an older hub rejecting
+      // this release's row shape) fails identically on every row, so failing
+      // loud on the first one — rather than warning it away — is what
+      // surfaces it.
+      let hubPatchEverSucceeded = false;
       hubSink = {
         onUpsert: async (row) => {
           try {
             const evidence = await readRowFilesBase64(row, reportDir);
             await hubCtx.hub.patchRun(runId, { rows: [row], evidence });
+            hubPatchEverSucceeded = true;
           } catch (err) {
-            log.warn(`hub: incremental push failed for ${row.feature}/${row.spec}: ${errMessage(err)}`);
+            if (!hubPatchEverSucceeded) {
+              hubPublishBroken = true;
+              log.error(
+                `hub: incremental push failed for ${row.feature}/${row.spec}, and no patch to this run has succeeded yet ` +
+                  `(likely hub/CLI version skew — upgrade the hub): ${errMessage(err)}`,
+              );
+            } else {
+              log.warn(`hub: incremental push failed for ${row.feature}/${row.spec}: ${errMessage(err)}`);
+            }
           }
         },
       };
@@ -830,12 +855,12 @@ export async function executeRun(
   let report: RunReportData;
   {
     // One analysis phase for the whole run, opened once every spec has
-    // executed: the audit batches across execution paths and the classifier's
-    // banner is printed once, in one place. The live path classifies inline
-    // (its evidence is the transcript it just produced), so its rows arrive
-    // analyzed and only det + external rows pass through here.
+    // executed, so the classifier's banner is printed once, in one place. The
+    // live path classifies inline (its evidence is the transcript it just
+    // produced), so its rows arrive analyzed and only det + external rows
+    // pass through here.
     const detFailed = det.summaries.filter(failedSpec);
-    const analysisRun = await beginFailureAnalysis(
+    const analysisRun = beginFailureAnalysis(
       [
         ...detFailed.map((s) => ({ featureName: s.featureName, specName: s.specName })),
         ...externalRows
@@ -867,7 +892,10 @@ export async function executeRun(
     // Reconcile the hub run: re-send every final row (upsert is idempotent, so
     // this heals any mid-run patch that failed), stamp the real git metadata
     // the provisional per-spec patches lacked, and flip running → terminal.
-    // Best-effort: a hub failure here still leaves a complete local report.
+    // The local report is complete either way, but a failure here is NOT a
+    // warning: it leaves the hub's run permanently "running", which
+    // misrepresents this run's outcome rather than merely omitting it — see
+    // hubPublishBroken below, which turns this into a non-zero exit.
     if (hubRunId) {
       const finalStatus = overallExitCode === 0 ? "passed" : "failed";
       const reportMeta = buildReportEnvelope({
@@ -882,6 +910,13 @@ export async function executeRun(
       // own patches), so their evidence PNGs must ride along on this seal PATCH
       // or the hub UI's det step frames 404. Collect files only for rows that
       // weren't streamed, under one shared byte budget.
+      //
+      // Note: "streamed" here means "the local report attempted an upsert",
+      // not "the hub accepted the PATCH" — incrementalReport.rows() doesn't
+      // know which mid-run patches failed. A row whose mid-run PATCH failed is
+      // still excluded here, so this seal PATCH heals its JSON (rows: below
+      // resends everything) but not its evidence PNGs. Pre-existing gap, not
+      // fixed here.
       const streamedKeys = new Set(incrementalReport.rows().map((r) => `${r.feature}/${r.spec}`));
       const sealRows = report.results.filter((r) => !streamedKeys.has(`${r.feature}/${r.spec}`));
       const evidence = await readRowsFilesBase64(sealRows, reportDir);
@@ -893,12 +928,22 @@ export async function executeRun(
           finalStatus,
           reportMeta,
         });
+        // Clears any earlier mid-run PATCH failure: this seal PATCH resends
+        // EVERY row (`report.results`), so once it lands the hub holds a
+        // complete, correct, terminal run — a run that healed must not fail CI.
+        hubPublishBroken = false;
         log.info(`hub: incremental run finalized (${hubRunId}, ${finalStatus})`);
       } catch (err) {
-        log.warn(`hub: could not finalize incremental run ${hubRunId}: ${errMessage(err)}`);
+        hubPublishBroken = true;
+        log.error(`hub: could not finalize incremental run ${hubRunId}, which is left "running" on the hub: ${errMessage(err)}`);
       }
     }
   }
+
+  // A run whose hub publish is known broken must not exit clean: the local
+  // tests may have passed, but --report-to-hub asked for a published result
+  // and the hub does not have a correct one (see hubPublishBroken above).
+  if (hubPublishBroken) overallExitCode = 1;
 
   // "ignored without any 'mode: live' spec" already warned upfront alongside
   // the other live-only flags.
@@ -1136,16 +1181,16 @@ export function failedSpec(s: SpecRunSummary): boolean {
 }
 
 /**
- * Build ReportSpecResult[] for a set of vitest summaries, running the drift
- * audit + failure analysis for the failed ones (see failure-analysis.ts, which
- * external-target specs share). Degrades — never throws — when Claude auth or
- * the git diff aren't available. Caller writes report.json.
+ * Build ReportSpecResult[] for a set of vitest summaries, running the failure
+ * analysis for the failed ones (see failure-analysis.ts, which external-target
+ * specs share). Degrades — never throws — when Claude auth or the git diff
+ * aren't available. Caller writes report.json.
  */
 async function analyzeDeterministicSummaries(
   summaries: readonly SpecRunSummary[],
   cwd: string,
   reportDir: string,
-  { pass, driftByKey }: FailureAnalysisRun,
+  { pass }: FailureAnalysisRun,
 ): Promise<ReportSpecResult[]> {
   // Load blocks once (shared across all specs) so evidence captions can show
   // the step's `expected` text from spec.yaml, including block-inlined steps.
@@ -1185,7 +1230,6 @@ async function analyzeDeterministicSummaries(
         status: "passed",
         analysis: null,
         analysisSkipped: null,
-        driftAudit: null,
         failureLogExcerpt: null,
         diffExcerpt: null,
         specYaml: null,
@@ -1194,7 +1238,6 @@ async function analyzeDeterministicSummaries(
       continue;
     }
 
-    const driftAudit = driftByKey.get(specKey({ featureName: s.featureName, specName: s.specName })) ?? null;
     const failureLog = buildFailureLog(s);
     const fields = await pass.analyze({
       featureName: s.featureName,
@@ -1203,11 +1246,10 @@ async function analyzeDeterministicSummaries(
       failureLog,
       specYaml,
       target: AGENT_BROWSER_TARGET,
-      driftAudit,
     });
 
     // Spell out the failed-row keys in the historical order (analysis,
-    // analysisSkipped, analysisBase?, driftAudit, failureLogExcerpt,
+    // analysisSkipped, analysisBase?, failureLogExcerpt,
     // diffExcerpt, specYaml, liveRun) rather than spreading `fields` — a
     // spread would reorder `diffExcerpt` and change report.json byte-for-byte,
     // which the e2e goldens and cross-version diffs care about.
@@ -1218,7 +1260,6 @@ async function analyzeDeterministicSummaries(
       analysisSkipped: fields.analysisSkipped,
       ...(fields.analysisBase ? { analysisBase: fields.analysisBase } : {}),
       ...(fields.customPromptVersion ? { customPromptVersion: fields.customPromptVersion } : {}),
-      driftAudit,
       failureLogExcerpt: failureLog.length > 0 ? failureLog : null,
       diffExcerpt: fields.diffExcerpt,
       specYaml,

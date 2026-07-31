@@ -1,6 +1,6 @@
 import { driftAuthAvailable } from "../../drift/auth.ts";
 import { invokeClaudeStreaming } from "../../claude/invoke.ts";
-import type { FailureLabel } from "../../report/schema.ts";
+import { causesForKind, type ActualCause } from "../../report/schema.ts";
 import { ANALYSIS_PROMPT_VERSION, buildFailureAnalysisPrompt } from "../../report/prompt.ts";
 import { LEARNING_SYSTEM_PROMPT, buildLearningUserPrompt } from "../../prompts/custom-prompt-learning.ts";
 import {
@@ -16,7 +16,7 @@ import type { HubStorage } from "./storage/types.ts";
 /**
  * A triage-learning job. It reads the "actual cause" labels a human recorded
  * against failing specs (via the hub UI), has Claude write a short calibration
- * note from them, and stores it back as the "analysis-custom-prompt" prompt. The
+ * note from them, and stores it back as the "triage.agent" prompt. The
  * next `ccqa run` that pulls picks it up and the failure classifier calibrates
  * to this project's conventions.
  *
@@ -51,7 +51,6 @@ const PROMPT_PREVIEW_FIXTURE = {
   diffPatch: null,
   changedFiles: null,
   baseRef: null,
-  driftAudit: null,
 } as const;
 
 /** Build the short failure signal a graded case shows the learning prompt. */
@@ -102,15 +101,22 @@ export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJo
     // cases count; UNKNOWN isn't a gradeable cause.
     const runs = await storage.runs.list({ project: job.project, limit: runLimit });
     const cases: GradedCase[] = [];
+    let excluded = 0;
     for (const run of runs) {
-      // Drift rows are gradeable too, and they carry the same three labels —
-      // but they were predicted by the drift prompt, so their corrections
-      // belong to a drift overlay, not to this one. Mixing them would tune the
-      // failure-analysis prompt on cases it never saw.
+      // Drift rows are gradeable too, but they're predicted by the drift
+      // prompt, not this one — mixing them in would tune the failure-analysis
+      // note on cases it never saw.
       if (run.kind !== "run") continue;
       const records = await storage.triage.list(run.id);
       for (const r of records) {
-        const actual = r.actualCause as FailureLabel;
+        const actual = r.actualCause as ActualCause;
+        // A run row can still carry a grade invalid for its kind (e.g.
+        // NO_DRIFT, an audit-only answer) — same reason as the `run.kind`
+        // check above: exclude it rather than tune on a cause it can't emit.
+        if (!causesForKind("run").includes(actual)) {
+          excluded++;
+          continue;
+        }
         cases.push({
           predicted: r.predicted.label,
           actualCause: actual,
@@ -121,13 +127,20 @@ export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJo
       }
     }
 
+    // Record the resolved inputs now so a later failure reports real counts,
+    // not 0s — safe before the zero-case check below because the queue's own
+    // `jobs.update` (queue.ts `runOne`) already persisted this job row.
+    await storage.jobs.update(job.id, { input: { runLimit, casesConsidered: cases.length, casesExcluded: excluded } });
+
     if (cases.length === 0) {
+      if (excluded > 0) {
+        const noun = excluded === 1 ? "case was" : "cases were";
+        throw new Error(
+          `${excluded} graded triage ${noun} recorded under a cause invalid for a run and cannot be learned from — regrade ${excluded === 1 ? "it" : "them"}`,
+        );
+      }
       throw new Error("no graded triage cases for this project — grade some failing specs first");
     }
-
-    // Record the resolved inputs now, so a later failure still reports the
-    // real case count instead of the create-time 0.
-    await storage.jobs.update(job.id, { input: { runLimit, casesConsidered: cases.length } });
 
     // Split by target so one target's calibration never leaks into another.
     // Cases with no recorded target (old grades) feed the un-scoped fallback
@@ -190,7 +203,7 @@ export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJo
     const beforePrompt = buildFailureAnalysisPrompt({ ...PROMPT_PREVIEW_FIXTURE, customPrompt: representativeOverlay(prevCustomPrompt) });
     const afterPrompt = buildFailureAnalysisPrompt({ ...PROMPT_PREVIEW_FIXTURE, customPrompt: representativeOverlay(customPrompt) });
 
-    await storage.prompts.put(job.project, "analysis-custom-prompt", new TextEncoder().encode(JSON.stringify(customPrompt)), {
+    await storage.prompts.put(job.project, "triage.agent", new TextEncoder().encode(JSON.stringify(customPrompt)), {
       customPromptVersion: customPrompt.customPromptVersion,
       basePromptVersion: customPrompt.basePromptVersion,
     });
@@ -219,7 +232,7 @@ function representativeOverlay(cp: AnalysisCustomPrompt | null): AnalysisCustomP
 
 /** Read the currently-stored custom prompt, or null when there is none / it's unreadable. */
 async function loadStoredCustomPrompt(storage: HubStorage, project: string): Promise<AnalysisCustomPrompt | null> {
-  const entry = await storage.prompts.get(project, "analysis-custom-prompt");
+  const entry = await storage.prompts.get(project, "triage.agent");
   if (!entry) return null;
   try {
     const parsed = AnalysisCustomPromptSchema.safeParse(JSON.parse(new TextDecoder().decode(entry.blob)));

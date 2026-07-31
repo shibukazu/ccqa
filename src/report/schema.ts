@@ -2,45 +2,70 @@ import { z } from "zod";
 import { FIXABLE_DIAGNOSIS_TYPES } from "../diagnose/types.ts";
 
 /**
- * The three-way root-cause call for a failing spec, framed as drift analysis:
- *  - TEST_DRIFT:  what the spec verifies is unchanged; only the test code
- *                 drifted from the source (selector rename, timing, ...).
- *                 Future iterations may auto-fix these.
- *  - SPEC_CHANGE: the thing being verified itself changed (UI redesign,
- *                 spec change). Never auto-fix — a human must re-draft.
- *  - PRODUCT_BUG: neither of the above explains the failure — treat it as
- *                 a product regression.
+ * One vocabulary, two answerable subsets.
+ *
+ * A failing test has one of four causes, and each names the artifact that has
+ * to change:
+ *  - TEST_DRIFT:  the generated test code. What the spec verifies is
+ *                 unchanged; only the code that runs fell out of step (a
+ *                 selector rename, a timing assumption, an over-tight
+ *                 assertion).
+ *  - SPEC_CHANGE: the spec. The thing being verified itself changed — a UI
+ *                 redesign, a reworked flow. A human re-drafts it.
+ *  - PRODUCT_BUG: the product. An error response, a missing side effect,
+ *                 wrong data, a flow that no longer completes.
+ *  - ENVIRONMENT: nothing in the repository. A service that is down, a
+ *                 missing or expired credential, absent seeded data, timing.
+ *
+ * The audit answers the first two and no more: it never opens a browser, so
+ * it has no standing to say the product is broken or the environment failed.
+ * A run answers all four in one call — it holds the execution evidence and
+ * reads the source itself, so the question is never split across stages.
  *
  * The stakeholder ask behind this module is measurement-first: the call is
  * known to be hard, so every prediction is carried in report.json where the
  * hub UI lets a human record the ground truth and computes the confusion
  * matrix client-side. Accuracy may start low; it must be *visible*.
  */
-export const FAILURE_LABELS = ["TEST_DRIFT", "SPEC_CHANGE", "PRODUCT_BUG"] as const;
-export const FailureLabelSchema = z.enum(FAILURE_LABELS);
-export type FailureLabel = z.infer<typeof FailureLabelSchema>;
+export const DRIFT_FAILURE_CAUSES = ["TEST_DRIFT", "SPEC_CHANGE"] as const;
+export const FAILURE_CAUSES = [...DRIFT_FAILURE_CAUSES, "PRODUCT_BUG", "ENVIRONMENT"] as const;
 
-/** What the model may answer: the three labels, or UNKNOWN when evidence is weak. */
-export const PREDICTED_LABELS = [...FAILURE_LABELS, "UNKNOWN"] as const;
+/** What a model may answer: a cause, or UNKNOWN when the evidence is too weak. */
+export const PREDICTED_LABELS = [...FAILURE_CAUSES, "UNKNOWN"] as const;
 export const PredictedLabelSchema = z.enum(PREDICTED_LABELS);
 export type PredictedLabel = z.infer<typeof PredictedLabelSchema>;
 
 /**
  * What a human may record as the ground truth.
  *
- * A failing test always has a cause, so for a run the answer is one of
- * FAILURE_LABELS. A drift audit can be wrong in one further way that has no
- * equivalent there: it can report drift on a spec that still describes the
- * product. `NO_DRIFT` records that, and it is offered on drift rows only —
- * "the test failed but nothing is wrong" is not an answer about a run.
+ * The audit can be wrong in one way a run cannot: it can report drift on a
+ * spec that still describes the product. `NO_DRIFT` records that, and it is
+ * offered on audit rows only — "the test failed but nothing is wrong" is not
+ * an answer about a run, where `ENVIRONMENT` says it instead.
  *
- * Kept out of PREDICTED_LABELS deliberately: a clean audit is the *absence*
- * of a diagnosis, not a fourth label the model emits.
+ * `UNKNOWN` is deliberately absent on both sides: a grade is the answer, and
+ * "I don't know" is a reason not to grade rather than a grade.
  */
 export const NO_DRIFT_CAUSE = "NO_DRIFT";
-export const ACTUAL_CAUSES = [...FAILURE_LABELS, NO_DRIFT_CAUSE] as const;
+export const DRIFT_ACTUAL_CAUSES = [...DRIFT_FAILURE_CAUSES, NO_DRIFT_CAUSE] as const;
+export const ACTUAL_CAUSES = [...FAILURE_CAUSES, NO_DRIFT_CAUSE] as const;
 export const ActualCauseSchema = z.enum(ACTUAL_CAUSES);
 export type ActualCause = z.infer<typeof ActualCauseSchema>;
+
+/** Report rows come in two kinds, and one answers fewer questions than the other. */
+export type ReportKind = "run" | "drift";
+
+/** What a person may record on a row of this kind. */
+export function causesForKind(kind: ReportKind): readonly ActualCause[] {
+  return kind === "drift" ? DRIFT_ACTUAL_CAUSES : FAILURE_CAUSES;
+}
+
+/** What the model may answer on a row of this kind. */
+export function predictedForKind(kind: ReportKind): readonly PredictedLabel[] {
+  return kind === "drift"
+    ? ([...DRIFT_FAILURE_CAUSES, "UNKNOWN"] as const)
+    : PREDICTED_LABELS;
+}
 
 export const SUB_DIAGNOSES = [...FIXABLE_DIAGNOSIS_TYPES, "NONE"] as const;
 
@@ -95,11 +120,10 @@ export const FailureAnalysisSchema = z.object({
   evidence: z.array(FailureEvidenceSchema),
   reasoning: z.string(),
   /**
-   * Which surface the diagnosis is about (see `DriftSurfaceSchema`). Only ever
-   * set for a `kind: "drift"` row, where `analysis` carries a full
-   * `DriftDiagnosis` (`driftResultsToReport`) rather than an ordinary failure
-   * analysis — absent there. Optional so existing failure-analysis data (and
-   * this schema's other callers) stay valid without it.
+   * Which half of the test case is stale, and therefore how it is repaired
+   * (see `DriftSurfaceSchema`). Set only for TEST_DRIFT / SPEC_CHANGE — the
+   * other causes are not about the test case at all. Optional so a report
+   * written before this field existed stays valid.
    */
   surface: DriftSurfaceSchema.optional(),
 });
@@ -119,8 +143,7 @@ export type FailureAnalysis = z.infer<typeof FailureAnalysisSchema>;
  * means sharing the definitions, not emitting every label.
  */
 export const DriftLabelSchema = PredictedLabelSchema.extract([
-  "TEST_DRIFT",
-  "SPEC_CHANGE",
+  ...DRIFT_FAILURE_CAUSES,
   "UNKNOWN",
 ]);
 export type DriftLabel = z.infer<typeof DriftLabelSchema>;
@@ -139,10 +162,8 @@ export const DriftSubDiagnosisSchema = z
  * field, so it can travel in a report's `analysis` and be rendered by the
  * diagnosis card the failure path already has.
  *
- * Lives here rather than `src/drift/types.ts` (which re-exports it) to avoid
- * a schema cycle: `ReportSpecResult.driftAudit` below needs this type, and
- * `src/drift/types.ts` already imports `FailureEvidenceSchema` /
- * `PredictedLabelSchema` / `SUB_DIAGNOSES` from this module.
+ * Lives here rather than `src/drift/types.ts` (which re-exports it) because it
+ * narrows this module's vocabulary, which that one already imports.
  */
 export const DriftDiagnosisSchema = z.object({
   label: DriftLabelSchema,
@@ -347,7 +368,7 @@ export const ReportSpecResultSchema = z.object({
   /** Human-readable reason when a failed spec was NOT analyzed (no auth, no spec.yaml, ...). */
   analysisSkipped: z.string().nullable(),
   /**
-   * The analysis-custom-prompt overlay version actually applied to THIS row's
+   * The `triage.agent` overlay version actually applied to THIS row's
    * failure analysis. Per-row (not just per-run) because per-target overlays
    * mean different specs of one run can use different overlays; the envelope's
    * `customPromptVersion` records only the un-scoped fallback. Optional (omitted
@@ -361,13 +382,10 @@ export const ReportSpecResultSchema = z.object({
    * report.json stays valid; absent when no diff context was resolved.
    */
   analysisBase: z.object({ ref: z.string(), sha: z.string() }).nullable().optional(),
-  /**
-   * A normal run's own spec↔code drift audit (`analyzeDrift`), fed to the
-   * classifier as evidence for `analysis` above — not this row's own verdict.
-   * For a `kind: "drift"` run the diagnosis IS the row's verdict and lives in
-   * `analysis` instead; this stays null there.
-   */
-  driftAudit: DriftDiagnosisSchema.nullable(),
+  // A `driftAudit` field used to sit here, holding the separate audit a run
+  // made before classifying. Dropped with that call: on a run row it could
+  // now only ever be null, which reads as "the audit found nothing" rather
+  // than "no audit ran". Older report.json still parses — zod strips it.
   failureLogExcerpt: z.string().nullable(),
   diffExcerpt: z.string().nullable(),
   specYaml: z.string().nullable(),
@@ -491,7 +509,7 @@ export const LabelEntrySchema = z.object({
   feature: z.string(),
   spec: z.string(),
   predicted: PredictedLabelSchema,
-  label: FailureLabelSchema,
+  label: ActualCauseSchema,
   note: z.string().optional(),
 });
 export type LabelEntry = z.infer<typeof LabelEntrySchema>;

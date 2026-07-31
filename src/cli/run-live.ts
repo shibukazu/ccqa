@@ -4,7 +4,6 @@ import { join } from "node:path";
 import * as log from "./logger.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
 
-import { analyzeDrift } from "../drift/analyze.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
 import type { DiffProvider } from "../run/diff-provider.ts";
 import { ANALYSIS_DISABLED } from "../run/failure-analysis.ts";
@@ -18,6 +17,7 @@ import {
   loadAvailableBlocks,
   loadPromptBundleFromHub,
   readSpecFile,
+  type AvailableBlock,
 } from "../store/index.ts";
 import type { HubContext } from "./hub-conn.ts";
 import { isStorageStateShape } from "./hub.ts";
@@ -126,6 +126,10 @@ export async function runLiveSpecs(
   const auth: DriftAuth = failureAnalysisEnabled ? driftAuthAvailable() : { ok: false, reason: "disabled" };
   if (failureAnalysisEnabled && !auth.ok) log.info(`failure analysis skipped (${auth.reason})`);
 
+  // Spec-independent like `auth` above — hoisted so N failing specs share one
+  // load instead of re-reading `.ccqa/blocks/` per failure.
+  const blocks = failureAnalysisEnabled ? await loadAvailableBlocks(cwd) : [];
+
   const reportDir = opts.reportDir ?? ".";
 
   // Fresh agent-browser session per spec so Chrome state doesn't bleed across.
@@ -148,7 +152,7 @@ export async function runLiveSpecs(
       if (outcome.kind !== "run") return { outcome, row: null };
       const row = await buildLiveReportRow(
         outcome,
-        { auth, diffProvider, reportDir },
+        { auth, diffProvider, reportDir, blocks },
         opts,
         cwd,
       );
@@ -177,10 +181,8 @@ export async function runLiveSpecs(
 
 /**
  * Build one spec's report row: the live-run base row plus (for a failed spec)
- * the drift audit and failure-analysis fields. Runs inside the pool worker so
- * the row can be upserted incrementally the moment the spec finishes. The
- * drift audit only runs for failed specs — passing specs get no driftAudit,
- * matching the deterministic path.
+ * the failure-analysis fields. Runs inside the pool worker so the row can be
+ * upserted incrementally the moment the spec finishes.
  */
 async function buildLiveReportRow(
   r: Extract<SpecRunOutcome, { kind: "run" }>,
@@ -188,6 +190,7 @@ async function buildLiveReportRow(
     auth: DriftAuth;
     diffProvider: DiffProvider | null;
     reportDir: string;
+    blocks: AvailableBlock[];
   },
   opts: RunLiveOptions,
   cwd: string,
@@ -199,17 +202,11 @@ async function buildLiveReportRow(
     result: r.result,
     reportDir: ctx.reportDir,
   });
-  const driftForSpec =
-    ctx.diffProvider && r.result.status === "failed" ? await runDriftAuditOne(r, opts, cwd) : null;
   const analysis =
     ctx.diffProvider && r.result.status === "failed"
-      ? await analyzeOneLiveFailure(r, ctx.diffProvider, driftForSpec, ctx.auth, opts, cwd)
+      ? await analyzeOneLiveFailure(r, ctx.diffProvider, ctx.auth, ctx.blocks, opts, cwd)
       : undefined;
-  return {
-    ...base,
-    driftAudit: driftForSpec,
-    ...analysisFieldsFor(analysis, r.result.status),
-  };
+  return { ...base, ...analysisFieldsFor(analysis, r.result.status) };
 }
 
 /**
@@ -237,35 +234,6 @@ function analysisFieldsFor(
     return { analysisSkipped: ANALYSIS_DISABLED };
   }
   return {};
-}
-
-/**
- * Run `analyzeDrift` for one failed spec, used as evidence for its
- * failure-analysis prompt and shown in its report row. Mirrors the
- * deterministic path (src/run/pipeline.ts), which also scopes the audit to
- * failed specs only. Drift findings are advisory — they never change the
- * live-run exit code.
- */
-async function runDriftAuditOne(
-  r: Extract<SpecRunOutcome, { kind: "run" }>,
-  opts: RunLiveOptions,
-  cwd: string,
-): Promise<ReportSpecResult["driftAudit"]> {
-  const key = `${r.featureName}/${r.specName}`;
-  log.info(`drift audit: ${key}`);
-  const blocks = await loadAvailableBlocks(cwd);
-  const [result] = await analyzeDrift({
-    targets: [{ featureName: r.featureName, specName: r.specName }],
-    cwd,
-    blocks,
-    ...(opts.model ? { model: opts.model } : {}),
-    ...(opts.language ? { language: opts.language } : {}),
-  });
-  if (!result || !result.ok) {
-    log.warn(`drift audit failed for ${key}: ${result?.error ?? "no result"}`);
-    return null;
-  }
-  return result.drift;
 }
 
 type SpecRunOutcome =
@@ -538,8 +506,8 @@ type LiveFailureAnalysis = {
 async function analyzeOneLiveFailure(
   r: Extract<SpecRunOutcome, { kind: "run" }>,
   diffProvider: DiffProvider,
-  driftForSpec: ReportSpecResult["driftAudit"],
   auth: DriftAuth,
+  blocks: AvailableBlock[],
   opts: RunLiveOptions,
   cwd: string,
 ): Promise<LiveFailureAnalysis> {
@@ -573,6 +541,9 @@ async function analyzeOneLiveFailure(
   const outcome = await analyzeFailure(
     {
       liveTranscriptExcerpt: excerpt,
+      // A `mode: live` spec has no compiled surface — it IS the test that ran.
+      hasGeneratedSurface: false,
+      blocks,
       specYaml: r.specYaml,
       diffPatch: specDiff?.patch ?? null,
       changedFiles: specDiff?.nameStatus ?? null,
@@ -580,7 +551,6 @@ async function analyzeOneLiveFailure(
       baseSource: specDiff?.base.source ?? null,
       range: specDiff?.range ?? null,
       ...(baselineMissing ? { baselineMissing } : {}),
-      driftAudit: driftForSpec,
       ...(opts.language ? { outputLanguage: opts.language } : {}),
       ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),
       ...(customPrompt ? { customPrompt } : {}),

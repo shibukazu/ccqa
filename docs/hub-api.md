@@ -137,9 +137,12 @@ mid-run), a one-time startup sweep flips every such orphaned run to
 
 Each failing spec's classification pairs an AI **prediction** (read-only,
 sourced from the run's report) with a human-recorded **actual cause**
-(write-only from the client's perspective). See
-[Failure triage](./running.md#failure-triage) for what TEST_DRIFT /
-SPEC_CHANGE / PRODUCT_BUG mean.
+(write-only from the client's perspective). One vocabulary of four causes —
+`TEST_DRIFT` / `SPEC_CHANGE` / `PRODUCT_BUG` / `ENVIRONMENT` — is shared by
+both callers; a `kind: "drift"` row (the audit) can only ever carry the
+first two, since it never opens a browser. See [Failure
+triage](./running.md#failure-triage) and [Drift
+detection](./running.md#drift-detection).
 
 ```
 GET /api/v1/runs/:id/triage
@@ -148,13 +151,26 @@ GET /api/v1/runs/:id/triage
       cases: [{ feature, spec,
                 target?,                 // generation target of the graded row (e.g. "playwright"); omitted for agent-browser
                 predicted: { label, confidence, subDiagnosis?, headline },
-                actual: { cause, note?, recordedAt } | null }],
-      recorded: number, total: number   // progress readout
+                actual: { cause, note?, recordedAt, invalidForKind? } | null }],
+      recorded: number, recordedInvalidForKind: number, total: number
     }
+  `invalidForKind` marks a grade whose `cause` is not one this row's kind
+  accepts (e.g. `NO_DRIFT` on a `kind: "run"` row). Such a row is excluded
+  from the confusion matrix and from every learning job, and counted in
+  `recordedInvalidForKind` rather than `recorded`, so a reader can see how
+  much of the history stopped counting instead of watching accuracy fall
+  for no stated reason. Nothing converts it — regrade it.
 
 PUT /api/v1/runs/:id/triage/:feature/:spec/actual-cause
-  body: { cause: "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG" | "NO_DRIFT", note?: string }
-  → 200 TriageCase | 404 (no such case) | 409 (run has no report yet)
+  body: { cause: "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG"
+               | "ENVIRONMENT" | "NO_DRIFT", note?: string }
+  → 200 TriageCase | 400 (cause not valid for this row's kind)
+    | 404 (no such case) | 409 (run has no report yet)
+  Which causes are valid depends on the row's kind: a `kind: "run"` row
+  takes "TEST_DRIFT" / "SPEC_CHANGE" / "PRODUCT_BUG" / "ENVIRONMENT" — a run
+  answers all four; a `kind: "drift"` row takes "TEST_DRIFT" / "SPEC_CHANGE"
+  / "NO_DRIFT" — the audit never opens a browser, so it can't say the
+  product broke or the environment failed.
   "NO_DRIFT" records that an audit reported drift where there was none. It is
   offered on `kind: "drift"` rows only — a failing test always has a cause.
 
@@ -163,8 +179,12 @@ DELETE /api/v1/runs/:id/triage/:feature/:spec/actual-cause
 
 PUT /api/v1/runs/:id/triage/actual-causes
   body: LabelsExport JSON
-  → 200 { imported: number }
-  Bulk-import path for a batch of graded actual-causes (e.g. from external tooling).
+  → 200 { imported: number, rejected: [{ feature, spec, reason }] }
+  Bulk-import path for a batch of graded actual-causes (e.g. from external
+  tooling). Each entry is validated against its own row's kind, the same way
+  the single PUT is, and an entry that names no matching row or an invalid
+  cause is returned in `rejected` rather than dropped — a count alone cannot
+  tell "imported 8 of 10" from "imported 8, silently lost 2".
 ```
 
 Grading a `kind: "drift"` row also corrects that spec's entry in the drift
@@ -493,20 +513,23 @@ and any `GET` that returns a decrypted value, return `503` otherwise.
 
 ## Prompts
 
-Prompt assets (guidance prompts and the analysis custom prompt), scoped
+Prompt assets (guidance prompts and learned calibration notes), scoped
 by **project only** — unlike sessions and variables, prompts are project-wide,
 not per-profile (the same guidance applies across every profile a project runs
 against). Prompts are **not encrypted** and require no
 `CCQA_HUB_ENCRYPTION_KEY` — they are plain text, not secrets. `name` must be
 one of the reserved prompt names — a `<kind>.user` / `<kind>.agent` pair for
-`record`, `live`, `playwright`, and `runn`, plus `triage.user` (human-written
-failure-classification guidance) and `analysis-custom-prompt` — anything else
-is `400`.
+`record`, `live`, `playwright`, `runn`, `triage`, and `audit`. `triage.user`
+/ `audit.user` are human-written classification guidance for the run and the
+audit respectively; `triage.agent` / `audit.agent` are the learned
+calibration notes a [learning job](#learning-jobs) writes. Anything else is
+`400`.
 
 ```
 PUT /api/v1/projects/:project/prompts/:name
   Content-Type: text/markdown or application/json (name-dependent)
-  body: prompt text (Markdown for guidance names, JSON for analysis-custom-prompt)
+  body: prompt text (Markdown for guidance names; JSON for the two learned
+        calibration notes, "triage.agent" / "audit.agent")
   → 204 | 400 (unknown prompt name)
 
 GET /api/v1/projects/:project/prompts
@@ -549,10 +572,13 @@ DELETE /api/v1/projects/:project/perspectives
 
 ## Learning jobs
 
-Turn graded triage into an improved analysis custom prompt. A job scans a project's
-recent runs, collects the human-recorded actual causes, and writes a new
-`analysis-custom-prompt` prompt (see [Prompts](#prompts)). Jobs are scoped by
-project/profile and run asynchronously on the hub, one at a time.
+Turn graded triage into an improved calibration note. A job scans a
+project's recent runs, collects the human-recorded actual causes on
+`kind: "run"` rows, and writes a new `triage.agent` prompt (see
+[Prompts](#prompts)). Drift (`kind: "drift"`) grades use a different label
+set and are not read by this job — there is no job that writes
+`audit.agent` yet. Jobs are scoped by project/profile and run
+asynchronously on the hub, one at a time.
 
 Learning always has Claude write a short prose calibration note from the
 graded cases. This needs Claude auth on the hub (`ANTHROPIC_API_KEY` or a

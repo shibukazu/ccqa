@@ -43,7 +43,6 @@ function specResult(overrides: Partial<ReportSpecResult> = {}): ReportSpecResult
     assertions: null,
     analysis: null,
     analysisSkipped: null,
-    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,

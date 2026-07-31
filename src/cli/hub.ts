@@ -343,7 +343,7 @@ const promptRm = new Command("rm")
   }));
 
 const promptCommand = new Command("prompt")
-  .description("Manage prompt assets (per-flow user/agent guidance, triage user guidance, analysis custom prompt) stored on the hub (fetched automatically by `ccqa run` at run time).")
+  .description("Manage prompt assets (per-flow user/agent guidance, triage/audit user guidance, learned calibration prompts) stored on the hub (fetched automatically by `ccqa run` / `ccqa audit` at run time).")
   .addCommand(promptPush)
   .addCommand(promptLs)
   .addCommand(promptRm);

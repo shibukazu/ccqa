@@ -77,7 +77,6 @@ export async function liveRunToReportResult(args: {
     assertions: null,
     analysis: null,
     analysisSkipped: null,
-    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml,

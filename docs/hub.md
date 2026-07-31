@@ -206,18 +206,21 @@ cause `ccqa run` to create or push a run to the hub on their own.
 
 ### Fetching sessions, variables, and prompts at run time
 
-There is no `pull` command — `ccqa run` and `ccqa record` fetch what they
-need from the hub directly as they execute, whenever `--hub-url`/`--hub-token`
-(or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) are set. Both commands also accept
-`--hub-header`/`CCQA_HUB_HEADER` (see above) for hub requests made during the run:
+There is no `pull` command — `ccqa run`, `ccqa record`, and `ccqa audit`
+fetch what they need from the hub directly as they execute, whenever
+`--hub-url`/`--hub-token` (or `CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) are set. All
+three also accept `--hub-header`/`CCQA_HUB_HEADER` (see above) for hub
+requests made during the run:
 
 - A spec's `session:` restores fetch the named session(s) for the resolved
   project/profile straight from the hub.
 - `--hub-profile <name>` fetches every variable for that project/profile and
   applies them to the process environment before the run starts.
-- `--learn-hub-trace-prompt` / `--learn-hub-live-prompt` read and write the `record.agent` / `live.agent`
-  prompt on the hub; the human-maintained `triage.user` guidance and the
-  learned failure-analysis custom prompt are fetched the same way.
+- `--learn-hub-trace-prompt` / `--learn-hub-live-prompt` read and write the
+  `record.agent` / `live.agent` prompt on the hub. `ccqa run` also fetches
+  the human-maintained `triage.user` guidance and the learned `triage.agent`
+  calibration note the same way; `ccqa audit` fetches its own `audit.user` /
+  `audit.agent` pair.
 
 This is what lets a CI job hold exactly one secret, `CCQA_HUB_TOKEN` — no
 per-session file checked in, no separate secret per variable a spec needs,
@@ -362,15 +365,17 @@ else is scoped to the selected project.
   selected project, per **profile** (chosen with the selector in this tab —
   profiles scope secrets only; prompts and runs are project-wide). Sensitive
   values stay hidden.
-- **Prompts** shows the project's custom instructions (record/live guidance
-  and the `triage.user` failure-classification guidance) and the learned
-  failure-cause calibration — project-wide, shared across profiles.
-- **Learning** turns your triage grades into a better analysis custom prompt. After
+- **Prompts** shows the project's custom instructions (record/live guidance,
+  the `triage.user` run-classification guidance, and the `audit.user` audit
+  guidance) plus each side's learned calibration note (`triage.agent`,
+  `audit.agent`) — project-wide, shared across profiles.
+- **Learning** turns your triage grades into a better calibration note. After
   grading failing specs on a run, a **Learn from these grades** button appears
   under the confusion matrix; it starts an asynchronous learning job that has
-  Claude write a calibration note. The Learning tab lists jobs and their
-  status, and each job's page shows the analysis prompt **before and after**
-  the learned custom prompt, side by side.
+  Claude write a `triage.agent` note from the run-side grades (`TEST_DRIFT` /
+  `SPEC_CHANGE` / `PRODUCT_BUG` / `ENVIRONMENT`). The Learning tab lists jobs
+  and their status, and each job's page shows the failure-analysis prompt
+  **before and after** the learned note, side by side.
 
 The full report bundle (report.json + evidence PNGs + run artifacts) is
 available as a tarball download via the run detail's "Download artifacts"
@@ -380,26 +385,32 @@ link.
 
 Grading a run's failing specs (predicted cause vs. the real one) builds up a
 labelled history on the hub. A **learning job** has Claude turn that history
-into an `analysis-custom-prompt` prompt — a short calibration note — that calibrates
-future failure classification to this project's conventions. Learning runs on
-the hub as an asynchronous job, triggered from the UI
-(or `POST /learning-jobs`, see [the API](./hub-api.md#learning-jobs)) — it is not a CLI
-command.
+into a `triage.agent` prompt — a short calibration note — that calibrates
+future run-side classification (`TEST_DRIFT` / `SPEC_CHANGE` /
+`PRODUCT_BUG` / `ENVIRONMENT`) to this project's conventions. It reads
+`kind: "run"` grades only; drift (audit) grades answer a narrower subset of
+the same vocabulary and don't feed this job. Learning runs on the hub as an
+asynchronous job, triggered from the UI (or `POST /learning-jobs`, see [the
+API](./hub-api.md#learning-jobs)) — it is not a CLI command.
 
 Learning always needs `ANTHROPIC_API_KEY` / a Claude login **on the hub
 process**; the job fails with a clear error if it's missing (the hub itself
 stays up).
 
-The learned custom prompt is stored like any other prompt and fetched
-directly by the next `ccqa run`, so it picks it up automatically.
+The learned note is stored like any other prompt and fetched directly by
+the next `ccqa run`, so it picks it up automatically.
 
 Alongside the learned note, the human-maintained `triage.user` prompt holds
-standing, project-specific classification guidance (e.g. "wording changes on
-the settings screen count as SPEC_CHANGE"). Write it in the UI's Prompts tab,
-or locally in `.ccqa/prompts/triage.user.md` and upload it with `ccqa hub
-prompt push triage.user`. `ccqa run` fetches it with the custom prompt and
-injects it into the failure-analysis prompt ahead of the learned calibration
-note — human standing guidance first, learned calibration second.
+standing, project-specific classification guidance (e.g. "a stale seed-data
+fixture on staging always counts as ENVIRONMENT"). Write it in the UI's
+Prompts tab, or locally in `.ccqa/prompts/triage.user.md` and upload it with
+`ccqa hub prompt push triage.user`. `ccqa run` fetches it with the learned
+note and injects it into the failure-analysis prompt ahead of the learned
+calibration — human standing guidance first, learned calibration second.
+
+The audit has its own counterpart, `audit.user` / `audit.agent`, fetched by
+`ccqa audit` the same way. No learning job writes `audit.agent` yet — only
+its `.user` half is human-edited today.
 
 ## Security
 

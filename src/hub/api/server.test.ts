@@ -54,7 +54,6 @@ function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; r
             assertions: null,
             analysis: null,
             analysisSkipped: null,
-            driftAudit: null,
             failureLogExcerpt: null,
             diffExcerpt: null,
             specYaml: null,
@@ -72,10 +71,8 @@ function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; r
 }
 
 /**
- * Build a pushed-report archive with a per-spec drift diagnosis in `analysis`
- * (never `driftAudit`, which is a normal run's own audit evidence — see
- * ReportSpecResultSchema), as produced by `ccqa drift --push` (`kind: "drift"`
- * report.json). Three specs: one TEST_DRIFT (error severity), one UNKNOWN
+ * Build a pushed-report archive with a per-spec drift diagnosis in `analysis`,
+ * as produced by `ccqa drift --push` (`kind: "drift"` report.json). Three specs: one TEST_DRIFT (error severity), one UNKNOWN
  * (warn severity), one clean (no diagnosis).
  */
 function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
@@ -85,7 +82,6 @@ function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
     durationMs: null,
     assertions: null,
     analysisSkipped: null,
-    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,
@@ -176,7 +172,6 @@ function makeCleanAuditTarGz(gitHead: string, specs: readonly string[]): Uint8Ar
       assertions: null,
       analysis: null,
       analysisSkipped: null,
-      driftAudit: null,
       failureLogExcerpt: null,
       diffExcerpt: null,
       specYaml: null,
@@ -202,7 +197,6 @@ function makeRow(overrides: Partial<ReportSpecResult> = {}): ReportSpecResult {
     assertions: null,
     analysis: null,
     analysisSkipped: null,
-    driftAudit: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
     specYaml: null,
@@ -744,6 +738,174 @@ describe("hub API server", () => {
         restarted.closeAllConnections();
         await new Promise<void>((r) => restarted.close(() => r()));
       }
+    });
+
+    describe("triage actual-cause per-kind validation", () => {
+      const runAnalysis = (): NonNullable<ReportSpecResult["analysis"]> => ({
+        label: "PRODUCT_BUG",
+        confidence: 0.9,
+        headline: "h",
+        recommendation: "r",
+        evidence: [],
+        reasoning: "",
+      });
+
+      async function openAnalyzedRun(): Promise<Record<string, unknown>> {
+        const run = await openRun();
+        await patch(run.id as string, {
+          rows: [makeRow({ status: "failed", analysis: runAnalysis() })],
+          done: true,
+        });
+        return run;
+      }
+
+      test("rejects a drift-only cause (NO_DRIFT) on a kind:\"run\" row", async () => {
+        const run = await openAnalyzedRun();
+        const res = await fetch(
+          `${baseUrl}/api/v1/runs/${run.id}/triage/demo/example/actual-cause`,
+          authed({
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cause: "NO_DRIFT" }),
+          }),
+        );
+        expect(res.status).toBe(400);
+        expect((await json(res)).error.code).toBe("invalid_request");
+      });
+
+      test("accepts a run-kind cause (ENVIRONMENT) on a kind:\"run\" row", async () => {
+        const run = await openAnalyzedRun();
+        const res = await fetch(
+          `${baseUrl}/api/v1/runs/${run.id}/triage/demo/example/actual-cause`,
+          authed({
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cause: "ENVIRONMENT" }),
+          }),
+        );
+        expect(res.status).toBe(200);
+      });
+
+      test("GET triage flags a grade whose cause this row's kind cannot produce", async () => {
+        const run = await openAnalyzedRun();
+        // Simulate a grade whose cause this row's kind does not accept —
+        // written straight to storage since PUT rejects it.
+        await storage.triage.putActualCause(run.id as string, {
+          feature: "demo",
+          spec: "example",
+          predicted: { label: "PRODUCT_BUG", confidence: 0.9, headline: "h" },
+          actualCause: "NO_DRIFT",
+          promptVersion: "1",
+          recordedAt: new Date().toISOString(),
+        });
+
+        const body = await json(await fetch(`${baseUrl}/api/v1/runs/${run.id}/triage`, authed()));
+        const triageCase = body.cases.find((c: { feature: string; spec: string }) => c.feature === "demo" && c.spec === "example");
+        expect(triageCase.actual.invalidForKind).toBe(true);
+      });
+
+      test("GET triage splits an invalid-for-kind grade out of `recorded` into `recordedInvalidForKind`", async () => {
+        const run = await openRun();
+        await patch(run.id as string, {
+          rows: [
+            makeRow({ feature: "demo", spec: "one", status: "failed", analysis: runAnalysis() }),
+            makeRow({ feature: "demo", spec: "two", status: "failed", analysis: runAnalysis() }),
+          ],
+          done: true,
+        });
+
+        const valid = await fetch(
+          `${baseUrl}/api/v1/runs/${run.id}/triage/demo/one/actual-cause`,
+          authed({
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ cause: "ENVIRONMENT" }),
+          }),
+        );
+        expect(valid.status).toBe(200);
+
+        // A grade whose cause this row's kind does not accept, written
+        // straight to storage since the PUT rejects it.
+        await storage.triage.putActualCause(run.id as string, {
+          feature: "demo",
+          spec: "two",
+          predicted: { label: "PRODUCT_BUG", confidence: 0.9, headline: "h" },
+          actualCause: "NO_DRIFT",
+          promptVersion: "1",
+          recordedAt: new Date().toISOString(),
+        });
+
+        const body = await json(await fetch(`${baseUrl}/api/v1/runs/${run.id}/triage`, authed()));
+        expect(body.recorded).toBe(1);
+        expect(body.recordedInvalidForKind).toBe(1);
+        expect(body.total).toBe(2);
+      });
+    });
+
+    describe("triage bulk import (actual-causes)", () => {
+      const runAnalysis = (): NonNullable<ReportSpecResult["analysis"]> => ({
+        label: "PRODUCT_BUG",
+        confidence: 0.9,
+        headline: "h",
+        recommendation: "r",
+        evidence: [],
+        reasoning: "",
+      });
+
+      function importCauses(runId: string, labels: unknown[]): Promise<Response> {
+        return fetch(
+          `${baseUrl}/api/v1/runs/${runId}/triage/actual-causes`,
+          authed({
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ schemaVersion: 1, runId, promptVersion: "1", exportedAt: new Date().toISOString(), labels }),
+          }),
+        );
+      }
+
+      test("rejects a drift-only cause on a kind:\"run\" row without dropping it silently or importing the rest", async () => {
+        const run = await openRun();
+        await patch(run.id as string, {
+          rows: [
+            makeRow({ feature: "demo", spec: "one", status: "failed", analysis: runAnalysis() }),
+            makeRow({ feature: "demo", spec: "two", status: "failed", analysis: runAnalysis() }),
+          ],
+          done: true,
+        });
+
+        const res = await importCauses(run.id as string, [
+          { feature: "demo", spec: "one", predicted: "PRODUCT_BUG", label: "PRODUCT_BUG" },
+          { feature: "demo", spec: "two", predicted: "PRODUCT_BUG", label: "NO_DRIFT" },
+        ]);
+        expect(res.status).toBe(200);
+        const body = await json(res);
+        expect(body.imported).toBe(1);
+        expect(body.rejected).toEqual([
+          { feature: "demo", spec: "two", reason: expect.stringContaining("not a valid actual cause") },
+        ]);
+
+        const triage = await json(await fetch(`${baseUrl}/api/v1/runs/${run.id}/triage`, authed()));
+        const rejectedCase = triage.cases.find((c: { spec: string }) => c.spec === "two");
+        expect(rejectedCase.actual).toBeNull();
+      });
+
+      test("reports a rejected entry, rather than dropping it, for a label with no matching report row", async () => {
+        const run = await openRun();
+        await patch(run.id as string, {
+          rows: [makeRow({ feature: "demo", spec: "one", status: "failed", analysis: runAnalysis() })],
+          done: true,
+        });
+
+        const res = await importCauses(run.id as string, [
+          { feature: "demo", spec: "missing", predicted: "PRODUCT_BUG", label: "PRODUCT_BUG" },
+        ]);
+        expect(res.status).toBe(200);
+        const body = await json(res);
+        expect(body.imported).toBe(0);
+        expect(body.rejected).toEqual([
+          { feature: "demo", spec: "missing", reason: expect.stringContaining("no triage case") },
+        ]);
+      });
     });
   });
 
