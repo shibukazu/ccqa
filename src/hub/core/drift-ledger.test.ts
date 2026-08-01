@@ -55,6 +55,18 @@ describe("drift ledger", () => {
     expect(cleared).not.toHaveProperty("confidence");
   });
 
+  test("a regrade away from SPEC_CHANGE drops the repair kind, even when the row stays drifted", () => {
+    const led = ledger({
+      "f/s": entry({ label: "SPEC_CHANGE", specChangeKind: "FEATURE_REMOVED", headline: "flow gone" }),
+    });
+
+    const relabelled = gradedDriftEntry(led, "f/s", "r", "TEST_DRIFT");
+    expect(relabelled).toMatchObject({ label: "TEST_DRIFT", headline: "flow gone" });
+    expect(relabelled).not.toHaveProperty("specChangeKind");
+
+    expect(gradedDriftEntry(led, "f/s", "r", null)).not.toHaveProperty("specChangeKind");
+  });
+
   test("grading an older run never overwrites a newer audit of the same spec", () => {
     // The failure this guards: grading is retrospective, so a correction to a
     // run from last week must not land on top of an audit of newer code.

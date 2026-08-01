@@ -17,6 +17,7 @@ import type { SecretScope } from "../types.ts";
  *   drift-ledger/<project>/<branch>.json         (DriftLedger, no profile)
  *   deploys/<project>/<profile>/log.json         (DeployLog, ring-buffered)
  *   deploys/<project>/<profile>/touch.json       (SpecTouchIndex derived from the log)
+ *   acks/<project>/<profile>/<name>.json         (Ack: a consumer's acted-on keys)
  *
  * IDs and names are validated by their callers (run ids are server-minted
  * UUIDs; project/profile/name come from validated request params) before
@@ -157,4 +158,8 @@ export function deployTouchIndexPath(root: string, project: string, profile: str
 
 export function specLocksPath(root: string, project: string, profile: string): string {
   return join(root, "locks", project, profile, "locks.json");
+}
+
+export function ackPath(root: string, project: string, profile: string, name: string): string {
+  return join(root, "acks", project, profile, `${name}.json`);
 }

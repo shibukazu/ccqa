@@ -52,12 +52,15 @@ export function gradedDriftEntry(
   if (!entry || entry.runId !== runId) return null;
   if (entry.label === label && entry.graded === true) return null;
   const graded: SpecDriftEntry = { ...entry, label, graded: true };
-  // Neither describes a cleared row; leaving them would caption a "no drift"
-  // entry with the finding the audit had claimed.
+  // None of these describes a cleared row; leaving them would caption a "no
+  // drift" entry with the finding the audit had claimed.
   if (label === null) {
     delete graded.surface;
     delete graded.headline;
     delete graded.confidence;
   }
+  // Narrower than the above: a regrade from SPEC_CHANGE to any other answer
+  // leaves a repair kind that names a spec change nobody now claims.
+  if (label !== "SPEC_CHANGE") delete graded.specChangeKind;
   return graded;
 }

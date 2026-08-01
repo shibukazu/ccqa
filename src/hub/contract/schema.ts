@@ -1,5 +1,12 @@
 import { z } from "zod";
-import { ActualCauseSchema, DriftLabelSchema, DriftSurfaceSchema, PredictedLabelSchema } from "../../report/schema.ts";
+import {
+  ActualCauseSchema,
+  DriftLabelSchema,
+  DriftSurfaceSchema,
+  PredictedLabelSchema,
+  ReportKindSchema,
+  SpecChangeKindSchema,
+} from "../../report/schema.ts";
 
 /**
  * The hub's public REST contract (docs/hub-api.md). These schemas are
@@ -34,8 +41,15 @@ export const RunSchema = z.object({
   profile: z.string().nullable(),
   branch: z.string().nullable(),
   status: RunStatusSchema,
-  /** "run" = ccqa run/live execution; "drift" = ccqa audit --report-to-hub. */
-  kind: z.enum(["run", "drift"]).default("run"),
+  /**
+   * Which command left the run: "run" = ccqa run/live execution; "drift" =
+   * ccqa audit --report-to-hub; "record" = ccqa record --report-to-hub.
+   *
+   * A recording produces no verdict about anything, so it exists here only to
+   * put its Claude spend where a budget can see it — every ledger and every
+   * count that answers "is this spec green" leaves it alone (ADR-0017).
+   */
+  kind: ReportKindSchema.default("run"),
   /**
    * Drift result pushed via `ccqa audit --report-to-hub`; null for kind:"run". Counts
    * by label rather than by a derived severity — a label IS the finding, and
@@ -735,6 +749,8 @@ export const SpecDriftEntrySchema = z.object({
   label: DriftLabelSchema.nullable(),
   /** Set only when `label` is non-null — no surface applies to a clean audit. */
   surface: DriftSurfaceSchema.optional(),
+  /** See `SpecChangeKindSchema`. */
+  specChangeKind: SpecChangeKindSchema.optional(),
   confidence: z.number().optional(),
   headline: z.string().optional(),
   /** The commit this audit read. */
@@ -817,3 +833,34 @@ export const CreateLearningJobRequestSchema = z.object({
   runLimit: z.number().int().positive().max(1000).optional(),
 });
 export type CreateLearningJobRequest = z.infer<typeof CreateLearningJobRequestSchema>;
+
+// Bounds on an ack's key set. Both sit orders of magnitude above any plausible
+// set of short keys, so they only ever stop a malformed client from writing an
+// unbounded document.
+const MAX_ACK_KEYS = 5000;
+const MAX_ACK_KEY_LENGTH = 256;
+
+/**
+ * A named set of opaque keys a consumer has already acted on, as stored (see
+ * `AckStore`). `at` is null only for a set that was never written — an ack
+ * nobody has recorded yet reads as empty rather than missing.
+ */
+export const AckSchema = z.object({
+  keys: z.array(z.string()),
+  at: z.string().nullable(),
+});
+export type Ack = z.infer<typeof AckSchema>;
+
+/** Body of `PUT /projects/:project/acks/:name?profile=` — the whole set, not a delta. */
+export const PutAckRequestSchema = z.object({
+  keys: z.array(z.string().min(1).max(MAX_ACK_KEY_LENGTH)).max(MAX_ACK_KEYS),
+});
+export type PutAckRequest = z.infer<typeof PutAckRequestSchema>;
+
+/** Body of `GET`/`PUT /projects/:project/acks/:name?profile=`. */
+export const AckResponseSchema = AckSchema.extend({
+  project: z.string(),
+  profile: z.string(),
+  name: z.string(),
+});
+export type AckResponse = z.infer<typeof AckResponseSchema>;

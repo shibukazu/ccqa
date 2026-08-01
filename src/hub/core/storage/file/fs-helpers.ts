@@ -2,6 +2,19 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 
+/**
+ * Defense-in-depth for a name this layer joins into a file path. The API's
+ * `SAFE_SEGMENT` (api/validate.ts) is deliberately stricter — it also fixes a
+ * charset and a length — and stays the rule for what a client may name; this
+ * only refuses traversal, so it also covers callers that never came through
+ * HTTP (tests, a library embedding the hub).
+ */
+export function assertSafeName(value: string, label: string): void {
+  if (value.length === 0 || value === "." || value === ".." || value.includes("/") || value.includes("\\")) {
+    throw new Error(`invalid ${label}: must be a bare name without path separators or '..'`);
+  }
+}
+
 /** Read and JSON-parse a file, returning `null` when it doesn't exist. Malformed JSON throws. */
 export async function readJson<T>(path: string): Promise<T | null> {
   let raw: string;

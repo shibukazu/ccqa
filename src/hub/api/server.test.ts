@@ -88,9 +88,14 @@ function makeReportTarGz(opts: { status?: "passed" | "failed"; runId?: string; r
 /**
  * Build a pushed-report archive with a per-spec drift diagnosis in `analysis`,
  * as produced by `ccqa drift --push` (`kind: "drift"` report.json). Three specs: one TEST_DRIFT (error severity), one UNKNOWN
- * (warn severity), one clean (no diagnosis).
+ * (warn severity), one clean (no diagnosis). `specChangeKind` adds a fourth,
+ * SPEC_CHANGE row — opt-in, so the three-row spec counts stay as they are — and
+ * puts the same value on the TEST_DRIFT row, which is the mismatched shape a
+ * client is free to push and the hub must not store.
  */
-function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
+function makeDriftReportTarGz(
+  opts: { gitHead?: string; specChangeKind?: "FEATURE_REMOVED" | "BEHAVIOUR_CHANGED" } = {},
+): Uint8Array {
   const baseResult: Omit<ReportSpecResult, "feature" | "spec" | "analysis" | "status"> = {
     title: null,
     testCounts: null,
@@ -124,6 +129,7 @@ function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
           label: "TEST_DRIFT",
           confidence: 0.8,
           subDiagnosis: "SELECTOR_DRIFT",
+          ...(opts.specChangeKind ? { specChangeKind: opts.specChangeKind } : {}),
           headline: "mismatch",
           recommendation: "",
           evidence: [],
@@ -152,6 +158,24 @@ function makeDriftReportTarGz(opts: { gitHead?: string } = {}): Uint8Array {
         status: "passed",
         analysis: null,
       },
+      ...(opts.specChangeKind
+        ? [{
+            ...baseResult,
+            feature: "demo",
+            spec: "spec-change",
+            status: "failed" as const,
+            analysis: {
+              label: "SPEC_CHANGE" as const,
+              confidence: 0.9,
+              subDiagnosis: "NONE" as const,
+              specChangeKind: opts.specChangeKind,
+              headline: "the flow no longer exists",
+              recommendation: "",
+              evidence: [],
+              reasoning: "",
+            },
+          }]
+        : []),
     ],
   };
   const entries: TarEntry[] = [
@@ -1107,7 +1131,7 @@ describe("hub API server", () => {
   });
 
   describe("drift ledger", () => {
-    function getDriftLedger(project: string): Promise<{ project: string; specs: Record<string, { label: string | null; gitHead: string; runId: string }> }> {
+    function getDriftLedger(project: string): Promise<{ project: string; specs: Record<string, { label: string | null; specChangeKind?: string; gitHead: string; runId: string }> }> {
       return fetch(`${baseUrl}/api/v1/projects/${project}/drift`, authed()).then(json);
     }
 
@@ -1127,6 +1151,18 @@ describe("hub API server", () => {
       expect(ledger.specs["demo/never-audited"]).toBeUndefined();
     });
 
+    test("specChangeKind reaches the ledger on a SPEC_CHANGE row and is dropped from any other", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=dr-sc&kind=drift&branch=main`, authed({
+        method: "POST",
+        body: makeDriftReportTarGz({ gitHead: "f".repeat(40), specChangeKind: "FEATURE_REMOVED" }),
+      }));
+      expect(res.status).toBe(201);
+
+      const ledger = await getDriftLedger("dr-sc");
+      expect(ledger.specs["demo/spec-change"]).toMatchObject({ label: "SPEC_CHANGE", specChangeKind: "FEATURE_REMOVED" });
+      expect(ledger.specs["demo/test-drift"]).not.toHaveProperty("specChangeKind");
+    });
+
     test("a kind:\"run\" push does not touch the drift ledger", async () => {
       const res = await fetch(`${baseUrl}/api/v1/runs?project=dr-run&branch=main`, authed({
         method: "POST",
@@ -1136,6 +1172,69 @@ describe("hub API server", () => {
 
       const ledger = await getDriftLedger("dr-run");
       expect(ledger.specs).toEqual({});
+    });
+  });
+
+  describe("record runs", () => {
+    // The load-bearing property of the third kind: a recording produced a
+    // test, it did not check the product, so nothing it leaves may become the
+    // baseline that says a spec is green or the record of what the audit read.
+    // What it must carry is the spend — that is the whole reason it exists.
+    test("advances neither ledger, and still records what the recording spent", async () => {
+      const openRes = await fetch(
+        `${baseUrl}/api/v1/runs/open?project=rec&kind=record&branch=main&gitHead=${"a".repeat(40)}`,
+        authed({ method: "POST" }),
+      );
+      expect(openRes.status).toBe(201);
+      const opened = await json(openRes);
+      expect(opened.kind).toBe("record");
+
+      const patchRes = await fetch(`${baseUrl}/api/v1/runs/${opened.id}`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rows: [makeRow({ feature: "f", spec: "recorded", status: "passed" })],
+          done: true,
+          reportMeta: { cost: makeCost(1.25) },
+        }),
+      }));
+      expect(patchRes.status).toBe(200);
+      expect(await json(patchRes)).toMatchObject({ status: "passed", costUsd: 1.25 });
+
+      const specLedger = await fetch(`${baseUrl}/api/v1/projects/rec/last-green?branch=main`, authed()).then(json);
+      expect(specLedger).toMatchObject({ entries: {}, lastRun: {}, lastRed: {} });
+      const driftLedger = await fetch(`${baseUrl}/api/v1/projects/rec/drift`, authed()).then(json);
+      expect(driftLedger.specs).toEqual({});
+    });
+
+    // Nothing a recording leaves is read against a deploy, so the log — the
+    // hub's most-read file — is not parsed to stamp one.
+    test("is left unattributed rather than stamped from the deploy log", async () => {
+      await fetch(`${baseUrl}/api/v1/projects/recd/deploys`, authed({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sha: "d1", previousSha: null }),
+      }));
+
+      const opened = await fetch(
+        `${baseUrl}/api/v1/runs/open?project=recd&kind=record&branch=main`,
+        authed({ method: "POST" }),
+      ).then(json);
+      expect(opened).toMatchObject({ deployedSha: null, deployedShaSource: null });
+    });
+
+    test("a listing takes the kinds it asks for, and refuses one that is not a kind", async () => {
+      await fetch(`${baseUrl}/api/v1/runs/open?project=reck&kind=record&branch=main`, authed({ method: "POST" }));
+      await fetch(`${baseUrl}/api/v1/runs?project=reck&branch=main`, authed({
+        method: "POST",
+        body: makeReportTarGz({ status: "passed" }),
+      }));
+
+      const filtered = await fetch(`${baseUrl}/api/v1/runs?project=reck&kind=run,drift`, authed()).then(json);
+      expect(filtered.runs.map((r: { kind: string }) => r.kind)).toEqual(["run"]);
+
+      const bad = await fetch(`${baseUrl}/api/v1/runs?project=reck&kind=audit`, authed());
+      expect(bad.status).toBe(400);
     });
   });
 
@@ -1492,6 +1591,52 @@ describe("hub API server", () => {
         body: JSON.stringify({ feature: "tasks", spec: "no-such-spec", note: "x" }),
       }));
       expect(patchMissingSpec.status).toBe(404);
+    });
+  });
+
+  describe("acks", () => {
+    function ackUrl(name: string, profile?: string): string {
+      const query = profile ? `?profile=${profile}` : "";
+      return `${baseUrl}/api/v1/projects/demo/acks/${name}${query}`;
+    }
+
+    function putKeys(name: string, keys: string[], profile?: string) {
+      return fetch(ackUrl(name, profile), authed({
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keys }),
+      }));
+    }
+
+    test("an unset ack reads as an empty set, and a write round-trips", async () => {
+      const unset = await fetch(ackUrl("notified"), authed());
+      expect(unset.status).toBe(200); // not 404 — "nothing acted on yet" is an answer
+      expect(await json(unset)).toEqual({ project: "demo", profile: "default", name: "notified", keys: [], at: null });
+
+      const putRes = await putKeys("notified", ["tasks/search", "tasks/create"]);
+      expect(putRes.status).toBe(200);
+      expect(await json(putRes)).toMatchObject({ keys: ["tasks/search", "tasks/create"], at: expect.any(String) });
+
+      const getRes = await fetch(ackUrl("notified"), authed());
+      expect(await json(getRes)).toMatchObject({ keys: ["tasks/search", "tasks/create"] });
+    });
+
+    test("two profiles under one project keep separate sets", async () => {
+      await putKeys("notified", ["tasks/search"], "staging");
+      await putKeys("notified", ["tasks/create"], "production");
+
+      expect((await json(await fetch(ackUrl("notified", "staging"), authed()))).keys).toEqual(["tasks/search"]);
+      expect((await json(await fetch(ackUrl("notified", "production"), authed()))).keys).toEqual(["tasks/create"]);
+    });
+
+    test("a :name that decodes to a traversal attempt is rejected", async () => {
+      // Encoded so the client's own URL normalization leaves it intact — a bare
+      // "%2e%2e" segment is collapsed before the request is sent, so it would
+      // never reach the router. The hub still decodes this one to "../evil".
+      const getRes = await fetch(ackUrl("%2e%2e%2fevil"), authed());
+      expect(getRes.status).toBe(400);
+      const putRes = await putKeys("%2e%2e%2fevil", ["tasks/search"]);
+      expect(putRes.status).toBe(400);
     });
   });
 

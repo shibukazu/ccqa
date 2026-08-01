@@ -12,7 +12,6 @@ import { renderDrift } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
 import { driftResultsToReport, driftResultToRow } from "../drift/to-report.ts";
 import { currentReportCost } from "../report/run-cost.ts";
-import { githubRunId, githubRunUrl } from "../run/github-run.ts";
 import type { Format, SpecResult, SpecTarget, Threshold } from "../drift/types.ts";
 import type { DriftGuidance } from "../prompts/drift.ts";
 import {
@@ -38,7 +37,12 @@ import {
   resolveHubContext,
   type HubContext,
 } from "./hub-conn.ts";
-import { detectBranch, getGitHead } from "./git-branch.ts";
+import {
+  openHubRun,
+  requireReportToHubConnection,
+  sealHubRun,
+  type HubRunPush,
+} from "./open-hub-run.ts";
 import { withUsageErrors } from "./usage-errors.ts";
 import * as log from "./logger.ts";
 import { withCostReporting } from "./cost-line.ts";
@@ -223,11 +227,15 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   }
 
   const blocks = await loadAvailableBlocks(cwd);
-  // Checked before the prompt-context fetch and the sweep itself (and above the
-  // try/finally below): a job that asked to publish and cannot reach the hub
-  // should not spend the sweep first, and `process.exit` here must not skip
-  // the claim release — it runs before that finally block even starts.
-  requireReportToHubConnection(opts);
+  // Resolved before the prompt-context fetch and the sweep itself: a job that
+  // asked to publish and cannot reach the hub should not spend the sweep first.
+  let pushConn: HubContext | null = null;
+  if (opts.reportToHub) {
+    const pushHub = resolveHubClient(opts);
+    pushConn = requireReportToHubConnection(
+      pushHub && { hub: pushHub, project: resolveProject({ project: opts.project, cwd }) },
+    );
+  }
 
   let results: SpecResult[];
   let promptCtx: AuditPromptContext;
@@ -235,11 +243,11 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   // sweep of every spec runs well past a CI job's timeout, and the audit's
   // only output is the hub — batching the push to the end means an interrupt
   // throws away everything the sweep already paid for.
-  let push: DriftPush | null = null;
+  let push: HubRunPush | null = null;
   try {
     promptCtx = await resolveAuditPromptContext(opts, cwd);
-    if (opts.reportToHub) {
-      push = await openDriftPush(opts, cwd);
+    if (pushConn) {
+      push = await openHubRun("drift", pushConn, cwd, opts.hubProfile);
       if (format === "text") log.info(`hub: incremental drift run opened (${push.runId})`);
     }
     results = await analyzeDrift({
@@ -316,75 +324,11 @@ async function releaseSpecs(
 }
 
 /**
- * Fail fast when `--report-to-hub` was requested but no hub connection is
- * available. Called at the top of `runAudit`, before the sweep spends any
- * model calls — `pushDriftResults` (below) keeps its own equivalent, injectable
- * check so it stays safe to call standalone (e.g. in tests) without this guard
- * having already run.
- */
-export function requireReportToHubConnection(opts: AuditOptions): void {
-  if (!opts.reportToHub || resolveHubClient(opts)) return;
-  log.error("--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)");
-  process.exit(2);
-}
-
-/** An open `kind: "drift"` run this sweep patches its rows into as they land. */
-export interface DriftPush {
-  hub: HubClient;
-  runId: string;
-  /** Resolved once at open, so the seal names the run's own commit. */
-  gitHead: string | null;
-}
-
-/**
- * Open the drift run this sweep patches into. A failure here is fatal, as it
- * is for `ccqa run`: a job that asked to publish and cannot reach the hub has
- * not done what it was told, and the audit has no local artifact to fall back
- * on — the hub is its only output. Raised before any spec is checked, so
- * nothing is wasted. Not retried: a dropped response after the hub committed
- * would leave a second orphan running run.
- *
- * `resolveHub` is injectable for tests.
- */
-export async function openDriftPush(
-  opts: AuditOptions,
-  cwd: string,
-  resolveHub: (opts: AuditOptions) => HubClient | null = resolveHubClient,
-): Promise<DriftPush> {
-  const hub = resolveHub(opts);
-  if (!hub) {
-    throw new RunUsageError(
-      "--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
-    );
-  }
-  const project = resolveProject({ project: opts.project, cwd });
-  const [branch, gitHead] = await Promise.all([detectBranch(cwd), getGitHead(cwd)]);
-  const ciRunId = githubRunId();
-  const runUrl = githubRunUrl();
-  try {
-    const run = await hub.openRun({
-      project,
-      kind: "drift",
-      ...(branch ? { branch } : {}),
-      ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
-      ...(gitHead ? { gitHead } : {}),
-      ...(ciRunId ? { ciRunId } : {}),
-      ...(runUrl ? { runUrl } : {}),
-    });
-    return { hub, runId: run.id, gitHead };
-  } catch (err) {
-    // Thrown, not exited: the caller's `finally` has to release this sweep's
-    // spec claims first, or an unreachable hub holds them for the full TTL.
-    throw new RunUsageError(`--report-to-hub: could not open a run on the hub (${errMessage(err)})`);
-  }
-}
-
-/**
  * Send one finished spec. A failure is warned and swallowed rather than
  * thrown: the seal resends every row, so a dropped patch costs freshness for
  * the rest of the sweep, not the record.
  */
-export async function sendDriftRow(push: DriftPush, result: SpecResult, threshold: Threshold): Promise<void> {
+export async function sendDriftRow(push: HubRunPush, result: SpecResult, threshold: Threshold): Promise<void> {
   try {
     await push.hub.patchRun(push.runId, {
       rows: [driftResultToRow(result, threshold)],
@@ -403,7 +347,7 @@ export async function sendDriftRow(push: DriftPush, result: SpecResult, threshol
  * from the rows.
  */
 export async function sealDriftPush(
-  push: DriftPush,
+  push: HubRunPush,
   args: {
     results: SpecResult[];
     threshold: Threshold;
@@ -424,24 +368,16 @@ export async function sealDriftPush(
     triageUserPromptHash: promptCtx?.triageUserPromptHash ?? null,
   });
 
-  try {
-    await push.hub.patchRun(push.runId, {
-      rows: report.results,
-      done: true,
-      reportMeta: {
-        git: report.git,
-        promptVersion: report.promptVersion,
-        customPromptVersion: report.customPromptVersion,
-        ...(report.triageUserPromptHash ? { triageUserPromptHash: report.triageUserPromptHash } : {}),
-        cost: report.cost,
-      },
-    });
-  } catch (err) {
-    // The run stays `running` on the hub with a partial set of rows. That is a
-    // wrong record, not merely a missing one, so it must not exit clean.
-    log.error(`hub: could not close the drift run ${push.runId}: ${errMessage(err)}`);
-    process.exit(2);
-  }
+  await sealHubRun(push, {
+    rows: report.results,
+    reportMeta: {
+      git: report.git,
+      promptVersion: report.promptVersion,
+      customPromptVersion: report.customPromptVersion,
+      ...(report.triageUserPromptHash ? { triageUserPromptHash: report.triageUserPromptHash } : {}),
+      cost: report.cost,
+    },
+  });
 
   if (format === "text") {
     // Derived here rather than through `resolveBaseUrl`, which exits when no

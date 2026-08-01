@@ -1,4 +1,5 @@
 import type { HubStorage } from "../types.ts";
+import { createFileAckStore } from "./ack-store.ts";
 import { createFileArtifactStore } from "./artifact-store.ts";
 import { createFileDeployStore } from "./deploy-store.ts";
 import { createFileLockStore } from "./lock-store.ts";
@@ -26,5 +27,6 @@ export function createFileHubStorage(dataDir: string): HubStorage {
     driftLedger: createFileDriftLedgerStore(dataDir),
     deploys: createFileDeployStore(dataDir),
     locks: createFileLockStore(dataDir),
+    acks: createFileAckStore(dataDir),
   };
 }

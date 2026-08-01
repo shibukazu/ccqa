@@ -5,7 +5,8 @@ with no server involved, and that is unchanged. `ccqa serve` — the **hub** —
 is a thin control plane on top: a small HTTP server that stores the results
 of runs that already happened elsewhere, plus the sessions, variables,
 triage records, and coverage inventory (perspectives) a team wants to
-share. The hub never executes `ccqa run`
+share — and the [acks](./hub-api.md#acks) a consumer's automation keeps to
+remember what it has already acted on. The hub never executes `ccqa run`
 itself and has no notion of a "queue" — every run it knows about was already
 finished before it was pushed.
 

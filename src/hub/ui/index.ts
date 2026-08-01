@@ -589,6 +589,9 @@ const CSS = `
      the way the old errors/warnings counts did. */
   .chip.kind-chip { color: var(--violet); background: var(--violet-bg); border-color: var(--violet-border); font-family: var(--font); }
   .chip.drift-count-chip { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); }
+  /* Prose, not an identifier — and neutral, since it qualifies the label chip
+     beside it rather than claiming a severity of its own. */
+  .chip.spec-change-chip { font-family: var(--font); }
   .drift-meta-box { display: flex; flex-direction: column; gap: 4px; }
   /* The chips carry their own margin for the run list, where they sit inline
      after other chips. Here the container owns the spacing, so the margin only
@@ -1077,6 +1080,7 @@ const CLIENT_JS = `
       "meta.drift": "Drift",
       "diag.cause": "Cause", "diag.fix": "Fix",
       "diag.surface": "Surface", "diag.surface.spec": "spec", "diag.surface.generated": "generated code",
+      "diag.specChangeKind.FEATURE_REMOVED": "feature gone", "diag.specChangeKind.BEHAVIOUR_CHANGED": "behaviour changed",
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
       "acc.assertions": "Assertions",
       "acc.artifacts": "Artifacts",
@@ -1085,7 +1089,7 @@ const CLIENT_JS = `
       "spec.kind.live": "Live", "spec.kind.det": "Deterministic",
       "det.steps": "Steps",
       "det.noEvidence": "No step screenshots:",
-      "kind.run": "Test run", "kind.drift": "Drift audit",
+      "kind.run": "Test run", "kind.drift": "Drift audit", "kind.record": "Recording",
       "drift.summary.ratio": "{found} of {total} specs",
       "drift.clean": "No drift issues",
       "status.passed": "passed", "status.failed": "failed", "status.skipped": "skipped", "status.running": "running",
@@ -1235,6 +1239,7 @@ const CLIENT_JS = `
       "meta.drift": "ドリフト",
       "diag.cause": "原因", "diag.fix": "対処",
       "diag.surface": "対象", "diag.surface.spec": "spec", "diag.surface.generated": "生成コード",
+      "diag.specChangeKind.FEATURE_REMOVED": "機能が無い", "diag.specChangeKind.BEHAVIOUR_CHANGED": "振る舞いが変わった",
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
       "acc.assertions": "アサーション",
       "acc.artifacts": "成果物",
@@ -1243,7 +1248,7 @@ const CLIENT_JS = `
       "spec.kind.live": "ライブ", "spec.kind.det": "決定的",
       "det.steps": "ステップ",
       "det.noEvidence": "ステップのスクリーンショットなし:",
-      "kind.run": "テスト実行", "kind.drift": "ドリフト監査",
+      "kind.run": "テスト実行", "kind.drift": "ドリフト監査", "kind.record": "収録",
       "drift.summary.ratio": "{found} / {total} スペック",
       "drift.clean": "ドリフトの問題なし",
       "status.passed": "合格", "status.failed": "失敗", "status.skipped": "スキップ", "status.running": "実行中",
@@ -1622,6 +1627,21 @@ const CLIENT_JS = `
     return run.kind === "drift" ? driftFoundBadge(driftRunState(run), "drift.run.") : statusBadge(run.status);
   }
 
+  // Which command left the run, and whether its spec counts are a tally of
+  // what was verified. A recording's rows are the specs it wrote, not specs it
+  // checked, so "1 / 1 passed" and a full meter would claim a test result.
+  // A kind from a newer hub keeps the generic label but is read the same
+  // cautious way, since nothing here knows what its counts mean.
+  var KINDS = {
+    run: { label: "kind.run", verifies: true },
+    drift: { label: "kind.drift", verifies: true },
+    record: { label: "kind.record", verifies: false },
+  };
+  function kindOf(kind) { return KINDS[kind] || { label: "kind.run", verifies: false }; }
+  function kindChip(kind) {
+    return el("span", "chip kind-chip", t(kindOf(kind).label));
+  }
+
   // A run's Claude spend, in the same $x.xxxx form as the per-step badge.
   // A run that billed nothing, and one stored before costs were recorded, both
   // arrive as a non-number — printing $0.0000 would claim a measured zero.
@@ -1892,12 +1912,10 @@ const CLIENT_JS = `
       runCell.appendChild(el("div", "runid", r.id.slice(0, 8)));
       var sub = el("div", "subline");
       sub.appendChild(ciBadge(r));
+      sub.appendChild(kindChip(r.kind));
       if (r.kind === "drift") {
-        sub.appendChild(el("span", "chip kind-chip", t("kind.drift")));
         var rowDrift = driftSummary(r);
         if (rowDrift) driftChips(rowDrift).forEach(function (chip) { sub.appendChild(chip); });
-      } else {
-        sub.appendChild(el("span", "chip kind-chip", t("kind.run")));
       }
       runCell.appendChild(sub);
       tr.appendChild(runCell);
@@ -1914,29 +1932,33 @@ const CLIENT_JS = `
       statusCell.appendChild(runStatusBadge(r));
       tr.appendChild(statusCell);
 
-      // A drift row counts what the audit found, not what "passed" — the same
-      // ratio its detail page shows. Reading passed/total here printed a
-      // different number for the same run in the two places you would compare.
-      var rowDriftSummary = r.kind === "drift" ? driftSummary(r) : null;
-      var found = rowDriftSummary
-        ? rowDriftSummary.testDrift + rowDriftSummary.specChange + rowDriftSummary.unknown
-        : null;
-      var num = rowDriftSummary
-        ? found + " / " + rowDriftSummary.specs
-        : r.specs.passed + " / " + r.specs.total;
-      var fillTotal = rowDriftSummary ? rowDriftSummary.specs : r.specs.total;
-      var fillPart = rowDriftSummary ? found : r.specs.passed;
-
       var specsCell = document.createElement("td");
-      var specsWrap = el("div", "specs");
-      var meter = el("span", "meter" + (rowDriftSummary ? " drift" : ""));
-      var pct = fillTotal > 0 ? Math.round((fillPart / fillTotal) * 100) : 0;
-      var bar = el("i");
-      bar.style.width = pct + "%";
-      meter.appendChild(bar);
-      specsWrap.appendChild(meter);
-      specsWrap.appendChild(el("span", "num muted", num));
-      specsCell.appendChild(specsWrap);
+      if (!kindOf(r.kind).verifies) {
+        specsCell.appendChild(el("span", "muted", "—"));
+      } else {
+        // A drift row counts what the audit found, not what "passed" — the same
+        // ratio its detail page shows. Reading passed/total here printed a
+        // different number for the same run in the two places you would compare.
+        var rowDriftSummary = r.kind === "drift" ? driftSummary(r) : null;
+        var found = rowDriftSummary
+          ? rowDriftSummary.testDrift + rowDriftSummary.specChange + rowDriftSummary.unknown
+          : null;
+        var num = rowDriftSummary
+          ? found + " / " + rowDriftSummary.specs
+          : r.specs.passed + " / " + r.specs.total;
+        var fillTotal = rowDriftSummary ? rowDriftSummary.specs : r.specs.total;
+        var fillPart = rowDriftSummary ? found : r.specs.passed;
+
+        var specsWrap = el("div", "specs");
+        var meter = el("span", "meter" + (rowDriftSummary ? " drift" : ""));
+        var pct = fillTotal > 0 ? Math.round((fillPart / fillTotal) * 100) : 0;
+        var bar = el("i");
+        bar.style.width = pct + "%";
+        meter.appendChild(bar);
+        specsWrap.appendChild(meter);
+        specsWrap.appendChild(el("span", "num muted", num));
+        specsCell.appendChild(specsWrap);
+      }
       tr.appendChild(specsCell);
 
       tr.appendChild(el("td", "muted num", costText(r.costUsd)));
@@ -1975,7 +1997,7 @@ const CLIENT_JS = `
     // What kind of run this is, said once. The spec cards below used to repeat
     // it per row, which read as "this spec was drift-audited" — a property of
     // the run described as if it varied spec to spec. Same chip as the run list.
-    sub.appendChild(el("span", "chip kind-chip", t(run.kind === "drift" ? "kind.drift" : "kind.run")));
+    sub.appendChild(kindChip(run.kind));
     idblock.appendChild(sub);
     head.appendChild(idblock);
 
@@ -2009,7 +2031,7 @@ const CLIENT_JS = `
         driftBox.appendChild(el("div", "muted", ratio));
         metaItem(t("meta.drift"), driftBox);
       }
-    } else {
+    } else if (kindOf(run.kind).verifies) {
       metaItem(t("meta.specs"), run.specs.passed + " / " + run.specs.total + " " + t("meta.passed"));
     }
     // Everything this run spent on Claude — live browsing, triage, the audit a
@@ -2118,6 +2140,12 @@ const CLIENT_JS = `
     var a = r.analysis;
     var head = el("div", "analysis-head");
     head.appendChild(labelChip(a.label));
+    // Which repair a SPEC_CHANGE needs — delete the spec, or rewrite it. The
+    // label is re-checked rather than trusted: this chip means nothing beside
+    // any other one, however the row reached the browser.
+    if (a.label === "SPEC_CHANGE" && a.specChangeKind) {
+      head.appendChild(el("span", "chip spec-change-chip", t("diag.specChangeKind." + a.specChangeKind)));
+    }
     head.appendChild(el("span", "conf", Math.round(a.confidence * 100) + "%"));
     wrap.appendChild(head);
     var kv = el("div", "analysis-kv");
@@ -3312,8 +3340,12 @@ const CLIENT_JS = `
   // runs and no deploys to judge). One runs page answers both: runId -> CI URL,
   // and the profiles a run was actually recorded under. A run pushed without a
   // profile lands in "default", exactly as the ledger stores it.
+  //
+  // Only the two kinds a ledger entry can point at, so recordings — which
+  // advance no ledger and are never looked up here — cannot crowd them out of
+  // the window.
   function fetchRunIndex() {
-    return apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project) + "&limit=200")
+    return apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project) + "&kind=run,drift&limit=200")
       .then(function (data) {
         var urls = {};
         var profiles = [];

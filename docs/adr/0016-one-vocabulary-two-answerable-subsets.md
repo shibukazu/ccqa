@@ -50,6 +50,27 @@ For `TEST_DRIFT`/`SPEC_CHANGE` the analysis also sets `surface` (`spec` or
 `generated`) — which half of the test case is stale, and therefore how it
 is repaired.
 
+### Which kind of spec change, as a fourth axis
+
+`SPEC_CHANGE` alone does not say what to do with the spec, and the two
+repairs are opposites: a behaviour that no longer exists means the spec is
+deleted, while a behaviour that still exists but works differently means it
+is rewritten and re-recorded. The audit answers that as its own field,
+`specChangeKind` (`FEATURE_REMOVED` / `BEHAVIOUR_CHANGED`).
+
+It is a separate axis rather than a `subDiagnosis` value because
+`subDiagnosis` is `[...FIXABLE_DIAGNOSIS_TYPES, "NONE"]` — the shapes a
+machine knows how to repair. A spec change is by definition not one of
+those, so it always lands on `NONE` there, and widening that enum would
+make it mean two things at once.
+
+`FEATURE_REMOVED` is the stronger claim and has to be earned by evidence
+pointing at where the implementation would be if it existed; short of that
+the answer is `BEHAVIOUR_CHANGED`. There is deliberately no third value for
+"cannot tell": the field is simply absent, and every reader — the hub UI,
+the ledger response, any CI consumer — must leave an absent value to a
+human rather than defaulting to either repair.
+
 ### Why Rejected A does not work
 
 Two vocabularies on one report card is confusing by itself, but the
@@ -132,8 +153,9 @@ merged single call scored 2/2, at 99% and 95% confidence.
   (`FAILURE_CAUSES`, `causesForKind`, `predictedForKind`)
 - Run prompt: `src/report/prompt.ts` (`ANALYSIS_PROMPT_VERSION` "13" — its
   changelog comment carries the full v13 rationale)
-- Audit prompt: `src/prompts/drift.ts` (`DRIFT_PROMPT_VERSION`), unchanged
-  by this ADR — it already answered only `TEST_DRIFT`/`SPEC_CHANGE`
+- Audit prompt: `src/prompts/drift.ts` (`DRIFT_PROMPT_VERSION`). Its label
+  set was already `TEST_DRIFT`/`SPEC_CHANGE`; v6 added the
+  `specChangeKind` axis above
 - Related: ADR-0008 (label→action routing; amended by this ADR — see its
   note), ADR-0014 (the audit/execution axes `--only-hub-rerun-needed`
   reads; unaffected by this ADR)

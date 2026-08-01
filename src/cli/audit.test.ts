@@ -1,14 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import { HubApiError, type HubClient } from "../hub-client/index.ts";
-import { RunUsageError } from "../run/errors.ts";
 import type { HubContext } from "./hub-conn.ts";
 import type { Run } from "../hub/contract/schema.ts";
 import type { SpecResult } from "../drift/types.ts";
 import * as log from "./logger.ts";
+import type { HubRunPush } from "./open-hub-run.ts";
 import {
-  type DriftPush,
-  openDriftPush,
-  requireReportToHubConnection,
   resolveAuditHubContext,
   resolveAuditPromptContext,
   sealDriftPush,
@@ -35,23 +32,13 @@ function fakeRun(overrides: Partial<Run> = {}): Run {
   };
 }
 
-function fakePush(patchRun: HubClient["patchRun"]): DriftPush {
-  return { hub: { patchRun } as unknown as HubClient, runId: "r1", gitHead: null };
+function fakePush(patchRun: HubClient["patchRun"]): HubRunPush {
+  return { hub: { patchRun } as unknown as HubClient, kind: "drift", runId: "r1", gitHead: null };
 }
 
 const results: SpecResult[] = [{ target: { featureName: "tasks", specName: "create" }, ok: true, drift: null }];
 
 describe("incremental drift push", () => {
-  test("a failed open is raised, not degraded to a local-only sweep", async () => {
-    // The audit writes no local artifact, so a sweep that cannot publish has
-    // nothing to show for itself. Raised rather than exited so the caller's
-    // `finally` still releases this sweep's spec claims.
-    const openRun = vi.fn().mockRejectedValue(new HubApiError(503, "unavailable", "hub down"));
-    await expect(
-      openDriftPush({ project: "demo" }, process.cwd(), () => ({ openRun } as unknown as HubClient)),
-    ).rejects.toThrow(RunUsageError);
-  });
-
   test("a failed row patch does not abort the sweep", async () => {
     // Thrown here it would kill the pool mid-sweep and lose the specs still
     // running — worse than the missing row, which the seal resends anyway.
@@ -91,32 +78,6 @@ describe("incremental drift push", () => {
       ),
     ).rejects.toThrow("process.exit(2)");
     vi.restoreAllMocks();
-  });
-});
-
-describe("requireReportToHubConnection", () => {
-  test("does nothing when --report-to-hub was not requested", () => {
-    expect(() => requireReportToHubConnection({})).not.toThrow();
-  });
-
-  test("does nothing when a hub connection is available", () => {
-    expect(() =>
-      requireReportToHubConnection({ reportToHub: true, hubUrl: "http://hub.example", hubToken: "t" }),
-    ).not.toThrow();
-  });
-
-  test("exits before the sweep would run when --report-to-hub has no hub connection", () => {
-    // Stubbed so a CCQA_HUB_URL/CCQA_HUB_TOKEN left in the environment can't
-    // make this test flaky: it must fail on missing opts, not on env leakage.
-    vi.stubEnv("CCQA_HUB_URL", "");
-    vi.stubEnv("CCQA_HUB_TOKEN", "");
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("exit");
-    }) as never);
-    expect(() => requireReportToHubConnection({ reportToHub: true })).toThrow("exit");
-    expect(exit).toHaveBeenCalledWith(2);
-    exit.mockRestore();
-    vi.unstubAllEnvs();
   });
 });
 

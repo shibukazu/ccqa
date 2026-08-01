@@ -35,7 +35,7 @@ export function createFileRunStore(root: string): RunStore {
       });
     },
 
-    async list({ project, branch, status, limit }) {
+    async list({ project, branch, status, kinds, limit }) {
       const ids = await listSubdirsOrEmpty(runsDir(root));
       const runs: Run[] = [];
       for (const id of ids) {
@@ -44,6 +44,7 @@ export function createFileRunStore(root: string): RunStore {
         if (project !== undefined && run.project !== project) continue;
         if (branch !== undefined && run.branch !== branch) continue;
         if (status !== undefined && run.status !== status) continue;
+        if (kinds !== undefined && !kinds.includes(run.kind)) continue;
         runs.push(run);
       }
       runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));

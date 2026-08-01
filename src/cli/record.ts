@@ -5,12 +5,22 @@ import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
+import { currentReportCost } from "../report/run-cost.ts";
+import { emptySpecRow } from "../report/spec-row.ts";
 import { runTrace, type RunTraceResult } from "./trace.ts";
 import { parseAutoFixFlag, resolveTargetOrExit, runGenerate, toFixMode, type AutoFixMode } from "./generate.ts";
 import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOption, DEFAULT_LANGUAGE } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { resolveHubClient, type HubContext } from "./hub-conn.ts";
+import {
+  needsHubConnection,
+  openHubRun,
+  requireReportToHubConnection,
+  sealHubRun,
+  type HubRunPush,
+} from "./open-hub-run.ts";
+import { createRunTeardown, installTeardownSignalHandlers } from "./run-teardown.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import type { ValidationMode } from "../runtime/replay-validate.ts";
 import type { Locator, ParsedStatusLine, RecordedAction } from "../types.ts";
@@ -30,6 +40,7 @@ interface RecordOptions {
   sessionPin?: boolean;
   traceOnly?: boolean;
   learnHubTracePrompt?: boolean;
+  reportToHub?: boolean;
   cwd?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -77,6 +88,10 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .optionsGroup("What to do with the result:")
     .option("--overwrite", "Replace an existing test.spec.ts without warning")
+    .option(
+      "--report-to-hub",
+      "Leave a run (kind: record) on the hub saying this spec was recorded and what the recording spent on Claude, so a budget summed over the hub's runs sees it. It advances no ledger: a recording verifies nothing.",
+    )
     .optionsGroup("Learning:")
     .option(
       "--learn-hub-trace-prompt",
@@ -150,9 +165,12 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // Checked before the browser runs: a recording that cannot write back what
   // it learned should say so first, not after the expensive part.
   if (opts.learnHubTracePrompt && hubContext === null) {
-    log.error("--learn-hub-trace-prompt requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)");
+    log.error(needsHubConnection("--learn-hub-trace-prompt"));
     process.exit(2);
   }
+  // Checked here rather than left to `openHubRun`: that call sits behind the
+  // spec lock, and the usage error it raises exits without releasing it.
+  const pushConn = opts.reportToHub ? requireReportToHubConnection(hubContext) : null;
 
   // Hold the spec lock across trace + generate: a concurrent record/generate
   // of the same spec would interleave ir.json and output writes. runGenerate
@@ -167,32 +185,52 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
     },
   );
 
-  let traceResult: RunTraceResult | null = null;
-  try {
-    traceResult = await runTrace(featureName, specName, opts.model, opts.traceValidation ?? "lenient", language, {
-      cwd: cwdForProfile,
-      hubContext,
-    });
-    log.blank();
+  // Opened after the lock, so a spec another job holds costs no orphan run,
+  // and before the trace, so a recording that dies still leaves its spend.
+  const push = pushConn ? await openHubRun("record", pushConn, cwdForProfile, opts.hubProfile) : null;
+  if (push) log.info(`hub: record run opened (${push.runId})`);
 
-    if (!opts.traceOnly) {
-      await runGenerate(featureName, specName, {
-        maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
-        fixMode: toFixMode(opts.autoFix ?? "interactive"),
-        force: opts.overwrite ?? false,
-        useSnapshot: opts.sessionPin !== false,
-        language,
-        model: opts.model,
+  // Node skips `finally` on a signal, and a CI `timeout` sends SIGTERM — so a
+  // hung recording would otherwise leave its run `running` with no spend, the
+  // one case the flag exists for.
+  let sealed = false;
+  const seal = async (recorded: boolean): Promise<void> => {
+    if (!push || sealed) return;
+    sealed = true;
+    await sealRecordPush(push, featureName, specName, recorded);
+  };
+  const teardown = createRunTeardown();
+  teardown.onFinalize(() => seal(false));
+  const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
+
+  let recorded = false;
+  try {
+    let traceResult: RunTraceResult | null = null;
+    let generated = true;
+    try {
+      traceResult = await runTrace(featureName, specName, opts.model, opts.traceValidation ?? "lenient", language, {
         cwd: cwdForProfile,
         hubContext,
       });
-    }
-  } finally {
-    await releaseLock();
-  }
+      log.blank();
 
-  if (opts.learnHubTracePrompt && traceResult !== null) {
-    {
+      if (!opts.traceOnly) {
+        generated = (await runGenerate(featureName, specName, {
+          maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
+          fixMode: toFixMode(opts.autoFix ?? "interactive"),
+          force: opts.overwrite ?? false,
+          useSnapshot: opts.sessionPin !== false,
+          language,
+          model: opts.model,
+          cwd: cwdForProfile,
+          hubContext,
+        })).passed;
+      }
+    } finally {
+      await releaseLock();
+    }
+
+    if (opts.learnHubTracePrompt && traceResult !== null) {
       log.blank();
       await updateAgentPrompt({
         kind: "record",
@@ -203,8 +241,39 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
         ...(language ? { language } : {}),
       });
     }
+    recorded = generated;
+  } finally {
+    disposeSignalHandlers();
+    await seal(recorded);
   }
 
+  // After the seal: `process.exit` would skip it, losing exactly the spend an
+  // exhausted auto-fix loop is most expensive for.
+  if (!recorded) process.exit(1);
+}
+
+/**
+ * Close the record run with the one row this command produced. One spec is
+ * recorded per invocation, so one row is the whole run — enough for the runs
+ * list to say what the money bought.
+ */
+export async function sealRecordPush(
+  push: HubRunPush,
+  featureName: string,
+  specName: string,
+  recorded: boolean,
+): Promise<void> {
+  await sealHubRun(push, {
+    rows: [
+      emptySpecRow({
+        feature: featureName,
+        spec: specName,
+        title: null,
+        status: recorded ? "passed" : "failed",
+      }),
+    ],
+    reportMeta: { git: { head: push.gitHead, base: null }, cost: currentReportCost() },
+  });
 }
 
 /**

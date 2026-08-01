@@ -58,6 +58,20 @@ describe("driftResultsToReport", () => {
     expect(report.results[0]!.analysis).toEqual({ ...d, reasoning: "" });
   });
 
+  test("specChangeKind survives on SPEC_CHANGE and is dropped from any other label", () => {
+    const changed = driftResultsToReport(
+      [result({ drift: diagnosis({ label: "SPEC_CHANGE", specChangeKind: "FEATURE_REMOVED" }) })],
+      meta,
+    );
+    expect(changed.results[0]!.analysis!.specChangeKind).toBe("FEATURE_REMOVED");
+
+    const stray = driftResultsToReport(
+      [result({ drift: diagnosis({ label: "TEST_DRIFT", specChangeKind: "FEATURE_REMOVED" }) })],
+      meta,
+    );
+    expect(stray.results[0]!.analysis).not.toHaveProperty("specChangeKind");
+  });
+
   test("a spec with a call error is failed regardless of the diagnosis", () => {
     const report = driftResultsToReport([result({ error: "claude call failed" })], meta);
     expect(report.results[0]!.status).toBe("failed");
