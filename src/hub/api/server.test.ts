@@ -583,6 +583,44 @@ describe("hub API server", () => {
       expect(sealed.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, unknown: 1 });
     });
 
+    test("a drift row reaches the ledger without waiting for the seal", async () => {
+      // `ccqa audit` has no signal teardown, so a sweep a CI timeout kills
+      // never sends `done`. If the ledger only moved there, every spec the
+      // sweep already paid to audit would be due all over again.
+      const sha = "b".repeat(40);
+      const run = await json(
+        await fetch(
+          `${baseUrl}/api/v1/runs/open?project=demo&kind=drift&branch=main&gitHead=${sha}`,
+          authed({ method: "POST" }),
+        ),
+      );
+
+      await patch(run.id as string, {
+        rows: [
+          makeRow({
+            spec: "audited-early",
+            status: "failed",
+            analysis: {
+              label: "TEST_DRIFT",
+              confidence: 0.9,
+              headline: "h",
+              recommendation: "r",
+              evidence: [],
+              reasoning: "",
+            },
+          }),
+        ],
+      });
+
+      // Still running: nothing sealed it.
+      const midRun = await json(await fetch(`${baseUrl}/api/v1/runs/${run.id}`, authed()));
+      expect(midRun.status).toBe("running");
+      expect(midRun.drift).toEqual({ specs: 1, testDrift: 1, specChange: 0, unknown: 0 });
+
+      const ledger = await json(await fetch(`${baseUrl}/api/v1/projects/demo/drift`, authed()));
+      expect(ledger.specs["demo/audited-early"]).toMatchObject({ label: "TEST_DRIFT", gitHead: sha });
+    });
+
     test("grading a drift row is joined on as gradedDrift, leaving the audit's own counts alone", async () => {
       // A grade is the ground truth and every screen should follow it, but the
       // run must keep saying what the audit found — that pair is what the

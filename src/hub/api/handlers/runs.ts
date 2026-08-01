@@ -455,28 +455,37 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
       }
     }
 
-    const patch: Partial<Run> = done
-      ? {
-          status: finalStatus ?? (specs.failed > 0 ? "failed" : "passed"),
-          specs,
-          costUsd,
-          // The single-shot push derives this at create time from the whole
-          // report. Here the rows only exist once the run is sealed, so it is
-          // derived at the same point — otherwise a drift run pushed
-          // incrementally would carry label counts of null while its rows
-          // plainly have diagnoses, and every reader of `drift` would have to
-          // treat "no summary" and "no drift" as the same thing.
-          ...(run.kind === "drift" ? { drift: summarizeDrift(mergedResults) } : {}),
-          ...(reportMeta?.git?.head ? { gitHead: reportMeta.git.head } : {}),
-          ...(reportMeta?.promptVersion ? { promptVersion: reportMeta.promptVersion } : {}),
-          ...((await deployHeadMovedDuringRun(config.storage, run)) ? { deployedShaAmbiguous: true } : {}),
-        }
-      : { specs, costUsd };
+    const patch: Partial<Run> = {
+      specs,
+      costUsd,
+      // Recomputed on every patch, not just the seal: a drift run whose rows
+      // plainly carry diagnoses must not report label counts of null while it
+      // is still running, or every reader of `drift` has to treat "no summary"
+      // and "no drift" as the same thing.
+      ...(run.kind === "drift" ? { drift: summarizeDrift(mergedResults) } : {}),
+      ...(done
+        ? {
+            status: finalStatus ?? (specs.failed > 0 ? "failed" : "passed"),
+            ...(reportMeta?.git?.head ? { gitHead: reportMeta.git.head } : {}),
+            ...(reportMeta?.promptVersion ? { promptVersion: reportMeta.promptVersion } : {}),
+            ...((await deployHeadMovedDuringRun(config.storage, run)) ? { deployedShaAmbiguous: true } : {}),
+          }
+        : {}),
+    };
     const updated = await config.storage.runs.update(id, patch);
-    if (done) {
-      await updateSpecLedger(config.storage, updated, mergedResults);
-      await updateDriftLedger(config.storage, updated, mergedResults);
-    }
+    // The drift ledger advances on every patch, not only on the seal. An
+    // audited spec is a finished fact — one verdict about one spec at one
+    // commit, which nothing later in the sweep can revise — and `ccqa audit`
+    // has no signal teardown, so the patch carrying the row is the only moment
+    // it can be made durable. A sweep a CI timeout kills then keeps the specs
+    // it already paid for instead of being due all over again.
+    //
+    // The spec ledger stays on the seal. A `kind: "run"` row's cause is filled
+    // in the tail phase after the pool drains, so advancing per patch would
+    // publish red entries with no cause and rewrite them moments later. That
+    // path also has a teardown finalizer, which seals an interrupted run.
+    await updateDriftLedger(config.storage, updated, mergedResults);
+    if (done) await updateSpecLedger(config.storage, updated, mergedResults);
 
     sendJson(ctx.res, 200, updated);
   };
