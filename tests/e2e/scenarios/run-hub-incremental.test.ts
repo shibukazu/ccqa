@@ -1,15 +1,13 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createServer, type Server } from "node:http";
+import { createServer } from "node:http";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
+import { startTestHub, type TestHub } from "../_helpers/hub-server.ts";
 import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
 import { installFakeAgentBrowser } from "../_helpers/fake-ab.ts";
 import { writeMockMessages } from "../_helpers/fake-claude.ts";
-import { createHubServer } from "../../../src/hub/api/server.ts";
-import { createFileHubStorage } from "../../../src/hub/core/storage/file/index.ts";
 
 // End-to-end for incremental hub push: `ccqa run --report-to-hub` opens a
 // "running" run on the hub, PATCHes each finished spec's row as it lands, and
@@ -30,28 +28,16 @@ function mockStepMessages(stepId: string): Array<Record<string, unknown>> {
 
 describe("ccqa run --report-to-hub — incremental hub push", () => {
   let project: FakeProject | null = null;
-  let server: Server;
-  let dataDir: string;
+  let hub: TestHub;
   let baseUrl: string;
 
   beforeEach(async () => {
-    dataDir = await mkdtemp(join(tmpdir(), "ccqa-hub-inc-"));
-    server = createHubServer({
-      storage: createFileHubStorage(dataDir),
-      token: TOKEN,
-      encryptionKey: null,
-      allowedOrigins: [],
-    });
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-    const address = server.address();
-    if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
-    baseUrl = `http://127.0.0.1:${address.port}`;
+    hub = await startTestHub({ token: TOKEN });
+    baseUrl = hub.baseUrl;
   });
 
   afterEach(async () => {
-    server.closeAllConnections();
-    await new Promise<void>((r) => server.close(() => r()));
-    await rm(dataDir, { recursive: true, force: true });
+    await hub.close();
     if (project) {
       await project.cleanup();
       project = null;

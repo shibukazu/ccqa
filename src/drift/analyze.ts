@@ -24,6 +24,13 @@ export interface AnalyzeDriftInput {
   guidance?: DriftGuidance;
   /** Called once per spec when its check starts. Used by `cli/audit` for progress logging. */
   onSpecStart?: (target: SpecTarget) => void;
+  /**
+   * Called once per spec as soon as its check lands, before the sweep ends.
+   * `cli/audit` pushes the row to the hub here, so an interrupted sweep leaves
+   * what it already paid for. Awaited, which lets a slow hub throttle the pool
+   * rather than letting unsent rows pile up.
+   */
+  onSpecDone?: (result: SpecResult) => void | Promise<void>;
 }
 
 const DEFAULT_CONCURRENCY = 3;
@@ -35,11 +42,14 @@ const DEFAULT_CONCURRENCY = 3;
  * `cli/run` calls this with just the failing specs after vitest.
  */
 export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult[]> {
-  const { targets, cwd, blocks, concurrency = DEFAULT_CONCURRENCY, model, language, guidance, onSpecStart } = input;
+  const { targets, cwd, blocks, concurrency = DEFAULT_CONCURRENCY, model, language, guidance, onSpecStart, onSpecDone } =
+    input;
 
   return runPool(targets, concurrency, async (target) => {
     onSpecStart?.(target);
-    return checkSpec(target, { cwd, blocks, model, language, guidance });
+    const result = await checkSpec(target, { cwd, blocks, model, language, guidance });
+    await onSpecDone?.(result);
+    return result;
   });
 }
 

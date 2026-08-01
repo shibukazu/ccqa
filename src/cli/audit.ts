@@ -1,8 +1,5 @@
 import { Command } from "commander";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   ensureCcqaDir,
   listFeatureTree,
@@ -13,7 +10,9 @@ import { errMessage, RunUsageError } from "../run/errors.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
 import { renderDrift } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
-import { driftResultsToReport } from "../drift/to-report.ts";
+import { driftResultsToReport, driftResultToRow } from "../drift/to-report.ts";
+import { currentReportCost } from "../report/run-cost.ts";
+import { githubRunId, githubRunUrl } from "../run/github-run.ts";
 import type { Format, SpecResult, SpecTarget, Threshold } from "../drift/types.ts";
 import type { DriftGuidance } from "../prompts/drift.ts";
 import {
@@ -24,8 +23,7 @@ import {
   hashTriageUserPrompt,
 } from "../prompts/custom-prompt.ts";
 import { collectChangedSpecs } from "./changed-specs.ts";
-import { packDirToTarGz } from "../hub/core/tar.ts";
-import { HubApiError, type HubClient } from "../hub-client/index.ts";
+import type { HubClient } from "../hub-client/index.ts";
 import { addLanguageOption, addProfileOption } from "./options.ts";
 import { fetchAuditNeed, selectSpecsNeedingAudit } from "../drift/audit-selection.ts";
 import { requireHubProfile } from "../run/hub-selection.ts";
@@ -233,8 +231,17 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
 
   let results: SpecResult[];
   let promptCtx: AuditPromptContext;
+  // Opened before the sweep so each spec can be sent the moment it lands. A
+  // sweep of every spec runs well past a CI job's timeout, and the audit's
+  // only output is the hub — batching the push to the end means an interrupt
+  // throws away everything the sweep already paid for.
+  let push: DriftPush | null = null;
   try {
     promptCtx = await resolveAuditPromptContext(opts, cwd);
+    if (opts.reportToHub) {
+      push = await openDriftPush(opts, cwd);
+      if (format === "text") log.info(`hub: incremental drift run opened (${push.runId})`);
+    }
     results = await analyzeDrift({
       targets,
       cwd,
@@ -245,6 +252,9 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
       guidance: promptCtx.guidance,
       onSpecStart: (t) => {
         if (format === "text") log.info(`checking ${t.featureName}/${t.specName}`);
+      },
+      onSpecDone: async (r) => {
+        if (push) await sendDriftRow(push, r, threshold);
       },
     });
   } finally {
@@ -258,9 +268,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
 
   process.stdout.write(renderDrift(results, format, cwd));
 
-  if (opts.reportToHub) {
-    await pushDriftResults({ results, threshold, cwd, opts, format, baseRef, promptCtx });
-  }
+  if (push) await sealDriftPush(push, { results, threshold, opts, format, baseRef, promptCtx });
 
   process.exit(determineExitCode(results, threshold));
 }
@@ -320,69 +328,127 @@ export function requireReportToHubConnection(opts: AuditOptions): void {
   process.exit(2);
 }
 
+/** An open `kind: "drift"` run this sweep patches its rows into as they land. */
+export interface DriftPush {
+  hub: HubClient;
+  runId: string;
+  /** Resolved once at open, so the seal names the run's own commit. */
+  gitHead: string | null;
+}
+
 /**
- * Push a finished drift audit to a ccqa hub as a `kind: "drift"` run, so it
- * shows up alongside `ccqa run` runs in the hub UI. A missing hub connection
- * is a usage error, not a silent skip — a CI job that asked to publish and
- * did not must say so.
+ * Open the drift run this sweep patches into. A failure here is fatal, as it
+ * is for `ccqa run`: a job that asked to publish and cannot reach the hub has
+ * not done what it was told, and the audit has no local artifact to fall back
+ * on — the hub is its only output. Raised before any spec is checked, so
+ * nothing is wasted. Not retried: a dropped response after the hub committed
+ * would leave a second orphan running run.
  *
- * `resolveHub` is injectable so tests can supply a fake `HubClient` without
- * a real hub connection; it defaults to the real flag/env resolution.
+ * `resolveHub` is injectable for tests.
  */
-export async function pushDriftResults(
+export async function openDriftPush(
+  opts: AuditOptions,
+  cwd: string,
+  resolveHub: (opts: AuditOptions) => HubClient | null = resolveHubClient,
+): Promise<DriftPush> {
+  const hub = resolveHub(opts);
+  if (!hub) {
+    throw new RunUsageError(
+      "--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
+    );
+  }
+  const project = resolveProject({ project: opts.project, cwd });
+  const [branch, gitHead] = await Promise.all([detectBranch(cwd), getGitHead(cwd)]);
+  const ciRunId = githubRunId();
+  const runUrl = githubRunUrl();
+  try {
+    const run = await hub.openRun({
+      project,
+      kind: "drift",
+      ...(branch ? { branch } : {}),
+      ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
+      ...(gitHead ? { gitHead } : {}),
+      ...(ciRunId ? { ciRunId } : {}),
+      ...(runUrl ? { runUrl } : {}),
+    });
+    return { hub, runId: run.id, gitHead };
+  } catch (err) {
+    // Thrown, not exited: the caller's `finally` has to release this sweep's
+    // spec claims first, or an unreachable hub holds them for the full TTL.
+    throw new RunUsageError(`--report-to-hub: could not open a run on the hub (${errMessage(err)})`);
+  }
+}
+
+/**
+ * Send one finished spec. A failure is warned and swallowed rather than
+ * thrown: the seal resends every row, so a dropped patch costs freshness for
+ * the rest of the sweep, not the record.
+ */
+export async function sendDriftRow(push: DriftPush, result: SpecResult, threshold: Threshold): Promise<void> {
+  try {
+    await push.hub.patchRun(push.runId, {
+      rows: [driftResultToRow(result, threshold)],
+      // Rides along per row so a sweep still in flight shows what it has spent.
+      reportMeta: { cost: currentReportCost() },
+    });
+  } catch (err) {
+    log.warn(`hub: could not push ${result.target.featureName}/${result.target.specName}: ${errMessage(err)}`);
+  }
+}
+
+/**
+ * Close the run with every row and the envelope metadata. Resends all rows
+ * rather than only the unsent ones, so this one call also repairs any row
+ * whose mid-sweep patch failed. Status is left to the hub, which derives it
+ * from the rows.
+ */
+export async function sealDriftPush(
+  push: DriftPush,
   args: {
     results: SpecResult[];
     threshold: Threshold;
-    cwd: string;
     opts: AuditOptions;
     format: Format;
     baseRef?: string | null;
     /** Absent only in tests that call this directly without the guidance phase. */
     promptCtx?: AuditPromptContext;
   },
-  resolveHub: (opts: AuditOptions) => HubClient | null = resolveHubClient,
 ): Promise<void> {
-  const { results, threshold, cwd, opts, format, baseRef, promptCtx } = args;
-  const hub = resolveHub(opts);
-  if (!hub) {
-    log.error("--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)");
+  const { results, threshold, opts, format, baseRef, promptCtx } = args;
+  // Branch and head come from the open, not from git again: the sealed
+  // envelope then names the same commit the run was attributed to.
+  const report = driftResultsToReport(results, {
+    threshold,
+    git: { head: push.gitHead, base: baseRef ?? null },
+    customPromptVersion: promptCtx?.customPromptVersion ?? null,
+    triageUserPromptHash: promptCtx?.triageUserPromptHash ?? null,
+  });
+
+  try {
+    await push.hub.patchRun(push.runId, {
+      rows: report.results,
+      done: true,
+      reportMeta: {
+        git: report.git,
+        promptVersion: report.promptVersion,
+        customPromptVersion: report.customPromptVersion,
+        ...(report.triageUserPromptHash ? { triageUserPromptHash: report.triageUserPromptHash } : {}),
+        cost: report.cost,
+      },
+    });
+  } catch (err) {
+    // The run stays `running` on the hub with a partial set of rows. That is a
+    // wrong record, not merely a missing one, so it must not exit clean.
+    log.error(`hub: could not close the drift run ${push.runId}: ${errMessage(err)}`);
     process.exit(2);
   }
 
-  try {
-    const project = resolveProject({ project: opts.project, cwd });
-    const [branch, head] = await Promise.all([detectBranch(cwd), getGitHead(cwd)]);
-
-    const report = driftResultsToReport(results, {
-      threshold,
-      git: { head, base: baseRef ?? null },
-      customPromptVersion: promptCtx?.customPromptVersion ?? null,
-      triageUserPromptHash: promptCtx?.triageUserPromptHash ?? null,
-    });
-
-    const dir = await mkdtemp(join(tmpdir(), "ccqa-drift-push-"));
-    try {
-      await writeFile(join(dir, "report.json"), JSON.stringify(report, null, 2), "utf8");
-      const archive = await packDirToTarGz(dir);
-      const run = await hub.pushRun(archive, {
-        project,
-        ...(branch ? { branch } : {}),
-        kind: "drift",
-      });
-      if (format === "text") {
-        // best-effort push なので、URL未設定時にexitするresolveBaseUrlではなくここで独立導出する
-        const baseUrl = (opts.hubUrl ?? process.env.CCQA_HUB_URL ?? "").replace(/\/+$/, "");
-        log.info(`pushed drift result to hub: ${baseUrl}/#/runs/${run.id}`);
-      }
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  } catch (err) {
-    if (err instanceof HubApiError) {
-      log.error(`hub request failed (${err.status} ${err.code}): ${err.message}`);
-      process.exit(2);
-    }
-    throw err;
+  if (format === "text") {
+    // Derived here rather than through `resolveBaseUrl`, which exits when no
+    // URL is set — by this point the push has landed, so an unset URL should
+    // cost a link, not the run.
+    const baseUrl = (opts.hubUrl ?? process.env.CCQA_HUB_URL ?? "").replace(/\/+$/, "");
+    log.info(`pushed drift result to hub: ${baseUrl}/#/runs/${push.runId}`);
   }
 }
 

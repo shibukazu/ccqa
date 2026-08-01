@@ -1,14 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
+import { startTestHub, type TestHub } from "../_helpers/hub-server.ts";
 import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
 import { writeMockMessages } from "../_helpers/fake-claude.ts";
-import { createHubServer } from "../../../src/hub/api/server.ts";
-import { createFileHubStorage } from "../../../src/hub/core/storage/file/index.ts";
 
 // `ccqa audit --only-hub-audit-needed` claims the specs it is about to check
 // (so a second cycle inside the same TTL window doesn't re-audit them) and
@@ -27,18 +23,11 @@ function auditArgs(extra: string[] = []): string[] {
 
 describe("ccqa audit --only-hub-audit-needed — claim release", () => {
   let project: FakeProject | null = null;
-  let server: Server;
-  let dataDir: string;
-  let baseUrl: string;
+  let hub: TestHub;
 
   beforeEach(async () => {
-    dataDir = await mkdtemp(join(tmpdir(), "ccqa-audit-claim-"));
-    const storage = createFileHubStorage(dataDir);
-    server = createHubServer({ storage, token: TOKEN, encryptionKey: null, allowedOrigins: [] });
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-    const address = server.address();
-    if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
-    baseUrl = `http://127.0.0.1:${address.port}`;
+    hub = await startTestHub({ token: TOKEN });
+    const storage = hub.storage;
 
     // `--only-hub-audit-needed` 404s without a perspectives document, so seed
     // one directly (no Claude call needed) listing the fixture's one spec.
@@ -49,9 +38,7 @@ describe("ccqa audit --only-hub-audit-needed — claim release", () => {
   });
 
   afterEach(async () => {
-    server.closeAllConnections();
-    await new Promise<void>((r) => server.close(() => r()));
-    await rm(dataDir, { recursive: true, force: true });
+    await hub.close();
     if (project) {
       await project.cleanup();
       project = null;
@@ -68,7 +55,7 @@ describe("ccqa audit --only-hub-audit-needed — claim release", () => {
     const env = {
       ...noColorEnv(),
       CCQA_CLAUDE_MOCK_FILE: mockPath,
-      CCQA_HUB_URL: baseUrl,
+      CCQA_HUB_URL: hub.baseUrl,
       CCQA_HUB_TOKEN: TOKEN,
     };
 
