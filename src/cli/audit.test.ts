@@ -5,10 +5,13 @@ import type { Run } from "../hub/contract/schema.ts";
 import type { SpecResult } from "../drift/types.ts";
 import * as log from "./logger.ts";
 import {
+  openDriftPush,
   pushDriftResults,
   requireReportToHubConnection,
   resolveAuditHubContext,
   resolveAuditPromptContext,
+  sealDriftPush,
+  sendDriftRow,
 } from "./audit.ts";
 
 function fakeRun(overrides: Partial<Run> = {}): Run {
@@ -83,6 +86,59 @@ describe("pushDriftResults", () => {
     ).rejects.toThrow("process.exit(2)");
 
     expect(exitSpy).toHaveBeenCalledWith(2);
+    vi.restoreAllMocks();
+  });
+});
+
+describe("incremental drift push", () => {
+  test("opens a drift run and falls back to the one-shot push when the open fails", async () => {
+    // The fallback is the point: the sweep must still publish, just without
+    // the per-spec streaming.
+    const openRun = vi.fn().mockRejectedValue(new HubApiError(503, "unavailable", "hub down"));
+    const push = await openDriftPush({ project: "demo" }, process.cwd(), "json", () => ({
+      openRun,
+    } as unknown as HubClient));
+    expect(push).toBeNull();
+  });
+
+  test("a failed row patch does not abort the sweep", async () => {
+    // Thrown here it would kill the pool mid-sweep and lose the specs still
+    // running — worse than the missing row, which the seal resends anyway.
+    const patchRun = vi.fn().mockRejectedValue(new HubApiError(500, "boom", "nope"));
+    await expect(
+      sendDriftRow({ hub: { patchRun } as unknown as HubClient, runId: "r1" }, results[0]!, "error"),
+    ).resolves.toBeUndefined();
+  });
+
+  test("the seal sends every row and closes the run", async () => {
+    // Every row, not just the unsent ones: that is what repairs a row whose
+    // mid-sweep patch failed.
+    const patchRun = vi.fn().mockResolvedValue(fakeRun());
+    await sealDriftPush(
+      { hub: { patchRun } as unknown as HubClient, runId: "r1" },
+      { results, threshold: "error", cwd: process.cwd(), opts: { project: "demo" }, format: "json" },
+    );
+
+    expect(patchRun).toHaveBeenCalledTimes(1);
+    const [id, body] = patchRun.mock.calls[0]!;
+    expect(id).toBe("r1");
+    expect(body.done).toBe(true);
+    expect(body.rows).toHaveLength(results.length);
+    expect(body.rows[0]).toMatchObject({ feature: "tasks", spec: "create" });
+  });
+
+  test("exits 2 when the seal fails, leaving a run that is wrong rather than absent", async () => {
+    const patchRun = vi.fn().mockRejectedValue(new HubApiError(500, "boom", "nope"));
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as never);
+
+    await expect(
+      sealDriftPush(
+        { hub: { patchRun } as unknown as HubClient, runId: "r1" },
+        { results, threshold: "error", cwd: process.cwd(), opts: { project: "demo" }, format: "json" },
+      ),
+    ).rejects.toThrow("process.exit(2)");
     vi.restoreAllMocks();
   });
 });

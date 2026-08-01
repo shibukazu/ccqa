@@ -33,6 +33,32 @@ function specStatus(result: SpecResult, threshold: Threshold): "passed" | "faile
  * equivalent (the audit gives one headline, not a deliberation) so it is
  * filled with an empty string to satisfy `FailureAnalysisSchema`.
  */
+/**
+ * One audited spec as a report row. Split out of `driftResultsToReport` so the
+ * incremental push can send a row the moment its spec lands, using the same
+ * mapping the final report uses — the hub upserts by feature/spec, so the two
+ * must produce identical rows or the closing patch would rewrite history.
+ */
+export function driftResultToRow(result: SpecResult, threshold: Threshold): ReportSpecResult {
+  return {
+    feature: result.target.featureName,
+    spec: result.target.specName,
+    title: result.title ?? null,
+    ...(result.live === undefined ? {} : { mode: result.live ? ("live" as const) : ("deterministic" as const) }),
+    status: specStatus(result, threshold),
+    testCounts: null,
+    durationMs: null,
+    assertions: null,
+    analysis: result.drift ? result.drift : null,
+    analysisSkipped: null,
+    failureLogExcerpt: null,
+    diffExcerpt: null,
+    specYaml: null,
+    evidence: null,
+    liveRun: null,
+  };
+}
+
 export function driftResultsToReport(
   results: SpecResult[],
   meta: {
@@ -49,23 +75,7 @@ export function driftResultsToReport(
     triageUserPromptHash?: string | null;
   },
 ): RunReportData {
-  const specResults: ReportSpecResult[] = results.map((result) => ({
-    feature: result.target.featureName,
-    spec: result.target.specName,
-    title: result.title ?? null,
-    ...(result.live === undefined ? {} : { mode: result.live ? ("live" as const) : ("deterministic" as const) }),
-    status: specStatus(result, meta.threshold),
-    testCounts: null,
-    durationMs: null,
-    assertions: null,
-    analysis: result.drift ? result.drift : null,
-    analysisSkipped: null,
-    failureLogExcerpt: null,
-    diffExcerpt: null,
-    specYaml: null,
-    evidence: null,
-    liveRun: null,
-  }));
+  const specResults = results.map((result) => driftResultToRow(result, meta.threshold));
 
   return {
     schemaVersion: 1,
