@@ -14,6 +14,8 @@ import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOpt
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { resolveHubClient, type HubContext } from "./hub-conn.ts";
+import { createRunTeardown, installTeardownSignalHandlers, type RunTeardown } from "./run-teardown.ts";
+import { needsHubConnection } from "./open-hub-run.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import { buildGenerateRunSummary } from "./build-generate-run-summary.ts";
 import * as log from "./logger.ts";
@@ -61,20 +63,25 @@ export interface RunGenerateOptions {
   hubContext?: HubContext | null;
   /** Refresh the target's `<target>.agent` learning prompt from this run. */
   updateAgentPrompt?: boolean;
+  /** The caller's signal teardown; targets register pinned browser sessions with it. */
+  teardown?: RunTeardown;
 }
 
 /**
  * The `generate` flow shared by `ccqa generate` and the codegen half of
  * `ccqa record`: resolve the spec's target plugin, load its input (the
  * recording, for input:"recording" targets), and dispatch to the plugin.
- * This layer owns the CLI concerns — overwrite confirmation, logging,
- * exit-code policy — while the plugin owns the generation pipeline.
+ * This layer owns the CLI concerns — overwrite confirmation, logging — while
+ * the plugin owns the generation pipeline. A generation whose output still
+ * fails is reported as `{ passed: false }` rather than thrown or exited: both
+ * callers have work left that `process.exit` would skip — `ccqa record
+ * --report-to-hub` still has to seal the run holding what the retries cost.
  */
 export async function runGenerate(
   featureName: string,
   specName: string,
   opts: RunGenerateOptions,
-): Promise<void> {
+): Promise<{ passed: boolean }> {
   log.header("generate", `${featureName}/${specName}`);
 
   const cwd = opts.cwd ?? process.cwd();
@@ -86,7 +93,7 @@ export async function runGenerate(
   // generate in the same process.
   const releaseLock = await acquireSpecLock(featureName, specName, "generate", cwd);
   try {
-    await runGenerateLocked(featureName, specName, opts, cwd);
+    return await runGenerateLocked(featureName, specName, opts, cwd);
   } finally {
     await releaseLock();
   }
@@ -111,7 +118,7 @@ async function runGenerateLocked(
   specName: string,
   opts: RunGenerateOptions,
   cwd: string,
-): Promise<void> {
+): Promise<{ passed: boolean }> {
   const specYaml = await readSpecFile(featureName, specName, cwd);
   const spec = parseTestSpec(specYaml);
   const config = await loadProjectConfig(cwd);
@@ -134,7 +141,8 @@ async function runGenerateLocked(
     const proceed = await confirmOverwrite(existingOutput);
     if (!proceed) {
       log.info("aborted; pass --overwrite to replace it without prompting");
-      return;
+      // Declining is not a failed generation: nothing was generated to fail.
+      return { passed: true };
     }
   }
 
@@ -163,22 +171,19 @@ async function runGenerateLocked(
     model: opts.model,
     hub: opts.hubContext ?? null,
     fix: { maxRetries: opts.maxRetries, mode: opts.fixMode, useSnapshot: opts.useSnapshot },
+    teardown: opts.teardown,
   };
 
   const result = await target.generate(ctx);
 
-  // Learn from this generation before the exit-code check: even a failed
-  // generation carries a useful signal (the fix it couldn't land), and a
-  // non-zero exit below would otherwise skip it.
+  // Learn from a failed generation too: the fix it couldn't land is a signal.
   if (opts.updateAgentPrompt) {
     await runGenerateAgentPromptUpdate(target, featureName, specName, result, opts, cwd);
   }
 
-  if (!result.passed) {
-    log.warn("auto-fix exhausted; test still failing");
-    process.exit(1);
-  }
-  log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
+  if (!result.passed) log.warn("auto-fix exhausted; test still failing");
+  else log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
+  return { passed: result.passed };
 }
 
 /**
@@ -333,13 +338,19 @@ async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promi
   }
 
   if (opts.learnHubCodegenPrompt && hubClient === null) {
-    log.error("--learn-hub-codegen-prompt requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)");
+    log.error(needsHubConnection("--learn-hub-codegen-prompt"));
     process.exit(2);
   }
   const hubContext: HubContext | null = hubClient && project ? { hub: hubClient, project } : null;
 
+  // `ccqa record` hands its own teardown down; standalone `ccqa generate` owns
+  // one here, so an interrupted generation still reaps the browser session the
+  // target pinned.
+  const teardown = createRunTeardown();
+  const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
+  let passed: boolean;
   try {
-    await runGenerate(featureName, specName, {
+    ({ passed } = await runGenerate(featureName, specName, {
       maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
       fixMode: toFixMode(opts.autoFix ?? "interactive"),
       force: opts.overwrite ?? false,
@@ -350,12 +361,17 @@ async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promi
       cwd,
       hubContext,
       updateAgentPrompt: opts.learnHubCodegenPrompt ?? false,
-    });
+      teardown,
+    }));
   } catch (e) {
     if (e instanceof SpecLockedError) {
       log.error(e.message);
       process.exit(2);
     }
     throw e;
+  } finally {
+    await teardown.run();
+    disposeSignalHandlers();
   }
+  if (!passed) process.exit(1);
 }

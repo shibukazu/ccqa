@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry, type SpecRedLedgerEntry } from "../../contract/schema.ts";
-import { GitEnvelopeSchema, ReportCostSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
+import { GitEnvelopeSchema, normalizeDiagnosis, ReportCostSchema, ReportKindSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportKind, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { DriftLabel } from "../../../drift/types.ts";
 import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
@@ -95,7 +95,7 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
         // head *after* it. A deploy that landed mid-run therefore reads as the
         // run's baseline and under-reports "needs re-run" — pass ?deployedSha=
         // (captured before the run started) to close that window.
-        ...(await resolveDeployedSha(config.storage, project, profile, deployedSha)),
+        ...(await resolveDeployedSha(config.storage, kind, project, profile, deployedSha)),
         deployedShaAmbiguous: false,
       };
 
@@ -155,7 +155,7 @@ export function createOpenRunHandler(config: OpenRunHandlerConfig) {
       // Stamped at open, not at finalize: this is the commit the environment
       // was actually running when the run started. The finalize patch checks
       // whether the head moved underneath it.
-      ...(await resolveDeployedSha(config.storage, project, profile, deployedSha)),
+      ...(await resolveDeployedSha(config.storage, kind, project, profile, deployedSha)),
       deployedShaAmbiguous: false,
     };
 
@@ -233,6 +233,8 @@ async function updateSpecLedger(
   results: ReportSpecResult[],
 ): Promise<void> {
   const { gitHead, branch } = run;
+  // Only an execution may move a baseline. A recording is not a verification:
+  // it produced a test, it did not check the product.
   if (run.kind !== "run" || !gitHead || !branch) return;
   const entry: SpecLedgerEntry = {
     gitHead,
@@ -302,13 +304,16 @@ async function updateDriftLedger(
   for (const row of results) {
     if (row.status === "skipped") continue;
     const key = `${row.feature}/${row.spec}`;
-    const diagnosis = row.analysis;
+    // Normalized on the way in: a client is free to push a row this hub never
+    // built, and the ledger is where a mismatched one would outlive the push.
+    const diagnosis = row.analysis ? normalizeDiagnosis(row.analysis) : null;
     ledger.specs[key] = {
       // A kind:"drift" row's `analysis` always originates from analyzeDrift
       // (see summarizeDrift above), so its label is one of
       // TEST_DRIFT/SPEC_CHANGE/UNKNOWN, never PRODUCT_BUG.
       label: diagnosis ? (diagnosis.label as DriftLabel) : null,
       surface: diagnosis?.surface,
+      specChangeKind: diagnosis?.specChangeKind,
       confidence: diagnosis?.confidence,
       headline: diagnosis?.headline,
       gitHead,
@@ -334,11 +339,15 @@ async function updateDriftLedger(
  */
 async function resolveDeployedSha(
   storage: HubStorage,
+  kind: ReportKind,
   project: string,
   profile: string | null,
   explicit: string | null,
 ): Promise<Pick<Run, "deployedSha" | "deployedShaSource">> {
   if (explicit) return { deployedSha: explicit, deployedShaSource: "client" };
+  // A recording advances no ledger, so nothing it leaves can be read against a
+  // deploy — and a stamped sha would cost a second log read at the seal.
+  if (kind === "record") return { deployedSha: null, deployedShaSource: null };
   try {
     const head = await storage.deploys.head(project, profile ?? "default");
     if (head) return { deployedSha: head.sha, deployedShaSource: "hub-deploy-log" };
@@ -485,17 +494,22 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
   };
 }
 
-/** GET /api/v1/runs?project&branch&status&limit */
+/** GET /api/v1/runs?project&branch&status&kind&limit */
 export function createListRunsHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const project = ctx.url.searchParams.get("project");
     const branch = ctx.url.searchParams.get("branch");
     const status = ctx.url.searchParams.get("status");
     const limitRaw = ctx.url.searchParams.get("limit");
+    // Comma-separated, unlike the single `kind` a push declares: a caller that
+    // only reads some kinds (the UI's runId→URL map skips recordings) would
+    // otherwise have to widen `limit` to keep the rest in the window.
+    const kindsRaw = ctx.url.searchParams.get("kind");
     const runs = await storage.runs.list({
       ...(project ? { project } : {}),
       ...(branch ? { branch } : {}),
       ...(status ? { status: status as Run["status"] } : {}),
+      ...(kindsRaw ? { kinds: kindsRaw.split(",").map(requireKind) } : {}),
       ...(limitRaw ? { limit: Number(limitRaw) } : {}),
     });
     sendJson(ctx.res, 200, { runs: await Promise.all(runs.map((r) => withGradedDrift(storage, r))) });
@@ -629,7 +643,7 @@ function parseRunScope(ctx: RouteContext): {
   project: string;
   branch: string | null;
   profile: string | null;
-  kind: "run" | "drift";
+  kind: Run["kind"];
   deployedSha: string | null;
 } {
   const projectRaw = ctx.url.searchParams.get("project");
@@ -639,11 +653,18 @@ function parseRunScope(ctx: RouteContext): {
   const profileRaw = ctx.url.searchParams.get("profile");
   const profile = profileRaw ? requireSafeSegment(profileRaw, "profile") : null;
   const kindRaw = ctx.url.searchParams.get("kind");
-  if (kindRaw !== null && kindRaw !== "run" && kindRaw !== "drift") {
-    throw new HttpError(400, "invalid_param", `invalid kind: must be "run" or "drift"`);
-  }
   const deployedSha = boundedParam(ctx.url.searchParams.get("deployedSha"), "deployedSha", 64);
-  return { project, branch, profile, kind: kindRaw ?? "run", deployedSha };
+  return { project, branch, profile, kind: kindRaw === null ? "run" : requireKind(kindRaw), deployedSha };
+}
+
+/** One `kind` value, validated against the enum so the message can't drift from it. */
+function requireKind(raw: string): ReportKind {
+  const parsed = ReportKindSchema.safeParse(raw);
+  if (!parsed.success) {
+    const allowed = ReportKindSchema.options.map((k) => `"${k}"`).join(", ");
+    throw new HttpError(400, "invalid_param", `invalid kind: must be one of ${allowed}`);
+  }
+  return parsed.data;
 }
 
 /**

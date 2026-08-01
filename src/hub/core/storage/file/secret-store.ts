@@ -1,21 +1,10 @@
 import type { SecretScope, SecretStore } from "../types.ts";
-import { listDirOrEmpty, listSubdirsOrEmpty, readBytesOrNull, readJson, removePath, writeBytes, writeJson } from "./fs-helpers.ts";
+import { assertSafeName, listDirOrEmpty, listSubdirsOrEmpty, readBytesOrNull, readJson, removePath, writeBytes, writeJson } from "./fs-helpers.ts";
 import { secretBlobPath, secretKindDir, secretMetaPath, secretProjectDir, secretScopeDir } from "./paths.ts";
 
 interface StoredMeta {
   meta: Record<string, unknown>;
   updatedAt: string;
-}
-
-/**
- * Defense-in-depth: project/profile/name are expected to already be validated
- * by the HTTP layer (`requireSafeSegment`), but this store builds file paths
- * directly from them, so it re-checks rather than trusting callers blindly.
- */
-function assertSafeName(value: string, label: string): void {
-  if (value.length === 0 || value.includes("/") || value.includes("\\") || value.split(/[\\/]/).includes("..") || value === ".") {
-    throw new Error(`invalid ${label}: must be a bare name without path separators or '..'`);
-  }
 }
 
 function assertSafeScope(scope: SecretScope): void {

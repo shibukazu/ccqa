@@ -1,17 +1,6 @@
 import type { PerspectivesStore } from "../types.ts";
-import { readBytesOrNull, removePath, updateJson, writeBytes } from "./fs-helpers.ts";
+import { assertSafeName, readBytesOrNull, removePath, updateJson, writeBytes } from "./fs-helpers.ts";
 import { perspectivesPath } from "./paths.ts";
-
-/**
- * Defense-in-depth path validation: the HTTP layer already checks the project
- * segment, but this builds a file path from it, so it re-checks rather than
- * trusting callers. Mirrors the sibling prompt/secret stores.
- */
-function assertSafeName(value: string, label: string): void {
-  if (value.length === 0 || value.includes("/") || value.includes("\\") || value.split(/[\\/]/).includes("..") || value === ".") {
-    throw new Error(`invalid ${label}: must be a bare name without path separators or '..'`);
-  }
-}
 
 /**
  * Perspectives storage: one JSON document per project, plain UTF-8 with no

@@ -54,6 +54,24 @@ describe("createRunTeardown", () => {
     expect(closeSession).toHaveBeenCalledWith("s1");
   });
 
+  test("a second run() while the first is in flight awaits it, rather than returning early", async () => {
+    // On a signal both the handler and the command's own `finally` land here,
+    // and the second one goes on to `process.exit` — returning early there
+    // would kill `ccqa record`'s seal PATCH mid-flight.
+    const teardown = createRunTeardown();
+    let flushed = false;
+    teardown.onFinalize(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      flushed = true;
+    });
+
+    const fromSignalHandler = teardown.run();
+    await teardown.run();
+
+    expect(flushed).toBe(true);
+    await fromSignalHandler;
+  });
+
   test("run() is idempotent — a second call does nothing (double Ctrl-C guard)", async () => {
     const teardown = createRunTeardown();
     const finalize = vi.fn();

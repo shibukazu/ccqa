@@ -157,6 +157,30 @@ end, so a run killed by a CI timeout still says what it burned. The one
 thing outside it is `--learn-hub-live-prompt`, which runs after the report is
 written; the `[cost]` line on stderr is the true total for the invocation.
 
+## What leaves a run on the hub
+
+Three commands leave a run behind, each under its own `kind`, and the hub UI
+lists all three together:
+
+| Command | `kind` | What it advances |
+|---|---|---|
+| `ccqa run --report-to-hub` | `run` | the spec ledger — what passed, what failed, and what still needs a re-run |
+| `ccqa audit --report-to-hub` | `drift` | the drift ledger — what the audit last read, and what it found |
+| `ccqa record --report-to-hub` | `record` | nothing |
+
+A recording advances nothing on purpose: it produced a test, it did not check
+the product, so it can never be the record that says a spec is green or that
+the audit has caught up. It is there for one reason — an automated
+re-recording loop calls Claude several times per spec, and a budget that caps
+spend by summing `costUsd` over the hub's runs cannot see money that left no
+run. The run carries the spec that was recorded, whether the recording
+finished, and what it spent; it is sealed even when the recording throws,
+since a failed recording paid for its calls all the same.
+
+The flag needs a hub connection (`--hub-url`/`--hub-token` or
+`CCQA_HUB_URL`/`CCQA_HUB_TOKEN`) and fails without one rather than recording
+silently unpublished.
+
 ## Failure triage
 
 With `--on-fail-explain`, each failing spec gets a **root-cause call** made
@@ -328,8 +352,9 @@ ccqa audit --report-to-hub                # also push the result to a ccqa hub
 `--report-to-hub` uploads the audit result to a hub as a `kind: "drift"` run, shown
 alongside `ccqa run` runs in the hub UI with its own issue counts. It needs
 a hub connection (`--hub-url`/`--hub-token` or `CCQA_HUB_URL`/
-`CCQA_HUB_TOKEN`); without one it logs a warning and is skipped, never
-changing the exit code (still driven by `--exit-on`).
+`CCQA_HUB_TOKEN`) and exits 2 without one, before the sweep spends anything —
+the audit writes no local report, so a sweep that cannot publish has nothing
+to show for itself.
 
 Pushing also advances the hub's per-project **drift ledger**: each spec's
 newest audit (or "no drift found") lands there, so the Perspectives tab shows

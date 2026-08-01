@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   FailureAnalysisSchema,
   LabelsExportSchema,
+  normalizeDiagnosis,
   RunReportDataSchema,
   type RunReportData,
 } from "./schema.ts";
@@ -147,6 +148,17 @@ describe("FailureAnalysisSchema", () => {
         reasoning: "",
       }).success,
     ).toBe(false);
+  });
+});
+
+describe("normalizeDiagnosis", () => {
+  test("keeps specChangeKind under SPEC_CHANGE and drops it from any other label", () => {
+    const kept = normalizeDiagnosis({ label: "SPEC_CHANGE", specChangeKind: "FEATURE_REMOVED" as const });
+    expect(kept.specChangeKind).toBe("FEATURE_REMOVED");
+
+    const stray = normalizeDiagnosis({ label: "TEST_DRIFT", specChangeKind: "FEATURE_REMOVED" as const });
+    expect(stray).not.toHaveProperty("specChangeKind");
+    expect(stray.label).toBe("TEST_DRIFT");
   });
 });
 

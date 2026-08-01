@@ -1,22 +1,10 @@
 import type { PromptStore } from "../types.ts";
-import { listDirOrEmpty, listSubdirsOrEmpty, readBytesOrNull, readJson, removePath, writeBytes, writeJson } from "./fs-helpers.ts";
+import { assertSafeName, listDirOrEmpty, listSubdirsOrEmpty, readBytesOrNull, readJson, removePath, writeBytes, writeJson } from "./fs-helpers.ts";
 import { promptBlobPath, promptMetaPath, promptProjectDir, promptsKindDir } from "./paths.ts";
 
 interface StoredMeta {
   meta: Record<string, unknown>;
   updatedAt: string;
-}
-
-/**
- * Defense-in-depth path validation: the HTTP layer already checks project/name,
- * but this builds file paths from them, so it re-checks rather than trusting
- * callers. (Which names are allowed at all is the handler's job — this only
- * guards against path traversal.)
- */
-function assertSafeName(value: string, label: string): void {
-  if (value.length === 0 || value.includes("/") || value.includes("\\") || value.split(/[\\/]/).includes("..") || value === ".") {
-    throw new Error(`invalid ${label}: must be a bare name without path separators or '..'`);
-  }
 }
 
 /**

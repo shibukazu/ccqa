@@ -47,11 +47,12 @@ POST /api/v1/runs?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&d
   Content-Type: application/gzip
   body: gzip tar of a `ccqa run` output directory (must contain report.json)
   ?profile is optional — recorded on the Run for display; runs are not scoped by profile
-  ?kind is optional — "run" (default) or "drift"; "drift" is a `ccqa audit --report-to-hub` audit, not an executed run
+  ?kind is optional — "run" (default), "drift" or "record"; only "run" is an executed run (see the `kind` field below)
   ?deployedSha is optional — the commit the environment was running; overrides the deploy log's head
   → 201 Run
 
-GET /api/v1/runs?project=<name>&branch=<branch>&status=<status>&limit=<n>
+GET /api/v1/runs?project=<name>&branch=<branch>&status=<status>&kind=<kinds>&limit=<n>
+  ?kind is optional — a comma-separated list of kinds to keep (e.g. "run,drift")
   → 200 { runs: Run[] }
 
 GET /api/v1/runs/:id
@@ -99,7 +100,7 @@ interface Run {
   profile: string | null;    // which profile/environment the run executed against; display-only
   branch: string | null;
   status: "passed" | "failed" | "running";
-  kind: "run" | "drift";     // "run" = ccqa run/live execution; "drift" = ccqa audit --report-to-hub
+  kind: "run" | "drift" | "record";  // which command left the run — see below
   drift: { specs: number; testDrift: number; specChange: number; unknown: number } | null; // set only for kind: "drift"
   specs: { total: number; passed: number; failed: number };
   gitHead: string | null;
@@ -123,7 +124,16 @@ this run record via `POST /api/v1/runs/open` and `PATCH /api/v1/runs/:id`.
 `drift` is derived from the pushed report's `results[].analysis` (present only
 for `kind: "drift"` runs, where each row's `analysis` is a labelled
 `TEST_DRIFT`/`SPEC_CHANGE`/`UNKNOWN` diagnosis rather than a triage call) and
-is `null` for `kind: "run"`.
+is `null` for every other kind.
+
+`kind` names the command that left the run: `"run"` is `ccqa run`, `"drift"`
+is `ccqa audit --report-to-hub`, and `"record"` is
+`ccqa record --report-to-hub`. Only `"run"` executed anything. A `"record"`
+run carries one row — the spec that was recorded — and exists so that a
+budget summed over `costUsd` sees what re-recording cost; it advances no
+ledger, because recording a test is not a verification of the product. Its
+`specs` counts are about that one row and answer nothing about a spec's
+health.
 
 `costUsd` is what the run spent on Claude, taken from the pushed report's
 `cost.totalCostUsd`. It counts everything the invocation billed — live
@@ -488,6 +498,7 @@ GET /api/v1/projects/:project/drift
 interface SpecDriftEntry {
   label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN" | null;  // null = audited, no drift found
   surface?: "spec" | "generated";  // set only when label is non-null
+  specChangeKind?: "FEATURE_REMOVED" | "BEHAVIOUR_CHANGED";  // set only on SPEC_CHANGE
   confidence?: number;
   headline?: string;
   gitHead: string;   // the commit this audit read
@@ -505,6 +516,52 @@ a different state from `label: null` and the two must not be conflated. A
 had (including none). Entries are scoped by project/**branch**; the response
 merges every branch, newest `at` per spec winning — the same approximation
 `/last-green`'s `getMerged` read makes.
+
+`specChangeKind` names which repair a `SPEC_CHANGE` needs: `FEATURE_REMOVED`
+means the behaviour the spec checks is gone from the code, so the spec goes
+with it, and `BEHAVIOUR_CHANGED` means it still exists but works differently,
+so the spec is rewritten and re-recorded. It is **absent** on every other
+label, and also on a spec change the audit could not read either way — there
+is no third value, so a consumer must leave an absent one to a human rather
+than defaulting to either repair.
+
+## Acks
+
+A named set of opaque keys a consumer has already **acted on**, scoped by
+project/profile. A consumer that reports the hub's verdicts onward — telling
+a human, opening a ticket, whatever it does — needs to know what it already
+handled, so it can send only what is new; a CI job has no memory across runs,
+and the hub is the only durable thing in the loop. The set is opaque to the
+hub: the consumer picks the name, decides what "acted on" means, and does its
+own comparing.
+
+```
+GET /api/v1/projects/:project/acks/:name?profile=<name>
+  → 200 { project, profile, name, keys: string[], at: string | null }
+
+PUT /api/v1/projects/:project/acks/:name?profile=<name>
+  Content-Type: application/json
+  body: { keys: string[] }
+  → 200 { project, profile, name, keys, at }   (`at` is the write time)
+```
+
+`profile` defaults to `"default"`. `name` must be a bare name (letters,
+digits, `.`, `_`, `-`), like a session's.
+
+A `GET` of a name that was never written returns an **empty set** with
+`at: null`, not a `404` — "nothing acted on yet" is the honest answer on a
+first run. `PUT` replaces the set wholesale rather than applying a delta, so
+the consumer sends what it holds now; `keys: []` resets. There is no
+`DELETE`, and the hub computes no diff — only the consumer knows what to do
+with the difference.
+
+**Write after acting, never before.** The `PUT` records what was successfully
+acted on; issuing it first would mark a failed send as delivered and the item
+would never be mentioned again.
+
+Bounds: at most 5000 keys, each at most 256 characters. Both sit far above
+any real project and exist only to stop a malformed client writing an
+unbounded document.
 
 ## Sessions
 

@@ -18,7 +18,7 @@ import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "5";
+export const DRIFT_PROMPT_VERSION = "6";
 
 /**
  * Project guidance injected into the audit, in the same order the run's
@@ -120,6 +120,7 @@ Drift found:
     "confidence": 0.0,
     "surface": "spec" | "generated",
     "subDiagnosis": "SELECTOR_DRIFT" | "OVER_ASSERTION" | "NONE",
+    "specChangeKind": "FEATURE_REMOVED" | "BEHAVIOUR_CHANGED",
     "headline": "<one line: what is out of sync>",
     "recommendation": "<what to change to bring them back in sync>",
     "reasoning": "<how you reached this label: what you looked for, what you found, why it is this label and not the other>",
@@ -131,6 +132,13 @@ Drift found:
 \`\`\`
 
 \`subDiagnosis\`: \`SELECTOR_DRIFT\` when a selector or string was renamed, \`OVER_ASSERTION\` when the spec asserts something narrower than the product ever promised, \`NONE\` otherwise.
+
+\`specChangeKind\`: set it only when the label is \`SPEC_CHANGE\`, and omit the field entirely otherwise. It says which repair the spec needs — deleting it, or rewriting and re-recording it:
+
+- \`FEATURE_REMOVED\` — the code no longer implements the behaviour at all: removed, moved elsewhere, or deliberately disabled. This is the stronger claim, so earn it: your evidence must point at where the implementation would be if it still existed.
+- \`BEHAVIOUR_CHANGED\` — the behaviour is still there, but its wording, its route, or the conditions it runs under moved.
+
+When the evidence does not support "gone", answer \`BEHAVIOUR_CHANGED\`. When neither reading is supported, omit the field — there is no value for "I cannot tell", and a human decides what you leave unsaid.
 `;
 }
 

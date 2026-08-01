@@ -26,6 +26,14 @@ describe("buildDriftSystemPrompt", () => {
     expect(out).toMatch(/"drift": null/);
     expect(out).toMatch(/"label": "TEST_DRIFT" \| "SPEC_CHANGE" \| "UNKNOWN"/);
     expect(out).toMatch(/"subDiagnosis": "SELECTOR_DRIFT" \| "OVER_ASSERTION" \| "NONE"/);
+    expect(out).toMatch(/"specChangeKind": "FEATURE_REMOVED" \| "BEHAVIOUR_CHANGED"/);
+  });
+
+  test("specChangeKind is scoped to SPEC_CHANGE, and omitted rather than guessed", () => {
+    const out = buildDriftSystemPrompt(NO_BLOCKS);
+    expect(out).toMatch(/set it only when the label is `SPEC_CHANGE`/);
+    expect(out).toMatch(/When the evidence does not support "gone", answer `BEHAVIOUR_CHANGED`/);
+    expect(out).toMatch(/When neither reading is supported, omit the field/);
   });
 });
 

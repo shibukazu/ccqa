@@ -40,7 +40,7 @@ export function driftResultToRow(result: SpecResult, threshold: Threshold): Repo
       status: specStatus(result, threshold),
     }),
     ...(result.live === undefined ? {} : { mode: result.live ? ("live" as const) : ("deterministic" as const) }),
-    analysis: result.drift ?? null,
+    analysis: result.drift,
   };
 }
 

@@ -52,16 +52,28 @@ export const ACTUAL_CAUSES = [...FAILURE_CAUSES, NO_DRIFT_CAUSE] as const;
 export const ActualCauseSchema = z.enum(ACTUAL_CAUSES);
 export type ActualCause = z.infer<typeof ActualCauseSchema>;
 
-/** Report rows come in two kinds, and one answers fewer questions than the other. */
-export type ReportKind = "run" | "drift";
+/**
+ * Report rows come in kinds, and each answers fewer questions than the last.
+ * A "record" row answers none: it says a recording happened and what it cost,
+ * and nothing was judged, so both vocabularies below are empty for it.
+ *
+ * The one source for the vocabulary: the report envelope, the hub's
+ * `Run.kind` and the `?kind=` query params all derive from this enum, so a
+ * fourth kind cannot be half-added. What a kind that judges nothing may and
+ * may not advance is ADR-0017.
+ */
+export const ReportKindSchema = z.enum(["run", "drift", "record"]);
+export type ReportKind = z.infer<typeof ReportKindSchema>;
 
 /** What a person may record on a row of this kind. */
 export function causesForKind(kind: ReportKind): readonly ActualCause[] {
+  if (kind === "record") return [];
   return kind === "drift" ? DRIFT_ACTUAL_CAUSES : FAILURE_CAUSES;
 }
 
 /** What the model may answer on a row of this kind. */
 export function predictedForKind(kind: ReportKind): readonly PredictedLabel[] {
+  if (kind === "record") return [];
   return kind === "drift"
     ? ([...DRIFT_FAILURE_CAUSES, "UNKNOWN"] as const)
     : PREDICTED_LABELS;
@@ -96,6 +108,22 @@ export const DriftSurfaceSchema = z.enum(["spec", "generated"]);
 export type DriftSurface = z.infer<typeof DriftSurfaceSchema>;
 
 /**
+ * Which repair a `SPEC_CHANGE` needs: `FEATURE_REMOVED` means the behaviour
+ * the spec checks is gone from the code, so the spec goes with it;
+ * `BEHAVIOUR_CHANGED` means it still exists but works differently, so the spec
+ * is rewritten and re-recorded.
+ *
+ * A fourth axis rather than a `subDiagnosis` value, because that vocabulary is
+ * `[...FIXABLE_DIAGNOSIS_TYPES, "NONE"]` — the shapes a machine knows how to
+ * repair — so a spec change always lands on `NONE` there.
+ *
+ * Deliberately without an "unknown" member: absence carries it, and every
+ * reader must treat an absent value as a call to leave to a human.
+ */
+export const SpecChangeKindSchema = z.enum(["FEATURE_REMOVED", "BEHAVIOUR_CHANGED"]);
+export type SpecChangeKind = z.infer<typeof SpecChangeKindSchema>;
+
+/**
  * LLM output shape. Deliberately NOT .strict(): the model occasionally adds
  * keys, and rejecting the whole analysis over an extra field would collapse
  * a usable prediction into UNKNOWN. Zod's default strips unknown keys.
@@ -126,6 +154,12 @@ export const FailureAnalysisSchema = z.object({
    * written before this field existed stays valid.
    */
   surface: DriftSurfaceSchema.optional(),
+  /**
+   * See `SpecChangeKindSchema`. Declared here because an audit's verdict
+   * travels in a report row's `analysis`, which is parsed by this schema —
+   * today only the audit sets it.
+   */
+  specChangeKind: SpecChangeKindSchema.optional(),
 });
 export type FailureAnalysis = z.infer<typeof FailureAnalysisSchema>;
 
@@ -171,6 +205,8 @@ export const DriftDiagnosisSchema = z.object({
   /** Where the drift is, which decides how it is repaired. See `DriftSurfaceSchema`. */
   surface: DriftSurfaceSchema.default("spec"),
   subDiagnosis: DriftSubDiagnosisSchema.default("NONE"),
+  /** See `SpecChangeKindSchema`. */
+  specChangeKind: SpecChangeKindSchema.optional(),
   /** One line: what is out of sync. */
   headline: z.string(),
   /** What to change to bring them back in sync. */
@@ -185,6 +221,30 @@ export const DriftDiagnosisSchema = z.object({
   reasoning: z.string().default(""),
 });
 export type DriftDiagnosis = z.infer<typeof DriftDiagnosisSchema>;
+
+/**
+ * `specChangeKind` names which repair a `SPEC_CHANGE` needs, so under any other
+ * label it is dropped. Dropped rather than rejected — a stray value must not
+ * cost an otherwise usable verdict.
+ *
+ * Two producers apply it. `ccqa audit` normalizes at the parse boundary
+ * (`src/drift/analyze.ts`), so every consumer of a verdict it produced — the
+ * JSON output, the report rows, the hub push — is clean by construction. The
+ * hub normalizes rows on the way into the drift ledger, which is what a
+ * foreign client's push passes through.
+ *
+ * What does NOT hold: a pushed report's stored archive is kept verbatim and
+ * served back unchanged, so a row a foreign client wrote can still carry a
+ * stray field. That is why the UI re-checks the label before rendering the
+ * chip rather than trusting the stored row.
+ */
+export function normalizeDiagnosis<T extends { label: string; specChangeKind?: SpecChangeKind }>(
+  diagnosis: T,
+): T {
+  if (diagnosis.label === "SPEC_CHANGE" || diagnosis.specChangeKind === undefined) return diagnosis;
+  const { specChangeKind: _dropped, ...rest } = diagnosis;
+  return rest as T;
+}
 
 export const ReportAssertionSchema = z.object({
   name: z.string(),
@@ -452,8 +512,8 @@ export const GitEnvelopeSchema = z.object({
 
 export const RunReportDataSchema = z.object({
   schemaVersion: z.literal(1),
-  /** "run" = ccqa run/live execution result; "drift" = ccqa audit --report-to-hub. */
-  kind: z.enum(["run", "drift"]).default("run"),
+  /** Which command produced it. See {@link ReportKindSchema}. */
+  kind: ReportKindSchema.default("run"),
   createdAt: z.string(),
   /** GITHUB_RUN_ID when running in Actions; null locally. Links the report back to its CI run. */
   runId: z.string().nullable(),

@@ -1,4 +1,5 @@
 import type {
+  Ack,
   DeployEntry,
   DeployInput,
   DeployLog,
@@ -10,6 +11,7 @@ import type {
   SpecLocks,
   SpecTouchIndex,
 } from "../../contract/schema.ts";
+import type { ReportKind } from "../../../report/schema.ts";
 
 /**
  * Everything the hub persists, behind one interface. `createHubStorage`
@@ -36,6 +38,26 @@ export interface HubStorage {
   driftLedger: DriftLedgerStore;
   deploys: DeployStore;
   locks: LockStore;
+  acks: AckStore;
+}
+
+/**
+ * Named sets of opaque keys a consumer's automation has already acted on, and
+ * the hub's first store it does not interpret: every sibling above is typed
+ * state the hub reasons about, while an ack's name, its keys and what "acted
+ * on" means are all the consumer's. The hub holds it only because a CI job has
+ * no memory between runs and the hub is the only durable thing in that loop.
+ *
+ * Scoped per (project, profile) even though the likeliest thing to ack is a
+ * drift verdict, which is deliberately not (ADR-0013) — the same trade the
+ * lock store above makes: acting happens against one environment, and a scope
+ * the hub never kept cannot be recovered later.
+ */
+export interface AckStore {
+  /** Never absent: a name nothing was written under reads as an empty set with `at: null`. */
+  get(project: string, profile: string, name: string): Promise<Ack>;
+  /** Replace the set wholesale and stamp the write time. */
+  put(project: string, profile: string, name: string, keys: string[]): Promise<Ack>;
 }
 
 /**
@@ -117,8 +139,14 @@ export interface RunStore {
   get(id: string): Promise<Run | null>;
   /** Mutable while running; immutable once terminal (enforced by the API layer, not the store). */
   update(id: string, patch: Partial<Run>): Promise<Run>;
-  /** Newest first, optionally filtered by project / branch / status. */
-  list(q: { project?: string; branch?: string; status?: RunStatus; limit?: number }): Promise<Run[]>;
+  /** Newest first, optionally filtered by project / branch / status / kind (any of `kinds`). */
+  list(q: {
+    project?: string;
+    branch?: string;
+    status?: RunStatus;
+    kinds?: ReportKind[];
+    limit?: number;
+  }): Promise<Run[]>;
   /** Distinct project names across all stored runs. Feeds `GET /projects`. */
   listProjects(): Promise<string[]>;
 }

@@ -99,13 +99,17 @@ export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJo
     // store (each record already carries the model's prediction, the human
     // label, and — when known — the row's generation target). Only labelled
     // cases count; UNKNOWN isn't a gradeable cause.
-    const runs = await storage.runs.list({ project: job.project, limit: runLimit });
+    //
+    // Filtered by kind in the query, not after: a project that records nightly
+    // would otherwise spend the whole window on `record` runs and report "no
+    // graded cases" while gradeable runs sat just outside it.
+    const runs = await storage.runs.list({ project: job.project, limit: runLimit, kinds: ["run"] });
     const cases: GradedCase[] = [];
     let excluded = 0;
     for (const run of runs) {
-      // Drift rows are gradeable too, but they're predicted by the drift
-      // prompt, not this one — mixing them in would tune the failure-analysis
-      // note on cases it never saw.
+      // Belt and braces behind the query's `kinds`: a drift row is gradeable
+      // too, but it's predicted by the drift prompt, not this one, and tuning
+      // the failure-analysis note on it would teach it cases it never saw.
       if (run.kind !== "run") continue;
       const records = await storage.triage.list(run.id);
       for (const r of records) {

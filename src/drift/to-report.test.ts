@@ -58,6 +58,14 @@ describe("driftResultsToReport", () => {
     expect(report.results[0]!.analysis).toEqual({ ...d, reasoning: "" });
   });
 
+  test("specChangeKind reaches the row (normalized upstream, at the drift reply's parse boundary)", () => {
+    const changed = driftResultsToReport(
+      [result({ drift: diagnosis({ label: "SPEC_CHANGE", specChangeKind: "FEATURE_REMOVED" }) })],
+      meta,
+    );
+    expect(changed.results[0]!.analysis!.specChangeKind).toBe("FEATURE_REMOVED");
+  });
+
   test("a spec with a call error is failed regardless of the diagnosis", () => {
     const report = driftResultsToReport([result({ error: "claude call failed" })], meta);
     expect(report.results[0]!.status).toBe("failed");

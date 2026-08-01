@@ -94,7 +94,7 @@ export interface HubClient {
       project: string;
       branch?: string;
       profile?: string;
-      kind?: "run" | "drift";
+      kind?: Run["kind"];
       deployedSha?: string;
     },
   ): Promise<Run>;
@@ -113,7 +113,7 @@ export interface HubClient {
     project: string;
     branch?: string;
     profile?: string;
-    kind?: "run" | "drift";
+    kind?: Run["kind"];
     gitHead?: string;
     deployedSha?: string;
     /** CI run id (GITHUB_RUN_ID) and its run URL, stamped at open time so an

@@ -70,17 +70,11 @@ export async function generateAgentBrowserTest(ctx: GenerateContext): Promise<Ge
   // again on exit (success, failure, or thrown). The helper is best-effort
   // and never throws.
   //
-  // Ctrl-C bypasses try/finally on Node by default, so we also wire a
-  // signal handler that fires close before we exit. SIGINT/SIGTERM both
-  // get the same treatment.
-  let signalHandler: (() => void) | null = null;
+  // Ctrl-C bypasses try/finally on Node by default, so the session is handed
+  // to the command's teardown, which reaps it and owns the exit.
   if (agentBrowserSession) {
     await closeSession(agentBrowserSession);
-    signalHandler = () => {
-      void closeSession(agentBrowserSession).finally(() => process.exit(130));
-    };
-    process.once("SIGINT", signalHandler);
-    process.once("SIGTERM", signalHandler);
+    ctx.teardown?.trackSession(agentBrowserSession);
   }
   try {
     const initialRun = await log.timedPhase("vitest run #1", () => runVitestForSession(scriptPath), "run");
@@ -106,11 +100,10 @@ export async function generateAgentBrowserTest(ctx: GenerateContext): Promise<Ge
       passed,
     };
   } finally {
-    if (signalHandler) {
-      process.off("SIGINT", signalHandler);
-      process.off("SIGTERM", signalHandler);
+    if (agentBrowserSession) {
+      ctx.teardown?.untrackSession(agentBrowserSession);
+      await closeSession(agentBrowserSession);
     }
-    if (agentBrowserSession) await closeSession(agentBrowserSession);
   }
 }
 

@@ -60,6 +60,7 @@ import { loadProjectConfig } from "../config/project-config.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
 import { detectBranch, getGitHead } from "../cli/git-branch.ts";
+import { needsHubConnection, REPORT_TO_HUB_NEEDS_CONNECTION } from "../cli/open-hub-run.ts";
 import { githubRunId, githubRunUrl } from "./github-run.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
@@ -425,21 +426,15 @@ export async function executeRun(
   // A real run reaches this having already required a hub for `--profile`;
   // a dry run skips that, so this is where it finds out.
   if (rerunProfile !== null && hubCtx == null) {
-    throw new RunUsageError(
-      "--only-hub-rerun-needed requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
-    );
+    throw new RunUsageError(needsHubConnection("--only-hub-rerun-needed"));
   }
   // Checked here rather than where the push happens: a run that cannot publish
   // its result should not spend the run first. Same for the prompt refresh.
   if (opts.reportToHub && hubCtx == null) {
-    throw new RunUsageError(
-      "--report-to-hub requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
-    );
+    throw new RunUsageError(REPORT_TO_HUB_NEEDS_CONNECTION);
   }
   if (opts.learnHubLivePrompt && hubCtx == null) {
-    throw new RunUsageError(
-      "--learn-hub-live-prompt requires a hub connection (--hub-url/--hub-token or CCQA_HUB_URL/CCQA_HUB_TOKEN)",
-    );
+    throw new RunUsageError(needsHubConnection("--learn-hub-live-prompt"));
   }
 
   // Everything this run needs from the hub, in one batch of independent round

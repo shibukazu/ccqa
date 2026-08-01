@@ -7,6 +7,7 @@ import {
   type DriftGuidance,
 } from "../prompts/drift.ts";
 import { languageDirective } from "../prompts/language.ts";
+import { normalizeDiagnosis } from "../report/schema.ts";
 import { tryReadSpecFile, type AvailableBlock } from "../store/index.ts";
 import { collectSpecArtifacts } from "./artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
@@ -108,7 +109,11 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
     }
     try {
       const reply = DriftReplySchema.parse(JSON.parse(json));
-      return { target, ok: true, drift: reply.drift, live: artifacts.live, title: artifacts.title };
+      // Normalized here, at the only place a drift verdict enters the process,
+      // so every consumer downstream — `--report-format json`, the report rows,
+      // the hub push — sees a diagnosis that already obeys the label's rules.
+      const drift = reply.drift ? normalizeDiagnosis(reply.drift) : null;
+      return { target, ok: true, drift, live: artifacts.live, title: artifacts.title };
     } catch (e) {
       lastError = `failed to parse drift reply: ${(e as Error).message}`;
     }

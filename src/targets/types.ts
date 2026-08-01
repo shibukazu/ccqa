@@ -2,6 +2,7 @@ import type { TestSpec } from "../spec/yaml-schema.ts";
 import type { RecordedAction } from "../ir/types.ts";
 import type { Conventions, ResourceRef, TargetConfig } from "../config/project-config.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
+import type { RunTeardown } from "../cli/run-teardown.ts";
 import type { FixMode } from "../diagnose/loop.ts";
 import type { SpecRef } from "../store/index.ts";
 import type { GroupLookup } from "../run/serial-groups.ts";
@@ -118,6 +119,15 @@ export interface GenerateContext {
   /** Hub connection for prompt bundles (learning overlays); null when unconfigured. */
   hub: HubContext | null;
   fix: FixOptions;
+  /**
+   * The command's signal teardown. A target that pins a browser session
+   * registers it here instead of installing its own signal handler: the
+   * command owns the exit, and a second handler racing it could exit before
+   * the command's own finalizers (e.g. sealing a hub run) had finished.
+   * Absent only for callers with no teardown, which then get no signal-time
+   * reap.
+   */
+  teardown?: RunTeardown;
 }
 
 export interface GeneratedFile {

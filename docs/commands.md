@@ -11,6 +11,7 @@ authoritative for flags.
 | `ccqa init` | Create the `.ccqa/` skeleton (`features/`, `blocks/`). |
 | `ccqa draft [feature/spec]` | Draft or refine a `spec.yaml` interactively with Claude. See [Draft](./draft.md). |
 | `ccqa record <feature/spec>` | Drive the browser once and compile the recording into test code. Use `--auto-fix auto` in CI, where nobody can answer a prompt. See [Auto-fix](./auto-fix.md). |
+| `ccqa record <feature/spec> --report-to-hub` | Leave a `kind: record` run on the hub saying the spec was recorded and what that spent, so a budget summed over the hub's runs counts it. It advances no ledger. See [What leaves a run on the hub](./running.md#what-leaves-a-run-on-the-hub). |
 | `ccqa generate <feature/spec>` | Re-emit test code from an existing recording, or straight from the spec for spec-input targets like `runn`. See [Generation targets](./targets.md). |
 | `ccqa perspectives` | Rebuild the project's coverage inventory on the hub. See [spec.yaml reference](./spec.md#inventory-coverage-with-perspectives). |
 
