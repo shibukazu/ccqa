@@ -546,7 +546,12 @@ const CSS = `
   .empty-note { color: var(--muted); font-size: 13px; padding: 16px 2px; }
 
   .runid { font-family: var(--mono); font-size: 13px; font-weight: 600; }
-  .subline { margin-top: 3px; }
+  /* Chips wrap when a run carries several labels. Laid out as inline content
+     they wrapped to a line indented by the chips' own left margin, and the two
+     lines sat at text leading — too tight to read as separate rows. Flex with a
+     gap aligns every line at the same left edge and spaces them the same way
+     horizontally and vertically. */
+  .subline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 4px; }
   .ci-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-family: var(--mono); color: var(--muted); background: var(--surface-3); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
   .ci-badge.local { color: var(--muted-2); }
   a.ci-badge { text-decoration: none; }
@@ -562,6 +567,15 @@ const CSS = `
   .badge.skipped .d { background: var(--muted); }
   .badge.running { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
   .badge.running .d { background: var(--amber); }
+  /* A drift verdict is a diagnosis, not a broken test: amber, never fail-red.
+     Without these the badge rendered as bare text next to the pill-shaped
+     pass/fail ones, and read as a different kind of thing. */
+  .badge.dr-found { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+  .badge.dr-found .d { background: var(--amber); }
+  .badge.dr-clean { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
+  .badge.dr-clean .d { background: var(--pass); }
+  .badge.dr-unknown { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
+  .badge.dr-unknown .d { background: var(--muted); }
   .badge-live, .badge-det { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-weight: 600; border: 1px solid transparent; }
   .badge-live { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
   .badge-det { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
@@ -573,8 +587,8 @@ const CSS = `
      order decides). One amber look for every drift label chip — a label chip
      is a finding, not a severity, so it does not split into fail-red/amber
      the way the old errors/warnings counts did. */
-  .chip.kind-chip { color: var(--violet); background: var(--violet-bg); border-color: var(--violet-border); font-family: var(--font); margin-left: 6px; }
-  .chip.drift-count-chip { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); margin-left: 6px; }
+  .chip.kind-chip { color: var(--violet); background: var(--violet-bg); border-color: var(--violet-border); font-family: var(--font); }
+  .chip.drift-count-chip { color: var(--amber); background: var(--amber-bg); border-color: var(--amber-border); }
   .drift-meta-box { display: flex; flex-direction: column; gap: 4px; }
   /* The chips carry their own margin for the run list, where they sit inline
      after other chips. Here the container owns the spacing, so the margin only
