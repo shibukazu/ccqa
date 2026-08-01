@@ -431,3 +431,67 @@ describe("a deploy whose selection was not stored", () => {
     });
   });
 });
+
+describe("computeRerun: the spec's own edits", () => {
+  // A verdict is a claim about a (spec, product) pair. The deploy log covers
+  // the product side; these cover the other one. Without them a spec repaired
+  // and merged stays needsRepair until a deploy happens to reach it, and a run
+  // that passed against the previous spec keeps answering verified.
+
+  test("a drifted spec edited after the audit is due again, not needsRepair", () => {
+    const verdict = compute({
+      specs: [{ key: "f/s", changedAt: "2026-07-27T00:00:00Z" }],
+      log: log(deploy(0)),
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+    });
+    expect(verdict.audit).toBe("due");
+    expect(verdict.verdict).toBe("inProgress");
+    expect(verdict.specChangedSince).toBe("2026-07-27T00:00:00Z");
+  });
+
+  test("a passing run is stale once the spec it ran is edited", () => {
+    const verdict = compute({
+      specs: [{ key: "f/s", changedAt: "2026-07-27T00:00:00Z" }],
+      log: log(deploy(0)),
+      ledger: ledgerWithRun(ranAt("sha-0")),
+    });
+    // The new spec has never run, so the old pass cannot answer for it.
+    expect(verdict.execution).toBe("stale");
+    // The same edit stales the audit too, and the audit is asked first — the
+    // spec has to be read again before running it is worth anything.
+    expect(verdict.audit).toBe("due");
+    expect(verdict.verdict).toBe("inProgress");
+  });
+
+  test("an edit older than the deploy the baseline read changes nothing", () => {
+    const verdict = compute({
+      specs: [{ key: "f/s", changedAt: "2026-07-19T00:00:00Z" }],
+      log: log(deploy(0)),
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+    });
+    expect(verdict.audit).toBe("drifted");
+    expect(verdict.verdict).toBe("needsRepair");
+    expect(verdict.specChangedSince).toBeUndefined();
+  });
+
+  test("an inventory with no edit time leaves the deploy-only answer alone", () => {
+    const verdict = compute({
+      specs: [{ key: "f/s" }],
+      log: log(deploy(0)),
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+    });
+    expect(verdict.audit).toBe("drifted");
+    expect(verdict.verdict).toBe("needsRepair");
+  });
+
+  test("a failed run stays failed however the spec has moved", () => {
+    // A red result is current information about the product whatever the spec
+    // has done since, and re-running it before a person looks teaches nothing.
+    const verdict = compute({
+      specs: [{ key: "f/s", changedAt: "2026-07-27T00:00:00Z" }],
+      log: log(deploy(0)),
+      ledger: ledgerWithFailedRun(ranAt("sha-0")),
+    });
+    expect(verdict.execution).toBe("failed");
+  });
+});
