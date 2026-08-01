@@ -1,4 +1,5 @@
 import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
+import { emptySpecRow } from "../report/spec-row.ts";
 import { currentReportCost } from "../report/run-cost.ts";
 import { DRIFT_PROMPT_VERSION } from "../prompts/drift.ts";
 import { driftSeverity, type SpecResult, type Threshold } from "./types.ts";
@@ -20,45 +21,34 @@ function specStatus(result: SpecResult, threshold: Threshold): "passed" | "faile
 }
 
 /**
- * Adapts `ccqa audit` results into the shared RunReportData shape so they can
- * be pushed to the hub (`ccqa audit --report-to-hub`) and rendered by the same report
- * UI as `ccqa run`/`ccqa live`. Browser-execution fields (testCounts,
- * evidence, liveRun, ...) don't apply to a drift audit and are always null —
- * which is why `mode` is carried separately: nothing ran, but which surfaces
- * were audited is still a fact about the row.
+ * One audited spec as a report row. Browser-execution fields don't apply to an
+ * audit and stay empty — which is why `mode` is carried separately: nothing
+ * ran, but which surfaces were audited is still a fact about the row. The
+ * diagnosis goes into `analysis` because for a `kind: "drift"` report the
+ * diagnosis IS the row's verdict, so it renders through the same card a failed
+ * `ccqa run` spec does.
  *
- * Each result's diagnosis goes into `analysis`: for a `kind: "drift"` report
- * the diagnosis IS the row's verdict, so it renders through the same diagnosis
- * card a failed `ccqa run` spec does. `reasoning` has no drift-audit
- * equivalent (the audit gives one headline, not a deliberation) so it is
- * filled with an empty string to satisfy `FailureAnalysisSchema`.
- */
-/**
- * One audited spec as a report row. Split out of `driftResultsToReport` so the
- * incremental push can send a row the moment its spec lands, using the same
- * mapping the final report uses — the hub upserts by feature/spec, so the two
- * must produce identical rows or the closing patch would rewrite history.
+ * Shared by the incremental push and the final report: the hub upserts by
+ * feature/spec, so two mappings would let the closing patch rewrite history.
  */
 export function driftResultToRow(result: SpecResult, threshold: Threshold): ReportSpecResult {
   return {
-    feature: result.target.featureName,
-    spec: result.target.specName,
-    title: result.title ?? null,
+    ...emptySpecRow({
+      feature: result.target.featureName,
+      spec: result.target.specName,
+      title: result.title ?? null,
+      status: specStatus(result, threshold),
+    }),
     ...(result.live === undefined ? {} : { mode: result.live ? ("live" as const) : ("deterministic" as const) }),
-    status: specStatus(result, threshold),
-    testCounts: null,
-    durationMs: null,
-    assertions: null,
-    analysis: result.drift ? result.drift : null,
-    analysisSkipped: null,
-    failureLogExcerpt: null,
-    diffExcerpt: null,
-    specYaml: null,
-    evidence: null,
-    liveRun: null,
+    analysis: result.drift ?? null,
   };
 }
 
+/**
+ * Adapts `ccqa audit` results into the shared RunReportData shape so they can
+ * be pushed to the hub (`ccqa audit --report-to-hub`) and rendered by the same
+ * report UI as `ccqa run`/`ccqa live`.
+ */
 export function driftResultsToReport(
   results: SpecResult[],
   meta: {

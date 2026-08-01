@@ -473,17 +473,11 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
         : {}),
     };
     const updated = await config.storage.runs.update(id, patch);
-    // The drift ledger advances on every patch, not only on the seal. An
-    // audited spec is a finished fact — one verdict about one spec at one
-    // commit, which nothing later in the sweep can revise — and `ccqa audit`
-    // has no signal teardown, so the patch carrying the row is the only moment
-    // it can be made durable. A sweep a CI timeout kills then keeps the specs
-    // it already paid for instead of being due all over again.
-    //
-    // The spec ledger stays on the seal. A `kind: "run"` row's cause is filled
-    // in the tail phase after the pool drains, so advancing per patch would
-    // publish red entries with no cause and rewrite them moments later. That
-    // path also has a teardown finalizer, which seals an interrupted run.
+    // A drift row is final when it arrives — one verdict about one spec at one
+    // commit — so it is made durable immediately, and a sweep a CI timeout
+    // kills keeps the specs it already paid for. A `kind: "run"` row is not:
+    // its cause is filled in the tail phase after the pool drains, so an early
+    // advance would publish red entries with no cause and rewrite them.
     await updateDriftLedger(config.storage, updated, mergedResults);
     if (done) await updateSpecLedger(config.storage, updated, mergedResults);
 

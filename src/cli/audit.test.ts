@@ -1,12 +1,13 @@
 import { describe, expect, test, vi } from "vitest";
 import { HubApiError, type HubClient } from "../hub-client/index.ts";
+import { RunUsageError } from "../run/errors.ts";
 import type { HubContext } from "./hub-conn.ts";
 import type { Run } from "../hub/contract/schema.ts";
 import type { SpecResult } from "../drift/types.ts";
 import * as log from "./logger.ts";
 import {
+  type DriftPush,
   openDriftPush,
-  pushDriftResults,
   requireReportToHubConnection,
   resolveAuditHubContext,
   resolveAuditPromptContext,
@@ -34,71 +35,21 @@ function fakeRun(overrides: Partial<Run> = {}): Run {
   };
 }
 
-function fakeHubClient(pushRun: HubClient["pushRun"]): HubClient {
-  return { pushRun } as unknown as HubClient;
+function fakePush(patchRun: HubClient["patchRun"]): DriftPush {
+  return { hub: { patchRun } as unknown as HubClient, runId: "r1", gitHead: null };
 }
 
 const results: SpecResult[] = [{ target: { featureName: "tasks", specName: "create" }, ok: true, drift: null }];
 
-describe("pushDriftResults", () => {
-  test("exits rather than skipping when no hub is configured", async () => {
-    // Asking to publish and silently not publishing is the failure mode this
-    // guards: a CI job would go green having recorded nothing.
-    const exit = vi.spyOn(process, "exit").mockImplementation((() => {
-      throw new Error("exit");
-    }) as never);
-    await expect(
-      pushDriftResults(
-        { results, threshold: "error", cwd: process.cwd(), opts: { project: "demo" }, format: "text" },
-        () => null,
-      ),
-    ).rejects.toThrow("exit");
-    expect(exit).toHaveBeenCalledWith(2);
-    exit.mockRestore();
-  });
-
-  test("pushes the report with kind: drift when a hub is configured", async () => {
-    const pushRun = vi.fn().mockResolvedValue(fakeRun());
-    const hub = fakeHubClient(pushRun);
-
-    await pushDriftResults(
-      { results, threshold: "error", cwd: process.cwd(), opts: { project: "demo" }, format: "text" },
-      () => hub,
-    );
-
-    expect(pushRun).toHaveBeenCalledTimes(1);
-    const [, meta] = pushRun.mock.calls[0]!;
-    expect(meta).toMatchObject({ project: "demo", kind: "drift" });
-  });
-
-  test("exits 2 when the hub push fails with a HubApiError", async () => {
-    const pushRun = vi.fn().mockRejectedValue(new HubApiError(503, "no_encryption_key", "encryption not configured"));
-    const hub = fakeHubClient(pushRun);
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code: number) => {
-      throw new Error(`process.exit(${code})`);
-    }) as never);
-
-    await expect(
-      pushDriftResults(
-        { results, threshold: "error", cwd: process.cwd(), opts: { project: "demo" }, format: "text" },
-        () => hub,
-      ),
-    ).rejects.toThrow("process.exit(2)");
-
-    expect(exitSpy).toHaveBeenCalledWith(2);
-    vi.restoreAllMocks();
-  });
-});
-
 describe("incremental drift push", () => {
-  test("opens a drift run and falls back to the one-shot push when the open fails", async () => {
-    // The fallback is the point: the sweep must still publish, just without
-    // the per-spec streaming.
+  test("a failed open is raised, not degraded to a local-only sweep", async () => {
+    // The audit writes no local artifact, so a sweep that cannot publish has
+    // nothing to show for itself. Raised rather than exited so the caller's
+    // `finally` still releases this sweep's spec claims.
     const openRun = vi.fn().mockRejectedValue(new HubApiError(503, "unavailable", "hub down"));
-    const push = await openDriftPush({ project: "demo" }, process.cwd(), "json", () => ({
-      openRun,
-    } as unknown as HubClient));
-    expect(push).toBeNull();
+    await expect(
+      openDriftPush({ project: "demo" }, process.cwd(), () => ({ openRun } as unknown as HubClient)),
+    ).rejects.toThrow(RunUsageError);
   });
 
   test("a failed row patch does not abort the sweep", async () => {
@@ -106,7 +57,7 @@ describe("incremental drift push", () => {
     // running — worse than the missing row, which the seal resends anyway.
     const patchRun = vi.fn().mockRejectedValue(new HubApiError(500, "boom", "nope"));
     await expect(
-      sendDriftRow({ hub: { patchRun } as unknown as HubClient, runId: "r1" }, results[0]!, "error"),
+      sendDriftRow(fakePush(patchRun), results[0]!, "error"),
     ).resolves.toBeUndefined();
   });
 
@@ -115,8 +66,8 @@ describe("incremental drift push", () => {
     // mid-sweep patch failed.
     const patchRun = vi.fn().mockResolvedValue(fakeRun());
     await sealDriftPush(
-      { hub: { patchRun } as unknown as HubClient, runId: "r1" },
-      { results, threshold: "error", cwd: process.cwd(), opts: { project: "demo" }, format: "json" },
+      fakePush(patchRun),
+      { results, threshold: "error", opts: { project: "demo" }, format: "json" },
     );
 
     expect(patchRun).toHaveBeenCalledTimes(1);
@@ -129,14 +80,14 @@ describe("incremental drift push", () => {
 
   test("exits 2 when the seal fails, leaving a run that is wrong rather than absent", async () => {
     const patchRun = vi.fn().mockRejectedValue(new HubApiError(500, "boom", "nope"));
-    const exitSpy = vi.spyOn(process, "exit").mockImplementation(((code: number) => {
+    vi.spyOn(process, "exit").mockImplementation(((code: number) => {
       throw new Error(`process.exit(${code})`);
     }) as never);
 
     await expect(
       sealDriftPush(
-        { hub: { patchRun } as unknown as HubClient, runId: "r1" },
-        { results, threshold: "error", cwd: process.cwd(), opts: { project: "demo" }, format: "json" },
+        fakePush(patchRun),
+        { results, threshold: "error", opts: { project: "demo" }, format: "json" },
       ),
     ).rejects.toThrow("process.exit(2)");
     vi.restoreAllMocks();
