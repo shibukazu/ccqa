@@ -1,4 +1,4 @@
-import { normalizeDiagnosis, type ReportSpecResult, type RunReportData } from "../report/schema.ts";
+import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
 import { currentReportCost } from "../report/run-cost.ts";
 import { DRIFT_PROMPT_VERSION } from "../prompts/drift.ts";
@@ -40,7 +40,7 @@ export function driftResultToRow(result: SpecResult, threshold: Threshold): Repo
       status: specStatus(result, threshold),
     }),
     ...(result.live === undefined ? {} : { mode: result.live ? ("live" as const) : ("deterministic" as const) }),
-    analysis: result.drift ? normalizeDiagnosis(result.drift) : null,
+    analysis: result.drift,
   };
 }
 

@@ -14,6 +14,7 @@ import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOpt
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
 import { resolveHubClient, type HubContext } from "./hub-conn.ts";
+import { createRunTeardown, installTeardownSignalHandlers, type RunTeardown } from "./run-teardown.ts";
 import { needsHubConnection } from "./open-hub-run.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import { buildGenerateRunSummary } from "./build-generate-run-summary.ts";
@@ -62,6 +63,8 @@ export interface RunGenerateOptions {
   hubContext?: HubContext | null;
   /** Refresh the target's `<target>.agent` learning prompt from this run. */
   updateAgentPrompt?: boolean;
+  /** The caller's signal teardown; targets register pinned browser sessions with it. */
+  teardown?: RunTeardown;
 }
 
 /**
@@ -168,6 +171,7 @@ async function runGenerateLocked(
     model: opts.model,
     hub: opts.hubContext ?? null,
     fix: { maxRetries: opts.maxRetries, mode: opts.fixMode, useSnapshot: opts.useSnapshot },
+    teardown: opts.teardown,
   };
 
   const result = await target.generate(ctx);
@@ -339,6 +343,11 @@ async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promi
   }
   const hubContext: HubContext | null = hubClient && project ? { hub: hubClient, project } : null;
 
+  // `ccqa record` hands its own teardown down; standalone `ccqa generate` owns
+  // one here, so an interrupted generation still reaps the browser session the
+  // target pinned.
+  const teardown = createRunTeardown();
+  const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
   let passed: boolean;
   try {
     ({ passed } = await runGenerate(featureName, specName, {
@@ -352,6 +361,7 @@ async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promi
       cwd,
       hubContext,
       updateAgentPrompt: opts.learnHubCodegenPrompt ?? false,
+      teardown,
     }));
   } catch (e) {
     if (e instanceof SpecLockedError) {
@@ -359,6 +369,9 @@ async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promi
       process.exit(2);
     }
     throw e;
+  } finally {
+    await teardown.run();
+    disposeSignalHandlers();
   }
   if (!passed) process.exit(1);
 }

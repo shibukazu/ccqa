@@ -20,14 +20,38 @@ export interface RunTeardown {
   untrackSession(name: string): void;
   /** Register a callback run once during teardown (e.g. flush the report). */
   onFinalize(fn: () => void | Promise<void>): void;
-  /** Run every finalize callback, then reap every tracked session. Idempotent. */
+  /**
+   * Run every finalize callback, then reap every tracked session. Runs once;
+   * a later caller awaits the first run rather than returning early — both the
+   * signal handler and the command's own `finally` land here, and the one that
+   * returned early would `process.exit` through the other's flush.
+   */
   run(): Promise<void>;
 }
 
 export function createRunTeardown(): RunTeardown {
   const sessions = new Set<string>();
   const finalizers: (() => void | Promise<void>)[] = [];
-  let torn = false;
+  let running: Promise<void> | null = null;
+
+  const tearDown = async (): Promise<void> => {
+    // Finalizers first (flush the report) so results are durable before we
+    // spend time reaping browsers. Each is best-effort: one failing must not
+    // skip the rest or the session reap.
+    for (const fn of finalizers) {
+      try {
+        await fn();
+      } catch (err) {
+        // Can't recover on exit, but a finalizer failing here means the
+        // interrupt-time report flush (the whole point of teardown) may have
+        // been lost — say so rather than exiting silently.
+        log.warn(`teardown finalizer failed (partial report may be incomplete): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // closeSession is itself best-effort and never throws.
+    await Promise.all([...sessions].map((name) => closeSession(name)));
+    sessions.clear();
+  };
 
   return {
     trackSession(name) {
@@ -39,26 +63,9 @@ export function createRunTeardown(): RunTeardown {
     onFinalize(fn) {
       finalizers.push(fn);
     },
-    async run() {
-      // Guard against a double Ctrl-C re-entering teardown mid-flight.
-      if (torn) return;
-      torn = true;
-      // Finalizers first (flush the report) so results are durable before we
-      // spend time reaping browsers. Each is best-effort: one failing must not
-      // skip the rest or the session reap.
-      for (const fn of finalizers) {
-        try {
-          await fn();
-        } catch (err) {
-          // Can't recover on exit, but a finalizer failing here means the
-          // interrupt-time report flush (the whole point of teardown) may have
-          // been lost — say so rather than exiting silently.
-          log.warn(`teardown finalizer failed (partial report may be incomplete): ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-      // closeSession is itself best-effort and never throws.
-      await Promise.all([...sessions].map((name) => closeSession(name)));
-      sessions.clear();
+    run() {
+      running ??= tearDown();
+      return running;
     },
   };
 }
@@ -66,8 +73,9 @@ export function createRunTeardown(): RunTeardown {
 /**
  * Install SIGINT/SIGTERM handlers that run {@link RunTeardown.run} then exit
  * with the conventional signal code, and return a disposer that removes them.
- * Mirrors the pattern in `src/targets/agent-browser/generate.ts`. A second
- * signal while tearing down hard-exits immediately rather than waiting.
+ * A command must install at most one: a second handler that also exits would
+ * race this one and could terminate mid-finalizer. A second signal while
+ * tearing down hard-exits immediately rather than waiting.
  */
 export function installTeardownSignalHandlers(teardown: RunTeardown): () => void {
   let handling = false;

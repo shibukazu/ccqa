@@ -368,7 +368,7 @@ export async function sealDriftPush(
     triageUserPromptHash: promptCtx?.triageUserPromptHash ?? null,
   });
 
-  await sealHubRun(push, {
+  const sealed = await sealHubRun(push, {
     rows: report.results,
     reportMeta: {
       git: report.git,
@@ -378,6 +378,10 @@ export async function sealDriftPush(
       cost: report.cost,
     },
   });
+  // A run left `running` holds a wrong record, not a missing one: the sweep
+  // must not report success. Nothing is queued behind this call, so the audit
+  // takes the exit here rather than carrying the failure back up.
+  if (!sealed) process.exit(2);
 
   if (format === "text") {
     // Derived here rather than through `resolveBaseUrl`, which exits when no

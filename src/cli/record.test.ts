@@ -45,4 +45,11 @@ describe("sealRecordPush", () => {
     await sealRecordPush(fakePush(patchRun), "tasks", "create", true);
     expect(patchRun.mock.calls[0]![1].rows[0].status).toBe("passed");
   });
+
+  test("a failed seal answers false instead of exiting", async () => {
+    // It runs as a teardown finalizer: exiting here would skip the
+    // browser-session reap queued behind it. The caller sets the exit code.
+    const patchRun = vi.fn().mockRejectedValue(new Error("nope"));
+    await expect(sealRecordPush(fakePush(patchRun), "tasks", "create", true)).resolves.toBe(false);
+  });
 });

@@ -4,8 +4,13 @@ import type { RouteContext } from "../router.ts";
 import { readJsonBody, sendJson } from "../respond.ts";
 import { requireProfileParam, requireSafeSegment } from "../validate.ts";
 
-/** A few thousand short keys (see the schema's bounds) plus JSON quoting fits well inside this. */
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
+/**
+ * Pre-parse guard only. `PutAckRequestSchema` holds the real bound (5000 keys
+ * of 256 characters); this sits above the largest body that can satisfy it —
+ * 5000 keys of 256 `\uXXXX`-escaped characters — so a conforming client is
+ * never answered 413 by a limit the documented bounds don't mention.
+ */
+const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 function requireAckKey(ctx: RouteContext): { project: string; profile: string; name: string } {
   return {

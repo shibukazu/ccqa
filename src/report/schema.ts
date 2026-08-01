@@ -223,13 +223,20 @@ export const DriftDiagnosisSchema = z.object({
 export type DriftDiagnosis = z.infer<typeof DriftDiagnosisSchema>;
 
 /**
- * The one place `specChangeKind` is held to its label: it names which repair a
- * `SPEC_CHANGE` needs, so under any other label it is dropped. Dropped rather
- * than rejected — a stray value must not cost an otherwise usable verdict.
+ * `specChangeKind` names which repair a `SPEC_CHANGE` needs, so under any other
+ * label it is dropped. Dropped rather than rejected — a stray value must not
+ * cost an otherwise usable verdict.
  *
- * Every writer of a diagnosis passes through here (the audit's row builder,
- * the hub's drift-ledger ingest), so a producer that never learned the rule
- * cannot write a row that breaks it.
+ * Two producers apply it. `ccqa audit` normalizes at the parse boundary
+ * (`src/drift/analyze.ts`), so every consumer of a verdict it produced — the
+ * JSON output, the report rows, the hub push — is clean by construction. The
+ * hub normalizes rows on the way into the drift ledger, which is what a
+ * foreign client's push passes through.
+ *
+ * What does NOT hold: a pushed report's stored archive is kept verbatim and
+ * served back unchanged, so a row a foreign client wrote can still carry a
+ * stray field. That is why the UI re-checks the label before rendering the
+ * chip rather than trusting the stored row.
  */
 export function normalizeDiagnosis<T extends { label: string; specChangeKind?: SpecChangeKind }>(
   diagnosis: T,

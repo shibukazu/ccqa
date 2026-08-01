@@ -68,20 +68,22 @@ export async function openHubRun(
 }
 
 /**
- * Close an open run with its final rows and envelope. A failed seal leaves the
- * run `running` with whatever rows landed — a wrong record, not merely a
- * missing one — so it must not exit clean. Exiting is the CLI's policy, not a
- * universal one: `executeRun` publishes the same way from a library call and
- * flips its exit code instead.
+ * Close an open run with its final rows and envelope, answering whether it
+ * closed. A failed seal leaves the run `running` with whatever rows landed — a
+ * wrong record, not merely a missing one — so a CLI caller must not exit clean.
+ * The exit is the caller's to make rather than taken here: `ccqa record` seals
+ * from inside a teardown finalizer, and exiting there would skip the
+ * browser-session reap queued behind it.
  */
 export async function sealHubRun(
   push: HubRunPush,
   body: Pick<PatchRunRequest, "rows" | "reportMeta">,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await push.hub.patchRun(push.runId, { ...body, done: true });
+    return true;
   } catch (err) {
     log.error(`hub: could not close the ${push.kind} run ${push.runId}: ${errMessage(err)}`);
-    process.exit(2);
+    return false;
   }
 }

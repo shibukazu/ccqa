@@ -192,18 +192,16 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
 
   // Node skips `finally` on a signal, and a CI `timeout` sends SIGTERM — so a
   // hung recording would otherwise leave its run `running` with no spend, the
-  // one case the flag exists for.
-  let sealed = false;
-  const seal = async (recorded: boolean): Promise<void> => {
-    if (!push || sealed) return;
-    sealed = true;
-    await sealRecordPush(push, featureName, specName, recorded);
-  };
+  // one case the flag exists for. Both paths seal through the teardown, so the
+  // `process.exit` below cannot cut off a PATCH already on the wire.
+  let recorded = false;
+  let sealed = true;
   const teardown = createRunTeardown();
-  teardown.onFinalize(() => seal(false));
+  teardown.onFinalize(async () => {
+    if (push) sealed = await sealRecordPush(push, featureName, specName, recorded);
+  });
   const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
 
-  let recorded = false;
   try {
     let traceResult: RunTraceResult | null = null;
     let generated = true;
@@ -224,6 +222,7 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
           model: opts.model,
           cwd: cwdForProfile,
           hubContext,
+          teardown,
         })).passed;
       }
     } finally {
@@ -243,27 +242,29 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
     }
     recorded = generated;
   } finally {
+    await teardown.run();
     disposeSignalHandlers();
-    await seal(recorded);
   }
 
   // After the seal: `process.exit` would skip it, losing exactly the spend an
-  // exhausted auto-fix loop is most expensive for.
+  // exhausted auto-fix loop is most expensive for. A run left open on the hub
+  // is the worse outcome of the two, so it decides the code.
+  if (!sealed) process.exit(2);
   if (!recorded) process.exit(1);
 }
 
 /**
- * Close the record run with the one row this command produced. One spec is
- * recorded per invocation, so one row is the whole run — enough for the runs
- * list to say what the money bought.
+ * Close the record run with the one row this command produced, answering
+ * whether it closed. One spec is recorded per invocation, so one row is the
+ * whole run — enough for the runs list to say what the money bought.
  */
 export async function sealRecordPush(
   push: HubRunPush,
   featureName: string,
   specName: string,
   recorded: boolean,
-): Promise<void> {
-  await sealHubRun(push, {
+): Promise<boolean> {
+  return sealHubRun(push, {
     rows: [
       emptySpecRow({
         feature: featureName,
