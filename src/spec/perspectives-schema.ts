@@ -95,6 +95,14 @@ export const PerspectiveSpecSchema = z
     testCondition: z.string().optional(),
     preconditions: z.array(z.string().min(1)).optional(),
     status: PerspectiveStatusSchema,
+    /**
+     * When this spec was last edited (committer date, ISO 8601). Lets the hub
+     * treat an audit or a run as stale once the spec itself has moved — the
+     * deploy log only says when the *product* moved. Optional: a document
+     * written by an older CLI has none, and every reader falls back to the
+     * deploy-only comparison it used before.
+     */
+    changedAt: z.string().optional(),
     note: z.string().optional(),
   })
   .strip();

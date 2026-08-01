@@ -19,6 +19,7 @@ import {
   type FeatureTreeEntry,
 } from "../store/index.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
+import { readSpecChangedAt } from "../spec/spec-changed-at.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import { loadProjectConfig, type ProjectConfig } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
@@ -284,6 +285,8 @@ export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<Perspecti
   // config is not a reason to fail the inventory, so fall back to the schema
   // default (agent-browser) if it can't be loaded.
   const config = await loadProjectConfig(process.cwd()).catch(() => null);
+  // One git walk for the whole tree; each spec picks its own entry out of it.
+  const changedAt = await readSpecChangedAt(process.cwd());
   const features = await Promise.all(
     tree.map(async (feature): Promise<PerspectiveFeature> => {
       const specs = await Promise.all(
@@ -295,11 +298,13 @@ export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<Perspecti
             const meta = readSpecMeta(s.specName, specYaml);
             const plugin = resolveSpecTarget(specYaml, config);
             const status = await deriveStatus(feature.featureName, s.specName, meta.mode, plugin);
+            const lastEdit = changedAt.get(`${feature.featureName}/${s.specName}`);
             return {
               specName: s.specName,
               title: meta.title,
               summary: "",
               status,
+              ...(lastEdit ? { changedAt: lastEdit } : {}),
             };
           }),
       );

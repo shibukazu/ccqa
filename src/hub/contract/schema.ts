@@ -612,6 +612,14 @@ export const SpecRerunSchema = z.object({
    * once: one hole can swallow both baselines.
    */
   executionAssumedReached: RerunUnknownReasonSchema.optional(),
+  /**
+   * Set when the spec itself has been edited since the audit read it, or since
+   * the last run. A verdict is a claim about a (spec, product) pair, so either
+   * side moving invalidates it — the deploy log only covers the product side.
+   * Absent when the inventory carries no edit time (a document written by an
+   * older CLI), which leaves the deploy-only comparison in place.
+   */
+  specChangedSince: z.string().optional(),
   /** The job working on this spec right now, or null. Expired holds read as null. */
   heldBy: SpecLockSchema.nullable(),
   lastRun: SpecLedgerEntrySchema.nullable(),

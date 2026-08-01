@@ -10,6 +10,11 @@ import type { PerspectivesStore } from "./storage/types.ts";
 export interface SpecTarget {
   /** "feature/spec" — the same key the spec ledger uses. */
   key: string;
+  /**
+   * When the spec was last edited (ISO 8601), as the inventory recorded it.
+   * Absent on documents written before `ccqa perspectives` carried it.
+   */
+  changedAt?: string;
 }
 
 function prop(obj: unknown, key: string): unknown {
@@ -34,7 +39,11 @@ export function readSpecTargets(doc: unknown): SpecTarget[] {
     for (const spec of specs) {
       const specName = prop(spec, "specName");
       if (typeof specName !== "string") continue;
-      out.push({ key: `${featureName}/${specName}` });
+      const changedAt = prop(spec, "changedAt");
+      out.push({
+        key: `${featureName}/${specName}`,
+        ...(typeof changedAt === "string" && changedAt ? { changedAt } : {}),
+      });
     }
   }
   return out;

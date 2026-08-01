@@ -41,9 +41,48 @@ export interface RerunInput {
   now: Date;
 }
 
+/**
+ * When each deployed commit reached the environment. A baseline read at that
+ * commit cannot have seen anything committed after it was deployed.
+ */
+function deployedAt(log: DeployLog): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const entry of log.entries) out.set(entry.sha, entry.at);
+  return out;
+}
+
+/**
+ * Has the spec moved since the baseline was taken?
+ *
+ * A verdict is a claim about a (spec, product) pair, so either side moving
+ * invalidates it. The deploy log covers the product side; this covers the
+ * other one. Without it a spec repaired and merged stays `needsRepair` until
+ * a deploy happens to reach it, and a run that passed against the previous
+ * spec keeps answering `verified` for the new one.
+ *
+ * Compared against when the baseline commit was *deployed*, not when the audit
+ * or run happened: the tree read at that commit predates its deployment, so an
+ * edit after it is definitely not in it. Falls back to the baseline's own
+ * timestamp when the log cannot place the commit.
+ *
+ * One-directional. A later edit time proves the baseline is stale; an earlier
+ * one proves nothing, and this answers false rather than guessing.
+ */
+function specMovedSince(
+  changedAt: string | undefined,
+  baselineSha: string | null,
+  baselineAt: string,
+  deployTimes: Map<string, string>,
+): string | null {
+  if (!changedAt) return null;
+  const cutoff = (baselineSha && deployTimes.get(baselineSha)) || baselineAt;
+  return changedAt > cutoff ? changedAt : null;
+}
+
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
   const { specs, ledger, log, touchIndex, drift, locks, now } = input;
   const range = buildRange(log, touchIndex);
+  const deployTimes = deployedAt(log);
 
   const out: Record<string, SpecRerun> = {};
   for (const spec of specs) {
@@ -52,11 +91,35 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       lastGreen: ledger.green[spec.key] ?? null,
       lastRed: ledger.red[spec.key] ?? null,
     };
-    const audit = auditState(drift, spec.key, range);
-    const execution = executionState(coords, (sha) => freshness(sha, spec.key, range));
+    let audit = auditState(drift, spec.key, range);
+    let execution = executionState(coords, (sha) => freshness(sha, spec.key, range));
+
+    // The spec's own edits, applied to both axes. `due`/`stale` already mean
+    // "the baseline no longer answers for what is here now", so an edit lands
+    // in the existing vocabulary rather than adding a state.
+    const driftEntry = drift.specs[spec.key];
+    const auditMoved = specMovedSince(
+      spec.changedAt,
+      driftEntry?.gitHead ?? null,
+      driftEntry?.at ?? "",
+      deployTimes,
+    );
+    const runMoved = specMovedSince(
+      spec.changedAt,
+      coords.lastRun?.deployedSha ?? null,
+      coords.lastRun?.at ?? "",
+      deployTimes,
+    );
+    if (auditMoved && audit.audit !== "due") audit = { audit: "due" };
+    // `failed` is left alone: a red result is current information about the
+    // product whatever the spec has done since, and re-running it before a
+    // person looks teaches nothing.
+    if (runMoved && execution.execution === "passed") execution = { execution: "stale" };
+
     const held = heldBy(locks, spec.key, now);
     out[spec.key] = {
       verdict: decide(audit.audit, execution.execution, held),
+      ...(auditMoved || runMoved ? { specChangedSince: (auditMoved ?? runMoved)! } : {}),
       ...audit,
       ...execution,
       heldBy: held,
