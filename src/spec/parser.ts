@@ -14,11 +14,32 @@ import {
  * `humanizeIssue`'s `unrecognized_keys` branch (below) rather than checked
  * ahead of validation, so the migration note reaches both `parseTestSpec` and
  * `parseBlockSpec` through the one place that already rewrites that error.
+ *
+ * `at` scopes an entry to where the schema used to accept the field; the
+ * same key anywhere else keeps the generic unknown-key rendering.
  */
-const REMOVED_FIELDS: Record<string, string> = {
-  relatedPaths: "which specs a change affects is now decided by `ccqa select-specs`, which reads the diff instead of a declared path list. Delete the field.",
-  dummy: "it was a block param placeholder for recording a block on its own, which no command does any more, and nothing else ever read it. Delete the line.",
-  description: "it was a block param's prose note that no prompt ever received (a block list carries only a param's name, required and secret). Delete the line.",
+interface RemovedField {
+  at: (path: (string | number)[]) => boolean;
+  message: string;
+}
+
+/** The spec/block root (an `unrecognized_keys` issue there has an empty path). */
+const atRoot = (path: (string | number)[]) => path.length === 0;
+
+/** A block param entry — the issue path is `params.<index>`. */
+const atBlockParam = (path: (string | number)[]) =>
+  path.length === 2 && path[0] === "params" && typeof path[1] === "number";
+
+const UNREAD_PARAM_FIELD =
+  "nothing reads it (a block param reaches the prompts as its name, required and secret only). Delete the line.";
+
+const REMOVED_FIELDS: Record<string, RemovedField> = {
+  relatedPaths: {
+    at: atRoot,
+    message: "which specs a change affects is now decided by `ccqa select-specs`, which reads the diff instead of a declared path list. Delete the field.",
+  },
+  dummy: { at: atBlockParam, message: UNREAD_PARAM_FIELD },
+  description: { at: atBlockParam, message: UNREAD_PARAM_FIELD },
 };
 
 /** Parse a spec.yaml. Schema rejections are rewritten with actionable messages. */
@@ -93,9 +114,9 @@ function humanizeIssue(issue: ZodLikeIssue, isBlock: boolean): string {
     if (isBlock && keys.includes("include")) {
       return `Nested blocks are not supported — flatten by inlining the included block's steps into this block.`;
     }
-    const removed = keys.filter((k) => k in REMOVED_FIELDS);
-    const stillUnknown = keys.filter((k) => !(k in REMOVED_FIELDS));
-    const parts = removed.map((k) => `\`${k}\` is no longer part of the spec schema — ${REMOVED_FIELDS[k]}`);
+    const removed = keys.filter((k) => REMOVED_FIELDS[k]?.at(issue.path));
+    const stillUnknown = keys.filter((k) => !REMOVED_FIELDS[k]?.at(issue.path));
+    const parts = removed.map((k) => `\`${k}\` is no longer part of the spec schema — ${REMOVED_FIELDS[k]!.message}`);
     if (stillUnknown.length > 0) parts.push(`Unknown keys: ${stillUnknown.join(", ")}`);
     return parts.join(" ");
   }

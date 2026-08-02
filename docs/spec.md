@@ -133,10 +133,8 @@ Rules:
   values as `process.env.<NAME>` template literals, so secrets never land in
   the generated test file.
 
-Earlier versions also accepted `dummy` and `description` on a param.
-Neither was ever read: the draft and audit prompts only ever received a
-param's `name`, `required` and `secret`. Both are now rejected, so a block
-that still carries one fails to parse until the line is deleted.
+If a param still carries a `dummy` or `description` line, delete it — the
+parser rejects both fields.
 
 ### Using a block from a spec
 

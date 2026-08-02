@@ -62,6 +62,22 @@ steps:
 `),
     ).toThrow(/relatedPaths.*no longer part of the spec schema.*ccqa select-specs/s);
   });
+
+  it("keeps the generic unknown-key message for `description` at the spec root", () => {
+    let err: Error | null = null;
+    try {
+      parseTestSpec(`title: demo
+description: a note
+steps:
+  - instruction: i
+    expected: e
+`);
+    } catch (e) {
+      err = e as Error;
+    }
+    expect(err!.message).toMatch(/Unknown keys: description/);
+    expect(err!.message).not.toMatch(/no longer part of the spec schema/);
+  });
 });
 
 describe("parseBlockSpec", () => {
@@ -87,7 +103,7 @@ steps:
     ).toThrow(/Nested blocks/);
   });
 
-  it("tells a param carrying `dummy` or `description` that nothing ever read it", () => {
+  it("tells a param carrying `dummy` or `description` that nothing reads it", () => {
     for (const field of ["dummy", "description"]) {
       expect(() =>
         parseBlockSpec(`title: Login
