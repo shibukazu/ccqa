@@ -137,18 +137,12 @@ export const DEFAULT_SPEC_MODE: SpecMode = "deterministic";
  * `required: false` makes it optional. `secret: true` flags the value as
  * sensitive — codegen renders such values as `process.env.<NAME> ?? ""`
  * template literals so the secret never ends up baked into test.spec.ts.
- * `dummy` is a placeholder value surfaced by the draft / drift prompts
- * (which see the block in isolation, before any include site exists);
- * `description` is the param's semantic role, also consumed by those
- * prompts and by spec authors browsing the block.
  */
 export const BlockParamSchema = z
   .object({
     name: z.string().min(1),
     required: z.boolean().optional(),
     secret: z.boolean().optional(),
-    dummy: z.string().optional(),
-    description: z.string().optional(),
   })
   .strict();
 export type BlockParam = z.infer<typeof BlockParamSchema>;
