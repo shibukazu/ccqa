@@ -17,6 +17,11 @@ on:
         type: boolean
         required: false
         default: false
+      hub_impact_override:
+        description: "Release even though the diff disagrees with the bump — say why (printed in the job summary and the release notes)"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -28,6 +33,8 @@ jobs:
     env:
       BUMP: ${{ inputs.bump }}
       DRY_RUN: ${{ inputs.dry_run }}
+      OVERRIDE: ${{ inputs.hub_impact_override }}
+      NOTES: release-notes.md
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,6 +51,14 @@ jobs:
           node-version: "22"
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
+
+      # Before the bump, so the diff it reads is the release's own changes and
+      # not the `chore: release` commit. Before the build, so a bump the diff
+      # contradicts fails in seconds rather than after the full suite.
+      - name: Classify hub impact
+        run: |
+          node --experimental-strip-types src/release/check.ts \
+            --bump "$BUMP" --override "$OVERRIDE" --notes-out "$NOTES"
 
       - name: Configure git
         run: |
@@ -97,6 +112,16 @@ jobs:
       - name: Publish to npm (trusted publishing + provenance)
         if: ${{ env.DRY_RUN != 'true' }}
         run: npx -y npm@latest publish --provenance --access public
+
+      # After publishing: a release that npm rejected should not be announced.
+      # The hub-impact answer leads the body — it is what the person holding a
+      # deployed hub has to act on — and gh appends the generated changelog.
+      - name: Create GitHub Release
+        if: ${{ env.DRY_RUN != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: gh release create "$VERSION" --title "$VERSION" --notes-file "$NOTES" --generate-notes
 
       - name: Dry-run publish
         if: ${{ env.DRY_RUN == 'true' }}
