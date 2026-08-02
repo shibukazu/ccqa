@@ -1,6 +1,6 @@
 # 0017. Records the hub stores but does not judge
 
-- Status: accepted
+- Status: accepted (amended 2026-08-02 — see Amendment below)
 - Date: 2026-08-02
 
 ## Context and problem statement
@@ -122,7 +122,8 @@ detect or undo.
 It is also the one record here that is bounded — entries are pruned to a
 90-day window as the log is appended to. An ack is replaced wholesale and a run
 is its own document, but this is a single document that only ever grows, and a
-budget only ever asks about the recent past.
+budget only ever asks about the recent past. *(Amended below: runs are bounded
+too, by count rather than by age.)*
 
 ## Consequences
 
@@ -141,6 +142,32 @@ Follow-up: nothing generalises the ack yet — there is no listing of names
 under a project, and no expiry. Both are additive, and neither is needed
 until a consumer keeps more than a handful of sets.
 
+## Amendment (2026-08-02): runs are bounded too, by count
+
+The spend log is described above as the one record here that is bounded. It is
+now the only one bounded by **age**: a run is capped by **count**, at the
+newest 200 per (project, branch), and an evicted run's artifacts and triage
+grades are deleted with it (`ccqa serve --max-runs-per-branch <n>`).
+
+The `kind: "record"` run this ADR introduced is what forced it. A recording is
+left per re-recorded spec, so an automated fix loop adds several a night, and
+each carries the screenshots that are most of what the hub stores. That is a
+burst, and any time window admits an unbounded number of them — which is why
+the two records are bounded on different axes: a spend entry is a few hundred
+bytes and arrives once per job, where a run is large and arrives in clusters.
+
+One cap covers every kind, so a night of recordings can push that branch's
+executions out of what is kept. Deliberate: a per-kind cap would make "the
+newest N runs" mean something different row by row, and the answer for a
+project that records heavily is a larger cap.
+
+Neither ledger is swept. Both are one small document per branch, and an entry
+already carries everything a verdict needs, so an entry outlives the run it
+names: `GET /runs/:id` then answers 404 and the UI's run page says the run is
+no longer kept. Pinning referenced runs was the alternative, and was
+rejected: it pins the *oldest* runs indefinitely and grows with the spec count
+rather than with the cap, which is not a bound.
+
 ## More information
 
 - Run kinds: `src/report/schema.ts` (`ReportKindSchema`), enforced in
@@ -154,6 +181,9 @@ until a consumer keeps more than a handful of sets.
   `src/hub/core/storage/file/spend-store.ts`, routes in
   `src/hub/api/handlers/spend.ts`, client in `ccqa hub cost push`, wire
   contract in [`docs/hub-api.md`](../hub-api.md#spend)
+- Run retention: `src/hub/core/retention.ts`, called from the push and seal
+  handlers in `src/hub/api/handlers/runs.ts`, operator guide in
+  [`docs/hub.md`](../hub.md#run-retention)
 - Related: ADR-0006 (the hub stores, it does not execute), ADR-0009 (a run is
   immutable once terminal — a recording is too), ADR-0013 (why the drift
   ledger is not profile-scoped)

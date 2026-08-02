@@ -2,7 +2,7 @@ import { cp } from "node:fs/promises";
 import { join } from "node:path";
 import { packFilesToTarGz } from "../../tar.ts";
 import type { ArtifactStore } from "../types.ts";
-import { listFilesRecursive, readBytesOrNull, updateJson, writeBytes } from "./fs-helpers.ts";
+import { listFilesRecursive, readBytesOrNull, removePath, serialize, updateJson, writeBytes } from "./fs-helpers.ts";
 import { artifactsRunDir } from "./paths.ts";
 
 /**
@@ -55,6 +55,13 @@ export function createFileArtifactStore(root: string): ArtifactStore {
     async updateJsonFile(runId, relPath, mutate) {
       assertSafeRelPath(relPath);
       await updateJson(join(artifactsRunDir(root, runId), relPath), mutate);
+    },
+
+    async delete(runId) {
+      // report.json is the one file `updateJsonFile` is ever called with, so
+      // its chain is the only one a delete of the tree has to get behind.
+      const dir = artifactsRunDir(root, runId);
+      await serialize(join(dir, "report.json"), () => removePath(dir));
     },
   };
 }

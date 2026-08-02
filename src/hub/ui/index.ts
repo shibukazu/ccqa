@@ -1108,6 +1108,7 @@ const CLIENT_JS = `
       "detail.back": "Runs", "detail.specs": "Specs",
       "detail.download": "Download artifacts",
       "detail.triage": "Triage",
+      "detail.notKept": "This run is no longer kept — the hub keeps only the most recent runs of each branch.",
       "meta.branch": "Branch", "meta.specs": "Specs", "meta.cost": "Cost",
       "meta.created": "Created", "meta.passed": "passed", "meta.profile": "Profile",
       "meta.drift": "Drift",
@@ -1271,6 +1272,7 @@ const CLIENT_JS = `
       "detail.back": "実行", "detail.specs": "スペック",
       "detail.download": "アーティファクトをダウンロード",
       "detail.triage": "トリアージ",
+      "detail.notKept": "この実行はもう保持されていません — ハブは各ブランチの直近の実行だけを保持します。",
       "meta.branch": "ブランチ", "meta.specs": "スペック", "meta.cost": "コスト",
       "meta.created": "作成", "meta.passed": "合格", "meta.profile": "プロファイル",
       "meta.drift": "ドリフト",
@@ -1561,7 +1563,9 @@ const CLIENT_JS = `
         // A reverse proxy can answer with non-JSON (an HTML 502 page) — fall
         // back to the status line instead of a JSON-parse error message.
         return res.json().catch(function () { return null; }).then(function (b) {
-          throw new Error((b && b.error && b.error.message) || (res.status + " " + res.statusText));
+          var err = new Error((b && b.error && b.error.message) || (res.status + " " + res.statusText));
+          err.status = res.status;
+          throw err;
         });
       }
       return res.status === 204 ? null : res.json();
@@ -2958,12 +2962,10 @@ const CLIENT_JS = `
 
   // ── run detail: orchestration ───────────────────────────────────────
 
-  function detailError(what) {
-    return function (err) {
-      var e = document.getElementById("detail-error");
-      e.hidden = false;
-      e.textContent = what + ": " + err.message;
-    };
+  function detailError(msg) {
+    var e = document.getElementById("detail-error");
+    e.hidden = false;
+    e.textContent = msg;
   }
 
   function openRunDetail(runId) {
@@ -2979,9 +2981,17 @@ const CLIENT_JS = `
     document.getElementById("detail-spec-count").textContent = "";
     document.getElementById("triage-summary").textContent = "";
 
+    // Retention drops a run but never the ledger entries pointing at it, so a
+    // Perspectives link can outlive its target. That 404 is the whole story of
+    // the page, so it speaks for the report's failure too.
+    var runGone = false;
+
     apiFetch("/api/v1/runs/" + encodeURIComponent(runId)).then(function (run) {
       renderRunHead(run);
-    }).catch(detailError("Error loading run"));
+    }).catch(function (err) {
+      runGone = err.status === 404;
+      detailError(runGone ? t("detail.notKept") : "Error loading run: " + err.message);
+    });
 
     apiFetch("/api/v1/runs/" + encodeURIComponent(runId) + "/report").then(function (report) {
       // Draw the spec cards first from the report alone, then re-draw once
@@ -2997,7 +3007,9 @@ const CLIENT_JS = `
       loadTriage(runId, isDrift, function (loaded) {
         renderSpecCards(runId, report.results, loaded, isDrift);
       });
-    }).catch(detailError("Error loading report"));
+    }).catch(function (err) {
+      if (!runGone) detailError("Error loading report: " + err.message);
+    });
   }
 
   // ── learning jobs ────────────────────────────────────────────────────

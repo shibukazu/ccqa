@@ -64,22 +64,31 @@ export async function writeJson(path: string, value: unknown): Promise<void> {
  */
 const updateChains = new Map<string, Promise<unknown>>();
 
-export async function updateJson<T>(path: string, mutate: (current: T | null) => T): Promise<T> {
+/**
+ * Queue `work` behind whatever is already in flight for `path`. A delete takes
+ * the same chain as the updates it removes: `writeJson` recreates the parent
+ * directory, so an unordered delete would be silently undone by an update that
+ * was already queued.
+ */
+export async function serialize<T>(path: string, work: () => Promise<T>): Promise<T> {
   const previous = updateChains.get(path) ?? Promise.resolve();
-  const next = previous
-    .catch(() => {}) // a prior failed update must not wedge the chain for later callers
-    .then(async () => {
-      const current = await readJson<T>(path);
-      const updated = mutate(current);
-      await writeJson(path, updated);
-      return updated;
-    });
+  // a prior failed update must not wedge the chain for later callers
+  const next = previous.catch(() => {}).then(work);
   updateChains.set(path, next);
   try {
     return await next;
   } finally {
     if (updateChains.get(path) === next) updateChains.delete(path);
   }
+}
+
+export async function updateJson<T>(path: string, mutate: (current: T | null) => T): Promise<T> {
+  return await serialize(path, async () => {
+    const current = await readJson<T>(path);
+    const updated = mutate(current);
+    await writeJson(path, updated);
+    return updated;
+  });
 }
 
 /** Read a raw file, returning `null` when it doesn't exist. */

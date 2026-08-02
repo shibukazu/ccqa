@@ -158,6 +158,13 @@ export interface RunStore {
   get(id: string): Promise<Run | null>;
   /** Mutable while running; immutable once terminal (enforced by the API layer, not the store). */
   update(id: string, patch: Partial<Run>): Promise<Run>;
+  /**
+   * Drop the record. The retention sweep (`core/retention.ts`) calls this
+   * before deleting the run's artifacts and triage, so a run that is still
+   * listable always has a report behind it — the same order the push takes,
+   * reversed.
+   */
+  delete(id: string): Promise<void>;
   /** Newest first, optionally filtered by project / branch / status / kind (any of `kinds`) / creation time. */
   list(q: {
     project?: string;
@@ -185,6 +192,8 @@ export interface ArtifactStore {
   putFile(runId: string, relPath: string, bytes: Uint8Array): Promise<void>;
   /** Concurrency-safe read-modify-write for a JSON artifact (e.g. report.json). */
   updateJsonFile<T>(runId: string, relPath: string, mutate: (current: T | null) => T): Promise<void>;
+  /** Drop the whole tree — the evidence images are the bulk of what retention reclaims. */
+  delete(runId: string): Promise<void>;
 }
 
 /**
@@ -231,6 +240,8 @@ export interface TriageStore {
   /** Upsert by (runId, feature, spec) — re-recording a case overwrites the previous entry. */
   putActualCause(runId: string, record: TriageRecord): Promise<void>;
   deleteActualCause(runId: string, feature: string, spec: string): Promise<void>;
+  /** Drop every grade recorded against a run, for when the run itself is dropped. */
+  deleteAll(runId: string): Promise<void>;
   list(runId: string): Promise<TriageRecord[]>;
 }
 

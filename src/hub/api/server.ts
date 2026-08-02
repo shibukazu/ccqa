@@ -66,6 +66,7 @@ export interface HubServerConfig {
   encryptionKey: Buffer | null;
   allowedOrigins: string[];
   maxPushBytes?: number;
+  maxRunsPerBranch?: number;
 }
 
 /** Endpoints reachable without a token: the liveness probe and the bundled UI shell. */
@@ -175,14 +176,17 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
     ctx.res.end(renderHubUi());
   });
 
+  const retention = config.maxRunsPerBranch != null ? { maxRunsPerBranch: config.maxRunsPerBranch } : {};
   router.post("/api/v1/runs", createPushRunHandler({
     storage,
     ...(config.maxPushBytes ? { maxPushBytes: config.maxPushBytes } : {}),
+    ...retention,
   }));
   router.post("/api/v1/runs/open", createOpenRunHandler({ storage }));
   router.patch("/api/v1/runs/:id", createPatchRunHandler({
     storage,
     ...(config.maxPushBytes != null ? { maxPushBytes: config.maxPushBytes } : {}),
+    ...retention,
   }));
   router.get("/api/v1/runs", createListRunsHandler(storage));
   router.get("/api/v1/runs/:id", createGetRunHandler(storage));
