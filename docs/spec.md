@@ -127,12 +127,14 @@ Rules:
   inside a block) are rejected: flatten by inlining the included block's
   steps.
 - `params` are string-typed; reference them in step strings with `${name}`.
-  Each param takes `name` (required), `required` (defaults to `true`),
-  `secret` (defaults to `false`), and optional `dummy` / `description`
-  fields used by the draft/drift prompts.
+  Each param takes `name` (required), `required` (defaults to `true`) and
+  `secret` (defaults to `false`).
 - `secret: true` marks a value as sensitive. Generated code renders env-like
   values as `process.env.<NAME>` template literals, so secrets never land in
   the generated test file.
+
+If a param still carries a `dummy` or `description` line, delete it — the
+parser rejects both fields.
 
 ### Using a block from a spec
 
