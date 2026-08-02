@@ -1042,6 +1042,72 @@ describe("hub API server", () => {
     });
   });
 
+  // The sweep hangs off a run reaching terminal rather than off startup: the
+  // hub whose disk grows is the one written to constantly and never restarted.
+  describe("run retention", () => {
+    let capped: Server;
+    let cappedUrl: string;
+
+    beforeEach(async () => {
+      capped = createHubServer({
+        storage,
+        token: TOKEN,
+        encryptionKey: null,
+        allowedOrigins: [],
+        maxRunsPerBranch: 1,
+      });
+      await new Promise<void>((resolvePromise) => capped.listen(0, "127.0.0.1", resolvePromise));
+      const address = capped.address();
+      if (address === null || typeof address === "string") throw new Error("expected a bound TCP address");
+      cappedUrl = `http://127.0.0.1:${address.port}`;
+    });
+
+    afterEach(async () => {
+      capped.closeAllConnections();
+      await new Promise<void>((resolvePromise) => capped.close(() => resolvePromise()));
+    });
+
+    /** Seeded rather than pushed, so which run is the oldest of the branch is unambiguous. */
+    async function seedOlderRun(id: string): Promise<void> {
+      await storage.runs.create({
+        id, project: "demo", profile: null, branch: "main", status: "passed",
+        kind: "run", drift: null,
+        specs: { total: 1, passed: 1, failed: 0 }, gitHead: null, promptVersion: "1",
+        ciRunId: null, reportCreatedAt: "2020-01-01T00:00:00.000Z", createdAt: "2020-01-01T00:00:00.000Z",
+      });
+      await storage.artifacts.putFile(id, "report.json", new TextEncoder().encode("{}"));
+    }
+
+    test("a push past the cap evicts the branch's oldest run and its report", async () => {
+      await seedOlderRun("older");
+      const pushed = await fetch(`${cappedUrl}/api/v1/runs?project=demo&branch=main`, authed({
+        method: "POST",
+        body: makeReportTarGz({ status: "passed" }),
+      })).then(json);
+
+      const { runs } = await fetch(`${cappedUrl}/api/v1/runs?project=demo`, authed()).then(json);
+      expect(runs.map((r: { id: string }) => r.id)).toEqual([pushed.id]);
+      expect((await fetch(`${cappedUrl}/api/v1/runs/older/report`, authed())).status).toBe(404);
+    });
+
+    test("an incremental run sweeps at its seal, not while it is still open", async () => {
+      await seedOlderRun("older");
+      const opened = await fetch(
+        `${cappedUrl}/api/v1/runs/open?project=demo&branch=main`,
+        authed({ method: "POST" }),
+      ).then(json);
+      expect(await storage.runs.get("older")).not.toBeNull();
+
+      await fetch(`${cappedUrl}/api/v1/runs/${opened.id}`, authed({
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rows: [], done: true }),
+      }));
+
+      expect(await storage.runs.get("older")).toBeNull();
+    });
+  });
+
   describe("last-green ledger", () => {
     async function openAndFinish(args: {
       branch: string;

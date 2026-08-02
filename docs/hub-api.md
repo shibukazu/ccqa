@@ -167,6 +167,14 @@ restarts while a run is still `running` (e.g. it crashed or was redeployed
 mid-run), a one-time startup sweep flips every such orphaned run to
 `"failed"`, since nothing will ever resume patching it.
 
+Runs are not kept forever. Each time one reaches a terminal state, its
+`(project, branch)` is trimmed to the newest 200 (`ccqa serve
+--max-runs-per-branch <n>`), and every dropped run's record, artifacts and
+triage records go together — so `GET /runs/:id` and everything under it answer
+`404` for it afterwards. Ledger entries are not rewritten, so `/last-green`,
+`/rerun` and `/drift` can hand back a `runId` that no longer resolves; nothing
+they compute reads that id (see [docs/hub.md](./hub.md#run-retention)).
+
 ## Triage
 
 Each failing spec's classification pairs an AI **prediction** (read-only,

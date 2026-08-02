@@ -1,5 +1,5 @@
 import type { TriageRecord, TriageStore } from "../types.ts";
-import { readJson, updateJson } from "./fs-helpers.ts";
+import { readJson, removePath, serialize, updateJson } from "./fs-helpers.ts";
 import { triagePath } from "./paths.ts";
 
 export function createFileTriageStore(root: string): TriageStore {
@@ -21,6 +21,11 @@ export function createFileTriageStore(root: string): TriageStore {
         const records = current ?? [];
         return records.filter((r) => !(r.feature === feature && r.spec === spec));
       });
+    },
+
+    async deleteAll(runId) {
+      const path = triagePath(root, runId);
+      await serialize(path, () => removePath(path));
     },
 
     async list(runId) {

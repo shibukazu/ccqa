@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { createHubServer } from "../hub/api/server.ts";
 import { createHubStorage } from "../hub/core/storage/factory.ts";
 import { parseEncryptionKey } from "../hub/core/crypto.ts";
+import { DEFAULT_MAX_RUNS_PER_BRANCH } from "../hub/core/retention.ts";
 import { driftAuthAvailable } from "../drift/auth.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import * as log from "./logger.ts";
@@ -11,6 +12,7 @@ export interface ServeOptions {
   dataDir: string;
   allowOrigin?: string[];
   maxPushMb?: number;
+  maxRunsPerBranch?: number;
 }
 
 export const serveCommand = new Command("serve")
@@ -29,6 +31,11 @@ export const serveCommand = new Command("serve")
     [] as string[],
   )
   .option("--max-push-mb <n>", "Reject pushed report bundles larger than this (MB). Default 32.", parsePositiveInt)
+  .option(
+    "--max-runs-per-branch <n>",
+    "Keep this many runs per project and branch; older ones are deleted with their artifacts and grades. Default 200.",
+    parsePositiveInt,
+  )
   .action(async (opts: ServeOptions) => {
     await runServe(opts);
   });
@@ -71,6 +78,7 @@ async function runServe(opts: ServeOptions): Promise<void> {
     encryptionKey,
     allowedOrigins: opts.allowOrigin ?? [],
     ...(opts.maxPushMb ? { maxPushBytes: opts.maxPushMb * 1024 * 1024 } : {}),
+    ...(opts.maxRunsPerBranch ? { maxRunsPerBranch: opts.maxRunsPerBranch } : {}),
   });
 
   const requestedPort = Number(opts.port);
@@ -93,6 +101,8 @@ async function runServe(opts: ServeOptions): Promise<void> {
     log.header("serve", `port ${boundPort}`);
     log.meta("data-dir", dataDir);
     log.meta("encryption", encryptionKey ? "enabled" : "disabled (no CCQA_HUB_ENCRYPTION_KEY)");
+    // Printed because it deletes — the cap should be visible before history is.
+    log.meta("run retention", `${opts.maxRunsPerBranch ?? DEFAULT_MAX_RUNS_PER_BRANCH} per project/branch`);
     // Learning jobs always call Claude. Missing auth doesn't stop the hub —
     // only running a learning job fails, at run time.
     const auth = driftAuthAvailable();

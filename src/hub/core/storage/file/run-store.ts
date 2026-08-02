@@ -1,7 +1,7 @@
 import type { Run } from "../../../contract/schema.ts";
 import type { RunStore } from "../types.ts";
-import { listSubdirsOrEmpty, readJson, updateJson, writeJson } from "./fs-helpers.ts";
-import { runMetaPath, runsDir } from "./paths.ts";
+import { listSubdirsOrEmpty, readJson, removePath, serialize, updateJson, writeJson } from "./fs-helpers.ts";
+import { runDir, runMetaPath, runsDir } from "./paths.ts";
 import { windowFilter } from "./time-window.ts";
 
 /**
@@ -34,6 +34,10 @@ export function createFileRunStore(root: string): RunStore {
         if (!current) throw new Error(`run "${id}" not found`);
         return { ...current, ...patch };
       });
+    },
+
+    async delete(id) {
+      await serialize(runMetaPath(root, id), () => removePath(runDir(root, id)));
     },
 
     async list({ project, branch, status, kinds, since, until, limit }) {

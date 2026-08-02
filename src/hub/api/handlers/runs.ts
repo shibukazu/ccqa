@@ -11,6 +11,7 @@ import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
 import { emptyDriftLedger } from "../../core/drift-ledger.ts";
 import { emptyLedger } from "../../core/spec-ledger.ts";
+import { DEFAULT_MAX_RUNS_PER_BRANCH, sweepRunRetention } from "../../core/retention.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
 import { errMsg, HttpError, readBody, readJsonBody, sendBytes, sendJson } from "../respond.ts";
@@ -22,6 +23,7 @@ const DEFAULT_MAX_PUSH_BYTES = 32 * 1024 * 1024;
 export interface PushRunHandlerConfig {
   storage: HubStorage;
   maxPushBytes?: number;
+  maxRunsPerBranch?: number;
 }
 
 /**
@@ -32,6 +34,7 @@ export interface PushRunHandlerConfig {
  */
 export function createPushRunHandler(config: PushRunHandlerConfig) {
   const maxPushBytes = config.maxPushBytes ?? DEFAULT_MAX_PUSH_BYTES;
+  const maxRunsPerBranch = config.maxRunsPerBranch ?? DEFAULT_MAX_RUNS_PER_BRANCH;
   return async (ctx: RouteContext): Promise<void> => {
     const { project, branch, profile, kind, deployedSha } = parseRunScope(ctx);
 
@@ -105,6 +108,7 @@ export function createPushRunHandler(config: PushRunHandlerConfig) {
       await config.storage.runs.create(run);
       await updateSpecLedger(config.storage, run, report.results);
       await updateDriftLedger(config.storage, run, report.results);
+      await sweepRunRetention(config.storage, run, maxRunsPerBranch);
 
       sendJson(ctx.res, 201, run);
     } finally {
@@ -189,6 +193,7 @@ const PatchRunRequestSchema = z.object({
 export interface PatchRunHandlerConfig {
   storage: HubStorage;
   maxPushBytes?: number;
+  maxRunsPerBranch?: number;
 }
 
 /** Insert or replace `rows` into `results`, upserting by feature/spec identity. */
@@ -381,6 +386,7 @@ async function deployHeadMovedDuringRun(storage: HubStorage, run: Run): Promise<
  */
 export function createPatchRunHandler(config: PatchRunHandlerConfig) {
   const maxPushBytes = config.maxPushBytes ?? DEFAULT_MAX_PUSH_BYTES;
+  const maxRunsPerBranch = config.maxRunsPerBranch ?? DEFAULT_MAX_RUNS_PER_BRANCH;
   return async (ctx: RouteContext): Promise<void> => {
     const id = ctx.params.id!;
     const run = await getRunOr404(config.storage, id);
@@ -488,7 +494,12 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
     // its cause is filled in the tail phase after the pool drains, so an early
     // advance would publish red entries with no cause and rewrite them.
     await updateDriftLedger(config.storage, updated, mergedResults);
-    if (done) await updateSpecLedger(config.storage, updated, mergedResults);
+    if (done) {
+      await updateSpecLedger(config.storage, updated, mergedResults);
+      // Only at the seal: an open run is not yet in its branch's count, and
+      // sweeping on every row would re-list the project once per spec.
+      await sweepRunRetention(config.storage, updated, maxRunsPerBranch);
+    }
 
     sendJson(ctx.res, 200, updated);
   };

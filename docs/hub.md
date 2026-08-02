@@ -37,10 +37,12 @@ ccqa serve --port 8787                  # TCP port to listen on. Default 8787.
 ccqa serve --data-dir ./ccqa-hub-data   # Runs, sessions, variables. Default ./ccqa-hub-data.
 ccqa serve --allow-origin https://intranet.example  # CORS-allowed origin, repeatable. Omit for no cross-origin access.
 ccqa serve --max-push-mb 32             # Reject pushed report bundles larger than this (MB). Default 32.
+ccqa serve --max-runs-per-branch 200    # Keep this many runs per project and branch. Default 200.
 ```
 
 On startup the hub logs its port, data directory, whether encryption is
-enabled, the allowed CORS origins (if any), and the URL it's listening at.
+enabled, the run-retention cap in effect, the allowed CORS origins (if any),
+and the URL it's listening at.
 
 ## How runs, sessions, and variables flow through the hub
 
@@ -319,6 +321,40 @@ Read it via `GET /api/v1/projects/:project/drift` (no `?profile=` — see
 [the API reference](./hub-api.md#drift-ledger)), or in the **Perspectives**
 tab below, which shows it beside — never merged with — the re-run column,
 since the two answer different questions.
+
+## Run retention
+
+The hub keeps the newest **200 runs of each (project, branch)** and deletes
+the rest — the run record, its artifacts and its triage grades together.
+Change the cap with `ccqa serve --max-runs-per-branch <n>`; whatever is in
+effect is printed at startup. There is no off switch — set the cap high on a
+hub that has to keep everything.
+
+The sweep happens whenever a run reaches a terminal state — a `ccqa hub push`,
+or the sealing patch of a `--report-to-hub` run — and only over the branch
+that run belongs to. There is no sweep at startup, because the hub whose disk
+grows is the one written to constantly and never restarted. A run that is
+still `running` is neither counted nor evicted.
+
+It is a count rather than an age window — the
+[spend log](./hub-api.md#spend) uses 90 days — because what has to be bounded
+is a burst: `ccqa record --report-to-hub` leaves one run per re-recorded spec,
+so a nightly fix loop can add dozens, and any time window admits an unbounded
+number of them. The evidence screenshots are most of the bytes, which is why
+artifacts go with the record rather than outliving it.
+
+Every kind counts toward the same cap, so a night of recordings can push that
+branch's executions out — raise `--max-runs-per-branch` on a project that
+records heavily and wants a long run history. Triage grades are bounded the
+same way; a [learning job](#triage-learning) reads the most recent runs, well
+inside the default cap.
+
+Neither ledger is swept: each is one small document per branch, and its
+entries carry everything a verdict needs. What an entry keeps is the `runId`
+it came from, which may name a run that is no longer stored — the hub answers
+`404` for it and the UI's run page says the run is no longer kept. Nothing
+computed from a ledger reads that id, so `/rerun`, `/audit-needed`,
+`/last-green` and the drift ledger are unaffected.
 
 ## The bundled UI
 
