@@ -5,8 +5,10 @@ judgements, and a judgement you cannot measure you cannot improve. The `eval/`
 tree is a self-contained benchmark for them: a small target app, drift seeded
 as declared mutations with known labels, and a harness that runs the real
 commands against a real checkout and scores the answers. No API key is needed
-to develop against it (the tests replay a mocked Claude); a real run needs
-one and costs a few model calls per case.
+to develop against it (the tests replay a mocked Claude), and a real run uses
+your local Claude Code login when you have one — an API key is only needed
+where no such login exists, e.g. in CI. A real run costs a few model calls
+per case.
 
 The point of the setup is the loop: edit a prompt under `src/prompts/`,
 re-run the eval, compare the numbers. The commands under test always run from
@@ -23,9 +25,15 @@ eval/
   results/   per-run scored JSON (gitignored)
 ```
 
-`eval/app/` is a complete little product — `node server.mjs` serves it — but
-phase 1 never runs it: the audit and the selection read source, so only the
-source has to exist and stay honest. The `.ccqa/` tree next to it holds a
+`eval/app/` is a complete little product — one process, `node server.mjs`,
+no dependencies — but it is laid out like a real one: the server file only
+boots and serves static files, and everything under `/api/` lives in
+`backend/` (routes, an in-memory store, input validation), with the
+frontend's `public/js/api.js` as the contract counterpart of the backend
+routes. That split is what lets a case mutate one layer while the judgement
+lives in another — the backend-impact cases below exist because of it.
+Phase 1 never runs the app: the audit and the selection read source, so only
+the source has to exist and stay honest. The `.ccqa/` tree next to it holds a
 login block and five deterministic specs (sign in, add a task, complete a
 task, filter the list, read the help page) whose `test.spec.ts` files are
 hand-written in the shape `ccqa generate` emits, with selectors that really
@@ -46,7 +54,7 @@ only.
 pnpm eval:audit                     # all audit cases, haiku
 pnpm eval:select                    # all select cases, haiku
 pnpm eval:audit rename              # only cases whose name contains "rename"
-pnpm eval:audit -- --model sonnet   # a different model
+pnpm eval:audit --model sonnet      # a different model
 ```
 
 Each run prints a human summary and writes
@@ -76,8 +84,8 @@ This inventory is what the benchmark claims to cover: one case per
 judgement, none testing the same one twice. Specs not named are expected
 clean / `notNeeded`.
 
-**Audit** — a full run makes one model call per spec per case (15 cases ×
-5 specs = 75 calls), so run cost scales linearly with both counts; on haiku
+**Audit** — a full run makes one model call per spec per case (19 cases ×
+5 specs = 95 calls), so run cost scales linearly with both counts; on haiku
 that is a few dollars.
 
 | case                       | seeds                                        | expected                                             |
@@ -85,8 +93,11 @@ that is a few dollars.
 | baseline-clean             | nothing at all                               | all clean                                            |
 | server-unrelated-change    | server-only changes no spec observes         | all clean                                            |
 | refactor-bait-clean        | internal rename, nothing observable          | all clean                                            |
+| store-refactor-clean       | backend store internals refactored, identical behaviour | all clean                                 |
 | new-feature-clean          | new feature no spec covers                   | all clean                                            |
 | css-only-change            | presentation-only restyle                    | all clean                                            |
+| backend-field-rename       | backend renames a response field the frontend reads | all clean (suspected breakage is not drift)   |
+| backend-route-move         | an API route moves, frontend keeps the old path | all clean (suspected breakage is not drift)       |
 | rename-add-button          | visible button label renamed                 | add-task: TEST_DRIFT/generated/SELECTOR_DRIFT        |
 | rename-complete-aria-label | accessible name renamed, no visible text     | complete-task, filter-tasks: TEST_DRIFT/SELECTOR_DRIFT |
 | stale-spec-prose           | on-screen copy renamed, structural selector survives | filter-tasks: TEST_DRIFT (surface `spec`, unscoreable default) |
@@ -97,21 +108,25 @@ that is a few dollars.
 | rework-add-flow            | the flow's affordance replaced               | add-task: SPEC_CHANGE/BEHAVIOUR_CHANGED              |
 | confirm-before-complete    | the flow gains a confirmation step           | complete-task, filter-tasks: SPEC_CHANGE/BEHAVIOUR_CHANGED |
 | move-help-route            | a page moves to a new route                  | read-help: SPEC_CHANGE/BEHAVIOUR_CHANGED             |
+| backend-title-minlength    | backend validation refuses the specs' data   | the three adding specs: SPEC_CHANGE/BEHAVIOUR_CHANGED |
 
 **Select** — at most one model call per case; the two mechanical cases make
 none (spec-tree changes are set membership, pinned here so they never start
 costing a call).
 
-| case                   | seeds                                        | expected needed                  |
-| ---------------------- | -------------------------------------------- | -------------------------------- |
-| docs-only-change       | documentation only                           | none                             |
-| css-only-change        | presentation only                            | none                             |
-| filter-bar-refactor    | a change inside one feature                  | filter-tasks                     |
-| mixed-commit-noise     | one copy change plus docs noise              | auth/login                       |
-| server-endpoint-change | one endpoint's handler changes               | complete-task, filter-tasks      |
-| api-shared-change      | the shared fetch layer changes               | the four sign-in specs           |
-| block-spec-file-change | the login block's spec.yaml (mechanical)     | the four including specs         |
-| spec-own-file-change   | a spec's own file (mechanical)               | that spec                        |
+| case                    | seeds                                        | expected needed                  |
+| ----------------------- | -------------------------------------------- | -------------------------------- |
+| docs-only-change        | documentation only                           | none                             |
+| css-only-change         | presentation only                            | none                             |
+| filter-bar-refactor     | the filter click stops re-rendering the list | filter-tasks                     |
+| mixed-commit-noise      | one copy change plus docs noise              | auth/login                       |
+| server-endpoint-change  | one endpoint's handler changes               | complete-task, filter-tasks      |
+| api-shared-change       | the shared fetch layer changes               | the four sign-in specs           |
+| backend-title-minlength | backend validation refuses the specs' data   | the three adding specs           |
+| backend-field-rename    | backend renames a response field the frontend reads | the four sign-in specs    |
+| backend-route-move      | an API route moves, frontend keeps the old path | complete-task, filter-tasks   |
+| block-spec-file-change  | the login block's spec.yaml (mechanical)     | the four including specs         |
+| spec-own-file-change    | a spec's own file (mechanical)               | that spec                        |
 
 ## What the numbers mean
 
@@ -148,8 +163,11 @@ being scored — scoring it would grade the fallback, not the model.
 Some ground truths are genuinely at the boundary the prompts are asked to
 draw — a removed button declared `SPEC_CHANGE` rather than `TEST_DRIFT`, a
 filter-bar edit cleared for specs that render through the filter's default
-path. That is deliberate: the eval's job is to make prompt versions
-comparable on a fixed answer key, not to be beyond argument. Change an
+path, a backend/frontend contract break expected clean because a static
+audit may not claim `PRODUCT_BUG` (ADR-0016) and the intent the specs
+describe is unchanged. That is deliberate: the eval's job is to make
+prompt versions comparable on a fixed answer key, not to be beyond
+argument. Change an
 expected answer only with the same care as changing the prompt it measures.
 
 ## Adding a case

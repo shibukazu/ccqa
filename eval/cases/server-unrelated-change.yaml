@@ -3,15 +3,31 @@ mutations:
   - file: server.mjs
     search: 'sendJson(res, 404, { error: "Not found" });'
     replace: 'sendJson(res, 404, { error: "File not found" });'
-  - file: server.mjs
+  - file: backend/store.mjs
     search: |-
-      sendJson(res, 404, { error: "No such endpoint" });
+      export function findTask(id) {
+        return tasks.find((t) => t.id === id) ?? null;
+      }
+    replace: |-
+      export function findTask(id) {
+        return tasks.find((t) => t.id === id) ?? null;
+      }
+
+      export function removeTask(id) {
+        tasks = tasks.filter((t) => t.id !== id);
+      }
+  - file: backend/routes/tasks.mjs
+    search: import { addTask, findTask, listTasks } from "../store.mjs";
+    replace: import { addTask, findTask, listTasks, removeTask } from "../store.mjs";
+  - file: backend/routes/tasks.mjs
+    search: |-
+      return false;
     replace: |-
       if (req.method === "DELETE" && toggle) {
-          tasks = tasks.filter((t) => t.id !== Number(toggle[1]));
+          removeTask(Number(toggle[1]));
           sendJson(res, 200, { ok: true });
-          return;
+          return true;
         }
-        sendJson(res, 404, { error: "No such endpoint" });
+        return false;
 expect:
   audit: {}

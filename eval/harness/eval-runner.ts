@@ -150,8 +150,15 @@ export async function runEvalCli(
       await run({ model: opts.model, ...(filter ? { filter } : {}) });
     });
 
+  // `pnpm eval:audit -- --model x` forwards the literal `--`, which commander
+  // reads as "everything after is positional" and rejects. A bare `--` never
+  // means anything to these entries, so drop the first one wherever it sits.
+  const argv = process.argv.slice();
+  const dashDash = argv.indexOf("--", 2);
+  if (dashDash !== -1) argv.splice(dashDash, 1);
+
   try {
-    await program.parseAsync();
+    await program.parseAsync(argv);
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
     process.exit(1);

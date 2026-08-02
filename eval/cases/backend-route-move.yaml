@@ -1,0 +1,19 @@
+# Unlike move-help-route, no spec names an API path: the intent (toggle a
+# task) is unchanged and the mismatch with the frontend's PATCH /api/tasks/:id
+# is suspected breakage, which a static audit must not report (no PRODUCT_BUG
+# on a static read). The toggling flows plausibly break, so select re-runs them.
+title: >-
+  the toggle route moves in the backend while the frontend still calls the
+  old path — no drift to report, but the toggling specs must re-run
+mutations:
+  - file: backend/routes/tasks.mjs
+    search: 'const toggle = url.pathname.match(/^\/api\/tasks\/(\d+)$/);'
+    replace: 'const toggle = url.pathname.match(/^\/api\/tasks\/(\d+)\/status$/);'
+expect:
+  audit: {}
+  select:
+    tasks/complete-task: needed
+    tasks/filter-tasks: needed
+    auth/login: notNeeded
+    tasks/add-task: notNeeded
+    help/read-help: notNeeded

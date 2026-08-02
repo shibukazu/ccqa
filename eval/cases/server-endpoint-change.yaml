@@ -4,18 +4,18 @@ title: >-
   one API endpoint's handler changes — the specs exercising it are needed,
   the rest are not
 mutations:
-  - file: server.mjs
+  - file: backend/routes/tasks.mjs
     search: |-
-      const body = await readBody(req);
-          if (typeof body.done === "boolean") task.done = body.done;
+      const done = validDone(body);
+          if (done !== null) task.done = done;
           sendJson(res, 200, { task });
     replace: |-
-      const body = await readBody(req);
-          if (typeof body.done !== "boolean") {
+      const done = validDone(body);
+          if (done === null) {
             sendJson(res, 400, { error: "done must be a boolean" });
-            return;
+            return true;
           }
-          task.done = body.done;
+          task.done = done;
           sendJson(res, 200, { task });
 expect:
   select:

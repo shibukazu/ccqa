@@ -1,0 +1,21 @@
+# The backend sibling of refactor-bait-clean: a diff in the data layer every
+# task spec's requests pass through, with provably identical behaviour. The
+# audit must judge across the layer boundary, not react to where the diff sits.
+title: >-
+  the store's task lookup is rewritten with identical behaviour — a
+  backend-internal refactor the audit must stay silent on
+mutations:
+  - file: backend/store.mjs
+    search: |-
+      export function findTask(id) {
+        return tasks.find((t) => t.id === id) ?? null;
+      }
+    replace: |-
+      export function findTask(id) {
+        for (const task of tasks) {
+          if (task.id === id) return task;
+        }
+        return null;
+      }
+expect:
+  audit: {}
