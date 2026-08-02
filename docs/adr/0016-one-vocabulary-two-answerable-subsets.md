@@ -115,6 +115,24 @@ regression above got wrong.
 design scored 1/2, Rejected B scored 1/2 (a different spec), and the
 merged single call scored 2/2, at 99% and 95% confidence.
 
+### What a rerun earns
+
+`ENVIRONMENT` is the only cause with no artifact to read, and so the one
+label a single run cannot always earn: when the cause is timing, the
+evidence that would settle it is that a second attempt passes.
+`--on-fail-explain-rerun` collects that evidence. It runs after the
+classification rather than before, because its `auto` keys off the label —
+it reruns the two labels that turn on reproducibility, `UNKNOWN` and
+`ENVIRONMENT`.
+
+A second attempt that passes earns `ENVIRONMENT`, and is cited in the row's
+evidence like any other claim. A second attempt that fails earns nothing
+new: it rules out the flake and names no artifact, so the label stands as
+first classified and the row records only that the failure reproduced.
+Promoting a reproducible `UNKNOWN` to a cause would be exactly the unearned
+label this ADR refuses. Either way the row's `status` does not move — the
+spec failed, and the rerun says why.
+
 ### Consequences
 
 - Good: one vocabulary means `PREDICTED_LABELS` / `ACTUAL_CAUSES` are a
@@ -153,6 +171,7 @@ merged single call scored 2/2, at 99% and 95% confidence.
   (`FAILURE_CAUSES`, `causesForKind`, `predictedForKind`)
 - Run prompt: `src/report/prompt.ts` (`ANALYSIS_PROMPT_VERSION` "13" — its
   changelog comment carries the full v13 rationale)
+- Rerun phase: `src/run/explain-rerun.ts` (`--on-fail-explain-rerun`)
 - Audit prompt: `src/prompts/drift.ts` (`DRIFT_PROMPT_VERSION`). Its label
   set was already `TEST_DRIFT`/`SPEC_CHANGE`; v6 added the
   `specChangeKind` axis above

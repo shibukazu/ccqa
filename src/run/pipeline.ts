@@ -27,6 +27,11 @@ import {
   type FailureAnalysisDeps,
   type FailureAnalysisRun,
 } from "./failure-analysis.ts";
+import {
+  rerunExplainedFailures,
+  type ExplainRerunMode,
+  type RerunOutcome,
+} from "./explain-rerun.ts";
 import { createDiffProvider, type DiffProvider } from "./diff-provider.ts";
 import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.ts";
 import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
@@ -145,6 +150,10 @@ export interface RunOptions {
   onFailExplain?: boolean;
   /** Diff base for the classification; without it, each spec's own last green. */
   onFailExplainBase?: string;
+  /** Which classified failures get a second attempt. See `--on-fail-explain-rerun`. */
+  onFailExplainRerun?: ExplainRerunMode;
+  /** Cap on how many specs one run may rerun; unset is uncapped. */
+  onFailExplainRerunMaxSpecs?: number;
   replaySkipEvidence?: boolean;
   liveStepRetry?: number;
   liveArtifactsDir?: string;
@@ -347,6 +356,11 @@ export async function executeRun(
   // each spec diffs against its own last green, which needs the hub
   // connection, so that ledger fetch happens below once hubCtx exists.
   const wantsLastGreen = opts.onFailExplain === true && opts.onFailExplainBase === undefined;
+  // A rerun revises a label, so it needs one to revise: without
+  // --on-fail-explain nothing is classified and a second attempt would settle
+  // nothing. Warned about below, with the other flags this run cannot honour.
+  const rerunMode: ExplainRerunMode =
+    opts.onFailExplain === true ? (opts.onFailExplainRerun ?? "never") : "never";
   const [head, fixedBase] = await Promise.all([
     getGitHead(cwd),
     forExecution && opts.onFailExplain && opts.onFailExplainBase !== undefined
@@ -679,6 +693,11 @@ export async function executeRun(
     // to single-spec runs, matching the flag's help text.
     log.warn("--out is ignored when running multiple live specs");
   }
+  if (opts.onFailExplainRerun !== undefined && rerunMode === "never" && opts.onFailExplainRerun !== "never") {
+    log.warn(
+      "--on-fail-explain-rerun is ignored: without --on-fail-explain nothing is classified, so a second attempt would settle nothing",
+    );
+  }
   if (detSpecs.length === 0 && opts.replaySkipEvidence === true) {
     log.warn(
       "--no-evidence is ignored: it only applies to agent-browser 'mode: deterministic' specs, and this run has none",
@@ -897,9 +916,20 @@ export async function executeRun(
       analysisRun,
     );
     const analyzedExternalRows = await analyzeExternalRows(externalRows, analysisRun);
+    // Second attempts, after the classification they revise. `overallExitCode`
+    // is already fixed above and the rows keep their status, so a spec whose
+    // rerun passed stays a failure — the rerun explains it, it does not undo it.
+    const results = await rerunExplainedFailures(
+      [...detResults, ...analyzedExternalRows, ...live.reportResults],
+      {
+        mode: rerunMode,
+        maxSpecs: opts.onFailExplainRerunMaxSpecs ?? null,
+        execute: createRerunExecutor({ detSpecs, liveSpecs, dispatch, liveOpts, opts, cwd, resources }),
+      },
+    );
     report = await writeUnifiedReport({
       reportDir,
-      results: [...detResults, ...analyzedExternalRows, ...live.reportResults],
+      results,
       git,
       customPromptVersion,
       triageUserPromptHash,
@@ -1289,6 +1319,78 @@ async function analyzeDeterministicSummaries(
   }
 
   return results;
+}
+
+/**
+ * How `--on-fail-explain-rerun` re-executes one spec: on the same path that
+ * just ran it, with the same inputs, so the second attempt answers the same
+ * question the first did.
+ *
+ * Everything it writes goes to a throwaway report directory. The failed run's
+ * screenshots and artifacts are the record of what happened, and a rerun that
+ * shares their paths would overwrite them with a different attempt's — the
+ * external runner and the live adapter both recreate a spec's directories.
+ * Nothing here upserts a row or classifies: the attempt is evidence about the
+ * run's row, not a row of its own.
+ */
+function createRerunExecutor(ctx: {
+  detSpecs: readonly SpecWithMode[];
+  liveSpecs: readonly SpecWithMode[];
+  dispatch: TargetDispatch;
+  liveOpts: RunLiveOptions;
+  opts: RunOptions;
+  cwd: string;
+  resources: GroupLookup;
+}): (ref: SpecRef) => Promise<RerunOutcome> {
+  const detKeys = new Set(ctx.detSpecs.map(specKey));
+  const liveKeys = new Set(ctx.liveSpecs.map(specKey));
+  return async (ref) => {
+    const key = specKey(ref);
+    const scratch = await mkdtemp(join(tmpdir(), "ccqa-rerun-"));
+    try {
+      if (detKeys.has(key)) {
+        const summary = await runOneDeterministicSpec(ref, 0, {
+          cwd: ctx.cwd,
+          tmpDir: scratch,
+          vitestConfig: await resolveVitestConfig(ctx.cwd),
+          captureOutput: false,
+          reportDir: scratch,
+          captureEvidence: false,
+        });
+        return summary !== null && !failedSpec(summary) ? "passed" : "failed";
+      }
+      if (liveKeys.has(key)) {
+        // Dropping the incremental writer keeps the attempt out of report.json
+        // and the hub; dropping the diff provider keeps it out of the
+        // classifier, which has already said what it has to say about this spec.
+        const { report: _streamed, ...liveOpts } = ctx.liveOpts;
+        const run = await runLiveSpecs([ref], {
+          ...liveOpts,
+          reportDir: scratch,
+          diffProvider: null,
+          concurrency: 1,
+        });
+        return run.failedCount > 0 ? "failed" : "passed";
+      }
+      const group = ctx.dispatch.external.find((g) => g.specs.some((s) => specKey(s) === key));
+      if (group === undefined) throw new Error(`${key} has no execution path to re-run`);
+      const [row] = await group.runner.run([ref], {
+        cwd: ctx.cwd,
+        reportDir: scratch,
+        concurrency: 1,
+        resources: ctx.resources,
+        ...(ctx.opts.model ? { model: ctx.opts.model } : {}),
+        ...(ctx.opts.language ? { language: ctx.opts.language } : {}),
+        targetId: group.targetId,
+        targetConfig: group.targetConfig,
+        stepEvidence: group.stepEvidence,
+        onSpecComplete: async () => {},
+      });
+      return row?.status === "passed" ? "passed" : "failed";
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  };
 }
 
 /**

@@ -14,6 +14,7 @@ import {
 import { parseTestSpec } from "../spec/parser.ts";
 import { languageDirective, useJapanesePrompts } from "../prompts/language.ts";
 import { addLanguageOption } from "./options.ts";
+import { resolveCwd } from "./resolve-cwd.ts";
 import {
   ensureCcqaDir,
   listFeatureTree,
@@ -40,13 +41,22 @@ export const draftCommand = addLanguageOption(
     .argument("[feature/spec]", "Optional spec path (e.g. tasks/create-and-complete). If omitted, Claude proposes one from your intent.")
     .description("Interactively draft and refine a spec.yaml with Claude Code")
     .option("--instruction <text>", "Non-interactive single-shot instruction (skips the interactive loop)")
-    .option("-y, --yes", "Apply each generated patch without asking [y/N]", false),
+    .option("-y, --yes", "Apply each generated patch without asking [y/N]", false)
+    .option(
+      "-m, --model <name>",
+      "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+    )
+    .option(
+      "--cwd <path>",
+      "Working directory containing the .ccqa/ tree (monorepo support). Defaults to the current directory.",
+    ),
 ).action(withUsageErrors(async (specPath: string | undefined, opts: DraftOptions) => {
   await withCostReporting("draft", () => runDraftCli(specPath, opts));
 }));
 
 async function runDraftCli(specPath: string | undefined, opts: DraftOptions): Promise<void> {
-  await ensureCcqaDir();
+  const cwd = resolveCwd(opts.cwd);
+  await ensureCcqaDir(cwd);
 
   let featureName: string;
   let specName: string;
@@ -55,25 +65,28 @@ async function runDraftCli(specPath: string | undefined, opts: DraftOptions): Pr
   if (specPath) {
     ({ featureName, specName } = parseSpecPath(specPath));
   } else {
-    const { naming, intent } = await proposeNaming(opts);
+    const { naming, intent } = await proposeNaming(opts, cwd);
     featureName = naming.featureName;
     specName = naming.specName;
     prefilledIntent = intent;
   }
 
-  await runDraft(featureName, specName, opts, prefilledIntent);
+  await runDraft(featureName, specName, opts, cwd, prefilledIntent);
 }
 
 interface DraftOptions {
   instruction?: string;
   yes?: boolean;
   language?: string;
+  model?: string;
+  cwd?: string;
 }
 
 async function runDraft(
   featureName: string,
   specName: string,
   opts: DraftOptions,
+  cwd: string,
   /**
    * If we already collected the user's intent during the naming phase,
    * reuse it for the very first turn instead of prompting again.
@@ -89,7 +102,7 @@ async function runDraft(
   while (true) {
     // Re-read on each iteration so changes the user makes in their editor
     // between turns are picked up.
-    const existing = await tryReadSpecFile(featureName, specName);
+    const existing = await tryReadSpecFile(featureName, specName, cwd);
     const isFirstRun = existing === null;
 
     let userInput: string;
@@ -122,6 +135,8 @@ async function runDraft(
       userInput: userInput.trim(),
       autoApply: opts.yes === true,
       language: opts.language,
+      model: opts.model,
+      cwd,
     });
 
     if (oneShot) {
@@ -148,6 +163,9 @@ interface TurnInput {
   userInput: string;
   autoApply: boolean;
   language?: string;
+  model?: string;
+  /** Both the .ccqa root and the codebase Claude reads. */
+  cwd: string;
 }
 
 interface TurnResult {
@@ -156,10 +174,10 @@ interface TurnResult {
 }
 
 async function runOneTurn(input: TurnInput): Promise<TurnResult> {
-  const { featureName, specName, existing, userInput, autoApply, language } = input;
+  const { featureName, specName, existing, userInput, autoApply, language, model, cwd } = input;
   const isFirstRun = existing === null;
 
-  const blocks = await loadAvailableBlocks();
+  const blocks = await loadAvailableBlocks(cwd);
   const systemPrompt = buildDraftSystemPrompt(blocks) + languageDirective(language);
   const userPrompt = buildDraftPrompt({
     mode: isFirstRun ? "create" : "refine",
@@ -181,6 +199,8 @@ async function runOneTurn(input: TurnInput): Promise<TurnResult> {
       systemPrompt,
       allowedTools: ["Read", "Grep", "Glob"],
       silenceBashLog: true,
+      ...(model ? { model } : {}),
+      cwd,
     },
     (msg: SDKMessage) => {
       if (msg.type !== "assistant") return;
@@ -245,7 +265,7 @@ async function runOneTurn(input: TurnInput): Promise<TurnResult> {
     return { hasError: true, applied: false };
   }
 
-  const saved = await saveSpecFile(featureName, specName, report.patch);
+  const saved = await saveSpecFile(featureName, specName, report.patch, cwd);
   log.meta("saved", saved);
   return { hasError, applied: true };
 }
@@ -337,6 +357,7 @@ function writeFinding(issue: DraftIssue): void {
 
 async function proposeNaming(
   opts: DraftOptions,
+  cwd: string,
 ): Promise<{ naming: { featureName: string; specName: string }; intent: string }> {
   const ja = useJapanesePrompts(opts.language);
   const oneShot = opts.instruction !== undefined;
@@ -350,7 +371,7 @@ async function proposeNaming(
     process.exit(1);
   }
 
-  const tree = await listFeatureTree();
+  const tree = await listFeatureTree(cwd);
   const treeForPrompt: ExistingFeatureTree[] = tree.map((f) => ({
     featureName: f.featureName,
     specs: f.specs.map((s) => ({ specName: s.specName })),
@@ -363,6 +384,8 @@ async function proposeNaming(
       prompt: buildNamingPrompt(intent.trim(), treeForPrompt),
       systemPrompt: buildNamingSystemPrompt(),
       allowedTools: ["Read", "Grep", "Glob"],
+      ...(opts.model ? { model: opts.model } : {}),
+      cwd,
     },
     () => {},
   );

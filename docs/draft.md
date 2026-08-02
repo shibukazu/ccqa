@@ -63,4 +63,6 @@ Findings with severity `WARN` or `ERROR` are shown in full; `OK` checks collapse
 ccqa draft [feature/spec]               # arg is optional; Claude proposes a name if omitted
   --instruction <text>                  # single-shot, non-interactive
   --yes                                 # auto-apply patches without [y/N] confirmation
+  --model <name>                        # 'sonnet' | 'opus' | 'haiku' or a full id
+  --cwd <path>                          # the .ccqa root and the codebase Claude reads
 ```

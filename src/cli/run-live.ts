@@ -23,6 +23,7 @@ import type { HubContext } from "./hub-conn.ts";
 import { isStorageStateShape } from "./hub.ts";
 import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
+import { buildLiveEnvScrubMap } from "../runtime/env-scrub.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import {
   DEFAULT_SESSION_PROFILE,
@@ -392,6 +393,11 @@ async function runOneSpec(args: {
   const blocks = await loadAllBlocks(cwd);
   const expanded = expandSpec(spec, { blocks });
 
+  // Built now, from the same process.env the browser will resolve `${VAR}`
+  // against: reading it back at report time would miss a value that changed
+  // after the prose quoting it was written.
+  const envScrubMap = buildLiveEnvScrubMap(spec, expanded);
+
   log.meta("spec", spec.title);
   log.meta("steps", expanded.length);
   const includes = collectIncludedBlockNames(spec);
@@ -438,6 +444,7 @@ async function runOneSpec(args: {
       runId,
       runDir,
       sessionName,
+      envScrubMap,
       statePath,
       verifyUrl,
       systemPromptSuffix: userPromptSuffix,
