@@ -199,7 +199,7 @@ export interface ArtifactStore {
 /**
  * Where a secret lives: one hub manages many projects (one per consuming
  * `.ccqa` tree), and within a project secrets are grouped by profile
- * (stg / prd / default, mirroring `.ccqa/profiles/<name>.env` locally).
+ * (stg / prd / default).
  */
 export interface SecretScope {
   project: string;

@@ -5,6 +5,7 @@ import { HubApiError } from "../hub-client/index.ts";
 import { HubConnectionError, requireHubClient, type HubConnOptions } from "./hub-conn.ts";
 import { hubHeaderOption, hubTokenOption, hubUrlOption } from "./hub-conn.ts";
 import * as log from "./logger.ts";
+import { warnRepoLocalProfiles } from "./repo-local-profiles.ts";
 
 export { DEFAULT_LANGUAGE, languageDirective, useJapanesePrompts } from "../prompts/language.ts";
 
@@ -83,6 +84,11 @@ export async function applyProfileFromOption(opts: ResolveProfileEnvOptions): Pr
  * rather than skipping it.
  */
 export async function resolveProfileEnv(opts: ResolveProfileEnvOptions): Promise<void> {
+  // Here rather than at command start: this is where an invocation settles
+  // where its variables come from, and both branches reach it — including the
+  // run with no --hub-profile, whose author is the likeliest to believe a
+  // repo-local file is supplying them. Called once per invocation, not per spec.
+  await warnRepoLocalProfiles(opts.cwd);
   if (opts.profile !== undefined) {
     await applyNamedProfile(opts.profile, opts.project, opts.cwd, opts);
   } else {
