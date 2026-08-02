@@ -606,6 +606,8 @@ const CSS = `
   /* which generation target ran the spec (agent-browser / playwright / runn) */
   .badge-target { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: var(--radius-sm); font-size: 11px; font-family: var(--mono); background: var(--surface-3); color: var(--muted); border: 1px solid var(--border); }
   .chip { display: inline-flex; align-items: center; padding: 1px 8px; border-radius: 6px; background: var(--surface-3); border: 1px solid var(--border); color: var(--fg-dim); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
+  .chip.icon-chip { gap: 5px; padding-left: 6px; }
+  .chip.icon-chip svg { width: 12px; height: 12px; flex: none; opacity: .7; }
   /* Below .chip in source order so these override its background/border/color
      when combined as class="chip drift-count-chip" (same specificity — source
      order decides). One amber look for every drift label chip — a label chip
@@ -1779,6 +1781,45 @@ const CLIENT_JS = `
     return svg;
   }
 
+  function svgCircle(cx, cy, r) {
+    var c = document.createElementNS(SVG_NS, "circle");
+    c.setAttribute("cx", cx);
+    c.setAttribute("cy", cy);
+    c.setAttribute("r", r);
+    return c;
+  }
+
+  /** A fork in a line — the conventional git-branch glyph. */
+  function svgBranch() {
+    var svg = svgIcon();
+    svg.appendChild(svgPath("M6 3v12"));
+    svg.appendChild(svgCircle("18", "6", "3"));
+    svg.appendChild(svgCircle("6", "18", "3"));
+    svg.appendChild(svgPath("M18 9a9 9 0 0 1-9 9"));
+    return svg;
+  }
+
+  /** Stacked racks — a profile names a deployed environment, not a code path. */
+  function svgProfile() {
+    var svg = svgIcon();
+    svg.appendChild(svgPath("M4 4h16v6H4zM4 14h16v6H4z"));
+    svg.appendChild(svgPath("M8 7h.01M8 17h.01"));
+    return svg;
+  }
+
+  /**
+   * A chip whose glyph says which field it is. Two of these sit side by side on
+   * every run, so without one they read as two unlabelled words. The title is
+   * the fallback for anyone the glyph does not reach.
+   */
+  function iconChip(icon, text, label) {
+    var chip = el("span", "chip icon-chip");
+    chip.title = label;
+    chip.appendChild(icon);
+    chip.appendChild(document.createTextNode(text));
+    return chip;
+  }
+
   // Round caps so the "i"/"!" dot (a zero-length segment) actually paints as a
   // filled dot instead of vanishing under a butt cap at small sizes.
   function svgRounded() {
@@ -2034,8 +2075,8 @@ const CLIENT_JS = `
       var sub = el("div", "subline");
       sub.appendChild(ciBadge(r));
       sub.appendChild(kindChip(r.kind));
-      sub.appendChild(el("span", "chip", r.branch || "—"));
-      if (r.profile) sub.appendChild(el("span", "chip", r.profile));
+      sub.appendChild(iconChip(svgBranch(), r.branch || "—", t("meta.branch")));
+      if (r.profile) sub.appendChild(iconChip(svgProfile(), r.profile, t("meta.profile")));
       if (r.kind === "drift") {
         var rowDrift = driftSummary(r);
         if (rowDrift) driftChips(rowDrift).forEach(function (chip) { sub.appendChild(chip); });
