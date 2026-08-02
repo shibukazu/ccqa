@@ -1,5 +1,5 @@
 import { SELECTION_ABANDONED_MARKER } from "../../src/select/analyze.ts";
-import { runEval, type CaseContext, type EvalCaseResult, type EvalOptions } from "./eval-runner.ts";
+import { CaseAbandonedError, runEval, type CaseContext, type EvalCaseResult, type EvalOptions } from "./eval-runner.ts";
 import { formatUsd, renderTable, type ResultMeta } from "./results.ts";
 import {
   computeSelectMetrics,
@@ -37,21 +37,26 @@ export async function runSelectEval(opts: EvalOptions = {}): Promise<SelectEvalS
 }
 
 async function runSelectCase({ evalCase, repo, model, ccqa }: CaseContext): Promise<SelectSpecOutcome[]> {
-  const res = await ccqa(["select-specs", "--base", repo.baseSha, "--head", repo.headSha, "--format", "json", "--model", model]);
-  if (res.exitCode !== 0) {
-    throw new Error(`select-specs failed for case ${evalCase.name} (exit ${res.exitCode}):\n${res.stderr}`);
-  }
   // An abandoned selection exits 0 with every spec `unknown` — running
   // everything is the command's intended degradation, but scoring it would
   // grade the fallback, not the model: on a case expecting all-`needed`, a
-  // dead credential would post precision and recall 1.0.
-  if (res.stderr.includes(SELECTION_ABANDONED_MARKER)) {
-    throw new Error(
-      `select-specs abandoned its selection for case ${evalCase.name} — the model never produced ` +
-        `a usable answer, so there is nothing to score:\n${res.stderr.trim()}`,
-    );
+  // dead credential would post precision and recall 1.0. One retry, because a
+  // single malformed reply is a flake, not an answer about the prompt.
+  for (let attempt = 1; ; attempt++) {
+    const res = await ccqa(["select-specs", "--base", repo.baseSha, "--head", repo.headSha, "--format", "json", "--model", model]);
+    if (res.exitCode !== 0) {
+      throw new Error(`select-specs failed for case ${evalCase.name} (exit ${res.exitCode}):\n${res.stderr}`);
+    }
+    if (!res.stderr.includes(SELECTION_ABANDONED_MARKER)) {
+      return scoreSelectCase(evalCase.expect.select ?? {}, parseSelectOutput(res.stdout));
+    }
+    if (attempt >= 2) {
+      throw new CaseAbandonedError(
+        `select-specs abandoned its selection for case ${evalCase.name} twice — the model never ` +
+          `produced a usable answer, so there is nothing to score:\n${res.stderr.trim()}`,
+      );
+    }
   }
-  return scoreSelectCase(evalCase.expect.select ?? {}, parseSelectOutput(res.stdout));
 }
 
 function printSelectSummary(summary: SelectEvalSummary): void {
@@ -74,6 +79,13 @@ function printSelectSummary(summary: SelectEvalSummary): void {
   console.log(`exact verdicts ${fmt(metrics.verdictAccuracy)}`);
   if (metrics.unknowns > 0) {
     console.log(`undecided ${metrics.unknowns} verdict(s) came back unknown — selected, but the model declined them`);
+  }
+  // Abandoned cases are excluded from every number above, so their absence
+  // must be said — a metric over fewer cases silently reads as a full run.
+  const abandoned = summary.cases.filter((c) => c.abandoned);
+  if (abandoned.length > 0) {
+    console.log(`ABANDONED ${abandoned.length} case(s), excluded from the metrics: ${abandoned.map((c) => c.name).join(", ")}`);
+    process.exitCode = 1;
   }
   if (meta.cost) {
     console.log(`cost ${formatUsd(meta.cost.totalUsd)} over ${meta.cost.invocations} invocation(s)`);

@@ -38,7 +38,9 @@ export async function runAuditEval(opts: EvalOptions = {}): Promise<AuditEvalSum
 }
 
 async function runAuditCase({ evalCase, model, ccqa }: CaseContext): Promise<AuditSpecOutcome[]> {
-  const res = await ccqa(["audit", "--report-format", "json", "--model", model]);
+  // Concurrency matches how the audit runs in CI; serial sweeps of the layered
+  // fixture run past the child-process timeout.
+  const res = await ccqa(["audit", "--report-format", "json", "--model", model, "--concurrency", "4"]);
   // Exit 1 is the audit reporting drift — the expected outcome for most
   // cases here. Anything past that is the command itself failing.
   if (res.exitCode !== 0 && res.exitCode !== 1) {

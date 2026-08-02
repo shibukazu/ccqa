@@ -28,7 +28,17 @@ export interface EvalCaseResult<TOutcome> {
   name: string;
   title: string;
   outcomes: TOutcome[];
+  /** Set when the model never produced a scoreable answer; excluded from the aggregate. */
+  abandoned?: true;
 }
+
+/**
+ * A case the model failed to answer even after the runner's retry. Thrown by
+ * a `runCase` instead of scoring, caught by the loop: the case is recorded as
+ * abandoned and the run continues — one flaky reply must not cost the rest of
+ * a paid run, and an abandoned case must never count as a correct answer.
+ */
+export class CaseAbandonedError extends Error {}
 
 export interface EvalSummary<TOutcome, TAggregate> {
   meta: ResultMeta;
@@ -106,11 +116,17 @@ export async function runEval<TOutcome, TAggregate>(
             scrubEnv: isAmbientCcqaKey,
             env: { CCQA_COST_FILE: costFile, ...opts.env },
           });
-        results.push({
-          name: evalCase.name,
-          title: evalCase.title,
-          outcomes: await def.runCase({ evalCase, repo, model, ccqa }),
-        });
+        try {
+          results.push({
+            name: evalCase.name,
+            title: evalCase.title,
+            outcomes: await def.runCase({ evalCase, repo, model, ccqa }),
+          });
+        } catch (err) {
+          if (!(err instanceof CaseAbandonedError)) throw err;
+          say(`  abandoned: ${err.message}`);
+          results.push({ name: evalCase.name, title: evalCase.title, outcomes: [], abandoned: true });
+        }
       } finally {
         await repo.cleanup();
       }
