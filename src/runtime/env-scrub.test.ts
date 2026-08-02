@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { buildSpecEnvScrub, scrubEnvValues } from "./env-scrub.ts";
+import { buildLiveEnvScrubMap, buildSpecEnvScrub, scrubEnvValues } from "./env-scrub.ts";
 import { BlockSpecSchema, TestSpecSchema, type TestSpec } from "../spec/yaml-schema.ts";
 import { expandSpec } from "../spec/expand.ts";
 
@@ -86,6 +86,19 @@ describe("buildSpecEnvScrub", () => {
     const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }));
     expect(out.map[0]).toEqual(["abcdef", "${LONG}"]);
     expect(out.map[1]).toEqual(["abc", "${SHORT}"]);
+  });
+});
+
+describe("buildLiveEnvScrubMap", () => {
+  test("keeps values worth masking and drops the ones that read as prose", () => {
+    process.env["APP_URL"] = "https://example.com";
+    process.env["PAGE"] = "2";
+    process.env["FEATURE_ON"] = "true";
+    const spec = specOf([
+      { instruction: "open ${APP_URL}/${PAGE} with ${FEATURE_ON}", expected: "loaded" },
+    ]);
+    const map = buildLiveEnvScrubMap(spec, expandSpec(spec, { blocks: new Map() }));
+    expect(map).toEqual([["https://example.com", "${APP_URL}"]]);
   });
 });
 

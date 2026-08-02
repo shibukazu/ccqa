@@ -13,6 +13,7 @@ import {
   buildLiveUserPrompt,
 } from "../prompts/live.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
+import { scrubEnvValues } from "./env-scrub.ts";
 import { stepArtifactPaths } from "./live-artifacts.ts";
 import { findLastStepResult } from "./live-result-parse.ts";
 import { takeScreenshot } from "./screenshot.ts";
@@ -93,6 +94,12 @@ export interface RunLiveExecutorInput {
   runId: string;
   runDir: string;
   sessionName: string;
+  /**
+   * `[resolvedValue, "${VAR}"]` pairs for this spec's env refs, from
+   * `buildLiveEnvScrubMap`. Every string the model writes is put through it,
+   * so a profile value it quotes back never lands in the step log or report.
+   */
+  envScrubMap: Array<[string, string]>;
   /**
    * Absolute path to a saved agent-browser auth-state file (cookies +
    * localStorage). When provided, ccqa restores it into the session once,
@@ -231,28 +238,34 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     }
 
     const outcome = lastOutcome!;
-    stepResults.push({
-      stepId: step.id,
-      source: step.source,
-      instruction: step.instruction,
-      expected: step.expected,
-      status: outcome.status,
-      reasoning:
-        attempt > 0 && outcome.status === "failed"
-          ? `${outcome.reasoning} (after ${attempt + 1} attempts)`
-          : outcome.reasoning,
-      beforePng: outcome.beforePng,
-      afterPng: outcome.afterPng,
-      logTxt: paths.logTxt,
-      durationMs: Date.now() - stepStartedAt,
-      cost: outcome.cost,
-      commands: outcome.commands,
-    });
+    const recorded = scrubLiveStepText(
+      {
+        stepId: step.id,
+        source: step.source,
+        instruction: step.instruction,
+        expected: step.expected,
+        status: outcome.status,
+        reasoning:
+          attempt > 0 && outcome.status === "failed"
+            ? `${outcome.reasoning} (after ${attempt + 1} attempts)`
+            : outcome.reasoning,
+        beforePng: outcome.beforePng,
+        afterPng: outcome.afterPng,
+        logTxt: paths.logTxt,
+        durationMs: Date.now() - stepStartedAt,
+        cost: outcome.cost,
+        commands: outcome.commands,
+      },
+      input.envScrubMap,
+    );
+    stepResults.push(recorded);
 
+    // Narrate from the scrubbed step, not the raw outcome — this line is what
+    // CI captures in its job log.
     if (outcome.status === "passed") {
-      log.step("STEP_DONE", step.id, outcome.reasoning);
+      log.step("STEP_DONE", step.id, recorded.reasoning);
     } else {
-      log.step("ASSERTION_FAILED", step.id, outcome.reasoning);
+      log.step("ASSERTION_FAILED", step.id, recorded.reasoning);
       overallFailed = true;
     }
   }
@@ -316,7 +329,11 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
-    await writeFile(paths.logTxt, transcript || "(no assistant text captured)", "utf-8");
+    // The transcript is model prose plus whatever page text it quoted, and the
+    // failure-analysis excerpt reads this file back into report.json — so it is
+    // scrubbed on the way to disk, not at some later reader.
+    const scrubbed = scrubEnvValues(transcript, input.envScrubMap);
+    await writeFile(paths.logTxt, scrubbed || "(no assistant text captured)", "utf-8");
 
     const { status, reasoning } = judgeStepOutcome({
       step,
@@ -449,6 +466,22 @@ export function judgeStepOutcome({ step, isError, errorDetail, judged }: JudgeIn
       ? baseReason
       : `(stepId mismatch: model wrote ${judged.stepId}) ${baseReason}`;
   return { status, reasoning };
+}
+
+/**
+ * Scrub the strings a step carries that the model authored: its verdict prose
+ * and the commands it issued. `instruction` / `expected` are copied from the
+ * spec, which keeps `${VAR}` symbolic, so they need nothing.
+ */
+export function scrubLiveStepText(
+  step: LiveStepResult,
+  scrubMap: Array<[string, string]>,
+): LiveStepResult {
+  return {
+    ...step,
+    reasoning: scrubEnvValues(step.reasoning, scrubMap),
+    commands: step.commands.map((c) => scrubEnvValues(c, scrubMap)),
+  };
 }
 
 function buildSkippedStep(step: ExpandedActionStep, reason: string): LiveStepResult {
