@@ -1,0 +1,11 @@
+title: a docs-only change — no spec is reached
+mutations:
+  - file: README.md
+    search: "No build step:"
+    replace: "No build step (Node 20+):"
+expect:
+  select:
+    auth/login: notNeeded
+    tasks/add-task: notNeeded
+    tasks/complete-task: notNeeded
+    tasks/filter-tasks: notNeeded

@@ -1,0 +1,18 @@
+title: >-
+  the "Signed in as" note is dropped — the generated test asserted it, the
+  spec never asked for it
+mutations:
+  - file: public/index.html
+    search: |-
+      <p id="session-note"></p>
+    replace: ""
+  - file: public/js/auth.js
+    search: |-
+      document.getElementById("session-note").textContent = `Signed in as ${email}`;
+    replace: ""
+expect:
+  audit:
+    auth/login:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: OVER_ASSERTION

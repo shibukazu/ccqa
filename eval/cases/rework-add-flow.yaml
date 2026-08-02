@@ -1,0 +1,13 @@
+title: >-
+  adding a task becomes Enter-only — the feature survives, the flow the spec
+  describes does not
+mutations:
+  - file: public/index.html
+    search: <button type="submit">Add task</button>
+    replace: <p id="add-hint">Press Enter to add</p>
+expect:
+  audit:
+    tasks/add-task:
+      label: SPEC_CHANGE
+      surface: spec
+      specChangeKind: BEHAVIOUR_CHANGED

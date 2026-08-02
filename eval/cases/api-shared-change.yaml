@@ -1,0 +1,11 @@
+title: the shared fetch layer changes — every spec signs in through it
+mutations:
+  - file: public/js/api.js
+    search: 'const headers = { "content-type": "application/json" };'
+    replace: 'const headers = { "content-type": "application/json", accept: "application/json" };'
+expect:
+  select:
+    auth/login: needed
+    tasks/add-task: needed
+    tasks/complete-task: needed
+    tasks/filter-tasks: needed

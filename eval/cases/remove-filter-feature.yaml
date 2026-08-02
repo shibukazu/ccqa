@@ -1,0 +1,45 @@
+title: the filter feature is removed outright — the spec asks about something gone
+mutations:
+  - file: public/index.html
+    search: |-
+      <div id="filter-bar" role="group" aria-label="Filter tasks"></div>
+    replace: ""
+  - file: public/js/filter.js
+    delete: true
+  - file: public/js/main.js
+    search: |-
+      import { initFilter } from "./filter.js";
+    replace: ""
+  - file: public/js/main.js
+    search: |-
+      import { initTasks, reloadTasks, renderTasks } from "./tasks.js";
+    replace: |-
+      import { initTasks, reloadTasks } from "./tasks.js";
+  - file: public/js/main.js
+    search: |-
+      initFilter(() => {
+        renderTasks();
+      });
+    replace: ""
+  - file: public/js/tasks.js
+    search: |-
+      import { currentFilter } from "./filter.js";
+    replace: ""
+  - file: public/js/tasks.js
+    search: |-
+      function visibleTasks() {
+        const filter = currentFilter();
+        if (filter === "active") return tasks.filter((t) => !t.done);
+        if (filter === "completed") return tasks.filter((t) => t.done);
+        return tasks;
+      }
+    replace: |-
+      function visibleTasks() {
+        return tasks;
+      }
+expect:
+  audit:
+    tasks/filter-tasks:
+      label: SPEC_CHANGE
+      surface: spec
+      specChangeKind: FEATURE_REMOVED

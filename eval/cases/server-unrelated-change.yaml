@@ -1,0 +1,17 @@
+title: server-only changes no spec observes — the audit must not cry wolf
+mutations:
+  - file: server.mjs
+    search: 'sendJson(res, 404, { error: "Not found" });'
+    replace: 'sendJson(res, 404, { error: "File not found" });'
+  - file: server.mjs
+    search: |-
+      sendJson(res, 404, { error: "No such endpoint" });
+    replace: |-
+      if (req.method === "DELETE" && toggle) {
+          tasks = tasks.filter((t) => t.id !== Number(toggle[1]));
+          sendJson(res, 200, { ok: true });
+          return;
+        }
+        sendJson(res, 404, { error: "No such endpoint" });
+expect:
+  audit: {}

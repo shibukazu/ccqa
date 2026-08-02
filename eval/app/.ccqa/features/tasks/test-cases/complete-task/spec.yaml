@@ -1,0 +1,11 @@
+title: complete a task
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: type "Buy milk" into the "What needs doing?" field and press Enter
+    expected: the list shows "Buy milk"
+  - instruction: check the "Complete Buy milk" checkbox
+    expected: the task shows as done and the counter shows no tasks left

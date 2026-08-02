@@ -73,7 +73,10 @@
     "test": "vitest run",
     "test:unit": "vitest run src/",
     "test:e2e": "vitest run tests/e2e",
+    "test:eval": "vitest run eval/harness",
     "release:check": "node --experimental-strip-types src/release/check.ts",
+    "eval:audit": "node --experimental-strip-types eval/harness/run-audit.ts",
+    "eval:select": "node --experimental-strip-types eval/harness/run-select.ts",
     "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
   },
   "engines": {

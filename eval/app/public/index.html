@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tasks</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main>
+      <section id="login-view" aria-labelledby="login-heading">
+        <h1 id="login-heading">Sign in</h1>
+        <form id="login-form">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="username" required />
+          <label for="password">Password</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required />
+          <button type="submit">Sign in</button>
+        </form>
+        <p id="login-error" role="alert" hidden>Wrong email or password</p>
+      </section>
+
+      <section id="tasks-view" aria-labelledby="tasks-heading" hidden>
+        <header>
+          <h1 id="tasks-heading">My Tasks</h1>
+          <p id="session-note"></p>
+        </header>
+        <form id="add-form">
+          <label for="new-task">New task</label>
+          <input id="new-task" name="title" placeholder="What needs doing?" required />
+          <button type="submit">Add task</button>
+        </form>
+        <div id="filter-bar" role="group" aria-label="Filter tasks"></div>
+        <ul id="task-list" aria-label="Tasks"></ul>
+        <p id="task-count"></p>
+      </section>
+    </main>
+    <script type="module" src="/js/main.js"></script>
+  </body>
+</html>

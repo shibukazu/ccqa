@@ -1,0 +1,11 @@
+title: add a task to the list
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: type "Buy milk" into the "What needs doing?" field
+    expected: the field holds "Buy milk"
+  - instruction: submit the new task with the add button
+    expected: the list shows "Buy milk" and the counter shows one task left

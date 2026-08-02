@@ -15,5 +15,5 @@
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true
   },
-  "include": ["bin/**/*", "src/**/*", "tests/**/*", "vitest.config.ts", "tsdown.config.ts"]
+  "include": ["bin/**/*", "src/**/*", "tests/**/*", "eval/harness/**/*", "vitest.config.ts", "tsdown.config.ts"]
 }

@@ -1,0 +1,15 @@
+title: sign in with the seeded account
+params:
+  - name: APP_URL
+  - name: EMAIL
+  - name: PASSWORD
+    secret: true
+steps:
+  - instruction: open ${APP_URL}
+    expected: the "Sign in" heading is visible
+  - instruction: fill the "Email" field with ${EMAIL}
+    expected: the field holds the typed value
+  - instruction: fill the "Password" field with ${PASSWORD}
+    expected: the field holds the typed value
+  - instruction: click the "Sign in" button
+    expected: the "My Tasks" heading is visible

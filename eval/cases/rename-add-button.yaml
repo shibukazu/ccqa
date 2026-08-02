@@ -1,0 +1,11 @@
+title: the add button's label is renamed — the generated selector goes stale
+mutations:
+  - file: public/index.html
+    search: <button type="submit">Add task</button>
+    replace: <button type="submit">Add</button>
+expect:
+  audit:
+    tasks/add-task:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT

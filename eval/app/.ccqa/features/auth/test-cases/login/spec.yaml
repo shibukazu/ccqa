@@ -1,0 +1,9 @@
+title: sign in and land on the task list
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: read the task list page
+    expected: the "My Tasks" heading and the task counter are visible

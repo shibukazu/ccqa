@@ -1,0 +1,11 @@
+title: a change inside the filter bar — only the filter spec is reached
+mutations:
+  - file: public/js/filter.js
+    search: 'other.setAttribute("aria-pressed", String(other === button));'
+    replace: 'other.setAttribute("aria-pressed", other === button ? "true" : "false");'
+expect:
+  select:
+    tasks/filter-tasks: needed
+    auth/login: notNeeded
+    tasks/add-task: notNeeded
+    tasks/complete-task: notNeeded
