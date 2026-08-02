@@ -1,5 +1,5 @@
 import { errMessage, RunUsageError } from "../run/errors.ts";
-import { githubRunId, githubRunUrl } from "../run/github-run.ts";
+import { ciProvenance } from "../run/github-run.ts";
 import type { HubClient, PatchRunRequest } from "../hub-client/index.ts";
 import type { Run } from "../hub/contract/schema.ts";
 import { detectBranch, getGitHead } from "./git-branch.ts";
@@ -49,8 +49,6 @@ export async function openHubRun(
   profile?: string,
 ): Promise<HubRunPush> {
   const [branch, gitHead] = await Promise.all([detectBranch(cwd), getGitHead(cwd)]);
-  const ciRunId = githubRunId();
-  const runUrl = githubRunUrl();
   try {
     const run = await conn.hub.openRun({
       project: conn.project,
@@ -58,8 +56,7 @@ export async function openHubRun(
       ...(branch ? { branch } : {}),
       ...(profile ? { profile } : {}),
       ...(gitHead ? { gitHead } : {}),
-      ...(ciRunId ? { ciRunId } : {}),
-      ...(runUrl ? { runUrl } : {}),
+      ...ciProvenance(),
     });
     return { hub: conn.hub, kind, runId: run.id, gitHead };
   } catch (err) {

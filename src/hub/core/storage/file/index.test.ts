@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { Run } from "../../../contract/schema.ts";
 import type { HubStorage, TriageRecord } from "../types.ts";
 import { createFileHubStorage } from "./index.ts";
+import { SPEND_RETENTION_DAYS } from "./spend-store.ts";
 
 /**
  * Tests target the `HubStorage` interface, not file-specific internals, so
@@ -289,6 +290,48 @@ describe("HubStorage (file backend)", () => {
       ]);
       const records = await storage.triage.list("run-1");
       expect(records.map((r) => r.spec).sort()).toEqual(["a", "b", "c"]);
+    });
+  });
+
+  describe("spend", () => {
+    function daysAgo(days: number): string {
+      return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    }
+
+    test("appending prunes what has fallen out of the retention window", async () => {
+      await storage.spend.append("demo", { id: "old", at: daysAgo(SPEND_RETENTION_DAYS + 1), costUsd: 9, label: "old" });
+      await storage.spend.append("demo", { id: "recent", at: daysAgo(1), costUsd: 1, label: "recent" });
+
+      // Queried with no window at all, so only the prune can have dropped it.
+      expect((await storage.spend.list("demo", {})).map((e) => e.id)).toEqual(["recent"]);
+    });
+
+    test("a second push from the same CI run under the same label replaces the first", async () => {
+      const at = daysAgo(0);
+      await storage.spend.append("demo", { id: "first", at, costUsd: 3, label: "nightly", ciRunId: "42" });
+      await storage.spend.append("demo", { id: "retry", at, costUsd: 5, label: "nightly", ciRunId: "42" });
+      // Another job of the same CI run bills separately and keeps its entry.
+      await storage.spend.append("demo", { id: "other-job", at, costUsd: 1, label: "pr-check", ciRunId: "42" });
+
+      const ids = (await storage.spend.list("demo", {})).map((e) => e.id).sort();
+      expect(ids).toEqual(["other-job", "retry"]);
+    });
+
+    test("an unreadable entry is dropped alone, and appending keeps the survivors", async () => {
+      const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      await mkdir(join(dataDir, "spend"), { recursive: true });
+      await writeFile(
+        join(dataDir, "spend", "demo.json"),
+        JSON.stringify({ entries: [{ id: "unreadable" }, { id: "kept", at: daysAgo(1), costUsd: 2, label: "nightly" }] }),
+      );
+
+      await storage.spend.append("demo", { id: "new", at: daysAgo(0), costUsd: 1, label: "nightly" });
+
+      // Reading the whole log as empty would answer "this project spent
+      // nothing", which a budget believes; the drop must leave a trace instead.
+      expect((await storage.spend.list("demo", {})).map((e) => e.id)).toEqual(["new", "kept"]);
+      expect(errors).toHaveBeenCalled();
+      errors.mockRestore();
     });
   });
 });

@@ -864,3 +864,52 @@ export const AckResponseSchema = AckSchema.extend({
   name: z.string(),
 });
 export type AckResponse = z.infer<typeof AckResponseSchema>;
+
+/**
+ * What one batch of ccqa invocations spent on Claude, as the job that ran them
+ * reported it (see `SpendStore`). `label` is the consumer's name for the batch
+ * — its job name — and the only thing that says where the money went.
+ */
+export const SpendEntrySchema = z.object({
+  id: z.string(),
+  at: z.string(),
+  costUsd: z.number(),
+  label: z.string(),
+  /** The CI run that produced the batch, so a total can be traced back to its job. */
+  ciRunId: z.string().optional(),
+  runUrl: z.string().optional(),
+});
+export type SpendEntry = z.infer<typeof SpendEntrySchema>;
+
+/**
+ * A project's retained spend log, in arrival order — `at` is the reporting
+ * job's, so a late push lands last whatever it says. Readers sort.
+ */
+export const SpendLogSchema = z.object({
+  entries: z.array(SpendEntrySchema).default([]),
+});
+export type SpendLog = z.infer<typeof SpendLogSchema>;
+
+/** Body of `POST /projects/:project/spend` — one batch's total. `at` defaults to now. */
+export const RecordSpendRequestSchema = z.object({
+  costUsd: z.number().nonnegative(),
+  label: z.string().min(1).max(200),
+  at: z.string().refine((v) => !Number.isNaN(Date.parse(v)), "at must be an ISO-8601 instant").optional(),
+  ciRunId: z.string().optional(),
+  runUrl: z.string().optional(),
+});
+export type RecordSpendRequest = z.infer<typeof RecordSpendRequestSchema>;
+
+/**
+ * Body of `GET /projects/:project/spend?since=&until=`, newest first. `since`
+ * and `until` echo the window that was asked for (null for an open end), so a
+ * reader of `totalUsd` can tell what it totals.
+ */
+export const SpendLogResponseSchema = z.object({
+  project: z.string(),
+  since: z.string().nullable(),
+  until: z.string().nullable(),
+  totalUsd: z.number(),
+  entries: z.array(SpendEntrySchema),
+});
+export type SpendLogResponse = z.infer<typeof SpendLogResponseSchema>;

@@ -1,4 +1,5 @@
 import { appendFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { ClaudeInvocationCost } from "../claude/invoke.ts";
 import { readCostTally, withCostTally } from "../claude/cost-tally.ts";
 import { formatLiveCost } from "../runtime/live-cost-format.ts";
@@ -84,4 +85,45 @@ function appendCostRecord(command: string, cost: ClaudeInvocationCost): void {
   } catch {
     // Telemetry must never fail the command it measures.
   }
+}
+
+/** What a cost file adds up to, and what was lost adding it up. */
+export interface CostFileTotal {
+  totalUsd: number;
+  invocations: number;
+  /** Lines that did not parse. Any at all makes `totalUsd` a floor, not the bill. */
+  unreadable: number;
+}
+
+/**
+ * Read back what `appendCostRecord` wrote. `null` when the file isn't there:
+ * ccqa never ran, which is not the answer "ran and was billed nothing". An
+ * unbilled line (`totalCostUsd: null`) adds nothing to the total but is still
+ * an invocation — a killed job leaves a half-written last line, which is
+ * neither.
+ */
+export async function readCostFileTotal(path: string): Promise<CostFileTotal | null> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (err) {
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
+  }
+  let totalUsd = 0;
+  let invocations = 0;
+  let unreadable = 0;
+  for (const line of raw.split("\n")) {
+    if (line.trim().length === 0) continue;
+    let record: { totalCostUsd?: unknown };
+    try {
+      record = JSON.parse(line);
+    } catch {
+      unreadable++;
+      continue;
+    }
+    invocations++;
+    if (typeof record.totalCostUsd === "number") totalUsd += record.totalCostUsd;
+  }
+  return { totalUsd, invocations, unreadable };
 }

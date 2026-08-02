@@ -16,3 +16,14 @@ export function githubRunUrl(env: NodeJS.ProcessEnv = process.env): string | nul
 export function githubRunId(env: NodeJS.ProcessEnv = process.env): string | null {
   return env["GITHUB_RUN_ID"] ?? null;
 }
+
+/**
+ * The CI provenance every hub record carries, ready to spread into a request
+ * body. Empty outside Actions, so a local invocation sends neither field
+ * rather than a null one.
+ */
+export function ciProvenance(env: NodeJS.ProcessEnv = process.env): { ciRunId?: string; runUrl?: string } {
+  const ciRunId = githubRunId(env);
+  const runUrl = githubRunUrl(env);
+  return { ...(ciRunId ? { ciRunId } : {}), ...(runUrl ? { runUrl } : {}) };
+}

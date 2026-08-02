@@ -10,6 +10,7 @@ import type {
   SpecLedger,
   SpecLocks,
   SpecTouchIndex,
+  SpendEntry,
 } from "../../contract/schema.ts";
 import type { ReportKind } from "../../../report/schema.ts";
 
@@ -39,6 +40,24 @@ export interface HubStorage {
   deploys: DeployStore;
   locks: LockStore;
   acks: AckStore;
+  spend: SpendStore;
+}
+
+/**
+ * What a consumer's jobs spent on Claude, per project — a third record the hub
+ * stores without interpreting (ADR-0017), beside the ack below. A budget reads
+ * these totals instead of summing runs, and the two must not be added
+ * (docs/hub-api.md#spend).
+ */
+export interface SpendStore {
+  /**
+   * Append one entry, dropping anything past the retention window in the same
+   * write. A second push from the same `ciRunId` under the same label replaces
+   * its earlier entry instead of adding to it.
+   */
+  append(project: string, entry: SpendEntry): Promise<SpendEntry>;
+  /** Newest first, over the half-open window `[since, until)`; either end may be omitted. */
+  list(project: string, q: { since?: string; until?: string }): Promise<SpendEntry[]>;
 }
 
 /**
@@ -139,12 +158,15 @@ export interface RunStore {
   get(id: string): Promise<Run | null>;
   /** Mutable while running; immutable once terminal (enforced by the API layer, not the store). */
   update(id: string, patch: Partial<Run>): Promise<Run>;
-  /** Newest first, optionally filtered by project / branch / status / kind (any of `kinds`). */
+  /** Newest first, optionally filtered by project / branch / status / kind (any of `kinds`) / creation time. */
   list(q: {
     project?: string;
     branch?: string;
     status?: RunStatus;
     kinds?: ReportKind[];
+    /** ISO-8601 instants bounding `createdAt` — `since` inclusive, `until` exclusive. */
+    since?: string;
+    until?: string;
     limit?: number;
   }): Promise<Run[]>;
   /** Distinct project names across all stored runs. Feeds `GET /projects`. */

@@ -1,10 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import { tallyInvocation, withCostTally } from "../claude/cost-tally.ts";
-import { reportCost, withCostReporting } from "./cost-line.ts";
+import { readCostFileTotal, reportCost, withCostReporting } from "./cost-line.ts";
 
 const ONE_CALL = {
   totalCostUsd: 1.5,
@@ -61,6 +61,28 @@ describe("CCQA_COST_FILE", () => {
 
     expect(returned).toBe("done");
     expect(await recorded()).toEqual([["audit", 1.5]]);
+  });
+
+  // The other half of the file: what `ccqa hub cost push` reports to the hub.
+  describe("readCostFileTotal", () => {
+    test("sums the file, counting an unbilled line and setting an unreadable one apart", async () => {
+      const path = join(dir, "cost.jsonl");
+      await writeFile(
+        path,
+        [
+          JSON.stringify({ command: "audit", totalCostUsd: 1.25 }),
+          JSON.stringify({ command: "run", totalCostUsd: 0.75 }),
+          JSON.stringify({ command: "select-specs", totalCostUsd: null }),
+          '{"command":"record","totalCos',   // what a killed job leaves behind
+        ].join("\n"),
+      );
+
+      expect(await readCostFileTotal(path)).toEqual({ totalUsd: 2, invocations: 3, unreadable: 1 });
+    });
+
+    test("a file that isn't there is null — ccqa never ran, which is not a spend of zero", async () => {
+      expect(await readCostFileTotal(join(dir, "missing.jsonl"))).toBeNull();
+    });
   });
 
   async function recorded(): Promise<[string, number | null][]> {
