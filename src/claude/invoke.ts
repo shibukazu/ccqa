@@ -3,6 +3,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { SDKMessage, Options, HookInput } from "@anthropic-ai/claude-agent-sdk";
 import * as log from "../cli/logger.ts";
 import { FIND_ACTIONS, FIND_LOCATORS } from "../ir/from-agent-browser.ts";
+import { scrubEnvValues } from "../runtime/env-scrub.ts";
 import { missingNativeBinaryMessage, missingNativeBinaryPackage } from "./native-binary.ts";
 import { tallyInvocation } from "./cost-tally.ts";
 
@@ -76,6 +77,12 @@ export interface ClaudeInvokeOptions {
    * want a summary view (e.g. `ccqa draft`) can opt out and tally tool usage
    * themselves via `onEvent`. */
   silenceBashLog?: boolean;
+  /**
+   * `[resolvedValue, "${VAR}"]` pairs applied to a Bash command before it is
+   * logged: the model may inline a profile value where the spec wrote
+   * `${VAR}`, and that log line is what CI keeps. Omitted → logged verbatim.
+   */
+  envScrubMap?: Array<[string, string]>;
   /**
    * When true, the PreToolUse guards that enforce the trace-time replayability
    * contract on agent-browser commands are skipped: the blocked-subcommand set
@@ -220,6 +227,7 @@ export async function invokeClaudeStreaming(
     onAbAction,
     onAbActionFailed,
     silenceBashLog = false,
+    envScrubMap = [],
     relaxAbConstraints = false,
   } = options;
 
@@ -427,7 +435,7 @@ export async function invokeClaudeStreaming(
         for (const block of msg.message.content ?? []) {
           if (block.type === "tool_use" && block.name === "Bash") {
             const cmd = (block.input as Record<string, unknown>)?.["command"];
-            if (typeof cmd === "string") log.bash(cmd);
+            if (typeof cmd === "string") log.bash(scrubEnvValues(cmd, envScrubMap));
           }
         }
       }

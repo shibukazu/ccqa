@@ -44,6 +44,7 @@ const { analyzeDrift } = await import("../drift/analyze.ts");
 const { analyzeFailure } = await import("../report/analyze.ts");
 const { buildLiveTranscriptExcerpt } = await import("../report/live-transcript-excerpt.ts");
 const { runLiveExecutor } = await import("../runtime/live-executor.ts");
+const { readSpecFile } = await import("../store/index.ts");
 const { resolveSessionState, runLiveSpecs } = await import("./run-live.ts");
 
 const VALID_STATE = { cookies: [], origins: [] };
@@ -210,6 +211,8 @@ describe("runLiveSpecs failure-analysis gating", () => {
 
   afterEach(async () => {
     vi.mocked(buildLiveTranscriptExcerpt).mockResolvedValue(null);
+    vi.mocked(readSpecFile).mockResolvedValue(SAMPLE_SPEC_YAML);
+    delete process.env["CCQA_TEST_APP_URL"];
     await rm(outDir, { recursive: true, force: true });
   });
 
@@ -238,6 +241,24 @@ describe("runLiveSpecs failure-analysis gating", () => {
     // A `mode: live` spec has no compiled surface at all — declared
     // explicitly rather than inferred from the absent `script` field.
     expect(vi.mocked(analyzeFailure).mock.calls[0]![0].hasGeneratedSurface).toBe(false);
+  });
+
+  test("the map built at run start reaches the classifier, so its prose can be scrubbed", async () => {
+    process.env["CCQA_TEST_APP_URL"] = "https://app.example.com";
+    vi.mocked(readSpecFile).mockResolvedValue(
+      "title: sample spec\nsteps:\n  - instruction: open ${CCQA_TEST_APP_URL}\n    expected: loaded\n",
+    );
+    vi.mocked(runLiveExecutor).mockReset().mockResolvedValue(fakeLiveRunResult("failed"));
+
+    await runLiveSpecs([{ featureName: "feature-a", specName: "spec-fail" }], {
+      out: outDir,
+      diffProvider: { forSpec: async () => ({ ok: false as const, skip: "no recorded green yet" }) },
+      resources: () => [],
+    });
+
+    expect(vi.mocked(analyzeFailure).mock.calls[0]![1].envScrubMap).toEqual([
+      ["https://app.example.com", "${CCQA_TEST_APP_URL}"],
+    ]);
   });
 
   test("no diffProvider (analysis not requested) makes no Claude call at all", async () => {

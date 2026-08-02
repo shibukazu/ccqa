@@ -3,6 +3,7 @@ import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import * as log from "../cli/logger.ts";
 import { clamp, extractJsonCandidates, isObject, truncate } from "../diagnose/diagnose.ts";
+import { scrubEnvValues } from "../runtime/env-scrub.ts";
 import {
   buildFailureAnalysisPrompt,
   CHANGED_FILE_DIFF_TOOL,
@@ -18,6 +19,17 @@ import {
   type FailureEvidence,
   type PredictedLabel,
 } from "./schema.ts";
+
+export interface FailureAnalysisOptions {
+  model?: string;
+  cwd?: string;
+  getFileDiff: (path: string) => string | null;
+  /**
+   * `[resolvedValue, "${VAR}"]` pairs from `buildProseEnvScrubMap`, applied to
+   * the classifier's prose before it reaches the row (see `scrubOutcome`).
+   */
+  envScrubMap?: Array<[string, string]>;
+}
 
 export interface FailureAnalysisOutcome {
   /** Parsed and normalised analysis. Never null: unusable output degrades to UNKNOWN. */
@@ -75,7 +87,44 @@ function buildDiffMcpServer(getFileDiff: (path: string) => string | null) {
  */
 export async function analyzeFailure(
   input: FailureAnalysisPromptInput,
-  options: { model?: string; cwd?: string; getFileDiff: (path: string) => string | null },
+  options: FailureAnalysisOptions,
+): Promise<FailureAnalysisOutcome> {
+  return scrubOutcome(await classifyFailure(input, options), options.envScrubMap ?? []);
+}
+
+/**
+ * Mask the profile values the classifier may have quoted: its Read/Grep reach
+ * the repository, so a local `.env` is in reach of its prose even when the
+ * evidence it was handed is clean. A literal match — a value the model
+ * paraphrases still gets through.
+ */
+function scrubOutcome(
+  outcome: FailureAnalysisOutcome,
+  scrubMap: Array<[string, string]>,
+): FailureAnalysisOutcome {
+  if (scrubMap.length === 0) return outcome;
+  const scrub = (text: string): string => scrubEnvValues(text, scrubMap);
+  const { analysis } = outcome;
+  return {
+    ...outcome,
+    raw: scrub(outcome.raw),
+    analysis: {
+      ...analysis,
+      headline: scrub(analysis.headline),
+      recommendation: scrub(analysis.recommendation),
+      reasoning: scrub(analysis.reasoning),
+      evidence: analysis.evidence.map((item) => ({
+        ...item,
+        ...(item.file !== undefined ? { file: scrub(item.file) } : {}),
+        detail: scrub(item.detail),
+      })),
+    },
+  };
+}
+
+async function classifyFailure(
+  input: FailureAnalysisPromptInput,
+  options: FailureAnalysisOptions,
 ): Promise<FailureAnalysisOutcome> {
   const prompt = buildFailureAnalysisPrompt(input);
   const { result: raw, isError } = await invokeClaudeStreaming(

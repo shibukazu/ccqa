@@ -96,7 +96,7 @@ export interface RunLiveExecutorInput {
   sessionName: string;
   /**
    * `[resolvedValue, "${VAR}"]` pairs for this spec's env refs, from
-   * `buildLiveEnvScrubMap`. Every string the model writes is put through it,
+   * `buildProseEnvScrubMap`. Every string the model writes is put through it,
    * so a profile value it quotes back never lands in the step log or report.
    */
   envScrubMap: Array<[string, string]>;
@@ -299,6 +299,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
           prompt: userPrompt,
           systemPrompt,
           model: input.model,
+          envScrubMap: input.envScrubMap,
           relaxAbConstraints: true,
         },
         (msg: SDKMessage) => {

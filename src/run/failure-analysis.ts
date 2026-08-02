@@ -4,8 +4,11 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { analyzeFailure } from "../report/analyze.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
-import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
-import type { AvailableBlock, SpecRef } from "../store/index.ts";
+import { buildProseEnvScrubMap } from "../runtime/env-scrub.ts";
+import { expandSpec } from "../spec/expand.ts";
+import { tryParseTestSpec } from "../spec/parser.ts";
+import { AGENT_BROWSER_TARGET, type BlockSpec } from "../spec/yaml-schema.ts";
+import { loadAllBlocks, type AvailableBlock, type SpecRef } from "../store/index.ts";
 import { specArtifactsDir } from "../targets/run-artifacts.ts";
 import { loadGeneratedManifest } from "../targets/llm-engine.ts";
 import { C } from "../cli/colors.ts";
@@ -107,6 +110,10 @@ export interface FailureAnalysisPass {
 export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAnalysisPass {
   let printedHeader = false;
   let warnedDiffUnavailable = false;
+  // Parsed blocks for the scrub map below, read at most once per pass.
+  // `deps.blocks` won't do — it is the prompt's projection, with no step
+  // bodies, and that is where a block's own `${VAR}` refs live.
+  let parsedBlocks: Promise<Map<string, BlockSpec>> | null = null;
 
   return {
     async analyze(input) {
@@ -149,6 +156,9 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
       log.info(
         `failure analysis: ${featureName}/${specName}${baselineMissing ? " (no baseline — classifying from current source)" : ""}`,
       );
+      // A block that no longer parses costs the scrub map, not the classification.
+      parsedBlocks ??= loadAllBlocks(deps.cwd).catch(() => new Map<string, BlockSpec>());
+      const envScrubMap = specEnvScrubMap(input.specYaml, await parsedBlocks);
       const outcome = await analyzeFailure(
         {
           script: await input.readScript(),
@@ -174,6 +184,7 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
           ...(deps.model ? { model: deps.model } : {}),
           cwd: deps.cwd,
           getFileDiff: specDiff?.fileDiff ?? (() => null),
+          envScrubMap,
         },
       );
 
@@ -189,6 +200,27 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
       };
     },
   };
+}
+
+/**
+ * The `${VAR}` values this spec resolved, for masking them out of the
+ * classifier's prose. Read from `process.env` here rather than at run start
+ * (where the live path builds its own): a profile is applied once per
+ * invocation, so this is still what the spec ran against.
+ */
+function specEnvScrubMap(
+  specYaml: string,
+  blocks: Map<string, BlockSpec>,
+): Array<[string, string]> {
+  const spec = tryParseTestSpec(specYaml);
+  if (spec === null) return [];
+  try {
+    return buildProseEnvScrubMap(spec, expandSpec(spec, { blocks }));
+  } catch {
+    // An include that no longer resolves costs the refs inside that block's
+    // steps; the spec's own, include params included, still scrub.
+    return buildProseEnvScrubMap(spec, []);
+  }
 }
 
 /** One classified spec's line in the failure-analysis block. */

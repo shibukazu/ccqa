@@ -149,6 +149,7 @@ export async function runTrace(
       systemPrompt,
       ...agentBrowserInvokeBase({ sessionName, runId: sessionName }),
       model,
+      envScrubMap,
       onAbAction: ({ abAction, stepId, assertMarker }) => {
         const stepForCommand = stepTracker.fromCommand(stepId);
         const line = abAction === undefined ? null : scrubEnvValues(abAction, envScrubMap);
