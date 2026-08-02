@@ -73,6 +73,7 @@
     "test": "vitest run",
     "test:unit": "vitest run src/",
     "test:e2e": "vitest run tests/e2e",
+    "release:check": "node --experimental-strip-types src/release/check.ts",
     "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
   },
   "engines": {

@@ -511,3 +511,27 @@ export CCQA_HUB_TOKEN=<the token from .env>   # then `ccqa hub var set ...`,
 
 `ANTHROPIC_API_KEY` in `.env` is optional — only hub-side triage-learning
 jobs need it.
+
+## When a release means you must redeploy
+
+ccqa's version number answers this on its own, so you never have to read a
+diff to find out ([ADR-0018](adr/0018-the-bump-answers-the-hub.md)):
+
+**`patch`**
+
+Nothing to do. Neither the hub's own source nor the wire contract changed.
+
+**`minor`**
+
+The hub may have changed, additively. The one you are running keeps working;
+redeploy it to pick up what is new.
+
+**`major`**
+
+The wire contract changed in a way that breaks. Move the hub and the CLI
+together.
+
+A hub bug fix is therefore a `minor`, not a `patch`: from outside, a fix you
+have to redeploy to receive is no different from a feature you have to
+redeploy to receive. Each release states its own answer at the top of its
+GitHub Release notes.

@@ -80,6 +80,12 @@ test fixtures **must stay neutral and generic**.
   resulting `chore: release <version>` commit + tag, then publishes to npm.
 - The source of truth for the version is **`package.json`**, not git tags. Choosing
   `major` from `0.9.x` produces `1.0.0`.
+- **The bump answers whether a deployed hub has to be redeployed** (ADR-0018).
+  `patch` promises no hub impact; `minor` may add to the hub; `major` breaks the
+  wire contract and moves both sides together. The release workflow classifies
+  the diff and **stops** when it contradicts the bump, so a hub change released
+  as a patch fails rather than shipping invisibly. Run `pnpm release:check
+  --bump <patch|minor|major>` locally to see the verdict before dispatching.
 
 ## Documentation language policy
 
