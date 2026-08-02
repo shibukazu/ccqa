@@ -51,9 +51,10 @@ POST /api/v1/runs?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&d
   ?deployedSha is optional — the commit the environment was running; overrides the deploy log's head
   → 201 Run
 
-GET /api/v1/runs?project=<name>&branch=<branch>&status=<status>&kind=<kinds>&limit=<n>
+GET /api/v1/runs?project=<name>&branch=<branch>&status=<status>&kind=<kinds>&since=<instant>&until=<instant>&limit=<n>
   ?kind is optional — a comma-separated list of kinds to keep (e.g. "run,drift")
-  → 200 { runs: Run[] }
+  ?since / ?until are optional ISO-8601 instants bounding `createdAt`
+  → 200 { runs: Run[] } | 400 (a `since`/`until` that is not an instant)
 
 GET /api/v1/runs/:id
   → 200 Run | 404
@@ -67,6 +68,11 @@ GET /api/v1/runs/:id/artifacts
 GET /api/v1/runs/:id/artifacts/*path
   → 200 (individual file — the hub UI fetches evidence PNGs this way) | 404
 ```
+
+The listing's time window is compared against `createdAt` — the field the
+listing also sorts by — and is half-open, `[since, until)`: to ask for one
+day, pass that day's start as `since` and the next day's start as `until`,
+and no run is counted twice at a boundary. Either end may be given alone.
 
 As an alternative to the single-shot push above, a still-executing
 `ccqa run` can stream results into the hub incrementally, spec by spec,
@@ -562,6 +568,68 @@ would never be mentioned again.
 Bounds: at most 5000 keys, each at most 256 characters. Both sit far above
 any real project and exist only to stop a malformed client writing an
 unbounded document.
+
+## Spend
+
+What one batch of ccqa invocations cost on Claude, as the job that ran them
+reported it. `ccqa hub cost push` is the client for this: it sums the JSONL
+every command appends to `$CCQA_COST_FILE` and posts a single entry.
+
+**A budget reads this, not runs.** Only `run`, `audit --report-to-hub` and
+`record --report-to-hub` leave a run behind, so a cap computed by summing
+`Run.costUsd` cannot see the rest of what calls Claude — the coverage-inventory
+refresh, the spec rewrite a fix loop makes before re-recording, the spec
+selection a deploy record runs, an audit that deliberately publishes nothing. A
+reported batch covers its whole job **including** the run and the audit inside
+it, so a consumer that adopts the spend log must stop summing runs; adding both
+counts those twice. Runs keep `costUsd` for their own display.
+
+```
+POST /api/v1/projects/:project/spend
+  Content-Type: application/json
+  body: { costUsd: number, label: string, at?: string, ciRunId?: string, runUrl?: string }
+  → 201 SpendEntry | 400 (an `at` that is not an ISO-8601 instant)
+
+GET /api/v1/projects/:project/spend?since=<instant>&until=<instant>
+  → 200 { project, since, until, totalUsd, entries: SpendEntry[] }   (newest first)
+  → 400 (a `since`/`until` that is not an instant)
+```
+
+```ts
+interface SpendEntry {
+  id: string;
+  at: string;        // defaults to the time of the POST; stored in UTC
+  costUsd: number;
+  label: string;     // what the batch was, in the consumer's words: its job name
+  ciRunId?: string;  // the CI run that produced it
+  runUrl?: string;
+}
+```
+
+No `?profile=`: a batch is one job's bill, and a job can touch several
+environments. The window is the same half-open `[since, until)` the runs
+listing takes, compared against `at`; either end may be given alone, and
+`totalUsd` totals exactly the entries returned.
+
+A push carrying the same `ciRunId` and `label` as a stored entry **replaces**
+it rather than adding to it: a retried job spends again, but it also rewrites
+its cost file from scratch, so its later total is the whole of that job — and
+a workflow that pushes twice by accident cannot silently double the project's
+bill, which no later request could detect or undo. Outside CI there is no
+`ciRunId`, and every push is its own entry.
+
+Entries older than **90 days** are dropped as the log is appended to. The
+document is otherwise append-only, and a budget only ever asks about the recent
+past — an unbounded one would make every read slower for entries nobody asks
+about.
+
+One known weakness: a job killed before it reports loses its whole total, and
+the budget never sees that job at all. There is no incremental variant. Push
+once at the end of the job, and run that step unconditionally (GitHub Actions:
+`if: always()`) so a failing job still reports what it spent. A job killed
+mid-write leaves a half-written last line in the cost file, which
+`ccqa hub cost push` counts and warns about: the entry it sent is then a floor
+rather than the whole bill.
 
 ## Sessions
 

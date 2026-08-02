@@ -61,7 +61,7 @@ import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./tar
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
 import { detectBranch, getGitHead } from "../cli/git-branch.ts";
 import { needsHubConnection, REPORT_TO_HUB_NEEDS_CONNECTION } from "../cli/open-hub-run.ts";
-import { githubRunId, githubRunUrl } from "./github-run.ts";
+import { ciProvenance, githubRunId, githubRunUrl } from "./github-run.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import { C } from "../cli/colors.ts";
@@ -718,8 +718,6 @@ export async function executeRun(
   if (hubCtx != null && opts.reportToHub) {
     try {
       const branch = await detectBranch(cwd);
-      const ciRunId = githubRunId();
-      const runUrl = githubRunUrl();
       const opened = await hubCtx.hub.openRun({
         project: hubCtx.project,
         ...(branch ? { branch } : {}),
@@ -729,8 +727,7 @@ export async function executeRun(
         // deploy-log head when this call lands — after the deterministic
         // phase — so a deploy during that phase would become the baseline.
         ...(deployedSha ? { deployedSha } : {}),
-        ...(ciRunId ? { ciRunId } : {}),
-        ...(runUrl ? { runUrl } : {}),
+        ...ciProvenance(),
         kind: "run",
       });
       hubRunId = opened.id;

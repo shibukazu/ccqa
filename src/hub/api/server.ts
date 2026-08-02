@@ -26,6 +26,7 @@ import { createGetDeployLogHandler, createRecordDeployHandler } from "./handlers
 import { createGetAuditNeedHandler } from "./handlers/audit-need.ts";
 import { createAcquireLocksHandler, createReleaseLocksHandler } from "./handlers/locks.ts";
 import { createGetAckHandler, createPutAckHandler } from "./handlers/acks.ts";
+import { createGetSpendHandler, createRecordSpendHandler } from "./handlers/spend.ts";
 import { createGetRerunHandler } from "./handlers/rerun.ts";
 import {
   createDeletePromptHandler,
@@ -214,6 +215,11 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   // the hub never reads a key (ADR-0017).
   router.get("/api/v1/projects/:project/acks/:name", createGetAckHandler(storage));
   router.put("/api/v1/projects/:project/acks/:name", createPutAckHandler(storage));
+
+  // What a consumer's jobs spent, reported per batch and totalled per window.
+  // A budget reads this instead of summing runs (ADR-0017).
+  router.post("/api/v1/projects/:project/spend", createRecordSpendHandler(storage));
+  router.get("/api/v1/projects/:project/spend", createGetSpendHandler(storage));
 
   const sessionConfig = { store: storage.sessions, encryptionKey: config.encryptionKey };
   router.put("/api/v1/projects/:project/sessions/:profile/:name", createPutSessionHandler(sessionConfig));

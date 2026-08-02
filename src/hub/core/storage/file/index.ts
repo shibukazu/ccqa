@@ -10,6 +10,7 @@ import { createFilePerspectivesStore } from "./perspectives-store.ts";
 import { createFilePromptStore } from "./prompt-store.ts";
 import { createFileRunStore } from "./run-store.ts";
 import { createFileSecretStore } from "./secret-store.ts";
+import { createFileSpendStore } from "./spend-store.ts";
 import { createFileTriageStore } from "./triage-store.ts";
 
 /** Reference `HubStorage` implementation: everything lives as files under `dataDir`. */
@@ -28,5 +29,6 @@ export function createFileHubStorage(dataDir: string): HubStorage {
     deploys: createFileDeployStore(dataDir),
     locks: createFileLockStore(dataDir),
     acks: createFileAckStore(dataDir),
+    spend: createFileSpendStore(dataDir),
   };
 }

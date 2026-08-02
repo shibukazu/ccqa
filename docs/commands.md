@@ -47,6 +47,7 @@ look before letting a selection decide what a paid run covers.
 | `ccqa hub var set / ls / rm` | Manage the variables `${…}` in a spec resolve to at run time. See [Sharing sessions and variables](./hub.md#sharing-sessions-and-variables-via-the-hub). |
 | `ccqa hub deploy record --profile <p> --sha <sha>` | Tell the hub what a deploy shipped, and which specs it reaches. `--no-select-specs` skips the second half, so every spec behind it is assumed reached instead of cleared. See [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record). |
 | `ccqa hub prompt push / ls / rm` | Manage per-flow guidance and learned prompts. See [Triage learning](./hub.md#triage-learning). |
+| `ccqa hub cost push --label <name>` | Sum `$CCQA_COST_FILE` and record the total on the hub as one spend entry — what a budget reads instead of summing runs. See [Spend](./hub-api.md#spend). |
 
 ## Environment variables
 
@@ -126,6 +127,17 @@ command that was not billed still writes its line, with
 `"totalCostUsd": null` — that it ran and cost nothing is an answer, and a
 missing line would read as a missing run. A file that cannot be written is
 never fatal: cost telemetry does not fail the command it measures.
+
+To keep that number after the job's workspace is gone, push it to the hub as
+the job's last step:
+
+```bash
+ccqa hub cost push --label "$GITHUB_JOB"
+```
+
+One entry per job, added up per project by the hub — the number a budget reads
+instead of summing the hub's runs, never alongside it. See
+[Spend](./hub-api.md#spend).
 
 `ccqa run` additionally records its spend in the report — see
 [The run report](./running.md#the-run-report).

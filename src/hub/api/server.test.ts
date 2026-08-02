@@ -486,6 +486,37 @@ describe("hub API server", () => {
       expect(reportRes.status).toBe(200);
     });
 
+    // Seeded through the store, not pushed: a push stamps `createdAt` "now",
+    // and the window is entirely about that field.
+    async function seedRunAt(id: string, createdAt: string): Promise<void> {
+      await storage.runs.create({
+        id, project: "win", profile: null, branch: null, status: "passed",
+        kind: "run", drift: null,
+        specs: { total: 1, passed: 1, failed: 0 }, gitHead: null, promptVersion: "1",
+        ciRunId: null, reportCreatedAt: createdAt, createdAt,
+      });
+    }
+
+    test("a listing takes the half-open [since, until) window it asks for", async () => {
+      await seedRunAt("w-before", "2026-07-31T23:59:59.999Z");
+      await seedRunAt("w-since", "2026-08-01T00:00:00.000Z");
+      await seedRunAt("w-until", "2026-08-02T00:00:00.000Z");
+
+      const res = await fetch(
+        `${baseUrl}/api/v1/runs?project=win&since=2026-08-01T00:00:00.000Z&until=2026-08-02T00:00:00.000Z`,
+        authed(),
+      );
+      // The run exactly on `since` is in, the one exactly on `until` is out —
+      // so asking for the next day counts that one there, and only there.
+      expect((await json(res)).runs.map((r: { id: string }) => r.id)).toEqual(["w-since"]);
+    });
+
+    test("a since that is not an instant returns 400", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/runs?project=win&since=yesterday`, authed());
+      expect(res.status).toBe(400);
+      expect((await json(res)).error.code).toBe("invalid_param");
+    });
+
     test("POST ?kind=drift stores drift summary counts derived from each spec's diagnosis", async () => {
       const res = await fetch(`${baseUrl}/api/v1/runs?project=demo&kind=drift`, authed({
         method: "POST",
@@ -1637,6 +1668,33 @@ describe("hub API server", () => {
       expect(getRes.status).toBe(400);
       const putRes = await putKeys("%2e%2e%2fevil", ["tasks/search"]);
       expect(putRes.status).toBe(400);
+    });
+  });
+
+  describe("spend", () => {
+    function recordSpend(body: Record<string, unknown>) {
+      return fetch(`${baseUrl}/api/v1/projects/demo/spend`, authed({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }));
+    }
+
+    test("two reported batches add up over the window they fall in", async () => {
+      const first = await recordSpend({ costUsd: 1.25, label: "nightly", at: "2026-08-01T02:00:00.000Z" });
+      expect(first.status).toBe(201);
+      expect(await json(first)).toMatchObject({ costUsd: 1.25, label: "nightly", id: expect.any(String) });
+      await recordSpend({ costUsd: 0.75, label: "pr-check", at: "2026-08-01T09:00:00.000Z" });
+      // Outside the window asked for below, so it must not reach the total.
+      await recordSpend({ costUsd: 40, label: "next-day", at: "2026-08-02T01:00:00.000Z" });
+
+      const res = await fetch(
+        `${baseUrl}/api/v1/projects/demo/spend?since=2026-08-01T00:00:00.000Z&until=2026-08-02T00:00:00.000Z`,
+        authed(),
+      );
+      const body = await json(res);
+      expect(body.totalUsd).toBeCloseTo(2);
+      expect(body.entries.map((e: { label: string }) => e.label)).toEqual(["pr-check", "nightly"]);
     });
   });
 

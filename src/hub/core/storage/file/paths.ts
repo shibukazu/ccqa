@@ -18,6 +18,7 @@ import type { SecretScope } from "../types.ts";
  *   deploys/<project>/<profile>/log.json         (DeployLog, ring-buffered)
  *   deploys/<project>/<profile>/touch.json       (SpecTouchIndex derived from the log)
  *   acks/<project>/<profile>/<name>.json         (Ack: a consumer's acted-on keys)
+ *   spend/<project>.json                         (SpendLog, pruned to its retention window)
  *
  * IDs and names are validated by their callers (run ids are server-minted
  * UUIDs; project/profile/name come from validated request params) before
@@ -162,4 +163,9 @@ export function specLocksPath(root: string, project: string, profile: string): s
 
 export function ackPath(root: string, project: string, profile: string, name: string): string {
   return join(root, "acks", project, profile, `${name}.json`);
+}
+
+// One document per project, deliberately not per profile (docs/hub-api.md#spend).
+export function spendPath(root: string, project: string): string {
+  return join(root, "spend", `${project}.json`);
 }

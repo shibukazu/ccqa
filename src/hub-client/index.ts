@@ -9,10 +9,13 @@ import type {
   LastGreenEntry,
   PutActualCauseRequest,
   RecordDeployRequest,
+  RecordSpendRequest,
   RerunReport,
   Run,
   RunStatus,
   RunTriage,
+  SpendEntry,
+  SpendLogResponse,
   TriageCase,
 } from "../hub/contract/schema.ts";
 import type { PromptName } from "../prompts/prompt-names.ts";
@@ -182,6 +185,14 @@ export interface HubClient {
   recordDeploy(project: string, profile: string, body: RecordDeployRequest): Promise<DeployEntry>;
   /** The profile's retained deploy log, oldest first; `limit` keeps the newest N. */
   getDeployLog(project: string, q: { profile: string; limit?: number }): Promise<DeployLogResponse>;
+
+  /**
+   * Report what one batch of ccqa invocations cost (`ccqa hub cost push`).
+   * Read instead of a sum over runs, never alongside one (ADR-0017).
+   */
+  recordSpend(project: string, body: RecordSpendRequest): Promise<SpendEntry>;
+  /** The project's spend over `[since, until)`, newest first, with the window's total. */
+  getSpend(project: string, q?: { since?: string; until?: string }): Promise<SpendLogResponse>;
 
   putSession(project: string, profile: string, name: string, storageState: unknown): Promise<void>;
   getSession(project: string, profile: string, name: string): Promise<unknown>;
@@ -418,6 +429,17 @@ export function createHubClient(opts: HubClientOptions): HubClient {
       return json(`${deploysPath(project)}?${queryString({ profile: q.profile, limit: q.limit })}`);
     },
 
+    recordSpend(project, body) {
+      return json(spendPath(project), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    },
+    getSpend(project, q = {}) {
+      return json(`${spendPath(project)}?${queryString({ since: q.since, until: q.until })}`);
+    },
+
     async listProjects() {
       const { projects } = await json<{ projects: string[] }>("/api/v1/projects");
       return projects;
@@ -513,6 +535,10 @@ function promptsPath(project: string): string {
 /** The deploy log is per project, selected by a `?profile=` query param: `/api/v1/projects/<project>/deploys`. */
 function deploysPath(project: string): string {
   return `/api/v1/projects/${encodeURIComponent(project)}/deploys`;
+}
+
+function spendPath(project: string): string {
+  return `/api/v1/projects/${encodeURIComponent(project)}/spend`;
 }
 
 function locksPath(project: string): string {

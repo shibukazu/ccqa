@@ -2,6 +2,7 @@ import type { Run } from "../../../contract/schema.ts";
 import type { RunStore } from "../types.ts";
 import { listSubdirsOrEmpty, readJson, updateJson, writeJson } from "./fs-helpers.ts";
 import { runMetaPath, runsDir } from "./paths.ts";
+import { windowFilter } from "./time-window.ts";
 
 /**
  * Read one run record for an aggregate scan, tolerating a bad entry: a
@@ -35,8 +36,9 @@ export function createFileRunStore(root: string): RunStore {
       });
     },
 
-    async list({ project, branch, status, kinds, limit }) {
+    async list({ project, branch, status, kinds, since, until, limit }) {
       const ids = await listSubdirsOrEmpty(runsDir(root));
+      const inWindow = windowFilter({ since, until });
       const runs: Run[] = [];
       for (const id of ids) {
         const run = await readRunOrSkip(root, id);
@@ -45,6 +47,7 @@ export function createFileRunStore(root: string): RunStore {
         if (branch !== undefined && run.branch !== branch) continue;
         if (status !== undefined && run.status !== status) continue;
         if (kinds !== undefined && !kinds.includes(run.kind)) continue;
+        if (!inWindow(run.createdAt)) continue;
         runs.push(run);
       }
       runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));

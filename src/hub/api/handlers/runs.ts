@@ -14,7 +14,7 @@ import { emptyLedger } from "../../core/spec-ledger.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
 import { errMsg, HttpError, readBody, readJsonBody, sendBytes, sendJson } from "../respond.ts";
-import { requireSafeRelPath, requireSafeSegment } from "../validate.ts";
+import { requireSafeRelPath, requireSafeSegment, requireWindowParams } from "../validate.ts";
 
 /** Default cap on a pushed report bundle. Overridable via `serve --max-push-mb`. */
 const DEFAULT_MAX_PUSH_BYTES = 32 * 1024 * 1024;
@@ -494,7 +494,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
   };
 }
 
-/** GET /api/v1/runs?project&branch&status&kind&limit */
+/** GET /api/v1/runs?project&branch&status&kind&since&until&limit */
 export function createListRunsHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const project = ctx.url.searchParams.get("project");
@@ -510,6 +510,7 @@ export function createListRunsHandler(storage: HubStorage) {
       ...(branch ? { branch } : {}),
       ...(status ? { status: status as Run["status"] } : {}),
       ...(kindsRaw ? { kinds: kindsRaw.split(",").map(requireKind) } : {}),
+      ...requireWindowParams(ctx.url),
       ...(limitRaw ? { limit: Number(limitRaw) } : {}),
     });
     sendJson(ctx.res, 200, { runs: await Promise.all(runs.map((r) => withGradedDrift(storage, r))) });

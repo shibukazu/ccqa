@@ -1,6 +1,7 @@
 import { causesForKind, predictedForKind, PREDICTED_LABELS } from "../../report/schema.ts";
 import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
 import { GUIDANCE_KINDS } from "../../prompts/prompt-names.ts";
+import { RunStatusSchema } from "../contract/schema.ts";
 
 /**
  * The hub's bundled WebUI: a single static HTML page with vanilla JS, in a
@@ -132,10 +133,32 @@ const HTML_BODY = `
       <div class="page-bar">
         <h1 data-i18n="runs.title">Runs</h1>
         <span class="total" id="runs-total-cost" hidden></span>
+        <span class="total" id="runs-capped" hidden></span>
+        <!-- Ruled off from the two above because it counts something else: the
+             project's whole spend, not what the listed runs cost. -->
+        <span class="total apart" id="runs-spend-24h" hidden></span>
         <div class="spacer"></div>
         ${refreshButton("runs-refresh")}
       </div>
       <div class="content">
+        <!-- Deliberately selects and a native date input, not the .fchip
+             toggles the rest of the page uses: these three refetch, and a chip
+             group beside a date box would be the odd one out. Their options
+             are built by syncRunsFilters. -->
+        <div class="toolbar">
+          <div class="fgroup">
+            <label class="fgroup-label" for="runs-f-date" data-i18n="runs.filter.date">Date</label>
+            <input class="fctl" type="date" id="runs-f-date">
+          </div>
+          <div class="fgroup">
+            <label class="fgroup-label" for="runs-f-kind" data-i18n="runs.filter.kind">Kind</label>
+            <select class="fctl" id="runs-f-kind"></select>
+          </div>
+          <div class="fgroup">
+            <label class="fgroup-label" for="runs-f-status" data-i18n="runs.filter.status">Status</label>
+            <select class="fctl" id="runs-f-status"></select>
+          </div>
+        </div>
         <div class="card" id="runs-card">
           <div class="table-wrap">
             <table>
@@ -497,6 +520,7 @@ const CSS = `
   .page-bar .back svg { width: 15px; height: 15px; }
   .page-bar .filters { display: flex; gap: 8px; margin-left: 8px; }
   .page-bar .total { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .page-bar .total.apart { padding-left: 12px; border-left: 1px solid var(--border); }
   .page-bar .spacer { flex: 1; }
   .content { padding: 18px 24px 48px; }
 
@@ -925,6 +949,13 @@ const CSS = `
   .fchip[aria-pressed="true"] { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
   .fchip .fcount { margin-left: 6px; font-variant-numeric: tabular-nums; color: var(--muted-2); }
   .fchip[aria-pressed="true"] .fcount { color: var(--accent-fg); opacity: 0.7; }
+  /* A filter control that picks one value out of many (the runs bar's date box
+     and selects), sized to itself — .input is the full-width form field the
+     sheets use, which in a toolbar row swallows the whole line. */
+  .fctl { height: 32px; padding: 0 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--fg); font: inherit; font-size: 13px; }
+  /* Native chrome (the date picker's glyph, the select's arrow) takes its
+     colours from the color-scheme property, not from any class of ours. */
+  .dark .fctl { color-scheme: dark; }
 
   .chip.live { background: var(--info-bg); color: var(--info); border-color: var(--info-border); }
   .badge.ok { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
@@ -1044,7 +1075,10 @@ const CLIENT_JS = `
   var PREDICTED_LABELS = ${JSON.stringify(PREDICTED_LABELS)};
   var AGENT_BROWSER_TARGET = ${JSON.stringify(AGENT_BROWSER_TARGET)};
   var GUIDANCE_KINDS = ${JSON.stringify(GUIDANCE_KINDS)};
-  var state = { token: "", project: "", profile: "default", detailRunId: "", jobPollToken: 0 };
+  // Every status a run can be in, from the contract that defines them, so the
+  // runs filter offers exactly what a row's badge can say.
+  var RUN_STATUSES = ${JSON.stringify(RunStatusSchema.options)};
+  var state = { token: "", project: "", profile: "default", detailRunId: "", jobPollToken: 0, runsLoadToken: 0, spendLoadToken: 0 };
   var knownProfiles = [];
   var TOKEN_KEY = "ccqa-hub-token";
   var LANG_KEY = "ccqa-hub-lang";
@@ -1069,9 +1103,13 @@ const CLIENT_JS = `
       "projects.title": "Projects", "projects.new": "New project",
       "runs.title": "Runs", "runs.empty": "Select a project to see its runs.",
       "runs.none": "No runs yet for this project.", "projects.none": "No projects yet. Create one to get started.", "projects.noneShort": "No projects yet",
+      "runs.noMatch": "No runs match this filter.",
       "runs.col.run": "Run", "runs.col.branch": "Branch", "runs.col.status": "Status",
       "runs.col.specs": "Specs", "runs.col.cost": "Cost", "runs.col.created": "Created",
-      "runs.totalCost": "Cost of these {n}:",
+      "runs.totalCost": "Cost of these {n}:", "runs.capped": "showing the first {n}",
+      "runs.spend24h": "All spend, last 24h:",
+      "runs.filter.date": "Date", "runs.filter.kind": "Kind", "runs.filter.status": "Status",
+      "runs.filter.all": "All",
       "detail.back": "Runs", "detail.specs": "Specs",
       "detail.download": "Download artifacts",
       "detail.triage": "Triage",
@@ -1228,9 +1266,13 @@ const CLIENT_JS = `
       "projects.title": "プロジェクト", "projects.new": "新規プロジェクト",
       "runs.title": "実行", "runs.empty": "プロジェクトを選択すると実行一覧が表示されます。",
       "runs.none": "このプロジェクトにはまだ実行がありません。", "projects.none": "まだプロジェクトがありません。作成して始めましょう。", "projects.noneShort": "プロジェクトなし",
+      "runs.noMatch": "条件に一致する実行はありません。",
       "runs.col.run": "実行", "runs.col.branch": "ブランチ", "runs.col.status": "ステータス",
       "runs.col.specs": "スペック", "runs.col.cost": "コスト", "runs.col.created": "作成",
-      "runs.totalCost": "この {n} 件のコスト:",
+      "runs.totalCost": "この {n} 件のコスト:", "runs.capped": "先頭 {n} 件のみ表示",
+      "runs.spend24h": "直近 24 時間の全支出:",
+      "runs.filter.date": "日付", "runs.filter.kind": "種類", "runs.filter.status": "結果",
+      "runs.filter.all": "すべて",
       "detail.back": "実行", "detail.specs": "スペック",
       "detail.download": "アーティファクトをダウンロード",
       "detail.triage": "トリアージ",
@@ -1398,6 +1440,9 @@ const CLIENT_JS = `
     for (var i = 0; i < nodes.length; i++) { nodes[i].textContent = t(nodes[i].getAttribute("data-i18n")); }
     var phs = document.querySelectorAll("[data-i18n-ph]");
     for (var j = 0; j < phs.length; j++) { phs[j].placeholder = t(phs[j].getAttribute("data-i18n-ph")); }
+    // The runs filters' options are built rather than marked up, so they are
+    // not reached by the two loops above.
+    syncRunsFilters();
     document.documentElement.lang = lang;
   }
 
@@ -1865,13 +1910,58 @@ const CLIENT_JS = `
 
   // ── runs list ────────────────────────────────────────────────────────
 
+  var RUNS_LIMIT = 50;
+  // Outlives every render, so a refresh or a language switch comes back to the
+  // list the operator was looking at.
+  var runsFilter = { date: "", kind: "", status: "" };
+  function runsFilterActive() { return !!(runsFilter.date || runsFilter.kind || runsFilter.status); }
+
+  function runsQuery() {
+    var q = "/api/v1/runs?project=" + encodeURIComponent(state.project) + "&limit=" + RUNS_LIMIT;
+    if (runsFilter.kind) q += "&kind=" + encodeURIComponent(runsFilter.kind);
+    if (runsFilter.status) q += "&status=" + encodeURIComponent(runsFilter.status);
+    if (runsFilter.date) {
+      // The picked day becomes [local midnight, next local midnight). The API
+      // takes instants and carries no timezone, so the day has to be resolved
+      // here — against the clock of whoever picked it.
+      var p = runsFilter.date.split("-");
+      var start = new Date(+p[0], +p[1] - 1, +p[2]);
+      var next = new Date(+p[0], +p[1] - 1, +p[2] + 1);
+      q += "&since=" + encodeURIComponent(start.toISOString()) + "&until=" + encodeURIComponent(next.toISOString());
+    }
+    return q;
+  }
+
+  // Both selects take their values from the tables that label the rows, so a
+  // filter cannot name a kind or a status differently from the run it hides.
+  // Called on boot and on a language switch — the only times the labels move.
+  function syncRunsFilters() {
+    document.getElementById("runs-f-date").value = runsFilter.date;
+    fillRunsFilter("runs-f-kind", Object.keys(KINDS), function (k) { return t(kindOf(k).label); }, runsFilter.kind);
+    fillRunsFilter("runs-f-status", RUN_STATUSES, function (s) { return t("status." + s); }, runsFilter.status);
+  }
+
+  function fillRunsFilter(id, values, labelOf, selected) {
+    var sel = document.getElementById(id);
+    clear(sel);
+    var any = el("option", null, t("runs.filter.all"));
+    any.value = "";   // the empty value is what the query omits
+    sel.appendChild(any);
+    values.forEach(function (v) {
+      var opt = el("option", null, labelOf(v));
+      opt.value = v;
+      sel.appendChild(opt);
+    });
+    sel.value = selected;
+  }
+
   // What the listed runs cost together — the accumulating number an operator
   // reads to decide how often CI should run, so it follows whatever filter
   // produced the list. Hidden when no listed run carries a cost at all, since
   // a "$0.0000" total would read as "CI is free" rather than "nothing measured".
   //
-  // The label names the run count on purpose. The list is capped (limit=50), so
-  // an unqualified "total" would quietly under-report a project's spend the
+  // The label names the run count on purpose. The list is capped (RUNS_LIMIT),
+  // so an unqualified "total" would quietly under-report a project's spend the
   // moment it has more runs than that — the one number this feature exists to
   // get right.
   function renderRunsTotalCost(runs) {
@@ -1893,14 +1983,38 @@ const CLIENT_JS = `
     }
   }
 
+  // The project's whole spend over the last 24 hours — deliberately not the
+  // list's window or filter: the two numbers differ by everything that calls
+  // Claude without leaving a run behind, which is why both are here. Hidden
+  // when nothing was reported, since "$0.0000" would claim a free day.
+  function loadRunsSpend() {
+    var span = document.getElementById("runs-spend-24h");
+    span.hidden = true;
+    var token = ++state.spendLoadToken;
+    var since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    apiFetch("/api/v1/projects/" + encodeURIComponent(state.project) + "/spend?since=" + encodeURIComponent(since))
+      .then(function (data) {
+        if (token !== state.spendLoadToken) return;
+        if (!data.entries.length) return;
+        span.hidden = false;
+        span.textContent = t("runs.spend24h") + " " + costText(data.totalUsd);
+      })
+      .catch(function () { /* the runs list is the page; a missing total must not replace it with an error */ });
+  }
+
   function renderRunsList(runs) {
     var tbody = document.getElementById("runs-tbody");
     clear(tbody);
     renderRunsTotalCost(runs);
+    // A full page is almost certainly a truncated one, and under a date filter
+    // that turns the total beside it into a day's spend that stops at the cap.
+    var capped = document.getElementById("runs-capped");
+    capped.hidden = runs.length < RUNS_LIMIT;
+    capped.textContent = t("runs.capped").replace("{n}", RUNS_LIMIT);
     var empty = document.getElementById("runs-empty");
     if (runs.length === 0) {
       empty.hidden = false;
-      empty.textContent = t("runs.none");
+      empty.textContent = t(runsFilterActive() ? "runs.noMatch" : "runs.none");
       return;
     }
     empty.hidden = true;
@@ -1967,17 +2081,31 @@ const CLIENT_JS = `
     });
   }
 
-  function loadRuns() {
-    var empty = document.getElementById("runs-empty");
-    empty.hidden = true;
-    apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project) + "&limit=50")
-      .then(function (data) { renderRunsList(data.runs); })
+  // Compared against the live token before painting, so a slower earlier
+  // response cannot land last: holding an arrow key down in the date box fires
+  // one request per day passed, and the table would end up on the wrong one.
+  function loadRunsList() {
+    var token = ++state.runsLoadToken;
+    document.getElementById("runs-empty").hidden = true;
+    apiFetch(runsQuery())
+      .then(function (data) {
+        if (token !== state.runsLoadToken) return;
+        renderRunsList(data.runs);
+      })
       .catch(function (err) {
-        clear(document.getElementById("runs-tbody"));
-        renderRunsTotalCost([]);
+        if (token !== state.runsLoadToken) return;
+        renderRunsList([]);
+        var empty = document.getElementById("runs-empty");
         empty.hidden = false;
         empty.textContent = "Error loading runs: " + err.message;
       });
+  }
+
+  // Entering the view or refreshing it. The spend readout is a fixed window,
+  // so a filter change reloads the list alone.
+  function loadRuns() {
+    loadRunsSpend();
+    loadRunsList();
   }
 
   // ── run detail: header ──────────────────────────────────────────────
@@ -4808,6 +4936,14 @@ const CLIENT_JS = `
 
   document.getElementById("detail-back").addEventListener("click", function () { location.hash = "#/runs"; });
   document.getElementById("runs-refresh").addEventListener("click", loadRuns);
+  // Every control refetches: the window and the kinds are the server's to
+  // apply, so filtering client-side would only narrow the same capped page.
+  [["runs-f-date", "date"], ["runs-f-kind", "kind"], ["runs-f-status", "status"]].forEach(function (pair) {
+    document.getElementById(pair[0]).addEventListener("change", function (e) {
+      runsFilter[pair[1]] = e.target.value;
+      loadRunsList();
+    });
+  });
   document.getElementById("learn-run").addEventListener("click", startLearn);
   document.getElementById("jobs-refresh").addEventListener("click", loadJobs);
   // Wrap so the click PointerEvent isn't passed as loadSecrets' statusAfter

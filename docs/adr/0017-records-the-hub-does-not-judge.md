@@ -10,12 +10,14 @@ derived from one reads it that way: a run says whether specs passed, an audit
 says whether they still describe the code, and the spec ledger, the drift
 ledger and the two re-run axes are all folded from those two answers.
 
-Two additions break that assumption at once. `ccqa record` produces a run
-record too, but it judged nothing — it says a recording happened and what it
-cost. And a consumer that reports the hub's verdicts onward needs to remember
-what it already reported: a CI job has no memory between runs, and the hub is
-the only durable thing in that loop, but what it remembers is the consumer's
-own bookkeeping and not a fact about any spec.
+Three additions break that assumption. `ccqa record` produces a run record
+too, but it judged nothing — it says a recording happened and what it cost. A
+consumer that reports the hub's verdicts onward needs to remember what it
+already reported: a CI job has no memory between runs, and the hub is the only
+durable thing in that loop, but what it remembers is the consumer's own
+bookkeeping and not a fact about any spec. And what a job spent on Claude is a
+number about the job rather than about any spec — one the hub cannot derive,
+because most of the commands that spend it leave no run behind.
 
 The symptom that forced the first is cost. Re-recording a spec is the most
 expensive thing ccqa does per invocation, and it was the only spend a budget
@@ -23,23 +25,37 @@ summed over the hub could not see. The obvious fix — push it as a run — lets
 a recording advance that spec's "last green", which is the one claim a
 recording must never make: it produced a test, it did not check the product.
 
+That fix reached exactly as far as runs do, which is the symptom that forced
+the third. Three commands leave a run; the coverage-inventory refresh, the spec
+rewrite a fix loop makes before re-recording, the spec selection a deploy
+record runs and a verification audit that deliberately publishes nothing all
+call Claude and leave none. So a cap summed over stored runs is not the day's
+spend — while the complete number already exists and is thrown away, since
+every command writes its own total to `$CCQA_COST_FILE` and nothing durable
+adds those up across jobs and days.
+
 ## Considered options
 
-- **Leave both out.** Recording spend stays invisible, and every consumer
+- **Leave them out.** Recording spend stays invisible, every consumer
   re-invents durable bookkeeping (a committed file, a cache key) that the hub
-  already knows how to store.
-- **Give each its own concept**: a `Recording` record beside `Run`, and a
-  typed "already reported" document the hub understands and diffs. Both
-  duplicate machinery the hub has, and the second puts the hub in charge of a
-  policy only the consumer knows — what counts as acting, and when it landed.
-- **Store both as what they are, and make "the hub does not interpret this"
-  the rule** rather than an exception noted at each site.
+  already knows how to store, and a budget keeps summing runs — a total that
+  is complete only for the commands that leave one.
+- **Give each its own concept**: a `Recording` record beside `Run`, a typed
+  "already reported" document the hub understands and diffs, and a spend
+  figure the hub derives from what it holds. The first duplicates machinery
+  the hub has; the second puts the hub in charge of a policy only the consumer
+  knows — what counts as acting, and when it landed; and the third asks for
+  the one number the hub cannot reach, since the spend it never saw is exactly
+  what is missing.
+- **Store all three as what they are, and make "the hub does not interpret
+  this" the rule** rather than an exception noted at each site.
 
 ## Decision outcome
 
-**Chosen: store both, interpret neither.** The hub is already a control
-plane that computes almost nothing (ADR-0006); these are the two records
-where it computes nothing at all.
+**Chosen: store all three, interpret none.** The hub is already a control
+plane that computes almost nothing (ADR-0006); these are the three records it
+reads nothing into — the most it does with one is add a column of reported
+numbers up.
 
 ### A run kind that advances no ledger
 
@@ -83,16 +99,43 @@ the lock store is profile-scoped: acting happens against one environment, and
 a consumer that has only one passes nothing and lands in `"default"`, while
 one that acts per environment cannot recover a scope the hub never kept.
 
+### A total the hub only adds up
+
+A spend entry is what one batch of invocations cost, under a label the
+consumer chose. The hub keeps entries per project — a batch is a job's bill,
+and a job can touch several environments — totals whatever window is asked
+for, and reads nothing else into them.
+
+The consequence is a rule, not a field: **a consumer that adopts the spend log
+stops summing runs.** A batch covers its whole job, including the run and the
+audit inside it, so reading both counts those twice. Runs keep `costUsd`
+because a run's own page has to say what that run cost; a budget reads the
+spend log.
+
+The one thing the hub does key on is where a batch came from: a push carrying
+the same `ciRunId` and label as a stored entry replaces it. A retried job does
+spend again, but it also rewrites its cost file from scratch, so its later
+total is the whole of that job — and a workflow that ends up pushing twice
+cannot quietly double a project's bill, which nothing after the fact could
+detect or undo.
+
+It is also the one record here that is bounded — entries are pruned to a
+90-day window as the log is appended to. An ack is replaced wholesale and a run
+is its own document, but this is a single document that only ever grows, and a
+budget only ever asks about the recent past.
+
 ## Consequences
 
-Good: a budget summed over `costUsd` finally sees re-recording, and a
-consumer's bookkeeping stops being a file it has to commit or a cache it has
-to hope survives.
+Good: re-recording is visible on the hub at all, a budget has one number to
+read instead of a sum that was never complete, and a consumer's bookkeeping
+stops being a file it has to commit or a cache it has to hope survives.
 
-Bad: two records now exist that the hub cannot reason about. A recording's
+Bad: three records now exist that the hub cannot reason about. A recording's
 `specs` counts are real numbers about real rows that answer nothing — the view
-labels them as such rather than showing a tally — and an ack's keys mean
-whatever wrote them, which nothing but the consumer can check.
+labels them as such rather than showing a tally — an ack's keys mean whatever
+wrote them, and a spend entry is a number the hub cannot check against
+anything: a job killed before it reports is indistinguishable from one that
+spent nothing.
 
 Follow-up: nothing generalises the ack yet — there is no listing of names
 under a project, and no expiry. Both are additive, and neither is needed
@@ -107,6 +150,10 @@ until a consumer keeps more than a handful of sets.
 - Acks: `AckStore` in `src/hub/core/storage/types.ts`, routes in
   `src/hub/api/handlers/acks.ts`, wire contract in
   [`docs/hub-api.md`](../hub-api.md#acks)
+- Spend: `SpendStore` in `src/hub/core/storage/types.ts`, retention in
+  `src/hub/core/storage/file/spend-store.ts`, routes in
+  `src/hub/api/handlers/spend.ts`, client in `ccqa hub cost push`, wire
+  contract in [`docs/hub-api.md`](../hub-api.md#spend)
 - Related: ADR-0006 (the hub stores, it does not execute), ADR-0009 (a run is
   immutable once terminal — a recording is too), ADR-0013 (why the drift
   ledger is not profile-scoped)

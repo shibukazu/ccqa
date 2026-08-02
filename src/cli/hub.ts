@@ -12,7 +12,7 @@ import {
 import { SessionNameSchema } from "../spec/yaml-schema.ts";
 import { isPromptName, PROMPT_NAMES, type PromptName, resolvePromptLocalPath } from "../prompts/prompt-names.ts";
 import { DEFAULT_REPORT_DIR } from "../run/report-constants.ts";
-import { githubRunUrl } from "../run/github-run.ts";
+import { ciProvenance, githubRunUrl } from "../run/github-run.ts";
 import { deployHeadSha } from "../run/deploy-head.ts";
 import { errMessage } from "../run/errors.ts";
 import { capDeployPaths } from "./deploy-paths.ts";
@@ -27,7 +27,7 @@ import { resolveProject } from "./resolve-project.ts";
 import { hubTokenOption, hubUrlOption, resolveHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
 import { detectBranch } from "./git-branch.ts";
 import * as log from "./logger.ts";
-import { withCostReporting } from "./cost-line.ts";
+import { readCostFileTotal, withCostReporting } from "./cost-line.ts";
 
 /**
  * `ccqa hub` — the client side of the ccqa hub (a results/secret control
@@ -539,6 +539,69 @@ const deployCommand = new Command("deploy")
   .description("Report deploys to the hub, the input behind `ccqa run --only-hub-rerun-needed`.")
   .addCommand(deployRecord);
 
+// ── cost ────────────────────────────────────────────────────────────────
+
+interface CostPushOptions extends HubConnOptions {
+  project?: string;
+  cwd?: string;
+  label: string;
+  from?: string;
+}
+
+const costPush = new Command("push")
+  .description(
+    "Record what this job spent on Claude: sum the cost file every ccqa invocation appended to " +
+      "($CCQA_COST_FILE) and push the total to the hub as one spend entry. Run it last, once. " +
+      "A budget reads these totals INSTEAD OF summing the hub's runs: most commands that call Claude " +
+      "leave no run behind, and a batch already includes the ones that do, so adding both double-counts.",
+  )
+  .requiredOption(
+    "--label <name>",
+    "What this batch was — typically the CI job's name. Required: an unlabelled entry tells a reader " +
+      "nothing about where the money went.",
+  )
+  .option("--from <path>", "Cost file to read. Defaults to $CCQA_COST_FILE.")
+  .option("--project <name>", "Project the spend is recorded against. Defaults to the current directory's name.")
+  .option(...cwdOption)
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .action(withHubErrors(runCostPush));
+
+async function runCostPush(opts: CostPushOptions): Promise<void> {
+  const path = opts.from ?? process.env.CCQA_COST_FILE;
+  if (!path) {
+    log.error("no cost file to read (--from <path> or CCQA_COST_FILE)");
+    process.exit(2);
+  }
+  const project = resolveProject(opts);
+  const hub = connect(opts);
+
+  log.header("hub cost push", opts.label);
+  log.meta("project", project);
+  const total = await readCostFileTotal(path);
+  if (total === null) {
+    log.warn(`no cost file at ${path}; recorded nothing — ccqa never ran here, which is not a spend of zero`);
+    return;
+  }
+  if (total.invocations === 0) {
+    log.warn(`${path} holds no invocations; recorded nothing`);
+    return;
+  }
+  await hub.recordSpend(project, { costUsd: total.totalUsd, label: opts.label, ...ciProvenance() });
+  log.meta("invocations", String(total.invocations));
+  if (total.unreadable > 0) {
+    log.warn(
+      `${total.unreadable} line(s) of ${path} could not be read, so the total below is a floor: ` +
+        "what they cost is not in it, and the hub now holds the short number",
+    );
+  }
+  log.info(`recorded $${total.totalUsd.toFixed(4)} of spend on the hub`);
+}
+
+const costCommand = new Command("cost")
+  .description("Report what a CI job spent on Claude to the hub — the number a budget reads.")
+  .addCommand(costPush);
+
 // ── push ──────────────────────────────────────────────────────────────────
 
 const pushCommand = new Command("push")
@@ -607,6 +670,7 @@ export const hubCommand = new Command("hub")
   )
   .addCommand(pushCommand)
   .addCommand(deployCommand)
+  .addCommand(costCommand)
   .addCommand(sessionCommand)
   .addCommand(varCommand)
   .addCommand(promptCommand);
