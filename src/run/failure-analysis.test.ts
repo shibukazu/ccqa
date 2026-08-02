@@ -39,6 +39,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  delete process.env["CCQA_TEST_LOGIN_EMAIL"];
   await rm(cwd, { recursive: true, force: true });
 });
 
@@ -95,6 +96,7 @@ function deps(overrides: Partial<FailureAnalysisDeps> = {}): FailureAnalysisDeps
     cwd,
     reportDir: join(cwd, "report"),
     blocks: [],
+    parsedBlocks: new Map(),
     customPrompt: null,
     triageUserPrompt: null,
     ...overrides,
@@ -185,6 +187,18 @@ describe("analyzeExternalRows", () => {
     expect(promptInput.baselineMissing).toBe("no recorded green yet");
     expect(promptInput.diffPatch).toBeNull();
     expect(promptInput.baseRef).toBeNull();
+  });
+
+  it("hands the classifier the values this spec resolved, so its prose can be scrubbed", async () => {
+    process.env["CCQA_TEST_LOGIN_EMAIL"] = "user@example.com";
+    vi.mocked(analyzeFailure).mockResolvedValue({ analysis: ANALYSIS, raw: "", sdkError: false });
+    const specYaml =
+      "title: Sample flow\nsteps:\n  - instruction: sign in as ${CCQA_TEST_LOGIN_EMAIL}\n    expected: signed in\n";
+    await analyze([failedRow("x", { specYaml })], deps());
+
+    expect(vi.mocked(analyzeFailure).mock.calls[0]![1].envScrubMap).toEqual([
+      ["user@example.com", "${CCQA_TEST_LOGIN_EMAIL}"],
+    ]);
   });
 
   it("records the disabled reason and makes no Claude calls without --failure-analysis", async () => {

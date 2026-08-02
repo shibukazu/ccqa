@@ -1,5 +1,9 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, withoutEmptyEndpointVars } from "./invoke.ts";
+import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, withoutEmptyEndpointVars } from "./invoke.ts";
+import * as log from "../cli/logger.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 describe("extractAbActionFromBashCommand", () => {
@@ -619,6 +623,39 @@ describe("extractInvocationCost", () => {
       outputTokens: null,
       models: [],
     });
+  });
+});
+
+const LOGGED_COMMAND = "agent-browser --session s1 open https://app.example.com/orders";
+
+/** Replay one Bash tool_use through the real invoke and return what it logged. */
+async function logOfOneBashCall(envScrubMap: Array<[string, string]>): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), "ccqa-invoke-log-"));
+  const mockPath = join(dir, "claude-mock.jsonl");
+  const message = {
+    type: "assistant",
+    message: {
+      content: [{ type: "tool_use", id: "t1", name: "Bash", input: { command: LOGGED_COMMAND } }],
+    },
+  };
+  await writeFile(mockPath, JSON.stringify(message) + "\n", "utf8");
+  process.env["CCQA_CLAUDE_MOCK_FILE"] = mockPath;
+  const written: string[] = [];
+  try {
+    await log.withSink({ write: (text) => written.push(text) }, async () => {
+      await invokeClaudeStreaming({ prompt: "x", envScrubMap }, () => {});
+    });
+  } finally {
+    delete process.env["CCQA_CLAUDE_MOCK_FILE"];
+    await rm(dir, { recursive: true, force: true });
+  }
+  return written.join("");
+}
+
+describe("invokeClaudeStreaming Bash logging", () => {
+  test("masks a resolved env value the model inlined into the command", async () => {
+    const out = await logOfOneBashCall([["https://app.example.com", "${APP_URL}"]]);
+    expect(out).toContain("agent-browser --session s1 open ${APP_URL}/orders");
   });
 });
 

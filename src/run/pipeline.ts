@@ -7,7 +7,7 @@ import {
   getTestScript,
   listAllSpecsWithSpecFile,
   loadAllBlocks,
-  loadAvailableBlocks,
+  projectAvailableBlocks,
   resolveSpecTargets,
   specKey,
   tryReadSpecFile,
@@ -498,6 +498,10 @@ export async function executeRun(
   // path builds its own from RunLiveOptions). The Claude-credential probe can
   // hit the macOS Keychain, so it happens here rather than per phase — and only
   // when a baseline was requested, since that is what turns analysis on.
+  //
+  // Blocks are read once for the whole run: the analysis pass, its prompt
+  // projection and the deterministic evidence captions all consume this map.
+  const parsedBlocks = await loadAllBlocks(cwd);
   const analysisDeps: FailureAnalysisDeps = {
     diffProvider,
     auth: diffProvider ? driftAuthAvailable() : { ok: false, reason: "skipped by flags" },
@@ -505,7 +509,8 @@ export async function executeRun(
     reportDir,
     // So the prompt can check an `include:` step's target still exists —
     // mirrors what the audit is given (src/prompts/drift.ts).
-    blocks: await loadAvailableBlocks(cwd),
+    blocks: projectAvailableBlocks(parsedBlocks),
+    parsedBlocks,
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
     customPrompt,
@@ -1241,12 +1246,8 @@ async function analyzeDeterministicSummaries(
   summaries: readonly SpecRunSummary[],
   cwd: string,
   reportDir: string,
-  { pass }: FailureAnalysisRun,
+  { pass, deps }: FailureAnalysisRun,
 ): Promise<ReportSpecResult[]> {
-  // Load blocks once (shared across all specs) so evidence captions can show
-  // the step's `expected` text from spec.yaml, including block-inlined steps.
-  const allBlocks = await loadAllBlocks(cwd);
-
   const results: ReportSpecResult[] = [];
   for (const s of summaries) {
     const assertions = collectAssertions(s);
@@ -1254,7 +1255,7 @@ async function analyzeDeterministicSummaries(
     // failure-analysis prompt.
     const specYaml = await tryReadSpecFile(s.featureName, s.specName, cwd);
     const parsedSpec = tryParseTestSpec(specYaml);
-    const stepDescriptions = buildStepDescriptions(parsedSpec, allBlocks);
+    const stepDescriptions = buildStepDescriptions(parsedSpec, deps.parsedBlocks);
     const evidence = await loadEvidenceForSpec(s.evidenceDir, reportDir, stepDescriptions);
     const base = {
       feature: s.featureName,
@@ -1296,6 +1297,7 @@ async function analyzeDeterministicSummaries(
       readScript: () => readScriptSafe(s.scriptFile),
       failureLog,
       specYaml,
+      parsedSpec,
       target: AGENT_BROWSER_TARGET,
     });
 

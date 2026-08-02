@@ -208,8 +208,7 @@ export async function loadAllBlocks(cwd?: string): Promise<Map<string, BlockSpec
  * Co-located with `loadAllBlocks` so callers don't have to remember the
  * isParamRequired / secret-default mapping.
  */
-export async function loadAvailableBlocks(cwd?: string): Promise<AvailableBlock[]> {
-  const blocks = await loadAllBlocks(cwd);
+export function projectAvailableBlocks(blocks: Map<string, BlockSpec>): AvailableBlock[] {
   return [...blocks.entries()].map(([name, block]) => ({
     name,
     title: block.title,
@@ -219,6 +218,11 @@ export async function loadAvailableBlocks(cwd?: string): Promise<AvailableBlock[
       secret: p.secret === true,
     })),
   }));
+}
+
+/** `loadAllBlocks` + `projectAvailableBlocks`, for callers that need only the projection. */
+export async function loadAvailableBlocks(cwd?: string): Promise<AvailableBlock[]> {
+  return projectAvailableBlocks(await loadAllBlocks(cwd));
 }
 
 export async function readBlockSpec(name: string, cwd?: string): Promise<BlockSpec> {

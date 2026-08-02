@@ -146,4 +146,33 @@ describe("analyzeFailure", () => {
     expect(analysis.label).toBe("UNKNOWN");
     expect(analysis.reasoning).toContain("no parseable JSON");
   });
+
+  test("a resolved value the classifier quoted is masked in its prose, never in a file path", async () => {
+    vi.mocked(invokeClaudeStreaming).mockResolvedValue(
+      claudeResult(
+        "```json\n" +
+          JSON.stringify({
+            label: "ENVIRONMENT",
+            confidence: 0.7,
+            headline: "signed in as user@example.com",
+            recommendation: "check user@example.com exists",
+            reasoning: "the repo's .env sets LOGIN_EMAIL=user@example.com",
+            // A path that happens to contain the value must survive as a
+            // usable repository coordinate.
+            evidence: [{ file: "fixtures/user@example.com/login.json", detail: "user@example.com" }],
+          }) +
+          "\n```",
+      ),
+    );
+    const { analysis } = await analyzeFailure(MINIMAL_INPUT, {
+      ...MINIMAL_OPTIONS,
+      envScrubMap: [["user@example.com", "${LOGIN_EMAIL}"]],
+    });
+    expect(analysis.headline).toBe("signed in as ${LOGIN_EMAIL}");
+    expect(analysis.recommendation).toBe("check ${LOGIN_EMAIL} exists");
+    expect(analysis.reasoning).not.toContain("user@example.com");
+    expect(analysis.evidence).toEqual([
+      { file: "fixtures/user@example.com/login.json", detail: "${LOGIN_EMAIL}" },
+    ]);
+  });
 });

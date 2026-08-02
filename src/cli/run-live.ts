@@ -23,7 +23,7 @@ import type { HubContext } from "./hub-conn.ts";
 import { isStorageStateShape } from "./hub.ts";
 import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
-import { buildLiveEnvScrubMap } from "../runtime/env-scrub.ts";
+import { buildProseEnvScrubMap } from "../runtime/env-scrub.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import {
   DEFAULT_SESSION_PROFILE,
@@ -243,6 +243,9 @@ type SpecRunOutcome =
       specName: string;
       runDir: string;
       specYaml: string;
+      /** Carried to the analysis rather than rebuilt there: rebuilding would
+       * re-read blocks from disk, which a mid-run edit could have changed. */
+      envScrubMap: Array<[string, string]>;
       result: LiveRunResult;
     }
   | {
@@ -393,10 +396,10 @@ async function runOneSpec(args: {
   const blocks = await loadAllBlocks(cwd);
   const expanded = expandSpec(spec, { blocks });
 
-  // Built now, from the same process.env the browser will resolve `${VAR}`
-  // against: reading it back at report time would miss a value that changed
-  // after the prose quoting it was written.
-  const envScrubMap = buildLiveEnvScrubMap(spec, expanded);
+  // Built at run start because the executor needs it while the run produces
+  // step prose, not just at report time. (The environment itself is stable: a
+  // profile is applied once per invocation, before any spec runs.)
+  const envScrubMap = buildProseEnvScrubMap(spec, expanded);
 
   log.meta("spec", spec.title);
   log.meta("steps", expanded.length);
@@ -473,6 +476,7 @@ async function runOneSpec(args: {
       specName,
       runDir,
       specYaml: specContent,
+      envScrubMap,
       result,
     };
   } finally {
@@ -555,7 +559,12 @@ async function analyzeOneLiveFailure(
       ...(opts.triageUserPrompt ? { triageUserPrompt: opts.triageUserPrompt } : {}),
       ...(customPrompt ? { customPrompt } : {}),
     },
-    { ...(opts.model ? { model: opts.model } : {}), cwd, getFileDiff: specDiff?.fileDiff ?? (() => null) },
+    {
+      ...(opts.model ? { model: opts.model } : {}),
+      cwd,
+      getFileDiff: specDiff?.fileDiff ?? (() => null),
+      envScrubMap: r.envScrubMap,
+    },
   );
   const pct = Math.round(outcome.analysis.confidence * 100);
   const headline = outcome.analysis.headline.trim() || (outcome.analysis.reasoning.split("\n")[0] ?? "").trim();
