@@ -629,7 +629,7 @@ describe("extractInvocationCost", () => {
 const LOGGED_COMMAND = "agent-browser --session s1 open https://app.example.com/orders";
 
 /** Replay one Bash tool_use through the real invoke and return what it logged. */
-async function logOfOneBashCall(envScrubMap?: Array<[string, string]>): Promise<string> {
+async function logOfOneBashCall(envScrubMap: Array<[string, string]>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "ccqa-invoke-log-"));
   const mockPath = join(dir, "claude-mock.jsonl");
   const message = {
@@ -643,10 +643,7 @@ async function logOfOneBashCall(envScrubMap?: Array<[string, string]>): Promise<
   const written: string[] = [];
   try {
     await log.withSink({ write: (text) => written.push(text) }, async () => {
-      await invokeClaudeStreaming(
-        { prompt: "x", ...(envScrubMap ? { envScrubMap } : {}) },
-        () => {},
-      );
+      await invokeClaudeStreaming({ prompt: "x", envScrubMap }, () => {});
     });
   } finally {
     delete process.env["CCQA_CLAUDE_MOCK_FILE"];
@@ -659,10 +656,6 @@ describe("invokeClaudeStreaming Bash logging", () => {
   test("masks a resolved env value the model inlined into the command", async () => {
     const out = await logOfOneBashCall([["https://app.example.com", "${APP_URL}"]]);
     expect(out).toContain("agent-browser --session s1 open ${APP_URL}/orders");
-  });
-
-  test("logs verbatim for a caller that passes no scrub map", async () => {
-    expect(await logOfOneBashCall()).toContain(LOGGED_COMMAND);
   });
 });
 

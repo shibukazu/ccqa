@@ -243,7 +243,8 @@ type SpecRunOutcome =
       specName: string;
       runDir: string;
       specYaml: string;
-      /** Carried from run start, where the values were resolved, to the analysis. */
+      /** Carried to the analysis rather than rebuilt there: rebuilding would
+       * re-read blocks from disk, which a mid-run edit could have changed. */
       envScrubMap: Array<[string, string]>;
       result: LiveRunResult;
     }
@@ -395,9 +396,9 @@ async function runOneSpec(args: {
   const blocks = await loadAllBlocks(cwd);
   const expanded = expandSpec(spec, { blocks });
 
-  // Built now, from the same process.env the browser will resolve `${VAR}`
-  // against: reading it back at report time would miss a value that changed
-  // after the prose quoting it was written.
+  // Built at run start because the executor needs it while the run produces
+  // step prose, not just at report time. (The environment itself is stable: a
+  // profile is applied once per invocation, before any spec runs.)
   const envScrubMap = buildProseEnvScrubMap(spec, expanded);
 
   log.meta("spec", spec.title);

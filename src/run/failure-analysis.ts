@@ -7,8 +7,8 @@ import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prom
 import { buildProseEnvScrubMap } from "../runtime/env-scrub.ts";
 import { expandSpec } from "../spec/expand.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
-import { AGENT_BROWSER_TARGET, type BlockSpec } from "../spec/yaml-schema.ts";
-import { loadAllBlocks, type AvailableBlock, type SpecRef } from "../store/index.ts";
+import { AGENT_BROWSER_TARGET, type BlockSpec, type TestSpec } from "../spec/yaml-schema.ts";
+import type { AvailableBlock, SpecRef } from "../store/index.ts";
 import { specArtifactsDir } from "../targets/run-artifacts.ts";
 import { loadGeneratedManifest } from "../targets/llm-engine.ts";
 import { C } from "../cli/colors.ts";
@@ -54,6 +54,11 @@ export interface FailureAnalysisDeps {
   reportDir: string;
   /** Blocks under `.ccqa/blocks/`, so the prompt can check an `include:` step's target still exists. */
   blocks: AvailableBlock[];
+  /**
+   * The same blocks fully parsed — the scrub map needs step bodies, which
+   * the `blocks` projection drops.
+   */
+  parsedBlocks: Map<string, BlockSpec>;
   model?: string;
   language?: string;
   /**
@@ -77,6 +82,9 @@ export interface SpecFailureInput {
   failureLog: string;
   /** Null when the spec file is gone; the classification is then withheld. */
   specYaml: string | null;
+  /** Parsed form of `specYaml` (null when missing or malformed), so the pass
+   * does not re-parse what its caller already parsed. */
+  parsedSpec: TestSpec | null;
   /** This spec's generation target — selects the custom-prompt overlay to apply. */
   target: string;
   /**
@@ -110,10 +118,6 @@ export interface FailureAnalysisPass {
 export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAnalysisPass {
   let printedHeader = false;
   let warnedDiffUnavailable = false;
-  // Parsed blocks for the scrub map below, read at most once per pass.
-  // `deps.blocks` won't do — it is the prompt's projection, with no step
-  // bodies, and that is where a block's own `${VAR}` refs live.
-  let parsedBlocks: Promise<Map<string, BlockSpec>> | null = null;
 
   return {
     async analyze(input) {
@@ -156,9 +160,7 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
       log.info(
         `failure analysis: ${featureName}/${specName}${baselineMissing ? " (no baseline — classifying from current source)" : ""}`,
       );
-      // A block that no longer parses costs the scrub map, not the classification.
-      parsedBlocks ??= loadAllBlocks(deps.cwd).catch(() => new Map<string, BlockSpec>());
-      const envScrubMap = specEnvScrubMap(input.specYaml, await parsedBlocks);
+      const envScrubMap = specEnvScrubMap(input.parsedSpec, deps.parsedBlocks);
       const outcome = await analyzeFailure(
         {
           script: await input.readScript(),
@@ -209,10 +211,9 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
  * invocation, so this is still what the spec ran against.
  */
 function specEnvScrubMap(
-  specYaml: string,
+  spec: TestSpec | null,
   blocks: Map<string, BlockSpec>,
 ): Array<[string, string]> {
-  const spec = tryParseTestSpec(specYaml);
   if (spec === null) return [];
   try {
     return buildProseEnvScrubMap(spec, expandSpec(spec, { blocks }));
@@ -294,6 +295,7 @@ export async function analyzeExternalRows(
       readScript: () => readGeneratedTestSources(ref, deps.cwd),
       failureLog: row.failureLogExcerpt ?? "",
       specYaml: row.specYaml,
+      parsedSpec: tryParseTestSpec(row.specYaml),
       target: row.target ?? AGENT_BROWSER_TARGET,
       artifactsDir: readableArtifactsDir(ref, deps),
     });

@@ -96,6 +96,7 @@ function deps(overrides: Partial<FailureAnalysisDeps> = {}): FailureAnalysisDeps
     cwd,
     reportDir: join(cwd, "report"),
     blocks: [],
+    parsedBlocks: new Map(),
     customPrompt: null,
     triageUserPrompt: null,
     ...overrides,

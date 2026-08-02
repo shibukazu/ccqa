@@ -80,7 +80,7 @@ export interface ClaudeInvokeOptions {
   /**
    * `[resolvedValue, "${VAR}"]` pairs applied to a Bash command before it is
    * logged: the model may inline a profile value where the spec wrote
-   * `${VAR}`, and that log line is what CI keeps. Omitted → logged verbatim.
+   * `${VAR}`, and that log line is what CI keeps.
    */
   envScrubMap?: Array<[string, string]>;
   /**

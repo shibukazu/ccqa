@@ -20,7 +20,7 @@ import {
   type PredictedLabel,
 } from "./schema.ts";
 
-export interface FailureAnalysisOptions {
+interface FailureAnalysisOptions {
   model?: string;
   cwd?: string;
   getFileDiff: (path: string) => string | null;
@@ -96,7 +96,9 @@ export async function analyzeFailure(
  * Mask the profile values the classifier may have quoted: its Read/Grep reach
  * the repository, so a local `.env` is in reach of its prose even when the
  * evidence it was handed is clean. A literal match — a value the model
- * paraphrases still gets through.
+ * paraphrases still gets through. Only what the classifier authored is
+ * covered: the row's other evidence (`failureLogExcerpt`, `diffExcerpt`)
+ * passes to the report and the hub as its producer wrote it.
  */
 function scrubOutcome(
   outcome: FailureAnalysisOutcome,
@@ -113,9 +115,10 @@ function scrubOutcome(
       headline: scrub(analysis.headline),
       recommendation: scrub(analysis.recommendation),
       reasoning: scrub(analysis.reasoning),
+      // `file` stays as written: it is a coordinate into the repository, and
+      // masking a path segment would break the pointer it exists to be.
       evidence: analysis.evidence.map((item) => ({
         ...item,
-        ...(item.file !== undefined ? { file: scrub(item.file) } : {}),
         detail: scrub(item.detail),
       })),
     },

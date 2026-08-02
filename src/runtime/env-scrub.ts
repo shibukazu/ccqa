@@ -76,12 +76,13 @@ const MIN_PROSE_SCRUB_LENGTH = 4;
 const COMMON_PROSE_VALUES = new Set(["true", "false", "null", "none", "undefined"]);
 
 /**
- * Scrub map for model prose — a live step's verdict, a failure analysis —
- * built like {@link buildSpecEnvScrub} but without the values that read as
- * ordinary text (`"1"`, `"true"`). Prose runs to paragraphs, so replacing
- * every occurrence of such a value would cost more meaning than it protects;
- * record scrubs single command lines, where the same trade favours keeping
- * them.
+ * Scrub map for model output, built like {@link buildSpecEnvScrub} but
+ * without the values that read as ordinary text (`"1"`, `"true"`): prose
+ * runs to paragraphs, where replacing every occurrence of such a value
+ * costs more meaning than it protects. Record's own scrub keeps them for
+ * its single command lines; the live path reuses this one map for its Bash
+ * command log too, trading that short-value coverage for not building a
+ * second map.
  */
 export function buildProseEnvScrubMap(
   spec: TestSpec,
