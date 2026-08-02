@@ -30,6 +30,7 @@ const STATE_END = "// --- end pure: drift row/run state";
 function rowStates(): {
   driftRowState: (r: { status: string; analysis: { label: string } | null }) => string;
   driftRunState: (run: { status: string; drift: unknown }) => string;
+  answersDrift: (run: { kind: string; status: string }) => boolean;
 } {
   const src = clientScript();
   const start = src.indexOf(STATE_START);
@@ -37,7 +38,7 @@ function rowStates(): {
   expect(start, "the pure drift row/run state region is missing").toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return new Function(
-    `${src.slice(start, end)}\nreturn { driftRowState: driftRowState, driftRunState: driftRunState };`,
+    `${src.slice(start, end)}\nreturn { driftRowState: driftRowState, driftRunState: driftRunState, answersDrift: answersDrift };`,
   )();
 }
 
@@ -71,5 +72,15 @@ describe("hub UI: run detail drift badges", () => {
     expect(driftRunState(run({ specs: 3, testDrift: 0, specChange: 0, unknown: 0 }))).toBe("clean");
     // A run from a hub that predates the summary has only its status to go on.
     expect(driftRunState(run(null, "failed"))).toBe("found");
+  });
+
+  test("an audit still running is not asked what it found", () => {
+    // Its summary is absent because it has not finished, and `driftRunState`
+    // reads an absent summary as "clean" — so an audit mid-sweep would claim
+    // "no drift" while it was still looking.
+    const { answersDrift } = rowStates();
+    expect(answersDrift({ kind: "drift", status: "running" })).toBe(false);
+    expect(answersDrift({ kind: "drift", status: "passed" })).toBe(true);
+    expect(answersDrift({ kind: "run", status: "passed" })).toBe(false);
   });
 });

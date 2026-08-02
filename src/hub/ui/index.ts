@@ -1669,7 +1669,7 @@ const CLIENT_JS = `
   // Shared by the runs-list row and the run-detail header — the one place
   // both decide whether a run's own status badge speaks drift's vocabulary.
   function runStatusBadge(run) {
-    return run.kind === "drift" ? driftFoundBadge(driftRunState(run), "drift.run.") : statusBadge(run.status);
+    return answersDrift(run) ? driftFoundBadge(driftRunState(run), "drift.run.") : statusBadge(run.status);
   }
 
   // Which command left the run, and whether its spec counts are a tally of
@@ -1731,6 +1731,16 @@ const CLIENT_JS = `
     if (graded) return graded === "NO_DRIFT" ? "clean" : "found";
     if (r.analysis && r.analysis.label) return r.analysis.label === "UNKNOWN" ? "unknown" : "found";
     return r.status === "failed" ? "found" : "clean";
+  }
+
+  /**
+   * Whether a run's badge should say what the audit found, rather than how the
+   * run itself is going. Only once it is over: an audit still streaming its
+   * rows has no summary yet, and reading that absence as "no drift" claims the
+   * one answer nobody has earned.
+   */
+  function answersDrift(run) {
+    return run.kind === "drift" && run.status !== "running";
   }
 
   /** A whole drift run's state. Label counts beat status for the same reason. */
