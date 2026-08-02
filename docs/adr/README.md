@@ -39,6 +39,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0015](0015-serial-groups-in-one-place.md) | Serial groups live in one place: `.ccqa/config.yaml`, not each spec | accepted |
 | [0016](0016-one-vocabulary-two-answerable-subsets.md) | One vocabulary, two answerable subsets: the run answers all four causes, the audit only two | accepted |
 | [0017](0017-records-the-hub-does-not-judge.md) | Records the hub stores but does not judge: a run kind that advances no ledger, and an opaque key set | accepted |
+| [0018](0018-the-bump-answers-the-hub.md) | The bump answers the hub, and the diff checks the answer | accepted |
 
 ## Template
 
