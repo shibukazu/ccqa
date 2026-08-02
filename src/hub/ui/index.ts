@@ -162,7 +162,7 @@ const HTML_BODY = `
         <div class="card" id="runs-card">
           <div class="table-wrap">
             <table>
-              <thead><tr><th data-i18n="runs.col.run">Run</th><th data-i18n="runs.col.branch">Branch</th><th data-i18n="meta.profile">Profile</th><th data-i18n="runs.col.status">Status</th><th data-i18n="runs.col.specs">Specs</th><th data-i18n="runs.col.cost">Cost</th><th data-i18n="runs.col.created">Created</th></tr></thead>
+              <thead><tr><th data-i18n="runs.col.run">Run</th><th data-i18n="runs.col.status">Status</th><th data-i18n="runs.col.cost">Cost</th><th data-i18n="runs.col.created">Created</th></tr></thead>
               <tbody id="runs-tbody"></tbody>
             </table>
           </div>
@@ -622,13 +622,6 @@ const CSS = `
      indents the first one away from the label and the ratio line below it. */
   .drift-meta-chips { display: flex; gap: 6px; }
   .drift-meta-chips .chip { margin-left: 0; }
-  .specs { display: inline-flex; align-items: center; gap: 9px; }
-  .meter { width: 54px; height: 6px; border-radius: 3px; background: var(--fail-bg); overflow: hidden; }
-  .meter i { display: block; height: 100%; background: var(--pass); }
-  /* A drift row's bar fills with what the audit FOUND, so a full bar is the bad
-     end — the opposite of a test run's. It must not be painted pass-green. */
-  .meter.drift { background: var(--surface-3); }
-  .meter.drift i { background: var(--amber-fill); }
 
   /* run detail */
   .rd-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
@@ -1104,8 +1097,8 @@ const CLIENT_JS = `
       "runs.title": "Runs", "runs.empty": "Select a project to see its runs.",
       "runs.none": "No runs yet for this project.", "projects.none": "No projects yet. Create one to get started.", "projects.noneShort": "No projects yet",
       "runs.noMatch": "No runs match this filter.",
-      "runs.col.run": "Run", "runs.col.branch": "Branch", "runs.col.status": "Status",
-      "runs.col.specs": "Specs", "runs.col.cost": "Cost", "runs.col.created": "Created",
+      "runs.col.run": "Run", "runs.col.status": "Status",
+      "runs.col.cost": "Cost", "runs.col.created": "Created",
       "runs.totalCost": "Cost of these {n}:", "runs.capped": "showing the first {n}",
       "runs.spend24h": "All spend, last 24h:",
       "runs.filter.date": "Date", "runs.filter.kind": "Kind", "runs.filter.status": "Status",
@@ -1267,8 +1260,8 @@ const CLIENT_JS = `
       "runs.title": "実行", "runs.empty": "プロジェクトを選択すると実行一覧が表示されます。",
       "runs.none": "このプロジェクトにはまだ実行がありません。", "projects.none": "まだプロジェクトがありません。作成して始めましょう。", "projects.noneShort": "プロジェクトなし",
       "runs.noMatch": "条件に一致する実行はありません。",
-      "runs.col.run": "実行", "runs.col.branch": "ブランチ", "runs.col.status": "ステータス",
-      "runs.col.specs": "スペック", "runs.col.cost": "コスト", "runs.col.created": "作成",
+      "runs.col.run": "実行", "runs.col.status": "ステータス",
+      "runs.col.cost": "コスト", "runs.col.created": "作成",
       "runs.totalCost": "この {n} 件のコスト:", "runs.capped": "先頭 {n} 件のみ表示",
       "runs.spend24h": "直近 24 時間の全支出:",
       "runs.filter.date": "日付", "runs.filter.kind": "種類", "runs.filter.status": "結果",
@@ -1674,9 +1667,9 @@ const CLIENT_JS = `
 
   // Which command left the run, and whether its spec counts are a tally of
   // what was verified. A recording's rows are the specs it wrote, not specs it
-  // checked, so "1 / 1 passed" and a full meter would claim a test result.
-  // A kind from a newer hub keeps the generic label but is read the same
-  // cautious way, since nothing here knows what its counts mean.
+  // checked, so "1 / 1 passed" would claim a test result. A kind from a newer
+  // hub keeps the generic label but is read the same cautious way, since
+  // nothing here knows what its counts mean.
   var KINDS = {
     run: { label: "kind.run", verifies: true },
     drift: { label: "kind.drift", verifies: true },
@@ -2032,11 +2025,17 @@ const CLIENT_JS = `
       var tr = el("tr", "row");
       tr.addEventListener("click", function () { location.hash = "#/runs/" + encodeURIComponent(r.id); });
 
+      // Four columns: which run, how it went, what it cost, when. Everything
+      // else is one click away, and a column that has to mean something
+      // different per kind (a spec tally that counts passes for a run and
+      // findings for an audit) reads wrong before it reads useful.
       var runCell = document.createElement("td");
       runCell.appendChild(el("div", "runid", r.id.slice(0, 8)));
       var sub = el("div", "subline");
       sub.appendChild(ciBadge(r));
       sub.appendChild(kindChip(r.kind));
+      sub.appendChild(el("span", "chip", r.branch || "—"));
+      if (r.profile) sub.appendChild(el("span", "chip", r.profile));
       if (r.kind === "drift") {
         var rowDrift = driftSummary(r);
         if (rowDrift) driftChips(rowDrift).forEach(function (chip) { sub.appendChild(chip); });
@@ -2044,46 +2043,9 @@ const CLIENT_JS = `
       runCell.appendChild(sub);
       tr.appendChild(runCell);
 
-      var branchCell = document.createElement("td");
-      branchCell.appendChild(el("span", "chip", r.branch || "—"));
-      tr.appendChild(branchCell);
-
-      var profileCell = document.createElement("td");
-      profileCell.appendChild(r.profile ? el("span", "chip", r.profile) : el("span", "muted", "—"));
-      tr.appendChild(profileCell);
-
       var statusCell = document.createElement("td");
       statusCell.appendChild(runStatusBadge(r));
       tr.appendChild(statusCell);
-
-      var specsCell = document.createElement("td");
-      if (!kindOf(r.kind).verifies) {
-        specsCell.appendChild(el("span", "muted", "—"));
-      } else {
-        // A drift row counts what the audit found, not what "passed" — the same
-        // ratio its detail page shows. Reading passed/total here printed a
-        // different number for the same run in the two places you would compare.
-        var rowDriftSummary = r.kind === "drift" ? driftSummary(r) : null;
-        var found = rowDriftSummary
-          ? rowDriftSummary.testDrift + rowDriftSummary.specChange + rowDriftSummary.unknown
-          : null;
-        var num = rowDriftSummary
-          ? found + " / " + rowDriftSummary.specs
-          : r.specs.passed + " / " + r.specs.total;
-        var fillTotal = rowDriftSummary ? rowDriftSummary.specs : r.specs.total;
-        var fillPart = rowDriftSummary ? found : r.specs.passed;
-
-        var specsWrap = el("div", "specs");
-        var meter = el("span", "meter" + (rowDriftSummary ? " drift" : ""));
-        var pct = fillTotal > 0 ? Math.round((fillPart / fillTotal) * 100) : 0;
-        var bar = el("i");
-        bar.style.width = pct + "%";
-        meter.appendChild(bar);
-        specsWrap.appendChild(meter);
-        specsWrap.appendChild(el("span", "num muted", num));
-        specsCell.appendChild(specsWrap);
-      }
-      tr.appendChild(specsCell);
 
       tr.appendChild(el("td", "muted num", costText(r.costUsd)));
       tr.appendChild(el("td", "muted num", relTime(r.createdAt)));
