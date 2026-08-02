@@ -4712,8 +4712,8 @@ const CLIENT_JS = `
   }
 
   // ── profile switching (per-tab dropdowns) ──────────────────────────────
-  // Profiles scope variables + sessions (a profile is a set of env vars, like
-  // .ccqa/profiles/<name>.env) and, since ADR-0010, the needs-re-run verdict:
+  // Profiles scope variables + sessions (a profile is a set of env vars) and,
+  // since ADR-0010, the needs-re-run verdict:
   // two environments sit at different commits, so that question has no
   // profile-free answer. Prompts are project-wide and runs are cross-profile,
   // so there is still no header-level selector — Secrets and Perspectives each

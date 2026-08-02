@@ -122,6 +122,19 @@ ccqa run auth/login --hub-profile admin     # same spec, the admin account's val
 `--hub-profile` also selects the sessions bucket for `session:` restores —
 one flag picks both. `ccqa record` accepts `--hub-profile` the same way.
 
+### Leftover repo-local profile files
+
+Earlier versions read a profile's variables from `.ccqa/profiles/<name>.env`
+in the repository. **ccqa no longer reads those files.** If one is still
+there, its values are not in effect — the run uses the hub's values, or
+`<cwd>/.env`. `ccqa run`, `ccqa record` and `ccqa generate` warn once when
+they find one; the run itself is not affected, so it continues.
+
+Move the values to the hub with `ccqa hub var set --profile <name>`, then
+delete the file. If the file is tracked by git, the credentials in it are
+committed: rotate them, because deleting the file now does not un-commit
+what was in it.
+
 ## The run report
 
 `ccqa run` always writes `report.json` (plus evidence PNGs) to the report

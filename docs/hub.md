@@ -221,7 +221,10 @@ requests made during the run:
 - A spec's `session:` restores fetch the named session(s) for the resolved
   project/profile straight from the hub.
 - `--hub-profile <name>` fetches every variable for that project/profile and
-  applies them to the process environment before the run starts.
+  applies them to the process environment before the run starts. A
+  `.ccqa/profiles/<name>.env` left over from an earlier version is not
+  read — see
+  [leftover repo-local profile files](./running.md#leftover-repo-local-profile-files).
 - `--learn-hub-trace-prompt` / `--learn-hub-live-prompt` read and write the
   `record.agent` / `live.agent` prompt on the hub. `ccqa run` also fetches
   the human-maintained `triage.user` guidance and the learned `triage.agent`
