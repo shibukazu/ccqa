@@ -72,7 +72,10 @@ describe("ccqa run --on-fail-explain-rerun", () => {
           CCQA_CLAUDE_MOCK_FILE: mockPath,
           CCQA_FLAKE_MARKER: join(cwd, "flake-marker"),
         },
-        timeoutMs: 120_000,
+        // Under the test's own budget, so a child that overruns says so
+        // instead of being killed by the framework with nothing to show. This
+        // one runs the spec twice, so it needs the longer of the two.
+        timeoutMs: 90_000,
       },
     );
     const combined = stripAnsi(result.stdout + result.stderr);
@@ -85,5 +88,5 @@ describe("ccqa run --on-fail-explain-rerun", () => {
     expect(row.status).toBe("failed");
     expect(row.rerun).toEqual({ outcome: "passed" });
     expect(row.analysis.label).toBe("ENVIRONMENT");
-  });
+  }, 120_000);
 });
