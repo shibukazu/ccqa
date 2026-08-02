@@ -1,9 +1,12 @@
+import { execFile } from "node:child_process";
 import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { execFileP } from "../../src/drift/affected.ts";
+import { promisify } from "node:util";
 import type { Mutation } from "./cases.ts";
 import { applyMutations } from "./mutate.ts";
+
+const execFileP = promisify(execFile);
 
 export interface CaseRepo {
   /** Root of the throwaway checkout; also the cwd the ccqa commands run in. */
@@ -33,9 +36,11 @@ export async function buildCaseRepo(appDir: string, mutations: readonly Mutation
     const baseSha = await head(dir);
     await applyMutations(dir, mutations);
     await git(dir, "add", "-A");
-    // --allow-empty carries the no-mutation baseline case: two commits always
-    // exist, so callers never special-case "base equals head".
-    await git(dir, "commit", "-m", "mutation", "--no-gpg-sign", "--allow-empty");
+    // The empty commit carries the zero-mutation baseline case: two commits
+    // always exist, so callers never special-case "base equals head". With
+    // mutations declared it stays off — an empty diff then means the writes
+    // never reached this checkout, which must fail, not score.
+    await git(dir, "commit", "-m", "mutation", "--no-gpg-sign", ...(mutations.length === 0 ? ["--allow-empty"] : []));
     const headSha = await head(dir);
     return { dir, baseSha, headSha, cleanup: () => rm(dir, { recursive: true, force: true }) };
   } catch (err) {

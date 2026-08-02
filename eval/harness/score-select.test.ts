@@ -35,9 +35,14 @@ describe("scoreSelectCase + computeSelectMetrics", () => {
       trueNegatives: 1,
       precision: 0.5,
       recall: 1,
+      unknowns: 1,
     });
     // `unknown` is a safe answer but never the exactly-right one.
     expect(metrics.verdictAccuracy).toBeCloseTo(2 / 3);
+  });
+
+  it("throws when an expected spec never appears in the report", () => {
+    expect(() => scoreSelectCase({ "a/gone": "needed" }, report([["a/other", "notNeeded"]]))).toThrow(/a\/gone/);
   });
 
   it("catches the miss that matters: a needed spec cleared", () => {

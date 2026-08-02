@@ -41,5 +41,4 @@ expect:
   audit:
     tasks/filter-tasks:
       label: SPEC_CHANGE
-      surface: spec
       specChangeKind: FEATURE_REMOVED

@@ -9,5 +9,4 @@ expect:
   audit:
     tasks/add-task:
       label: SPEC_CHANGE
-      surface: spec
       specChangeKind: BEHAVIOUR_CHANGED

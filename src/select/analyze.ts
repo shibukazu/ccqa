@@ -267,6 +267,14 @@ function readSpecArray(parsed: unknown): SelectRawAnswer[] {
 }
 
 /**
+ * The one stable phrase in the abandon warning below. Exported for callers
+ * that watch stderr — the eval harness must not score an abandoned selection
+ * as an answer — since the exit code stays 0 (running everything is the
+ * intended degraded behaviour, not a command failure).
+ */
+export const SELECTION_ABANDONED_MARKER = "every spec is left undecided and will run";
+
+/**
  * The selection call failed as a whole: every spec becomes `unknown`, and the
  * reason is warned about rather than only recorded per spec.
  *
@@ -276,7 +284,7 @@ function readSpecArray(parsed: unknown): SelectRawAnswer[] {
  * quietly cost a full suite run every time.
  */
 function abandonSelection(specs: readonly SpecDescription[], reason: string): SpecSelection[] {
-  log.warn(`select-specs: ${reason} — every spec is left undecided and will run`);
+  log.warn(`select-specs: ${reason} — ${SELECTION_ABANDONED_MARKER}`);
   return allUnknown(specs, reason);
 }
 

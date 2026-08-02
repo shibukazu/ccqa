@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -33,8 +33,36 @@ describe("applyMutations", () => {
     await expect(readFile(join(dir, "gone.txt"), "utf8")).rejects.toThrow();
   });
 
-  // The rule the whole harness leans on: a mutation that stopped applying
-  // must never score as "the app was clean and the audit agreed".
+  it("applies several mutations to the same file in order", async () => {
+    await writeFile(join(dir, "a.txt"), "one two three", "utf8");
+    await applyMutations(dir, [
+      { file: "a.txt", search: "one", replace: "1" },
+      { file: "a.txt", search: "three", replace: "3" },
+    ]);
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("1 two 3");
+  });
+
+  // An earlier mutation's `replace` must not manufacture a later mutation's
+  // match: every search is counted against the untouched baseline first.
+  it("rejects a search that only exists after an earlier mutation ran", async () => {
+    await writeFile(join(dir, "a.txt"), "alpha", "utf8");
+    await expect(
+      applyMutations(dir, [
+        { file: "a.txt", search: "alpha", replace: "beta" },
+        { file: "a.txt", search: "beta", replace: "gamma" },
+      ]),
+    ).rejects.toThrow(MutationError);
+    // Pass one failed before pass two wrote anything.
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("alpha");
+  });
+
+  it("rejects a path that escapes the checkout", async () => {
+    await expect(
+      applyMutations(dir, [{ file: "../escape.txt", search: "x", replace: "y" }]),
+    ).rejects.toThrow(/escapes the checkout/);
+  });
+
+  // The rule the whole harness leans on — see `applyMutations`' doc.
   it("fails loudly when the search string is gone", async () => {
     await writeFile(join(dir, "a.txt"), "one two three", "utf8");
     await expect(
@@ -56,5 +84,14 @@ describe("applyMutations", () => {
     await expect(applyMutations(dir, [{ file: "missing.txt", delete: true }])).rejects.toThrow(
       MutationError,
     );
+  });
+
+  // Only ENOENT means "the case names a file the baseline lacks"; any other
+  // I/O failure must surface as itself, not as the not-found message.
+  it("rethrows a non-ENOENT read failure untranslated", async () => {
+    await mkdir(join(dir, "a-dir"));
+    await expect(
+      applyMutations(dir, [{ file: "a-dir", search: "x", replace: "y" }]),
+    ).rejects.toThrow(/EISDIR/);
   });
 });

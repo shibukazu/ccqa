@@ -23,7 +23,7 @@ export function scoreSelectCase(
   expectations: Readonly<Record<string, SelectExpectation>>,
   report: SelectReport,
 ): SelectSpecOutcome[] {
-  return report.specs.map((row) => {
+  const outcomes = report.specs.map((row) => {
     const key = `${row.featureName}/${row.specName}`;
     return {
       spec: key,
@@ -32,6 +32,15 @@ export function scoreSelectCase(
       selected: row.verdict !== "notNeeded",
     };
   });
+  // An expectation the report never answered must count as a miss, not vanish
+  // from the metrics.
+  const answered = new Set(outcomes.map((o) => o.spec));
+  for (const key of Object.keys(expectations)) {
+    if (!answered.has(key)) {
+      throw new Error(`select-specs returned no verdict for expected spec "${key}"`);
+    }
+  }
+  return outcomes;
 }
 
 export interface SelectMetrics {
@@ -45,6 +54,11 @@ export interface SelectMetrics {
   recall: number | null;
   /** Exact verdict matches; `unknown` never matches exactly. */
   verdictAccuracy: number;
+  /**
+   * `unknown` verdicts — the model declining a spec, not clearing it. Kept
+   * visible in the summary so a partially-degraded run reads as one.
+   */
+  unknowns: number;
 }
 
 export function computeSelectMetrics(outcomes: readonly SelectSpecOutcome[]): SelectMetrics {
@@ -53,12 +67,14 @@ export function computeSelectMetrics(outcomes: readonly SelectSpecOutcome[]): Se
   let fn = 0;
   let tn = 0;
   let exact = 0;
+  let unknowns = 0;
   for (const o of outcomes) {
     if (o.selected && o.expected === "needed") tp++;
     else if (o.selected && o.expected === "notNeeded") fp++;
     else if (!o.selected && o.expected === "needed") fn++;
     else tn++;
     if (o.verdict === o.expected) exact++;
+    if (o.verdict === "unknown") unknowns++;
   }
   return {
     truePositives: tp,
@@ -68,5 +84,6 @@ export function computeSelectMetrics(outcomes: readonly SelectSpecOutcome[]): Se
     precision: tp + fp === 0 ? null : tp / (tp + fp),
     recall: tp + fn === 0 ? null : tp / (tp + fn),
     verdictAccuracy: outcomes.length === 0 ? 0 : exact / outcomes.length,
+    unknowns,
   };
 }

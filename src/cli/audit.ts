@@ -8,7 +8,7 @@ import {
 } from "../store/index.ts";
 import { errMessage, RunUsageError } from "../run/errors.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
-import { renderDrift } from "../drift/format.ts";
+import { renderDrift, type AuditJsonPayload } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
 import { driftResultsToReport, driftResultToRow } from "../drift/to-report.ts";
 import { currentReportCost } from "../report/run-cost.ts";
@@ -471,7 +471,8 @@ type NoSpecsReason = "noSpecsFound" | "allCurrent" | "allHeld" | "noDiffIntersec
 
 function exitWithNoSpecs(format: Format, reason: NoSpecsReason, message: string): never {
   if (format === "json") {
-    process.stdout.write(`${JSON.stringify({ specs: [], skipped: reason }, null, 2)}\n`);
+    const payload: AuditJsonPayload = { specs: [], skipped: reason };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (format === "text") {
     log.info(message);
   } else if (format === "github" && reason === "noSpecsFound") {

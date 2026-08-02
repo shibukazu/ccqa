@@ -8,10 +8,6 @@ export async function apiLogin(email, password) {
   token = res.token;
 }
 
-export function apiSignedIn() {
-  return token !== null;
-}
-
 export async function apiListTasks() {
   const res = await request("GET", "/api/tasks");
   return res.tasks;

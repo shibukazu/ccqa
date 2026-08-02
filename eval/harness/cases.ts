@@ -2,6 +2,13 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
+import {
+  DriftLabelSchema,
+  DriftSubDiagnosisSchema,
+  DriftSurfaceSchema,
+  SpecChangeKindSchema,
+} from "../../src/report/schema.ts";
+import { SelectVerdictSchema } from "../../src/select/types.ts";
 import { listAllSpecsWithSpecFile, specKey } from "../../src/store/index.ts";
 
 /**
@@ -33,18 +40,26 @@ export type Mutation = z.infer<typeof MutationSchema>;
  * `subDiagnosis` / `specChangeKind` are scored as sub-answers when declared,
  * and only among label-correct predictions — a wrong label already counts
  * against the case, and its sub-fields answer a question that was not asked.
+ *
+ * The vocabulary is the audit's own (`src/report/schema.ts`), narrowed:
+ * `UNKNOWN` is not a ground truth a case may declare, and the sub-answer
+ * values that are also `DriftDiagnosisSchema` defaults (`surface: spec`,
+ * `subDiagnosis: NONE`) are rejected — the CLI's JSON is post-parse, so a
+ * defaulted field cannot be told apart from a model that answered, and an
+ * expectation that cannot lose must not be scored.
  */
 export const AuditExpectationSchema = z
   .object({
-    label: z.enum(["TEST_DRIFT", "SPEC_CHANGE"]),
-    surface: z.enum(["spec", "generated"]).optional(),
-    subDiagnosis: z.enum(["SELECTOR_DRIFT", "OVER_ASSERTION", "NONE"]).optional(),
-    specChangeKind: z.enum(["FEATURE_REMOVED", "BEHAVIOUR_CHANGED"]).optional(),
+    label: DriftLabelSchema.exclude(["UNKNOWN"]),
+    surface: DriftSurfaceSchema.exclude(["spec"]).optional(),
+    subDiagnosis: DriftSubDiagnosisSchema.exclude(["NONE"]).optional(),
+    specChangeKind: SpecChangeKindSchema.optional(),
   })
   .strict();
 export type AuditExpectation = z.infer<typeof AuditExpectationSchema>;
 
-export const SelectExpectationSchema = z.enum(["needed", "notNeeded"]);
+/** `unknown` is the model's fallback, never a ground truth a case may declare. */
+export const SelectExpectationSchema = SelectVerdictSchema.exclude(["unknown"]);
 export type SelectExpectation = z.infer<typeof SelectExpectationSchema>;
 
 export const EvalCaseSchema = z
@@ -97,4 +112,13 @@ export async function loadCases(casesDir: string, specKeys: readonly string[]): 
       return { name, ...parsed.data };
     }),
   );
+}
+
+export function filterCases(cases: EvalCase[], kind: "audit" | "select", filter?: string): EvalCase[] {
+  const withKind = cases.filter((c) => c.expect[kind] !== undefined);
+  const filtered = filter ? withKind.filter((c) => c.name.includes(filter)) : withKind;
+  if (filtered.length === 0) {
+    throw new Error(filter ? `no ${kind} case matches "${filter}"` : `no ${kind} cases found`);
+  }
+  return filtered;
 }

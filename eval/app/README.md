@@ -1,13 +1,12 @@
-# Task app (eval target)
+# Task app
 
-A deliberately small task-list app the ccqa evaluation harness audits. Sign
-in, list tasks, add a task, complete a task, filter the list. No build step:
+A small task-list app: sign in, see your tasks, add one, mark one done,
+filter the list. No build step:
 
 ```sh
 node server.mjs
 ```
 
-The `.ccqa/` tree next to this file holds the specs the harness evaluates
-against. Mutations in `eval/cases/` edit this app to seed known drift, so any
-change here must keep the baseline consistent with those specs and with the
-`search` strings the cases rely on.
+`server.mjs` serves the static UI from `public/` and a JSON API. State lives
+in memory and resets on restart. Browser test cases for the main flows live
+under `.ccqa/`.

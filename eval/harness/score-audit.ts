@@ -1,42 +1,16 @@
-import { z } from "zod";
+import { AuditJsonPayloadSchema, type AuditJsonPayload } from "../../src/drift/format.ts";
+import { DriftLabelSchema } from "../../src/report/schema.ts";
 import type { AuditExpectation } from "./cases.ts";
 
-/**
- * What one `ccqa audit --report-format json` sweep printed. Parsed leniently
- * (unknown keys stripped, drift fields optional) so a report-shape addition
- * upstream does not break the harness; the fields scored here are the ones
- * the contract already guarantees.
- */
-export const AuditOutputSchema = z.object({
-  specs: z.array(
-    z.object({
-      feature: z.string(),
-      spec: z.string(),
-      ok: z.boolean(),
-      error: z.string().optional(),
-      drift: z
-        .object({
-          label: z.string(),
-          surface: z.string().optional(),
-          subDiagnosis: z.string().optional(),
-          specChangeKind: z.string().optional(),
-          headline: z.string().optional(),
-          confidence: z.number().optional(),
-        })
-        .nullable(),
-    }),
-  ),
-  skipped: z.string().optional(),
-});
-export type AuditOutput = z.infer<typeof AuditOutputSchema>;
+export type AuditOutput = AuditJsonPayload;
 
 export function parseAuditOutput(stdout: string): AuditOutput {
-  return AuditOutputSchema.parse(JSON.parse(stdout));
+  return AuditJsonPayloadSchema.parse(JSON.parse(stdout));
 }
 
 /** Expected side adds CLEAN (no entry in the case's map); predicted side adds what a sweep can also produce. */
-export const EXPECTED_LABELS = ["CLEAN", "TEST_DRIFT", "SPEC_CHANGE"] as const;
-export const PREDICTED_LABELS = ["CLEAN", "TEST_DRIFT", "SPEC_CHANGE", "UNKNOWN", "ERROR"] as const;
+export const EXPECTED_LABELS = ["CLEAN", ...DriftLabelSchema.exclude(["UNKNOWN"]).options] as const;
+export const PREDICTED_LABELS = ["CLEAN", ...DriftLabelSchema.options, "ERROR"] as const;
 export type ExpectedLabel = (typeof EXPECTED_LABELS)[number];
 export type PredictedLabel = (typeof PREDICTED_LABELS)[number];
 
@@ -70,7 +44,7 @@ export function scoreAuditCase(
   expectations: Readonly<Record<string, AuditExpectation>>,
   output: AuditOutput,
 ): AuditSpecOutcome[] {
-  return output.specs.map((row) => {
+  const outcomes = output.specs.map((row) => {
     const key = `${row.feature}/${row.spec}`;
     const expectation = expectations[key];
     const expected: ExpectedLabel = expectation?.label ?? "CLEAN";
@@ -85,13 +59,22 @@ export function scoreAuditCase(
       subAnswers: labelMatch && expectation ? scoreSubAnswers(expectation, row) : [],
     };
   });
+  // An expectation the sweep never answered must count as a miss, not vanish
+  // from the matrix.
+  const answered = new Set(outcomes.map((o) => o.spec));
+  for (const key of Object.keys(expectations)) {
+    if (!answered.has(key)) {
+      throw new Error(`the audit returned no verdict for expected spec "${key}"`);
+    }
+  }
+  return outcomes;
 }
 
 function predictedLabel(row: AuditOutput["specs"][number]): PredictedLabel {
   if (!row.ok) return "ERROR";
   if (row.drift === null) return "CLEAN";
-  const label = row.drift.label;
-  return label === "TEST_DRIFT" || label === "SPEC_CHANGE" || label === "UNKNOWN" ? label : "ERROR";
+  const label = DriftLabelSchema.safeParse(row.drift.label);
+  return label.success ? label.data : "ERROR";
 }
 
 function scoreSubAnswers(
@@ -109,12 +92,24 @@ function scoreSubAnswers(
   return out;
 }
 
+export interface ClassRecall {
+  correct: number;
+  total: number;
+}
+
 export interface ConfusionMatrix {
   /** rows: expected label; columns: predicted label; cells: spec-verdict counts. */
   matrix: Record<ExpectedLabel, Record<PredictedLabel, number>>;
   total: number;
   correct: number;
   accuracy: number;
+  /**
+   * Per-class recall beside the total, because the total is dominated by the
+   * CLEAN class: most specs in most cases are untouched, so answering clean
+   * to everything already scores high on `accuracy` alone.
+   */
+  cleanRecall: ClassRecall;
+  driftRecall: ClassRecall;
   subAnswers: { total: number; correct: number };
 }
 
@@ -123,11 +118,16 @@ export function buildConfusionMatrix(outcomes: readonly AuditSpecOutcome[]): Con
     EXPECTED_LABELS.map((e) => [e, Object.fromEntries(PREDICTED_LABELS.map((p) => [p, 0]))]),
   ) as ConfusionMatrix["matrix"];
   let correct = 0;
+  const cleanRecall: ClassRecall = { correct: 0, total: 0 };
+  const driftRecall: ClassRecall = { correct: 0, total: 0 };
   let subTotal = 0;
   let subCorrect = 0;
   for (const outcome of outcomes) {
     matrix[outcome.expected][outcome.predicted]++;
     if (outcome.labelMatch) correct++;
+    const recall = outcome.expected === "CLEAN" ? cleanRecall : driftRecall;
+    recall.total++;
+    if (outcome.labelMatch) recall.correct++;
     for (const sub of outcome.subAnswers) {
       subTotal++;
       if (sub.match) subCorrect++;
@@ -138,6 +138,8 @@ export function buildConfusionMatrix(outcomes: readonly AuditSpecOutcome[]): Con
     total: outcomes.length,
     correct,
     accuracy: outcomes.length === 0 ? 0 : correct / outcomes.length,
+    cleanRecall,
+    driftRecall,
     subAnswers: { total: subTotal, correct: subCorrect },
   };
 }

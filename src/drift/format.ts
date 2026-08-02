@@ -1,5 +1,37 @@
 import { relative, resolve } from "node:path";
+import { z } from "zod";
 import { driftSeverity, type Format, type SpecResult } from "./types.ts";
+
+/**
+ * What `--report-format json` prints: one row per audited spec, plus
+ * `skipped` on the nothing-to-audit path (`exitWithNoSpecs` in
+ * `src/cli/audit.ts`). Declared beside `renderJson` so the emitter and any
+ * reader share one shape. Deliberately lenient — drift fields as plain
+ * strings, extra keys stripped — so a reader parsing with it survives a
+ * vocabulary or shape addition upstream.
+ */
+export const AuditJsonPayloadSchema = z.object({
+  specs: z.array(
+    z.object({
+      feature: z.string(),
+      spec: z.string(),
+      ok: z.boolean(),
+      error: z.string().optional(),
+      drift: z
+        .object({
+          label: z.string(),
+          surface: z.string().optional(),
+          subDiagnosis: z.string().optional(),
+          specChangeKind: z.string().optional(),
+          headline: z.string().optional(),
+          confidence: z.number().optional(),
+        })
+        .nullable(),
+    }),
+  ),
+  skipped: z.string().optional(),
+});
+export type AuditJsonPayload = z.infer<typeof AuditJsonPayloadSchema>;
 
 /**
  * Render drift results as a string. The CLI commands and the `run` failure
@@ -52,7 +84,7 @@ function renderText(results: SpecResult[]): string {
 }
 
 function renderJson(results: SpecResult[]): string {
-  const payload = {
+  const payload: AuditJsonPayload = {
     specs: results.map((r) => ({
       feature: r.target.featureName,
       spec: r.target.specName,
