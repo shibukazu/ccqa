@@ -87,6 +87,21 @@ steps:
     ).toThrow(/Nested blocks/);
   });
 
+  it("tells a param carrying `dummy` or `description` that nothing ever read it", () => {
+    for (const field of ["dummy", "description"]) {
+      expect(() =>
+        parseBlockSpec(`title: Login
+params:
+  - name: email
+    ${field}: something
+steps:
+  - instruction: i
+    expected: e
+`),
+      ).toThrow(new RegExp(`${field}.*no longer part of the spec schema.*Delete the line`, "s"));
+    }
+  });
+
   it("points a block with `relatedPaths` at the same migration note as a spec", () => {
     expect(() =>
       parseBlockSpec(`title: Login

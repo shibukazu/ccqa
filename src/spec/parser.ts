@@ -17,6 +17,8 @@ import {
  */
 const REMOVED_FIELDS: Record<string, string> = {
   relatedPaths: "which specs a change affects is now decided by `ccqa select-specs`, which reads the diff instead of a declared path list. Delete the field.",
+  dummy: "it was a block param placeholder for recording a block on its own, which no command does any more, and nothing else ever read it. Delete the line.",
+  description: "it was a block param's prose note that no prompt ever received (a block list carries only a param's name, required and secret). Delete the line.",
 };
 
 /** Parse a spec.yaml. Schema rejections are rewritten with actionable messages. */
