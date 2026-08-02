@@ -10,6 +10,7 @@ import {
   RunUsageError,
   type RunOptions,
 } from "../run/pipeline.ts";
+import { EXPLAIN_RERUN_MODES, type ExplainRerunMode } from "../run/explain-rerun.ts";
 import { addHubOptions, addLanguageOption, addProfileOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { createRunTeardown, installTeardownSignalHandlers } from "./run-teardown.ts";
@@ -93,6 +94,20 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "--on-fail-explain-base <ref>",
       "With --on-fail-explain: diff against <ref> instead of each spec's last green. Use when there is no hub to hold the baselines.",
     )
+    .option(
+      "--on-fail-explain-rerun <when>",
+      "With --on-fail-explain: run a failed spec a second time so the classifier can tell a flake from a real failure. 'auto' reruns the failures whose label turns on it (UNKNOWN, ENVIRONMENT), 'always' every classified failure, 'never' (default) none. A second attempt that passes labels the row ENVIRONMENT; the spec still counts as failed. Costs a full spec execution each — live specs included.",
+      (raw): ExplainRerunMode => {
+        if ((EXPLAIN_RERUN_MODES as readonly string[]).includes(raw)) return raw as ExplainRerunMode;
+        throw new Error(`--on-fail-explain-rerun must be one of ${EXPLAIN_RERUN_MODES.join(" | ")}`);
+      },
+      "never" as ExplainRerunMode,
+    )
+    .option(
+      "--on-fail-explain-rerun-max-specs <n>",
+      "Rerun at most N specs, in report order; the rest are named in the run summary and keep the label they were first given. Default: no cap. The knob for an environment having a bad day, where the alternative is turning the reruns off entirely.",
+      parseRerunMaxSpecs,
+    )
     .optionsGroup("What to do with the results:")
     .option(
       "--report-dir <dir>",
@@ -137,6 +152,17 @@ function parseConcurrency(raw: string): number {
   if (!Number.isInteger(n) || n < 1) {
     log.error(`invalid --concurrency: ${raw} (expected positive integer)`);
     process.exit(2);
+  }
+  return n;
+}
+
+/** Parse --on-fail-explain-rerun-max-specs: a positive integer. Zero is `--on-fail-explain-rerun never`. */
+function parseRerunMaxSpecs(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(
+      `--on-fail-explain-rerun-max-specs must be a positive integer, got "${raw}" (for none, pass --on-fail-explain-rerun never)`,
+    );
   }
   return n;
 }

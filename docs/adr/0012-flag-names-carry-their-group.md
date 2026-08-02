@@ -106,3 +106,9 @@ environment — more typing, in exchange for no hidden inputs.
 separate an unstable one from a real failure, is not part of this change. It
 needs somewhere in the report to say "unstable", and that belongs with the
 rework of the failure labels themselves.
+
+*(Delivered since, once [ADR-0016](0016-one-vocabulary-two-answerable-subsets.md)
+settled where a rerun's answer lands: a second attempt that passes earns
+`ENVIRONMENT`. The name is as deferred here, with
+`--on-fail-explain-rerun-max-specs` beside it — the prefix rules above are why
+the cap is spelled that way rather than `--max-reruns`.)*

@@ -373,6 +373,19 @@ export const LiveReportRunSchema = z.object({
 });
 export type LiveReportRun = z.infer<typeof LiveReportRunSchema>;
 
+/**
+ * What a second attempt at a failed spec showed (`--on-fail-explain-rerun`).
+ * "passed" means the failure did not reproduce, which is the evidence a single
+ * run cannot hold; "failed" means it did.
+ *
+ * The row's `status` never moves with it. The spec failed, and a passing second
+ * attempt explains that failure rather than undoing it.
+ */
+export const ReportRerunSchema = z.object({
+  outcome: z.enum(["passed", "failed"]),
+});
+export type ReportRerun = z.infer<typeof ReportRerunSchema>;
+
 export const ReportSpecResultSchema = z.object({
   feature: z.string(),
   spec: z.string(),
@@ -427,6 +440,12 @@ export const ReportSpecResultSchema = z.object({
   analysis: FailureAnalysisSchema.nullable(),
   /** Human-readable reason when a failed spec was NOT analyzed (no auth, no spec.yaml, ...). */
   analysisSkipped: z.string().nullable(),
+  /**
+   * See {@link ReportRerunSchema}. Present only on a row a second attempt was
+   * spent on; optional (not nullable) so older report.json stays valid
+   * byte-for-byte.
+   */
+  rerun: ReportRerunSchema.optional(),
   /**
    * The `triage.agent` overlay version actually applied to THIS row's
    * failure analysis. Per-row (not just per-run) because per-target overlays

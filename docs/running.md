@@ -62,6 +62,15 @@ Key flags (see `ccqa run --help` for the rest):
   triage](#failure-triage).
 - `--on-fail-explain-base <ref>` — diff against one shared ref instead of each
   spec's last green. Use it when there is no hub to hold the baselines.
+- `--on-fail-explain-rerun <auto|always|never>` — run a failed spec a second
+  time, so the label can rest on whether the failure reproduces. `never` by
+  default: a rerun is a full spec execution, live specs included. `auto`
+  reruns the failures whose label turns on reproducibility (`UNKNOWN`,
+  `ENVIRONMENT`); `always` reruns every classified failure. See [Rerunning a
+  failure](#rerunning-a-failure).
+- `--on-fail-explain-rerun-max-specs <n>` — rerun at most N specs. The rest
+  are named in the run summary and keep the label they were first given.
+  Uncapped by default.
 - `--report-format <fmt>` — `text` (default), `json` (print report.json), `github`
   (GitHub Actions annotations).
 - `--live-step-retry <n>` — live specs only: retry each failing step up to N times.
@@ -79,7 +88,8 @@ Every `--only-*` narrows what the one before it left, so passing several means
 "all of these". None of them can be combined with explicit spec targets.
 
 Exit code: `0` when every executed spec passed, `1` when any failed, `2` on
-usage errors. The failure analysis never changes the exit code.
+usage errors. The failure analysis never changes the exit code, and neither
+does a rerun that passes — the spec failed.
 
 ## Profiles and environment variables
 
@@ -276,6 +286,56 @@ the rest of the run proceeds. Each analyzed row records its own baseline in
 **Authentication.** The analysis needs `ANTHROPIC_API_KEY` (CI) or a local
 Claude Code login. With neither, the report is still written — only the
 analysis is skipped, with the reason recorded per spec.
+
+### Rerunning a failure
+
+`ENVIRONMENT` is the one cause with no artifact to read. When the log names
+it — a refused connection, a rejected credential — the classifier can call
+it; when the cause is a timing race, the only evidence that settles it is
+that a second attempt passes. So `--on-fail-explain-rerun auto` runs the spec
+again, and lets the result speak.
+
+It reruns two labels. `UNKNOWN` is the one the feature exists for: a refusal
+that reaches a human, most often for a flake. `ENVIRONMENT` is rerun to
+confirm rather than to discover — a second pass that fails too is real
+evidence that this is not the timing kind, which is worth having on a label
+somebody is about to act on. `always` reruns every classified failure
+instead; `never` (the default) reruns nothing.
+
+**A rerun that passes** is the missing evidence: the failure is not
+reproducible, so the cause is environmental and the label says
+`ENVIRONMENT`, with the second attempt cited in the row's evidence.
+
+**A rerun that fails again** is evidence too, but of a different kind. It
+rules out the flake and names no artifact, so the label stands as first
+classified and the row records that the failure reproduced. `UNKNOWN` in
+particular is not promoted: "not a flake" earns none of the three causes that
+point at something in the repository, and a label is only worth reading if it
+was earned (see [ADR-0016](./adr/0016-one-vocabulary-two-answerable-subsets.md)).
+Under `always`, a label the classifier already tied to a file — `TEST_DRIFT`,
+`SPEC_CHANGE`, `PRODUCT_BUG` — is likewise left alone whichever way the rerun
+goes; only the evidence line is added.
+
+Every rerun row carries `rerun: {"outcome": "passed" | "failed"}` in
+`report.json`, and the sentence the rerun added shows up in the hub UI's
+evidence panel. A spec that was not rerun has no `rerun` field, and the specs
+a `--on-fail-explain-rerun-max-specs` cap left out are named in the run
+summary — a silent truncation would read as "everything was checked".
+
+**The rerun's own result is not the run's result.** The spec failed; a
+passing second attempt explains why the run is red, it does not turn it
+green. The row keeps `status: "failed"`, the exit code and the hub's
+pass/fail counts are unchanged, and the hub's last-green ledger — which
+advances a spec's baseline only on a `passed` row — does not move. What the
+rerun writes goes to a throwaway directory, so the failing attempt's
+screenshots and artifacts stay the ones in the report.
+
+**Cost.** Each rerun is a full spec execution, and it is billed like one: a
+live spec costs its dollars again, and the `[cost]` line at the end of the
+run covers reruns like everything else the command spent. That is what
+`--on-fail-explain-rerun-max-specs <n>` bounds, so an environment having a
+bad day does not turn into an unbounded bill — the alternative to a cap being
+to turn the reruns off entirely.
 
 ### Grading and learning
 
