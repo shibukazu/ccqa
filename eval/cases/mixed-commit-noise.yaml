@@ -1,0 +1,20 @@
+# The session note's copy is asserted only by auth/login's generated code;
+# the other specs sign in through the same path but never read the note, and
+# the README line is noise the selection must not let widen the blast radius.
+title: >-
+  one user-visible change plus docs noise in the same commit — only the
+  spec that asserts the changed copy is needed
+mutations:
+  - file: public/js/auth.js
+    search: "document.getElementById(\"session-note\").textContent = `Signed in as ${email}`;"
+    replace: "document.getElementById(\"session-note\").textContent = `You are signed in as ${email}`;"
+  - file: README.md
+    search: "resets on restart"
+    replace: "resets whenever the server restarts"
+expect:
+  select:
+    auth/login: needed
+    tasks/add-task: notNeeded
+    tasks/complete-task: notNeeded
+    tasks/filter-tasks: notNeeded
+    help/read-help: notNeeded

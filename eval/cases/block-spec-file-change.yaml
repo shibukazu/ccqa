@@ -1,0 +1,17 @@
+# Regression pin, not a model measurement: select-specs answers spec-tree
+# changes mechanically (see partitionChanges in src/select/analyze.ts), so
+# this case costs no model call and must never start costing one.
+title: >-
+  the login block's own spec.yaml changes — every including spec re-runs
+  (mechanical set membership, no model call)
+mutations:
+  - file: .ccqa/blocks/login/spec.yaml
+    search: "title: sign in with the seeded account"
+    replace: "title: sign in with the seeded test account"
+expect:
+  select:
+    auth/login: needed
+    tasks/add-task: needed
+    tasks/complete-task: needed
+    tasks/filter-tasks: needed
+    help/read-help: notNeeded

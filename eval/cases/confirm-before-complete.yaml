@@ -1,0 +1,25 @@
+# Both specs that check the checkbox gain the undescribed confirmation step,
+# so both drift — the flow exists, but not as either spec tells it.
+title: >-
+  completing a task now asks for confirmation — the flow gained a step the
+  specs do not describe
+mutations:
+  - file: public/js/tasks.js
+    search: |-
+      checkbox.addEventListener("change", async () => {
+          const updated = await apiToggleTask(task.id, checkbox.checked);
+    replace: |-
+      checkbox.addEventListener("change", async () => {
+          if (checkbox.checked && !window.confirm(`Mark "${task.title}" as done?`)) {
+            checkbox.checked = false;
+            return;
+          }
+          const updated = await apiToggleTask(task.id, checkbox.checked);
+expect:
+  audit:
+    tasks/complete-task:
+      label: SPEC_CHANGE
+      specChangeKind: BEHAVIOUR_CHANGED
+    tasks/filter-tasks:
+      label: SPEC_CHANGE
+      specChangeKind: BEHAVIOUR_CHANGED

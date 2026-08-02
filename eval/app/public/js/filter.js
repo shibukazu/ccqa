@@ -19,6 +19,7 @@ export function initFilter(onChange) {
   for (const { id, label } of FILTERS) {
     const button = document.createElement("button");
     button.type = "button";
+    button.dataset.filter = id;
     button.textContent = label;
     button.setAttribute("aria-pressed", String(id === filter));
     button.addEventListener("click", () => {

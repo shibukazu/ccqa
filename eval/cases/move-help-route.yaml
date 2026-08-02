@@ -1,0 +1,13 @@
+# A moved route is SPEC_CHANGE, not TEST_DRIFT: the vocabulary files routes
+# under BEHAVIOUR_CHANGED ("its wording, its route, or the conditions it runs
+# under moved"), and the address is part of what the spec describes.
+title: the help page moves to a new route — same page, new address
+mutations:
+  - file: server.mjs
+    search: '"/help": "help.html",'
+    replace: '"/guide": "help.html",'
+expect:
+  audit:
+    help/read-help:
+      label: SPEC_CHANGE
+      specChangeKind: BEHAVIOUR_CHANGED

@@ -25,6 +25,12 @@ const MIME = {
   ".css": "text/css; charset=utf-8",
 };
 
+// Pretty routes for the pages; anything else resolves as a file under public/.
+const PAGES = {
+  "/": "index.html",
+  "/help": "help.html",
+};
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
   try {
@@ -92,7 +98,7 @@ function isAuthorized(req) {
 }
 
 async function serveStatic(res, pathname) {
-  const rel = pathname === "/" ? "index.html" : pathname.slice(1);
+  const rel = PAGES[pathname] ?? pathname.slice(1);
   const path = normalize(join(PUBLIC_DIR, rel));
   if (!path.startsWith(PUBLIC_DIR)) {
     sendJson(res, 403, { error: "Forbidden" });

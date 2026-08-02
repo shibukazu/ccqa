@@ -1,4 +1,6 @@
-title: the shared fetch layer changes — every spec signs in through it
+title: >-
+  the shared fetch layer changes — every spec that signs in goes through it,
+  and only the static help page does not
 mutations:
   - file: public/js/api.js
     search: 'const headers = { "content-type": "application/json" };'
@@ -9,3 +11,4 @@ expect:
     tasks/add-task: needed
     tasks/complete-task: needed
     tasks/filter-tasks: needed
+    help/read-help: notNeeded

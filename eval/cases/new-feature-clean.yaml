@@ -1,0 +1,39 @@
+title: >-
+  a new feature appears that no spec covers — existing specs must stay
+  clean
+mutations:
+  - file: public/index.html
+    search: '<p id="session-note"></p>'
+    replace: |-
+      <p id="session-note"></p>
+                <button id="theme-toggle" type="button">Dark mode</button>
+  - file: public/js/main.js
+    search: |-
+      initAuth(() => {
+        void reloadTasks();
+      });
+    replace: |-
+      initAuth(() => {
+        void reloadTasks();
+      });
+      document.getElementById("theme-toggle").addEventListener("click", () => {
+        document.body.classList.toggle("dark");
+      });
+  - file: public/styles.css
+    search: |-
+      .done {
+        text-decoration: line-through;
+        color: #777;
+      }
+    replace: |-
+      .done {
+        text-decoration: line-through;
+        color: #777;
+      }
+
+      .dark {
+        background: #1b1b1b;
+        color: #eee;
+      }
+expect:
+  audit: {}

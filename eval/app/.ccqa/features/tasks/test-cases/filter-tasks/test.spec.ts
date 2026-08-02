@@ -46,7 +46,7 @@ test("filter the list down to completed tasks", () => {
 
   // step: step-07 [spec]
   __setCurrentStep("step-07", "spec");
-  ab("click", "text=Completed");
+  ab("click", "[data-filter='completed']");
   abAssertTextVisible("Buy milk");
   abAssertNotVisible("text=Walk the dog");
   abStepEvidence("step-07", "spec");

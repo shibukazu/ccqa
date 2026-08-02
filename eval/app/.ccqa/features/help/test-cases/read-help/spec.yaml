@@ -1,0 +1,6 @@
+title: read the help page
+steps:
+  - instruction: open ${APP_URL}/help
+    expected: the "How it works" heading is visible
+  - instruction: follow the "Back to your tasks" link
+    expected: the "Sign in" heading is visible

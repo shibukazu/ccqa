@@ -1,0 +1,13 @@
+# The honest sub-answer is `surface: spec`, but that is the schema default and
+# cannot be scored (see AuditExpectationSchema) — only the label is declared.
+title: >-
+  the "Completed" filter is renamed on screen — the spec's prose goes stale
+  while the generated structural selector still passes
+mutations:
+  - file: public/js/filter.js
+    search: '{ id: "completed", label: "Completed" }'
+    replace: '{ id: "completed", label: "Done" }'
+expect:
+  audit:
+    tasks/filter-tasks:
+      label: TEST_DRIFT

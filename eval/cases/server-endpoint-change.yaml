@@ -1,0 +1,26 @@
+# The PATCH /api/tasks/:id handler is exercised by the two specs that toggle
+# a checkbox; adding tasks and signing in use other endpoints.
+title: >-
+  one API endpoint's handler changes — the specs exercising it are needed,
+  the rest are not
+mutations:
+  - file: server.mjs
+    search: |-
+      const body = await readBody(req);
+          if (typeof body.done === "boolean") task.done = body.done;
+          sendJson(res, 200, { task });
+    replace: |-
+      const body = await readBody(req);
+          if (typeof body.done !== "boolean") {
+            sendJson(res, 400, { error: "done must be a boolean" });
+            return;
+          }
+          task.done = body.done;
+          sendJson(res, 200, { task });
+expect:
+  select:
+    tasks/complete-task: needed
+    tasks/filter-tasks: needed
+    auth/login: notNeeded
+    tasks/add-task: notNeeded
+    help/read-help: notNeeded

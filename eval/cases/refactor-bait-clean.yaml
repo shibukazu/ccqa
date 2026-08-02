@@ -1,0 +1,12 @@
+# The false-positive probe that matters most for cost: a diff in a file every
+# task spec exercises, with zero observable change.
+title: an internal rename nothing observable follows — the audit must stay silent
+mutations:
+  - file: public/js/tasks.js
+    search: "for (const task of visibleTasks()) {"
+    replace: "for (const task of tasksToShow()) {"
+  - file: public/js/tasks.js
+    search: "function visibleTasks() {"
+    replace: "function tasksToShow() {"
+expect:
+  audit: {}

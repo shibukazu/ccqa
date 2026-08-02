@@ -1,0 +1,25 @@
+# The vocabulary counts deliberate disabling as FEATURE_REMOVED. The bait is
+# that every string the spec names still greps in filter.js — the audit has to
+# read reachability, not presence.
+title: >-
+  the filter feature is switched off, not deleted — the code remains but the
+  buttons never render
+mutations:
+  - file: public/js/main.js
+    search: |-
+      initFilter(() => {
+        renderTasks();
+      });
+    replace: |-
+      // Filters are off while the feature is reworked.
+      const FILTER_ENABLED = false;
+      if (FILTER_ENABLED) {
+        initFilter(() => {
+          renderTasks();
+        });
+      }
+expect:
+  audit:
+    tasks/filter-tasks:
+      label: SPEC_CHANGE
+      specChangeKind: FEATURE_REMOVED

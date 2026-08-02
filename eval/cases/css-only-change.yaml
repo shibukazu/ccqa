@@ -1,0 +1,29 @@
+# One mutation, both benchmarks: the specs assert text and behaviour, never
+# presentation, so the audit must stay silent and the selection must clear
+# every spec.
+title: a CSS-only restyle — nothing any spec asserts or selects changed
+mutations:
+  - file: public/styles.css
+    search: |-
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 32rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+    replace: |-
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 40rem;
+        margin: 3rem auto;
+        padding: 0 1.5rem;
+        background: #fafafa;
+      }
+expect:
+  audit: {}
+  select:
+    auth/login: notNeeded
+    tasks/add-task: notNeeded
+    tasks/complete-task: notNeeded
+    tasks/filter-tasks: notNeeded
+    help/read-help: notNeeded

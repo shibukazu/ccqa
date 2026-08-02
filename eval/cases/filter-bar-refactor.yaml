@@ -9,3 +9,4 @@ expect:
     auth/login: notNeeded
     tasks/add-task: notNeeded
     tasks/complete-task: notNeeded
+    help/read-help: notNeeded

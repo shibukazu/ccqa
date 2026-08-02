@@ -26,9 +26,11 @@ eval/
 `eval/app/` is a complete little product — `node server.mjs` serves it — but
 phase 1 never runs it: the audit and the selection read source, so only the
 source has to exist and stay honest. The `.ccqa/` tree next to it holds a
-login block and four deterministic specs (sign in, add a task, complete a
-task, filter the list) whose `test.spec.ts` files are hand-written in the
-shape `ccqa generate` emits, with selectors that really match the app.
+login block and five deterministic specs (sign in, add a task, complete a
+task, filter the list, read the help page) whose `test.spec.ts` files are
+hand-written in the shape `ccqa generate` emits, with selectors that really
+match the app. The help spec is the one spec that does not include the login
+block, which is what gives the block-drift case its clean bystander.
 Browser-driven evals (live, record, draft) are later phases; the app's
 accessible markup is already in place for them.
 
@@ -68,6 +70,49 @@ in the untouched baseline and again at apply time (the rationale lives on
 applies every committed case against the committed baseline in CI, so a
 rotted case fails a PR, not an eval run.
 
+## What the case set covers
+
+This inventory is what the benchmark claims to cover: one case per
+judgement, none testing the same one twice. Specs not named are expected
+clean / `notNeeded`.
+
+**Audit** — a full run makes one model call per spec per case (15 cases ×
+5 specs = 75 calls), so run cost scales linearly with both counts; on haiku
+that is a few dollars.
+
+| case                       | seeds                                        | expected                                             |
+| -------------------------- | -------------------------------------------- | ---------------------------------------------------- |
+| baseline-clean             | nothing at all                               | all clean                                            |
+| server-unrelated-change    | server-only changes no spec observes         | all clean                                            |
+| refactor-bait-clean        | internal rename, nothing observable          | all clean                                            |
+| new-feature-clean          | new feature no spec covers                   | all clean                                            |
+| css-only-change            | presentation-only restyle                    | all clean                                            |
+| rename-add-button          | visible button label renamed                 | add-task: TEST_DRIFT/generated/SELECTOR_DRIFT        |
+| rename-complete-aria-label | accessible name renamed, no visible text     | complete-task, filter-tasks: TEST_DRIFT/SELECTOR_DRIFT |
+| stale-spec-prose           | on-screen copy renamed, structural selector survives | filter-tasks: TEST_DRIFT (surface `spec`, unscoreable default) |
+| drop-session-note          | generated asserts what the spec never asked  | login: TEST_DRIFT/generated/OVER_ASSERTION           |
+| login-block-markup-drift   | shared login block's target markup changes   | all four block-including specs: TEST_DRIFT/generated/SELECTOR_DRIFT |
+| remove-filter-feature      | feature deleted outright                     | filter-tasks: SPEC_CHANGE/FEATURE_REMOVED            |
+| disable-filter-feature     | feature switched off, code kept              | filter-tasks: SPEC_CHANGE/FEATURE_REMOVED            |
+| rework-add-flow            | the flow's affordance replaced               | add-task: SPEC_CHANGE/BEHAVIOUR_CHANGED              |
+| confirm-before-complete    | the flow gains a confirmation step           | complete-task, filter-tasks: SPEC_CHANGE/BEHAVIOUR_CHANGED |
+| move-help-route            | a page moves to a new route                  | read-help: SPEC_CHANGE/BEHAVIOUR_CHANGED             |
+
+**Select** — at most one model call per case; the two mechanical cases make
+none (spec-tree changes are set membership, pinned here so they never start
+costing a call).
+
+| case                   | seeds                                        | expected needed                  |
+| ---------------------- | -------------------------------------------- | -------------------------------- |
+| docs-only-change       | documentation only                           | none                             |
+| css-only-change        | presentation only                            | none                             |
+| filter-bar-refactor    | a change inside one feature                  | filter-tasks                     |
+| mixed-commit-noise     | one copy change plus docs noise              | auth/login                       |
+| server-endpoint-change | one endpoint's handler changes               | complete-task, filter-tasks      |
+| api-shared-change      | the shared fetch layer changes               | the four sign-in specs           |
+| block-spec-file-change | the login block's spec.yaml (mechanical)     | the four including specs         |
+| spec-own-file-change   | a spec's own file (mechanical)               | that spec                        |
+
 ## What the numbers mean
 
 **Audit.** Every audited spec in every case is scored: specs the case names
@@ -76,9 +121,10 @@ carry an expected `TEST_DRIFT` or `SPEC_CHANGE` (with `surface`,
 spec is expected clean. The summary is a confusion matrix over
 expected × predicted labels — the CLEAN row's off-diagonal cells are the
 audit crying wolf, which the case set deliberately provokes with unrelated
-changes. Most expected verdicts *are* CLEAN — each case seeds at most one
-drift into a tree of several specs — so the headline accuracy has a high
-base rate and answering clean to everything already scores well above 80%.
+changes. Most expected verdicts *are* CLEAN — a case seeds drift into one
+or two specs of a five-spec tree, the block-drift case being the one
+deliberate flood — so the headline accuracy has a high base rate and
+answering clean to everything already scores well above 80%.
 The summary prints the CLEAN-row and drift-row recall beside the total;
 compare prompts on those, not on the headline.
 

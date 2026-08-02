@@ -1,0 +1,17 @@
+# Both surfaces quote the accessible name, so neither one can honestly be
+# declared as *the* stale surface — only the label and sub-diagnosis are.
+title: >-
+  the row checkbox's accessible name changes — no visible text moved, only
+  the aria-label both specs address it by
+mutations:
+  - file: public/js/tasks.js
+    search: 'checkbox.setAttribute("aria-label", `Complete ${task.title}`);'
+    replace: 'checkbox.setAttribute("aria-label", `Toggle ${task.title}`);'
+expect:
+  audit:
+    tasks/complete-task:
+      label: TEST_DRIFT
+      subDiagnosis: SELECTOR_DRIFT
+    tasks/filter-tasks:
+      label: TEST_DRIFT
+      subDiagnosis: SELECTOR_DRIFT
