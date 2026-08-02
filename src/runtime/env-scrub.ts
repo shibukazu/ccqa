@@ -69,6 +69,29 @@ function collect(value: string, into: Set<string>): void {
   for (const name of iterEnvRefNames(value)) into.add(name);
 }
 
+/** Shorter than this, a value is no secret and matches inside ordinary words. */
+const MIN_PROSE_SCRUB_LENGTH = 4;
+
+/** Long enough to clear the length bar, still ordinary prose / JSON. */
+const COMMON_PROSE_VALUES = new Set(["true", "false", "null", "none", "undefined"]);
+
+/**
+ * Scrub map for a live run, built like {@link buildSpecEnvScrub} but without
+ * the values that read as ordinary text (`"1"`, `"true"`). A live step records
+ * paragraphs of model prose, so replacing every occurrence of such a value
+ * would cost more meaning than it protects; record scrubs single command
+ * lines, where the same trade favours keeping them.
+ */
+export function buildLiveEnvScrubMap(
+  spec: TestSpec,
+  expanded: ExpandedActionStep[],
+): Array<[string, string]> {
+  return buildSpecEnvScrub(spec, expanded).map.filter(
+    ([value]) =>
+      value.length >= MIN_PROSE_SCRUB_LENGTH && !COMMON_PROSE_VALUES.has(value.toLowerCase()),
+  );
+}
+
 /**
  * Replace every occurrence of an env value with its `${VAR}` placeholder in
  * `text`. **Caller invariant**: the map must be sorted longest-value-first
