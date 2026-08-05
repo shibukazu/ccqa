@@ -3,27 +3,29 @@
 # every spec.
 title: a CSS-only restyle — nothing any spec asserts or selects changed
 mutations:
-  - file: public/styles.css
+  - file: web/src/styles.css
     search: |-
-      body {
-        font-family: system-ui, sans-serif;
-        max-width: 32rem;
-        margin: 2rem auto;
-        padding: 0 1rem;
+      .app-main {
+        max-width: 44rem;
+        margin: 0 auto;
+        padding: 2rem 1.5rem;
       }
     replace: |-
-      body {
-        font-family: system-ui, sans-serif;
-        max-width: 40rem;
-        margin: 3rem auto;
-        padding: 0 1.5rem;
-        background: #fafafa;
+      .app-main {
+        max-width: 52rem;
+        margin: 0 auto;
+        padding: 2.5rem 2rem;
       }
 expect:
   audit: {}
   select:
     auth/login: notNeeded
+    auth/logout: notNeeded
+    help/read-help: notNeeded
+    projects/create-project: notNeeded
+    projects/open-project: notNeeded
+    settings/update-profile: notNeeded
     tasks/add-task: notNeeded
     tasks/complete-task: notNeeded
+    tasks/edit-task-notes: notNeeded
     tasks/filter-tasks: notNeeded
-    help/read-help: notNeeded

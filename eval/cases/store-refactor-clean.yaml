@@ -1,21 +1,23 @@
-# The backend sibling of refactor-bait-clean: a diff in the data layer every
-# task spec's requests pass through, with provably identical behaviour. The
-# audit must judge across the layer boundary, not react to where the diff sits.
+# The backend sibling of refactor-bait-clean: a diff in the data layer the
+# project page reads through, with provably identical behaviour (`.get` is
+# `.all()[0]`). The audit must judge across the layer boundary, not react to
+# where the diff sits.
 title: >-
-  the store's task lookup is rewritten with identical behaviour — a
+  the project lookup is rewritten with identical behaviour — a
   backend-internal refactor the audit must stay silent on
 mutations:
-  - file: backend/store.mjs
+  - file: server/db/queries/projects.ts
     search: |-
-      export function findTask(id) {
-        return tasks.find((t) => t.id === id) ?? null;
+      export function getProject(db: DB, id: number): Project | undefined {
+        const row = db.prepare(`${SELECT_WITH_COUNTS} WHERE p.id = ? GROUP BY p.id`).get(id) as
+          | ProjectRow
+          | undefined;
+        return row ? toProject(row) : undefined;
       }
     replace: |-
-      export function findTask(id) {
-        for (const task of tasks) {
-          if (task.id === id) return task;
-        }
-        return null;
+      export function getProject(db: DB, id: number): Project | undefined {
+        const rows = db.prepare(`${SELECT_WITH_COUNTS} WHERE p.id = ? GROUP BY p.id`).all(id) as ProjectRow[];
+        return rows.length > 0 ? toProject(rows[0]!) : undefined;
       }
 expect:
   audit: {}

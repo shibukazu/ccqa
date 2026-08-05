@@ -1,10 +1,13 @@
+# The form still submits on Enter, so the feature survives — but the button
+# the spec describes pressing is gone. A removed affordance with the flow
+# reworked around it is BEHAVIOUR_CHANGED, not FEATURE_REMOVED.
 title: >-
   adding a task becomes Enter-only — the feature survives, the flow the spec
   describes does not
 mutations:
-  - file: public/index.html
-    search: <button type="submit">Add task</button>
-    replace: <p id="add-hint">Press Enter to add</p>
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: '<Button type="submit">Add task</Button>'
+    replace: '<p className="add-hint">Press Enter to add</p>'
 expect:
   audit:
     tasks/add-task:

@@ -1,0 +1,17 @@
+# The visible "Notes" label is untouched, so the spec prose stays honest and
+# only the generated #notes selector goes stale. The label and the textarea
+# move together, so the product keeps working.
+title: the notes field gets a new id — the generated selector goes stale
+mutations:
+  - file: web/src/pages/TaskDetailPage.tsx
+    search: '<label htmlFor="notes">Notes</label>'
+    replace: '<label htmlFor="task-notes">Notes</label>'
+  - file: web/src/pages/TaskDetailPage.tsx
+    search: id="notes"
+    replace: id="task-notes"
+expect:
+  audit:
+    tasks/edit-task-notes:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT

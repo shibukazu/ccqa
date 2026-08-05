@@ -1,13 +1,15 @@
-# The honest sub-answer is `surface: spec`, but that is the schema default and
-# cannot be scored (see AuditExpectationSchema) — only the label is declared.
+# The generated test addresses the field by #display-name and never asserts
+# the label's text, so the committed code still passes — the staleness lives
+# in the spec prose alone. `surface: spec` is the schema default and cannot
+# be scored (see AuditExpectationSchema) — only the label is declared.
 title: >-
-  the "Completed" filter is renamed on screen — the spec's prose goes stale
-  while the generated structural selector still passes
+  the "Display name" label is renamed on screen — the spec's prose goes
+  stale while the generated selector still passes
 mutations:
-  - file: public/js/filter.js
-    search: '{ id: "completed", label: "Completed" }'
-    replace: '{ id: "completed", label: "Done" }'
+  - file: web/src/pages/SettingsPage.tsx
+    search: label="Display name"
+    replace: label="Name"
 expect:
   audit:
-    tasks/filter-tasks:
+    settings/update-profile:
       label: TEST_DRIFT

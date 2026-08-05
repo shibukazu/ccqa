@@ -1,0 +1,27 @@
+# Backend-only diff — a migration default plus the insert that relies on it —
+# judged by tracing it to the one spec whose asserted progress copy it moves:
+# a task added through the form is now born done, so "1 of 4 done" reads
+# "2 of 4 done". The seeded rows and the toggle write their done flag
+# explicitly, so every other spec is untouched.
+title: >-
+  new tasks are created already done — the add flow's asserted progress
+  count no longer happens
+mutations:
+  - file: server/db/migrations/0002_create_projects_and_tasks.sql
+    search: "done INTEGER NOT NULL DEFAULT 0,"
+    replace: "done INTEGER NOT NULL DEFAULT 1,"
+  - file: server/db/queries/tasks.ts
+    search: |-
+      const result = db
+          .prepare("INSERT INTO tasks (project_id, title, notes) VALUES (?, ?, ?)")
+          .run(projectId, title, notes);
+    replace: |-
+      // Tasks are logged after the fact, so a new task enters already done.
+        const result = db
+          .prepare("INSERT INTO tasks (project_id, title, notes, done) VALUES (?, ?, ?, 1)")
+          .run(projectId, title, notes);
+expect:
+  audit:
+    tasks/add-task:
+      label: SPEC_CHANGE
+      specChangeKind: BEHAVIOUR_CHANGED

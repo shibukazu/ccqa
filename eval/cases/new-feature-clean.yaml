@@ -1,39 +1,29 @@
-title: >-
-  a new feature appears that no spec covers — existing specs must stay
-  clean
+# A new nav item and page appear; nothing any existing spec asserts moves.
+# The "Settings" and "Help" links the specs use are untouched.
+title: a new page appears that no spec covers — existing specs must stay clean
 mutations:
-  - file: public/index.html
-    search: '<p id="session-note"></p>'
+  - file: web/src/App.tsx
+    search: '<Route path="/settings" element={<SettingsPage />} />'
     replace: |-
-      <p id="session-note"></p>
-                <button id="theme-toggle" type="button">Dark mode</button>
-  - file: public/js/main.js
-    search: |-
-      initAuth(() => {
-        void reloadTasks();
-      });
+      <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/activity" element={<ActivityPage />} />
+  - file: web/src/App.tsx
+    search: '<NavLink to="/help">Help</NavLink>'
     replace: |-
-      initAuth(() => {
-        void reloadTasks();
-      });
-      document.getElementById("theme-toggle").addEventListener("click", () => {
-        document.body.classList.toggle("dark");
-      });
-  - file: public/styles.css
-    search: |-
-      .done {
-        text-decoration: line-through;
-        color: #777;
-      }
+      <NavLink to="/help">Help</NavLink>
+                <NavLink to="/activity">Activity</NavLink>
+  - file: web/src/App.tsx
+    search: "function AuthenticatedLayout() {"
     replace: |-
-      .done {
-        text-decoration: line-through;
-        color: #777;
+      function ActivityPage() {
+        return (
+          <section>
+            <h1>Activity</h1>
+            <p className="page-subtitle">Recent changes across your projects will appear here.</p>
+          </section>
+        );
       }
 
-      .dark {
-        background: #1b1b1b;
-        color: #eee;
-      }
+      function AuthenticatedLayout() {
 expect:
   audit: {}

@@ -1,14 +1,23 @@
+# Removing the JSON content-type breaks body parsing on every POST/PUT/PATCH
+# — and every spec but the static help page signs in through a POST before
+# doing anything else. The boundary the selection must find: help/read-help
+# never fetches at all.
 title: >-
-  the shared fetch layer changes — every spec that signs in goes through it,
-  and only the static help page does not
+  the shared fetch layer stops declaring JSON bodies — every spec that signs
+  in goes through it, and only the static help page does not
 mutations:
-  - file: public/js/api.js
-    search: 'const headers = { "content-type": "application/json" };'
-    replace: 'const headers = { "content-type": "application/json", accept: "application/json" };'
+  - file: web/src/api/http.ts
+    search: 'headers: { "Content-Type": "application/json", ...init.headers },'
+    replace: "headers: { ...init.headers },"
 expect:
   select:
     auth/login: needed
+    auth/logout: needed
+    help/read-help: notNeeded
+    projects/create-project: needed
+    projects/open-project: needed
+    settings/update-profile: needed
     tasks/add-task: needed
     tasks/complete-task: needed
+    tasks/edit-task-notes: needed
     tasks/filter-tasks: needed
-    help/read-help: notNeeded

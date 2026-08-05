@@ -1,42 +1,27 @@
 title: the filter feature is removed outright — the spec asks about something gone
 mutations:
-  - file: public/index.html
-    search: |-
-      <div id="filter-bar" role="group" aria-label="Filter tasks"></div>
-    replace: ""
-  - file: public/js/filter.js
+  - file: web/src/components/FilterBar.tsx
     delete: true
-  - file: public/js/main.js
-    search: |-
-      import { initFilter } from "./filter.js";
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: 'import { useEffect, useMemo, useState, type FormEvent } from "react";'
+    replace: 'import { useEffect, useState, type FormEvent } from "react";'
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: 'import { FilterBar, type TaskFilter } from "../components/FilterBar";'
     replace: ""
-  - file: public/js/main.js
-    search: |-
-      import { initTasks, reloadTasks, renderTasks } from "./tasks.js";
-    replace: |-
-      import { initTasks, reloadTasks } from "./tasks.js";
-  - file: public/js/main.js
-    search: |-
-      initFilter(() => {
-        renderTasks();
-      });
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: 'const [filter, setFilter] = useState<TaskFilter>("all");'
     replace: ""
-  - file: public/js/tasks.js
+  - file: web/src/pages/ProjectDetailPage.tsx
     search: |-
-      import { currentFilter } from "./filter.js";
+      const visibleTasks = useMemo(() => {
+          if (filter === "open") return tasks.filter((task) => !task.done);
+          if (filter === "completed") return tasks.filter((task) => task.done);
+          return tasks;
+        }, [tasks, filter]);
+    replace: const visibleTasks = tasks;
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: "<FilterBar value={filter} onChange={setFilter} />"
     replace: ""
-  - file: public/js/tasks.js
-    search: |-
-      function visibleTasks() {
-        const filter = currentFilter();
-        if (filter === "active") return tasks.filter((t) => !t.done);
-        if (filter === "completed") return tasks.filter((t) => t.done);
-        return tasks;
-      }
-    replace: |-
-      function visibleTasks() {
-        return tasks;
-      }
 expect:
   audit:
     tasks/filter-tasks:

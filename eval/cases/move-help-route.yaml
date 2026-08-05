@@ -1,11 +1,14 @@
-# A moved route is SPEC_CHANGE, not TEST_DRIFT: the vocabulary files routes
-# under BEHAVIOUR_CHANGED ("its wording, its route, or the conditions it runs
-# under moved"), and the address is part of what the spec describes.
+# A moved route is SPEC_CHANGE, not TEST_DRIFT: the address is part of what
+# the spec describes (it opens the help path directly), and the vocabulary
+# files a moved route under BEHAVIOUR_CHANGED.
 title: the help page moves to a new route — same page, new address
 mutations:
-  - file: server.mjs
-    search: '"/help": "help.html",'
-    replace: '"/guide": "help.html",'
+  - file: web/src/App.tsx
+    search: '<Route path="/help" element={<HelpPage />} />'
+    replace: '<Route path="/guide" element={<HelpPage />} />'
+  - file: web/src/App.tsx
+    search: '<NavLink to="/help">Help</NavLink>'
+    replace: '<NavLink to="/guide">Help</NavLink>'
 expect:
   audit:
     help/read-help:

@@ -1,25 +1,19 @@
-# Both specs that check the checkbox gain the undescribed confirmation step,
-# so both drift — the flow exists, but not as either spec tells it.
+# Only the spec that checks a row checkbox gains the undescribed
+# confirmation step. tasks/filter-tasks never toggles a task and the task
+# page's own "Done" checkbox is a different component — both stay clean.
 title: >-
   completing a task now asks for confirmation — the flow gained a step the
-  specs do not describe
+  spec does not describe
 mutations:
-  - file: public/js/tasks.js
-    search: |-
-      checkbox.addEventListener("change", async () => {
-          const updated = await apiToggleTask(task.id, checkbox.checked);
+  - file: web/src/components/TaskRow.tsx
+    search: "onChange={() => onToggle(task)}"
     replace: |-
-      checkbox.addEventListener("change", async () => {
-          if (checkbox.checked && !window.confirm(`Mark "${task.title}" as done?`)) {
-            checkbox.checked = false;
-            return;
-          }
-          const updated = await apiToggleTask(task.id, checkbox.checked);
+      onChange={() => {
+                if (!task.done && !window.confirm(`Mark "${task.title}" as done?`)) return;
+                onToggle(task);
+              }}
 expect:
   audit:
     tasks/complete-task:
-      label: SPEC_CHANGE
-      specChangeKind: BEHAVIOUR_CHANGED
-    tasks/filter-tasks:
       label: SPEC_CHANGE
       specChangeKind: BEHAVIOUR_CHANGED

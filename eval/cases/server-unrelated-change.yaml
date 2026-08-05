@@ -1,33 +1,31 @@
-title: server-only changes no spec observes — the audit must not cry wolf
+# Purely additive backend surface — a delete endpoint and its query — that no
+# spec's flow ever calls.
+title: a new server endpoint no spec observes — the audit must not cry wolf
 mutations:
-  - file: server.mjs
-    search: 'sendJson(res, 404, { error: "Not found" });'
-    replace: 'sendJson(res, 404, { error: "File not found" });'
-  - file: backend/store.mjs
+  - file: server/db/queries/tasks.ts
     search: |-
-      export function findTask(id) {
-        return tasks.find((t) => t.id === id) ?? null;
-      }
+      function toTask(row: TaskRow): Task {
     replace: |-
-      export function findTask(id) {
-        return tasks.find((t) => t.id === id) ?? null;
+      export function deleteTask(db: DB, id: number): void {
+        db.prepare("DELETE FROM tasks WHERE id = ?").run(id);
       }
 
-      export function removeTask(id) {
-        tasks = tasks.filter((t) => t.id !== id);
-      }
-  - file: backend/routes/tasks.mjs
-    search: import { addTask, findTask, listTasks } from "../store.mjs";
-    replace: import { addTask, findTask, listTasks, removeTask } from "../store.mjs";
-  - file: backend/routes/tasks.mjs
-    search: |-
-      return false;
+      function toTask(row: TaskRow): Task {
+  - file: server/routes/tasks.ts
+    search: 'import { createTask, getTask, listTasksByProject, updateTask } from "../db/queries/tasks";'
+    replace: 'import { createTask, deleteTask, getTask, listTasksByProject, updateTask } from "../db/queries/tasks";'
+  - file: server/routes/tasks.ts
+    search: "return router;"
     replace: |-
-      if (req.method === "DELETE" && toggle) {
-          removeTask(Number(toggle[1]));
-          sendJson(res, 200, { ok: true });
-          return true;
-        }
-        return false;
+      router.delete("/:id", (req, res) => {
+          if (!getTask(db, Number(req.params.id))) {
+            res.status(404).json({ error: "Task not found" });
+            return;
+          }
+          deleteTask(db, Number(req.params.id));
+          res.status(204).end();
+        });
+
+        return router;
 expect:
   audit: {}
