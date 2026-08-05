@@ -46,6 +46,9 @@ export function resolveCcqaCommand(): { cmd: string; args: string[] } {
   return devCcqaCommand();
 }
 
+/** The child hit the caller's deadline — distinguishable from the CLI failing. */
+export class CcqaTimeoutError extends Error {}
+
 export function runCcqa(
   args: string[],
   opts: RunCcqaOptions,
@@ -85,7 +88,7 @@ export function runCcqa(
 
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error(`runCcqa timed out after ${opts.timeoutMs ?? 60_000}ms`));
+      reject(new CcqaTimeoutError(`runCcqa timed out after ${opts.timeoutMs ?? 60_000}ms`));
     }, opts.timeoutMs ?? 60_000);
 
     child.on("error", (err) => {

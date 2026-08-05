@@ -92,6 +92,13 @@ function printAuditSummary(summary: AuditEvalSummary): void {
     `labels ${confusion.correct}/${confusion.total} correct (${pct}%) — ` +
       `CLEAN recall ${cleanRecall.correct}/${cleanRecall.total}, drift recall ${driftRecall.correct}/${driftRecall.total}`,
   );
+  // Abandoned cases are excluded from every number above, so their absence
+  // must be said — a metric over fewer cases silently reads as a full run.
+  const abandoned = summary.cases.filter((c) => c.abandoned);
+  if (abandoned.length > 0) {
+    console.log(`ABANDONED ${abandoned.length} case(s), excluded from the metrics: ${abandoned.map((c) => c.name).join(", ")}`);
+    process.exitCode = 1;
+  }
   if (confusion.subAnswers.total > 0) {
     console.log(`sub-answers ${confusion.subAnswers.correct}/${confusion.subAnswers.total} correct (among label-correct predictions)`);
   }

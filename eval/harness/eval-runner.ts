@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
 import { readCostFileTotal } from "../../src/cli/cost-line.ts";
-import { devCcqaCommand, runCcqa, type RunCcqaResult } from "../../tests/e2e/_helpers/cli.ts";
+import { CcqaTimeoutError, devCcqaCommand, runCcqa, type RunCcqaResult } from "../../tests/e2e/_helpers/cli.ts";
 import { filterCases, listFixtureSpecKeys, loadCases, type EvalCase } from "./cases.ts";
 import { buildCaseRepo, type CaseRepo } from "./fixture-repo.ts";
 import {
@@ -106,6 +106,7 @@ export async function runEval<TOutcome, TAggregate>(
   const costFile = join(costDir, "cost.jsonl");
   try {
     const results: EvalCaseResult<TOutcome>[] = [];
+    let consecutiveAbandons = 0;
     for (const evalCase of cases) {
       say(`case ${evalCase.name} — ${evalCase.title}`);
       const repo = await buildCaseRepo(DEFAULT_APP_DIR, evalCase.mutations);
@@ -124,13 +125,25 @@ export async function runEval<TOutcome, TAggregate>(
             title: evalCase.title,
             outcomes: await def.runCase({ evalCase, repo, model, ccqa }),
           });
+          consecutiveAbandons = 0;
         } catch (err) {
-          if (!(err instanceof CaseAbandonedError)) throw err;
+          // A timeout is abandoned too: it is the shape a throttled account
+          // takes (the CLI stalls at 0% CPU until the deadline), and one
+          // stalled case must not cost the run what already completed.
+          if (!(err instanceof CaseAbandonedError) && !(err instanceof CcqaTimeoutError)) throw err;
           say(`  abandoned: ${err.message}`);
           results.push({ name: evalCase.name, title: evalCase.title, outcomes: [], abandoned: true });
+          consecutiveAbandons += 1;
         }
       } finally {
         await repo.cleanup();
+      }
+      // Two in a row is no longer one flaky reply — the environment itself is
+      // stalled (throttling, network). Keep what completed instead of paying
+      // the timeout again for every remaining case.
+      if (consecutiveAbandons >= 2) {
+        say("two consecutive abandons — stopping the run here; the remaining cases were not attempted");
+        break;
       }
     }
 
