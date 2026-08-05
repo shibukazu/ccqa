@@ -65,10 +65,12 @@ describe("the committed cases against the committed baseline", () => {
     }
   }, 120_000);
 
-  // Three cases enumerate "the specs that include the login block" by hand.
+  // Two cases enumerate "the specs that include the login block" by hand.
   // Derive the true membership from the spec tree (`include: login` steps)
   // and hold the declarations to it, so an eleventh spec cannot silently rot
-  // the ground truth.
+  // the ground truth. (`api-shared-change` is deliberately not pinned here:
+  // its ground truth is "specs that go through the shared fetch layer", which
+  // only coincides with block membership in today's tree.)
   it("hand-declared login-block membership matches the spec tree", async () => {
     const includers = new Set<string>();
     for (const key of specKeys) {
@@ -87,13 +89,11 @@ describe("the committed cases against the committed baseline", () => {
     const markup = caseByName("login-block-markup-drift");
     expect(new Set(Object.keys(markup.expect.audit ?? {}))).toEqual(includers);
 
-    // Select cases: every spec is declared, and `needed` is exactly the including set.
-    for (const name of ["block-spec-file-change", "api-shared-change"]) {
-      const select = caseByName(name).expect.select ?? {};
-      expect(new Set(Object.keys(select))).toEqual(new Set(specKeys));
-      const needed = Object.keys(select).filter((key) => select[key] === "needed");
-      expect(new Set(needed)).toEqual(includers);
-    }
+    // Select case: every spec is declared, and `needed` is exactly the including set.
+    const select = caseByName("block-spec-file-change").expect.select ?? {};
+    expect(new Set(Object.keys(select))).toEqual(new Set(specKeys));
+    const needed = Object.keys(select).filter((key) => select[key] === "needed");
+    expect(new Set(needed)).toEqual(includers);
   });
 
   it("rejects an expectation for a spec the fixture does not have", async () => {

@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { applyMutations, MutationError } from "./mutate.ts";
+import { applyMutations, MutationError, validateMutations } from "./mutate.ts";
 
 describe("applyMutations", () => {
   let dir: string;
@@ -93,5 +93,38 @@ describe("applyMutations", () => {
     await expect(
       applyMutations(dir, [{ file: "a-dir", search: "x", replace: "y" }]),
     ).rejects.toThrow(/EISDIR/);
+  });
+});
+
+describe("validateMutations", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ccqa-eval-validate-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("accepts what an apply would accept without touching the checkout", async () => {
+    await writeFile(join(dir, "a.txt"), "one two three", "utf8");
+    await writeFile(join(dir, "b.txt"), "gone", "utf8");
+    await validateMutations(dir, [
+      { file: "a.txt", search: "two", replace: "2" },
+      { file: "b.txt", delete: true },
+    ]);
+    expect(await readFile(join(dir, "a.txt"), "utf8")).toBe("one two three");
+    expect(await readFile(join(dir, "b.txt"), "utf8")).toBe("gone");
+  });
+
+  it("rejects a mutation after a simulated delete, like an apply would", async () => {
+    await writeFile(join(dir, "a.txt"), "one", "utf8");
+    await expect(
+      validateMutations(dir, [
+        { file: "a.txt", delete: true },
+        { file: "a.txt", search: "one", replace: "1" },
+      ]),
+    ).rejects.toThrow(MutationError);
   });
 });

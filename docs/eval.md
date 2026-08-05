@@ -78,8 +78,9 @@ A mutation is a search/replace pair (or a file deletion), not a diff — and it
 **fails the run loudly** unless its search string occurs exactly once, both
 in the untouched baseline and again at apply time (the rationale lives on
 `applyMutations` in `eval/harness/mutate.ts`). `eval/harness/cases.test.ts`
-applies every committed case against the committed baseline in CI, so a
-rotted case fails a PR, not an eval run.
+validates every committed case against the baseline app read-only in CI —
+the same passes an apply runs, writing to an overlay — so a rotted case
+fails a PR, not an eval run.
 
 ## What the case set covers
 

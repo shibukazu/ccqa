@@ -14,16 +14,29 @@ const execFileP = promisify(execFile);
  * generated state (`pnpm install`, a booted app's database, Vite's cache).
  * The app's own .gitignore is the authority on what is not source; this
  * filter exists only because `fs.cp` does not consult it the way
- * `git add -A` would. ".DS_Store" is skipped unconditionally.
+ * `git add -A` would — and `git add -A` in the case repo still applies the
+ * real rules, so the filter is a copy-time optimization, not a gate. Only
+ * plain names are honored here; anchored or glob patterns are left to git.
+ * ".DS_Store" is skipped unconditionally.
  */
-const SKIPPED_NAMES = new Set([
-  ".DS_Store",
-  ...readFileSync(new URL("../app/.gitignore", import.meta.url), "utf8")
+const SKIPPED_NAMES = new Set([".DS_Store", ...readAppIgnoreNames()]);
+
+function readAppIgnoreNames(): string[] {
+  let raw: string;
+  try {
+    raw = readFileSync(new URL("../app/.gitignore", import.meta.url), "utf8");
+  } catch (err) {
+    throw new Error("eval/app/.gitignore is missing — the fixture copy filter derives its skip list from it", {
+      cause: err,
+    });
+  }
+  return raw
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line !== "" && !line.startsWith("#"))
-    .map((line) => line.replace(/\/$/, "")),
-]);
+    .map((line) => line.replace(/\/$/, ""))
+    .filter((name) => !name.includes("/") && !name.includes("*"));
+}
 
 export interface CaseRepo {
   /** Root of the throwaway checkout; also the cwd the ccqa commands run in. */

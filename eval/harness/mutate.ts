@@ -20,47 +20,66 @@ export class MutationError extends Error {}
  * cannot have consumed or duplicated a later match either.
  */
 export async function applyMutations(rootDir: string, mutations: readonly Mutation[]): Promise<void> {
-  for (const mutation of mutations) await checkAgainstBaseline(rootDir, mutation);
-  for (const mutation of mutations) await applyOne(rootDir, mutation);
+  await runMutations(rootDir, mutations, {
+    read: readOrNull,
+    write: (path, content) => writeFile(path, content, "utf8"),
+    delete: async (path) => void (await unlink(path)),
+  });
 }
 
 /**
- * The exact checks `applyMutations` performs, without writing anything: the
- * same baseline pass, then the apply pass replayed against an in-memory
- * overlay standing in for the earlier mutations' writes. Lets a guard test
+ * The passes `applyMutations` runs — same code, same errors — with the writes
+ * going to an in-memory overlay instead of the checkout. Lets a guard test
  * validate every committed case against the real app dir directly instead of
  * copying it.
  */
 export async function validateMutations(rootDir: string, mutations: readonly Mutation[]): Promise<void> {
-  for (const mutation of mutations) await checkAgainstBaseline(rootDir, mutation);
   /** Resolved path → content after the simulated writes; null = deleted. */
   const overlay = new Map<string, string | null>();
+  await runMutations(rootDir, mutations, {
+    read: async (path) => (overlay.has(path) ? overlay.get(path)! : readOrNull(path)),
+    write: async (path, content) => void overlay.set(path, content),
+    delete: async (path) => void overlay.set(path, null),
+  });
+}
+
+/** Where the apply pass reads and writes — the only difference between applying and validating. */
+interface MutationStore {
+  /** Content of the file, or null when it does not exist. */
+  read(path: string): Promise<string | null>;
+  write(path: string, content: string): Promise<void>;
+  delete(path: string): Promise<void>;
+}
+
+async function runMutations(
+  rootDir: string,
+  mutations: readonly Mutation[],
+  store: MutationStore,
+): Promise<void> {
+  for (const mutation of mutations) await checkAgainstBaseline(rootDir, mutation);
   for (const mutation of mutations) {
     const path = resolveInside(rootDir, mutation.file);
-    const current = overlay.has(path)
-      ? overlay.get(path)!
-      : await readFile(path, "utf8").catch((err: unknown) => {
-          if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-          throw err;
-        });
+    const content = await store.read(path);
     if ("delete" in mutation) {
-      if (current === null) {
+      if (content === null) {
         throw new MutationError(`cannot delete ${mutation.file}: file not found in the baseline`);
       }
-      overlay.set(path, null);
+      await store.delete(path);
       continue;
     }
-    if (current === null) {
+    if (content === null) {
       throw new MutationError(`cannot mutate ${mutation.file}: file not found in the baseline`);
     }
-    const occurrences = countOccurrences(current, mutation.search);
+    const occurrences = countOccurrences(content, mutation.search);
     if (occurrences !== 1) {
       throw new MutationError(
         `mutation clashes with an earlier one in the same case: ${JSON.stringify(mutation.search)} ` +
           `occurs ${occurrences} time(s) in ${mutation.file} after the preceding mutations`,
       );
     }
-    overlay.set(path, current.replace(mutation.search, () => mutation.replace));
+    // Replacer function, not a replacement string: `$&`-style patterns in the
+    // declared replacement must land verbatim, never be interpreted.
+    await store.write(path, content.replace(mutation.search, () => mutation.replace));
   }
 }
 
@@ -84,30 +103,6 @@ async function checkAgainstBaseline(rootDir: string, mutation: Mutation): Promis
   }
 }
 
-async function applyOne(rootDir: string, mutation: Mutation): Promise<void> {
-  const path = resolveInside(rootDir, mutation.file);
-  if ("delete" in mutation) {
-    try {
-      await unlink(path);
-    } catch (err) {
-      throw translateEnoent(err, `cannot delete ${mutation.file}: file not found in the baseline`);
-    }
-    return;
-  }
-
-  const content = await readBaselineFile(path, mutation.file);
-  const occurrences = countOccurrences(content, mutation.search);
-  if (occurrences !== 1) {
-    throw new MutationError(
-      `mutation clashes with an earlier one in the same case: ${JSON.stringify(mutation.search)} ` +
-        `occurs ${occurrences} time(s) in ${mutation.file} after the preceding mutations`,
-    );
-  }
-  // Replacer function, not a replacement string: `$&`-style patterns in the
-  // declared replacement must land verbatim, never be interpreted.
-  await writeFile(path, content.replace(mutation.search, () => mutation.replace), "utf8");
-}
-
 /** A `file` escaping the checkout would edit a real repo file and report success. */
 function resolveInside(rootDir: string, file: string): string {
   const root = resolve(rootDir);
@@ -116,6 +111,15 @@ function resolveInside(rootDir: string, file: string): string {
     throw new MutationError(`mutation path escapes the checkout: ${file}`);
   }
   return path;
+}
+
+async function readOrNull(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err instanceof Error ? err : new Error(String(err));
+  }
 }
 
 async function readBaselineFile(path: string, file: string): Promise<string> {
