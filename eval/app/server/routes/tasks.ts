@@ -3,6 +3,7 @@ import { TaskCreateSchema, TaskUpdateSchema } from "../../shared/tasks";
 import type { DB } from "../db/index";
 import { getProject } from "../db/queries/projects";
 import { createTask, getTask, listTasksByProject, updateTask } from "../db/queries/tasks";
+import { parseId } from "../lib/ids";
 import { requireAuth } from "../middleware/auth";
 
 export function tasksRouter(db: DB): Router {
@@ -10,8 +11,8 @@ export function tasksRouter(db: DB): Router {
   router.use(requireAuth);
 
   router.get("/", (req, res) => {
-    const projectId = Number(req.query.projectId);
-    if (!Number.isInteger(projectId) || projectId <= 0) {
+    const projectId = parseId(String(req.query.projectId));
+    if (projectId === undefined) {
       res.status(400).json({ error: "projectId is required" });
       return;
     }
@@ -33,7 +34,8 @@ export function tasksRouter(db: DB): Router {
   });
 
   router.get("/:id", (req, res) => {
-    const task = getTask(db, Number(req.params.id));
+    const id = parseId(req.params.id);
+    const task = id === undefined ? undefined : getTask(db, id);
     if (!task) {
       res.status(404).json({ error: "Task not found" });
       return;
@@ -47,7 +49,8 @@ export function tasksRouter(db: DB): Router {
       res.status(400).json({ error: "Nothing valid to update" });
       return;
     }
-    const task = updateTask(db, Number(req.params.id), parsed.data);
+    const id = parseId(req.params.id);
+    const task = id === undefined ? undefined : updateTask(db, id, parsed.data);
     if (!task) {
       res.status(404).json({ error: "Task not found" });
       return;

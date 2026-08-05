@@ -1,10 +1,12 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { writeMockMessages } from "../../tests/e2e/_helpers/fake-claude.ts";
 import { DRIFT_PROMPT_VERSION } from "../../src/prompts/drift.ts";
 import { runAuditEval } from "./audit-eval.ts";
+import { listFixtureSpecKeys } from "./cases.ts";
+import { DEFAULT_APP_DIR } from "./results.ts";
 import { runSelectEval } from "./select-eval.ts";
 
 // One case end to end through the real CLI, with the Claude SDK replaced by
@@ -19,28 +21,25 @@ import { runSelectEval } from "./select-eval.ts";
 // the committed baseline app, so a baseline edit that invalidates one fails
 // loudly (see `applyMutations`).
 
-/** The whole fixture spec tree, in the order the specs sort. */
-const ALL_SPECS = [
-  "auth/login",
-  "auth/logout",
-  "help/read-help",
-  "projects/create-project",
-  "projects/open-project",
-  "settings/update-profile",
-  "tasks/add-task",
-  "tasks/complete-task",
-  "tasks/edit-task-notes",
-  "tasks/filter-tasks",
-] as const;
+/**
+ * The whole fixture spec tree, sorted — derived, so the expected counts track
+ * the tree. The spec names inside `CASES` below stay literal on purpose: they
+ * are this suite's own ground truth, not a mirror of the tree.
+ */
+let ALL_SPECS: string[];
+
+beforeAll(async () => {
+  ALL_SPECS = await listFixtureSpecKeys(DEFAULT_APP_DIR);
+});
 
 const CASES: Record<string, string> = {
-  "baseline-clean": `
+  "wiring-baseline-clean": `
 title: nothing changes at all
 mutations: []
 expect:
   audit: {}
 `,
-  "rename-add-button": `
+  "wiring-rename-add-button": `
 title: visible button label renamed
 mutations:
   - file: web/src/pages/ProjectDetailPage.tsx
@@ -53,7 +52,7 @@ expect:
       surface: generated
       subDiagnosis: SELECTOR_DRIFT
 `,
-  "api-shared-change": `
+  "wiring-api-shared-change": `
 title: the shared fetch layer changes
 mutations:
   - file: web/src/api/http.ts
@@ -66,7 +65,7 @@ expect:
     tasks/complete-task: needed
     tasks/filter-tasks: needed
 `,
-  "block-spec-file-change": `
+  "wiring-block-spec-file-change": `
 title: the login block's spec file changes (mechanical)
 mutations:
   - file: .ccqa/blocks/login/spec.yaml
@@ -95,7 +94,7 @@ describe("eval wiring (mocked Claude)", () => {
     casesDir = join(dir, "cases");
     await mkdir(casesDir);
     for (const [name, yaml] of Object.entries(CASES)) {
-      await writeFile(join(casesDir, `${name}.yaml`), `${yaml.trimStart()}`, "utf8");
+      await writeFile(join(casesDir, `${name}.yaml`), yaml.trimStart(), "utf8");
     }
   });
 
@@ -109,7 +108,7 @@ describe("eval wiring (mocked Claude)", () => {
       { type: "result", subtype: "success", result: '{"drift": null}', is_error: false },
     ]);
     const summary = await runAuditEval({
-      filter: "baseline-clean",
+      filter: "wiring-baseline-clean",
       casesDir,
       resultsDir: join(dir, "results"),
       env: { CCQA_CLAUDE_MOCK_FILE: mock },
@@ -144,7 +143,7 @@ describe("eval wiring (mocked Claude)", () => {
       { type: "result", subtype: "success", result: JSON.stringify(drift), is_error: false },
     ]);
     const summary = await runAuditEval({
-      filter: "rename-add-button",
+      filter: "wiring-rename-add-button",
       casesDir,
       resultsDir: join(dir, "results"),
       env: { CCQA_CLAUDE_MOCK_FILE: mock },
@@ -175,7 +174,7 @@ describe("eval wiring (mocked Claude)", () => {
       { type: "result", subtype: "success", result: JSON.stringify(reply), is_error: false },
     ]);
     const summary = await runSelectEval({
-      filter: "api-shared-change",
+      filter: "wiring-api-shared-change",
       casesDir,
       resultsDir: join(dir, "results"),
       env: { CCQA_CLAUDE_MOCK_FILE: mock },
@@ -199,7 +198,7 @@ describe("eval wiring (mocked Claude)", () => {
       { type: "result", subtype: "success", result: '{"specs": []}', is_error: false },
     ]);
     const summary = await runSelectEval({
-      filter: "block-spec-file-change",
+      filter: "wiring-block-spec-file-change",
       casesDir,
       resultsDir: join(dir, "results"),
       env: { CCQA_CLAUDE_MOCK_FILE: mock },

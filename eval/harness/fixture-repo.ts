@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
@@ -11,11 +12,18 @@ const execFileP = promisify(execFile);
 /**
  * The app dir is a working dev checkout, so it accumulates installed and
  * generated state (`pnpm install`, a booted app's database, Vite's cache).
- * `git add -A` would ignore those via the app's .gitignore, but `fs.cp`
- * copies everything — filter them out so case repos stay small and
- * source-only.
+ * The app's own .gitignore is the authority on what is not source; this
+ * filter exists only because `fs.cp` does not consult it the way
+ * `git add -A` would. ".DS_Store" is skipped unconditionally.
  */
-const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", "data", ".vite", ".DS_Store"]);
+const SKIPPED_NAMES = new Set([
+  ".DS_Store",
+  ...readFileSync(new URL("../app/.gitignore", import.meta.url), "utf8")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .map((line) => line.replace(/\/$/, "")),
+]);
 
 export interface CaseRepo {
   /** Root of the throwaway checkout; also the cwd the ccqa commands run in. */
@@ -36,7 +44,7 @@ export interface CaseRepo {
 export async function buildCaseRepo(appDir: string, mutations: readonly Mutation[]): Promise<CaseRepo> {
   const dir = await mkdtemp(join(tmpdir(), "ccqa-eval-"));
   try {
-    await cp(appDir, dir, { recursive: true, filter: (src) => !SKIPPED_DIR_NAMES.has(basename(src)) });
+    await cp(appDir, dir, { recursive: true, filter: (src) => !SKIPPED_NAMES.has(basename(src)) });
     await git(dir, "init", "--initial-branch=main");
     await git(dir, "config", "user.email", "eval@example.com");
     await git(dir, "config", "user.name", "ccqa eval");

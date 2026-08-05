@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import type { Task } from "../../../shared/types";
 import { getTask, updateTask } from "../api/tasks";
 import { Button } from "../components/Button";
+import { CheckboxField } from "../components/CheckboxField";
 
 export function TaskDetailPage() {
   const { taskId } = useParams();
@@ -50,19 +51,14 @@ export function TaskDetailPage() {
             }}
           />
         </div>
-        <div className="field">
-          <label>
-            <input
-              type="checkbox"
-              checked={done}
-              onChange={(event) => {
-                setDone(event.target.checked);
-                setSaved(false);
-              }}
-            />{" "}
-            Done
-          </label>
-        </div>
+        <CheckboxField
+          label="Done"
+          checked={done}
+          onChange={(event) => {
+            setDone(event.target.checked);
+            setSaved(false);
+          }}
+        />
         <Button type="submit">Save</Button>
         {saved ? <span className="status-message"> Changes saved</span> : null}
       </form>

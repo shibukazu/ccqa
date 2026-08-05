@@ -23,10 +23,9 @@ export function ProjectListPage() {
       setError("Project name is required");
       return;
     }
-    const project = await createProject(parsed.data);
-    setProjects((current) =>
-      [...current, project].sort((a, b) => a.name.localeCompare(b.name)),
-    );
+    await createProject(parsed.data);
+    // Re-fetch instead of inserting locally: the server owns the sort order.
+    setProjects(await listProjects());
     setName("");
     setError(null);
     setCreating(false);

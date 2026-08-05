@@ -24,6 +24,46 @@ export async function applyMutations(rootDir: string, mutations: readonly Mutati
   for (const mutation of mutations) await applyOne(rootDir, mutation);
 }
 
+/**
+ * The exact checks `applyMutations` performs, without writing anything: the
+ * same baseline pass, then the apply pass replayed against an in-memory
+ * overlay standing in for the earlier mutations' writes. Lets a guard test
+ * validate every committed case against the real app dir directly instead of
+ * copying it.
+ */
+export async function validateMutations(rootDir: string, mutations: readonly Mutation[]): Promise<void> {
+  for (const mutation of mutations) await checkAgainstBaseline(rootDir, mutation);
+  /** Resolved path → content after the simulated writes; null = deleted. */
+  const overlay = new Map<string, string | null>();
+  for (const mutation of mutations) {
+    const path = resolveInside(rootDir, mutation.file);
+    const current = overlay.has(path)
+      ? overlay.get(path)!
+      : await readFile(path, "utf8").catch((err: unknown) => {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw err;
+        });
+    if ("delete" in mutation) {
+      if (current === null) {
+        throw new MutationError(`cannot delete ${mutation.file}: file not found in the baseline`);
+      }
+      overlay.set(path, null);
+      continue;
+    }
+    if (current === null) {
+      throw new MutationError(`cannot mutate ${mutation.file}: file not found in the baseline`);
+    }
+    const occurrences = countOccurrences(current, mutation.search);
+    if (occurrences !== 1) {
+      throw new MutationError(
+        `mutation clashes with an earlier one in the same case: ${JSON.stringify(mutation.search)} ` +
+          `occurs ${occurrences} time(s) in ${mutation.file} after the preceding mutations`,
+      );
+    }
+    overlay.set(path, current.replace(mutation.search, () => mutation.replace));
+  }
+}
+
 async function checkAgainstBaseline(rootDir: string, mutation: Mutation): Promise<void> {
   const path = resolveInside(rootDir, mutation.file);
   if ("delete" in mutation) {

@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { SettingsSchema } from "../../../shared/settings";
 import { fetchSettings, saveSettings } from "../api/settings";
 import { Button } from "../components/Button";
+import { CheckboxField } from "../components/CheckboxField";
 import { TextField } from "../components/TextField";
 
 export function SettingsPage() {
@@ -47,19 +48,14 @@ export function SettingsPage() {
           }}
           error={error ?? undefined}
         />
-        <div className="field">
-          <label>
-            <input
-              type="checkbox"
-              checked={emailUpdates}
-              onChange={(event) => {
-                setEmailUpdates(event.target.checked);
-                setSaved(false);
-              }}
-            />{" "}
-            Email me a weekly summary
-          </label>
-        </div>
+        <CheckboxField
+          label="Email me a weekly summary"
+          checked={emailUpdates}
+          onChange={(event) => {
+            setEmailUpdates(event.target.checked);
+            setSaved(false);
+          }}
+        />
         <Button type="submit">Save changes</Button>
         {saved ? <span className="status-message"> Settings saved</span> : null}
       </form>

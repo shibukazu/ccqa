@@ -2,6 +2,7 @@ import { Router } from "express";
 import { ProjectCreateSchema } from "../../shared/projects";
 import type { DB } from "../db/index";
 import { createProject, getProject, listProjects } from "../db/queries/projects";
+import { parseId } from "../lib/ids";
 import { requireAuth } from "../middleware/auth";
 
 export function projectsRouter(db: DB): Router {
@@ -22,7 +23,8 @@ export function projectsRouter(db: DB): Router {
   });
 
   router.get("/:id", (req, res) => {
-    const project = getProject(db, Number(req.params.id));
+    const id = parseId(req.params.id);
+    const project = id === undefined ? undefined : getProject(db, id);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;

@@ -69,7 +69,7 @@
   "scripts": {
     "build": "tsdown",
     "dev": "node --experimental-strip-types ./bin/ccqa.ts",
-    "typecheck": "tsc --noEmit && pnpm --dir eval/app typecheck",
+    "typecheck": "tsc --noEmit && pnpm -r typecheck",
     "test": "vitest run",
     "test:unit": "vitest run src/",
     "test:e2e": "vitest run tests/e2e",

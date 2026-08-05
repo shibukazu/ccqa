@@ -1,6 +1,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Express } from "express";
+import { createServer } from "vite";
 
 const webRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "web");
 
@@ -9,7 +10,6 @@ const webRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "w
  * HMR in development, and every non-/api request falls through to the SPA.
  */
 export async function attachFrontend(app: Express): Promise<void> {
-  const { createServer } = await import("vite");
   const vite = await createServer({
     root: webRoot,
     configFile: path.join(webRoot, "vite.config.ts"),
