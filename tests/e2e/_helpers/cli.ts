@@ -92,7 +92,10 @@ export function runCcqa(
       clearTimeout(timeout);
       reject(err);
     });
-    child.on("exit", (code) => {
+    // "close", not "exit": exit fires when the process dies, possibly before
+    // the last stdout chunks are delivered — large JSON reports came back
+    // truncated. close waits for the stdio streams to drain.
+    child.on("close", (code) => {
       clearTimeout(timeout);
       resolvePromise({ stdout, stderr, exitCode: code ?? -1 });
     });

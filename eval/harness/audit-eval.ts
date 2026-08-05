@@ -1,5 +1,6 @@
+import { ZodError } from "zod";
 import { DRIFT_PROMPT_VERSION } from "../../src/prompts/drift.ts";
-import { runEval, type CaseContext, type EvalCaseResult, type EvalOptions } from "./eval-runner.ts";
+import { CaseAbandonedError, runEval, type CaseContext, type EvalCaseResult, type EvalOptions } from "./eval-runner.ts";
 import { formatUsd, renderTable, type ResultMeta } from "./results.ts";
 import {
   buildConfusionMatrix,
@@ -38,19 +39,34 @@ export async function runAuditEval(opts: EvalOptions = {}): Promise<AuditEvalSum
 }
 
 async function runAuditCase({ evalCase, model, ccqa }: CaseContext): Promise<AuditSpecOutcome[]> {
-  // Concurrency matches how the audit runs in CI; serial sweeps of the layered
-  // fixture run past the child-process timeout.
-  const res = await ccqa(["audit", "--report-format", "json", "--model", model, "--concurrency", "4"]);
-  // Exit 1 is the audit reporting drift — the expected outcome for most
-  // cases here. Anything past that is the command itself failing.
-  if (res.exitCode !== 0 && res.exitCode !== 1) {
-    throw new Error(`audit failed for case ${evalCase.name} (exit ${res.exitCode}):\n${res.stderr}`);
+  // Unparsable output gets one more attempt, then abandons the case instead
+  // of killing the whole paid run — same posture as the select eval.
+  let parseFailure: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // Concurrency matches how the audit runs in CI; serial sweeps of the
+    // layered fixture run past the child-process timeout.
+    const res = await ccqa(["audit", "--report-format", "json", "--model", model, "--concurrency", "4"]);
+    // Exit 1 is the audit reporting drift — the expected outcome for most
+    // cases here. Anything past that is the command itself failing.
+    if (res.exitCode !== 0 && res.exitCode !== 1) {
+      throw new Error(`audit failed for case ${evalCase.name} (exit ${res.exitCode}):\n${res.stderr}`);
+    }
+    let output;
+    try {
+      output = parseAuditOutput(res.stdout);
+    } catch (err) {
+      if (!(err instanceof SyntaxError) && !(err instanceof ZodError)) throw err;
+      parseFailure = err;
+      continue;
+    }
+    if (output.specs.length === 0) {
+      throw new Error(`audit swept no specs for case ${evalCase.name} (skipped: ${output.skipped ?? "unknown"})`);
+    }
+    return scoreAuditCase(evalCase.expect.audit ?? {}, output);
   }
-  const output = parseAuditOutput(res.stdout);
-  if (output.specs.length === 0) {
-    throw new Error(`audit swept no specs for case ${evalCase.name} (skipped: ${output.skipped ?? "unknown"})`);
-  }
-  return scoreAuditCase(evalCase.expect.audit ?? {}, output);
+  throw new CaseAbandonedError(
+    `audit output unparsable for case ${evalCase.name} after 2 attempts: ${String(parseFailure)}`,
+  );
 }
 
 function printAuditSummary(summary: AuditEvalSummary): void {
