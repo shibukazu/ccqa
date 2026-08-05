@@ -1,0 +1,11 @@
+title: update the display name in settings
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: open the "Settings" page from the header
+    expected: the "Settings" heading and the "Display name" field are visible
+  - instruction: replace the "Display name" value with "Weekend Maintainer" and click "Save changes"
+    expected: the page confirms with "Settings saved"

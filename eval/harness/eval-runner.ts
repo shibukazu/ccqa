@@ -18,6 +18,8 @@ export interface EvalOptions {
   model?: string;
   /** Substring filter on case names. */
   filter?: string;
+  /** Where the case YAMLs live; the wiring test points this at its own fixtures. */
+  casesDir?: string;
   resultsDir?: string;
   /** Extra env for the ccqa subprocesses; the wiring test injects the Claude mock here. */
   env?: Record<string, string>;
@@ -94,7 +96,7 @@ export async function runEval<TOutcome, TAggregate>(
 
   const specKeys = await listFixtureSpecKeys(DEFAULT_APP_DIR);
   if (specKeys.length === 0) throw new Error(`no specs found under ${join(DEFAULT_APP_DIR, ".ccqa")}`);
-  const cases = filterCases(await loadCases(DEFAULT_CASES_DIR, specKeys), def.kind, opts.filter);
+  const cases = filterCases(await loadCases(opts.casesDir ?? DEFAULT_CASES_DIR, specKeys), def.kind, opts.filter);
 
   const say = (line: string) => {
     if (!opts.quiet) console.log(line);

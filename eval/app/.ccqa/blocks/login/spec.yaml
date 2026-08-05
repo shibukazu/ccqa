@@ -12,4 +12,4 @@ steps:
   - instruction: fill the "Password" field with ${PASSWORD}
     expected: the field holds the typed value
   - instruction: click the "Sign in" button
-    expected: the "My Tasks" heading is visible
+    expected: the "Projects" heading is visible

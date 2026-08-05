@@ -1,0 +1,9 @@
+title: open a project from the list
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: click the "Website redesign" project
+    expected: the project page shows its name, the "1 of 3 done" progress, and the seeded tasks

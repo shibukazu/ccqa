@@ -7,7 +7,7 @@ import { ab, abWait, abUpload, abAssertTextVisible, abAssertVisible, abAssertNot
 // and inspect the same session after the run finishes.
 process.env.AGENT_BROWSER_SESSION ||= `ccqa-run-${Date.now()}`;
 
-test("filter the list down to completed tasks", () => {
+test("filter a project down to completed tasks", () => {
   // step: step-01 [login]
   __setCurrentStep("step-01", "login");
   ab("open", `${process.env.APP_URL ?? ""}`);
@@ -27,27 +27,19 @@ test("filter the list down to completed tasks", () => {
   // step: step-04 [login]
   __setCurrentStep("step-04", "login");
   ab("click", "text=Sign in");
-  abWait("text=My Tasks");
+  abWait("text=Projects");
   abStepEvidence("step-04", "login");
 
   // step: step-05 [spec]
   __setCurrentStep("step-05", "spec");
-  ab("fill", "[placeholder='What needs doing?']", "Buy milk");
-  ab("press", "Enter");
-  ab("fill", "[placeholder='What needs doing?']", "Walk the dog");
-  ab("press", "Enter");
-  abWait("text=Walk the dog");
+  ab("click", "text=Website redesign");
+  abWait("text=1 of 3 done");
   abStepEvidence("step-05", "spec");
 
   // step: step-06 [spec]
   __setCurrentStep("step-06", "spec");
-  ab("check", "[aria-label='Complete Buy milk']");
+  ab("click", "text=Completed");
+  abAssertTextVisible("Draft the new homepage copy");
+  abAssertNotVisible("text=Collect homepage feedback");
   abStepEvidence("step-06", "spec");
-
-  // step: step-07 [spec]
-  __setCurrentStep("step-07", "spec");
-  ab("click", "[data-filter='completed']");
-  abAssertTextVisible("Buy milk");
-  abAssertNotVisible("text=Walk the dog");
-  abStepEvidence("step-07", "spec");
 }, 5 * 60 * 1000);

@@ -17,7 +17,7 @@ test("read the help page", () => {
 
   // step: step-02 [spec]
   __setCurrentStep("step-02", "spec");
-  ab("click", "text=Back to your tasks");
+  ab("click", "text=Back to the app");
   abWait("text=Sign in");
   abAssertTextVisible("Sign in");
   abStepEvidence("step-02", "spec");

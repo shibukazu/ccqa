@@ -1,12 +1,21 @@
 import { execFile } from "node:child_process";
 import { cp, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import type { Mutation } from "./cases.ts";
 import { applyMutations } from "./mutate.ts";
 
 const execFileP = promisify(execFile);
+
+/**
+ * The app dir is a working dev checkout, so it accumulates installed and
+ * generated state (`pnpm install`, a booted app's database, Vite's cache).
+ * `git add -A` would ignore those via the app's .gitignore, but `fs.cp`
+ * copies everything — filter them out so case repos stay small and
+ * source-only.
+ */
+const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", "data", ".vite", ".DS_Store"]);
 
 export interface CaseRepo {
   /** Root of the throwaway checkout; also the cwd the ccqa commands run in. */
@@ -27,7 +36,7 @@ export interface CaseRepo {
 export async function buildCaseRepo(appDir: string, mutations: readonly Mutation[]): Promise<CaseRepo> {
   const dir = await mkdtemp(join(tmpdir(), "ccqa-eval-"));
   try {
-    await cp(appDir, dir, { recursive: true });
+    await cp(appDir, dir, { recursive: true, filter: (src) => !SKIPPED_DIR_NAMES.has(basename(src)) });
     await git(dir, "init", "--initial-branch=main");
     await git(dir, "config", "user.email", "eval@example.com");
     await git(dir, "config", "user.name", "ccqa eval");

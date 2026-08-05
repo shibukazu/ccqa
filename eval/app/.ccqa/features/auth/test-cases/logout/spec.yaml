@@ -1,0 +1,9 @@
+title: sign out from the header
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: click the "Sign out" button in the header
+    expected: the "Sign in" heading is visible again

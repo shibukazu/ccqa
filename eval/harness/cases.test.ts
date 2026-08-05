@@ -13,12 +13,14 @@ const execFileP = promisify(execFile);
 describe("the committed cases against the committed baseline", () => {
   // The standing guard: every case file parses, names only real specs, and
   // every mutation still applies to today's baseline (rationale on
-  // `applyMutations`). A rotted case fails here, in CI.
+  // `applyMutations`). A rotted case fails here, in CI. An empty cases dir
+  // is legal — the committed set is rebuilt whenever the baseline app is
+  // replaced — so the guard checks whatever is there, without requiring
+  // anything to be.
   it("every case loads and every mutation still applies", async () => {
     const specKeys = await listFixtureSpecKeys(DEFAULT_APP_DIR);
     expect(specKeys.length).toBeGreaterThan(0);
     const cases = await loadCases(DEFAULT_CASES_DIR, specKeys);
-    expect(cases.length).toBeGreaterThan(0);
     for (const evalCase of cases) {
       const repo = await buildCaseRepo(DEFAULT_APP_DIR, evalCase.mutations);
       await repo.cleanup();
@@ -30,6 +32,7 @@ describe("the committed cases against the committed baseline", () => {
   it("a mutation reaches the head commit", async () => {
     const specKeys = await listFixtureSpecKeys(DEFAULT_APP_DIR);
     const cases = await loadCases(DEFAULT_CASES_DIR, specKeys);
+    if (cases.length === 0) return; // nothing committed yet — see the guard above
     const evalCase = cases.find((c) => c.mutations.length === 1 && "search" in c.mutations[0]!);
     if (!evalCase) throw new Error("no single-search-mutation case committed");
     const mutation = evalCase.mutations[0]! as { file: string; search: string };

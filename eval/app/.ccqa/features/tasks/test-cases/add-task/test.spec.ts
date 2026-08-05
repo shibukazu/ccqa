@@ -7,7 +7,7 @@ import { ab, abWait, abUpload, abAssertTextVisible, abAssertVisible, abAssertNot
 // and inspect the same session after the run finishes.
 process.env.AGENT_BROWSER_SESSION ||= `ccqa-run-${Date.now()}`;
 
-test("add a task to the list", () => {
+test("add a task to a project", () => {
   // step: step-01 [login]
   __setCurrentStep("step-01", "login");
   ab("open", `${process.env.APP_URL ?? ""}`);
@@ -27,19 +27,25 @@ test("add a task to the list", () => {
   // step: step-04 [login]
   __setCurrentStep("step-04", "login");
   ab("click", "text=Sign in");
-  abWait("text=My Tasks");
+  abWait("text=Projects");
   abStepEvidence("step-04", "login");
 
   // step: step-05 [spec]
   __setCurrentStep("step-05", "spec");
-  ab("fill", "[placeholder='What needs doing?']", "Buy milk");
+  ab("click", "text=Website redesign");
+  abWait("text=1 of 3 done");
   abStepEvidence("step-05", "spec");
 
   // step: step-06 [spec]
   __setCurrentStep("step-06", "spec");
-  ab("click", "text=Add task");
-  abWait("text=Buy milk");
-  abAssertTextVisible("Buy milk");
-  abAssertTextVisible("1 task left");
+  ab("fill", "[placeholder='Add a task']", "Review the launch checklist");
   abStepEvidence("step-06", "spec");
+
+  // step: step-07 [spec]
+  __setCurrentStep("step-07", "spec");
+  ab("click", "text=Add task");
+  abWait("text=Review the launch checklist");
+  abAssertTextVisible("Review the launch checklist");
+  abAssertTextVisible("1 of 4 done");
+  abStepEvidence("step-07", "spec");
 }, 5 * 60 * 1000);

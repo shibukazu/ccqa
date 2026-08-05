@@ -1,11 +1,13 @@
-title: add a task to the list
+title: add a task to a project
 steps:
   - include: login
     params:
       APP_URL: ${APP_URL}
       EMAIL: ${APP_EMAIL}
       PASSWORD: ${APP_PASSWORD}
-  - instruction: type "Buy milk" into the "What needs doing?" field
-    expected: the field holds "Buy milk"
-  - instruction: submit the new task with the add button
-    expected: the list shows "Buy milk" and the counter shows one task left
+  - instruction: open the "Website redesign" project
+    expected: the task list is visible
+  - instruction: type "Review the launch checklist" into the "Add a task" field
+    expected: the field holds the typed value
+  - instruction: submit the new task with the "Add task" button
+    expected: the list shows "Review the launch checklist" and the progress reads "1 of 4 done"

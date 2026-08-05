@@ -7,7 +7,7 @@ import { ab, abWait, abUpload, abAssertTextVisible, abAssertVisible, abAssertNot
 // and inspect the same session after the run finishes.
 process.env.AGENT_BROWSER_SESSION ||= `ccqa-run-${Date.now()}`;
 
-test("sign in and land on the task list", () => {
+test("sign in and land on the projects page", () => {
   // step: step-01 [login]
   __setCurrentStep("step-01", "login");
   ab("open", `${process.env.APP_URL ?? ""}`);
@@ -27,13 +27,13 @@ test("sign in and land on the task list", () => {
   // step: step-04 [login]
   __setCurrentStep("step-04", "login");
   ab("click", "text=Sign in");
-  abWait("text=My Tasks");
+  abWait("text=Projects");
   abStepEvidence("step-04", "login");
 
   // step: step-05 [spec]
   __setCurrentStep("step-05", "spec");
-  abAssertTextVisible("My Tasks");
+  abAssertTextVisible("Projects");
   abAssertTextVisible(`Signed in as ${process.env.APP_EMAIL ?? ""}`);
-  abAssertTextVisible("0 tasks left");
+  abAssertTextVisible("Website redesign");
   abStepEvidence("step-05", "spec");
 }, 5 * 60 * 1000);

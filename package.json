@@ -69,7 +69,7 @@
   "scripts": {
     "build": "tsdown",
     "dev": "node --experimental-strip-types ./bin/ccqa.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm --dir eval/app typecheck",
     "test": "vitest run",
     "test:unit": "vitest run src/",
     "test:e2e": "vitest run tests/e2e",
@@ -88,5 +88,11 @@
       "version": ">=22.6"
     }
   },
-  "packageManager": "pnpm@10.1.0"
+  "packageManager": "pnpm@10.1.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
 }

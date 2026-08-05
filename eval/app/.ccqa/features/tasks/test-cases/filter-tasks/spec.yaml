@@ -1,13 +1,11 @@
-title: filter the list down to completed tasks
+title: filter a project down to completed tasks
 steps:
   - include: login
     params:
       APP_URL: ${APP_URL}
       EMAIL: ${APP_EMAIL}
       PASSWORD: ${APP_PASSWORD}
-  - instruction: add "Buy milk" and "Walk the dog" by typing each into the "What needs doing?" field and pressing Enter
-    expected: the list shows both tasks
-  - instruction: check the "Complete Buy milk" checkbox
-    expected: the "Buy milk" row shows as done
-  - instruction: click the "Completed" filter button
-    expected: the list shows "Buy milk" and no longer shows "Walk the dog"
+  - instruction: open the "Website redesign" project
+    expected: the task list is visible
+  - instruction: click the "Completed" filter
+    expected: the list shows "Draft the new homepage copy" and no longer shows "Collect homepage feedback"
