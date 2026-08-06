@@ -22,10 +22,12 @@ function cloudProviderEnabled(): boolean {
 /**
  * Probe whether the host has any credential the Anthropic SDK can pick up:
  *   1. ANTHROPIC_API_KEY env var (CI / scripted use)
- *   2. CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX (cloud-provider
+ *   2. CLAUDE_CODE_OAUTH_TOKEN env var (a long-lived subscription token from
+ *      `claude setup-token`, the headless-CI counterpart of a login)
+ *   3. CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX (cloud-provider
  *      endpoints authenticated by the cloud SDK's credential chain)
- *   3. ~/.claude/.credentials.json (Claude Code login, file-based platforms)
- *   4. macOS Keychain item "Claude Code-credentials" (Claude Code login on
+ *   4. ~/.claude/.credentials.json (Claude Code login, file-based platforms)
+ *   5. macOS Keychain item "Claude Code-credentials" (Claude Code login on
  *      darwin stores the OAuth credentials in the Keychain, not on disk)
  *
  * Claude-driven hooks are opt-in, so the caller only consults this after the
@@ -33,13 +35,15 @@ function cloudProviderEnabled(): boolean {
  * that surfaces as "analysis skipped".
  */
 export function driftAuthAvailable(): { ok: true } | { ok: false; reason: string } {
-  const key = process.env["ANTHROPIC_API_KEY"];
-  if (typeof key === "string" && key.length > 0) return { ok: true };
+  for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.length > 0) return { ok: true };
+  }
   if (cloudProviderEnabled()) return { ok: true };
   const credPath = join(homedir(), ".claude", ".credentials.json");
   if (existsSync(credPath)) return { ok: true };
   if (process.platform === "darwin" && keychainHasClaudeCredentials()) return { ok: true };
-  return { ok: false, reason: "no ANTHROPIC_API_KEY / Bedrock or Vertex env / claude login" };
+  return { ok: false, reason: "no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN / Bedrock or Vertex env / claude login" };
 }
 
 /**

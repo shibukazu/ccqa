@@ -114,12 +114,15 @@ export function resolveModel(explicit?: string): string | undefined {
  * - `ANTHROPIC_AUTH_TOKEN`    — sent as `Authorization: Bearer <token>`.
  * - `ANTHROPIC_API_KEY`       — API key, when used instead of a token.
  * - `ANTHROPIC_CUSTOM_HEADERS` — extra request headers.
+ * - `CLAUDE_CODE_OAUTH_TOKEN` — long-lived subscription token from
+ *   `claude setup-token`, the headless-CI counterpart of a login.
  */
 const ENDPOINT_ENV_KEYS = [
   "ANTHROPIC_BASE_URL",
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_CUSTOM_HEADERS",
+  "CLAUDE_CODE_OAUTH_TOKEN",
 ] as const;
 
 /**
@@ -127,6 +130,12 @@ const ENDPOINT_ENV_KEYS = [
  * so they can be forwarded, verbatim, to every Claude Code invocation. Returns
  * only the keys that are actually set (non-empty), so unset variables never
  * override the SDK's own defaults.
+ *
+ * When both credentials are present the OAuth token wins and the API key is
+ * not forwarded. Left to the CLI the API key would win, which makes "switch a
+ * CI job to the subscription token" require unwiring the key everywhere; with
+ * the precedence here, adding the one variable is the whole switch, and
+ * removing it is the whole rollback.
  */
 export function resolveEndpointEnv(): Record<string, string> {
   const endpointEnv: Record<string, string> = {};
@@ -134,6 +143,7 @@ export function resolveEndpointEnv(): Record<string, string> {
     const value = process.env[key];
     if (value && value.length > 0) endpointEnv[key] = value;
   }
+  if (endpointEnv["CLAUDE_CODE_OAUTH_TOKEN"]) delete endpointEnv["ANTHROPIC_API_KEY"];
   return endpointEnv;
 }
 

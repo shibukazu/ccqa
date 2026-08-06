@@ -1,8 +1,8 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, withoutEmptyEndpointVars } from "./invoke.ts";
+import { afterEach, describe, test, expect } from "vitest";
+import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, resolveEndpointEnv, withoutEmptyEndpointVars } from "./invoke.ts";
 import * as log from "../cli/logger.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -656,6 +656,35 @@ describe("invokeClaudeStreaming Bash logging", () => {
   test("masks a resolved env value the model inlined into the command", async () => {
     const out = await logOfOneBashCall([["https://app.example.com", "${APP_URL}"]]);
     expect(out).toContain("agent-browser --session s1 open ${APP_URL}/orders");
+  });
+});
+
+describe("resolveEndpointEnv", () => {
+  const saved = {
+    ANTHROPIC_API_KEY: process.env["ANTHROPIC_API_KEY"],
+    CLAUDE_CODE_OAUTH_TOKEN: process.env["CLAUDE_CODE_OAUTH_TOKEN"],
+  };
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  test("forwards the OAuth token", () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-test";
+    expect(resolveEndpointEnv()["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("sk-ant-oat-test");
+  });
+
+  // The CLI would prefer the API key; forwarding both would make adding the
+  // token a no-op. The switch must be "add one variable", so the token wins.
+  test("the OAuth token wins over the API key", () => {
+    process.env["ANTHROPIC_API_KEY"] = "sk-real";
+    process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-test";
+    const env = resolveEndpointEnv();
+    expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("sk-ant-oat-test");
+    expect("ANTHROPIC_API_KEY" in env).toBe(false);
   });
 });
 

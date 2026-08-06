@@ -1,0 +1,389 @@
+{
+  "kind": "select",
+  "startedAt": "2026-08-03T04:53:17.604Z",
+  "model": "sonnet",
+  "promptVersion": null,
+  "cost": {
+    "totalUsd": 3.4298771999999995,
+    "invocations": 12,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "api-shared-change",
+      "title": "the shared fetch layer changes — every spec that signs in goes through it, and only the static help page does not",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "backend-field-rename",
+      "title": "the login response's token field is renamed in the backend only — nothing for the audit to report, but every signed-in flow must re-run",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "backend-route-move",
+      "title": "the toggle route moves in the backend while the frontend still calls the old path — no drift to report, but the toggling specs must re-run",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "backend-title-minlength",
+      "title": "the backend starts requiring 10-character titles — every flow that adds a task now describes a request the product refuses",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "block-spec-file-change",
+      "title": "the login block's own spec.yaml changes — every including spec re-runs (mechanical set membership, no model call)",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "css-only-change",
+      "title": "a CSS-only restyle — nothing any spec asserts or selects changed",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "docs-only-change",
+      "title": "a docs-only change — no spec is reached",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "filter-bar-refactor",
+      "title": "the filter bar stops re-rendering the list on click — only the spec that clicks a filter button is affected",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "mixed-commit-noise",
+      "title": "one user-visible change plus docs noise in the same commit — only the spec that asserts the changed copy is needed",
+      "outcomes": [],
+      "abandoned": true
+    },
+    {
+      "name": "server-endpoint-change",
+      "title": "one API endpoint's handler changes — the specs exercising it are needed, the rest are not",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "spec-own-file-change",
+      "title": "a spec's own file changes — that spec re-runs (mechanical set membership, no model call)",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "truePositives": 19,
+    "falsePositives": 0,
+    "falseNegatives": 2,
+    "trueNegatives": 29,
+    "precision": 1,
+    "recall": 0.9047619047619048,
+    "verdictAccuracy": 0.96,
+    "unknowns": 0
+  }
+}

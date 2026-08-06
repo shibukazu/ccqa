@@ -1,0 +1,113 @@
+{
+  "kind": "select",
+  "startedAt": "2026-08-02T11:46:40.754Z",
+  "model": "sonnet",
+  "promptVersion": null,
+  "cost": {
+    "totalUsd": 0.6358902,
+    "invocations": 3,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "api-shared-change",
+      "title": "the shared fetch layer changes — every spec signs in through it",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "docs-only-change",
+      "title": "a docs-only change — no spec is reached",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "filter-bar-refactor",
+      "title": "a change inside the filter bar — only the filter spec is reached",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "truePositives": 4,
+    "falsePositives": 0,
+    "falseNegatives": 1,
+    "trueNegatives": 7,
+    "precision": 1,
+    "recall": 0.8,
+    "verdictAccuracy": 0.9166666666666666,
+    "unknowns": 0
+  }
+}

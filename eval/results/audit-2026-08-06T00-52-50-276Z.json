@@ -1,0 +1,230 @@
+{
+  "kind": "audit",
+  "startedAt": "2026-08-06T00:52:50.276Z",
+  "model": "haiku",
+  "promptVersion": "6",
+  "cost": {
+    "totalUsd": 1.0756996,
+    "invocations": 1,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "login-block-markup-drift",
+      "title": "the login form's email field gets a new id — every spec including the login block drifts at once",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Email input selector mismatch: test uses #email but LoginPage has id=\"login-email\"",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test uses wrong selector for email input field",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Email field selector in generated test code does not match source",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Email input field selector changed from #email to #login-email",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Email field selector is incorrect in generated test code",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Email input selector #email does not exist; LoginPage uses #login-email",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Email input selector mismatch: test uses #email, but source uses #login-email",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "TEST_DRIFT",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    }
+  ],
+  "confusion": {
+    "matrix": {
+      "CLEAN": {
+        "CLEAN": 1,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "TEST_DRIFT": {
+        "CLEAN": 2,
+        "TEST_DRIFT": 7,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "SPEC_CHANGE": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      }
+    },
+    "total": 10,
+    "correct": 8,
+    "accuracy": 0.8,
+    "cleanRecall": {
+      "correct": 1,
+      "total": 1
+    },
+    "driftRecall": {
+      "correct": 7,
+      "total": 9
+    },
+    "subAnswers": {
+      "total": 14,
+      "correct": 14
+    }
+  }
+}

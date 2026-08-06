@@ -1,0 +1,1834 @@
+{
+  "kind": "audit",
+  "startedAt": "2026-08-05T22:16:16.500Z",
+  "model": "haiku",
+  "promptVersion": "6",
+  "cost": {
+    "totalUsd": 27.348351299999994,
+    "invocations": 22,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "backend-default-done",
+      "title": "new tasks are created already done — the add flow's asserted progress count no longer happens",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "New tasks are created as completed, so progress reads \"2 of 4 done\" not \"1 of 4 done\" after adding a task",
+          "subAnswers": [
+            {
+              "field": "specChangeKind",
+              "expected": "BEHAVIOUR_CHANGED",
+              "got": "BEHAVIOUR_CHANGED",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "backend-route-move",
+      "title": "the task update route moves server-side while the client still calls the old path — no drift to report, but the updating specs must re-run",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": false,
+          "headline": "Generated test missing explicit check for Settings heading visibility",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": false,
+          "headline": "Generated test calls outdated API endpoint; server route changed from `/:id` to `/:id/update`",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "baseline-clean",
+      "title": "no change at all — every spec must come back clean",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "confirm-before-complete",
+      "title": "completing a task now asks for confirmation — the flow gained a step the spec does not describe",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "css-only-change",
+      "title": "a CSS-only restyle — nothing any spec asserts or selects changed",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "disable-filter-feature",
+      "title": "the filter bar is switched off, not deleted — the code remains but the buttons never render",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "Filter UI is hidden; spec expects to click a 'Completed' filter button that no longer exists",
+          "subAnswers": [
+            {
+              "field": "specChangeKind",
+              "expected": "FEATURE_REMOVED",
+              "got": "BEHAVIOUR_CHANGED",
+              "match": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "login-block-markup-drift",
+      "title": "the login form's email field gets a new id — every spec including the login block drifts at once",
+      "outcomes": [],
+      "abandoned": true
+    },
+    {
+      "name": "move-help-route",
+      "title": "the help page moves to a new route — same page, new address",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "Help page route changed from /help to /guide",
+          "subAnswers": [
+            {
+              "field": "specChangeKind",
+              "expected": "BEHAVIOUR_CHANGED",
+              "got": "BEHAVIOUR_CHANGED",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "new-feature-clean",
+      "title": "a new page appears that no spec covers — existing specs must stay clean",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": false,
+          "headline": "Generated test selector 'text=Changes saved' does not match the actual rendered text ' Changes saved' (with leading space) in TaskDetailPage",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "refactor-bait-clean",
+      "title": "an internal rename nothing observable follows — the audit must stay silent",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "remove-filter-feature",
+      "title": "the filter feature is removed outright — the spec asks about something gone",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "Task filtering feature was removed from the product; 'Completed' filter button no longer exists",
+          "subAnswers": [
+            {
+              "field": "specChangeKind",
+              "expected": "FEATURE_REMOVED",
+              "got": "FEATURE_REMOVED",
+              "match": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rename-add-button",
+      "title": "the add button's label is renamed — the flow survives, the name does not",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test code clicks button with text 'Add task', but actual button text is 'Add'",
+          "subAnswers": [
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "rename-complete-aria-label",
+      "title": "the row checkbox's accessible name changes — no visible text moved, only the aria-label the spec addresses it by",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test uses wrong aria-label for task checkbox; source has `Toggle \"Collect homepage feedback\"` not `Mark \"Collect homepage feedback\" done`",
+          "subAnswers": [
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "rename-notes-field-id",
+      "title": "the notes field gets a new id — the generated selector goes stale",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test uses incorrect selector #notes instead of #task-notes for the Notes field",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "rework-add-flow",
+      "title": "adding a task becomes Enter-only — the feature survives, the flow the spec describes does not",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": false,
+          "headline": "Add task button was removed; form now submits via Enter key",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "server-unrelated-change",
+      "title": "a new server endpoint no spec observes — the audit must not cry wolf",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "settings-maintenance-gate",
+      "title": "the settings API is deliberately gated off — the page renders but saving is refused, so the described flow no longer completes",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "Settings endpoint is frozen and returns 503 error; the test describes a settings modification flow that is no longer available",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "shared-name-maxlength",
+      "title": "project names are capped at 10 characters — the name the create spec types is now refused by both the form and the API",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "SPEC_CHANGE",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "stale-spec-prose",
+      "title": "the \"Display name\" label is renamed on screen — the spec's prose goes stale while the generated selector still passes",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Spec expects visible label 'Display name' but source renders 'Name'",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "store-refactor-clean",
+      "title": "the project lookup is rewritten with identical behaviour — a backend-internal refactor the audit must stay silent on",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "trim-session-note",
+      "title": "the session note loses its prefix — the email the spec asks for is still visible, the copy the generated test asserted is not",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "TEST_DRIFT",
+          "predicted": "ERROR",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    }
+  ],
+  "confusion": {
+    "matrix": {
+      "CLEAN": {
+        "CLEAN": 184,
+        "TEST_DRIFT": 3,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "TEST_DRIFT": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 4,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 1
+      },
+      "SPEC_CHANGE": {
+        "CLEAN": 2,
+        "TEST_DRIFT": 1,
+        "SPEC_CHANGE": 5,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      }
+    },
+    "total": 200,
+    "correct": 193,
+    "accuracy": 0.965,
+    "cleanRecall": {
+      "correct": 184,
+      "total": 187
+    },
+    "driftRecall": {
+      "correct": 9,
+      "total": 13
+    },
+    "subAnswers": {
+      "total": 8,
+      "correct": 7
+    }
+  }
+}

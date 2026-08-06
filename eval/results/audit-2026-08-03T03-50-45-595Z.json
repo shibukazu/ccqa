@@ -1,0 +1,1033 @@
+{
+  "kind": "audit",
+  "startedAt": "2026-08-03T03:50:45.595Z",
+  "model": "haiku",
+  "promptVersion": "6",
+  "cost": {
+    "totalUsd": 9.6356995,
+    "invocations": 19,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "backend-field-rename",
+      "title": "the login response's token field is renamed in the backend only — nothing for the audit to report, but every signed-in flow must re-run",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "backend-route-move",
+      "title": "the toggle route moves in the backend while the frontend still calls the old path — no drift to report, but the toggling specs must re-run",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "backend-title-minlength",
+      "title": "the backend starts requiring 10-character titles — every flow that adds a task now describes a request the product refuses",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "SPEC_CHANGE",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "baseline-clean",
+      "title": "no change at all — every spec must come back clean",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "confirm-before-complete",
+      "title": "completing a task now asks for confirmation — the flow gained a step the specs do not describe",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "SPEC_CHANGE",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "css-only-change",
+      "title": "a CSS-only restyle — nothing any spec asserts or selects changed",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "disable-filter-feature",
+      "title": "the filter feature is switched off, not deleted — the code remains but the buttons never render",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "The Completed filter feature is disabled in the application; the filter buttons do not exist at runtime.",
+          "subAnswers": [
+            {
+              "field": "specChangeKind",
+              "expected": "FEATURE_REMOVED",
+              "got": "BEHAVIOUR_CHANGED",
+              "match": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "drop-session-note",
+      "title": "the \"Signed in as\" note is dropped — the generated test asserted it, the spec never asked for it",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test asserts 'Signed in as {email}' which is not rendered in the source code",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "OVER_ASSERTION",
+              "got": "OVER_ASSERTION",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": false,
+          "headline": "Spec expects 'one task left' but source renders '1 task left'",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "login-block-markup-drift",
+      "title": "the login form's email field gets a new id — every spec including the login block drifts at once",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated code uses stale selector #email, but HTML input has id login-email",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Email input selector \"#email\" does not match HTML element id=\"login-email\"",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated code uses non-existent selector `#email` for login form",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Email input selector is stale: generated code targets #email but source uses id=\"login-email\"",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "move-help-route",
+      "title": "the help page moves to a new route — same page, new address",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "SPEC_CHANGE",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": false,
+          "headline": "Help page route changed from /help to /guide",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "new-feature-clean",
+      "title": "a new feature appears that no spec covers — existing specs must stay clean",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "refactor-bait-clean",
+      "title": "an internal rename nothing observable follows — the audit must stay silent",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "remove-filter-feature",
+      "title": "the filter feature is removed outright — the spec asks about something gone",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "The filter-tasks spec describes a filtering feature that is not implemented in the codebase",
+          "subAnswers": [
+            {
+              "field": "specChangeKind",
+              "expected": "FEATURE_REMOVED",
+              "got": "FEATURE_REMOVED",
+              "match": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rename-add-button",
+      "title": "the add button's label is renamed — the generated selector goes stale",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test clicks on \"Add task\" button, but HTML button says only \"Add\"",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "rename-complete-aria-label",
+      "title": "the row checkbox's accessible name changes — no visible text moved, only the aria-label both specs address it by",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test uses aria-label selector \"Complete Buy milk\" but app generates \"Toggle Buy milk\"",
+          "subAnswers": [
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Checkbox aria-label in generated test does not match source code",
+          "subAnswers": [
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rework-add-flow",
+      "title": "adding a task becomes Enter-only — the feature survives, the flow the spec describes does not",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": false,
+          "headline": "The spec instructs clicking an \"add button\" to submit a task, but the product has no clickable button—it submits the form by pressing Enter.",
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "server-unrelated-change",
+      "title": "server-only changes no spec observes — the audit must not cry wolf",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "stale-spec-prose",
+      "title": "the \"Completed\" filter is renamed on screen — the spec's prose goes stale while the generated structural selector still passes",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Spec describes filter button as 'Completed' but UI label is 'Done'",
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "store-refactor-clean",
+      "title": "the store's task lookup is rewritten with identical behaviour — a backend-internal refactor the audit must stay silent on",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    }
+  ],
+  "confusion": {
+    "matrix": {
+      "CLEAN": {
+        "CLEAN": 76,
+        "TEST_DRIFT": 1,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "TEST_DRIFT": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 9,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "SPEC_CHANGE": {
+        "CLEAN": 5,
+        "TEST_DRIFT": 2,
+        "SPEC_CHANGE": 2,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      }
+    },
+    "total": 95,
+    "correct": 87,
+    "accuracy": 0.9157894736842105,
+    "cleanRecall": {
+      "correct": 76,
+      "total": 77
+    },
+    "driftRecall": {
+      "correct": 11,
+      "total": 18
+    },
+    "subAnswers": {
+      "total": 16,
+      "correct": 15
+    }
+  }
+}

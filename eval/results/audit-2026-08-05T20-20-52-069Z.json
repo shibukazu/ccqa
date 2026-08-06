@@ -1,0 +1,139 @@
+{
+  "kind": "audit",
+  "startedAt": "2026-08-05T20:20:52.069Z",
+  "model": "haiku",
+  "promptVersion": "6",
+  "cost": {
+    "totalUsd": 1.3691674,
+    "invocations": 1,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "backend-default-done",
+      "title": "new tasks are created already done — the add flow's asserted progress count no longer happens",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "CLEAN",
+          "labelMatch": false,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    }
+  ],
+  "confusion": {
+    "matrix": {
+      "CLEAN": {
+        "CLEAN": 9,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "TEST_DRIFT": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "SPEC_CHANGE": {
+        "CLEAN": 1,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      }
+    },
+    "total": 10,
+    "correct": 9,
+    "accuracy": 0.9,
+    "cleanRecall": {
+      "correct": 9,
+      "total": 9
+    },
+    "driftRecall": {
+      "correct": 0,
+      "total": 1
+    },
+    "subAnswers": {
+      "total": 0,
+      "correct": 0
+    }
+  }
+}
