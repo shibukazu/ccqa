@@ -3,7 +3,7 @@ import { tallyInvocation, withCostTally } from "../claude/cost-tally.ts";
 import type { ClaudeInvocationCost } from "../claude/invoke.ts";
 import type { HubClient } from "../hub-client/index.ts";
 import type { HubRunPush } from "./open-hub-run.ts";
-import { sealRecordPush } from "./record.ts";
+import { recordCommand, sealRecordPush } from "./record.ts";
 
 function fakePush(patchRun: HubClient["patchRun"]): HubRunPush {
   return { hub: { patchRun } as unknown as HubClient, kind: "record", runId: "r1", gitHead: "abc123" };
@@ -51,5 +51,30 @@ describe("sealRecordPush", () => {
     // browser-session reap queued behind it. The caller sets the exit code.
     const patchRun = vi.fn().mockRejectedValue(new Error("nope"));
     await expect(sealRecordPush(fakePush(patchRun), "tasks", "create", true)).resolves.toBe(false);
+  });
+
+  test("a failure note lands in the row's failureLogExcerpt", async () => {
+    // The hole this closes: a CI wrapper's `timeout` SIGTERMs a stuck
+    // recording, and the hub row said only status:"failed" — undiagnosable.
+    const patchRun = vi.fn().mockResolvedValue({});
+    await sealRecordPush(fakePush(patchRun), "tasks", "create", false, "terminated by signal (SIGTERM) during step-03");
+    expect(patchRun.mock.calls[0]![1].rows[0]).toMatchObject({
+      status: "failed",
+      failureLogExcerpt: "terminated by signal (SIGTERM) during step-03",
+    });
+  });
+
+  test("a note never captions a successful recording", async () => {
+    const patchRun = vi.fn().mockResolvedValue({});
+    await sealRecordPush(fakePush(patchRun), "tasks", "create", true, "terminated by signal (SIGTERM)");
+    expect(patchRun.mock.calls[0]![1].rows[0]).toMatchObject({ status: "passed", failureLogExcerpt: null });
+  });
+});
+
+describe("record --instruction", () => {
+  test("parses the flag into opts.instruction, and leaves it undefined when absent", () => {
+    expect(recordCommand.opts().instruction).toBeUndefined();
+    recordCommand.parseOptions(["--instruction", "avoid asserting the results counter"]);
+    expect(recordCommand.opts().instruction).toBe("avoid asserting the results counter");
   });
 });

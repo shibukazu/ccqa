@@ -76,8 +76,15 @@ export function createRunTeardown(): RunTeardown {
  * A command must install at most one: a second handler that also exits would
  * race this one and could terminate mid-finalizer. A second signal while
  * tearing down hard-exits immediately rather than waiting.
+ *
+ * `onSignal` runs synchronously before the teardown starts, so a finalizer
+ * can already see which signal is ending the process (e.g. `ccqa record`
+ * seals its hub run with a "terminated by signal" note).
  */
-export function installTeardownSignalHandlers(teardown: RunTeardown): () => void {
+export function installTeardownSignalHandlers(
+  teardown: RunTeardown,
+  onSignal?: (sig: "SIGINT" | "SIGTERM") => void,
+): () => void {
   let handling = false;
   const handler = (sig: "SIGINT" | "SIGTERM") => {
     const code = sig === "SIGINT" ? 130 : 143;
@@ -86,6 +93,7 @@ export function installTeardownSignalHandlers(teardown: RunTeardown): () => void
       return;
     }
     handling = true;
+    onSignal?.(sig);
     void teardown.run().finally(() => process.exit(code));
   };
   const onInt = () => handler("SIGINT");

@@ -5,7 +5,7 @@ vi.mock("../diagnose/snapshot.ts", async (importOriginal) => {
   return { ...actual, closeSession: vi.fn(async () => {}) };
 });
 const { closeSession } = await import("../diagnose/snapshot.ts");
-const { createRunTeardown } = await import("./run-teardown.ts");
+const { createRunTeardown, installTeardownSignalHandlers } = await import("./run-teardown.ts");
 
 describe("createRunTeardown", () => {
   beforeEach(() => {
@@ -83,5 +83,26 @@ describe("createRunTeardown", () => {
 
     expect(finalize).toHaveBeenCalledTimes(1);
     expect(closeSession).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("installTeardownSignalHandlers", () => {
+  test("onSignal runs before the finalizers, so a seal can say which signal fired", async () => {
+    const order: string[] = [];
+    const teardown = createRunTeardown();
+    teardown.onFinalize(() => {
+      order.push("finalize");
+    });
+    // The handler exits after teardown; neuter it so the test survives.
+    const exit = vi.spyOn(process, "exit").mockImplementation((() => undefined) as never);
+    const dispose = installTeardownSignalHandlers(teardown, (sig) => order.push(sig));
+    try {
+      process.emit("SIGTERM", "SIGTERM");
+      await teardown.run();
+      expect(order).toEqual(["SIGTERM", "finalize"]);
+    } finally {
+      dispose();
+      exit.mockRestore();
+    }
   });
 });

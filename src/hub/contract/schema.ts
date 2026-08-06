@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   ActualCauseSchema,
   DriftLabelSchema,
+  DriftSubDiagnosisSchema,
   DriftSurfaceSchema,
   PredictedLabelSchema,
   ReportKindSchema,
@@ -749,6 +750,12 @@ export const SpecDriftEntrySchema = z.object({
   label: DriftLabelSchema.nullable(),
   /** Set only when `label` is non-null — no surface applies to a clean audit. */
   surface: DriftSurfaceSchema.optional(),
+  /**
+   * The diagnosis's finer-grained kind (e.g. selector drift vs over-assertion),
+   * so a CI reader can branch on which repair a drifted spec needs. Optional:
+   * absent on entries written before this field existed, and on clean audits.
+   */
+  subDiagnosis: DriftSubDiagnosisSchema.optional(),
   /** See `SpecChangeKindSchema`. */
   specChangeKind: SpecChangeKindSchema.optional(),
   confidence: z.number().optional(),

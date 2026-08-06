@@ -512,6 +512,7 @@ GET /api/v1/projects/:project/drift
 interface SpecDriftEntry {
   label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN" | null;  // null = audited, no drift found
   surface?: "spec" | "generated";  // set only when label is non-null
+  subDiagnosis?: "SELECTOR_DRIFT" | "OVER_ASSERTION" | "NONE";  // the diagnosis's finer-grained kind
   specChangeKind?: "FEATURE_REMOVED" | "BEHAVIOUR_CHANGED";  // set only on SPEC_CHANGE
   confidence?: number;
   headline?: string;
@@ -530,6 +531,11 @@ a different state from `label: null` and the two must not be conflated. A
 had (including none). Entries are scoped by project/**branch**; the response
 merges every branch, newest `at` per spec winning — the same approximation
 `/last-green`'s `getMerged` read makes.
+
+`subDiagnosis` carries the diagnosis's finer-grained kind (e.g. selector
+drift vs over-assertion on a `TEST_DRIFT`), so a consumer can branch on which
+repair a drifted spec needs. It is absent on entries written before the field
+existed and on clean audits.
 
 `specChangeKind` names which repair a `SPEC_CHANGE` needs: `FEATURE_REMOVED`
 means the behaviour the spec checks is gone from the code, so the spec goes

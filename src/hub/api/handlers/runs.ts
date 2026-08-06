@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry, type SpecRedLedgerEntry } from "../../contract/schema.ts";
-import { GitEnvelopeSchema, normalizeDiagnosis, ReportCostSchema, ReportKindSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportKind, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
+import { DriftSubDiagnosisSchema, GitEnvelopeSchema, normalizeDiagnosis, ReportCostSchema, ReportKindSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportKind, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { DriftLabel } from "../../../drift/types.ts";
 import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
@@ -312,12 +312,18 @@ async function updateDriftLedger(
     // Normalized on the way in: a client is free to push a row this hub never
     // built, and the ledger is where a mismatched one would outlive the push.
     const diagnosis = row.analysis ? normalizeDiagnosis(row.analysis) : null;
+    // The row schema admits the full run-time subDiagnosis vocabulary; the
+    // ledger's contract only the kinds a static audit can claim. Narrowed
+    // rather than cast so a foreign client's row cannot store a value the
+    // ledger's own schema rejects.
+    const subDiagnosis = DriftSubDiagnosisSchema.safeParse(diagnosis?.subDiagnosis);
     ledger.specs[key] = {
       // A kind:"drift" row's `analysis` always originates from analyzeDrift
       // (see summarizeDrift above), so its label is one of
       // TEST_DRIFT/SPEC_CHANGE/UNKNOWN, never PRODUCT_BUG.
       label: diagnosis ? (diagnosis.label as DriftLabel) : null,
       surface: diagnosis?.surface,
+      subDiagnosis: subDiagnosis.success ? subDiagnosis.data : undefined,
       specChangeKind: diagnosis?.specChangeKind,
       confidence: diagnosis?.confidence,
       headline: diagnosis?.headline,

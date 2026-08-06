@@ -59,13 +59,26 @@ export interface RunTraceResult {
   churnByStep: Map<string, StepChurn>;
 }
 
+export interface RunTraceOptions {
+  cwd?: string;
+  hubContext?: HubContext | null;
+  /** Extra caller guidance appended to the trace system prompt (`--instruction`). */
+  instruction?: string;
+  /**
+   * Called whenever the trace advances to a new spec step. Lets the caller
+   * know which step was in flight when a signal killed the process — the
+   * trace's own result never materialises on that path.
+   */
+  onStep?: (stepId: string) => void;
+}
+
 export async function runTrace(
   featureName: string,
   specName: string,
   model?: string,
   validationMode: ValidationMode = "lenient",
   language?: string,
-  opts: { cwd?: string; hubContext?: HubContext | null } = {},
+  opts: RunTraceOptions = {},
 ): Promise<RunTraceResult> {
   log.header("trace", `${featureName}/${specName}`);
 
@@ -112,6 +125,7 @@ export async function runTrace(
     title: spec.title,
     steps: expanded,
     sessionName,
+    ...(opts.instruction ? { instruction: opts.instruction } : {}),
   });
   const promptBundle = await loadPromptBundleFromHub(opts.hubContext ?? null, "record");
   if (promptBundle !== null) log.meta("prompt", promptBundle.loaded.join(" + "));
@@ -131,7 +145,7 @@ export async function runTrace(
   // Tags each recorded action with its spec step so codegen can group by
   // step even when a step opens no URL (e.g. a "fill the form" step
   // sandwiched between a `navigate` step and a navigation).
-  const stepTracker = createStepTracker();
+  const stepTracker = createStepTracker(opts.onStep);
 
   const withStepId = (action: RecordedAction | null, stepId: string | undefined): RecordedAction | null => {
     if (!action) return null;
@@ -569,15 +583,18 @@ export interface StepTracker {
   fromCommand: (stepId: string | undefined) => string | undefined;
 }
 
-export function createStepTracker(): StepTracker {
+export function createStepTracker(onChange?: (stepId: string) => void): StepTracker {
   let currentStepId: string | undefined;
+  const advance = (stepId: string): void => {
+    if (stepId === currentStepId) return;
+    currentStepId = stepId;
+    onChange?.(stepId);
+  };
   return {
     current: () => currentStepId,
-    fromStepStartLine: (stepId) => {
-      currentStepId = stepId;
-    },
+    fromStepStartLine: advance,
     fromCommand: (stepId) => {
-      if (stepId) currentStepId = stepId;
+      if (stepId) advance(stepId);
       return currentStepId;
     },
   };

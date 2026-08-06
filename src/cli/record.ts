@@ -32,6 +32,7 @@ const VALIDATION_MODES = ["lenient", "strict"] as const;
 interface RecordOptions {
   model?: string;
   language?: string;
+  instruction?: string;
   hubProfile?: string;
   traceValidation?: ValidationMode;
   autoFix?: AutoFixMode;
@@ -64,6 +65,10 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     .option(
       "-m, --model <name>",
       "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+    )
+    .option(
+      "--instruction <text>",
+      "Extra guidance for the recording agent — e.g. the drift audit's finding when re-recording a drifted spec.",
     )
     .option(
       "--trace-validation <mode>",
@@ -196,11 +201,23 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // `process.exit` below cannot cut off a PATCH already on the wire.
   let recorded = false;
   let sealed = true;
+  // Which spec step the trace is in, and which signal (if any) is killing the
+  // process — together they turn a bare status:"failed" hub row into
+  // "terminated by signal (SIGTERM) during step-NN", the difference between a
+  // diagnosable CI timeout and a mystery.
+  let tracingStep: string | undefined;
+  let killedBy: "SIGINT" | "SIGTERM" | undefined;
   const teardown = createRunTeardown();
   teardown.onFinalize(async () => {
-    if (push) sealed = await sealRecordPush(push, featureName, specName, recorded);
+    if (!push) return;
+    const note = killedBy
+      ? `terminated by signal (${killedBy})${tracingStep ? ` during ${tracingStep}` : ""}`
+      : undefined;
+    sealed = await sealRecordPush(push, featureName, specName, recorded, note);
   });
-  const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
+  const disposeSignalHandlers = installTeardownSignalHandlers(teardown, (sig) => {
+    killedBy = sig;
+  });
 
   try {
     let traceResult: RunTraceResult | null = null;
@@ -209,7 +226,14 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       traceResult = await runTrace(featureName, specName, opts.model, opts.traceValidation ?? "lenient", language, {
         cwd: cwdForProfile,
         hubContext,
+        ...(opts.instruction ? { instruction: opts.instruction } : {}),
+        onStep: (stepId) => {
+          tracingStep = stepId;
+        },
       });
+      // The trace finished: a later signal (during generate) is no longer
+      // "during step-NN" — that would name a step that completed fine.
+      tracingStep = undefined;
       log.blank();
 
       if (!opts.traceOnly) {
@@ -257,21 +281,30 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
  * Close the record run with the one row this command produced, answering
  * whether it closed. One spec is recorded per invocation, so one row is the
  * whole run — enough for the runs list to say what the money bought.
+ *
+ * `failureNote` (e.g. "terminated by signal (SIGTERM) during step-03") rides
+ * in the row's `failureLogExcerpt` — the field a failed `ccqa run` row already
+ * uses for its failure text — so the hub says why a recording died instead of
+ * a bare status:"failed". Ignored on a successful recording.
  */
 export async function sealRecordPush(
   push: HubRunPush,
   featureName: string,
   specName: string,
   recorded: boolean,
+  failureNote?: string,
 ): Promise<boolean> {
   return sealHubRun(push, {
     rows: [
-      emptySpecRow({
-        feature: featureName,
-        spec: specName,
-        title: null,
-        status: recorded ? "passed" : "failed",
-      }),
+      {
+        ...emptySpecRow({
+          feature: featureName,
+          spec: specName,
+          title: null,
+          status: recorded ? "passed" : "failed",
+        }),
+        ...(!recorded && failureNote ? { failureLogExcerpt: failureNote } : {}),
+      },
     ],
     reportMeta: { git: { head: push.gitHead, base: null }, cost: currentReportCost() },
   });

@@ -56,6 +56,7 @@ export function gradedDriftEntry(
   // drift" entry with the finding the audit had claimed.
   if (label === null) {
     delete graded.surface;
+    delete graded.subDiagnosis;
     delete graded.headline;
     delete graded.confidence;
   }

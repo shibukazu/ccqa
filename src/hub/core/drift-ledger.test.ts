@@ -40,17 +40,19 @@ describe("drift ledger", () => {
 
   test("a grade replaces the verdict, and clearing a row drops the finding's caption", () => {
     const led = ledger({
-      "f/s": entry({ label: "TEST_DRIFT", surface: "spec", confidence: 0.9, headline: "stale copy" }),
+      "f/s": entry({ label: "TEST_DRIFT", surface: "spec", subDiagnosis: "OVER_ASSERTION", confidence: 0.9, headline: "stale copy" }),
     });
 
     const corrected = gradedDriftEntry(led, "f/s", "r", "SPEC_CHANGE");
     expect(corrected).toMatchObject({ label: "SPEC_CHANGE", graded: true, headline: "stale copy" });
 
-    // Cleared: surface/headline/confidence described a finding that is now
-    // withdrawn, so leaving them would caption "no drift" with the old claim.
+    // Cleared: surface/subDiagnosis/headline/confidence described a finding
+    // that is now withdrawn, so leaving them would caption "no drift" with the
+    // old claim.
     const cleared = gradedDriftEntry(led, "f/s", "r", null);
     expect(cleared).toMatchObject({ label: null, graded: true });
     expect(cleared).not.toHaveProperty("surface");
+    expect(cleared).not.toHaveProperty("subDiagnosis");
     expect(cleared).not.toHaveProperty("headline");
     expect(cleared).not.toHaveProperty("confidence");
   });
