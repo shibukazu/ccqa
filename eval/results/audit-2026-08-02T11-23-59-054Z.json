@@ -1,0 +1,321 @@
+{
+  "kind": "audit",
+  "startedAt": "2026-08-02T11:23:59.054Z",
+  "model": "haiku",
+  "promptVersion": "6",
+  "cost": {
+    "totalUsd": 3.0049606,
+    "invocations": 6,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "baseline-clean",
+      "title": "no change at all — every spec must come back clean",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "drop-session-note",
+      "title": "the \"Signed in as\" note is dropped — the generated test asserted it, the spec never asked for it",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test asserts \"Signed in as\" text that product never renders",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "OVER_ASSERTION",
+              "got": "SELECTOR_DRIFT",
+              "match": false
+            }
+          ]
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "remove-filter-feature",
+      "title": "the filter feature is removed outright — the spec asks about something gone",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "The spec expects a 'Completed' filter button that does not exist in the application",
+          "subAnswers": [
+            {
+              "field": "specChangeKind",
+              "expected": "FEATURE_REMOVED",
+              "got": "FEATURE_REMOVED",
+              "match": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "rename-add-button",
+      "title": "the add button's label is renamed — the generated selector goes stale",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "TEST_DRIFT",
+          "predicted": "TEST_DRIFT",
+          "labelMatch": true,
+          "headline": "Generated test clicks 'Add task' button but actual button text is 'Add'",
+          "subAnswers": [
+            {
+              "field": "surface",
+              "expected": "generated",
+              "got": "generated",
+              "match": true
+            },
+            {
+              "field": "subDiagnosis",
+              "expected": "SELECTOR_DRIFT",
+              "got": "SELECTOR_DRIFT",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "rework-add-flow",
+      "title": "adding a task becomes Enter-only — the feature survives, the flow the spec describes does not",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "SPEC_CHANGE",
+          "predicted": "SPEC_CHANGE",
+          "labelMatch": true,
+          "headline": "Spec describes a non-existent 'Add task' button; product only supports Enter-key submission",
+          "subAnswers": [
+            {
+              "field": "specChangeKind",
+              "expected": "BEHAVIOUR_CHANGED",
+              "got": "BEHAVIOUR_CHANGED",
+              "match": true
+            }
+          ]
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    },
+    {
+      "name": "server-unrelated-change",
+      "title": "server-only changes no spec observes — the audit must not cry wolf",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "CLEAN",
+          "predicted": "CLEAN",
+          "labelMatch": true,
+          "headline": null,
+          "subAnswers": []
+        }
+      ]
+    }
+  ],
+  "confusion": {
+    "matrix": {
+      "CLEAN": {
+        "CLEAN": 20,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "TEST_DRIFT": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 2,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "SPEC_CHANGE": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 2,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      }
+    },
+    "total": 24,
+    "correct": 24,
+    "accuracy": 1,
+    "cleanRecall": {
+      "correct": 20,
+      "total": 20
+    },
+    "driftRecall": {
+      "correct": 4,
+      "total": 4
+    },
+    "subAnswers": {
+      "total": 6,
+      "correct": 5
+    }
+  }
+}

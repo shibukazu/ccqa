@@ -1,0 +1,59 @@
+{
+  "kind": "audit",
+  "startedAt": "2026-08-06T00:16:15.481Z",
+  "model": "haiku",
+  "promptVersion": "6",
+  "cost": {
+    "totalUsd": 2.3581993,
+    "invocations": 2,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "login-block-markup-drift",
+      "title": "the login form's email field gets a new id — every spec including the login block drifts at once",
+      "outcomes": [],
+      "abandoned": true
+    }
+  ],
+  "confusion": {
+    "matrix": {
+      "CLEAN": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "TEST_DRIFT": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      },
+      "SPEC_CHANGE": {
+        "CLEAN": 0,
+        "TEST_DRIFT": 0,
+        "SPEC_CHANGE": 0,
+        "UNKNOWN": 0,
+        "ERROR": 0
+      }
+    },
+    "total": 0,
+    "correct": 0,
+    "accuracy": 0,
+    "cleanRecall": {
+      "correct": 0,
+      "total": 0
+    },
+    "driftRecall": {
+      "correct": 0,
+      "total": 0
+    },
+    "subAnswers": {
+      "total": 0,
+      "correct": 0
+    }
+  }
+}

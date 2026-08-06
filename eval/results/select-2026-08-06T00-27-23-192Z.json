@@ -1,0 +1,683 @@
+{
+  "kind": "select",
+  "startedAt": "2026-08-06T00:27:23.192Z",
+  "model": "sonnet",
+  "promptVersion": null,
+  "cost": {
+    "totalUsd": 3.0485399999999996,
+    "invocations": 11,
+    "unreadable": 0
+  },
+  "cases": [
+    {
+      "name": "api-shared-change",
+      "title": "the shared fetch layer stops declaring JSON bodies — every spec that signs in goes through it, and only the static help page does not",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "auth-middleware-clean",
+      "title": "the auth guard's rejection status changes — a path no spec's flow can reach, so nothing needs to re-run",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "backend-envelope-rename",
+      "title": "the create-task response envelope is renamed server-side — the client still reads the old key, so the add flow must re-run",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "backend-route-move",
+      "title": "the task update route moves server-side while the client still calls the old path — no drift to report, but the updating specs must re-run",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "block-spec-file-change",
+      "title": "the login block's own spec.yaml changes — every including spec re-runs (mechanical set membership, no model call)",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        }
+      ]
+    },
+    {
+      "name": "css-only-change",
+      "title": "a CSS-only restyle — nothing any spec asserts or selects changed",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "docs-only-change",
+      "title": "a docs-only change — no spec is reached",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "mixed-commit-noise",
+      "title": "one user-visible change plus docs noise in the same commit — only the spec that asserts the changed copy is needed",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "shared-name-maxlength",
+      "title": "project names are capped at 10 characters — the name the create spec types is now refused by both the form and the API",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    },
+    {
+      "name": "spec-own-file-change",
+      "title": "a spec's own file changes — that spec re-runs (mechanical set membership, no model call)",
+      "outcomes": [
+        {
+          "spec": "auth/login",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "auth/logout",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "help/read-help",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/create-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "projects/open-project",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "settings/update-profile",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/add-task",
+          "expected": "needed",
+          "verdict": "needed",
+          "selected": true
+        },
+        {
+          "spec": "tasks/complete-task",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/edit-task-notes",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        },
+        {
+          "spec": "tasks/filter-tasks",
+          "expected": "notNeeded",
+          "verdict": "notNeeded",
+          "selected": false
+        }
+      ]
+    }
+  ],
+  "metrics": {
+    "truePositives": 24,
+    "falsePositives": 0,
+    "falseNegatives": 0,
+    "trueNegatives": 76,
+    "precision": 1,
+    "recall": 1,
+    "verdictAccuracy": 1,
+    "unknowns": 0
+  }
+}
