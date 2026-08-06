@@ -658,6 +658,7 @@ describe("hub API server", () => {
             analysis: {
               label: "TEST_DRIFT",
               confidence: 0.9,
+              subDiagnosis: "OVER_ASSERTION",
               headline: "h",
               recommendation: "r",
               evidence: [],
@@ -672,8 +673,14 @@ describe("hub API server", () => {
       expect(midRun.status).toBe("running");
       expect(midRun.drift).toEqual({ specs: 1, testDrift: 1, specChange: 0, unknown: 0 });
 
+      // subDiagnosis round-trips into the ledger row, so a CI reader can
+      // branch on which repair the drifted spec needs.
       const ledger = await json(await fetch(`${baseUrl}/api/v1/projects/demo/drift`, authed()));
-      expect(ledger.specs["demo/audited-early"]).toMatchObject({ label: "TEST_DRIFT", gitHead: sha });
+      expect(ledger.specs["demo/audited-early"]).toMatchObject({
+        label: "TEST_DRIFT",
+        subDiagnosis: "OVER_ASSERTION",
+        gitHead: sha,
+      });
     });
 
     test("grading a drift row is joined on as gradedDrift, leaving the audit's own counts alone", async () => {

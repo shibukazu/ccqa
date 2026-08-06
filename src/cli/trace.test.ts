@@ -22,6 +22,18 @@ describe("createStepTracker", () => {
     expect(t.fromCommand(undefined)).toBeUndefined();
     expect(t.current()).toBeUndefined();
   });
+
+  test("notifies onChange once per advance, across both channels", () => {
+    // The consumer is `ccqa record`'s signal note ("during step-NN"): it needs
+    // the step in flight even though the trace result never materialises.
+    const seen: string[] = [];
+    const t = createStepTracker((stepId) => seen.push(stepId));
+    t.fromCommand("step-01");
+    t.fromCommand("step-01"); // same step: no re-fire
+    t.fromStepStartLine("step-02");
+    t.fromCommand(undefined); // no prefix: keeps the current step, no fire
+    expect(seen).toEqual(["step-01", "step-02"]);
+  });
 });
 
 describe("parseStatusLine", () => {

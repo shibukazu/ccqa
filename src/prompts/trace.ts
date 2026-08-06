@@ -15,6 +15,12 @@ export interface TraceSystemPromptInput {
   title: string;
   steps: TracePromptStep[];
   sessionName?: string;
+  /**
+   * Extra caller guidance, rendered as its own delimited section — e.g. a
+   * drift audit's finding when re-recording a drifted spec, so the recorder
+   * does not faithfully reproduce the mistake the audit flagged.
+   */
+  instruction?: string;
 }
 
 /**
@@ -31,6 +37,18 @@ export interface TraceSystemPromptInput {
  */
 export function buildTraceSystemPrompt(input: TraceSystemPromptInput): string {
   const sessionName = input.sessionName ?? generateSessionName();
+  const callerGuidance = input.instruction
+    ? `## Caller Guidance
+
+The caller provided extra guidance for this recording — for example, a drift
+audit's finding about what a previous recording of this spec got wrong. Treat
+it as advice on what to avoid or verify while recording; the spec's steps
+above remain the contract for what to do.
+
+${input.instruction}
+
+`
+    : "";
   const stepsText = input.steps
     .map(
       (step) => `### ${step.id} [${step.source}]
@@ -423,7 +441,7 @@ RUN_COMPLETED|passed|<summary>
 RUN_COMPLETED|failed|<summary>
 \`\`\`
 
-## Start
+${callerGuidance}## Start
 
 Begin by clearing cookies, then proceed straight to the first step's instruction.
 

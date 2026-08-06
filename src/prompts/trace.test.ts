@@ -32,6 +32,21 @@ describe("buildTraceSystemPrompt", () => {
     expect(out).not.toMatch(/wait "<selector>" --timeout/);
   });
 
+  it("appends the caller's instruction as its own delimited section", () => {
+    const out = buildTraceSystemPrompt({
+      title: "demo",
+      steps: baseSteps,
+      instruction: "Do not assert on the results counter — it varies per run.",
+    });
+    expect(out).toContain("## Caller Guidance");
+    expect(out).toContain("Do not assert on the results counter — it varies per run.");
+  });
+
+  it("emits no Caller Guidance section when no instruction was given", () => {
+    const out = buildTraceSystemPrompt({ title: "demo", steps: baseSteps });
+    expect(out).not.toContain("Caller Guidance");
+  });
+
   it("also requires text_visible to be verified via `wait --text` and warns about the alt/aria-label trap", () => {
     const out = buildTraceSystemPrompt({ title: "demo", steps: baseSteps });
     expect(out).toContain('wait --text "<text>" --timeout 3000');
