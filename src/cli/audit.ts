@@ -274,10 +274,17 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     if (holder) await releaseSpecs(hub!, hubProject!, opts.hubProfile!, holder);
   }
 
-  process.stdout.write(renderDrift(results, format, cwd));
+  // Wait for the pipe to drain before process.exit: write() buffers what the
+  // pipe did not take (~8 KB), and exit discards that buffer — a mass-drift
+  // report came back truncated to exactly its first chunk.
+  const flushed = new Promise<void>((resolve) => {
+    if (process.stdout.write(renderDrift(results, format, cwd))) resolve();
+    else process.stdout.once("drain", () => resolve());
+  });
 
   if (push) await sealDriftPush(push, { results, threshold, opts, format, baseRef, promptCtx });
 
+  await flushed;
   process.exit(determineExitCode(results, threshold));
 }
 
