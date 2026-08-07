@@ -69,6 +69,23 @@ export const PerspectiveStatusSchema = z
 export type PerspectiveStatus = z.infer<typeof PerspectiveStatusSchema>;
 
 /**
+ * One step of a spec, transcribed verbatim for display. Exactly one shape per
+ * step: an include step carries the block name it invokes (its params stay in
+ * the spec — they are wiring, not procedure), an action step carries the
+ * instruction and what it expects. Never authored or reworded here: like
+ * `title`, this is a mechanical copy the next `ccqa perspectives` rewrites.
+ */
+export const PerspectiveStepSchema = z
+  .object({
+    /** Present on an include step: the block it invokes. */
+    include: z.string().min(1).optional(),
+    instruction: z.string().optional(),
+    expected: z.string().optional(),
+  })
+  .strip();
+export type PerspectiveStep = z.infer<typeof PerspectiveStepSchema>;
+
+/**
  * One test case in the inventory.
  *
  * - `title` is transcribed verbatim from the spec.yaml.
@@ -80,11 +97,12 @@ export type PerspectiveStatus = z.infer<typeof PerspectiveStatusSchema>;
  *   steps (the opening screen, the state the test assumes, and the setup
  *   prerequisites such as which role logs in). Optional: a spec may not
  *   express all of them.
+ * - `steps` is the procedure itself, transcribed verbatim (never authored —
+ *   see PerspectiveStepSchema) so the hub UI can show a case in full without
+ *   a repo checkout. The spec.yaml stays the single source of truth: this
+ *   copy is rewritten wholesale every time the inventory is regenerated, the
+ *   same way `title` is.
  * - `note` is a human-only field. Regenerating perspectives preserves it.
- *
- * The detailed test procedure and expected results are deliberately NOT
- * duplicated here — the spec.yaml steps are the single source of truth for
- * those. The Markdown view links back to the spec instead of restating them.
  */
 export const PerspectiveSpecSchema = z
   .object({
@@ -94,6 +112,7 @@ export const PerspectiveSpecSchema = z
     startScreen: z.string().optional(),
     testCondition: z.string().optional(),
     preconditions: z.array(z.string().min(1)).optional(),
+    steps: z.array(PerspectiveStepSchema).optional(),
     status: PerspectiveStatusSchema,
     /**
      * When this spec was last edited (committer date, ISO 8601). Lets the hub

@@ -31,6 +31,7 @@ import {
   type Perspectives,
   type PerspectiveSpec,
   type PerspectiveStatus,
+  type PerspectiveStep,
 } from "../types.ts";
 import { DEFAULT_SPEC_MODE, SpecModeSchema, type SpecMode } from "../spec/yaml-schema.ts";
 import type { HubClient } from "../hub-client/index.ts";
@@ -303,6 +304,7 @@ export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<Perspecti
               specName: s.specName,
               title: meta.title,
               summary: "",
+              ...(meta.steps.length > 0 ? { steps: meta.steps } : {}),
               status,
               ...(lastEdit ? { changedAt: lastEdit } : {}),
             };
@@ -410,19 +412,47 @@ export function noteKey(featureName: string, specName: string): string {
 // --- I/O helpers (kept thin so the pure functions above stay testable) ---
 
 /** Lenient title/mode read from an already-loaded spec.yaml (null → defaults). */
-export function readSpecMeta(specName: string, specYaml: string | null): { title: string; mode: SpecMode } {
-  if (specYaml === null) return { title: specName, mode: DEFAULT_SPEC_MODE };
+export function readSpecMeta(
+  specName: string,
+  specYaml: string | null,
+): { title: string; mode: SpecMode; steps: PerspectiveStep[] } {
+  if (specYaml === null) return { title: specName, mode: DEFAULT_SPEC_MODE, steps: [] };
   try {
-    const parsed = parseYaml(specYaml) as { title?: unknown; mode?: unknown };
+    const parsed = parseYaml(specYaml) as { title?: unknown; mode?: unknown; steps?: unknown };
     const title = typeof parsed.title === "string" && parsed.title.length > 0
       ? parsed.title
       : specName;
     const modeResult = SpecModeSchema.safeParse(parsed.mode);
     const mode = modeResult.success ? modeResult.data : DEFAULT_SPEC_MODE;
-    return { title, mode };
+    return { title, mode, steps: transcribeSteps(parsed.steps) };
   } catch {
-    return { title: specName, mode: DEFAULT_SPEC_MODE };
+    return { title: specName, mode: DEFAULT_SPEC_MODE, steps: [] };
   }
+}
+
+/**
+ * The spec's procedure, copied verbatim for the inventory: an include step
+ * keeps only the block name (its params are wiring, not procedure), an
+ * action step keeps its instruction/expected text. Anything malformed is
+ * skipped — the inventory never fails over one bad step, matching how the
+ * rest of this sweep treats a broken spec.
+ */
+function transcribeSteps(raw: unknown): PerspectiveStep[] {
+  if (!Array.isArray(raw)) return [];
+  const steps: PerspectiveStep[] = [];
+  for (const step of raw) {
+    if (typeof step !== "object" || step === null) continue;
+    const s = step as { include?: unknown; instruction?: unknown; expected?: unknown };
+    if (typeof s.include === "string" && s.include.length > 0) {
+      steps.push({ include: s.include });
+    } else if (typeof s.instruction === "string" && s.instruction.length > 0) {
+      steps.push({
+        instruction: s.instruction,
+        ...(typeof s.expected === "string" && s.expected.length > 0 ? { expected: s.expected } : {}),
+      });
+    }
+  }
+  return steps;
 }
 
 /**

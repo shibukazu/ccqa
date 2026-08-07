@@ -1035,6 +1035,10 @@ const CSS = `
   .d-paths code { white-space: nowrap; }
   .d-prose + .d-paths { margin-top: 6px; }
   .manual-attest { margin-top: 14px; }
+  .steps-box { margin-top: 14px; max-width: 900px; }
+  .steps-box .slabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .d-steps { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: var(--fg-dim); white-space: pre-line; }
+  .d-steps .step-expected { display: block; margin-top: 2px; font-size: 12.5px; }
   .notebox { margin-top: 14px; max-width: 900px; }
   .notebox .nlabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .notebox textarea { width: 100%; min-height: 54px; resize: vertical; font: inherit; font-size: 13px; color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 8px 10px; }
@@ -1179,6 +1183,8 @@ const CLIENT_JS = `
       "perspectives.ov.cases": "cases", "perspectives.ov.features": "features",
       "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
       "perspectives.d.testCondition": "Condition", "perspectives.d.spec": "spec",
+      "perspectives.d.steps": "Steps", "perspectives.d.stepInclude": "Include: {name}",
+      "perspectives.d.stepExpected": "Expected:",
       "perspectives.note.label": "Note",
       "perspectives.note.placeholder": "Notes about this case…",
       "perspectives.note.saved": "Saved",
@@ -1357,6 +1363,8 @@ const CLIENT_JS = `
       "perspectives.ov.cases": "ケース", "perspectives.ov.features": "機能",
       "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
       "perspectives.d.testCondition": "実行条件", "perspectives.d.spec": "spec",
+      "perspectives.d.steps": "手順", "perspectives.d.stepInclude": "ブロック: {name}",
+      "perspectives.d.stepExpected": "期待結果:",
       "perspectives.note.label": "note",
       "perspectives.note.placeholder": "このケースについてのメモ…",
       "perspectives.note.saved": "保存しました",
@@ -4281,6 +4289,26 @@ const CLIENT_JS = `
       if (rerunHasFailure(rr)) row("perspectives.d.lastRed", rerunFailureValue(rr.lastRed));
     }
     frag.appendChild(dl);
+
+    if (spec.steps && spec.steps.length) {
+      var stepsBox = el("div", "steps-box");
+      stepsBox.appendChild(el("div", "slabel", t("perspectives.d.steps")));
+      var stepsList = el("ol", "d-steps");
+      spec.steps.forEach(function (step) {
+        var li = el("li");
+        if (step.include) {
+          li.textContent = t("perspectives.d.stepInclude").replace("{name}", step.include);
+        } else {
+          li.appendChild(document.createTextNode(step.instruction || ""));
+          if (step.expected) {
+            li.appendChild(el("div", "muted step-expected", t("perspectives.d.stepExpected") + " " + step.expected));
+          }
+        }
+        stepsList.appendChild(li);
+      });
+      stepsBox.appendChild(stepsList);
+      frag.appendChild(stepsBox);
+    }
 
     // A standing attestation always offers revoke — even when it changed
     // nothing (a held or machine-verified spec), it exists and must stay

@@ -21,10 +21,12 @@ export {
   PerspectiveFeatureSchema,
   PerspectiveSpecSchema,
   PerspectiveStatusSchema,
+  PerspectiveStepSchema,
   PerspectivesSchema,
   type PerspectiveFeature,
   type PerspectiveSpec,
   type PerspectiveStatus,
+  type PerspectiveStep,
   type Perspectives,
 } from "./spec/perspectives-schema.ts";
 
