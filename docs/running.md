@@ -472,6 +472,13 @@ consulted. There is no baseline for one to narrow away, which is how a spec no
 deploy ever reached could otherwise stay un-audited forever — and an un-audited
 spec is never run, so it would sit outside the loop indefinitely.
 
+A spec whose **drift entry is still open** is always included too. The hub's
+answer is deploy-based, and a merged fix for a drifted spec changes only the
+spec tree — no deploy lands on it, so the hub alone would never call it due
+again and the entry would stay open forever. A drifted spec is due until the
+audit itself clears it, which is what turns a merged repair back into a
+running spec.
+
 A spec the hub **cannot answer for** is audited rather than skipped. This used
 to default the opposite way from `--only-hub-rerun-needed` on a hole in the
 deploy log — audit costs cents, a live run costs dollars, so the audit did

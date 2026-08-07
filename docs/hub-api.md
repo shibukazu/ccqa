@@ -370,6 +370,10 @@ work and the run declined it. That gap is closed now: both treat an
 unplaceable range as reached (ADR-0014), so the two differ in wording, not in
 what they select.
 
+The client also reads the drift ledger and audits any spec whose entry is
+still open, regardless of the answer above. The union happens client-side —
+`because` stays a closed enum on the wire, so an older hub keeps working.
+
 A **claim** stops a second job starting on a spec the first is still working.
 It is not a value on either axis — the axes describe recorded facts, work in
 flight needs a lifetime, and the same mechanism covers both jobs. A claim
