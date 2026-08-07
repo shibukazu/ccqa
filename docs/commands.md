@@ -25,7 +25,7 @@ authoritative for flags.
 | `ccqa run --on-fail-explain` | Give every failing spec a root-cause label across all four causes, in one call. See [Failure triage](./running.md#failure-triage). |
 | `ccqa run --on-fail-explain-rerun auto` | Run a failure the classifier could not pin down a second time, and label it from whether it reproduces. Costs a full spec execution each; the spec stays failed either way. See [Rerunning a failure](./running.md#rerunning-a-failure). |
 | `ccqa audit [feature/spec]` | Audit specs against the codebase without running a browser. See [Drift detection](./running.md#drift-detection). |
-| `ccqa audit --only-hub-audit-needed` | Audit only the specs a deploy has reached since the audit last read them, plus every spec never audited. See [Auditing only what the deploy reached](./running.md#auditing-only-what-the-deploy-reached). |
+| `ccqa audit --only-hub-audit-needed` | Audit only the specs a deploy has reached since the audit last read them, plus every spec never audited and every spec whose drift entry is still open. See [Auditing only what the deploy reached](./running.md#auditing-only-what-the-deploy-reached). |
 | `ccqa select-specs --base <ref>` | Answer which specs a range reaches, and nothing else — the machinery behind `--only-affected-by`, usable on its own. See [Asking the question on its own](./running.md#asking-the-question-on-its-own). |
 
 Both `run` and `audit` accept `--report-format github` to annotate a pull request.
