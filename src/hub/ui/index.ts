@@ -206,6 +206,7 @@ const HTML_BODY = `
               <button class="fchip" id="persp-chip-needsrepair" data-f="needsRepair" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.needsRepair">Needs repair</span><span class="fcount"></span></button>
               <button class="fchip" id="persp-chip-rerunneeded" data-f="rerunNeeded" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.rerunNeeded">Re-run needed</span><span class="fcount"></span></button>
               <button class="fchip" id="persp-chip-inprogress" data-f="inProgress" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.inProgress">In progress</span><span class="fcount"></span></button>
+              <button class="fchip" id="persp-chip-manuallyverified" data-f="manuallyVerified" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.manuallyVerified">Manually verified</span><span class="fcount"></span></button>
               <button class="fchip" id="persp-chip-verified" data-f="verified" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.verified">Verified</span><span class="fcount"></span></button>
             </div>
             <div class="spacer"></div>
@@ -932,6 +933,9 @@ const CSS = `
   .sg-audit-undecided { background: var(--info); }
   .sg-verified, .sg-audit-clean, .sg-exec-passed { background: var(--pass); }
   .sg-inprogress, .sg-audit-due, .sg-exec-never { background: var(--muted-2); }
+  /* A person's word, not the machine's — kept off the pass/fail palette both
+     axes share so it never reads as either one. */
+  .sg-manual { background: var(--violet); }
 
   .search { flex: 1; min-width: 200px; max-width: 340px; display: flex; align-items: center; gap: 7px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 0 10px; height: 32px; background: var(--surface); }
   .search svg { width: 15px; height: 15px; flex: none; color: var(--muted-2); }
@@ -970,6 +974,11 @@ const CSS = `
   .badge.rr-unknown .d { background: var(--info); }
   .badge.rr-none { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
   .badge.rr-none .d { background: var(--muted); }
+  /* A person's attestation, not the audit/run pipeline's own verdict — kept
+     off that palette (rr-repair/rr-needed/rr-none/passed) the same way
+     sg-manual is kept off the summary bar's. */
+  .badge.rr-manual { background: var(--violet-bg); color: var(--violet); border-color: var(--violet-border); }
+  .badge.rr-manual .d { background: var(--violet); }
   .cellsub { display: block; margin-top: 3px; max-width: 260px; color: var(--muted); font-size: 11.5px; line-height: 1.45; }
   .graded-mark { color: var(--fg-dim); font-weight: 600; }
   .cellsub a { color: var(--muted); text-decoration: none; border-bottom: 1px dotted var(--border-strong); }
@@ -1025,6 +1034,7 @@ const CSS = `
   .d-paths { display: flex; flex-wrap: wrap; gap: 6px; }
   .d-paths code { white-space: nowrap; }
   .d-prose + .d-paths { margin-top: 6px; }
+  .manual-attest { margin-top: 14px; }
   .notebox { margin-top: 14px; max-width: 900px; }
   .notebox .nlabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .notebox textarea { width: 100%; min-height: 54px; resize: vertical; font: inherit; font-size: 13px; color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 8px 10px; }
@@ -1080,6 +1090,7 @@ const CLIENT_JS = `
   var THEME_KEY = "ccqa-hub-theme";
   var PROJECT_KEY = "ccqa-hub-project";
   var PROFILES_KEY = "ccqa-hub-profiles";
+  var ATTEST_BY_KEY = "ccqa-attest-by";
 
   // ── i18n ──────────────────────────────────────────────────────────────
   // Chrome + labels only. Model output (headline/recommendation/reasoning) is
@@ -1180,6 +1191,7 @@ const CLIENT_JS = `
       "perspectives.rerun.state.needsRepair": "Needs repair",
       "perspectives.rerun.state.rerunNeeded": "Re-run needed",
       "perspectives.rerun.state.inProgress": "In progress",
+      "perspectives.rerun.state.manuallyVerified": "Manually verified",
       "perspectives.rerun.state.verified": "Verified",
       "perspectives.rerun.vsDeploy": "judged against deploy",
       "perspectives.rerun.noDeployHead": "no deploy recorded for this profile",
@@ -1215,6 +1227,19 @@ const CLIENT_JS = `
       "perspectives.rerun.noDeployLogBanner": "No deploy has been recorded for profile {profile}, so no case can be judged. Wire ccqa hub deploy record into the deploy job for this environment.",
       "perspectives.rerun.deployHead": "deploy head",
       "perspectives.drift.graded": "confirmed",
+      "perspectives.manual.attestButton": "Mark as manually verified",
+      "perspectives.manual.revokeButton": "Revoke manual verification",
+      "perspectives.manual.promptBy": "Who is verifying this?",
+      "perspectives.manual.promptNote": "Note (optional)",
+      "perspectives.manual.confirmRevoke": "Revoke the manual verification for this case?",
+      "perspectives.manual.error": "Could not save — retry",
+      "perspectives.manual.verifiedBy": "{by} manually verified this ({at})",
+      "perspectives.manual.lapsed.deployReached": "the manual verification lapsed when a deploy reached this case",
+      "perspectives.manual.lapsed.deployReachedNamed": "the manual verification lapsed when deploy {sha} reached this case ({at})",
+      "perspectives.manual.lapsed.cannotPlace": "the manual verification lapsed — its baseline deploy could not be placed in the log",
+      "perspectives.manual.lapsed.specEdited": "the manual verification lapsed when the spec was edited",
+      "perspectives.manual.lapsed.newerRed": "the manual verification lapsed after a later run failed",
+      "perspectives.manual.lapsed.unrecognized": "the manual verification lapsed for a reason this UI does not recognise",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.playwright": "Playwright test generation",
@@ -1344,6 +1369,7 @@ const CLIENT_JS = `
       "perspectives.rerun.state.needsRepair": "修正待ち",
       "perspectives.rerun.state.rerunNeeded": "要再実行",
       "perspectives.rerun.state.inProgress": "進行中",
+      "perspectives.rerun.state.manuallyVerified": "手動確認済み",
       "perspectives.rerun.state.verified": "検証済み",
       "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
       "perspectives.rerun.noDeployHead": "このプロファイルにはデプロイの記録がありません",
@@ -1379,6 +1405,19 @@ const CLIENT_JS = `
       "perspectives.rerun.noDeployLogBanner": "プロファイル {profile} にデプロイの記録がないため、どのケースも判定できません。この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
       "perspectives.rerun.deployHead": "最新デプロイ",
       "perspectives.drift.graded": "人が確認",
+      "perspectives.manual.attestButton": "手動で確認した",
+      "perspectives.manual.revokeButton": "手動確認を取り消す",
+      "perspectives.manual.promptBy": "確認者名を入力してください",
+      "perspectives.manual.promptNote": "メモ（任意）",
+      "perspectives.manual.confirmRevoke": "このケースの手動確認を取り消しますか？",
+      "perspectives.manual.error": "保存に失敗しました — 再試行してください",
+      "perspectives.manual.verifiedBy": "{by}さんが手動確認（{at}）",
+      "perspectives.manual.lapsed.deployReached": "手動確認はデプロイの到達により失効",
+      "perspectives.manual.lapsed.deployReachedNamed": "手動確認はデプロイ {sha}（{at}）の到達により失効",
+      "perspectives.manual.lapsed.cannotPlace": "手動確認は基準デプロイをログで特定できず失効",
+      "perspectives.manual.lapsed.specEdited": "手動確認はspecの編集により失効",
+      "perspectives.manual.lapsed.newerRed": "手動確認は直後の実行失敗により失効",
+      "perspectives.manual.lapsed.unrecognized": "このUIが認識できない理由により手動確認が失効",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.playwright": "Playwrightテスト生成",
@@ -1511,6 +1550,17 @@ const CLIENT_JS = `
   function clearStoredProject() {
     try { window.localStorage.removeItem(PROJECT_KEY); }
     catch (e) { console.warn("ccqa hub: could not clear stored project:", e); }
+  }
+
+  // Remembered across attestations so the prompt's default is whoever last
+  // used this browser, not a blank field every time.
+  function loadAttestBy() {
+    try { return window.localStorage.getItem(ATTEST_BY_KEY) || ""; }
+    catch (e) { return ""; }
+  }
+  function storeAttestBy(by) {
+    try { window.localStorage.setItem(ATTEST_BY_KEY, by); }
+    catch (e) { /* non-fatal: next prompt just starts blank again */ }
   }
   function loadProfileMap() {
     try {
@@ -3460,6 +3510,11 @@ const CLIENT_JS = `
       "/rerun?profile=" + encodeURIComponent(state.profile);
   }
 
+  function attestationsPath() {
+    return "/api/v1/projects/" + encodeURIComponent(state.project) +
+      "/attestations?profile=" + encodeURIComponent(state.profile);
+  }
+
   // Resolves { report } or { note } and never rejects: a hub that predates
   // the endpoint costs only the columns it feeds, not the whole tab. A 404
   // here can only mean "no such route" — the endpoint's own 404 is "the
@@ -3538,6 +3593,31 @@ const CLIENT_JS = `
     return text === prefix + reason ? t(prefix + "unrecognized") : text;
   }
 
+  // Who attested and when, plus their note if they left one — the whole
+  // reason a "manuallyVerified" verdict has no evidence row of its own.
+  function manualAttestationText(manual) {
+    var text = t("perspectives.manual.verifiedBy").replace("{by}", manual.by).replace("{at}", relTime(manual.at));
+    return manual.note ? text + " — " + manual.note : text;
+  }
+
+  // An attestation that no longer covers what is deployed, named alongside
+  // whatever the current verdict's own reason is (rerunCellWhy appends this)
+  // rather than replacing it — the person deciding whether to attest again
+  // needs both: what the axes say now, and that a person's word used to
+  // stand in for it. deployReached is the only reason with a named cause
+  // (manualLapsedByDeploy) to add when the log could confirm one.
+  function rerunManualLapseText(rr) {
+    var lapsed = rr && rr.manualLapsed;
+    if (!lapsed) return null;
+    if (lapsed.because === "deployReached") {
+      var deploy = rr.manualLapsedByDeploy;
+      return deploy
+        ? t("perspectives.manual.lapsed.deployReachedNamed").replace("{sha}", shortSha(deploy.sha)).replace("{at}", relTime(deploy.at))
+        : t("perspectives.manual.lapsed.deployReached");
+    }
+    return rerunReasonText("perspectives.manual.lapsed.", lapsed.because);
+  }
+
   // Every verdict that carries no evidence row explains itself here, in the
   // actionable phrasing the detail panel wants. decide() checks heldBy before
   // the audit axis, so a spec another job already holds must be explained by
@@ -3557,6 +3637,7 @@ const CLIENT_JS = `
         ? rerunReasonText("perspectives.rerun.fix.", rr.auditAssumedReached)
         : t("perspectives.rerun.inProgressHint");
     }
+    if (rr.verdict === "manuallyVerified" && rr.manual) return manualAttestationText(rr.manual);
     return rerunReasonText("perspectives.rerun.fix.", rr.verdict);
   }
 
@@ -3575,16 +3656,23 @@ const CLIENT_JS = `
   // rather than claiming a deploy matched it.
   function rerunCellWhy(rr) {
     var head = perspState.rerun && perspState.rerun.deployHead;
+    var why;
     if (rr.verdict === "rerunNeeded") {
-      if (rr.executionAssumedReached) return rerunReasonText("perspectives.rerun.why.", rr.executionAssumedReached);
-      if (!rr.touchedBy || !rr.touchedBy.length) return t("perspectives.rerun.touchedUnknown");
-      return t("perspectives.rerun.touchedCount").replace("{n}", String(rr.touchedBy.length));
+      if (rr.executionAssumedReached) why = rerunReasonText("perspectives.rerun.why.", rr.executionAssumedReached);
+      else if (!rr.touchedBy || !rr.touchedBy.length) why = t("perspectives.rerun.touchedUnknown");
+      else why = t("perspectives.rerun.touchedCount").replace("{n}", String(rr.touchedBy.length));
+    } else if (rr.verdict === "verified") {
+      why = !head
+        ? t("perspectives.rerun.noDeployHead")
+        : t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
+    } else {
+      why = rerunWhyVerdict(rr);
     }
-    if (rr.verdict === "verified") {
-      if (!head) return t("perspectives.rerun.noDeployHead");
-      return t("perspectives.rerun.vsDeploy") + " " + shortSha(head.sha) + " · " + relTime(head.at);
-    }
-    return rerunWhyVerdict(rr);
+    // A lapsed attestation is worth saying no matter which verdict the axes
+    // landed on afterwards — it is not that verdict's reason, so it is
+    // appended rather than replacing it.
+    var lapse = rerunManualLapseText(rr);
+    return lapse ? why + " · " + lapse : why;
   }
 
 
@@ -3598,10 +3686,10 @@ const CLIENT_JS = `
   // the pipeline still owes, then what needs nothing. "needsRepair" leads
   // because it is the only verdict a run cannot clear — someone has to repair
   // the spec or the product.
-  var RERUN_ORDER = ["needsRepair", "rerunNeeded", "inProgress", "verified"];
+  var RERUN_ORDER = ["needsRepair", "rerunNeeded", "inProgress", "manuallyVerified", "verified"];
   var RERUN_SEG_CLASS = {
     needsRepair: "sg-needsrepair", rerunNeeded: "sg-rerunneeded",
-    inProgress: "sg-inprogress", verified: "sg-verified"
+    inProgress: "sg-inprogress", manuallyVerified: "sg-manual", verified: "sg-verified"
   };
 
   // The one rule the summary bar and the verdict filter chips both answer
@@ -3615,7 +3703,7 @@ const CLIENT_JS = `
 
   // One verdict per case, bucketed, via rerunVerdictOf above.
   function rerunComposition(verdicts) {
-    var counts = { needsRepair: 0, rerunNeeded: 0, inProgress: 0, verified: 0 };
+    var counts = { needsRepair: 0, rerunNeeded: 0, inProgress: 0, manuallyVerified: 0, verified: 0 };
     verdicts.forEach(function (rr) { counts[rerunVerdictOf(rr)] += 1; });
     return counts;
   }
@@ -3783,7 +3871,7 @@ const CLIENT_JS = `
   // takes the attention colour and re-running — machine work — does not.
   var VERDICT_BADGE = {
     needsRepair: "rr-repair", rerunNeeded: "rr-needed",
-    inProgress: "rr-none", verified: "passed"
+    inProgress: "rr-none", manuallyVerified: "rr-manual", verified: "passed"
   };
 
   function perspVerdictCell(rr) {
@@ -4114,6 +4202,44 @@ const CLIENT_JS = `
     return wrap;
   }
 
+  // Lets a person's own check stand in for the machine's verdict. prompt()/
+  // confirm() rather than a form: the action is rare and the two fields it
+  // needs are short, so a modal would outweigh what it does. reloadRerun()
+  // is the same profile-scoped refresh a profile switch uses — it re-renders
+  // the whole table, so an open detail panel closes along with it.
+  function manualAttestButton(feature, spec) {
+    var btn = el("button", "btn sm primary", t("perspectives.manual.attestButton"));
+    btn.type = "button";
+    btn.addEventListener("click", function () {
+      var by = window.prompt(t("perspectives.manual.promptBy"), loadAttestBy());
+      if (!by) return;
+      storeAttestBy(by);
+      var note = window.prompt(t("perspectives.manual.promptNote"), "");
+      apiFetch(attestationsPath(), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spec: perspSpecKey(feature, spec), by: by, note: note || undefined }),
+      }).then(function () { reloadRerun(); })
+        .catch(function (err) { window.alert(t("perspectives.manual.error") + ": " + err.message); });
+    });
+    return btn;
+  }
+
+  function manualRevokeButton(feature, spec) {
+    var btn = el("button", "btn ghost sm del", t("perspectives.manual.revokeButton"));
+    btn.type = "button";
+    btn.addEventListener("click", function () {
+      if (!window.confirm(t("perspectives.manual.confirmRevoke"))) return;
+      apiFetch(attestationsPath(), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spec: perspSpecKey(feature, spec) }),
+      }).then(function () { reloadRerun(); })
+        .catch(function (err) { window.alert(t("perspectives.manual.error") + ": " + err.message); });
+    });
+    return btn;
+  }
+
   // Detail row: a definition list of the case's fields plus the note editor.
   // Built with createElement/textContent throughout — every field here is
   // API-derived, so none of it may go through innerHTML.
@@ -4150,6 +4276,15 @@ const CLIENT_JS = `
       if (rerunHasFailure(rr)) row("perspectives.d.lastRed", rerunFailureValue(rr.lastRed));
     }
     frag.appendChild(dl);
+
+    var manualBtn = null;
+    if (rr && rr.verdict === "manuallyVerified") manualBtn = manualRevokeButton(feature, spec);
+    else if (rr && (rr.verdict === "needsRepair" || rr.verdict === "rerunNeeded")) manualBtn = manualAttestButton(feature, spec);
+    if (manualBtn) {
+      var manualBox = el("div", "manual-attest");
+      manualBox.appendChild(manualBtn);
+      frag.appendChild(manualBox);
+    }
 
     var notebox = el("div", "notebox");
     notebox.appendChild(el("div", "nlabel", t("perspectives.note.label")));

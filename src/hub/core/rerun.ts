@@ -1,6 +1,10 @@
 import type {
+  Attestation,
+  AttestationLapse,
+  Attestations,
   AuditState,
   DeployLog,
+  DeployRef,
   DriftLedger,
   ExecutionState,
   RerunUnknownReason,
@@ -37,6 +41,8 @@ export interface RerunInput {
   drift: DriftLedger;
   /** Who is working on what right now. Expired holds read as free. */
   locks: SpecLocks;
+  /** Each spec's standing manual attestation, if any. */
+  attestations: Attestations;
   /** Compared against each hold's expiry. Passed in so the answer is reproducible in tests. */
   now: Date;
 }
@@ -80,7 +86,7 @@ function specMovedSince(
 }
 
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
-  const { specs, ledger, log, touchIndex, drift, locks, now } = input;
+  const { specs, ledger, log, touchIndex, drift, locks, attestations, now } = input;
   const range = buildRange(log, touchIndex);
   const deployTimes = deployedAt(log);
 
@@ -117,16 +123,88 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
     if (runMoved && execution.execution === "passed") execution = { execution: "stale" };
 
     const held = heldBy(locks, spec.key, now);
+    let verdict = decide(audit.audit, execution.execution, held);
+
+    // A person's word overrides the machine's answer, never the axes: both
+    // are shipped unchanged so the reader can see what the attestation is
+    // standing in for. One that no longer covers is kept visible with the
+    // reason it lapsed — the person deciding whether to attest again needs
+    // to know what changed since they last looked.
+    const manualState = readAttestation(
+      attestations.specs[spec.key],
+      spec,
+      coords.lastRed,
+      range,
+      log,
+    );
+    if (manualState?.kind === "covers" && !held && verdict !== "verified") {
+      verdict = "manuallyVerified";
+    }
+
     out[spec.key] = {
-      verdict: decide(audit.audit, execution.execution, held),
+      verdict,
       ...(auditMoved || runMoved ? { specChangedSince: (auditMoved ?? runMoved)! } : {}),
       ...audit,
       ...execution,
+      ...(manualState?.kind === "covers" && verdict === "manuallyVerified"
+        ? { manual: manualState.attest }
+        : {}),
+      ...(manualState?.kind === "lapsed"
+        ? {
+            manualLapsed: { ...manualState.attest, because: manualState.because },
+            ...(manualState.because === "deployReached"
+              ? { manualLapsedByDeploy: manualState.byDeploy }
+              : {}),
+          }
+        : {}),
       heldBy: held,
       ...coords,
     };
   }
   return out;
+}
+
+type ManualState =
+  | { kind: "covers"; attest: Attestation }
+  | { kind: "lapsed"; attest: Attestation; because: AttestationLapse; byDeploy?: DeployRef | null };
+
+/**
+ * Does the attestation still speak for what is deployed? Checked in the order
+ * the lapse enum documents: deploy coverage first (a sha the log cannot place
+ * reads as reached, ADR-0014), then the spec's own edits — compared against
+ * when the person looked, not a deploy time, because they read the spec as it
+ * stood that moment — then a red run recorded after them, which is newer
+ * information than their word. The null-sha case is the profile that had no
+ * deploy log when they checked: their word covers exactly as long as that
+ * stays true.
+ */
+function readAttestation(
+  attest: Attestation | undefined,
+  spec: SpecTarget,
+  lastRed: SpecLedgerEntry | null,
+  range: RangeLookup,
+  log: DeployLog,
+): ManualState | null {
+  if (!attest) return null;
+
+  const coverage: Freshness =
+    attest.deployedSha === null
+      ? log.entries.length === 0
+        ? { kind: "current" }
+        : { kind: "unanswerable", reason: "noDeployLog" }
+      : freshness(attest.deployedSha, spec.key, range);
+  if (coverage.kind === "touched") {
+    return { kind: "lapsed", attest, because: "deployReached", byDeploy: coverage.touchedByDeploy };
+  }
+  if (coverage.kind === "unanswerable") return { kind: "lapsed", attest, because: "cannotPlace" };
+
+  if (spec.changedAt !== undefined && spec.changedAt > attest.at) {
+    return { kind: "lapsed", attest, because: "specEdited" };
+  }
+  if (lastRed !== null && lastRed.at > attest.at) {
+    return { kind: "lapsed", attest, because: "newerRed" };
+  }
+  return { kind: "covers", attest };
 }
 
 /**

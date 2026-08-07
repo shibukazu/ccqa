@@ -501,6 +501,15 @@ export const SpecVerdictSchema = z.enum([
   "rerunNeeded",
   /** Cleared by the audit, and the last run passed against what is deployed. */
   "verified",
+  /**
+   * A person checked the behaviour by hand and their attestation still covers
+   * what is deployed. Overrides what the axes would have said — they are
+   * shipped unchanged beside it — and lapses on its own when a deploy reaches
+   * the spec or the spec itself is edited (`manual` names the attestation).
+   * Kept apart from `verified`: one is the machine's answer, one is a
+   * person's word.
+   */
+  "manuallyVerified",
 ]);
 export type SpecVerdict = z.infer<typeof SpecVerdictSchema>;
 
@@ -599,6 +608,88 @@ export const ReleaseLocksRequestSchema = z.object({
 export type ReleaseLocksRequest = z.infer<typeof ReleaseLocksRequestSchema>;
 
 /**
+ * A person's word that they checked a spec's behaviour by hand against the
+ * deployed environment. It overrides the verdict, never the ledgers: the
+ * drift entry that parked the spec stays open, so the repair loop keeps its
+ * reason to fix the test, while the verdict stops asking a person for what a
+ * person already did.
+ *
+ * Anchored to the deploy head at the moment it was recorded, so it lapses on
+ * its own — a deploy reaching the spec, or the spec being edited, ends its
+ * coverage the same way those end a run's (ADR-0010). One per spec: a new
+ * attestation replaces the previous one.
+ */
+export const AttestationSchema = z.object({
+  /** Who checked. Free text — the hub has no accounts to resolve it against. */
+  by: z.string().min(1),
+  /** When the hub recorded it (stamped server-side). */
+  at: z.string(),
+  note: z.string().optional(),
+  /**
+   * The profile's deploy head when recorded, or null when the profile had no
+   * deploy log yet. The anchor freshness is judged against.
+   */
+  deployedSha: z.string().nullable(),
+});
+export type Attestation = z.infer<typeof AttestationSchema>;
+
+/** The per-(project, profile) attestation document: "feature/spec" → the standing attestation. */
+export const AttestationsSchema = z.object({
+  specs: z.record(z.string(), AttestationSchema).default({}),
+});
+export type Attestations = z.infer<typeof AttestationsSchema>;
+
+/**
+ * Why an attestation stopped covering the spec. One reason is named even when
+ * several hold, in the order the checks run (coverage, then the spec's own
+ * edits, then a later red run) — enough for a reader to see what to verify
+ * before attesting again.
+ */
+export const AttestationLapseSchema = z.enum([
+  /** A deploy reached the spec after the person checked. `manualLapsedByDeploy` names it when the log can. */
+  "deployReached",
+  /** The log cannot place the attestation's sha — assumed reached rather than trusted (ADR-0014). */
+  "cannotPlace",
+  /** The spec's text was edited after the person checked, so what they checked is not what is here now. */
+  "specEdited",
+  /** A run failed after the person checked — newer information than their word. */
+  "newerRed",
+]);
+export type AttestationLapse = z.infer<typeof AttestationLapseSchema>;
+
+/** Body of `PUT /projects/:project/attestations?profile=`. */
+export const PutAttestationRequestSchema = z.object({
+  /** "feature/spec" */
+  spec: z.string().min(1).max(512),
+  by: z.string().min(1).max(256),
+  note: z.string().max(4000).optional(),
+});
+export type PutAttestationRequest = z.infer<typeof PutAttestationRequestSchema>;
+
+/** Body of `DELETE /projects/:project/attestations?profile=`. */
+export const DeleteAttestationRequestSchema = z.object({
+  /** "feature/spec" */
+  spec: z.string().min(1).max(512),
+});
+export type DeleteAttestationRequest = z.infer<typeof DeleteAttestationRequestSchema>;
+
+/** Answer of PUT (the attestation as stamped) and GET (the whole document). */
+export const AttestationResponseSchema = z.object({
+  project: z.string(),
+  profile: z.string(),
+  spec: z.string(),
+  attestation: AttestationSchema,
+});
+export type AttestationResponse = z.infer<typeof AttestationResponseSchema>;
+
+export const AttestationsResponseSchema = z.object({
+  project: z.string(),
+  profile: z.string(),
+  specs: z.record(z.string(), AttestationSchema),
+});
+export type AttestationsResponse = z.infer<typeof AttestationsResponseSchema>;
+
+/**
  * One spec's verdict, the two axes it was derived from, and the three ledger
  * coordinates the view shows alongside them. The coordinates are always
  * present (null when the spec has no such entry); the optional fields appear
@@ -635,6 +726,21 @@ export const SpecRerunSchema = z.object({
    * older CLI), which leaves the deploy-only comparison in place.
    */
   specChangedSince: z.string().optional(),
+  /**
+   * The manual check standing in for the machine's answer. Present exactly
+   * when `verdict === "manuallyVerified"`. ADDITIVE and optional, so a client
+   * older than this field is unaffected — as are the two below.
+   */
+  manual: AttestationSchema.optional(),
+  /**
+   * An attestation that exists but no longer covers what is deployed, kept
+   * visible with the reason it lapsed instead of silently vanishing — the
+   * person deciding whether to attest again needs to know what changed since
+   * they last looked. The verdict is the axes' own answer again.
+   */
+  manualLapsed: AttestationSchema.extend({ because: AttestationLapseSchema }).optional(),
+  /** The deploy that ended the attestation, when `manualLapsed.because === "deployReached"` and the log can name it. */
+  manualLapsedByDeploy: DeployRefSchema.nullable().optional(),
   /** The job working on this spec right now, or null. Expired holds read as null. */
   heldBy: SpecLockSchema.nullable(),
   lastRun: SpecLedgerEntrySchema.nullable(),

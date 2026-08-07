@@ -499,6 +499,40 @@ Branch is not part of the scope — a run exercises the deployed environment
 whatever branch its code came from, so the ledger is read across every branch
 of the profile.
 
+### Manual attestations
+
+```
+GET    /api/v1/projects/:project/attestations?profile=
+PUT    /api/v1/projects/:project/attestations?profile=     { "spec": "feature/spec", "by": "...", "note": "..." }
+DELETE /api/v1/projects/:project/attestations?profile=     { "spec": "feature/spec" }
+```
+
+An attestation is a person's word that they checked a spec's behaviour by
+hand against the deployed environment. It overrides the **verdict**, never
+the ledgers: the drift entry that parked the spec stays open, so the repair
+loop keeps its reason to fix the test, while `/rerun` answers
+`manuallyVerified` instead of asking a person for what a person already did.
+The run side never selects a `manuallyVerified` spec — the test is still the
+broken one the attestation stands in for.
+
+The hub stamps the time and the profile's current deploy head; the caller
+sends only `spec`, `by` and an optional `note`. One attestation per spec — a
+new one replaces the old. It lapses on its own, judged by the same yardsticks
+a run's currency is: a deploy reaching the spec, the spec's own text being
+edited after the person looked, a run failing after them, or a deploy head
+the log cannot place (assumed reached, ADR-0014). A lapsed attestation is not
+dropped from `/rerun`: the row carries it as `manualLapsed` with a `because`
+naming which of those ended it (`deployReached` | `cannotPlace` |
+`specEdited` | `newerRed`), plus `manualLapsedByDeploy` naming the deploy
+when the log can — the person deciding whether to attest again needs to know
+what changed since they last looked. A standing one rides as `manual`,
+present exactly when the verdict is `manuallyVerified`.
+
+`GET` returns the raw document, standing and lapsed alike — whether one still
+covers its spec is `/rerun`'s answer; the raw read exists so a lapsed
+attestation can still be found and revoked. `DELETE` of a spec with no
+attestation succeeds: the caller asked for its absence, and it is absent.
+
 ## Drift ledger
 
 Every spec's last `ccqa audit --report-to-hub` audit, so a project can be reviewed

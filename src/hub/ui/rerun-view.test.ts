@@ -320,6 +320,22 @@ describe("hub UI: needs re-run", () => {
     expect(HTML).not.toContain("sg-unanswerable");
   });
 
+  test("manually verified reads as a person's word, not a machine pass", () => {
+    // A person's attestation overrides the verdict but is not the same claim
+    // as the audit/run pipeline clearing a case, so it must not blend into
+    // the "verified" pass colour.
+    const { rerunComposition, rerunSegments } = composition();
+    const cls = Object.fromEntries(
+      rerunSegments(rerunComposition([{ verdict: "verified" }, { verdict: "manuallyVerified" }])).map((s) => [s.state, s.cls]),
+    );
+    expect(cls.manuallyVerified).toBe("sg-manual");
+    const rule = (c: string, v: string) => new RegExp(`\\.${c}[^{}]*\\{[^}]*var\\(--${v}\\)`);
+    expect(HTML).toMatch(rule(cls.manuallyVerified!, "violet"));
+    expect(HTML).not.toMatch(rule(cls.manuallyVerified!, "pass"));
+    // The table row's own badge map (VERDICT_BADGE) keeps the same split.
+    expect(clientScript()).toContain('manuallyVerified: "rr-manual"');
+  });
+
   test("every state the hub can send has a segment, and an unrecognised one is not an all-clear", () => {
     const { RERUN_ORDER, rerunComposition } = composition();
     for (const state of SpecVerdictSchema.options) expect(RERUN_ORDER).toContain(state);
@@ -369,9 +385,9 @@ describe("hub UI: needs re-run", () => {
     }
     // Every filter chip has a count slot, and none carries data-i18n on the
     // button itself — applyStaticI18n's textContent swap would delete it.
-    // Three mode chips (all/deterministic/live) plus four verdict chips —
+    // Three mode chips (all/deterministic/live) plus five verdict chips —
     // one per SpecVerdictSchema option, same words as the 判定 column.
-    expect(HTML.match(/class="fcount"/g)).toHaveLength(7);
+    expect(HTML.match(/class="fcount"/g)).toHaveLength(8);
     expect(HTML).not.toMatch(/<button class="fchip"[^>]*data-i18n=/);
   });
 

@@ -76,7 +76,7 @@ export async function fetchRerunReport(
 }
 
 const SUMMARY_ORDER = rankedOrder<SpecVerdict>({
-  needsRepair: 0, rerunNeeded: 1, inProgress: 2, verified: 3,
+  needsRepair: 0, rerunNeeded: 1, inProgress: 2, manuallyVerified: 3, verified: 4,
 });
 
 export interface RerunSelection {
@@ -115,7 +115,9 @@ export interface RerunSelection {
  * cannot vouch for, are both as uncovered as one a deploy demonstrably
  * invalidated (ADR-0014). `needsRepair`, `inProgress` and `verified` are never
  * selected: running them repairs nothing, races something already in flight,
- * or repeats work that is still current.
+ * or repeats work that is still current. `manuallyVerified` is never selected
+ * either — the test is still the broken one the attestation stands in for,
+ * and running it would only relabel a person's answer with a machine failure.
  */
 export function selectSpecsNeedingRerun(
   specs: readonly SpecRef[],

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type {
+  Attestation,
+  Attestations,
   DeployEntry,
   DeployLog,
   DriftLedger,
@@ -61,6 +63,13 @@ function auditedAt(label: DriftLabel | null, gitHead: string): DriftLedger {
   };
 }
 
+/** An attestation recorded at `deployedSha`, after every fixture timestamp above. */
+function attested(deployedSha: string | null, overrides: Partial<Attestation> = {}): Attestations {
+  return {
+    specs: { "f/s": { by: "a-person", at: "2026-07-26T12:00:00Z", deployedSha, ...overrides } },
+  };
+}
+
 function compute(overrides: Partial<RerunInput> = {}): ReturnType<typeof computeRerun>[string] {
   const base = {
     specs: [SPEC],
@@ -68,6 +77,7 @@ function compute(overrides: Partial<RerunInput> = {}): ReturnType<typeof compute
     log: log(deploy(0)),
     touchIndex: {},
     locks: emptyLocks(),
+    attestations: { specs: {} },
     now: NOW,
     ...overrides,
   };
@@ -493,5 +503,71 @@ describe("computeRerun: the spec's own edits", () => {
       ledger: ledgerWithFailedRun(ranAt("sha-0")),
     });
     expect(verdict.execution).toBe("failed");
+  });
+});
+
+describe("computeRerun: a manual attestation overriding the verdict", () => {
+  test("a drifted spec with a covering attestation answers manuallyVerified, axes unchanged", () => {
+    const verdict = compute({
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+      attestations: attested("sha-0", { note: "checked by hand" }),
+    });
+    expect(verdict.verdict).toBe("manuallyVerified");
+    expect(verdict.audit).toBe("drifted");
+    expect(verdict.manual).toMatchObject({ by: "a-person", note: "checked by hand" });
+  });
+
+  test("lapses when a deploy touches the spec after the attestation, naming the deploy", () => {
+    const verdict = compute({
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1),
+      drift: auditedAt("TEST_DRIFT", "sha-1"),
+      attestations: attested("sha-0"),
+    });
+    expect(verdict.verdict).toBe("needsRepair");
+    expect(verdict.manual).toBeUndefined();
+    expect(verdict.manualLapsed).toMatchObject({ by: "a-person", because: "deployReached" });
+    expect(verdict.manualLapsedByDeploy).toMatchObject({ sha: "sha-1" });
+  });
+
+  test("a red run recorded after the attestation outranks it", () => {
+    const verdict = compute({
+      ledger: ledgerWithFailedRun(ranAt("sha-0", { at: "2026-07-26T18:00:00Z" })),
+      attestations: attested("sha-0"),
+    });
+    expect(verdict.verdict).toBe("needsRepair");
+    expect(verdict.manual).toBeUndefined();
+    expect(verdict.manualLapsed?.because).toBe("newerRed");
+  });
+
+  test("lapses when the spec itself is edited after the attestation", () => {
+    // The edit also re-opens the audit axis, so the verdict is the axes' own
+    // answer (inProgress) rather than needsRepair — the point here is that
+    // the attestation does not mask it, and says why.
+    const verdict = compute({
+      specs: [{ key: "f/s", changedAt: "2026-07-27T00:00:00Z" }],
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+      attestations: attested("sha-0"),
+    });
+    expect(verdict.verdict).toBe("inProgress");
+    expect(verdict.manual).toBeUndefined();
+    expect(verdict.manualLapsed?.because).toBe("specEdited");
+  });
+
+  test("the machine's own verified answer is not relabelled", () => {
+    const verdict = compute({ attestations: attested("sha-0") });
+    expect(verdict.verdict).toBe("verified");
+    expect(verdict.manual).toBeUndefined();
+  });
+
+  test("with no deploy log the attestation covers until a first deploy appears", () => {
+    const empty: DeployLog = { nextIndex: 0, entries: [] };
+    const verdict = compute({
+      log: empty,
+      ledger: { green: {}, run: {}, red: {} },
+      drift: auditedAt("TEST_DRIFT", "no-deploys"),
+      attestations: attested(null),
+    });
+    expect(verdict.verdict).toBe("manuallyVerified");
   });
 });

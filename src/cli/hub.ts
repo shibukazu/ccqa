@@ -663,6 +663,61 @@ const pushCommand = new Command("push")
     log.info(`${resolveBaseUrl(opts)}/#/runs/${run.id}`);
   }));
 
+// ── attestations ────────────────────────────────────────────────────────
+
+interface AttestOptions extends HubConnOptions {
+  project?: string;
+  profile: string;
+  by?: string;
+  note?: string;
+  revoke?: boolean;
+}
+
+const attestCommand = new Command("attest")
+  .argument("<feature/spec>", "Spec id, e.g. checkout/happy-path")
+  .description(
+    "Record that a person checked a spec's behaviour by hand against the deployed environment. " +
+      "The verdict answers manuallyVerified instead of asking a person for what a person already " +
+      "did — the drift ledger is untouched, so the repair loop keeps its reason to fix the test. " +
+      "The attestation lapses on its own when a deploy reaches the spec or the spec is edited.",
+  )
+  .requiredOption("--profile <name>", "Environment that was checked (e.g. 'stg'). The attestation is anchored to its current deploy head.")
+  .option("--by <name>", "Who checked. Required unless --revoke.")
+  .option("--note <text>", "What was checked and how — the reader deciding whether to trust it sees this.")
+  .option("--revoke", "Withdraw the spec's attestation instead of recording one.")
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .option("--project <name>", "Hub project. Defaults to the current directory's name.")
+  .option("--cwd <path>", "Directory the default --project name is resolved against.")
+  .action(withHubErrors(async (specId: string, opts: AttestOptions) => {
+    const project = resolveProject(opts);
+    const hub = connect(opts);
+    const [feature, ...rest] = specId.split("/");
+    if (!feature || rest.length === 0 || rest.some((s) => s.length === 0)) {
+      log.error(`invalid spec id: ${specId} — expected feature/spec`);
+      process.exit(2);
+    }
+
+    if (opts.revoke) {
+      await hub.deleteAttestation(project, { profile: opts.profile }, specId);
+      log.header("hub attest", `${specId} revoked`);
+      return;
+    }
+    if (!opts.by) {
+      log.error("--by <name> is required: an attestation is a person's word, and it needs the person");
+      process.exit(2);
+    }
+    const res = await hub.putAttestation(project, { profile: opts.profile }, {
+      spec: specId,
+      by: opts.by,
+      ...(opts.note !== undefined ? { note: opts.note } : {}),
+    });
+    log.header("hub attest", specId);
+    log.meta("by", res.attestation.by);
+    log.meta("anchored to deploy", res.attestation.deployedSha ?? "(no deploy log)");
+    log.info("the verdict answers manuallyVerified until a deploy reaches this spec or the spec is edited");
+  }));
+
 export const hubCommand = new Command("hub")
   .description(
     "Client for a ccqa hub: push run results and manage sessions/variables/prompts used by `ccqa run`. " +
@@ -673,7 +728,8 @@ export const hubCommand = new Command("hub")
   .addCommand(costCommand)
   .addCommand(sessionCommand)
   .addCommand(varCommand)
-  .addCommand(promptCommand);
+  .addCommand(promptCommand)
+  .addCommand(attestCommand);
 
 /** Loose check that a fetched session is agent-browser storage-state, mirroring loadStorageState. */
 export function isStorageStateShape(state: unknown): state is { cookies: unknown[]; origins: unknown[] } {
