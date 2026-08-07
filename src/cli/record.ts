@@ -214,6 +214,7 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // Signal and --timeout both die through this one seal-with-note path.
   let tracingStep: string | undefined;
   let abortCause: string | undefined;
+  let traceFailureNote: string | undefined;
   const teardown = createRunTeardown();
   teardown.onFinalize(async () => {
     if (!push) return;
@@ -222,7 +223,7 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       featureName,
       specName,
       recorded,
-      abortCause !== undefined ? abortNote(abortCause, tracingStep) : undefined,
+      abortCause !== undefined ? abortNote(abortCause, tracingStep) : traceFailureNote,
     );
   });
   const disposeSignalHandlers = installTeardownSignalHandlers(teardown, (sig) => {
@@ -261,6 +262,9 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       // The trace finished: a later signal (during generate) is no longer
       // "during step-NN" — that would name a step that completed fine.
       tracingStep = undefined;
+      if (traceResult.status !== "passed") {
+        traceFailureNote = "trace finished FAILED — a step did not complete, so the recording does not demonstrate the spec";
+      }
       log.blank();
 
       // Learn from the trace before generate runs, not after: the flag's
@@ -294,7 +298,12 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       await releaseLock();
     }
 
-    recorded = generated;
+    // A trace that did not complete is not a recording of the spec, however
+    // cleanly the generate half emitted code from it: the actions that exist
+    // replay fine, but the spec's later steps are simply absent, and a caller
+    // keying on exit 0 (the auto-fix loop) would ship that hole as a green
+    // test. The artifacts stay on disk for diagnosis either way.
+    recorded = generated && traceFailureNote === undefined;
   } finally {
     // Disarm before the teardown seals: a run completing at the buzzer must
     // not be shot by its own deadline mid-seal.
@@ -307,7 +316,10 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // exhausted auto-fix loop is most expensive for. A run left open on the hub
   // is the worse outcome of the two, so it decides the code.
   if (!sealed) process.exit(2);
-  if (!recorded) process.exit(1);
+  if (!recorded) {
+    if (traceFailureNote !== undefined) log.error(traceFailureNote);
+    process.exit(1);
+  }
 }
 
 /** `--timeout <seconds>`: a positive whole number of seconds. */
