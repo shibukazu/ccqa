@@ -41,21 +41,51 @@ export interface AuditSelection {
   summary: string;
 }
 
+/**
+ * Specs whose drift-ledger entry is still open. The hub's audit-need answer is
+ * deploy-based, and a merged fix changes only the spec tree — no deploy lands
+ * on the spec, so the hub would never call it due again and the entry would
+ * stay open forever. A drifted spec is due until the audit itself clears it.
+ * Unreadable ledger degrades to the deploy-based answer alone: the sweep must
+ * not die over the supplementary question.
+ */
+export async function fetchStillDrifted(ctx: HubContext): Promise<ReadonlySet<string>> {
+  try {
+    const ledger = await ctx.hub.getDriftLedger(ctx.project);
+    return new Set(
+      Object.entries(ledger.specs ?? {})
+        .filter(([, entry]) => entry.label != null)
+        .map(([key]) => key),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+type SelectionReason = AuditNeed["because"] | "stillDrifted";
+
 /** Worst-known-first, so the line leads with what has never been looked at. */
-const SUMMARY_ORDER = rankedOrder<AuditNeed["because"]>({
-  neverAudited: 0, cannotTell: 1, deployReached: 2, held: 3, current: 4,
+const SUMMARY_ORDER = rankedOrder<SelectionReason>({
+  neverAudited: 0, stillDrifted: 1, cannotTell: 2, deployReached: 3, held: 4, current: 5,
 });
 
 export function selectSpecsNeedingAudit(
   targets: readonly SpecRef[],
   report: AuditNeedReport,
+  stillDrifted: ReadonlySet<string> = new Set(),
 ): AuditSelection {
-  const counts = new Map<AuditNeed["because"], number>();
+  const counts = new Map<SelectionReason, number>();
   const selected: SpecRef[] = [];
   for (const target of targets) {
+    const key = specKey(target);
+    if (stillDrifted.has(key)) {
+      counts.set("stillDrifted", (counts.get("stillDrifted") ?? 0) + 1);
+      selected.push(target);
+      continue;
+    }
     // A spec the perspectives document does not list has no answer and no
     // baseline either — the same position as one never audited.
-    const need = report.specs[specKey(target)] ?? ({ because: "neverAudited" } satisfies AuditNeed);
+    const need = report.specs[key] ?? ({ because: "neverAudited" } satisfies AuditNeed);
     counts.set(need.because, (counts.get(need.because) ?? 0) + 1);
     if (needsAudit(need)) selected.push(target);
   }

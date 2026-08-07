@@ -24,7 +24,7 @@ import {
 import { collectChangedSpecs } from "./changed-specs.ts";
 import type { HubClient } from "../hub-client/index.ts";
 import { addLanguageOption, addProfileOption } from "./options.ts";
-import { fetchAuditNeed, selectSpecsNeedingAudit } from "../drift/audit-selection.ts";
+import { fetchAuditNeed, fetchStillDrifted, selectSpecsNeedingAudit } from "../drift/audit-selection.ts";
 import { requireHubProfile } from "../run/hub-selection.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { ProjectNameError, resolveProject } from "./resolve-project.ts";
@@ -83,7 +83,7 @@ export const auditCommand = addProfileOption(addLanguageOption(
     )
     .option(
       "--only-hub-audit-needed",
-      "Only specs the hub says a deploy has landed on since the audit last read them. A spec that was never audited is always included, and one the hub cannot answer for is audited rather than skipped. No git diff involved. Requires a hub connection and --hub-profile.",
+      "Only specs the hub says a deploy has landed on since the audit last read them. A spec that was never audited is always included, one the hub cannot answer for is audited rather than skipped, and one whose drift entry is still open is always re-audited — a merged fix changes only the spec tree, which no deploy answer covers. No git diff involved. Requires a hub connection and --hub-profile.",
     )
     .optionsGroup("How to run it:")
     .option("--concurrency <n>", `Parallel spec checks (default: ${DEFAULT_CONCURRENCY})`)
@@ -180,8 +180,12 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   // the prompt, and skips it entirely when nothing is left to audit.
   if (opts.onlyHubAuditNeeded) {
     const total = targets.length;
-    const report = await fetchAuditNeed({ hub: hub!, project: hubProject! }, opts.hubProfile!);
-    const selection = selectSpecsNeedingAudit(targets, report);
+    const ctx = { hub: hub!, project: hubProject! };
+    const [report, stillDrifted] = await Promise.all([
+      fetchAuditNeed(ctx, opts.hubProfile!),
+      fetchStillDrifted(ctx),
+    ]);
+    const selection = selectSpecsNeedingAudit(targets, report, stillDrifted);
     targets = selection.selected;
     if (format === "text") {
       log.meta("hub", selection.summary);
