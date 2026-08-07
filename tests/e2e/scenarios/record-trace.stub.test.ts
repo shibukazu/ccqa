@@ -108,4 +108,35 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     expect(generated).toMatch(/abAssertVisible\(/);
     expect(generated).toMatch(/abAssertUrl\(/);
   }, 120_000);
+
+  test("a trace that finishes FAILED exits 1 even when generate emits cleanly", async () => {
+    project = await makeFakeProject("record-trace-stub", { linkCcqa: true });
+    await installFakeAgentBrowser(project.cwd);
+
+    const mockPath = join(project.cwd, "claude-mock.jsonl");
+    const messages = mockTraceMessages();
+    // The agent declares the run failed (a step could not complete) — the
+    // recorded actions still generate fine, which is exactly the case the
+    // exit code must not paper over.
+    messages.splice(messages.length - 1, 0, {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "RUN_COMPLETED|failed|a step could not complete" }] },
+    });
+    await writeMockMessages(mockPath, messages);
+
+    const result = await runCcqa(["record", "demo/x"], {
+      cwd: project.cwd,
+      env: {
+        ...noColorEnv(),
+        CCQA_CLAUDE_MOCK_FILE: mockPath,
+        CCQA_AB_BIN: join(project.cwd, "node_modules/agent-browser/bin/agent-browser.js"),
+        CCQA_FAKE_AB_STDOUT: "about:blank",
+        CCQA_FAKE_AB_COUNT: "1",
+      },
+      timeoutMs: 90_000,
+    });
+    const combined = stripAnsi(result.stdout + result.stderr);
+    expect(result.exitCode, combined).toBe(1);
+    expect(combined).toContain("does not demonstrate the spec");
+  }, 120_000);
 });
