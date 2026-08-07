@@ -5,6 +5,7 @@ import {
   extractNotes,
   mergePerspectives,
   parseSummaries,
+  readSpecMeta,
   withoutGeneratedAt,
   type SummaryEntry,
 } from "./perspectives.ts";
@@ -397,5 +398,28 @@ describe("comparePerspectivesSkeleton (--check)", () => {
     );
     expect(issues).toHaveLength(1);
     expect(issues[0]).toContain("target=playwright");
+  });
+});
+
+describe("readSpecMeta (verbatim step transcription)", () => {
+  test("action steps keep instruction/expected, include steps keep only the block name", () => {
+    const yaml = stringifyYaml({
+      title: "a case",
+      steps: [
+        { include: "login", params: { email: "${A_VAR}" } },
+        { instruction: "open the list", expected: "the list shows" },
+        { instruction: "press submit" },
+        "not-a-step",
+      ],
+    });
+    expect(readSpecMeta("a-case", yaml).steps).toEqual([
+      { include: "login" },
+      { instruction: "open the list", expected: "the list shows" },
+      { instruction: "press submit" },
+    ]);
+  });
+
+  test("a spec with no steps transcribes none", () => {
+    expect(readSpecMeta("a-case", stringifyYaml({ title: "t" })).steps).toEqual([]);
   });
 });

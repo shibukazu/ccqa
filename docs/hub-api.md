@@ -776,7 +776,10 @@ DELETE /api/v1/projects/:project/prompts/:name
 The project's coverage-inventory document (`ccqa perspectives`), stored on
 the hub only — one JSON document per project, plain text, no encryption key
 required. The CLI Zod-validates before pushing; the hub only rejects bodies
-that aren't a JSON object. `PATCH` is the hub UI's note editing: `note` is
+that aren't a JSON object. Each spec entry may carry `steps`, the spec's
+procedure transcribed verbatim (an include step keeps only its block name)
+so the hub UI can show a case in full — a mechanical copy like `title`,
+rewritten wholesale on every regeneration, never authored. `PATCH` is the hub UI's note editing: `note` is
 the document's only human-authored field and this is its only write path
 (an empty `note` clears the field). The edit is applied as a serialized
 read-modify-write so concurrent edits can't clobber each other.
