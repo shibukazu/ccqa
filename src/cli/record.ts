@@ -37,6 +37,7 @@ interface RecordOptions {
   traceValidation?: ValidationMode;
   autoFix?: AutoFixMode;
   autoFixMaxRetries?: string;
+  timeout?: number;
   overwrite?: boolean;
   sessionPin?: boolean;
   traceOnly?: boolean;
@@ -86,6 +87,11 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       "interactive" as AutoFixMode,
     )
     .option("--auto-fix-max-retries <n>", "Maximum number of auto-fix retries", "3")
+    .option(
+      "--timeout <seconds>",
+      "Abort the recording after this many seconds, wherever it is (trace, generate, auto-fix): reap the browser session, seal the open hub run (--report-to-hub) with a 'timed out' note, and exit 124. Prefer this over wrapping the command in an external `timeout`, whose SIGTERM may never reach this process.",
+      parseTimeoutSeconds,
+    )
     .option("--trace-only", "Stop after the trace step; do not generate test code")
     .option(
       "--no-session-pin",
@@ -201,29 +207,50 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // `process.exit` below cannot cut off a PATCH already on the wire.
   let recorded = false;
   let sealed = true;
-  // Which spec step the trace is in, and which signal (if any) is killing the
+  // Which spec step the trace is in, and what (if anything) is aborting the
   // process — together they turn a bare status:"failed" hub row into
-  // "terminated by signal (SIGTERM) during step-NN", the difference between a
-  // diagnosable CI timeout and a mystery.
+  // "terminated by signal (SIGTERM) during step-NN" or "timed out after 900s
+  // during step-NN", the difference between a diagnosable death and a mystery.
+  // Signal and --timeout both die through this one seal-with-note path.
   let tracingStep: string | undefined;
-  let killedBy: "SIGINT" | "SIGTERM" | undefined;
+  let abortCause: string | undefined;
   const teardown = createRunTeardown();
   teardown.onFinalize(async () => {
     if (!push) return;
-    const note = killedBy
-      ? `terminated by signal (${killedBy})${tracingStep ? ` during ${tracingStep}` : ""}`
-      : undefined;
-    sealed = await sealRecordPush(push, featureName, specName, recorded, note);
+    sealed = await sealRecordPush(
+      push,
+      featureName,
+      specName,
+      recorded,
+      abortCause !== undefined ? abortNote(abortCause, tracingStep) : undefined,
+    );
   });
   const disposeSignalHandlers = installTeardownSignalHandlers(teardown, (sig) => {
-    killedBy = sig;
+    abortCause = `terminated by signal (${sig})`;
   });
 
+  // The deadline is record's own `timeout(1)`: a CI wrapper's SIGTERM lands on
+  // the package-manager shim, which does not reliably forward it here, so the
+  // graceful seal above never ran. Expiry takes the same road as a signal —
+  // name the cause, run the teardown (seal the hub row, reap the browser) —
+  // then exits 124, the code an external `timeout` made conventional. Armed
+  // here so it covers the whole expensive phase: trace, learning, generate
+  // and the auto-fix loop's browser replays.
+  let deadline: NodeJS.Timeout | undefined;
+  if (opts.timeout !== undefined) {
+    const seconds = opts.timeout;
+    deadline = setTimeout(() => {
+      abortCause = `timed out after ${seconds}s`;
+      log.error(`--timeout: ${abortNote(abortCause, tracingStep)}`);
+      void teardown.run().finally(() => process.exit(124));
+    }, seconds * 1000);
+    deadline.unref();
+  }
+
   try {
-    let traceResult: RunTraceResult | null = null;
     let generated = true;
     try {
-      traceResult = await runTrace(featureName, specName, opts.model, opts.traceValidation ?? "lenient", language, {
+      const traceResult = await runTrace(featureName, specName, opts.model, opts.traceValidation ?? "lenient", language, {
         cwd: cwdForProfile,
         hubContext,
         ...(opts.instruction ? { instruction: opts.instruction } : {}),
@@ -235,6 +262,20 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       // "during step-NN" — that would name a step that completed fine.
       tracingStep = undefined;
       log.blank();
+
+      // Learn from the trace before generate runs, not after: the flag's
+      // contract is "after the trace finishes", and the generate/auto-fix half
+      // (vitest browser replays, diagnose calls) has many ways to die that
+      // must not take a completed trace's learnings with it.
+      await learnFromTrace({
+        enabled: opts.learnHubTracePrompt === true,
+        featureName,
+        specName,
+        traceResult,
+        hubContext,
+        ...(opts.model ? { model: opts.model } : {}),
+        ...(language ? { language } : {}),
+      });
 
       if (!opts.traceOnly) {
         generated = (await runGenerate(featureName, specName, {
@@ -253,19 +294,11 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       await releaseLock();
     }
 
-    if (opts.learnHubTracePrompt && traceResult !== null) {
-      log.blank();
-      await updateAgentPrompt({
-        kind: "record",
-        flag: "--learn-hub-trace-prompt",
-        runSummary: buildRecordRunSummary(featureName, specName, traceResult),
-        hubContext,
-        ...(opts.model ? { model: opts.model } : {}),
-        ...(language ? { language } : {}),
-      });
-    }
     recorded = generated;
   } finally {
+    // Disarm before the teardown seals: a run completing at the buzzer must
+    // not be shot by its own deadline mid-seal.
+    if (deadline !== undefined) clearTimeout(deadline);
     await teardown.run();
     disposeSignalHandlers();
   }
@@ -275,6 +308,63 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // is the worse outcome of the two, so it decides the code.
   if (!sealed) process.exit(2);
   if (!recorded) process.exit(1);
+}
+
+/** `--timeout <seconds>`: a positive whole number of seconds. */
+export function parseTimeoutSeconds(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || Math.floor(n) !== n) {
+    throw new Error(`--timeout must be a positive integer number of seconds, got "${raw}"`);
+  }
+  return n;
+}
+
+/**
+ * The one line an aborted recording leaves on its hub row: what ended it
+ * ("terminated by signal (SIGTERM)", "timed out after 900s") plus the spec
+ * step that was tracing, when one was in flight. The signal handlers and the
+ * --timeout deadline both seal through this, so every abort dies with the
+ * same shape of reason.
+ */
+export function abortNote(cause: string, tracingStep?: string): string {
+  return `${cause}${tracingStep !== undefined ? ` during ${tracingStep}` : ""}`;
+}
+
+export interface LearnFromTraceArgs {
+  /** The caller's `--learn-hub-trace-prompt`. */
+  enabled: boolean;
+  featureName: string;
+  specName: string;
+  /** Null when no browser trace ran (or one died before producing a result). */
+  traceResult: RunTraceResult | null;
+  hubContext: HubContext | null;
+  model?: string;
+  language?: string;
+}
+
+/**
+ * The rule for `--learn-hub-trace-prompt`: a browser trace ran → learn from
+ * it; no trace → stay silent. `runRecord` calls this immediately after the
+ * trace, before generate — sequencing it after the generate/auto-fix half
+ * (as record once did) let any death there discard a completed trace's
+ * learnings. Returns whether the refresh fired, and takes the updater as a
+ * seam so the rule is testable without a browser.
+ */
+export async function learnFromTrace(
+  args: LearnFromTraceArgs,
+  update: typeof updateAgentPrompt = updateAgentPrompt,
+): Promise<boolean> {
+  if (!args.enabled || args.traceResult === null) return false;
+  log.blank();
+  await update({
+    kind: "record",
+    flag: "--learn-hub-trace-prompt",
+    runSummary: buildRecordRunSummary(args.featureName, args.specName, args.traceResult),
+    hubContext: args.hubContext,
+    ...(args.model !== undefined ? { model: args.model } : {}),
+    ...(args.language !== undefined ? { language: args.language } : {}),
+  });
+  return true;
 }
 
 /**
