@@ -186,12 +186,13 @@ function makeDriftReportTarGz(
 }
 
 /**
- * A `kind: "drift"` archive whose every row is clean, read at `gitHead`. The
- * re-run verdict now asks the audit first, so a fixture that exercises the run
+ * A `kind: "drift"` archive read at `gitHead`. Every spec is clean unless
+ * named by `drifted`, which carries a TEST_DRIFT diagnosis instead. The
+ * re-run verdict asks the audit first, so a fixture that exercises the run
  * axis has to say the audit already answered for the deployed commit —
  * otherwise every spec is `inProgress` and the run side is never reached.
  */
-function makeCleanAuditTarGz(gitHead: string, specs: readonly string[]): Uint8Array {
+function makeAuditTarGz(gitHead: string, specs: readonly string[], drifted?: string): Uint8Array {
   const report: RunReportData = {
     schemaVersion: 1,
     kind: "drift",
@@ -207,11 +208,22 @@ function makeCleanAuditTarGz(gitHead: string, specs: readonly string[]): Uint8Ar
       feature: key.split("/")[0]!,
       spec: key.split("/")[1]!,
       title: null,
-      status: "passed" as const,
+      status: key === drifted ? ("failed" as const) : ("passed" as const),
       testCounts: null,
       durationMs: null,
       assertions: null,
-      analysis: null,
+      analysis:
+        key === drifted
+          ? {
+              label: "TEST_DRIFT" as const,
+              confidence: 0.9,
+              headline: "a selector went stale",
+              recommendation: "re-record",
+              evidence: [],
+              reasoning: "",
+              surface: "generated" as const,
+            }
+          : null,
       analysisSkipped: null,
       failureLogExcerpt: null,
       diffExcerpt: null,
@@ -219,53 +231,6 @@ function makeCleanAuditTarGz(gitHead: string, specs: readonly string[]): Uint8Ar
       evidence: null,
       liveRun: null,
     })),
-  };
-  return packTarGz([
-    { path: "report.json", content: new TextEncoder().encode(JSON.stringify(report)), mode: 0o644 },
-    { path: "index.html", content: new TextEncoder().encode("<html></html>"), mode: 0o644 },
-  ]);
-}
-
-/** Like `makeCleanAuditTarGz`, but one spec carries a TEST_DRIFT diagnosis. */
-function makeDriftAuditTarGz(gitHead: string, driftedSpec: string, cleanSpecs: readonly string[]): Uint8Array {
-  const row = (key: string, drifted: boolean) => ({
-    feature: key.split("/")[0]!,
-    spec: key.split("/")[1]!,
-    title: null,
-    status: drifted ? ("failed" as const) : ("passed" as const),
-    testCounts: null,
-    durationMs: null,
-    assertions: null,
-    analysis: drifted
-      ? {
-          label: "TEST_DRIFT" as const,
-          confidence: 0.9,
-          headline: "a selector went stale",
-          recommendation: "re-record",
-          evidence: [],
-          reasoning: "",
-          surface: "generated" as const,
-        }
-      : null,
-    analysisSkipped: null,
-    failureLogExcerpt: null,
-    diffExcerpt: null,
-    specYaml: null,
-    evidence: null,
-    liveRun: null,
-  });
-  const report: RunReportData = {
-    schemaVersion: 1,
-    kind: "drift",
-    createdAt: new Date().toISOString(),
-    runId: null,
-    git: { head: gitHead, base: null },
-    model: null,
-    language: null,
-    promptVersion: "1",
-    customPromptVersion: null,
-    cost: null,
-    results: [row(driftedSpec, true), ...cleanSpecs.map((key) => row(key, false))],
   };
   return packTarGz([
     { path: "report.json", content: new TextEncoder().encode(JSON.stringify(report)), mode: 0o644 },
@@ -1455,7 +1420,7 @@ describe("hub API server", () => {
       const res = await fetch(`${baseUrl}/api/v1/runs?project=${PROJECT}&kind=drift&branch=main`, authed({
         method: "POST",
         headers: { "Content-Type": "application/gzip" },
-        body: makeCleanAuditTarGz(gitHead, specs),
+        body: makeAuditTarGz(gitHead, specs),
       }));
       expect(res.status).toBe(201);
     }
@@ -1611,7 +1576,7 @@ describe("hub API server", () => {
         const res = await fetch(`${baseUrl}/api/v1/runs?project=${PROJECT}&kind=drift&branch=main`, authed({
           method: "POST",
           headers: { "Content-Type": "application/gzip" },
-          body: makeDriftAuditTarGz(gitHead, "f/a", ["f/b", "f/unscoped"]),
+          body: makeAuditTarGz(gitHead, ["f/a", "f/b", "f/unscoped"], "f/a"),
         }));
         expect(res.status).toBe(201);
       }

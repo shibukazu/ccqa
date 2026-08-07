@@ -43,8 +43,10 @@ export function createGetAttestationsHandler(storage: HubStorage) {
 export function createPutAttestationHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const scope = requireScope(ctx);
-    const body = await readJsonBody(ctx.req, MAX_BODY_BYTES, PutAttestationRequestSchema, "attestation body");
-    const head = await storage.deploys.head(scope.project, scope.profile);
+    const [body, head] = await Promise.all([
+      readJsonBody(ctx.req, MAX_BODY_BYTES, PutAttestationRequestSchema, "attestation body"),
+      storage.deploys.head(scope.project, scope.profile),
+    ]);
     const attestation: Attestation = {
       by: body.by,
       at: new Date().toISOString(),

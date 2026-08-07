@@ -20,7 +20,7 @@ import { getChangedFilesBetween, type ChangedFile } from "../drift/affected.ts";
 import { selectSpecs } from "../select/analyze.ts";
 import { loadSpecInventory } from "../select/inventory.ts";
 import type { DeploySelection } from "../hub/contract/schema.ts";
-import { specKey } from "../store/index.ts";
+import { parseSpecPath, specKey } from "../store/index.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { sessionCaptureCommand } from "./session.ts";
 import { resolveProject } from "./resolve-project.ts";
@@ -689,12 +689,19 @@ const attestCommand = new Command("attest")
   .option(...hubTokenOption)
   .option("--project <name>", "Hub project. Defaults to the current directory's name.")
   .option("--cwd <path>", "Directory the default --project name is resolved against.")
-  .action(withHubErrors(async (specId: string, opts: AttestOptions) => {
+  .action(withHubErrors(async (rawSpecId: string, opts: AttestOptions) => {
     const project = resolveProject(opts);
     const hub = connect(opts);
-    const [feature, ...rest] = specId.split("/");
-    if (!feature || rest.length === 0 || rest.some((s) => s.length === 0)) {
-      log.error(`invalid spec id: ${specId} — expected feature/spec`);
+    // The same normalization every other <feature/spec> argument gets: the
+    // attestation is stored under this key and looked up by the canonical
+    // "feature/spec" form, so an alias accepted here but stored verbatim
+    // would silently never match.
+    let specId: string;
+    try {
+      const parsed = parseSpecPath(rawSpecId);
+      specId = `${parsed.featureName}/${parsed.specName}`;
+    } catch (err) {
+      log.error(errMessage(err));
       process.exit(2);
     }
 

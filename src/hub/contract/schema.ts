@@ -741,6 +741,13 @@ export const SpecRerunSchema = z.object({
   manualLapsed: AttestationSchema.extend({ because: AttestationLapseSchema }).optional(),
   /** The deploy that ended the attestation, when `manualLapsed.because === "deployReached"` and the log can name it. */
   manualLapsedByDeploy: DeployRefSchema.nullable().optional(),
+  /**
+   * Which hole made the attestation unplaceable, when `manualLapsed.because
+   * === "cannotPlace"` — the same annotation the axes keep
+   * (`auditAssumedReached` / `executionAssumedReached`), for the same reason:
+   * the eight ways a log fails to answer call for different fixes (ADR-0014).
+   */
+  manualLapsedReason: RerunUnknownReasonSchema.optional(),
   /** The job working on this spec right now, or null. Expired holds read as null. */
   heldBy: SpecLockSchema.nullable(),
   lastRun: SpecLedgerEntrySchema.nullable(),

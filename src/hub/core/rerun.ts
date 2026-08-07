@@ -136,6 +136,7 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       coords.lastRed,
       range,
       log,
+      deployTimes,
     );
     if (manualState?.kind === "covers" && !held && verdict !== "verified") {
       verdict = "manuallyVerified";
@@ -155,6 +156,7 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
             ...(manualState.because === "deployReached"
               ? { manualLapsedByDeploy: manualState.byDeploy }
               : {}),
+            ...(manualState.reason ? { manualLapsedReason: manualState.reason } : {}),
           }
         : {}),
       heldBy: held,
@@ -166,14 +168,22 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
 
 type ManualState =
   | { kind: "covers"; attest: Attestation }
-  | { kind: "lapsed"; attest: Attestation; because: AttestationLapse; byDeploy?: DeployRef | null };
+  | {
+      kind: "lapsed";
+      attest: Attestation;
+      because: AttestationLapse;
+      byDeploy?: DeployRef | null;
+      /** Set only for `cannotPlace`: which hole made the log unable to answer. */
+      reason?: RerunUnknownReason;
+    };
 
 /**
  * Does the attestation still speak for what is deployed? Checked in the order
  * the lapse enum documents: deploy coverage first (a sha the log cannot place
- * reads as reached, ADR-0014), then the spec's own edits — compared against
- * when the person looked, not a deploy time, because they read the spec as it
- * stood that moment — then a red run recorded after them, which is newer
+ * reads as reached, ADR-0014, with the hole kept as an annotation), then the
+ * spec's own edits — compared against when the person looked, because they
+ * read the spec as it stood that moment, which `specMovedSince` covers via a
+ * null baseline sha — then a red run recorded after them, which is newer
  * information than their word. The null-sha case is the profile that had no
  * deploy log when they checked: their word covers exactly as long as that
  * stays true.
@@ -184,6 +194,7 @@ function readAttestation(
   lastRed: SpecLedgerEntry | null,
   range: RangeLookup,
   log: DeployLog,
+  deployTimes: Map<string, string>,
 ): ManualState | null {
   if (!attest) return null;
 
@@ -196,9 +207,11 @@ function readAttestation(
   if (coverage.kind === "touched") {
     return { kind: "lapsed", attest, because: "deployReached", byDeploy: coverage.touchedByDeploy };
   }
-  if (coverage.kind === "unanswerable") return { kind: "lapsed", attest, because: "cannotPlace" };
+  if (coverage.kind === "unanswerable") {
+    return { kind: "lapsed", attest, because: "cannotPlace", reason: coverage.reason };
+  }
 
-  if (spec.changedAt !== undefined && spec.changedAt > attest.at) {
+  if (specMovedSince(spec.changedAt, null, attest.at, deployTimes)) {
     return { kind: "lapsed", attest, because: "specEdited" };
   }
   if (lastRed !== null && lastRed.at > attest.at) {

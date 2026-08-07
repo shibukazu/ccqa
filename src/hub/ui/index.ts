@@ -3615,6 +3615,12 @@ const CLIENT_JS = `
         ? t("perspectives.manual.lapsed.deployReachedNamed").replace("{sha}", shortSha(deploy.sha)).replace("{at}", relTime(deploy.at))
         : t("perspectives.manual.lapsed.deployReached");
     }
+    if (lapsed.because === "cannotPlace" && rr.manualLapsedReason) {
+      // The same per-hole vocabulary the axes' assumed-reached annotations
+      // use — an empty deploy log and an unjudged range call for different
+      // next actions, so the shrug names which hole it is.
+      return t("perspectives.manual.lapsed.cannotPlace") + " (" + rerunReasonText("perspectives.rerun.why.", rr.manualLapsedReason) + ")";
+    }
     return rerunReasonText("perspectives.manual.lapsed.", lapsed.because);
   }
 
@@ -4207,6 +4213,15 @@ const CLIENT_JS = `
   // needs are short, so a modal would outweigh what it does. reloadRerun()
   // is the same profile-scoped refresh a profile switch uses — it re-renders
   // the whole table, so an open detail panel closes along with it.
+  function submitAttestation(method, body) {
+    apiFetch(attestationsPath(), {
+      method: method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(function () { reloadRerun(); })
+      .catch(function (err) { window.alert(t("perspectives.manual.error") + ": " + err.message); });
+  }
+
   function manualAttestButton(feature, spec) {
     var btn = el("button", "btn sm primary", t("perspectives.manual.attestButton"));
     btn.type = "button";
@@ -4215,12 +4230,7 @@ const CLIENT_JS = `
       if (!by) return;
       storeAttestBy(by);
       var note = window.prompt(t("perspectives.manual.promptNote"), "");
-      apiFetch(attestationsPath(), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spec: perspSpecKey(feature, spec), by: by, note: note || undefined }),
-      }).then(function () { reloadRerun(); })
-        .catch(function (err) { window.alert(t("perspectives.manual.error") + ": " + err.message); });
+      submitAttestation("PUT", { spec: perspSpecKey(feature, spec), by: by, note: note || undefined });
     });
     return btn;
   }
@@ -4230,12 +4240,7 @@ const CLIENT_JS = `
     btn.type = "button";
     btn.addEventListener("click", function () {
       if (!window.confirm(t("perspectives.manual.confirmRevoke"))) return;
-      apiFetch(attestationsPath(), {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spec: perspSpecKey(feature, spec) }),
-      }).then(function () { reloadRerun(); })
-        .catch(function (err) { window.alert(t("perspectives.manual.error") + ": " + err.message); });
+      submitAttestation("DELETE", { spec: perspSpecKey(feature, spec) });
     });
     return btn;
   }
