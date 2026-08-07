@@ -524,9 +524,11 @@ the log cannot place (assumed reached, ADR-0014). A lapsed attestation is not
 dropped from `/rerun`: the row carries it as `manualLapsed` with a `because`
 naming which of those ended it (`deployReached` | `cannotPlace` |
 `specEdited` | `newerRed`), plus `manualLapsedByDeploy` naming the deploy
-when the log can — the person deciding whether to attest again needs to know
-what changed since they last looked. A standing one rides as `manual`,
-present exactly when the verdict is `manuallyVerified`.
+when the log can, and `manualLapsedReason` naming which hole when the log
+could not place it — the person deciding whether to attest again needs to
+know what changed since they last looked. A standing one rides as `manual`
+whether or not it decided the verdict: on a held or machine-verified spec it
+changed nothing, but it is still there to be seen and revoked.
 
 `GET` returns the raw document, standing and lapsed alike — whether one still
 covers its spec is `/rerun`'s answer; the raw read exists so a lapsed

@@ -4282,11 +4282,20 @@ const CLIENT_JS = `
     }
     frag.appendChild(dl);
 
+    // A standing attestation always offers revoke — even when it changed
+    // nothing (a held or machine-verified spec), it exists and must stay
+    // findable. A lapsed one is named right here, beside the attest button
+    // the reader is deciding whether to press.
     var manualBtn = null;
-    if (rr && rr.verdict === "manuallyVerified") manualBtn = manualRevokeButton(feature, spec);
+    if (rr && rr.manual) manualBtn = manualRevokeButton(feature, spec);
     else if (rr && (rr.verdict === "needsRepair" || rr.verdict === "rerunNeeded")) manualBtn = manualAttestButton(feature, spec);
     if (manualBtn) {
       var manualBox = el("div", "manual-attest");
+      if (rr.manual && rr.verdict !== "manuallyVerified") {
+        manualBox.appendChild(el("div", "d-prose", manualAttestationText(rr.manual)));
+      }
+      var lapseLine = rerunManualLapseText(rr);
+      if (lapseLine) manualBox.appendChild(el("div", "d-prose", lapseLine));
       manualBox.appendChild(manualBtn);
       frag.appendChild(manualBox);
     }

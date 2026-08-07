@@ -60,8 +60,10 @@ export async function fetchRerunReport(
   const parsed = RerunReportSchema.safeParse(report);
   if (!parsed.success) {
     throw new RunUsageError(
-      `${FLAG}: this hub's re-run answer is not in a shape this ccqa understands — it is likely ` +
-        `older than this CLI. Upgrade the hub, or select with --only-affected-by <ref> instead.`,
+      `${FLAG}: this hub's re-run answer is not in a shape this ccqa understands — the hub and ` +
+        `this CLI are on different versions, and either side being newer can cause it (a newer ` +
+        `hub may answer with verdicts this CLI does not know). Align the two, or select with ` +
+        `--only-affected-by <ref> instead.`,
     );
   }
   report = parsed.data;

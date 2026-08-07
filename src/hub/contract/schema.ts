@@ -727,9 +727,12 @@ export const SpecRerunSchema = z.object({
    */
   specChangedSince: z.string().optional(),
   /**
-   * The manual check standing in for the machine's answer. Present exactly
-   * when `verdict === "manuallyVerified"`. ADDITIVE and optional, so a client
-   * older than this field is unaffected — as are the two below.
+   * The spec's standing attestation, whenever one still covers what is
+   * deployed. The verdict is `manuallyVerified` only when it also had
+   * something to override — on a held or machine-verified spec the
+   * attestation changed nothing, but it is still here so it can be seen and
+   * revoked. ADDITIVE and optional, so a client older than this field is
+   * unaffected — as are the fields below.
    */
   manual: AttestationSchema.optional(),
   /**

@@ -49,17 +49,21 @@ describe("selectSpecsNeedingRerun", () => {
     { featureName: "f", specName: "verified" },
     { featureName: "f", specName: "needsRepair" },
     { featureName: "f", specName: "inProgress" },
+    { featureName: "f", specName: "manuallyVerified" },
   ];
   const verdicts = report({
     "f/rerunNeeded": spec("rerunNeeded"),
     "f/verified": spec("verified"),
     "f/needsRepair": spec("needsRepair"),
     "f/inProgress": spec("inProgress"),
+    "f/manuallyVerified": spec("manuallyVerified"),
   });
 
-  test("selects `rerunNeeded`, and nothing the other three answer for", () => {
+  test("selects `rerunNeeded`, and nothing the other four answer for", () => {
     // Running a spec the audit rejected is exactly what `needsRepair` exists
-    // to prevent, and `inProgress` would race whatever is already holding it.
+    // to prevent, `inProgress` would race whatever is already holding it, and
+    // a `manuallyVerified` spec's test is still the broken one a person's
+    // word stands in for.
     const { selected } = selectSpecsNeedingRerun(specs, verdicts);
     expect(selected.map((s) => s.specName)).toEqual(["rerunNeeded"]);
   });
@@ -78,7 +82,7 @@ describe("selectSpecsNeedingRerun", () => {
 
   test("the summary accounts for every offered spec", () => {
     expect(selectSpecsNeedingRerun(specs, verdicts).summary).toBe(
-      "1 needsRepair, 1 rerunNeeded, 1 inProgress, 1 verified",
+      "1 needsRepair, 1 rerunNeeded, 1 inProgress, 1 manuallyVerified, 1 verified",
     );
   });
 
@@ -134,7 +138,7 @@ describe("fetchRerunReport", () => {
     // exists to prevent.
     const stale = { verdict: "unanswerable", reason: "gapInRange" } as unknown as SpecRerun;
     const ctx = hubCtx({ getRerun: async () => report({ "f/s": stale }) });
-    await expect(fetchRerunReport(ctx, "stg")).rejects.toThrow(/older than this CLI/);
+    await expect(fetchRerunReport(ctx, "stg")).rejects.toThrow(/different versions/);
   });
 
   test("the handler's `no_perspectives` code points at `ccqa perspectives`", async () => {

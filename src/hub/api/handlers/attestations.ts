@@ -5,9 +5,10 @@ import {
   type AttestationResponse,
   type AttestationsResponse,
 } from "../../contract/schema.ts";
+import { requireSpecTargets } from "../../core/perspectives-specs.ts";
 import type { HubStorage } from "../../core/storage/types.ts";
 import type { RouteContext } from "../router.ts";
-import { readJsonBody, sendJson } from "../respond.ts";
+import { HttpError, readJsonBody, sendJson } from "../respond.ts";
 import { requireProfileParam, requireSafeSegment } from "../validate.ts";
 
 /** Far above the largest body `PutAttestationRequestSchema`'s bounds admit. */
@@ -43,10 +44,23 @@ export function createGetAttestationsHandler(storage: HubStorage) {
 export function createPutAttestationHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const scope = requireScope(ctx);
-    const [body, head] = await Promise.all([
+    const [body, head, targets] = await Promise.all([
       readJsonBody(ctx.req, MAX_BODY_BYTES, PutAttestationRequestSchema, "attestation body"),
       storage.deploys.head(scope.project, scope.profile),
+      requireSpecTargets(storage.perspectives, scope.project, "what can be attested"),
     ]);
+    // Only a spec the perspectives document knows can carry an attestation:
+    // /rerun iterates that document, so a key outside it would be accepted,
+    // never surface anywhere, and never lapse — write-only junk the store's
+    // one-per-spec bound is meant to rule out.
+    if (!targets.some((target) => target.key === body.spec)) {
+      throw new HttpError(
+        400,
+        "unknown_spec",
+        `spec "${body.spec}" is not in project "${scope.project}"'s perspectives document — ` +
+          `attest with the canonical feature/spec key, or push \`ccqa perspectives\` first`,
+      );
+    }
     const attestation: Attestation = {
       by: body.by,
       at: new Date().toISOString(),

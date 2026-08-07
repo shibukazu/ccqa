@@ -147,9 +147,11 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       ...(auditMoved || runMoved ? { specChangedSince: (auditMoved ?? runMoved)! } : {}),
       ...audit,
       ...execution,
-      ...(manualState?.kind === "covers" && verdict === "manuallyVerified"
-        ? { manual: manualState.attest }
-        : {}),
+      // A standing attestation is emitted whether or not it decided the
+      // verdict: on a held or machine-verified spec it changed nothing, but
+      // hiding it would leave an attestation nobody can see or revoke until
+      // the axes happen to fall back to needing it.
+      ...(manualState?.kind === "covers" ? { manual: manualState.attest } : {}),
       ...(manualState?.kind === "lapsed"
         ? {
             manualLapsed: { ...manualState.attest, because: manualState.because },
@@ -198,11 +200,16 @@ function readAttestation(
 ): ManualState | null {
   if (!attest) return null;
 
+  // A null anchor means the profile had no deploy log when the person
+  // checked. Once entries exist, the attestation has no sha to place — the
+  // same shape as a run that predates deploy-sha stamping, and the same
+  // word for it. `noDeployLog` would be factually wrong here: the reason
+  // only fires when the log is non-empty.
   const coverage: Freshness =
     attest.deployedSha === null
       ? log.entries.length === 0
         ? { kind: "current" }
-        : { kind: "unanswerable", reason: "noDeployLog" }
+        : { kind: "unanswerable", reason: "unknownDeployedSha" }
       : freshness(attest.deployedSha, spec.key, range);
   if (coverage.kind === "touched") {
     return { kind: "lapsed", attest, because: "deployReached", byDeploy: coverage.touchedByDeploy };

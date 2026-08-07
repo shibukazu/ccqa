@@ -554,10 +554,35 @@ describe("computeRerun: a manual attestation overriding the verdict", () => {
     expect(verdict.manualLapsed?.because).toBe("specEdited");
   });
 
-  test("the machine's own verified answer is not relabelled", () => {
+  test("the machine's own verified answer is not relabelled, but the attestation stays visible", () => {
+    // Hiding it would leave an attestation nobody can see or revoke until
+    // the axes happen to fall back to needing it.
     const verdict = compute({ attestations: attested("sha-0") });
     expect(verdict.verdict).toBe("verified");
-    expect(verdict.manual).toBeUndefined();
+    expect(verdict.manual).toMatchObject({ by: "a-person" });
+  });
+
+  test("a held spec stays inProgress — the attestation does not override a job in flight", () => {
+    const verdict = compute({
+      locks: { specs: { "f/s": { kind: "run", holder: "run-9", expiresAt: "2026-07-26T01:00:00Z" } } },
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+      attestations: attested("sha-0"),
+    });
+    expect(verdict.verdict).toBe("inProgress");
+    expect(verdict.manual).toMatchObject({ by: "a-person" });
+  });
+
+  test("a null anchor with a log that has since grown lapses as cannotPlace, naming the hole", () => {
+    // The person checked before any deploy was recorded; noDeployLog would
+    // be factually wrong once entries exist, so the annotation says the
+    // attestation itself has no sha to place.
+    const verdict = compute({
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+      attestations: attested(null),
+    });
+    expect(verdict.verdict).toBe("needsRepair");
+    expect(verdict.manualLapsed?.because).toBe("cannotPlace");
+    expect(verdict.manualLapsedReason).toBe("unknownDeployedSha");
   });
 
   test("with no deploy log the attestation covers until a first deploy appears", () => {
