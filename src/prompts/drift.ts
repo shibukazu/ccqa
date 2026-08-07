@@ -87,6 +87,21 @@ For a \`mode: live\` spec there is no generated surface, so always \`spec\`.
 
 ${surfaceAxisAside("`TEST_DRIFT`")}
 
+## What the \`replay-unstable\` comments are
+
+Generated code may carry \`// [warn] replay-unstable: ...\` comments. These are
+observations from the one validation replay run right after recording — a
+selector that did not appear within its timeout *in that run*, on that day's
+data and load. They are diagnostic breadcrumbs, not part of the test, and a
+slow environment produces them on selectors that are perfectly correct.
+
+Judge the selector the comment sits on like any other: find its string in the
+source. If it is there, the comment alone is **not** drift evidence — do not
+cite a \`replay-unstable\` comment as your evidence for TEST_DRIFT. If the
+string is genuinely absent from the source, the finding stands on that
+absence, with the source as the citation, whether or not a comment happens to
+sit nearby.
+
 ## Earning each answer
 
 - **No drift is a claim, not a default.** Make it after picking the concrete strings from *every* surface you were given — the spec's \`expected\` and the generated code's selectors alike — and finding each of them in the source. Clearing the test case because one surface checked out is the most common way to miss a real finding. If you never looked, the honest answer is UNKNOWN.
