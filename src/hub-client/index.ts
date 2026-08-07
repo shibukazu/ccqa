@@ -1,6 +1,8 @@
 import type {
   AcquireLocksRequest,
   AcquireLocksResponse,
+  AttestationResponse,
+  AttestationsResponse,
   AuditNeedReport,
   DeployEntry,
   DeployLogResponse,
@@ -175,6 +177,16 @@ export interface HubClient {
   acquireLocks(project: string, q: { profile: string }, body: AcquireLocksRequest): Promise<AcquireLocksResponse>;
   /** Drop everything `runId` holds. Safe to call when it holds nothing. */
   releaseLocks(project: string, q: { profile: string }, holder: string): Promise<void>;
+  /** Every attestation for the profile, standing and lapsed alike. */
+  getAttestations(project: string, q: { profile: string }): Promise<AttestationsResponse>;
+  /** Record that a person checked `spec` by hand. The hub stamps the time and deploy head. */
+  putAttestation(
+    project: string,
+    q: { profile: string },
+    body: { spec: string; by: string; note?: string },
+  ): Promise<AttestationResponse>;
+  /** Revoke a spec's attestation. Revoking one that does not exist succeeds. */
+  deleteAttestation(project: string, q: { profile: string }, spec: string): Promise<void>;
   /**
    * Every spec's last `ccqa audit --report-to-hub` result, keyed by "feature/spec". No
    * profile — drift asks whether a spec still describes the code, not
@@ -410,6 +422,23 @@ export function createHubClient(opts: HubClientOptions): HubClient {
         body: JSON.stringify({ holder }),
       });
     },
+    getAttestations(project, q) {
+      return json(`${attestationsPath(project)}?${queryString({ profile: q.profile })}`);
+    },
+    putAttestation(project, q, body) {
+      return json(`${attestationsPath(project)}?${queryString({ profile: q.profile })}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    },
+    async deleteAttestation(project, q, spec) {
+      await request(`${attestationsPath(project)}?${queryString({ profile: q.profile })}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spec }),
+      });
+    },
     getAuditNeed(project, q) {
       return json(
         `/api/v1/projects/${encodeURIComponent(project)}/audit-needed?${queryString({ profile: q.profile })}`,
@@ -543,6 +572,10 @@ function spendPath(project: string): string {
 
 function locksPath(project: string): string {
   return `/api/v1/projects/${encodeURIComponent(project)}/locks`;
+}
+
+function attestationsPath(project: string): string {
+  return `/api/v1/projects/${encodeURIComponent(project)}/attestations`;
 }
 
 /** Perspectives are one document per project: `/api/v1/projects/<project>/perspectives`. */

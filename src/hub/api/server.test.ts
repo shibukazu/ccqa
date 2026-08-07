@@ -186,12 +186,13 @@ function makeDriftReportTarGz(
 }
 
 /**
- * A `kind: "drift"` archive whose every row is clean, read at `gitHead`. The
- * re-run verdict now asks the audit first, so a fixture that exercises the run
+ * A `kind: "drift"` archive read at `gitHead`. Every spec is clean unless
+ * named by `drifted`, which carries a TEST_DRIFT diagnosis instead. The
+ * re-run verdict asks the audit first, so a fixture that exercises the run
  * axis has to say the audit already answered for the deployed commit —
  * otherwise every spec is `inProgress` and the run side is never reached.
  */
-function makeCleanAuditTarGz(gitHead: string, specs: readonly string[]): Uint8Array {
+function makeAuditTarGz(gitHead: string, specs: readonly string[], drifted?: string): Uint8Array {
   const report: RunReportData = {
     schemaVersion: 1,
     kind: "drift",
@@ -207,11 +208,22 @@ function makeCleanAuditTarGz(gitHead: string, specs: readonly string[]): Uint8Ar
       feature: key.split("/")[0]!,
       spec: key.split("/")[1]!,
       title: null,
-      status: "passed" as const,
+      status: key === drifted ? ("failed" as const) : ("passed" as const),
       testCounts: null,
       durationMs: null,
       assertions: null,
-      analysis: null,
+      analysis:
+        key === drifted
+          ? {
+              label: "TEST_DRIFT" as const,
+              confidence: 0.9,
+              headline: "a selector went stale",
+              recommendation: "re-record",
+              evidence: [],
+              reasoning: "",
+              surface: "generated" as const,
+            }
+          : null,
       analysisSkipped: null,
       failureLogExcerpt: null,
       diffExcerpt: null,
@@ -1408,7 +1420,7 @@ describe("hub API server", () => {
       const res = await fetch(`${baseUrl}/api/v1/runs?project=${PROJECT}&kind=drift&branch=main`, authed({
         method: "POST",
         headers: { "Content-Type": "application/gzip" },
-        body: makeCleanAuditTarGz(gitHead, specs),
+        body: makeAuditTarGz(gitHead, specs),
       }));
       expect(res.status).toBe(201);
     }
@@ -1546,6 +1558,75 @@ describe("hub API server", () => {
     test("re-run selection 404s when the project has no perspectives document", async () => {
       const res = await fetch(`${baseUrl}/api/v1/projects/no-doc/rerun`, authed());
       expect(res.status).toBe(404);
+    });
+
+    describe("manual attestations", () => {
+      const attestUrl = () => `${baseUrl}/api/v1/projects/${PROJECT}/attestations`;
+
+      function putAttestation(spec: string, by: string, note?: string) {
+        return fetch(attestUrl(), authed({
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spec, by, ...(note ? { note } : {}) }),
+        }));
+      }
+
+      /** Say the audit found drift on `f/a` at `gitHead` (the other specs clean). */
+      async function auditWithDrift(gitHead: string): Promise<void> {
+        const res = await fetch(`${baseUrl}/api/v1/runs?project=${PROJECT}&kind=drift&branch=main`, authed({
+          method: "POST",
+          headers: { "Content-Type": "application/gzip" },
+          body: makeAuditTarGz(gitHead, ["f/a", "f/b", "f/unscoped"], "f/a"),
+        }));
+        expect(res.status).toBe(201);
+      }
+
+      test("attest overrides the verdict, lapses on the next deploy with the reason named, and revokes", async () => {
+        await putPerspectives();
+        await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
+        await auditWithDrift("d1");
+
+        expect((await getRerun()).specs["f/a"].verdict).toBe("needsRepair");
+
+        const put = await putAttestation("f/a", "a-tester", "checked the flow by hand");
+        expect(put.status).toBe(200);
+        expect(await json(put)).toMatchObject({
+          spec: "f/a",
+          attestation: { by: "a-tester", deployedSha: "d1" },
+        });
+
+        const attested = await getRerun();
+        expect(attested.specs["f/a"]).toMatchObject({
+          verdict: "manuallyVerified",
+          audit: "drifted",
+          manual: { by: "a-tester", note: "checked the flow by hand" },
+        });
+
+        // A deploy that reaches the spec ends the attestation, and the row
+        // says so instead of silently dropping it.
+        await recordDeploy({
+          sha: "d2",
+          previousSha: "d1",
+          changedPaths: ["src/a/x.ts"],
+          selection: { "f/a": { verdict: "needed", reason: "touches src/a", touchedBy: ["src/a/x.ts"] } },
+        });
+        const lapsed = await getRerun();
+        expect(lapsed.specs["f/a"].verdict).not.toBe("manuallyVerified");
+        expect(lapsed.specs["f/a"].manualLapsed).toMatchObject({ by: "a-tester", because: "deployReached" });
+        expect(lapsed.specs["f/a"].manualLapsedByDeploy).toMatchObject({ sha: "d2" });
+
+        // The raw document still lists it, so it can be revoked after lapsing.
+        const doc = await json(await fetch(attestUrl(), authed()));
+        expect(doc.specs["f/a"]).toMatchObject({ by: "a-tester" });
+
+        const del = await fetch(attestUrl(), authed({
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spec: "f/a" }),
+        }));
+        expect(del.status).toBe(200);
+        expect((await getRerun()).specs["f/a"].manualLapsed).toBeUndefined();
+      });
     });
   });
 

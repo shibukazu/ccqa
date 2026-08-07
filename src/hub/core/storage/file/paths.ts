@@ -161,6 +161,10 @@ export function specLocksPath(root: string, project: string, profile: string): s
   return join(root, "locks", project, profile, "locks.json");
 }
 
+export function attestationsPath(root: string, project: string, profile: string): string {
+  return join(root, "attestations", project, profile, "attestations.json");
+}
+
 export function ackPath(root: string, project: string, profile: string, name: string): string {
   return join(root, "acks", project, profile, `${name}.json`);
 }

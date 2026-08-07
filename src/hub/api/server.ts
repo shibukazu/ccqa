@@ -26,6 +26,11 @@ import { createGetDeployLogHandler, createRecordDeployHandler } from "./handlers
 import { createGetAuditNeedHandler } from "./handlers/audit-need.ts";
 import { createAcquireLocksHandler, createReleaseLocksHandler } from "./handlers/locks.ts";
 import { createGetAckHandler, createPutAckHandler } from "./handlers/acks.ts";
+import {
+  createDeleteAttestationHandler,
+  createGetAttestationsHandler,
+  createPutAttestationHandler,
+} from "./handlers/attestations.ts";
 import { createGetSpendHandler, createRecordSpendHandler } from "./handlers/spend.ts";
 import { createGetRerunHandler } from "./handlers/rerun.ts";
 import {
@@ -214,6 +219,12 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.get("/api/v1/projects/:project/audit-needed", createGetAuditNeedHandler(storage));
   router.post("/api/v1/projects/:project/locks", createAcquireLocksHandler(storage));
   router.delete("/api/v1/projects/:project/locks", createReleaseLocksHandler(storage));
+
+  // A person's word that they checked a spec by hand — overrides the verdict,
+  // never the ledgers, and lapses on its own (see `AttestationSchema`).
+  router.get("/api/v1/projects/:project/attestations", createGetAttestationsHandler(storage));
+  router.put("/api/v1/projects/:project/attestations", createPutAttestationHandler(storage));
+  router.delete("/api/v1/projects/:project/attestations", createDeleteAttestationHandler(storage));
 
   // A consumer's own bookkeeping, under a name it chooses. Stored opaquely —
   // the hub never reads a key (ADR-0017).

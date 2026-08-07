@@ -1,6 +1,10 @@
 import type {
+  Attestation,
+  AttestationLapse,
+  Attestations,
   AuditState,
   DeployLog,
+  DeployRef,
   DriftLedger,
   ExecutionState,
   RerunUnknownReason,
@@ -37,6 +41,8 @@ export interface RerunInput {
   drift: DriftLedger;
   /** Who is working on what right now. Expired holds read as free. */
   locks: SpecLocks;
+  /** Each spec's standing manual attestation, if any. */
+  attestations: Attestations;
   /** Compared against each hold's expiry. Passed in so the answer is reproducible in tests. */
   now: Date;
 }
@@ -80,7 +86,7 @@ function specMovedSince(
 }
 
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
-  const { specs, ledger, log, touchIndex, drift, locks, now } = input;
+  const { specs, ledger, log, touchIndex, drift, locks, attestations, now } = input;
   const range = buildRange(log, touchIndex);
   const deployTimes = deployedAt(log);
 
@@ -117,16 +123,108 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
     if (runMoved && execution.execution === "passed") execution = { execution: "stale" };
 
     const held = heldBy(locks, spec.key, now);
+    let verdict = decide(audit.audit, execution.execution, held);
+
+    // A person's word overrides the machine's answer, never the axes: both
+    // are shipped unchanged so the reader can see what the attestation is
+    // standing in for. One that no longer covers is kept visible with the
+    // reason it lapsed — the person deciding whether to attest again needs
+    // to know what changed since they last looked.
+    const manualState = readAttestation(
+      attestations.specs[spec.key],
+      spec,
+      coords.lastRed,
+      range,
+      log,
+      deployTimes,
+    );
+    if (manualState?.kind === "covers" && !held && verdict !== "verified") {
+      verdict = "manuallyVerified";
+    }
+
     out[spec.key] = {
-      verdict: decide(audit.audit, execution.execution, held),
+      verdict,
       ...(auditMoved || runMoved ? { specChangedSince: (auditMoved ?? runMoved)! } : {}),
       ...audit,
       ...execution,
+      // A standing attestation is emitted whether or not it decided the
+      // verdict: on a held or machine-verified spec it changed nothing, but
+      // hiding it would leave an attestation nobody can see or revoke until
+      // the axes happen to fall back to needing it.
+      ...(manualState?.kind === "covers" ? { manual: manualState.attest } : {}),
+      ...(manualState?.kind === "lapsed"
+        ? {
+            manualLapsed: { ...manualState.attest, because: manualState.because },
+            ...(manualState.because === "deployReached"
+              ? { manualLapsedByDeploy: manualState.byDeploy }
+              : {}),
+            ...(manualState.reason ? { manualLapsedReason: manualState.reason } : {}),
+          }
+        : {}),
       heldBy: held,
       ...coords,
     };
   }
   return out;
+}
+
+type ManualState =
+  | { kind: "covers"; attest: Attestation }
+  | {
+      kind: "lapsed";
+      attest: Attestation;
+      because: AttestationLapse;
+      byDeploy?: DeployRef | null;
+      /** Set only for `cannotPlace`: which hole made the log unable to answer. */
+      reason?: RerunUnknownReason;
+    };
+
+/**
+ * Does the attestation still speak for what is deployed? Checked in the order
+ * the lapse enum documents: deploy coverage first (a sha the log cannot place
+ * reads as reached, ADR-0014, with the hole kept as an annotation), then the
+ * spec's own edits — compared against when the person looked, because they
+ * read the spec as it stood that moment, which `specMovedSince` covers via a
+ * null baseline sha — then a red run recorded after them, which is newer
+ * information than their word. The null-sha case is the profile that had no
+ * deploy log when they checked: their word covers exactly as long as that
+ * stays true.
+ */
+function readAttestation(
+  attest: Attestation | undefined,
+  spec: SpecTarget,
+  lastRed: SpecLedgerEntry | null,
+  range: RangeLookup,
+  log: DeployLog,
+  deployTimes: Map<string, string>,
+): ManualState | null {
+  if (!attest) return null;
+
+  // A null anchor means the profile had no deploy log when the person
+  // checked. Once entries exist, the attestation has no sha to place — the
+  // same shape as a run that predates deploy-sha stamping, and the same
+  // word for it. `noDeployLog` would be factually wrong here: the reason
+  // only fires when the log is non-empty.
+  const coverage: Freshness =
+    attest.deployedSha === null
+      ? log.entries.length === 0
+        ? { kind: "current" }
+        : { kind: "unanswerable", reason: "unknownDeployedSha" }
+      : freshness(attest.deployedSha, spec.key, range);
+  if (coverage.kind === "touched") {
+    return { kind: "lapsed", attest, because: "deployReached", byDeploy: coverage.touchedByDeploy };
+  }
+  if (coverage.kind === "unanswerable") {
+    return { kind: "lapsed", attest, because: "cannotPlace", reason: coverage.reason };
+  }
+
+  if (specMovedSince(spec.changedAt, null, attest.at, deployTimes)) {
+    return { kind: "lapsed", attest, because: "specEdited" };
+  }
+  if (lastRed !== null && lastRed.at > attest.at) {
+    return { kind: "lapsed", attest, because: "newerRed" };
+  }
+  return { kind: "covers", attest };
 }
 
 /**

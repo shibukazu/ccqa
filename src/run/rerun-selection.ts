@@ -60,8 +60,10 @@ export async function fetchRerunReport(
   const parsed = RerunReportSchema.safeParse(report);
   if (!parsed.success) {
     throw new RunUsageError(
-      `${FLAG}: this hub's re-run answer is not in a shape this ccqa understands — it is likely ` +
-        `older than this CLI. Upgrade the hub, or select with --only-affected-by <ref> instead.`,
+      `${FLAG}: this hub's re-run answer is not in a shape this ccqa understands — the hub and ` +
+        `this CLI are on different versions, and either side being newer can cause it (a newer ` +
+        `hub may answer with verdicts this CLI does not know). Align the two, or select with ` +
+        `--only-affected-by <ref> instead.`,
     );
   }
   report = parsed.data;
@@ -76,7 +78,7 @@ export async function fetchRerunReport(
 }
 
 const SUMMARY_ORDER = rankedOrder<SpecVerdict>({
-  needsRepair: 0, rerunNeeded: 1, inProgress: 2, verified: 3,
+  needsRepair: 0, rerunNeeded: 1, inProgress: 2, manuallyVerified: 3, verified: 4,
 });
 
 export interface RerunSelection {
@@ -115,7 +117,9 @@ export interface RerunSelection {
  * cannot vouch for, are both as uncovered as one a deploy demonstrably
  * invalidated (ADR-0014). `needsRepair`, `inProgress` and `verified` are never
  * selected: running them repairs nothing, races something already in flight,
- * or repeats work that is still current.
+ * or repeats work that is still current. `manuallyVerified` is never selected
+ * either — the test is still the broken one the attestation stands in for,
+ * and running it would only relabel a person's answer with a machine failure.
  */
 export function selectSpecsNeedingRerun(
   specs: readonly SpecRef[],

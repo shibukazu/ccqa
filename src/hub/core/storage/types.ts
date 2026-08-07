@@ -1,5 +1,6 @@
 import type {
   Ack,
+  Attestations,
   DeployEntry,
   DeployInput,
   DeployLog,
@@ -41,6 +42,7 @@ export interface HubStorage {
   locks: LockStore;
   acks: AckStore;
   spend: SpendStore;
+  attestations: AttestationStore;
 }
 
 /**
@@ -150,6 +152,22 @@ export interface LockStore {
     profile: string,
     mutate: (current: SpecLocks) => SpecLocks,
   ): Promise<SpecLocks>;
+}
+
+/**
+ * Per (project, profile), each spec's standing manual attestation. One per
+ * spec — a new one replaces the old — so the document never grows past the
+ * spec count and needs no retention sweep. Profile-scoped because a person
+ * checks one deployed environment, the same reason the lock store is.
+ */
+export interface AttestationStore {
+  get(project: string, profile: string): Promise<Attestations>;
+  /** Serialized read-modify-write, so two people attesting at once cannot clobber each other. */
+  update(
+    project: string,
+    profile: string,
+    mutate: (current: Attestations) => Attestations,
+  ): Promise<Attestations>;
 }
 
 export interface RunStore {

@@ -567,8 +567,9 @@ collapsing them would lose exactly the case that matters.
 | `needsRepair` | Drift, an audit that could not decide, or a failed run | **A person** |
 | `inProgress` | A job holds it, or the audit has not caught up with the deploy | Wait |
 | `verified` | Cleared by the audit, last run passed against this deploy | Nobody |
+| `manuallyVerified` | A person checked it by hand (`ccqa hub attest`) and that still covers this deploy | Nobody, until it lapses |
 
-Only `rerunNeeded` runs; nothing opts into the other three.
+Only `rerunNeeded` runs; nothing opts into the other four.
 
 **When the hub cannot tell whether a deploy reached a spec, it assumes it
 did.** An old run that predates deploy-sha tracking, a run that straddled a
@@ -596,6 +597,18 @@ spec that no longer describes the code: it would fail for the reason the audit
 already gave, or pass while verifying something the product stopped doing. The
 audit axis carries which repair it needs — `TEST_DRIFT` for a stale recording,
 which `ccqa record` fixes, or `SPEC_CHANGE` for a spec a human has to rewrite.
+
+**A person can stand in for the machine while a repair is stuck.** When the
+recorder cannot get through a spec — broken test data, a control it cannot
+drive — but a person has checked the behaviour by hand, `ccqa hub attest
+<feature/spec> --profile <p> --by <name>` (or the hub UI's button) records
+that. The verdict answers `manuallyVerified` instead of holding the spec in
+`needsRepair`; the drift ledger is untouched, so the repair loop keeps its
+reason to fix the test, and the run side still never selects it. The
+attestation lapses on its own — a deploy reaching the spec, the spec being
+edited, or a later failed run each end it — and the lapsed attestation stays
+visible in the verdict's reasons with which of those ended it, so the person
+deciding whether to attest again knows what changed since they last looked.
 
 None of these is passing or failing. They are unverified, and the selection
 summary counts each as its own verdict so that never reads as an all-clear. An
