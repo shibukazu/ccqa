@@ -1,0 +1,9 @@
+title: sign in and land on the projects page
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: read the projects page
+    expected: the "Projects" heading, the signed-in email, and the seeded projects are visible

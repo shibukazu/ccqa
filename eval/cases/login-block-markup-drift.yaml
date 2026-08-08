@@ -1,0 +1,49 @@
+# The visible "Email" label is unchanged, so the block's prose stays honest
+# and the drift is generated-only (every generated test fills #email).
+# help/read-help does not include the block and must come back clean — the
+# fan-out has a boundary.
+title: >-
+  the login form's email field gets a new id — every spec including the
+  login block drifts at once
+mutations:
+  - file: web/src/pages/LoginPage.tsx
+    search: id="email"
+    replace: id="login-email"
+expect:
+  audit:
+    auth/login:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT
+    auth/logout:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT
+    projects/create-project:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT
+    projects/open-project:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT
+    settings/update-profile:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT
+    tasks/add-task:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT
+    tasks/complete-task:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT
+    tasks/edit-task-notes:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT
+    tasks/filter-tasks:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: SELECTOR_DRIFT

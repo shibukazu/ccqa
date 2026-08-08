@@ -1,0 +1,15 @@
+# The false-positive probe that matters most for cost: a diff in the page
+# every task spec exercises, with zero observable change.
+title: an internal rename nothing observable follows — the audit must stay silent
+mutations:
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: "const visibleTasks = useMemo(() => {"
+    replace: "const tasksToShow = useMemo(() => {"
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: "{visibleTasks.map((task) => ("
+    replace: "{tasksToShow.map((task) => ("
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: "{visibleTasks.length === 0 ? ("
+    replace: "{tasksToShow.length === 0 ? ("
+expect:
+  audit: {}

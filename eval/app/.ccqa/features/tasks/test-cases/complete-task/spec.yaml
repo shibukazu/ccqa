@@ -1,0 +1,11 @@
+title: mark a task done
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: open the "Website redesign" project
+    expected: the task list is visible
+  - instruction: check the "Mark "Collect homepage feedback" done" checkbox
+    expected: the row shows as done and the progress reads "2 of 3 done"

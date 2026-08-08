@@ -69,11 +69,14 @@
   "scripts": {
     "build": "tsdown",
     "dev": "node --experimental-strip-types ./bin/ccqa.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && pnpm -r typecheck",
     "test": "vitest run",
     "test:unit": "vitest run src/",
     "test:e2e": "vitest run tests/e2e",
+    "test:eval": "vitest run eval/harness",
     "release:check": "node --experimental-strip-types src/release/check.ts",
+    "eval:audit": "node --experimental-strip-types eval/harness/run-audit.ts",
+    "eval:select": "node --experimental-strip-types eval/harness/run-select.ts",
     "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"
   },
   "engines": {
@@ -85,5 +88,11 @@
       "version": ">=22.6"
     }
   },
-  "packageManager": "pnpm@10.1.0"
+  "packageManager": "pnpm@10.1.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
 }

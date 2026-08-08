@@ -1,0 +1,11 @@
+title: filter a project down to completed tasks
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: open the "Website redesign" project
+    expected: the task list is visible
+  - instruction: click the "Completed" filter
+    expected: the list shows "Draft the new homepage copy" and no longer shows "Collect homepage feedback"

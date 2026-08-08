@@ -1,0 +1,26 @@
+# No spec names an API path: the intent (update a task) is unchanged and the
+# mismatch with the client's PATCH to the old path is suspected breakage,
+# which a static audit must not report (no PRODUCT_BUG on a static read).
+# The two flows that PATCH a task — toggling done and saving notes —
+# plausibly break, so select re-runs exactly those; adding uses POST and
+# filtering only reads.
+title: >-
+  the task update route moves server-side while the client still calls the
+  old path — no drift to report, but the updating specs must re-run
+mutations:
+  - file: server/routes/tasks.ts
+    search: 'router.patch("/:id", (req, res) => {'
+    replace: 'router.patch("/:id/update", (req, res) => {'
+expect:
+  audit: {}
+  select:
+    auth/login: notNeeded
+    auth/logout: notNeeded
+    help/read-help: notNeeded
+    projects/create-project: notNeeded
+    projects/open-project: notNeeded
+    settings/update-profile: notNeeded
+    tasks/add-task: notNeeded
+    tasks/complete-task: needed
+    tasks/edit-task-notes: needed
+    tasks/filter-tasks: notNeeded

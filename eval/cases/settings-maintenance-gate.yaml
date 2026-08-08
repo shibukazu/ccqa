@@ -1,0 +1,25 @@
+# A backend-only gate, judged by tracing it to the page: the settings form
+# still renders (its GET fails quietly), but the save the spec's outcome
+# depends on is deliberately refused — comment plus coherent message, so
+# this is a spec change, not suspected breakage to stay silent on. Whether
+# a gated-off save is "removed" or "reworked" is genuinely arguable, so
+# specChangeKind is left undeclared.
+title: >-
+  the settings API is deliberately gated off — the page renders but saving
+  is refused, so the described flow no longer completes
+mutations:
+  - file: server/routes/settings.ts
+    search: |-
+      const router = Router();
+        router.use(requireAuth);
+    replace: |-
+      const router = Router();
+        router.use(requireAuth);
+        // Settings are frozen while the account model is reworked.
+        router.use((_req, res) => {
+          res.status(503).json({ error: "Settings are temporarily unavailable" });
+        });
+expect:
+  audit:
+    settings/update-profile:
+      label: SPEC_CHANGE

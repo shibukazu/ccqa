@@ -8,7 +8,7 @@ import {
 } from "../store/index.ts";
 import { errMessage, RunUsageError } from "../run/errors.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
-import { renderDrift } from "../drift/format.ts";
+import { renderDrift, type AuditJsonPayload } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
 import { driftResultsToReport, driftResultToRow } from "../drift/to-report.ts";
 import { currentReportCost } from "../report/run-cost.ts";
@@ -278,10 +278,19 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     if (holder) await releaseSpecs(hub!, hubProject!, opts.hubProfile!, holder);
   }
 
-  process.stdout.write(renderDrift(results, format, cwd));
+  // process.exit discards what write() has not pushed past the pipe's first
+  // ~8 KB, and the drain event fires before that data is actually delivered —
+  // only the write callback is the completion signal (measured: drain-then-exit
+  // still truncates a 50 KB payload to 8192 bytes; callback-then-exit does
+  // not). A mass-drift report, the one that matters most, reached its CI
+  // parser truncated mid-string.
+  const flushed = new Promise<void>((resolve) => {
+    process.stdout.write(renderDrift(results, format, cwd), () => resolve());
+  });
 
   if (push) await sealDriftPush(push, { results, threshold, opts, format, baseRef, promptCtx });
 
+  await flushed;
   process.exit(determineExitCode(results, threshold));
 }
 
@@ -475,7 +484,8 @@ type NoSpecsReason = "noSpecsFound" | "allCurrent" | "allHeld" | "noDiffIntersec
 
 function exitWithNoSpecs(format: Format, reason: NoSpecsReason, message: string): never {
   if (format === "json") {
-    process.stdout.write(`${JSON.stringify({ specs: [], skipped: reason }, null, 2)}\n`);
+    const payload: AuditJsonPayload = { specs: [], skipped: reason };
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
   } else if (format === "text") {
     log.info(message);
   } else if (format === "github" && reason === "noSpecsFound") {

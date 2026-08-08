@@ -1,0 +1,4 @@
+title: no change at all — every spec must come back clean
+mutations: []
+expect:
+  audit: {}

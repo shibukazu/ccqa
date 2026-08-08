@@ -1,0 +1,13 @@
+# The spec prose and the generated click both quote the button's label, so
+# the root surface is the spec — the schema default, which cannot be scored
+# (see AuditExpectationSchema) — and only label + sub-diagnosis are declared.
+title: the add button's label is renamed — the flow survives, the name does not
+mutations:
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: '<Button type="submit">Add task</Button>'
+    replace: '<Button type="submit">Add</Button>'
+expect:
+  audit:
+    tasks/add-task:
+      label: TEST_DRIFT
+      subDiagnosis: SELECTOR_DRIFT

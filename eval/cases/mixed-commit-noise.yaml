@@ -1,0 +1,26 @@
+# The session note's copy is asserted only by auth/login's generated code;
+# the other specs sign in through the same header but never read the note,
+# and the README line is noise the selection must not let widen the blast
+# radius.
+title: >-
+  one user-visible change plus docs noise in the same commit — only the
+  spec that asserts the changed copy is needed
+mutations:
+  - file: web/src/App.tsx
+    search: "<span>Signed in as {user.email}</span>"
+    replace: "<span>You are signed in as {user.email}</span>"
+  - file: README.md
+    search: "browse projects, add tasks, tick them"
+    replace: "browse your projects, add tasks, tick them"
+expect:
+  select:
+    auth/login: needed
+    auth/logout: notNeeded
+    help/read-help: notNeeded
+    projects/create-project: notNeeded
+    projects/open-project: notNeeded
+    settings/update-profile: notNeeded
+    tasks/add-task: notNeeded
+    tasks/complete-task: notNeeded
+    tasks/edit-task-notes: notNeeded
+    tasks/filter-tasks: notNeeded

@@ -205,6 +205,7 @@ hub が要るものは名前で分かります。`--hub-profile`、
 | live モードで動かす | [Live specs](./live.md) |
 | 1 度ログインしてセッションを使い回す | [Sessions](./sessions.md) |
 | チームの hub を立てる・HTTP で操作する | [Hub](./hub.md) · [API](./hub-api.md) |
+| audit / selection のプロンプトを測る | [Prompt evaluation](./eval.md) |
 | なぜこの作りなのかを知る | [ADR](./adr/README.md) |
 
 ## ライセンス

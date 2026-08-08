@@ -1,0 +1,16 @@
+# The spec asks that the signed-in email be visible, and it still is — only
+# the generated test asserted the full "Signed in as ..." copy, which was
+# more than the spec asked for.
+title: >-
+  the session note loses its prefix — the email the spec asks for is still
+  visible, the copy the generated test asserted is not
+mutations:
+  - file: web/src/App.tsx
+    search: "<span>Signed in as {user.email}</span>"
+    replace: "<span>{user.email}</span>"
+expect:
+  audit:
+    auth/login:
+      label: TEST_DRIFT
+      surface: generated
+      subDiagnosis: OVER_ASSERTION

@@ -208,6 +208,7 @@ verification environment
 | Drive specs live, with per-project guidance | [Live specs](./docs/live.md) |
 | Sign in once and reuse the session | [Sessions](./docs/sessions.md) |
 | Run the team hub / script it over HTTP | [Hub](./docs/hub.md) · [API](./docs/hub-api.md) |
+| Measure the audit / selection prompts | [Prompt evaluation](./docs/eval.md) |
 | Understand why it is built this way | [ADR](./docs/adr/README.md) |
 
 ## License
