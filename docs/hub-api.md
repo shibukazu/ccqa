@@ -535,6 +535,38 @@ covers its spec is `/rerun`'s answer; the raw read exists so a lapsed
 attestation can still be found and revoked. `DELETE` of a spec with no
 attestation succeeds: the caller asked for its absence, and it is absent.
 
+### Audit dismissals
+
+```
+GET    /api/v1/projects/:project/audit-dismissals
+PUT    /api/v1/projects/:project/audit-dismissals   { "spec": "feature/spec", "by": "...", "note": "..." }
+DELETE /api/v1/projects/:project/audit-dismissals   { "spec": "feature/spec" }
+```
+
+A dismissal is a person's answer to one audit finding: the spec describes the
+code fine, and the finding is wrong. Where an attestation speaks about the
+product, this speaks about the **audit** — so it settles the audit axis
+(`clean`) rather than overriding the verdict, and the spec goes back to being
+run like any other. The run that follows is what says whether the person was
+right.
+
+No `?profile=`: an audit finding is about the repository, not an environment,
+the same reason the drift ledger has none.
+
+The hub reads which finding is being answered from the ledger and pins the
+dismissal to that audit run — the caller sends only `spec`, `by` and a
+required `note` (the correction a mis-firing audit learns from). A spec with
+no open finding is rejected with `no_open_finding`: there would be nothing to
+answer, and the record would never apply to anything.
+
+A later audit is a new observation of newer code, so it produces a new run and
+the dismissal stops applying — the machine gets to raise the finding again
+rather than being silenced for good. `/rerun` ships the dismissal as
+`auditDismissed` either way, and the axis beside it says which case it is:
+`clean` means the dismissal settled it, `drifted`/`undecided` means a later
+audit raised something the dismissal does not answer for, shown so the reader
+knows the argument has been had before.
+
 ## Drift ledger
 
 Every spec's last `ccqa audit --report-to-hub` audit, so a project can be reviewed

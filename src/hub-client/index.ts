@@ -3,6 +3,8 @@ import type {
   AcquireLocksResponse,
   AttestationResponse,
   AttestationsResponse,
+  AuditDismissalResponse,
+  AuditDismissalsResponse,
   AuditNeedReport,
   DeployEntry,
   DeployLogResponse,
@@ -187,6 +189,16 @@ export interface HubClient {
   ): Promise<AttestationResponse>;
   /** Revoke a spec's attestation. Revoking one that does not exist succeeds. */
   deleteAttestation(project: string, q: { profile: string }, spec: string): Promise<void>;
+  /** Every dismissed audit finding for the project, current and superseded alike. No profile — findings are about the repository. */
+  getAuditDismissals(project: string): Promise<AuditDismissalsResponse>;
+  /**
+   * Record that a person judged `spec`'s current audit finding wrong. The hub
+   * reads which finding that is from the ledger and pins the dismissal to it;
+   * a spec with no open finding is rejected.
+   */
+  putAuditDismissal(project: string, body: { spec: string; by: string; note: string }): Promise<AuditDismissalResponse>;
+  /** Withdraw a dismissal, putting the audit's finding back in force. */
+  deleteAuditDismissal(project: string, spec: string): Promise<void>;
   /**
    * Every spec's last `ccqa audit --report-to-hub` result, keyed by "feature/spec". No
    * profile — drift asks whether a spec still describes the code, not
@@ -439,6 +451,23 @@ export function createHubClient(opts: HubClientOptions): HubClient {
         body: JSON.stringify({ spec }),
       });
     },
+    getAuditDismissals(project) {
+      return json(auditDismissalsPath(project));
+    },
+    putAuditDismissal(project, body) {
+      return json(auditDismissalsPath(project), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    },
+    async deleteAuditDismissal(project, spec) {
+      await request(auditDismissalsPath(project), {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spec }),
+      });
+    },
     getAuditNeed(project, q) {
       return json(
         `/api/v1/projects/${encodeURIComponent(project)}/audit-needed?${queryString({ profile: q.profile })}`,
@@ -576,6 +605,10 @@ function locksPath(project: string): string {
 
 function attestationsPath(project: string): string {
   return `/api/v1/projects/${encodeURIComponent(project)}/attestations`;
+}
+
+function auditDismissalsPath(project: string): string {
+  return `/api/v1/projects/${encodeURIComponent(project)}/audit-dismissals`;
 }
 
 /** Perspectives are one document per project: `/api/v1/projects/<project>/perspectives`. */

@@ -50,6 +50,7 @@ look before letting a selection decide what a paid run covers.
 | `ccqa hub prompt push / ls / rm` | Manage per-flow guidance and learned prompts. See [Triage learning](./hub.md#triage-learning). |
 | `ccqa hub cost push --label <name>` | Sum `$CCQA_COST_FILE` and record the total on the hub as one spend entry — what a budget reads instead of summing runs. See [Spend](./hub-api.md#spend). |
 | `ccqa hub attest <feature/spec> --profile <p> --by <name>` | Record that a person checked the spec by hand: the verdict answers `manuallyVerified` until a deploy reaches the spec or the spec is edited. `--revoke` withdraws it. See [Manual attestations](./hub-api.md#manual-attestations). |
+| `ccqa hub dismiss <feature/spec> --by <name> --reason <text>` | Record that a person judged the spec's audit finding wrong: the audit axis reads `clean` and the next run settles it. `--revoke` puts the finding back. See [Audit dismissals](./hub-api.md#audit-dismissals). |
 
 ## Environment variables
 

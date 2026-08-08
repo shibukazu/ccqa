@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import type {
   Attestation,
   Attestations,
+  AuditDismissals,
   DeployEntry,
   DeployLog,
   DriftLedger,
@@ -78,6 +79,7 @@ function compute(overrides: Partial<RerunInput> = {}): ReturnType<typeof compute
     touchIndex: {},
     locks: emptyLocks(),
     attestations: { specs: {} },
+    dismissals: { specs: {} },
     now: NOW,
     ...overrides,
   };
@@ -594,5 +596,99 @@ describe("computeRerun: a manual attestation overriding the verdict", () => {
       attestations: attested(null),
     });
     expect(verdict.verdict).toBe("manuallyVerified");
+  });
+});
+
+describe("computeRerun: a person dismissing an audit finding", () => {
+  /**
+   * A dismissal answering the finding `auditedAt` records (runId "drift-1").
+   * `label` is part of the answer, not decoration: it is what the person
+   * judged wrong, and the engine matches on it.
+   */
+  function dismissed(
+    { auditRunId = "drift-1", label = "TEST_DRIFT" as DriftLabel } = {},
+  ): AuditDismissals {
+    return {
+      specs: {
+        "f/s": {
+          by: "a-person",
+          at: "2026-07-26T12:00:00Z",
+          note: "the selector is present; the finding rests on a replay note",
+          auditRunId,
+          label,
+          headline: "a selector went stale",
+        },
+      },
+    };
+  }
+
+  test("settles the audit axis, so the run side decides from there", () => {
+    const verdict = compute({
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+      ledger: ledgerWithRun(null),
+      dismissals: dismissed(),
+    });
+    expect(verdict.audit).toBe("clean");
+    // Cleared by a person, never run: the machine's own answer is owed next.
+    expect(verdict.verdict).toBe("rerunNeeded");
+    expect(verdict.auditDismissed).toMatchObject({ by: "a-person", label: "TEST_DRIFT" });
+    expect(verdict.auditDismissalApplied).toBe(true);
+  });
+
+  test("a spec the audit cleared and a run passed reads verified", () => {
+    const verdict = compute({ drift: auditedAt("TEST_DRIFT", "sha-0"), dismissals: dismissed() });
+    expect(verdict.verdict).toBe("verified");
+  });
+
+  test("UNKNOWN is dismissible too — the audit could not decide, the person could", () => {
+    const verdict = compute({
+      drift: auditedAt("UNKNOWN", "sha-0"),
+      dismissals: dismissed({ label: "UNKNOWN" }),
+    });
+    expect(verdict.audit).toBe("clean");
+  });
+
+  test("a finding from a later audit is not answered by it, and the old one is still shown", () => {
+    // Same spec, a new audit run: the machine gets to raise it again rather
+    // than being silenced for good.
+    const verdict = compute({ drift: auditedAt("TEST_DRIFT", "sha-0"), dismissals: dismissed({ auditRunId: "drift-9" }) });
+    expect(verdict.audit).toBe("drifted");
+    expect(verdict.verdict).toBe("needsRepair");
+    expect(verdict.auditDismissed).toMatchObject({ auditRunId: "drift-9" });
+  });
+
+  test("a human regrade of the same run is a different finding, and stands", () => {
+    // The triage flow rewrites the entry's label in place, keeping the run
+    // id. A dismissal of what the audit originally said must not go on
+    // suppressing what a person later confirmed.
+    const graded: DriftLedger = {
+      specs: {
+        "f/s": { label: "SPEC_CHANGE", gitHead: "sha-0", runId: "drift-1", at: "2026-07-26T00:00:00Z", graded: true },
+      },
+    };
+    const verdict = compute({ drift: graded, dismissals: dismissed() });
+    expect(verdict.audit).toBe("drifted");
+    expect(verdict.verdict).toBe("needsRepair");
+    expect(verdict.auditDismissalApplied).toBe(false);
+  });
+
+  test("a later audit clearing the spec is the machine's own answer, not the person's", () => {
+    // Both read `clean`, so the row says which one settled it — crediting a
+    // person for an audit that cleared the spec by itself would be a lie the
+    // detail panel repeats forever.
+    const verdict = compute({ drift: auditedAt(null, "sha-0"), dismissals: dismissed() });
+    expect(verdict.audit).toBe("clean");
+    expect(verdict.auditDismissed).toBeDefined();
+    expect(verdict.auditDismissalApplied).toBe(false);
+  });
+
+  test("a spec edited after the dismissal owes a fresh audit", () => {
+    const verdict = compute({
+      specs: [{ key: "f/s", changedAt: "2026-07-27T00:00:00Z" }],
+      drift: auditedAt("TEST_DRIFT", "sha-0"),
+      dismissals: dismissed(),
+    });
+    expect(verdict.audit).toBe("due");
+    expect(verdict.verdict).toBe("inProgress");
   });
 });

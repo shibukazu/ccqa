@@ -165,6 +165,12 @@ export function attestationsPath(root: string, project: string, profile: string)
   return join(root, "attestations", project, profile, "attestations.json");
 }
 
+// No profile segment: a dismissal answers an audit finding, which is about the
+// repository rather than an environment (see `AuditDismissalSchema`).
+export function auditDismissalsPath(root: string, project: string): string {
+  return join(root, "audit-dismissals", `${project}.json`);
+}
+
 export function ackPath(root: string, project: string, profile: string, name: string): string {
   return join(root, "acks", project, profile, `${name}.json`);
 }

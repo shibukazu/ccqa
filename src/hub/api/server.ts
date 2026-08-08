@@ -31,6 +31,11 @@ import {
   createGetAttestationsHandler,
   createPutAttestationHandler,
 } from "./handlers/attestations.ts";
+import {
+  createDeleteAuditDismissalHandler,
+  createGetAuditDismissalsHandler,
+  createPutAuditDismissalHandler,
+} from "./handlers/audit-dismissals.ts";
 import { createGetSpendHandler, createRecordSpendHandler } from "./handlers/spend.ts";
 import { createGetRerunHandler } from "./handlers/rerun.ts";
 import {
@@ -225,6 +230,12 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.get("/api/v1/projects/:project/attestations", createGetAttestationsHandler(storage));
   router.put("/api/v1/projects/:project/attestations", createPutAttestationHandler(storage));
   router.delete("/api/v1/projects/:project/attestations", createDeleteAttestationHandler(storage));
+
+  // A person's answer to one audit finding: it was wrong. Settles the audit
+  // axis rather than the verdict, and is pinned to the run that raised it.
+  router.get("/api/v1/projects/:project/audit-dismissals", createGetAuditDismissalsHandler(storage));
+  router.put("/api/v1/projects/:project/audit-dismissals", createPutAuditDismissalHandler(storage));
+  router.delete("/api/v1/projects/:project/audit-dismissals", createDeleteAuditDismissalHandler(storage));
 
   // A consumer's own bookkeeping, under a name it chooses. Stored opaquely —
   // the hub never reads a key (ADR-0017).

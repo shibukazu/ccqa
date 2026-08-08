@@ -24,16 +24,18 @@ export function createGetRerunHandler(storage: HubStorage) {
     const project = requireSafeSegment(ctx.params.project!, "project");
     const profile = requireProfileParam(ctx.url);
 
-    const [specs, ledger, log, touchIndex, drift, locks, attestations] = await Promise.all([
+    const [specs, ledger, log, touchIndex, drift, locks, attestations, dismissals] = await Promise.all([
       requireSpecTargets(storage.perspectives, project, "which specs need a re-run"),
       storage.ledger.getMerged(project, profile),
       storage.deploys.getLog(project, profile),
       storage.deploys.getTouchIndex(project, profile),
       // Not profile-scoped: whether a spec still describes the code is a
       // question about the repository, not about an environment (ADR-0013).
+      // A dismissal answers that same question, so it is not either.
       storage.driftLedger.getMerged(project),
       storage.locks.get(project, profile),
       storage.attestations.get(project, profile),
+      storage.auditDismissals.get(project),
     ]);
     const head = log.entries[log.entries.length - 1];
 
@@ -41,7 +43,7 @@ export function createGetRerunHandler(storage: HubStorage) {
       project,
       profile,
       deployHead: head ? deployRef(head) : null,
-      specs: computeRerun({ specs, ledger, log, touchIndex, drift, locks, attestations, now: new Date() }),
+      specs: computeRerun({ specs, ledger, log, touchIndex, drift, locks, attestations, dismissals, now: new Date() }),
     } satisfies RerunReport);
   };
 }

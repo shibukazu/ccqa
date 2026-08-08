@@ -1560,6 +1560,76 @@ describe("hub API server", () => {
       expect(res.status).toBe(404);
     });
 
+    describe("audit dismissals", () => {
+      const dismissUrl = () => `${baseUrl}/api/v1/projects/${PROJECT}/audit-dismissals`;
+
+      function dismiss(spec: string, by: string, note: string) {
+        return fetch(dismissUrl(), authed({
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spec, by, note }),
+        }));
+      }
+
+      test("dismissing a finding settles the audit axis; a later audit raises it again", async () => {
+        await putPerspectives();
+        await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
+        const first = await fetch(`${baseUrl}/api/v1/runs?project=${PROJECT}&kind=drift&branch=main`, authed({
+          method: "POST",
+          headers: { "Content-Type": "application/gzip" },
+          body: makeAuditTarGz("d1", ["f/a", "f/b", "f/unscoped"], "f/a"),
+        }));
+        expect(first.status).toBe(201);
+        expect((await getRerun()).specs["f/a"].verdict).toBe("needsRepair");
+
+        const put = await dismiss("f/a", "a-reviewer", "the selector is present in the source");
+        expect(put.status).toBe(200);
+        // The hub pins the dismissal to the finding it answers; the caller
+        // never says which run that is.
+        expect(await json(put)).toMatchObject({
+          spec: "f/a",
+          dismissal: { by: "a-reviewer", label: "TEST_DRIFT", auditRunId: expect.any(String) },
+        });
+
+        const settled = await getRerun();
+        expect(settled.specs["f/a"]).toMatchObject({
+          audit: "clean",
+          verdict: "rerunNeeded",
+          auditDismissed: { by: "a-reviewer" },
+        });
+
+        // A second audit at a newer commit is a new observation, so the
+        // finding stands again — with the old dismissal still visible.
+        await recordDeploy({ sha: "d2", previousSha: "d1", changedPaths: ["src/a/x.ts"] });
+        const second = await fetch(`${baseUrl}/api/v1/runs?project=${PROJECT}&kind=drift&branch=main`, authed({
+          method: "POST",
+          headers: { "Content-Type": "application/gzip" },
+          body: makeAuditTarGz("d2", ["f/a", "f/b", "f/unscoped"], "f/a"),
+        }));
+        expect(second.status).toBe(201);
+        const raised = await getRerun();
+        expect(raised.specs["f/a"]).toMatchObject({ audit: "drifted", verdict: "needsRepair" });
+        expect(raised.specs["f/a"].auditDismissed).toMatchObject({ by: "a-reviewer" });
+
+        const del = await fetch(dismissUrl(), authed({
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ spec: "f/a" }),
+        }));
+        expect(del.status).toBe(200);
+        expect((await getRerun()).specs["f/a"].auditDismissed).toBeUndefined();
+      });
+
+      test("a spec with no open finding cannot be dismissed", async () => {
+        await putPerspectives();
+        await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
+        await auditClean("d1");
+        const res = await dismiss("f/a", "a-reviewer", "nothing to answer");
+        expect(res.status).toBe(400);
+        expect((await json(res)).error.code).toBe("no_open_finding");
+      });
+    });
+
     describe("manual attestations", () => {
       const attestUrl = () => `${baseUrl}/api/v1/projects/${PROJECT}/attestations`;
 
