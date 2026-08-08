@@ -1,6 +1,7 @@
 import type { HubStorage } from "../types.ts";
 import { createFileAckStore } from "./ack-store.ts";
 import { createFileAttestationStore } from "./attestation-store.ts";
+import { createFileAuditDismissalStore } from "./audit-dismissal-store.ts";
 import { createFileArtifactStore } from "./artifact-store.ts";
 import { createFileDeployStore } from "./deploy-store.ts";
 import { createFileLockStore } from "./lock-store.ts";
@@ -32,5 +33,6 @@ export function createFileHubStorage(dataDir: string): HubStorage {
     acks: createFileAckStore(dataDir),
     spend: createFileSpendStore(dataDir),
     attestations: createFileAttestationStore(dataDir),
+    auditDismissals: createFileAuditDismissalStore(dataDir),
   };
 }

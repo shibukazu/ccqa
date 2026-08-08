@@ -1046,6 +1046,12 @@ const CSS = `
   .notebox .nstatus { font-size: 12px; color: var(--muted); }
   .notebox .nstatus.ok { color: var(--pass); }
   .notebox .nstatus.err { color: var(--fail); }
+  /* The inline form an audit-dismissal or environment-attestation button
+     expands into, in place of the two window.prompt() calls this replaces. */
+  .override-form { margin-top: 10px; max-width: 480px; display: flex; flex-direction: column; gap: 10px; }
+  .override-form textarea { width: 100%; min-height: 54px; resize: vertical; font: inherit; font-size: 13px; color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 8px 10px; }
+  .override-form .of-act { display: flex; align-items: center; gap: 8px; }
+  .override-form .of-hint { font-size: 12px; color: var(--muted); max-width: 62ch; line-height: 1.5; }
 
   @media (max-width: 900px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } .logo .wm { display: none; } .split { grid-template-columns: 1fr; } .rd-head .meta { margin-left: 0; } }
   @media (max-width: 700px) { .prompt-grid { grid-template-columns: 1fr; } .prompt-diff { grid-template-columns: 1fr; } }
@@ -1233,10 +1239,8 @@ const CLIENT_JS = `
       "perspectives.rerun.noDeployLogBanner": "No deploy has been recorded for profile {profile}, so no case can be judged. Wire ccqa hub deploy record into the deploy job for this environment.",
       "perspectives.rerun.deployHead": "deploy head",
       "perspectives.drift.graded": "confirmed",
-      "perspectives.manual.attestButton": "Mark as manually verified",
       "perspectives.manual.revokeButton": "Revoke manual verification",
-      "perspectives.manual.promptBy": "Who is verifying this?",
-      "perspectives.manual.promptNote": "Note (optional)",
+      "perspectives.manual.envButton": "If the environment issue is resolved, use this",
       "perspectives.manual.confirmRevoke": "Revoke the manual verification for this case?",
       "perspectives.manual.error": "Could not save — retry",
       "perspectives.manual.verifiedBy": "{by} manually verified this ({at})",
@@ -1246,6 +1250,18 @@ const CLIENT_JS = `
       "perspectives.manual.lapsed.specEdited": "the manual verification lapsed when the spec was edited",
       "perspectives.manual.lapsed.newerRed": "the manual verification lapsed after a later run failed",
       "perspectives.manual.lapsed.unrecognized": "the manual verification lapsed for a reason this UI does not recognise",
+      "perspectives.dismiss.offerButton": "If the test spec was fine, use this",
+      "perspectives.dismiss.revokeButton": "Undo the dismissal",
+      "perspectives.dismiss.confirmRevoke": "Undo the dismissal for this case?",
+      "perspectives.dismiss.activeNote": "Audit finding “{headline}” was dismissed by {by} as a false positive ({at}) — “{note}”. The next run will settle it.",
+      "perspectives.dismiss.priorNote": "This finding was previously dismissed by {by} ({at}) — “{note}”.",
+      "perspectives.override.byLabel": "Verified by",
+      "perspectives.override.reasonLabel": "Reason (required)",
+      "perspectives.override.noteLabel": "What was resolved, and how you checked (required)",
+      "perspectives.override.submit": "Record",
+      "perspectives.override.cancel": "Never mind",
+      "perspectives.override.dismissHint": "Overrides the audit finding and closes the case. The verdict moves to “re-run needed”, and the next run settles it.",
+      "perspectives.override.envHint": "The failure stays on record, but the verdict becomes “manually verified” without waiting for a re-run. It lapses once a deploy reaches this spec.",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.playwright": "Playwright test generation",
@@ -1413,10 +1429,8 @@ const CLIENT_JS = `
       "perspectives.rerun.noDeployLogBanner": "プロファイル {profile} にデプロイの記録がないため、どのケースも判定できません。この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
       "perspectives.rerun.deployHead": "最新デプロイ",
       "perspectives.drift.graded": "人が確認",
-      "perspectives.manual.attestButton": "手動で確認した",
       "perspectives.manual.revokeButton": "手動確認を取り消す",
-      "perspectives.manual.promptBy": "確認者名を入力してください",
-      "perspectives.manual.promptNote": "メモ（任意）",
+      "perspectives.manual.envButton": "環境要因が解消した場合はこちら",
       "perspectives.manual.confirmRevoke": "このケースの手動確認を取り消しますか？",
       "perspectives.manual.error": "保存に失敗しました — 再試行してください",
       "perspectives.manual.verifiedBy": "{by}さんが手動確認（{at}）",
@@ -1426,6 +1440,18 @@ const CLIENT_JS = `
       "perspectives.manual.lapsed.specEdited": "手動確認はspecの編集により失効",
       "perspectives.manual.lapsed.newerRed": "手動確認は直後の実行失敗により失効",
       "perspectives.manual.lapsed.unrecognized": "このUIが認識できない理由により手動確認が失効",
+      "perspectives.dismiss.offerButton": "テスト仕様に問題がなかった場合はこちら",
+      "perspectives.dismiss.revokeButton": "棄却を取り消す",
+      "perspectives.dismiss.confirmRevoke": "このケースの棄却を取り消しますか？",
+      "perspectives.dismiss.activeNote": "監査指摘「{headline}」は{by}が誤検知として棄却（{at}）—「{note}」。次の実行が裁定します。",
+      "perspectives.dismiss.priorNote": "前回この指摘は{by}が棄却しています（{at}）—「{note}」",
+      "perspectives.override.byLabel": "確認した人",
+      "perspectives.override.reasonLabel": "理由（必須）",
+      "perspectives.override.noteLabel": "解消と確認の内容（必須）",
+      "perspectives.override.submit": "記録する",
+      "perspectives.override.cancel": "やめる",
+      "perspectives.override.dismissHint": "監査の指摘を上書きして台帳を閉じます。判定は「要再実行」に移り、次の実行が正否を裁定します。",
+      "perspectives.override.envHint": "失敗の記録は残したまま、判定は再実行を待たず「手動確認済み」になります。次のデプロイがこの spec に届くと失効します。",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.playwright": "Playwrightテスト生成",
@@ -3523,6 +3549,13 @@ const CLIENT_JS = `
       "/attestations?profile=" + encodeURIComponent(state.profile);
   }
 
+  // A person's answer to an audit finding, not an environment: the finding is
+  // about the repository, not a deployed profile, so this carries no
+  // ?profile= (unlike attestationsPath above).
+  function auditDismissalsPath() {
+    return "/api/v1/projects/" + encodeURIComponent(state.project) + "/audit-dismissals";
+  }
+
   // Resolves { report } or { note } and never rejects: a hub that predates
   // the endpoint costs only the columns it feeds, not the whole tab. A 404
   // here can only mean "no such route" — the endpoint's own 404 is "the
@@ -4176,28 +4209,71 @@ const CLIENT_JS = `
   }
   // --- end pure: rerun detail labels ----------------------------------------
 
+  // --- pure: audit dismissal reading ----------------------------------------
+  // Self-contained (no DOM, no closures) for the same reason as the regions
+  // above: read rr.auditDismissed against rr.audit, per the schema's own
+  // comment on the field. "clean" means the dismissal is what is holding the
+  // axis there; "drifted"/"undecided" means a later audit re-raised what it
+  // answered, so the old dismissal no longer covers it.
+  function auditDismissalActive(rr) {
+    return !!(rr && rr.auditDismissed && rr.audit === "clean");
+  }
+  function auditDismissalReflagged(rr) {
+    return !!(rr && rr.auditDismissed && (rr.audit === "drifted" || rr.audit === "undecided"));
+  }
+  // --- end pure: audit dismissal reading -------------------------------------
+
+  // The dismissal's own words, read against the current audit state: active,
+  // it explains why the axis reads clean; re-flagged, it is a fact worth
+  // keeping visible beside the finding that reopened it.
+  function rerunDismissalLine(rr) {
+    if (!rr || !rr.auditDismissed) return null;
+    var d = rr.auditDismissed;
+    if (auditDismissalActive(rr)) {
+      return {
+        muted: false,
+        text: t("perspectives.dismiss.activeNote")
+          .replace("{headline}", d.headline).replace("{by}", d.by).replace("{at}", relTime(d.at)).replace("{note}", d.note),
+      };
+    }
+    if (auditDismissalReflagged(rr)) {
+      return {
+        muted: true,
+        text: t("perspectives.dismiss.priorNote")
+          .replace("{by}", d.by).replace("{at}", relTime(d.at)).replace("{note}", d.note),
+      };
+    }
+    return null;
+  }
+
   // The evidence behind the verdict, as the value of whichever row
   // rerunEvidenceLabelKey chose. For needed/notNeeded that is what the deploy
   // log holds since this case last ran, named by rerunChangeLine.
   // The label already states the timeframe, so the value never repeats it.
+  // A dismissal (active or superseded by a later finding) is appended below
+  // whichever of those this case has, rather than replacing it — see
+  // rerunDismissalLine.
   function rerunEvidenceValue(rr) {
     var wrap = el("div");
     if (!rerunHasEvidence(rr)) {
       wrap.appendChild(el("div", "d-prose", rerunWhyVerdict(rr)));
-      return wrap;
+    } else {
+      // Both states require a non-empty deploy log, so a head-less report
+      // contradicts itself; rerunChangeLine then names what is missing rather
+      // than inventing a baseline.
+      var line = rerunChangeLine(rr, perspState.rerun && perspState.rerun.deployHead);
+      var text = t(line.key).replace("{sha}", shortSha(line.sha));
+      if (line.at) text += " · " + relTime(line.at);
+      wrap.appendChild(el("div", "d-prose", text));
+      // A touch the index proved but cannot enumerate leaves no paths to
+      // list; the line above still says a change landed, which is all that
+      // is known.
+      if (rr.verdict === "rerunNeeded" && rr.touchedBy && rr.touchedBy.length) {
+        wrap.appendChild(pathCodes(rr.touchedBy));
+      }
     }
-    // Both states require a non-empty deploy log, so a head-less report
-    // contradicts itself; rerunChangeLine then names what is missing rather
-    // than inventing a baseline.
-    var line = rerunChangeLine(rr, perspState.rerun && perspState.rerun.deployHead);
-    var text = t(line.key).replace("{sha}", shortSha(line.sha));
-    if (line.at) text += " · " + relTime(line.at);
-    wrap.appendChild(el("div", "d-prose", text));
-    // A touch the index proved but cannot enumerate leaves no paths to list;
-    // the line above still says a change landed, which is all that is known.
-    if (rr.verdict === "rerunNeeded" && rr.touchedBy && rr.touchedBy.length) {
-      wrap.appendChild(pathCodes(rr.touchedBy));
-    }
+    var dismissLine = rerunDismissalLine(rr);
+    if (dismissLine) wrap.appendChild(el("div", "d-prose" + (dismissLine.muted ? " muted" : ""), dismissLine.text));
     return wrap;
   }
 
@@ -4216,9 +4292,7 @@ const CLIENT_JS = `
     return wrap;
   }
 
-  // Lets a person's own check stand in for the machine's verdict. prompt()/
-  // confirm() rather than a form: the action is rare and the two fields it
-  // needs are short, so a modal would outweigh what it does. reloadRerun()
+  // Lets a person's own check stand in for the machine's verdict. reloadRerun()
   // is the same profile-scoped refresh a profile switch uses — it re-renders
   // the whole table, so an open detail panel closes along with it.
   function submitAttestation(method, body) {
@@ -4230,17 +4304,16 @@ const CLIENT_JS = `
       .catch(function (err) { window.alert(t("perspectives.manual.error") + ": " + err.message); });
   }
 
-  function manualAttestButton(feature, spec) {
-    var btn = el("button", "btn sm primary", t("perspectives.manual.attestButton"));
-    btn.type = "button";
-    btn.addEventListener("click", function () {
-      var by = window.prompt(t("perspectives.manual.promptBy"), loadAttestBy());
-      if (!by) return;
-      storeAttestBy(by);
-      var note = window.prompt(t("perspectives.manual.promptNote"), "");
-      submitAttestation("PUT", { spec: perspSpecKey(feature, spec), by: by, note: note || undefined });
-    });
-    return btn;
+  // Lets a person say an audit finding was wrong. Same reload contract as
+  // submitAttestation above; a different endpoint (no ?profile=, ADR: a
+  // finding is about the repository).
+  function submitAuditDismissal(method, body) {
+    apiFetch(auditDismissalsPath(), {
+      method: method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(function () { reloadRerun(); })
+      .catch(function (err) { window.alert(t("perspectives.manual.error") + ": " + err.message); });
   }
 
   function manualRevokeButton(feature, spec) {
@@ -4251,6 +4324,121 @@ const CLIENT_JS = `
       submitAttestation("DELETE", { spec: perspSpecKey(feature, spec) });
     });
     return btn;
+  }
+
+  function auditDismissalRevokeButton(feature, spec) {
+    var btn = el("button", "btn ghost sm del", t("perspectives.dismiss.revokeButton"));
+    btn.type = "button";
+    btn.addEventListener("click", function () {
+      if (!window.confirm(t("perspectives.dismiss.confirmRevoke"))) return;
+      submitAuditDismissal("DELETE", { spec: perspSpecKey(feature, spec) });
+    });
+    return btn;
+  }
+
+  // The inline form a "dismiss" or "environment" offer button expands into,
+  // in place of the two window.prompt() calls this replaces. Both kinds ask
+  // for the same two things — who, and why — and differ only in wording and
+  // which endpoint the answer goes to.
+  function buildOverrideForm(kind, feature, spec, onCancel) {
+    var wrap = el("div", "override-form");
+
+    var byRow = el("div", "form-row");
+    byRow.appendChild(el("label", null, t("perspectives.override.byLabel")));
+    var byInput = el("input", "input");
+    byInput.type = "text";
+    byInput.value = loadAttestBy();
+    byRow.appendChild(byInput);
+    wrap.appendChild(byRow);
+
+    var noteRow = el("div", "form-row");
+    noteRow.appendChild(el("label", null, t(kind === "dismiss" ? "perspectives.override.reasonLabel" : "perspectives.override.noteLabel")));
+    var noteInput = el("textarea");
+    noteRow.appendChild(noteInput);
+    wrap.appendChild(noteRow);
+
+    var act = el("div", "of-act");
+    var submitBtn = el("button", "btn sm primary", t("perspectives.override.submit"));
+    submitBtn.type = "button";
+    submitBtn.disabled = true;
+    var cancelBtn = el("button", "btn ghost sm", t("perspectives.override.cancel"));
+    cancelBtn.type = "button";
+    act.appendChild(submitBtn);
+    act.appendChild(cancelBtn);
+    wrap.appendChild(act);
+
+    wrap.appendChild(el("div", "of-hint", t(kind === "dismiss" ? "perspectives.override.dismissHint" : "perspectives.override.envHint")));
+
+    function syncEnabled() {
+      submitBtn.disabled = !(byInput.value.trim() && noteInput.value.trim());
+    }
+    byInput.addEventListener("input", syncEnabled);
+    noteInput.addEventListener("input", syncEnabled);
+    cancelBtn.addEventListener("click", onCancel);
+
+    submitBtn.addEventListener("click", function () {
+      var by = byInput.value.trim();
+      var note = noteInput.value.trim();
+      if (!by || !note) return;
+      storeAttestBy(by);
+      if (kind === "dismiss") submitAuditDismissal("PUT", { spec: perspSpecKey(feature, spec), by: by, note: note });
+      else submitAttestation("PUT", { spec: perspSpecKey(feature, spec), by: by, note: note });
+    });
+
+    return wrap;
+  }
+
+  // A button that expands into buildOverrideForm above in place, rather than
+  // a modal — the action is rare enough that swapping the button for its own
+  // form reads fine without one.
+  function buildOverrideOffer(kind, feature, spec) {
+    var box = el("div", "manual-attest");
+    var openBtn = el("button", "btn sm primary", t(kind === "dismiss" ? "perspectives.dismiss.offerButton" : "perspectives.manual.envButton"));
+    openBtn.type = "button";
+    box.appendChild(openBtn);
+    openBtn.addEventListener("click", function () {
+      box.removeChild(openBtn);
+      var form = buildOverrideForm(kind, feature, spec, function () {
+        box.removeChild(form);
+        box.appendChild(openBtn);
+      });
+      box.appendChild(form);
+    });
+    return box;
+  }
+
+  // The audit-axis override slot: dismiss an open finding, or revoke a
+  // dismissal that is currently the reason the axis reads clean. At most one
+  // of the two ever shows (ADR: audit dismissal design) — a finding the axis
+  // itself has cleared, dismissed or not, offers nothing here.
+  function auditOverrideBox(feature, spec, rr) {
+    if (auditDismissalActive(rr)) {
+      var box = el("div", "manual-attest");
+      box.appendChild(auditDismissalRevokeButton(feature, spec));
+      return box;
+    }
+    if (rr.audit === "drifted" || rr.audit === "undecided") return buildOverrideOffer("dismiss", feature, spec);
+    return null;
+  }
+
+  // The execution-axis override slot: revoke a standing attestation, or offer
+  // one for an environment-caused failure — but only when the audit axis has
+  // no open finding of its own, which is auditOverrideBox's problem to answer,
+  // not this one's.
+  function executionOverrideBox(feature, spec, rr) {
+    if (rr.manual) {
+      var box = el("div", "manual-attest");
+      if (rr.verdict !== "manuallyVerified") box.appendChild(el("div", "d-prose", manualAttestationText(rr.manual)));
+      var lapseLine = rerunManualLapseText(rr);
+      if (lapseLine) box.appendChild(el("div", "d-prose", lapseLine));
+      box.appendChild(manualRevokeButton(feature, spec));
+      return box;
+    }
+    var auditOpen = rr.audit === "drifted" || rr.audit === "undecided";
+    if (!auditOpen && rr.execution === "failed" && rr.lastRed && rr.lastRed.label === "ENVIRONMENT") {
+      return buildOverrideOffer("environment", feature, spec);
+    }
+    return null;
   }
 
   // Detail row: a definition list of the case's fields plus the note editor.
@@ -4310,22 +4498,14 @@ const CLIENT_JS = `
       frag.appendChild(stepsBox);
     }
 
-    // A standing attestation always offers revoke — even when it changed
-    // nothing (a held or machine-verified spec), it exists and must stay
-    // findable. A lapsed one is named right here, beside the attest button
-    // the reader is deciding whether to press.
-    var manualBtn = null;
-    if (rr && rr.manual) manualBtn = manualRevokeButton(feature, spec);
-    else if (rr && (rr.verdict === "needsRepair" || rr.verdict === "rerunNeeded")) manualBtn = manualAttestButton(feature, spec);
-    if (manualBtn) {
-      var manualBox = el("div", "manual-attest");
-      if (rr.manual && rr.verdict !== "manuallyVerified") {
-        manualBox.appendChild(el("div", "d-prose", manualAttestationText(rr.manual)));
-      }
-      var lapseLine = rerunManualLapseText(rr);
-      if (lapseLine) manualBox.appendChild(el("div", "d-prose", lapseLine));
-      manualBox.appendChild(manualBtn);
-      frag.appendChild(manualBox);
+    // A person's override, always at most one control per axis: which finding
+    // is open decides whether that slot offers a new override or revokes a
+    // standing one (auditOverrideBox / executionOverrideBox).
+    if (rr) {
+      var auditBox = auditOverrideBox(feature, spec, rr);
+      if (auditBox) frag.appendChild(auditBox);
+      var execBox = executionOverrideBox(feature, spec, rr);
+      if (execBox) frag.appendChild(execBox);
     }
 
     var notebox = el("div", "notebox");

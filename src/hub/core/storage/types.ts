@@ -1,6 +1,7 @@
 import type {
   Ack,
   Attestations,
+  AuditDismissals,
   DeployEntry,
   DeployInput,
   DeployLog,
@@ -43,6 +44,7 @@ export interface HubStorage {
   acks: AckStore;
   spend: SpendStore;
   attestations: AttestationStore;
+  auditDismissals: AuditDismissalStore;
 }
 
 /**
@@ -168,6 +170,21 @@ export interface AttestationStore {
     profile: string,
     mutate: (current: Attestations) => Attestations,
   ): Promise<Attestations>;
+}
+
+/**
+ * Per project, each spec's last dismissed audit finding. No profile — a
+ * finding is about the repository, the same reason the drift ledger has none.
+ * One per spec (a new dismissal replaces the old), so the document is bounded
+ * by the spec count and needs no retention sweep.
+ */
+export interface AuditDismissalStore {
+  get(project: string): Promise<AuditDismissals>;
+  /** Serialized read-modify-write, so two dismissals at once cannot clobber each other. */
+  update(
+    project: string,
+    mutate: (current: AuditDismissals) => AuditDismissals,
+  ): Promise<AuditDismissals>;
 }
 
 export interface RunStore {

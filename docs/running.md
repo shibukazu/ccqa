@@ -598,17 +598,38 @@ already gave, or pass while verifying something the product stopped doing. The
 audit axis carries which repair it needs — `TEST_DRIFT` for a stale recording,
 which `ccqa record` fixes, or `SPEC_CHANGE` for a spec a human has to rewrite.
 
-**A person can stand in for the machine while a repair is stuck.** When the
-recorder cannot get through a spec — broken test data, a control it cannot
-drive — but a person has checked the behaviour by hand, `ccqa hub attest
-<feature/spec> --profile <p> --by <name>` (or the hub UI's button) records
-that. The verdict answers `manuallyVerified` instead of holding the spec in
-`needsRepair`; the drift ledger is untouched, so the repair loop keeps its
-reason to fix the test, and the run side still never selects it. The
-attestation lapses on its own — a deploy reaching the spec, the spec being
-edited, or a later failed run each end it — and the lapsed attestation stays
-visible in the verdict's reasons with which of those ended it, so the person
-deciding whether to attest again knows what changed since they last looked.
+### What a person may overrule
+
+The machine says two kinds of thing, and only one of them is an opinion. An
+**audit finding** is a judgement made by reading code; a **run result** is
+what happened when the test was executed. A person may overrule a judgement.
+Nobody overrules what happened.
+
+**A wrong audit finding can be dismissed.** When the audit flags a spec that
+in fact describes the code fine, `ccqa hub dismiss <feature/spec> --by <name>
+--reason <text>` (or the hub UI's button) records that. The audit axis reads
+`clean`, the spec goes back to being run like any other, and **the next run
+settles it** — nobody has to trust the dismissal indefinitely. The reason is
+required: it is the correction a mis-firing audit learns from. The dismissal
+is pinned to the audit run it answers, so a later audit raises its finding
+again rather than being silenced for good, and the earlier dismissal is shown
+beside the new finding so the reader knows the argument has been had before.
+
+**An environment failure can be declared resolved.** A run that failed for an
+environment reason (`ENVIRONMENT`) says nothing about the product, and whether
+the environment has since been fixed is not something the hub can observe. Once
+a person has fixed it and confirmed the behaviour by hand, `ccqa hub attest
+<feature/spec> --profile <p> --by <name>` (or the hub UI's button) answers
+`manuallyVerified` without waiting for another run. The failed run itself is
+not erased, and the attestation lapses on its own — a deploy reaching the spec,
+the spec being edited, or a later failed run each end it — with the reason it
+lapsed kept visible, so the person deciding whether to attest again knows what
+changed since they last looked.
+
+**A test that failed on its own terms cannot be talked out of.** A
+`TEST_DRIFT`, `PRODUCT_BUG` or unclassified failure is an observed fact: the
+repair is to fix the test, fix the product, or find out which. The hub UI
+offers nothing there, by design.
 
 None of these is passing or failing. They are unverified, and the selection
 summary counts each as its own verdict so that never reads as an all-clear. An

@@ -690,6 +690,69 @@ export const AttestationsResponseSchema = z.object({
 export type AttestationsResponse = z.infer<typeof AttestationsResponseSchema>;
 
 /**
+ * A person's answer to one audit finding: the spec describes the code fine,
+ * and the finding is wrong. Where an attestation speaks about the product,
+ * this speaks about the *audit* — so it settles the audit axis rather than
+ * the verdict, and the spec goes back to being run like any other.
+ *
+ * Pinned to the audit run whose finding it answers. A later audit is a new
+ * observation of newer code, so it produces a new run and this stops
+ * applying: the machine gets to raise the finding again, and the record of
+ * the last dismissal is shown beside it rather than silently suppressing it.
+ * No profile — an audit finding is about the repository, not an environment
+ * (ADR-0013), which is also why this is scoped per project alone.
+ */
+export const AuditDismissalSchema = z.object({
+  /** Who judged the finding wrong. Free text — the hub has no accounts. */
+  by: z.string().min(1),
+  /** When the hub recorded it (stamped server-side). */
+  at: z.string(),
+  /** Why. Required: this is the correction a mis-firing audit learns from. */
+  note: z.string().min(1),
+  /** The `kind: "drift"` run whose finding this answers. */
+  auditRunId: z.string(),
+  /** What was dismissed, copied so a reader needs only this record. */
+  label: DriftLabelSchema,
+  headline: z.string(),
+});
+export type AuditDismissal = z.infer<typeof AuditDismissalSchema>;
+
+/** The per-project dismissal document: "feature/spec" → the last dismissal. */
+export const AuditDismissalsSchema = z.object({
+  specs: z.record(z.string(), AuditDismissalSchema).default({}),
+});
+export type AuditDismissals = z.infer<typeof AuditDismissalsSchema>;
+
+/** Body of `PUT /projects/:project/audit-dismissals`. */
+export const PutAuditDismissalRequestSchema = z.object({
+  /** "feature/spec" */
+  spec: z.string().min(1).max(512),
+  by: z.string().min(1).max(256),
+  note: z.string().min(1).max(4000),
+});
+export type PutAuditDismissalRequest = z.infer<typeof PutAuditDismissalRequestSchema>;
+
+/** Body of `DELETE /projects/:project/audit-dismissals`. */
+export const DeleteAuditDismissalRequestSchema = z.object({
+  /** "feature/spec" */
+  spec: z.string().min(1).max(512),
+});
+export type DeleteAuditDismissalRequest = z.infer<typeof DeleteAuditDismissalRequestSchema>;
+
+export const AuditDismissalResponseSchema = z.object({
+  project: z.string(),
+  spec: z.string(),
+  dismissal: AuditDismissalSchema,
+});
+export type AuditDismissalResponse = z.infer<typeof AuditDismissalResponseSchema>;
+
+export const AuditDismissalsResponseSchema = z.object({
+  project: z.string(),
+  specs: z.record(z.string(), AuditDismissalSchema),
+});
+export type AuditDismissalsResponse = z.infer<typeof AuditDismissalsResponseSchema>;
+
+/**
  * One spec's verdict, the two axes it was derived from, and the three ledger
  * coordinates the view shows alongside them. The coordinates are always
  * present (null when the spec has no such entry); the optional fields appear
@@ -711,6 +774,14 @@ export const SpecRerunSchema = z.object({
    * deploy demonstrably reached it.
    */
   auditAssumedReached: RerunUnknownReasonSchema.optional(),
+  /**
+   * The spec's last dismissal, whenever one exists. Read it against the audit
+   * axis: `clean` beside it means the dismissal is what settled the axis;
+   * `drifted`/`undecided` beside it means a later audit raised a finding the
+   * dismissal does not answer for, and the old one is shown only so the
+   * reader knows this argument has been had before. ADDITIVE and optional.
+   */
+  auditDismissed: AuditDismissalSchema.optional(),
   /**
    * Set when `execution === "stale"` only because the log could not place the
    * run. Absent when a deploy demonstrably reached the spec, which

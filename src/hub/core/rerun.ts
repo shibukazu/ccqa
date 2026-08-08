@@ -2,6 +2,7 @@ import type {
   Attestation,
   AttestationLapse,
   Attestations,
+  AuditDismissals,
   AuditState,
   DeployLog,
   DeployRef,
@@ -43,6 +44,8 @@ export interface RerunInput {
   locks: SpecLocks;
   /** Each spec's standing manual attestation, if any. */
   attestations: Attestations;
+  /** Each spec's last dismissed audit finding, if any. Not profile-scoped, like the drift ledger. */
+  dismissals: AuditDismissals;
   /** Compared against each hold's expiry. Passed in so the answer is reproducible in tests. */
   now: Date;
 }
@@ -86,7 +89,7 @@ function specMovedSince(
 }
 
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
-  const { specs, ledger, log, touchIndex, drift, locks, attestations, now } = input;
+  const { specs, ledger, log, touchIndex, drift, locks, attestations, dismissals, now } = input;
   const range = buildRange(log, touchIndex);
   const deployTimes = deployedAt(log);
 
@@ -100,10 +103,24 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
     let audit = auditState(drift, spec.key, range);
     let execution = executionState(coords, (sha) => freshness(sha, spec.key, range));
 
+    const driftEntry = drift.specs[spec.key];
+
+    // A person answering the audit settles the audit axis: the finding was
+    // wrong, so the spec is as clean as one the audit cleared, and the run
+    // side decides from here. Pinned to the run that raised it — a later
+    // audit is a new observation, and the machine gets to say its piece
+    // again rather than being silenced for good.
+    const dismissal = dismissals.specs[spec.key];
+    const dismissed =
+      dismissal !== undefined &&
+      driftEntry !== undefined &&
+      dismissal.auditRunId === driftEntry.runId &&
+      (audit.audit === "drifted" || audit.audit === "undecided");
+    if (dismissed) audit = { audit: "clean" };
+
     // The spec's own edits, applied to both axes. `due`/`stale` already mean
     // "the baseline no longer answers for what is here now", so an edit lands
     // in the existing vocabulary rather than adding a state.
-    const driftEntry = drift.specs[spec.key];
     const auditMoved = specMovedSince(
       spec.changedAt,
       driftEntry?.gitHead ?? null,
@@ -147,6 +164,10 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       ...(auditMoved || runMoved ? { specChangedSince: (auditMoved ?? runMoved)! } : {}),
       ...audit,
       ...execution,
+      // Shipped whether or not it still applies: one beside a `drifted` axis
+      // is a finding raised again after being dismissed, which the reader
+      // needs to see rather than argue with from scratch.
+      ...(dismissal ? { auditDismissed: dismissal } : {}),
       // A standing attestation is emitted whether or not it decided the
       // verdict: on a held or machine-verified spec it changed nothing, but
       // hiding it would leave an attestation nobody can see or revoke until

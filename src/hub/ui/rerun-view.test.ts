@@ -116,6 +116,26 @@ function runStateLabels(): {
 }
 
 /**
+ * Whether a spec's last audit dismissal is the one currently holding the
+ * audit axis clean, or an old one a later audit re-flagged — lifted the same
+ * way, since perspDetailContent's override controls (audit-dismissal.md
+ * design) branch on exactly this read.
+ */
+const DISMISSAL_START = "// --- pure: audit dismissal reading";
+const DISMISSAL_END = "// --- end pure: audit dismissal reading";
+
+function dismissalReading(): {
+  auditDismissalActive: (rr: { audit?: string; auditDismissed?: unknown } | null) => boolean;
+} {
+  const src = clientScript();
+  const start = src.indexOf(DISMISSAL_START);
+  const end = src.indexOf(DISMISSAL_END);
+  expect(start, "the pure audit-dismissal-reading region is missing").toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return new Function(`${src.slice(start, end)}\nreturn { auditDismissalActive: auditDismissalActive };`)();
+}
+
+/**
  * Which profile the Perspectives tab opens into on a project's first visit,
  * lifted the same way: candidate ordering/dedup, and which candidate wins
  * once their deploy logs have been probed, are plain functions worth pinning
@@ -572,5 +592,15 @@ describe("hub UI: needs re-run", () => {
     // Nothing confirms: fall back to the old run-index-only heuristic rather
     // than leaving the pick undefined.
     expect(pickFirstWithDeployLog(candidates, [false, false, false], "default", ["ci"])).toBe("ci");
+  });
+
+  test("an active dismissal reads as the audit axis being clean, not as a stale answer to a re-flagged finding", () => {
+    const { auditDismissalActive } = dismissalReading();
+    const dismissed = { by: "a", at: "2026-07-01T00:00:00Z", note: "n", auditRunId: "r1", label: "TEST_DRIFT", headline: "h" };
+    expect(auditDismissalActive({ audit: "clean", auditDismissed: dismissed })).toBe(true);
+    // A later audit re-raised the finding: the old dismissal no longer holds
+    // the axis clean, so it must not read as active.
+    expect(auditDismissalActive({ audit: "drifted", auditDismissed: dismissed })).toBe(false);
+    expect(auditDismissalActive({ audit: "clean" })).toBe(false);
   });
 });

@@ -725,6 +725,60 @@ const attestCommand = new Command("attest")
     log.info("the verdict answers manuallyVerified until a deploy reaches this spec or the spec is edited");
   }));
 
+// ── audit dismissals ────────────────────────────────────────────────────
+
+interface DismissOptions extends HubConnOptions {
+  project?: string;
+  cwd?: string;
+  by?: string;
+  reason?: string;
+  revoke?: boolean;
+}
+
+const dismissCommand = new Command("dismiss")
+  .argument("<feature/spec>", "Spec id, e.g. checkout/happy-path")
+  .description(
+    "Record that a person judged the spec's current audit finding wrong: the spec describes the " +
+      "code fine. This settles the audit axis rather than the verdict — the spec goes back to " +
+      "being run like any other, and the next run says whether the person was right. The " +
+      "dismissal is pinned to the audit run that raised the finding, so a later audit can raise " +
+      "it again. No --profile: a finding is about the repository, not an environment.",
+  )
+  .option("--by <name>", "Who judged it wrong. Required unless --revoke.")
+  .option("--reason <text>", "Why the finding is wrong. Required unless --revoke — this is what a mis-firing audit learns from.")
+  .option("--revoke", "Withdraw the dismissal, putting the finding back in force.")
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .option("--project <name>", "Hub project. Defaults to the current directory's name.")
+  .option("--cwd <path>", "Directory the default --project name is resolved against.")
+  .action(withHubErrors(async (rawSpecId: string, opts: DismissOptions) => {
+    const project = resolveProject(opts);
+    const hub = connect(opts);
+    let specId: string;
+    try {
+      const parsed = parseSpecPath(rawSpecId);
+      specId = `${parsed.featureName}/${parsed.specName}`;
+    } catch (err) {
+      log.error(errMessage(err));
+      process.exit(2);
+    }
+
+    if (opts.revoke) {
+      await hub.deleteAuditDismissal(project, specId);
+      log.header("hub dismiss", `${specId} revoked`);
+      return;
+    }
+    if (!opts.by || !opts.reason) {
+      log.error("--by <name> and --reason <text> are both required: a dismissal is a person's correction, and it needs the person and the correction");
+      process.exit(2);
+    }
+    const res = await hub.putAuditDismissal(project, { spec: specId, by: opts.by, note: opts.reason });
+    log.header("hub dismiss", specId);
+    log.meta("by", res.dismissal.by);
+    log.meta("dismissed", `${res.dismissal.label} — ${res.dismissal.headline || "(no headline)"}`);
+    log.info("the audit axis reads clean until a later audit raises a finding of its own");
+  }));
+
 export const hubCommand = new Command("hub")
   .description(
     "Client for a ccqa hub: push run results and manage sessions/variables/prompts used by `ccqa run`. " +
@@ -736,7 +790,8 @@ export const hubCommand = new Command("hub")
   .addCommand(sessionCommand)
   .addCommand(varCommand)
   .addCommand(promptCommand)
-  .addCommand(attestCommand);
+  .addCommand(attestCommand)
+  .addCommand(dismissCommand);
 
 /** Loose check that a fetched session is agent-browser storage-state, mirroring loadStorageState. */
 export function isStorageStateShape(state: unknown): state is { cookies: unknown[]; origins: unknown[] } {
