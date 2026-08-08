@@ -775,13 +775,19 @@ export const SpecRerunSchema = z.object({
    */
   auditAssumedReached: RerunUnknownReasonSchema.optional(),
   /**
-   * The spec's last dismissal, whenever one exists. Read it against the audit
-   * axis: `clean` beside it means the dismissal is what settled the axis;
-   * `drifted`/`undecided` beside it means a later audit raised a finding the
-   * dismissal does not answer for, and the old one is shown only so the
-   * reader knows this argument has been had before. ADDITIVE and optional.
+   * The spec's last dismissal, whenever one exists — applied or not. Both are
+   * worth showing: one that no longer applies means a later audit raised a
+   * finding it does not answer for, and the reader should know this argument
+   * has been had before. ADDITIVE and optional.
    */
   auditDismissed: AuditDismissalSchema.optional(),
+  /**
+   * Whether the dismissal above is what settled the audit axis. Stated rather
+   * than inferred from `audit === "clean"`: a spec a later audit cleared on
+   * its own reads `clean` too, and a reader must not credit that to the
+   * person. Set exactly when `auditDismissed` is.
+   */
+  auditDismissalApplied: z.boolean().optional(),
   /**
    * Set when `execution === "stale"` only because the log could not place the
    * run. Absent when a deploy demonstrably reached the spec, which

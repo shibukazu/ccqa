@@ -4215,11 +4215,20 @@ const CLIENT_JS = `
   // comment on the field. "clean" means the dismissal is what is holding the
   // axis there; "drifted"/"undecided" means a later audit re-raised what it
   // answered, so the old dismissal no longer covers it.
+  // The audit has something outstanding on this spec. Both values mean the
+  // same thing to a reader deciding whether to answer it: the audit read the
+  // code and did not clear the spec (ADR-0019).
+  function auditOpen(rr) {
+    return !!rr && (rr.audit === "drifted" || rr.audit === "undecided");
+  }
   function auditDismissalActive(rr) {
-    return !!(rr && rr.auditDismissed && rr.audit === "clean");
+    // The hub says whether the dismissal settled the axis. Inferring it from
+    // "clean" would credit the person for a later audit clearing the spec on
+    // its own, which reads identically here.
+    return !!(rr && rr.auditDismissed && rr.auditDismissalApplied);
   }
   function auditDismissalReflagged(rr) {
-    return !!(rr && rr.auditDismissed && (rr.audit === "drifted" || rr.audit === "undecided"));
+    return !!(rr && rr.auditDismissed && auditOpen(rr));
   }
   // --- end pure: audit dismissal reading -------------------------------------
 
@@ -4409,7 +4418,7 @@ const CLIENT_JS = `
 
   // The audit-axis override slot: dismiss an open finding, or revoke a
   // dismissal that is currently the reason the axis reads clean. At most one
-  // of the two ever shows (ADR: audit dismissal design) — a finding the axis
+  // of the two ever shows — a finding the axis
   // itself has cleared, dismissed or not, offers nothing here.
   function auditOverrideBox(feature, spec, rr) {
     if (auditDismissalActive(rr)) {
@@ -4417,7 +4426,7 @@ const CLIENT_JS = `
       box.appendChild(auditDismissalRevokeButton(feature, spec));
       return box;
     }
-    if (rr.audit === "drifted" || rr.audit === "undecided") return buildOverrideOffer("dismiss", feature, spec);
+    if (auditOpen(rr)) return buildOverrideOffer("dismiss", feature, spec);
     return null;
   }
 
@@ -4429,13 +4438,12 @@ const CLIENT_JS = `
     if (rr.manual) {
       var box = el("div", "manual-attest");
       if (rr.verdict !== "manuallyVerified") box.appendChild(el("div", "d-prose", manualAttestationText(rr.manual)));
-      var lapseLine = rerunManualLapseText(rr);
-      if (lapseLine) box.appendChild(el("div", "d-prose", lapseLine));
       box.appendChild(manualRevokeButton(feature, spec));
       return box;
     }
-    var auditOpen = rr.audit === "drifted" || rr.audit === "undecided";
-    if (!auditOpen && rr.execution === "failed" && rr.lastRed && rr.lastRed.label === "ENVIRONMENT") {
+    // Only once the audit has actually cleared the spec: while it is still
+    // due, nobody knows yet whether the environment was the only thing wrong.
+    if (rr.audit === "clean" && rr.execution === "failed" && rr.lastRed && rr.lastRed.label === "ENVIRONMENT") {
       return buildOverrideOffer("environment", feature, spec);
     }
     return null;

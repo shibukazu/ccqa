@@ -83,6 +83,21 @@ function connect(opts: HubConnOptions): HubClient {
   process.exit(2);
 }
 
+/**
+ * The canonical "feature/spec" key for a CLI argument. Hub records are stored
+ * and looked up under exactly this form, so an alias accepted here but kept
+ * verbatim would silently never match.
+ */
+function requireSpecId(rawSpecId: string): string {
+  try {
+    const parsed = parseSpecPath(rawSpecId);
+    return `${parsed.featureName}/${parsed.specName}`;
+  } catch (err) {
+    log.error(errMessage(err));
+    process.exit(2);
+  }
+}
+
 function validateSessionName(name: string): string {
   const parsed = SessionNameSchema.safeParse(name);
   if (!parsed.success) {
@@ -692,18 +707,7 @@ const attestCommand = new Command("attest")
   .action(withHubErrors(async (rawSpecId: string, opts: AttestOptions) => {
     const project = resolveProject(opts);
     const hub = connect(opts);
-    // The same normalization every other <feature/spec> argument gets: the
-    // attestation is stored under this key and looked up by the canonical
-    // "feature/spec" form, so an alias accepted here but stored verbatim
-    // would silently never match.
-    let specId: string;
-    try {
-      const parsed = parseSpecPath(rawSpecId);
-      specId = `${parsed.featureName}/${parsed.specName}`;
-    } catch (err) {
-      log.error(errMessage(err));
-      process.exit(2);
-    }
+    const specId = requireSpecId(rawSpecId);
 
     if (opts.revoke) {
       await hub.deleteAttestation(project, { profile: opts.profile }, specId);
@@ -754,14 +758,7 @@ const dismissCommand = new Command("dismiss")
   .action(withHubErrors(async (rawSpecId: string, opts: DismissOptions) => {
     const project = resolveProject(opts);
     const hub = connect(opts);
-    let specId: string;
-    try {
-      const parsed = parseSpecPath(rawSpecId);
-      specId = `${parsed.featureName}/${parsed.specName}`;
-    } catch (err) {
-      log.error(errMessage(err));
-      process.exit(2);
-    }
+    const specId = requireSpecId(rawSpecId);
 
     if (opts.revoke) {
       await hub.deleteAuditDismissal(project, specId);
@@ -776,7 +773,7 @@ const dismissCommand = new Command("dismiss")
     log.header("hub dismiss", specId);
     log.meta("by", res.dismissal.by);
     log.meta("dismissed", `${res.dismissal.label} — ${res.dismissal.headline || "(no headline)"}`);
-    log.info("the audit axis reads clean until a later audit raises a finding of its own");
+    log.info("this finding no longer holds the spec back; a later audit can raise one of its own");
   }));
 
 export const hubCommand = new Command("hub")

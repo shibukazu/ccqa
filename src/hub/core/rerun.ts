@@ -107,14 +107,17 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
 
     // A person answering the audit settles the audit axis: the finding was
     // wrong, so the spec is as clean as one the audit cleared, and the run
-    // side decides from here. Pinned to the run that raised it — a later
-    // audit is a new observation, and the machine gets to say its piece
-    // again rather than being silenced for good.
+    // side decides from here. Pinned to the finding it answers — both the run
+    // that raised it and what that run said. The run alone is not enough: a
+    // human regrade rewrites the entry's label in place, keeping the run id,
+    // so matching on the id alone would let a dismissal of "the audit could
+    // not decide" go on suppressing a person's later "this drift is real".
     const dismissal = dismissals.specs[spec.key];
     const dismissed =
       dismissal !== undefined &&
       driftEntry !== undefined &&
       dismissal.auditRunId === driftEntry.runId &&
+      dismissal.label === driftEntry.label &&
       (audit.audit === "drifted" || audit.audit === "undecided");
     if (dismissed) audit = { audit: "clean" };
 
@@ -166,8 +169,11 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       ...execution,
       // Shipped whether or not it still applies: one beside a `drifted` axis
       // is a finding raised again after being dismissed, which the reader
-      // needs to see rather than argue with from scratch.
-      ...(dismissal ? { auditDismissed: dismissal } : {}),
+      // needs to see rather than argue with from scratch. Whether it applied
+      // is stated rather than left to be inferred — a spec a later audit
+      // cleared on its own also reads `clean`, and the two must not look
+      // alike to a reader deciding who cleared it.
+      ...(dismissal ? { auditDismissed: dismissal, auditDismissalApplied: dismissed } : {}),
       // A standing attestation is emitted whether or not it decided the
       // verdict: on a held or machine-verified spec it changed nothing, but
       // hiding it would leave an attestation nobody can see or revoke until

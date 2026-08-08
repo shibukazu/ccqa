@@ -31,10 +31,17 @@ export function createGetAuditDismissalsHandler(storage: HubStorage) {
  * judged the spec's current audit finding wrong.
  *
  * The finding being answered is read from the ledger rather than taken from
- * the caller: a dismissal must name the run it answers, and only the hub
- * knows which one is current. A spec with no open finding is a 400 — there is
- * nothing to dismiss, and accepting it would write a record that never
- * applies to anything.
+ * the caller: a dismissal must name the run and the label it answers, and
+ * only the hub knows which finding is current. A spec with no open finding is
+ * a 400 — there is nothing to dismiss, and accepting it would write a record
+ * that never applies to anything.
+ *
+ * The guard stops there on purpose. `/rerun` applies a dismissal only while
+ * the audit is also *current* for the profile being asked about, and that is
+ * a per-profile question this endpoint has no profile to ask it of (a finding
+ * is about the repository, so the dismissal is project-scoped). A dismissal
+ * written while a deploy has overtaken the audit is harmless: the next audit
+ * supersedes the finding, and the record with it.
  */
 export function createPutAuditDismissalHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {

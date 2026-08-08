@@ -600,7 +600,8 @@ which `ccqa record` fixes, or `SPEC_CHANGE` for a spec a human has to rewrite.
 
 ### What a person may overrule
 
-The machine says two kinds of thing, and only one of them is an opinion. An
+The machine says two kinds of thing, and only one of them is an opinion
+([ADR-0019](./adr/0019-what-a-person-may-overrule.md)). An
 **audit finding** is a judgement made by reading code; a **run result** is
 what happened when the test was executed. A person may overrule a judgement.
 Nobody overrules what happened.
