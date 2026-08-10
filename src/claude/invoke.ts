@@ -126,16 +126,22 @@ const ENDPOINT_ENV_KEYS = [
 ] as const;
 
 /**
+ * When both credentials are present the OAuth token wins and the API key is
+ * dropped. Left to the CLI the API key would win, which makes "switch a CI
+ * job to the subscription token" require unwiring the key everywhere; with
+ * this rule, adding the one variable is the whole switch, and removing it is
+ * the whole rollback. The one place the rule lives — both the resolved view
+ * and the env the SDK receives apply it through here.
+ */
+function preferOauthToken(env: Record<string, string | undefined>): void {
+  if (env["CLAUDE_CODE_OAUTH_TOKEN"]) delete env["ANTHROPIC_API_KEY"];
+}
+
+/**
  * Collects the endpoint/auth variables set in the current process environment
  * so they can be forwarded, verbatim, to every Claude Code invocation. Returns
  * only the keys that are actually set (non-empty), so unset variables never
- * override the SDK's own defaults.
- *
- * When both credentials are present the OAuth token wins and the API key is
- * not forwarded. Left to the CLI the API key would win, which makes "switch a
- * CI job to the subscription token" require unwiring the key everywhere; with
- * the precedence here, adding the one variable is the whole switch, and
- * removing it is the whole rollback.
+ * override the SDK's own defaults. Credential precedence per preferOauthToken.
  */
 export function resolveEndpointEnv(): Record<string, string> {
   const endpointEnv: Record<string, string> = {};
@@ -143,7 +149,7 @@ export function resolveEndpointEnv(): Record<string, string> {
     const value = process.env[key];
     if (value && value.length > 0) endpointEnv[key] = value;
   }
-  if (endpointEnv["CLAUDE_CODE_OAUTH_TOKEN"]) delete endpointEnv["ANTHROPIC_API_KEY"];
+  preferOauthToken(endpointEnv);
   return endpointEnv;
 }
 
@@ -161,6 +167,30 @@ export function withoutEmptyEndpointVars(
     if (out[key] === "") delete out[key];
   }
   return out;
+}
+
+/**
+ * The environment actually handed to the Claude Code process: the full process
+ * environment with the caller's overrides on top, empty endpoint variables
+ * dropped, and — when both credentials survive the merge — the API key removed
+ * so the OAuth token wins.
+ *
+ * That removal MUST happen on the env the SDK receives, not only on the
+ * resolved view: left to the CLI the API key would win, silently moving every
+ * call from the subscription to metered billing when a CI job wires both
+ * (which is exactly what happened before this function existed).
+ *
+ * Returns undefined when no endpoint variable is set and the caller passes no
+ * env, so the SDK keeps its own default environment.
+ */
+export function buildInvocationEnv(
+  env?: Record<string, string | undefined>,
+): Record<string, string | undefined> | undefined {
+  const hasEndpointEnv = Object.keys(resolveEndpointEnv()).length > 0;
+  if (!env && !hasEndpointEnv) return undefined;
+  const merged = withoutEmptyEndpointVars({ ...process.env, ...env });
+  preferOauthToken(merged);
+  return merged;
 }
 
 /**
@@ -243,23 +273,7 @@ export async function invokeClaudeStreaming(
 
   const resolvedModel = resolveModel(model);
 
-  // Forward the endpoint/auth variables (ANTHROPIC_BASE_URL, ...) to the Claude
-  // Code process so it can be pointed at a custom endpoint. When any is set (or
-  // the caller passes its own env), we materialise `env` from the full process
-  // environment and layer the caller's overrides on top, so those variables are
-  // always carried through. When none is set and the caller passes no env, we
-  // leave `env` unset and let the SDK use its own default.
-  //
-  // An endpoint variable that is set but EMPTY is dropped rather than passed
-  // on. CI cannot omit a key conditionally — an unset repository variable
-  // still renders as `""` — so without this, wiring the variable once to make
-  // the endpoint switchable would hand the CLI an empty base URL on every run
-  // that did not set it.
-  const hasEndpointEnv = Object.keys(resolveEndpointEnv()).length > 0;
-  const mergedEnv =
-    env || hasEndpointEnv
-      ? (withoutEmptyEndpointVars({ ...process.env, ...env }) as Record<string, string | undefined>)
-      : undefined;
+  const mergedEnv = buildInvocationEnv(env);
 
   // Track the last agent-browser tool_use_id so the post-tool hooks can roll
   // it back at most once. `claimAbToolUse` atomically tests-and-clears the id

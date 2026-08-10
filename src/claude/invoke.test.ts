@@ -1,8 +1,8 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, resolveEndpointEnv, withoutEmptyEndpointVars } from "./invoke.ts";
+import { afterEach, beforeEach, describe, test, expect } from "vitest";
+import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, resolveEndpointEnv, withoutEmptyEndpointVars, buildInvocationEnv } from "./invoke.ts";
 import * as log from "../cli/logger.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -685,6 +685,64 @@ describe("resolveEndpointEnv", () => {
     const env = resolveEndpointEnv();
     expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("sk-ant-oat-test");
     expect("ANTHROPIC_API_KEY" in env).toBe(false);
+  });
+});
+
+describe("buildInvocationEnv", () => {
+  // The whole endpoint set is saved (not only the two credentials): the
+  // returns-undefined case asserts that NO endpoint variable is set, so an
+  // ambient ANTHROPIC_BASE_URL on the host must not leak into the test.
+  const ENDPOINT_KEYS = [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_CUSTOM_HEADERS",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+  ] as const;
+  const saved = Object.fromEntries(ENDPOINT_KEYS.map((key) => [key, process.env[key]]));
+  beforeEach(() => {
+    for (const key of ENDPOINT_KEYS) delete process.env[key];
+  });
+  afterEach(() => {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  // resolveEndpointEnv's precedence is only real if it reaches the env the
+  // SDK receives. Before this function, the merged env kept both credentials
+  // and the CLI preferred the key — every CI call billed the metered key
+  // while the subscription token sat unused.
+  test("removes the API key from the env the SDK receives when the token is set", () => {
+    process.env["ANTHROPIC_API_KEY"] = "sk-real";
+    process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-test";
+    const env = buildInvocationEnv();
+    expect(env).toBeDefined();
+    expect(env!["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("sk-ant-oat-test");
+    expect("ANTHROPIC_API_KEY" in env!).toBe(false);
+  });
+
+  test("keeps the API key when it is the only credential", () => {
+    process.env["ANTHROPIC_API_KEY"] = "sk-real";
+    delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+    const env = buildInvocationEnv();
+    expect(env!["ANTHROPIC_API_KEY"]).toBe("sk-real");
+  });
+
+  // An empty token must not delete the key: "set to nothing" means unset.
+  test("an empty token does not oust the API key", () => {
+    process.env["ANTHROPIC_API_KEY"] = "sk-real";
+    process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "";
+    const env = buildInvocationEnv();
+    expect(env!["ANTHROPIC_API_KEY"]).toBe("sk-real");
+    expect("CLAUDE_CODE_OAUTH_TOKEN" in env!).toBe(false);
+  });
+
+  test("returns undefined with no endpoint variables and no caller env", () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+    expect(buildInvocationEnv()).toBeUndefined();
   });
 });
 
