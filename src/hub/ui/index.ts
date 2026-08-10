@@ -1026,7 +1026,7 @@ const CSS = `
   .d-grid dt { color: var(--muted); font-size: 12px; padding-top: 1px; }
   .d-grid dd { color: var(--fg-dim); }
   .d-grid dd ul { list-style: none; display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 0; }
-  .d-grid dd li::before { content: "\\2022 "; color: var(--muted-2); }
+  .d-grid dd ul li::before { content: "\\2022 "; color: var(--muted-2); }
   .d-grid code { font-size: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
   /* Prose gets a measure so it stops wrapping mid-phrase in a narrow column;
      paths wrap as whole chips, never inside a path. */
@@ -1035,17 +1035,20 @@ const CSS = `
   .d-paths code { white-space: nowrap; }
   .d-prose + .d-paths { margin-top: 6px; }
   .manual-attest { margin-top: 14px; }
-  .steps-box { margin-top: 14px; max-width: 900px; }
-  .steps-box .slabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .d-steps { margin: 4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 10px; font-size: 13px; color: var(--fg-dim); white-space: pre-line; }
   .d-steps .step-expected { display: block; margin-top: 2px; font-size: 12.5px; }
-  .notebox { margin-top: 14px; max-width: 900px; }
-  .notebox .nlabel { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
   .notebox textarea { width: 100%; min-height: 54px; resize: vertical; font: inherit; font-size: 13px; color: var(--fg-dim); background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius-sm); padding: 8px 10px; }
-  .notebox .nact { margin-top: 6px; display: flex; align-items: center; gap: 8px; }
+  .notebox .nact { margin-top: 6px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
   .notebox .nstatus { font-size: 12px; color: var(--muted); }
   .notebox .nstatus.ok { color: var(--pass); }
   .notebox .nstatus.err { color: var(--fail); }
+  /* ── detail panel: one card stack — reason, contents, note ── */
+  .c-title .c-id { display: block; font-family: var(--mono); font-size: 11px; color: var(--muted-2); margin-top: 2px; }
+  .p-sect { margin-top: 16px; max-width: 900px; }
+  .p-sect:first-child { margin-top: 12px; }
+  .p-slabel { font-size: 13px; font-weight: 600; color: var(--fg); margin-bottom: 6px; }
+  /* The one-line state note beside the finding chip: what happens next. */
+  .p-head-note { margin-left: auto; font-size: 12.5px; color: var(--muted); }
   /* The inline form an audit-dismissal or environment-attestation button
      expands into, in place of the two window.prompt() calls this replaces. */
   .override-form { margin-top: 10px; max-width: 480px; display: flex; flex-direction: column; gap: 10px; }
@@ -1188,16 +1191,15 @@ const CLIENT_JS = `
       "perspectives.mode.deterministic": "deterministic", "perspectives.mode.live": "live",
       "perspectives.ov.cases": "cases", "perspectives.ov.features": "features",
       "perspectives.d.preconditions": "Preconditions", "perspectives.d.startScreen": "Start screen",
-      "perspectives.d.testCondition": "Condition", "perspectives.d.spec": "spec",
-      "perspectives.d.steps": "Steps", "perspectives.d.stepInclude": "Include: {name}",
+      "perspectives.d.testCondition": "Condition", "perspectives.d.steps": "Steps", "perspectives.d.stepInclude": "Include: {name}",
       "perspectives.d.stepExpected": "Expected:",
       "perspectives.note.label": "Note",
       "perspectives.note.placeholder": "Notes about this case…",
       "perspectives.note.saved": "Saved",
       "perspectives.note.error": "Could not save — retry",
-      "perspectives.d.lastRed": "Most recent failure",
-      "perspectives.d.changedSince": "Changes since the last run",
       "perspectives.d.whyVerdict": "Why this verdict",
+      "perspectives.d.contents": "What this case does",
+      "perspectives.finding.loadFailed": "Could not load the finding's detail \u2014 open the run to read it",
       "perspectives.result.openRun": "Open this run in the hub",
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needsRepair": "Needs repair",
@@ -1208,26 +1210,26 @@ const CLIENT_JS = `
       "perspectives.rerun.vsDeploy": "judged against deploy",
       "perspectives.rerun.noDeployHead": "no deploy recorded for this profile",
       "perspectives.rerun.changedByDeploy": "deploy {sha} changed files matched to this case",
-      "perspectives.rerun.changesSome": "yes (as of deploy {sha})",
-      "perspectives.rerun.changesNone": "none (as of deploy {sha})",
+      "perspectives.rerun.changesSome": "changes matched to this case since the last run (as of deploy {sha})",
+      "perspectives.rerun.changesNone": "no changes matched to this case since the last run (as of deploy {sha})",
       "perspectives.rerun.touchedCount": "{n} deployed path(s) matched this case",
       "perspectives.rerun.touchedUnknown": "a deploy since the last run matched this case",
       "perspectives.rerun.inProgressHint": "an audit or a run is still going, or the audit has not caught up with the deploy",
-      "perspectives.rerun.heldHint": "another job already holds this spec — acting on it now would race that job",
-      "perspectives.rerun.repair.testDrift": "the generated test no longer matches the code — re-record it",
-      "perspectives.rerun.repair.specChange": "the spec describes something the code no longer does — a human decides",
-      "perspectives.rerun.repair.auditUndecided": "the audit read the code and could not decide — a human looks",
-      "perspectives.rerun.repair.runFailed": "the last run failed — re-running it changes nothing until the cause is fixed",
-      "perspectives.rerun.why.noSelectionInRange": "a deploy in range was recorded without a spec selection",
-      "perspectives.rerun.why.selectionUnknown": "the selector could not tell whether this case was affected",
+      "perspectives.rerun.heldHint": "an audit, auto-fix or run job is working on this case — dismissing or attesting is unavailable until it finishes",
+      "perspectives.rerun.repair.testDrift": "the audit judged the generated test code older than the implementation — auto-fix re-records it, so nothing is needed yet",
+      "perspectives.rerun.repair.specChange": "the audit judged that the behaviour this test assumes is gone from the code — fix or delete the test, or dismiss the finding via “{dismissButton}” if it is wrong",
+      "perspectives.rerun.repair.auditUndecided": "the audit could not tell whether the test has drifted — review the finding, then fix the test or dismiss it via “{dismissButton}”",
+      "perspectives.rerun.repair.runFailed": "the latest run failed — this verdict will not change until the failure's cause is addressed",
+      "perspectives.rerun.why.noSelectionInRange": "a deploy in range carries no impact judgement, so this case runs to be safe",
+      "perspectives.rerun.why.selectionUnknown": "the latest deploy could not be judged as affecting this case or not, so it runs to be safe",
       "perspectives.rerun.why.noDeployLog": "no deploy log for this profile",
       "perspectives.rerun.why.unknownDeployedSha": "the last run's deployed commit is unknown",
       "perspectives.rerun.why.ambiguousDeployedSha": "a deploy landed while the last run was executing",
       "perspectives.rerun.why.deployedShaNotInLog": "the last run's commit predates the retained deploy log",
       "perspectives.rerun.why.gapInRange": "deploys are missing from the range",
       "perspectives.rerun.why.unrecognized": "this hub reported a reason this UI does not recognise",
-      "perspectives.rerun.fix.noSelectionInRange": "A deploy in range was recorded without a spec selection, so nothing says whether it affected this case. Run ccqa select-specs in the deploy job and send its verdict with the deploy.",
-      "perspectives.rerun.fix.selectionUnknown": "A deploy in range was judged, but the selector could not decide this case. Re-run it to get a clean baseline.",
+      "perspectives.rerun.fix.noSelectionInRange": "A deploy was recorded without an impact judgement, so whether it affected this case is unknown. This happens when the judgement did not finish in time, or was disabled, at record. The next run and audit retake the result.",
+      "perspectives.rerun.fix.selectionUnknown": "A deploy could not be judged as affecting this case or not, so the next run retakes the result.",
       "perspectives.rerun.fix.noDeployLog": "Nothing has been recorded in this profile's deploy log. Wire ccqa hub deploy record into the deploy job for this environment so ccqa knows what shipped.",
       "perspectives.rerun.fix.unknownDeployedSha": "The last run did not record which commit the environment was running, so it cannot be positioned in the deploy log. Runs record it once this profile has a deploy log.",
       "perspectives.rerun.fix.ambiguousDeployedSha": "A deploy landed while the last run was executing, so which commit it exercised is not knowable. Re-run this case to get a clean baseline.",
@@ -1260,8 +1262,8 @@ const CLIENT_JS = `
       "perspectives.override.noteLabel": "What was resolved, and how you checked (required)",
       "perspectives.override.submit": "Record",
       "perspectives.override.cancel": "Never mind",
-      "perspectives.override.dismissHint": "Overrides the audit finding and closes the case. The verdict moves to “re-run needed”, and the next run settles it.",
-      "perspectives.override.envHint": "The failure stays on record, but the verdict becomes “manually verified” without waiting for a re-run. It lapses once a deploy reaches this spec.",
+      "perspectives.override.dismissHint": "Withdraws the audit finding and puts this case back among the runnable. The verdict moves to “re-run needed”, and the next run's result settles it.",
+      "perspectives.override.envHint": "The failure stays on record; only the verdict becomes “manually verified”. It lapses once a deploy reaches this case, and normal runs resume.",
       "prompt.card.record": "Recording browser actions",
       "prompt.card.live": "Live run (AI-driven)",
       "prompt.card.playwright": "Playwright test generation",
@@ -1378,16 +1380,15 @@ const CLIENT_JS = `
       "perspectives.mode.deterministic": "決定的", "perspectives.mode.live": "ライブ",
       "perspectives.ov.cases": "ケース", "perspectives.ov.features": "機能",
       "perspectives.d.preconditions": "前提条件", "perspectives.d.startScreen": "開始画面",
-      "perspectives.d.testCondition": "実行条件", "perspectives.d.spec": "spec",
-      "perspectives.d.steps": "手順", "perspectives.d.stepInclude": "ブロック: {name}",
+      "perspectives.d.testCondition": "実行条件", "perspectives.d.steps": "手順", "perspectives.d.stepInclude": "ブロック: {name}",
       "perspectives.d.stepExpected": "期待結果:",
-      "perspectives.note.label": "note",
+      "perspectives.note.label": "メモ",
       "perspectives.note.placeholder": "このケースについてのメモ…",
       "perspectives.note.saved": "保存しました",
       "perspectives.note.error": "保存に失敗しました — 再試行してください",
-      "perspectives.d.lastRed": "直近の失敗",
-      "perspectives.d.changedSince": "前回実行以降の変更",
       "perspectives.d.whyVerdict": "この判定の理由",
+      "perspectives.d.contents": "テストの内容",
+      "perspectives.finding.loadFailed": "詳細を読み込めませんでした。実行のページで確認してください",
       "perspectives.result.openRun": "ハブでこの実行を開く",
       "perspectives.result.ci": "CI",
       "perspectives.rerun.state.needsRepair": "修正待ち",
@@ -1397,27 +1398,27 @@ const CLIENT_JS = `
       "perspectives.rerun.state.verified": "検証済み",
       "perspectives.rerun.vsDeploy": "判定基準: デプロイ",
       "perspectives.rerun.noDeployHead": "このプロファイルにはデプロイの記録がありません",
-      "perspectives.rerun.changedByDeploy": "デプロイ {sha} がこのケースに一致するファイルを変更",
-      "perspectives.rerun.changesSome": "あり（デプロイ {sha} 時点）",
-      "perspectives.rerun.changesNone": "なし（デプロイ {sha} 時点）",
-      "perspectives.rerun.touchedCount": "このケースに一致したデプロイ差分 {n} 件",
-      "perspectives.rerun.touchedUnknown": "前回実行以降のデプロイがこのケースに一致する変更を行っています",
-      "perspectives.rerun.inProgressHint": "監査か実行がまだ走っているか、監査がデプロイに追いついていません",
-      "perspectives.rerun.heldHint": "このスペックは既に別のジョブが保持しています。今操作するとそのジョブと競合します",
-      "perspectives.rerun.repair.testDrift": "生成されたテストが古くなっています。録り直してください",
-      "perspectives.rerun.repair.specChange": "spec がコードのやめた動作を書いています。人が判断します",
-      "perspectives.rerun.repair.auditUndecided": "監査がコードを読んだうえで判定できませんでした。人が見ます",
-      "perspectives.rerun.repair.runFailed": "最後の実行が落ちています。原因を直すまで再実行しても変わりません",
-      "perspectives.rerun.why.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあります",
-      "perspectives.rerun.why.selectionUnknown": "影響の有無を判定できませんでした",
+      "perspectives.rerun.changedByDeploy": "デプロイ {sha} が、このケースに関係するファイルを変更しています",
+      "perspectives.rerun.changesSome": "前回の実行より後に、このケースに関係する変更があります（デプロイ {sha} 時点）",
+      "perspectives.rerun.changesNone": "前回の実行より後に、このケースに関係する変更はありません（デプロイ {sha} 時点）",
+      "perspectives.rerun.touchedCount": "前回の実行より後のデプロイが、このケースに関係する変更を {n} 件含んでいます",
+      "perspectives.rerun.touchedUnknown": "前回の実行より後のデプロイが、このケースに関係する変更を含んでいます",
+      "perspectives.rerun.inProgressHint": "監査または実行のジョブが作業中か、最新デプロイに対する監査がまだ走っていません",
+      "perspectives.rerun.heldHint": "監査・自動修正・実行のいずれかのジョブが、このケースを処理中です。終わるまで、このケースへの操作（棄却・手動確認）はできません",
+      "perspectives.rerun.repair.testDrift": "監査が、生成済みのテストコードは実装より古いと判定しました。自動修正が録り直すので、まず対応は不要です",
+      "perspectives.rerun.repair.specChange": "監査が、このテストの前提とする振る舞いは実装から無くなったと判定しました。テストを直すか削除するかを決めてください。指摘のほうが誤りなら、「{dismissButton}」から棄却できます",
+      "perspectives.rerun.repair.auditUndecided": "テストが実装とズレているかどうか、監査では判断できませんでした。指摘の内容を確認して、テストを直すか、「{dismissButton}」から棄却してください",
+      "perspectives.rerun.repair.runFailed": "直近の実行が失敗しています。失敗の原因に対処するまで、この判定は変わりません",
+      "perspectives.rerun.why.noSelectionInRange": "影響判定なしで記録されたデプロイがあるため、念のため実行対象になっています",
+      "perspectives.rerun.why.selectionUnknown": "直近のデプロイがこのケースに影響するかどうか判断できなかったため、念のため実行対象になっています",
       "perspectives.rerun.why.noDeployLog": "このプロファイルのデプロイ記録がありません",
       "perspectives.rerun.why.unknownDeployedSha": "前回実行時にデプロイされていたcommitが不明です",
       "perspectives.rerun.why.ambiguousDeployedSha": "前回実行の途中でデプロイが発生しました",
-      "perspectives.rerun.why.deployedShaNotInLog": "前回実行のcommitが保持中のデプロイログより古いです",
+      "perspectives.rerun.why.deployedShaNotInLog": "前回の実行が古く、どのデプロイに対して実行した結果か特定できません",
       "perspectives.rerun.why.gapInRange": "対象範囲のデプロイ記録が欠けています",
       "perspectives.rerun.why.unrecognized": "このUIが認識できない理由がハブから返されました",
-      "perspectives.rerun.fix.noSelectionInRange": "対象範囲に判定を伴わないデプロイがあり、このケースに影響したかどうかを示すものがありません。デプロイジョブで ccqa select-specs を実行し、判定をデプロイと一緒に送ってください。",
-      "perspectives.rerun.fix.selectionUnknown": "対象範囲のデプロイは判定されましたが、このケースについては判断がつきませんでした。再実行して基準を取り直してください。",
+      "perspectives.rerun.fix.noSelectionInRange": "影響判定なしで記録されたデプロイがあり、このケースに影響したかどうか分かりません。デプロイの記録時に影響判定が時間内に終わらなかったか、無効化されていたときに起きます。次の実行と監査で結果を取り直します。",
+      "perspectives.rerun.fix.selectionUnknown": "デプロイがこのケースに影響するかどうか判断できなかったため、次の実行で結果を取り直します。",
       "perspectives.rerun.fix.noDeployLog": "このプロファイルのデプロイログに記録がありません。何がデプロイされたかをccqaに伝えるため、この環境のデプロイジョブに ccqa hub deploy record を組み込んでください。",
       "perspectives.rerun.fix.unknownDeployedSha": "前回実行は環境で動いていたcommitを記録していないため、デプロイログ上の位置を決められません。このプロファイルにデプロイログができれば、以降の実行では記録されます。",
       "perspectives.rerun.fix.ambiguousDeployedSha": "前回実行の途中でデプロイが発生したため、どのcommitを検証したのか確定できません。基準を取り直すには再実行してください。",
@@ -1433,25 +1434,25 @@ const CLIENT_JS = `
       "perspectives.manual.envButton": "環境要因が解消した場合はこちら",
       "perspectives.manual.confirmRevoke": "このケースの手動確認を取り消しますか？",
       "perspectives.manual.error": "保存に失敗しました — 再試行してください",
-      "perspectives.manual.verifiedBy": "{by}さんが手動確認（{at}）",
-      "perspectives.manual.lapsed.deployReached": "手動確認はデプロイの到達により失効",
-      "perspectives.manual.lapsed.deployReachedNamed": "手動確認はデプロイ {sha}（{at}）の到達により失効",
-      "perspectives.manual.lapsed.cannotPlace": "手動確認は基準デプロイをログで特定できず失効",
-      "perspectives.manual.lapsed.specEdited": "手動確認はspecの編集により失効",
-      "perspectives.manual.lapsed.newerRed": "手動確認は直後の実行失敗により失効",
-      "perspectives.manual.lapsed.unrecognized": "このUIが認識できない理由により手動確認が失効",
+      "perspectives.manual.verifiedBy": "{by} さんが手動で動作確認しました（{at}）",
+      "perspectives.manual.lapsed.deployReached": "デプロイがこのケースに届いたため、手動確認は失効しました",
+      "perspectives.manual.lapsed.deployReachedNamed": "デプロイ {sha}（{at}）がこのケースに届いたため、手動確認は失効しました",
+      "perspectives.manual.lapsed.cannotPlace": "基準のデプロイをログで特定できなくなったため、手動確認は失効しました",
+      "perspectives.manual.lapsed.specEdited": "spec が編集されたため、手動確認は失効しました",
+      "perspectives.manual.lapsed.newerRed": "手動確認より後の実行が失敗したため、手動確認は失効しました",
+      "perspectives.manual.lapsed.unrecognized": "この UI が認識できない理由により、手動確認は失効しました",
       "perspectives.dismiss.offerButton": "テスト仕様に問題がなかった場合はこちら",
       "perspectives.dismiss.revokeButton": "棄却を取り消す",
       "perspectives.dismiss.confirmRevoke": "このケースの棄却を取り消しますか？",
-      "perspectives.dismiss.activeNote": "監査指摘「{headline}」は{by}が誤検知として棄却（{at}）—「{note}」。次の実行が裁定します。",
-      "perspectives.dismiss.priorNote": "前回この指摘は{by}が棄却しています（{at}）—「{note}」",
+      "perspectives.dismiss.activeNote": "{by} さんが監査指摘「{headline}」を誤検知として棄却しました（{at}・理由: {note}）。次の実行結果が正否を決めます。",
+      "perspectives.dismiss.priorNote": "この指摘は、以前 {by} さんが棄却しています（{at}・理由: {note}）",
       "perspectives.override.byLabel": "確認した人",
       "perspectives.override.reasonLabel": "理由（必須）",
       "perspectives.override.noteLabel": "解消と確認の内容（必須）",
       "perspectives.override.submit": "記録する",
       "perspectives.override.cancel": "やめる",
-      "perspectives.override.dismissHint": "監査の指摘を上書きして台帳を閉じます。判定は「要再実行」に移り、次の実行が正否を裁定します。",
-      "perspectives.override.envHint": "失敗の記録は残したまま、判定は再実行を待たず「手動確認済み」になります。次のデプロイがこの spec に届くと失効します。",
+      "perspectives.override.dismissHint": "監査の指摘を取り下げて、このケースを実行対象に戻します。判定は「要再実行」になり、次の実行結果が正否を決めます。",
+      "perspectives.override.envHint": "失敗の記録は残したまま、判定だけが「手動確認済み」になります。次のデプロイがこのケースに届くと失効し、通常の実行に戻ります。",
       "prompt.card.record": "ブラウザ操作の記録",
       "prompt.card.live": "ライブ実行（AI操作）",
       "prompt.card.playwright": "Playwrightテスト生成",
@@ -1747,7 +1748,6 @@ const CLIENT_JS = `
     span.appendChild(document.createTextNode(" " + t(i18nPrefix + state)));
     return span;
   }
-
 
   // Shared by the runs-list row and the run-detail header — the one place
   // both decide whether a run's own status badge speaks drift's vocabulary.
@@ -2358,15 +2358,13 @@ const CLIENT_JS = `
 
   // ── run detail: spec cards ──────────────────────────────────────────
 
-  // The diagnosis card: one surface for everything about a failure's cause.
-  // Verdict (label + confidence), then the cause→fix pair as labelled rows —
-  // headline and recommendation are one causal unit, so they read as one.
-  // subDiagnosis is deliberately NOT shown: it is a machine vocabulary for
-  // accuracy stratification and learning, not for humans. The caller appends
-  // the evidence/reasoning accordions and the grading zone into this box.
-  function analysisSection(runId, r) {
-    var wrap = el("div", "analysis-box");
-    var a = r.analysis;
+  // The diagnosis card's two halves, shared by the run view (analysisSection)
+  // and the perspectives reason card so the two renderings cannot drift:
+  // verdict head (label chip + confidence), then the cause→fix pair as
+  // labelled rows — headline and recommendation are one causal unit, so they
+  // read as one. subDiagnosis is deliberately NOT shown: it is a machine
+  // vocabulary for accuracy stratification and learning, not for humans.
+  function diagnosisHead(a) {
     var head = el("div", "analysis-head");
     head.appendChild(labelChip(a.label));
     // Which repair a SPEC_CHANGE needs — delete the spec, or rewrite it. The
@@ -2376,7 +2374,10 @@ const CLIENT_JS = `
       head.appendChild(el("span", "chip spec-change-chip", t("diag.specChangeKind." + a.specChangeKind)));
     }
     head.appendChild(el("span", "conf", Math.round(a.confidence * 100) + "%"));
-    wrap.appendChild(head);
+    return head;
+  }
+
+  function diagnosisKv(a) {
     var kv = el("div", "analysis-kv");
     // Set only when the verdict blames the test case (TEST_DRIFT/SPEC_CHANGE),
     // on both kinds of row — it names the half that has to be repaired.
@@ -2392,7 +2393,14 @@ const CLIENT_JS = `
       kv.appendChild(el("div", "k", t("diag.fix")));
       kv.appendChild(el("div", "v", a.recommendation));
     }
-    if (kv.childNodes.length > 0) wrap.appendChild(kv);
+    return kv.childNodes.length > 0 ? kv : null;
+  }
+
+  function analysisSection(runId, r) {
+    var wrap = el("div", "analysis-box");
+    wrap.appendChild(diagnosisHead(r.analysis));
+    var kv = diagnosisKv(r.analysis);
+    if (kv) wrap.appendChild(kv);
     return wrap;
   }
 
@@ -3505,9 +3513,10 @@ const CLIENT_JS = `
   // this hub answers at all. Chip visibility follows it rather than the report,
   // so switching profile doesn't drop the filter while the next one loads.
   // "drift" is the DriftLedgerResponse, or null when unanswered (older hub, or
-  // a failed fetch) — not profile-scoped, so it does not reset when the
-  // profile switcher changes (unlike "rerun" above). Only feeds the audit
-  // column's "audited at" line now; its own finding is superseded by rr.audit.
+  // a failed fetch) — not profile-scoped. It backs the audit column's
+  // "audited at" line and the reason card's finding (runId/label/headline),
+  // so reloadRerun refetches it alongside the rerun report to keep the two
+  // reports of one card equally fresh.
   var perspState = {
     doc: null, q: "", f: "all",
     rerun: null, rerunSupported: null, runUrls: {}, rerunProfiles: [],
@@ -3575,10 +3584,10 @@ const CLIENT_JS = `
 
   // ── perspectives: drift ledger ────────────────────────────────────────
   // Not profile-scoped (see perspState.drift above), so unlike rerunPath this
-  // takes no ?profile=. Its own finding is superseded by the audit axis in
-  // the /rerun report (ADR-0014); what survives into the view is only its
-  // coordinate — when a spec was last audited — folded into the audit
-  // column's evidence line (perspAuditCell).
+  // takes no ?profile=. The audit AXIS is answered by the /rerun report
+  // (ADR-0014); this ledger supplies what that report does not carry — the
+  // finding's own coordinate and words (runId/at/label/headline), shown in
+  // the audit column's evidence line and the reason card.
 
   function driftPath() {
     return "/api/v1/projects/" + encodeURIComponent(state.project) + "/drift";
@@ -3631,7 +3640,10 @@ const CLIENT_JS = `
   // when it has no entry).
   function rerunReasonText(prefix, reason) {
     var text = t(prefix + reason);
-    return text === prefix + reason ? t(prefix + "unrecognized") : text;
+    if (text === prefix + reason) text = t(prefix + "unrecognized");
+    // Wordings that point at the dismiss control name it by its own label, so
+    // renaming the button cannot silently strand four strings.
+    return text.replace("{dismissButton}", t("perspectives.dismiss.offerButton"));
   }
 
   // Who attested and when, plus their note if they left one — the whole
@@ -3721,7 +3733,6 @@ const CLIENT_JS = `
     var lapse = rerunManualLapseText(rr);
     return lapse ? why + " · " + lapse : why;
   }
-
 
   // --- pure: rerun composition ---------------------------------------------
   // Self-contained on purpose: no DOM, no closures. rerun-view.test.ts lifts
@@ -4164,8 +4175,8 @@ const CLIENT_JS = `
 
   // --- pure: rerun detail labels -------------------------------------------
   // Self-contained on purpose (no DOM, no closures) so rerun-view.test.ts can
-  // lift this region out of the rendered page and run it: which label the
-  // panel's evidence row wears, and whether it has a failure row at all.
+  // lift this region out of the rendered page and run it: whether the deploy
+  // log answered for this case, and which deploy the reason line names.
 
   // The deploy log answered for this case: the row can show what it holds.
   // A case the log could not place has no evidence to show even though its
@@ -4173,20 +4184,6 @@ const CLIENT_JS = `
   function rerunHasEvidence(rr) {
     if (rr.verdict === "verified") return true;
     return rr.verdict === "rerunNeeded" && !rr.executionAssumedReached;
-  }
-
-  // Evidence is labelled by the timeframe it covers; everything else names why
-  // the verdict landed — a different kind of content, and forcing one label
-  // over both would make one of the two read as a lie.
-  function rerunEvidenceLabelKey(rr) {
-    return rerunHasEvidence(rr) ? "perspectives.d.changedSince" : "perspectives.d.whyVerdict";
-  }
-
-  // The failure row points at a run. With no failure there is nothing to point
-  // at, so the row is omitted rather than filled with "never failed" — the row
-  // above already carries the last result.
-  function rerunHasFailure(rr) {
-    return !!(rr && rr.lastRed);
   }
 
   // Which deploy the evidence line names, and how. A "needed" verdict carries
@@ -4255,13 +4252,10 @@ const CLIENT_JS = `
     return null;
   }
 
-  // The evidence behind the verdict, as the value of whichever row
-  // rerunEvidenceLabelKey chose. For needed/notNeeded that is what the deploy
-  // log holds since this case last ran, named by rerunChangeLine.
-  // The label already states the timeframe, so the value never repeats it.
-  // A dismissal (active or superseded by a later finding) is appended below
-  // whichever of those this case has, rather than replacing it — see
-  // rerunDismissalLine.
+  // The reason card's body when no run-recorded finding is shown: what the
+  // deploy log holds since this case last ran (rerunChangeLine), or why the
+  // verdict landed. The dismissal and lapse notes are the card's own to
+  // append (perspReasonCard), not this value's.
   function rerunEvidenceValue(rr) {
     var wrap = el("div");
     if (!rerunHasEvidence(rr)) {
@@ -4281,29 +4275,12 @@ const CLIENT_JS = `
         wrap.appendChild(pathCodes(rr.touchedBy));
       }
     }
-    var dismissLine = rerunDismissalLine(rr);
-    if (dismissLine) wrap.appendChild(el("div", "d-prose" + (dismissLine.muted ? " muted" : ""), dismissLine.text));
-    return wrap;
-  }
-
-  // The failure: which run it was, then what the analysis concluded. The
-  // headline is model output, already localized server-side, so it is shown as
-  // written. A run made without failure analysis carries neither field, and the
-  // row is then the coordinate alone — what it has always been.
-  function rerunFailureValue(entry) {
-    var wrap = el("div");
-    wrap.appendChild(ledgerLine(entry));
-    if (entry.label) {
-      var line = el("div", "d-prose", labelText(entry.label));
-      if (entry.headline) line.appendChild(document.createTextNode(" · " + entry.headline));
-      wrap.appendChild(line);
-    }
     return wrap;
   }
 
   // Lets a person's own check stand in for the machine's verdict. reloadRerun()
-  // is the same profile-scoped refresh a profile switch uses — it re-renders
-  // the whole table, so an open detail panel closes along with it.
+  // is the same refresh a profile switch uses — it re-renders the whole
+  // table, so an open detail panel closes along with it.
   function submitAttestation(method, body) {
     apiFetch(attestationsPath(), {
       method: method,
@@ -4420,7 +4397,10 @@ const CLIENT_JS = `
   // dismissal that is currently the reason the axis reads clean. At most one
   // of the two ever shows — a finding the axis
   // itself has cleared, dismissed or not, offers nothing here.
+  // While a job holds the spec, no control shows at all: heldHint promises
+  // the reader that overrides wait for the job, so the buttons must too.
   function auditOverrideBox(feature, spec, rr) {
+    if (rr.heldBy) return null;
     if (auditDismissalActive(rr)) {
       var box = el("div", "manual-attest");
       box.appendChild(auditDismissalRevokeButton(feature, spec));
@@ -4435,6 +4415,7 @@ const CLIENT_JS = `
   // no open finding of its own, which is auditOverrideBox's problem to answer,
   // not this one's.
   function executionOverrideBox(feature, spec, rr) {
+    if (rr.heldBy) return null;
     if (rr.manual) {
       var box = el("div", "manual-attest");
       if (rr.verdict !== "manuallyVerified") box.appendChild(el("div", "d-prose", manualAttestationText(rr.manual)));
@@ -4449,16 +4430,133 @@ const CLIENT_JS = `
     return null;
   }
 
-  // Detail row: a definition list of the case's fields plus the note editor.
-  // Built with createElement/textContent throughout — every field here is
-  // API-derived, so none of it may go through innerHTML.
-  //
-  // The panel shows only what the table row cannot. The row already carries the
-  // title, mode, recorded state, last result and the re-run verdict, so none of
-  // those is repeated: what is left is the case's definition, the evidence the
-  // verdict rests on, and the note.
+  // ── the reason card ──────────────────────────────────────────────────────
+  // One card that answers "why is the verdict what it is". When an axis
+  // stands on a run-recorded finding (an open audit finding, or the failure
+  // the execution axis reports), the card carries that finding in full,
+  // fetched from the run's own report — where cause, fix and evidence
+  // already live. Everything a person may do about the state (dismiss,
+  // attest, revoke) sits in the same card, beside the reason it answers.
+
+  var runReportCache = {};
+  function fetchRunReport(runId) {
+    if (!runReportCache[runId]) {
+      // Same endpoint (and so the same HTTP cache entry) the run view reads.
+      // A failure is not cached: a transient 502 costs one refetch on the
+      // next expand instead of pinning the fallback for the session.
+      runReportCache[runId] = apiFetch("/api/v1/runs/" + encodeURIComponent(runId) + "/report")
+        .catch(function () { delete runReportCache[runId]; return null; });
+    }
+    return runReportCache[runId];
+  }
+
+  function reportRowFor(report, key) {
+    var rows = (report && report.results) || [];
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].feature + "/" + rows[i].spec === key) return rows[i];
+    }
+    return null;
+  }
+
+  // Which run-recorded finding the card shows, if any: an open audit finding
+  // wins (it is why nothing runs), else the failure the execution axis stands
+  // on. The ledger's own label/headline are the instant fallback while the
+  // report loads — and the whole content if it never arrives.
+  function reasonFindingSource(rr, driftEntry) {
+    if (auditOpen(rr) && driftEntry && driftEntry.runId && driftEntry.label) return driftEntry;
+    if (rr.execution === "failed" && rr.lastRed && rr.lastRed.runId && rr.lastRed.label) return rr.lastRed;
+    return null;
+  }
+
+  function perspReasonCard(feature, spec, rr, driftEntry) {
+    var card = el("div", "analysis-box");
+    var source = reasonFindingSource(rr, driftEntry);
+
+    if (source) {
+      // The ledger's label/headline render at once; the run's own report
+      // replaces them with the full diagnosis (the same head/kv the run view
+      // builds) when — and if — it arrives.
+      var note = el("span", "p-head-note", rerunWhyVerdict(rr));
+      var slot = el("div");
+      var head = el("div", "analysis-head");
+      head.appendChild(labelChip(source.label));
+      head.appendChild(note);
+      slot.appendChild(head);
+      if (source.headline) {
+        var kv = diagnosisKv({ headline: source.headline });
+        if (kv) slot.appendChild(kv);
+      }
+      card.appendChild(slot);
+
+      // A graded finding is the human's word, not the model's: the ledger
+      // carries the corrected label/headline, while the run's report still
+      // holds the original prediction. Upgrading would show the guess the
+      // person explicitly overwrote, so the card keeps the ledger's version.
+      if (source.graded) return finishReasonCard(card, feature, spec, rr);
+
+      fetchRunReport(source.runId).then(function (report) {
+        var reportRow = reportRowFor(report, perspSpecKey(feature, spec));
+        var a = reportRow && reportRow.analysis;
+        if (!a) {
+          if (!source.headline) slot.appendChild(el("div", "d-prose muted", t("perspectives.finding.loadFailed")));
+          return;
+        }
+        // The ledger's one-liner stands in when the report row lost its own.
+        if (!a.headline) a.headline = source.headline || "";
+        clear(slot);
+        var fullHead = diagnosisHead(a);
+        fullHead.appendChild(note);
+        slot.appendChild(fullHead);
+        var fullKv = diagnosisKv(a);
+        if (fullKv) slot.appendChild(fullKv);
+        var evi = analysisEvidenceSection(reportRow);
+        if (evi.count) slot.appendChild(detailsBlock(t("acc.evidence"), evi.count, evi.node));
+      });
+    } else {
+      // No finding to show: the reason is the deploy-log answer, or the
+      // verdict's own wording.
+      card.appendChild(rerunEvidenceValue(rr));
+    }
+
+    return finishReasonCard(card, feature, spec, rr);
+  }
+
+  // The card's shared tail: the dismissal/lapse notes and the person's
+  // controls, appended after whichever body the card ended up with.
+  function finishReasonCard(card, feature, spec, rr) {
+    var dline = rerunDismissalLine(rr);
+    if (dline) card.appendChild(el("div", "d-prose" + (dline.muted ? " muted" : ""), dline.text));
+    var lapse = rerunManualLapseText(rr);
+    if (lapse) card.appendChild(el("div", "d-prose muted", lapse));
+    var auditBox = auditOverrideBox(feature, spec, rr);
+    if (auditBox) card.appendChild(auditBox);
+    var execBox = executionOverrideBox(feature, spec, rr);
+    if (execBox) card.appendChild(execBox);
+    return card;
+  }
+
+  // Detail row: the case's current state first, then why the verdict is what
+  // it is, then what the case does, then the note — a stack of cards in the
+  // order a reader asks the questions. Built with createElement/textContent
+  // throughout — every field here is API-derived, so none of it may go
+  // through innerHTML.
   function perspDetailContent(feature, spec) {
     var frag = document.createDocumentFragment();
+    var rr = ledgerEntryFor(perspState.rerun, feature, spec);
+    var driftEntry = ledgerEntryFor(perspState.drift, feature, spec);
+
+    // The two axis states stay in the table row only — the panel answers why,
+    // not what, so it opens straight on the reason.
+    if (rr) {
+      var reason = el("div", "p-sect");
+      reason.appendChild(el("div", "p-slabel", t("perspectives.d.whyVerdict")));
+      reason.appendChild(perspReasonCard(feature, spec, rr, driftEntry));
+      frag.appendChild(reason);
+    }
+
+    var contents = el("div", "p-sect");
+    contents.appendChild(el("div", "p-slabel", t("perspectives.d.contents")));
+    var ccard = el("div", "analysis-box");
     var dl = el("dl", "d-grid");
     function row(labelKey, valueNode) {
       dl.appendChild(el("dt", null, t(labelKey)));
@@ -4475,20 +4573,7 @@ const CLIENT_JS = `
     }
     if (spec.startScreen) row("perspectives.d.startScreen", spec.startScreen);
     if (spec.testCondition) row("perspectives.d.testCondition", spec.testCondition);
-    // The spec id stays: it is what a user types to re-run this case, and the
-    // table shows the title, never the id.
-    row("perspectives.d.spec", el("code", null, spec.specName));
-
-    var rr = ledgerEntryFor(perspState.rerun, feature, spec);
-    if (rr) {
-      row(rerunEvidenceLabelKey(rr), rerunEvidenceValue(rr));
-      if (rerunHasFailure(rr)) row("perspectives.d.lastRed", rerunFailureValue(rr.lastRed));
-    }
-    frag.appendChild(dl);
-
     if (spec.steps && spec.steps.length) {
-      var stepsBox = el("div", "steps-box");
-      stepsBox.appendChild(el("div", "slabel", t("perspectives.d.steps")));
       var stepsList = el("ol", "d-steps");
       spec.steps.forEach(function (step) {
         var li = el("li");
@@ -4502,22 +4587,14 @@ const CLIENT_JS = `
         }
         stepsList.appendChild(li);
       });
-      stepsBox.appendChild(stepsList);
-      frag.appendChild(stepsBox);
+      row("perspectives.d.steps", stepsList);
     }
+    ccard.appendChild(dl);
+    contents.appendChild(ccard);
+    frag.appendChild(contents);
 
-    // A person's override, always at most one control per axis: which finding
-    // is open decides whether that slot offers a new override or revokes a
-    // standing one (auditOverrideBox / executionOverrideBox).
-    if (rr) {
-      var auditBox = auditOverrideBox(feature, spec, rr);
-      if (auditBox) frag.appendChild(auditBox);
-      var execBox = executionOverrideBox(feature, spec, rr);
-      if (execBox) frag.appendChild(execBox);
-    }
-
-    var notebox = el("div", "notebox");
-    notebox.appendChild(el("div", "nlabel", t("perspectives.note.label")));
+    var notebox = el("div", "notebox p-sect");
+    notebox.appendChild(el("div", "p-slabel", t("perspectives.note.label")));
     var ta = el("textarea");
     ta.placeholder = t("perspectives.note.placeholder");
     ta.value = spec.note || "";
@@ -4526,8 +4603,8 @@ const CLIENT_JS = `
     var saveBtn = el("button", "btn primary", t("common.save"));
     saveBtn.type = "button";
     var statusEl = el("span", "nstatus");
-    nact.appendChild(saveBtn);
     nact.appendChild(statusEl);
+    nact.appendChild(saveBtn);
     notebox.appendChild(nact);
     frag.appendChild(notebox);
 
@@ -4583,6 +4660,7 @@ const CLIENT_JS = `
 
         var titleTd = el("td", "c-title");
         titleTd.appendChild(document.createTextNode(spec.title));
+        titleTd.appendChild(el("span", "c-id", perspSpecKey(feature, spec)));
         if (spec.summary) titleTd.appendChild(el("span", "csum", spec.summary));
         row.appendChild(titleTd);
 
@@ -4715,8 +4793,8 @@ const CLIENT_JS = `
           loadRerun().catch(function (err) {
             setPerspNote("persp-rerun-note", t("perspectives.rerun.loadFailed") + ": " + err.message, "warn");
           }),
-          // Evidence-only (the "audited at" line in the audit column) — a
-          // failed or unsupported fetch just omits that line, no banner.
+          // A failed or unsupported fetch just omits the "audited at" line
+          // and the reason card's finding detail, no banner.
           loadDrift().catch(function () {}),
         ]);
       })
@@ -4855,29 +4933,32 @@ const CLIENT_JS = `
     });
   }
 
-  // Loaded once per project open — never re-run on a profile switch, since
-  // drift carries no profile (unlike loadRerun/reloadRerun below). Only the
-  // ledger's own coordinate (when a spec was last audited) survives into the
-  // view now — its finding is superseded by the fresher, deploy-aware audit
-  // axis in the /rerun report — so there is nothing here worth a banner on
-  // an older or unreachable hub.
+  // Loaded on project open and again on every reloadRerun: the reason card
+  // joins rr.audit against this ledger's entry (runId/headline), so the two
+  // must not drift apart after a dismissal or attestation. An older or
+  // unreachable hub degrades to the axis alone — not worth a banner.
   function loadDrift() {
     return fetch(driftPath(), { headers: { Authorization: "Bearer " + state.token } })
       .then(function (res) { return res.ok ? res.json() : null; }, function () { return null; })
       .then(function (report) {
-        perspState.drift = report || null;
+        // A transient failure keeps the copy already loaded — blanking it
+        // would drop the audit coordinates and the reason card's finding
+        // for the rest of the session.
+        if (report) perspState.drift = report;
         renderPerspectives();
       });
   }
 
-  // Switching profile re-asks only the profile-scoped question: the
-  // perspectives document itself is project-scoped and does not change, and
-  // neither does the run index loadRerun used to (wastefully) re-fetch.
+  // Re-asks the rerun question and refreshes the drift ledger beside it (the
+  // reason card reads both; see perspState.drift). The perspectives document
+  // itself is project-scoped and does not change, and neither does the run
+  // index loadRerun used to (wastefully) re-fetch.
   function reloadRerun() {
     perspState.rerun = null;
     setPerspNote("persp-rerun-note", "");
     setPerspDeployHead(null);
     renderPerspectives();
+    loadDrift().catch(function () {});
     return loadRerun();
   }
 

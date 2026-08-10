@@ -61,10 +61,9 @@ function composition(): {
 }
 
 /**
- * The expanded panel's row structure, lifted the same way. The builder itself
- * touches the DOM, so the decisions worth pinning — which label the evidence
- * row wears, which deploy that row names, and whether there is a failure row at
- * all — are written self-contained between these markers.
+ * The expanded panel's reason wording, lifted the same way. The builder itself
+ * touches the DOM, so the decision worth pinning — which deploy the reason
+ * line names — is written self-contained between these markers.
  */
 const DETAIL_START = "// --- pure: rerun detail labels";
 const DETAIL_END = "// --- end pure: rerun detail labels";
@@ -76,8 +75,6 @@ interface ChangeLine {
 }
 
 function detailLabels(): {
-  rerunEvidenceLabelKey: (rr: { verdict: string; executionAssumedReached?: string }) => string;
-  rerunHasFailure: (rr: { lastRed?: unknown } | null) => boolean;
   rerunChangeLine: (
     rr: { verdict: string; touchedByDeploy?: { sha: string; at: string } | null },
     deployHead: { sha: string; at: string } | null,
@@ -89,7 +86,7 @@ function detailLabels(): {
   expect(start, "the pure re-run detail-label region is missing").toBeGreaterThan(-1);
   expect(end).toBeGreaterThan(start);
   return new Function(
-    `${src.slice(start, end)}\nreturn { rerunEvidenceLabelKey: rerunEvidenceLabelKey, rerunHasFailure: rerunHasFailure, rerunChangeLine: rerunChangeLine };`,
+    `${src.slice(start, end)}\nreturn { rerunChangeLine: rerunChangeLine };`,
   )();
 }
 
@@ -448,38 +445,7 @@ describe("hub UI: needs re-run", () => {
     expect(heldIdx).toBeLessThan(auditHoleIdx);
   });
 
-  test("the evidence row is labelled by what it holds, not by one label forced over both", () => {
-    const { rerunEvidenceLabelKey } = detailLabels();
-    // A verdict with evidence: the row shows what the deploy log holds since the
-    // last run, so the label states that timeframe.
-    for (const verdict of ["rerunNeeded", "verified"]) {
-      expect(rerunEvidenceLabelKey({ verdict })).toBe("perspectives.d.changedSince");
-    }
-    // No evidence exists for these — the row names why the verdict landed
-    // instead, which is a different kind of content and must not wear the
-    // other label. A re-run assumed rather than observed is one of them: the
-    // log could not be read, so there is nothing to show from it.
-    for (const rr of [
-      { verdict: "needsRepair" },
-      { verdict: "inProgress" },
-      { verdict: "rerunNeeded", executionAssumedReached: "gapInRange" },
-    ]) {
-      expect(rerunEvidenceLabelKey(rr), rr.verdict).toBe("perspectives.d.whyVerdict");
-    }
-    const { en, ja } = dictionaries();
-    for (const key of ["perspectives.d.changedSince", "perspectives.d.whyVerdict"]) {
-      expect(en[key]).toBeTruthy();
-      expect(ja[key]).toBeTruthy();
-    }
-    // The label carries the timeframe, so the values must not repeat it.
-    for (const key of ["perspectives.rerun.changesSome", "perspectives.rerun.changesNone"]) {
-      expect(ja[key]).not.toContain("前回実行以降");
-      expect(ja[key]).toContain("{sha}");
-      expect(en[key]).toContain("{sha}");
-    }
-  });
-
-  test("the evidence row names the deploy that caused the verdict when the hub reports one", () => {
+  test("the reason line names the deploy that caused the verdict when the hub reports one", () => {
     const { rerunChangeLine } = detailLabels();
     const head = { sha: "9999999999", at: "2026-07-25T00:00:00Z" };
     const line = rerunChangeLine(
@@ -492,9 +458,14 @@ describe("hub UI: needs re-run", () => {
 
     const { en, ja } = dictionaries();
     for (const dict of [en, ja]) expect(dict["perspectives.rerun.changedByDeploy"]).toContain("{sha}");
+    // The judgement-point wordings name the deploy too.
+    for (const key of ["perspectives.rerun.changesSome", "perspectives.rerun.changesNone"]) {
+      expect(ja[key]).toContain("{sha}");
+      expect(en[key]).toContain("{sha}");
+    }
   });
 
-  test("without a named deploy the row keeps the weaker judgement-point wording", () => {
+  test("without a named deploy the reason line keeps the weaker judgement-point wording", () => {
     const { rerunChangeLine } = detailLabels();
     const head = { sha: "9999999999", at: "2026-07-25T00:00:00Z" };
     // An older hub omits the field; a hub that could not confirm the entry
@@ -522,15 +493,6 @@ describe("hub UI: needs re-run", () => {
     });
   });
 
-  test("the failure row is omitted when the case has never failed", () => {
-    const { rerunHasFailure } = detailLabels();
-    expect(rerunHasFailure({ lastRed: { runId: "r1", at: "2026-01-01T00:00:00Z" } })).toBe(true);
-    expect(rerunHasFailure({ lastRed: null })).toBe(false);
-    expect(rerunHasFailure(null)).toBe(false);
-    // And the "never failed" wording it replaced is gone, not left dangling.
-    const { en, ja } = dictionaries();
-    for (const dict of [en, ja]) expect(dict["perspectives.rerun.neverRed"]).toBeUndefined();
-  });
 
   test("the panel repeats nothing the row already carries", () => {
     // The execution verdict is rendered in exactly one place — the table cell.
@@ -547,6 +509,11 @@ describe("hub UI: needs re-run", () => {
       // Last passed is the row's own last-result column when it passed.
       "perspectives.d.lastGreen",
       "perspectives.rerun.neverGreen",
+      // The reason card replaced the labelled evidence/failure rows, and the
+      // spec id moved under the row title.
+      "perspectives.d.changedSince",
+      "perspectives.d.lastRed",
+      "perspectives.d.spec",
     ]) {
       expect(en[key], `${key} is unused and should be gone`).toBeUndefined();
       expect(ja[key]).toBeUndefined();
