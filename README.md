@@ -197,6 +197,23 @@ tenant, an account, a role — not an environment: ccqa tracks one
 verification environment
 ([ADR-0013](./docs/adr/0013-one-verification-environment.md)).
 
+## Agent skills
+
+`skills/` ships guides that let a coding agent (e.g. Claude Code) drive ccqa
+end-to-end on its own:
+
+- **ccqa-record** — create a new test case: pin down the behavior, write the
+  spec, choose deterministic or live mode, record, run to green.
+- **ccqa-rerecord** — bring a flagged or failing test case back to green:
+  read the hub's finding, decide what went stale, repair that, re-record.
+
+Install them with the [skills CLI](https://github.com/vercel-labs/skills)
+into a consuming project (or `-g` for all projects):
+
+```bash
+npx skills add <this-repo> --skill ccqa-record --skill ccqa-rerecord
+```
+
 ## Documentation
 
 | I want to… | Read |

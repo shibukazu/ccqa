@@ -155,4 +155,41 @@ describe("saveRecording", () => {
     await expect(stat(join(specDir, "actions.json"))).rejects.toThrow();
     await expect(stat(join(specDir, "route.md"))).rejects.toThrow();
   });
+
+  test("a successful save removes a leftover ir.failed.json", async () => {
+    const { mkdtemp, mkdir, writeFile, stat } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { saveRecording } = await import("./index.ts");
+
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-recording-"));
+    const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
+    await mkdir(specDir, { recursive: true });
+    await writeFile(join(specDir, "ir.failed.json"), "[]", "utf8");
+
+    await saveRecording("demo", "x", [{ action: "navigate", value: "https://example.test" }], cwd);
+
+    await expect(stat(join(specDir, "ir.failed.json"))).rejects.toThrow();
+  });
+});
+
+describe("saveFailedRecording", () => {
+  test("writes ir.failed.json and leaves ir.json untouched", async () => {
+    const { mkdtemp, mkdir, writeFile, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { saveFailedRecording } = await import("./index.ts");
+
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-failed-"));
+    const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
+    await mkdir(specDir, { recursive: true });
+    await writeFile(join(specDir, "ir.json"), '[{"action":"navigate","value":"https://good.test"}]', "utf8");
+
+    const path = await saveFailedRecording("demo", "x", [], cwd);
+
+    expect(path).toBe(join(specDir, "ir.failed.json"));
+    expect(JSON.parse(await readFile(path, "utf8"))).toHaveLength(0);
+    // The good recording survives the failed trace.
+    expect(JSON.parse(await readFile(join(specDir, "ir.json"), "utf8"))).toHaveLength(1);
+  });
 });

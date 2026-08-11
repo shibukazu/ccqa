@@ -16,4 +16,4 @@ ccqa record tasks/create-and-complete --auto-fix skip     # CI: auto-apply on hi
 ccqa record tasks/create-and-complete --auto-fix-max-retries 5
 ```
 
-> **Note**: `record` regenerates `test.spec.ts` from `ir.json` on every run. Manual edits to `test.spec.ts` are lost on the next `record`. When an existing `test.spec.ts` is detected, `record` always asks for `y/N` confirmation before overwriting (even with `--auto-fix auto` / `--auto-fix skip`). To skip the prompt in CI, pass `--overwrite`. To persist a fix, re-run `record` so `ir.json` reflects the new flow.
+> **Note**: every `record` whose trace succeeds regenerates `test.spec.ts` from `ir.json`, so manual edits to `test.spec.ts` are lost on the next successful `record`. A trace that FAILED regenerates nothing: its actions go to `ir.failed.json` for diagnosis and the previous `ir.json` / `test.spec.ts` stay as they were. When an existing `test.spec.ts` is detected, `record` always asks for `y/N` confirmation before overwriting (even with `--auto-fix auto` / `--auto-fix skip`). To skip the prompt in CI, pass `--overwrite`. To persist a fix, re-run `record` so `ir.json` reflects the new flow.

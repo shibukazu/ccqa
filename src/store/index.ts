@@ -17,6 +17,8 @@ export interface AvailableBlock {
 const CCQA_DIR = ".ccqa";
 const SPEC_FILE = "spec.yaml";
 const RECORDING_FILE = "ir.json";
+// Where a FAILED trace's actions land — see saveFailedRecording.
+const FAILED_RECORDING_FILE = "ir.failed.json";
 const PERSPECTIVES_FILE = "perspectives.yaml";
 const PERSPECTIVES_MD_FILE = "perspectives.md";
 
@@ -154,9 +156,33 @@ export async function saveRecording(
   const recordingPath = join(specDir, RECORDING_FILE);
   await writeFile(recordingPath, JSON.stringify(actions, null, 2), "utf-8");
   await Promise.all(
-    LEGACY_RECORDING_FILES.map((f) => unlink(join(specDir, f)).catch(() => {})),
+    // A successful save also removes a leftover failed-trace file: it
+    // described an older attempt, and keeping it beside a good ir.json
+    // reads as an open problem.
+    [...LEGACY_RECORDING_FILES, FAILED_RECORDING_FILE].map((f) =>
+      unlink(join(specDir, f)).catch(() => {}),
+    ),
   );
   return recordingPath;
+}
+
+/**
+ * Persist the actions of a trace that FAILED. They go to a side file so a
+ * recording that did not demonstrate the spec can never replace one that
+ * did — `ir.json` and the generated code stay whatever they were. The next
+ * successful {@link saveRecording} deletes the file.
+ */
+export async function saveFailedRecording(
+  featureName: string,
+  specName: string,
+  actions: RecordedAction[],
+  cwd?: string,
+): Promise<string> {
+  const specDir = getSpecDir(featureName, specName, cwd);
+  await mkdir(specDir, { recursive: true });
+  const path = join(specDir, FAILED_RECORDING_FILE);
+  await writeFile(path, JSON.stringify(actions, null, 2), "utf-8");
+  return path;
 }
 
 // --- Blocks (reusable shared procedures) ---

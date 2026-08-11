@@ -194,6 +194,23 @@ hub が要るものは名前で分かります。`--hub-profile`、
 検証環境は 1 つです
 （[ADR-0013](./adr/0013-one-verification-environment.md)）。
 
+## エージェントスキル
+
+`skills/` には、コーディングエージェント（Claude Code など）が ccqa を
+自律的に一気通貫で使うためのガイドが入っています。
+
+- **ccqa-record** — 新しいテストケースを作る: 検証対象の特定、spec の起草、
+  deterministic / live モードの選択、record、green になるまでの実行。
+- **ccqa-rerecord** — 指摘や失敗のあるテストケースを green に戻す: hub の
+  指摘の読解、何が古くなったかの判断、修復と再 record。
+
+[skills CLI](https://github.com/vercel-labs/skills) で利用側プロジェクトに
+インストールします（`-g` で全プロジェクト共通にもできます）。
+
+```bash
+npx skills add <this-repo> --skill ccqa-record --skill ccqa-rerecord
+```
+
 ## ドキュメント
 
 | やりたいこと | 読むもの |

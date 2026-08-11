@@ -124,6 +124,7 @@ CCQA_STEP=<step-id> agent-browser --session SESSION upload "<input[type=file] se
 - \`@ref\` / \`@e1\` / \`e14\` — reference IDs are session-specific and change every run.
 - **Bare tag selectors**: \`button\`, \`a\`, \`div\`, \`td\`, \`tr\`, \`main a\`, \`table tbody tr:nth-child(N)\`. These match every element of that tag and are non-deterministic on replay. **This includes the inner selector inside \`find first/last/nth\`** — see the \`find\` rules below.
 - \`[role='button']\` or \`[type='checkbox']\` alone — matches too many elements.
+- **Playwright-only pseudo-classes**: \`:has-text()\`, \`:text-is()\`, \`:text-matches()\`, \`:visible\`. agent-browser's CSS engine does not implement them — they match nothing and every command using them fails. Use \`text=...\` or plain CSS instead.
 - JavaScript execution (\`eval\`, \`js\`) — blocked by the hook layer.
 
 ### \`find\` subset (fallback when no ALLOWED CSS uniquely targets the element)

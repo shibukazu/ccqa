@@ -144,6 +144,14 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
     );
     process.exit(2);
   }
+  // A live spec has no recording: `ccqa run` executes the spec itself, and
+  // ignores any generated file — so a recording of it could only mislead.
+  if (spec.mode === "live") {
+    log.error(
+      `this spec is 'mode: live' — a live spec runs without a recording. Run 'ccqa run ${featureName}/${specName}' instead`,
+    );
+    process.exit(2);
+  }
 
   // Trace drives a real browser and resolves the spec's ${VAR} (login URL,
   // credentials) against process.env, so the profile (or default .env) must be
@@ -254,6 +262,10 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       const traceResult = await runTrace(featureName, specName, opts.model, opts.traceValidation ?? "lenient", language, {
         cwd: cwdForProfile,
         hubContext,
+        teardown,
+        // The learner reads validation's stability tags even from a failed
+        // trace, so keep the replay when learning is on (see RunTraceOptions).
+        validateFailedTrace: opts.learnHubTracePrompt === true,
         ...(opts.instruction ? { instruction: opts.instruction } : {}),
         onStep: (stepId) => {
           tracingStep = stepId;
@@ -281,7 +293,11 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
         ...(language ? { language } : {}),
       });
 
-      if (!opts.traceOnly) {
+      // A FAILED trace generates nothing: its actions went to a side file and
+      // ir.json still holds the last good recording (or none), so generating
+      // here could only recompile the old recording — or error on a spec
+      // never recorded. `--trace-only` skips generation by request.
+      if (!opts.traceOnly && traceResult.status === "passed") {
         generated = (await runGenerate(featureName, specName, {
           maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
           fixMode: toFixMode(opts.autoFix ?? "interactive"),
@@ -298,11 +314,10 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       await releaseLock();
     }
 
-    // A trace that did not complete is not a recording of the spec, however
-    // cleanly the generate half emitted code from it: the actions that exist
-    // replay fine, but the spec's later steps are simply absent, and a caller
-    // keying on exit 0 (the auto-fix loop) would ship that hole as a green
-    // test. The artifacts stay on disk for diagnosis either way.
+    // A trace that did not complete is not a recording of the spec: its
+    // actions were saved to a side file for diagnosis, nothing was generated
+    // from them, and a caller keying on the exit code (the auto-fix loop)
+    // sees the failure rather than shipping the hole as a green test.
     recorded = generated && traceFailureNote === undefined;
   } finally {
     // Disarm before the teardown seals: a run completing at the buzzer must

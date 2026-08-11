@@ -18,6 +18,12 @@ export interface RunTeardown {
   trackSession(name: string): void;
   /** Deregister a session that already closed cleanly (best-effort). */
   untrackSession(name: string): void;
+  /**
+   * Close a tracked session now (best-effort) and stop tracking it. Close
+   * first, then untrack — reversed, a signal between the two would skip the
+   * close and the teardown would no longer know the session existed.
+   */
+  closeTracked(name: string): Promise<void>;
   /** Register a callback run once during teardown (e.g. flush the report). */
   onFinalize(fn: () => void | Promise<void>): void;
   /**
@@ -58,6 +64,10 @@ export function createRunTeardown(): RunTeardown {
       sessions.add(name);
     },
     untrackSession(name) {
+      sessions.delete(name);
+    },
+    async closeTracked(name) {
+      await closeSession(name);
       sessions.delete(name);
     },
     onFinalize(fn) {

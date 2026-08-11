@@ -121,6 +121,15 @@ async function runGenerateLocked(
 ): Promise<{ passed: boolean }> {
   const specYaml = await readSpecFile(featureName, specName, cwd);
   const spec = parseTestSpec(specYaml);
+  // Same gate as `ccqa record`: a live spec has no recording to compile, and
+  // `ccqa run` ignores generated code for it — a spec switched to live after
+  // it was once recorded would otherwise still compile a test nothing runs.
+  if (spec.mode === "live") {
+    log.error(
+      `this spec is 'mode: live' — a live spec runs without generated code. Run 'ccqa run ${featureName}/${specName}' instead`,
+    );
+    process.exit(2);
+  }
   const config = await loadProjectConfig(cwd);
   const target = resolveTargetOrExit(() =>
     opts.targetOverride !== undefined
