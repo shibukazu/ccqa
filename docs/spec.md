@@ -26,6 +26,7 @@ spec directory accumulates these files as you work:
         create-and-complete/
           spec.yaml              # this document's subject
           ir.json                # (recording targets) recorded actions
+          ir.failed.json         # last FAILED trace, kept for diagnosis only
           test.spec.ts           # (agent-browser, deterministic) generated test
           generated.json         # (other targets) manifest of generated files
           runs/<timestamp>/      # (live) one run's step screenshots + summary

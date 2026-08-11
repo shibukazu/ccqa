@@ -7,6 +7,7 @@ import { bundledVitestConfigPath } from "../../runtime/bundled-config.ts";
 import { spawnVitestTeed } from "../../runtime/spawn-vitest.ts";
 import { runAutoFixLoop, type RunVitestResult } from "../../diagnose/loop.ts";
 import { closeSession } from "../../diagnose/snapshot.ts";
+import { buildRunId } from "../../runtime/live-artifacts.ts";
 import type { RecordedAction } from "../../types.ts";
 import type { GenerateContext, GenerateResult } from "../types.ts";
 import * as log from "../../cli/logger.ts";
@@ -175,9 +176,17 @@ export function findEmptySteps(
 async function runVitest(scriptPath: string, agentBrowserSession?: string): Promise<RunVitestResult> {
   const { exitCode, stdout, stderr } = await spawnVitestTeed(
     ["run", "--config", bundledVitestConfigPath(), scriptPath],
-    agentBrowserSession
-      ? { env: { ...process.env, AGENT_BROWSER_SESSION: agentBrowserSession } }
-      : {},
+    {
+      env: {
+        ...process.env,
+        // Fresh CCQA_RUN_ID per verification attempt, mirroring the run-time
+        // replays: a generated test referencing it must not run with the var
+        // unset (empty-string names, vacuous substring asserts) nor collide
+        // with data an earlier attempt created.
+        CCQA_RUN_ID: buildRunId(),
+        ...(agentBrowserSession ? { AGENT_BROWSER_SESSION: agentBrowserSession } : {}),
+      },
+    },
   );
   const currentScript = await readFile(scriptPath, "utf8");
   return { exitCode, output: stdout + stderr, currentScript };

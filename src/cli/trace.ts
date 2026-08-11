@@ -5,8 +5,11 @@ import {
   loadAllBlocks,
   loadPromptBundleFromHub,
   readSpecFile,
+  saveFailedRecording,
   saveRecording,
 } from "../store/index.ts";
+import { closeSession } from "../diagnose/snapshot.ts";
+import type { RunTeardown } from "./run-teardown.ts";
 import type { HubContext } from "./hub-conn.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
@@ -43,7 +46,11 @@ export interface RunTraceResult {
    * agent-prompt refresh reconstructs its per-step narrative from these.
    */
   statusLines: ParsedStatusLine[];
-  /** Number of actions kept after scrub / dedup / validation. */
+  /**
+   * Number of actions kept after scrub / dedup / validation. On a FAILED
+   * trace the replay validation is skipped (unless `validateFailedTrace`
+   * asked for it), so these are the scrub+dedup survivors, untagged.
+   */
   actionsKept: number;
   /** Total actions emitted before scrub / dedup / validation. */
   actionsRecorded: number;
@@ -70,6 +77,31 @@ export interface RunTraceOptions {
    * trace's own result never materialises on that path.
    */
   onStep?: (stepId: string) => void;
+  /**
+   * When given, the trace registers its agent-browser sessions here so a
+   * signal or `--timeout` reaps them; the normal path closes them itself as
+   * soon as the browser work is done.
+   */
+  teardown?: RunTeardown;
+  /**
+   * Run the post-trace replay validation even when the trace FAILED. A
+   * failed trace generates no code, so the replay is normally skipped — but
+   * the trace learner reads its stability tags, so the caller sets this
+   * when learning is enabled.
+   */
+  validateFailedTrace?: boolean;
+}
+
+/**
+ * Step ids (in spec order) whose kept actions include no assertion. A step
+ * with none produced a test that performs the step but verifies nothing
+ * about its `expected` — surfaced as a per-step warning after validation.
+ */
+export function stepsWithoutAsserts(stepIds: string[], actions: RecordedAction[]): string[] {
+  const withAssert = new Set(
+    actions.filter((a) => a.action === "assert" && a.stepId !== undefined).map((a) => a.stepId),
+  );
+  return stepIds.filter((id) => !withAssert.has(id));
 }
 
 export async function runTrace(
@@ -97,7 +129,12 @@ export async function runTrace(
   // ir.json with the literal trace-time value (e.g. a per-run id),
   // which then bakes into test.spec.ts and breaks `ccqa run` whenever the
   // env value changes.
-  const envScrub = buildSpecEnvScrub(spec, expanded);
+  const sessionName = generateSessionName();
+  // The trace child always runs with CCQA_RUN_ID set to the session name
+  // (agentBrowserInvokeBase below), whatever the parent env holds — the
+  // override keeps `${CCQA_RUN_ID}` scrubbing against the value the child
+  // actually sees.
+  const envScrub = buildSpecEnvScrub(spec, expanded, { CCQA_RUN_ID: sessionName });
   const envScrubMap = envScrub.map;
   if (envScrub.unresolved.length > 0) {
     // An unset ref can't be scrubbed, so it bakes in (see above). Surface that
@@ -119,7 +156,7 @@ export async function runTrace(
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
   log.blank();
 
-  const sessionName = generateSessionName();
+  opts.teardown?.trackSession(sessionName);
 
   const baseSystemPrompt = buildTraceSystemPrompt({
     title: spec.title,
@@ -232,16 +269,51 @@ export async function runTrace(
 
   const scrubbedActions = scrubAndReport(traceActions);
   const dedupedActions = dedupAndReport(scrubbedActions);
-  const validatedActions = validateAndReport(dedupedActions, validationMode);
+  // A FAILED trace's actions are diagnosis material, not a test in the
+  // making — nothing is generated from them, so the browser replay's
+  // stability tags usually buy minutes of browser time for nobody. The one
+  // consumer left is the trace learner, which reads unstable tags to avoid
+  // canonicalizing a flaky selector — so the caller opts back in via
+  // `validateFailedTrace` when learning is on. The replay resolves
+  // `${CCQA_RUN_ID}` to the trace's own value, so it hits the same DOM
+  // state the trace recorded against.
+  const validatedActions =
+    overallStatus === "passed" || opts.validateFailedTrace === true
+      ? validateAndReport(dedupedActions, validationMode, { CCQA_RUN_ID: sessionName }, opts.teardown)
+      : dedupedActions;
 
-  const recordingPath = await saveRecording(featureName, specName, validatedActions, opts.cwd);
+  // The trace session is done with the browser — close it now (best-effort,
+  // no need to wait) rather than at process end, so no Chrome lingers
+  // through the generate / auto-fix half. The teardown registration above
+  // stays as the backstop for the paths that never reach here.
+  void (opts.teardown?.closeTracked(sessionName) ?? closeSession(sessionName));
+
+  // A FAILED trace did not demonstrate the spec, so its actions must never
+  // replace a recording that did. They go to a side file for diagnosis;
+  // ir.json (and therefore the generated test) is left untouched.
+  const recordingPath =
+    overallStatus === "passed"
+      ? await saveRecording(featureName, specName, validatedActions, opts.cwd)
+      : await saveFailedRecording(featureName, specName, validatedActions, opts.cwd);
 
   log.blank();
   log.meta("saved", recordingPath);
   log.meta("actions", validatedActions.length);
   log.meta("status", overallStatus.toUpperCase());
 
-  log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
+  if (overallStatus === "passed") {
+    // A step whose actions carry no assertion produced a test that performs
+    // the step but verifies nothing about its `expected` — the kind of green
+    // that reads as coverage. Loud, per step, before codegen runs.
+    for (const stepId of stepsWithoutAsserts(expanded.map((s) => s.id), validatedActions)) {
+      log.warn(`${stepId} recorded no assertion — nothing in the generated test verifies its 'expected'`);
+    }
+    log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
+  } else {
+    log.warn(
+      "trace FAILED — the recorded actions were saved beside the spec for diagnosis; the previous ir.json and generated code are left untouched",
+    );
+  }
 
   return {
     status: overallStatus,
@@ -403,26 +475,39 @@ function isAdjacentDuplicate(a: RecordedAction, b: RecordedAction): boolean {
 
 /**
  * Run the post-trace replay validation and emit user-visible drop reports.
- * Splitting this out keeps `runTrace` readable; the function is pure aside
- * from `log.*` and the agent-browser invocations inside `validateActions`.
+ * Splitting this out keeps `runTrace` readable; side effects are `log.*`,
+ * the agent-browser invocations inside `validateActions`, and the replay
+ * session's registration/close on `teardown`.
  *
  * In lenient mode (the default) failing actions are NOT removed — they're
  * tagged with `replayUnstable: true` and merged back into the output stream
  * in their original order so codegen can still emit them (with a `// [warn]`
  * comment) and let the auto-fix loop decide what to do.
  */
-function validateAndReport(actions: RecordedAction[], mode: ValidationMode): RecordedAction[] {
+function validateAndReport(
+  actions: RecordedAction[],
+  mode: ValidationMode,
+  envOverrides: Record<string, string>,
+  teardown?: RunTeardown,
+): RecordedAction[] {
   if (actions.length === 0) return actions;
   const sessionName = `${generateSessionName()}-validate`;
+  teardown?.trackSession(sessionName);
   log.blank();
   log.info(`post-trace validation in ${mode} mode (replaying ${actions.length} recorded action(s))...`);
   const { kept, unstable, dropped, rescuedSteps = [] } = validateActions(actions, {
     sessionName,
     mode,
+    envOverrides,
     onProgress: (i, total, action) => {
       log.progress(i, total, validationProgressLabel(action));
     },
   });
+  // The replay session is done — close it here (best-effort, no need to
+  // wait) instead of leaving an idle browser to the end of the process. A
+  // throw above is covered by the teardown registration, which reaps every
+  // still-tracked session.
+  void (teardown?.closeTracked(sessionName) ?? closeSession(sessionName));
   log.progressEnd();
   if (rescuedSteps.length > 0) {
     log.info(`rescued ${rescuedSteps.length} step(s) that had lost every action: ${rescuedSteps.join(", ")}`);

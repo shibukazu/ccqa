@@ -115,15 +115,21 @@ const ASSERT_TIMEOUT_MS = 10_000;
  * has no side effect; assert types whose codegen forms aren't directly
  * verifiable here fall through to the caller's `unverifiable` fallback).
  */
-export function actionToAbArgs(action: RecordedAction, sessionName: string): string[] | PollCheck | null {
+export function actionToAbArgs(
+  action: RecordedAction,
+  sessionName: string,
+  envOverrides: Record<string, string> = {},
+): string[] | PollCheck | null {
   const base = ["--session", sessionName];
 
   // Resolve env refs in any value/selector positions so the validation
-  // hits the same DOM the test will. Param refs (`$name`) without an env
-  // match are preserved verbatim by `resolveEnvRefs`'s sibling
+  // hits the same DOM the test will. `envOverrides` carries the values the
+  // trace child ran with (e.g. CCQA_RUN_ID), so the replay resolves the
+  // same concrete values the trace used. Param refs (`$name`) without an
+  // env match are preserved verbatim by `resolveEnvRefs`'s sibling
   // `substituteVars`; here we only care about env-based ones, which is
   // exactly what the generated script's template literals resolve too.
-  const sub = (s: string | undefined): string => (s === undefined ? "" : resolveEnvRefs(s));
+  const sub = (s: string | undefined): string => (s === undefined ? "" : resolveEnvRefs(s, envOverrides));
 
   switch (action.action) {
     case "snapshot":
@@ -220,6 +226,12 @@ export interface ValidateOptions {
    * like a hang.
    */
   onProgress?: (index: number, total: number, action: RecordedAction) => void;
+  /**
+   * Values the trace child ran with (e.g. CCQA_RUN_ID), resolved ahead of
+   * `process.env` when replaying `${VAR}` refs — so the validation hits the
+   * same concrete values the trace recorded against.
+   */
+  envOverrides?: Record<string, string>;
 }
 
 // Sentinel for actions that carry no stepId (older traces, or commands
@@ -243,8 +255,12 @@ interface ActionOutcome {
  * `wait <selector>`); everything else spawns the agent-browser argv. A single
  * hard-timeout (SIGTERM) retry covers the daemon's occasional under-load drop.
  */
-function runValidationAction(action: RecordedAction, sessionName: string): ActionOutcome {
-  const built = actionToAbArgs(action, sessionName);
+function runValidationAction(
+  action: RecordedAction,
+  sessionName: string,
+  envOverrides: Record<string, string> = {},
+): ActionOutcome {
+  const built = actionToAbArgs(action, sessionName, envOverrides);
   if (built === null) return { skipped: true, ok: false, reason: "" };
   if (isPollCheck(built)) {
     const { ok, reason } = runPollCheck(built, sessionName);
@@ -297,7 +313,7 @@ export function validateActions(
       dropped.push({ index: i, action, reason: "skipped after a preceding action failed" });
       continue;
     }
-    const outcome = runValidationAction(action, opts.sessionName);
+    const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides);
     if (outcome.skipped) {
       kept.push(action);
       continue;
@@ -415,7 +431,7 @@ function rescueLostSteps(
   for (const [stepId, drops] of lostStepDrops.entries()) {
     let anyForThisStep = false;
     for (const d of drops) {
-      const outcome = runValidationAction(d.action, opts.sessionName);
+      const outcome = runValidationAction(d.action, opts.sessionName, opts.envOverrides);
       if (outcome.skipped) continue;
       if (outcome.ok) {
         rescuedIndices.add(d.index);

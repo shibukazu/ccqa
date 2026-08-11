@@ -109,15 +109,15 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     expect(generated).toMatch(/abAssertUrl\(/);
   }, 120_000);
 
-  test("a trace that finishes FAILED exits 1 even when generate emits cleanly", async () => {
+  test("a trace that finishes FAILED exits 1 and quarantines its actions", async () => {
     project = await makeFakeProject("record-trace-stub", { linkCcqa: true });
     await installFakeAgentBrowser(project.cwd);
 
     const mockPath = join(project.cwd, "claude-mock.jsonl");
     const messages = mockTraceMessages();
     // The agent declares the run failed (a step could not complete) — the
-    // recorded actions still generate fine, which is exactly the case the
-    // exit code must not paper over.
+    // actions go to ir.failed.json, nothing is generated from them, and the
+    // exit code must not paper over the failure.
     messages.splice(messages.length - 1, 0, {
       type: "assistant",
       message: { content: [{ type: "text", text: "RUN_COMPLETED|failed|a step could not complete" }] },
@@ -138,5 +138,13 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(1);
     expect(combined).toContain("does not demonstrate the spec");
+    // The failed trace's actions land beside the spec, and no test was
+    // compiled from them.
+    await expect(
+      readFile(join(project.cwd, ".ccqa/features/demo/test-cases/x/ir.failed.json"), "utf8"),
+    ).resolves.toContain("[");
+    await expect(
+      readFile(join(project.cwd, ".ccqa/features/demo/test-cases/x/test.spec.ts"), "utf8"),
+    ).rejects.toThrow();
   }, 120_000);
 });

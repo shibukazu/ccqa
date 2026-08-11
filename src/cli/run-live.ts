@@ -396,11 +396,6 @@ async function runOneSpec(args: {
   const blocks = await loadAllBlocks(cwd);
   const expanded = expandSpec(spec, { blocks });
 
-  // Built at run start because the executor needs it while the run produces
-  // step prose, not just at report time. (The environment itself is stable: a
-  // profile is applied once per invocation, before any spec runs.)
-  const envScrubMap = buildProseEnvScrubMap(spec, expanded);
-
   log.meta("spec", spec.title);
   log.meta("steps", expanded.length);
   const includes = collectIncludedBlockNames(spec);
@@ -437,6 +432,11 @@ async function runOneSpec(args: {
 
   try {
     const runId = buildRunId();
+    // Built after the run id exists: the executor injects CCQA_RUN_ID into
+    // the child, so the map must scrub against that value, not whatever the
+    // parent env holds. (The environment itself is stable: a profile is
+    // applied once per invocation, before any spec runs.)
+    const envScrubMap = buildProseEnvScrubMap(spec, expanded, { CCQA_RUN_ID: runId });
     const runDir = opts.out ?? join(specDir, "runs", runId);
     await mkdir(runDir, { recursive: true });
     log.meta("runDir", runDir);

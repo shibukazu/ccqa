@@ -44,17 +44,19 @@ export function* iterEnvRefNames(value: string): IterableIterator<string> {
 }
 
 /**
- * Resolve every `$VAR` / `${VAR}` reference against the current process env.
+ * Resolve every `$VAR` / `${VAR}` reference against `overrides`, then the
+ * current process env. `overrides` carries values an invoker injects into a
+ * child process (e.g. CCQA_RUN_ID), which beat the parent env there.
  *
  * Missing variables expand to the empty string, mirroring `sh` behaviour.
  * Throwing would force ccqa to be invoked with every var set even for
  * unused blocks, which is more user-hostile than letting the test fail
  * downstream with a clearer message ("login form rejected: empty password").
  */
-export function resolveEnvRefs(value: string): string {
+export function resolveEnvRefs(value: string, overrides: Record<string, string> = {}): string {
   return value.replace(ENV_VAR_RE, (_, braced: string | undefined, plain: string | undefined) => {
     const name = braced ?? plain ?? "";
-    return process.env[name] ?? "";
+    return overrides[name] ?? process.env[name] ?? "";
   });
 }
 

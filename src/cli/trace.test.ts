@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { createStepTracker, parseStatusLine, countRedundantByStep } from "./trace.ts";
+import { createStepTracker, parseStatusLine, countRedundantByStep, stepsWithoutAsserts } from "./trace.ts";
 import type { RecordedAction } from "../types.ts";
 
 describe("createStepTracker", () => {
@@ -126,5 +126,28 @@ describe("countRedundantByStep", () => {
       fill({ stepId: "step-01", locator: { by: "css", value: "#email" }, value: "${EMAIL}" }),
     ];
     expect(countRedundantByStep(actions).has("step-01")).toBe(false);
+  });
+});
+
+describe("stepsWithoutAsserts", () => {
+  const a = (o: Partial<RecordedAction>): RecordedAction => ({ action: "assert", assert: "text_visible", ...o });
+  const click = (o: Partial<RecordedAction>): RecordedAction => ({ action: "click", ...o });
+
+  test("names the steps whose kept actions carry no assertion, in spec order", () => {
+    const actions = [
+      click({ stepId: "step-01" }),
+      a({ stepId: "step-01" }),
+      click({ stepId: "step-02" }), // performs, verifies nothing
+      a({ stepId: "step-03" }),
+    ];
+    expect(stepsWithoutAsserts(["step-01", "step-02", "step-03"], actions)).toEqual(["step-02"]);
+  });
+
+  test("a step that lost every action is reported too — absence is not coverage", () => {
+    expect(stepsWithoutAsserts(["step-01", "step-02"], [a({ stepId: "step-01" })])).toEqual(["step-02"]);
+  });
+
+  test("an assert without a stepId claims no step", () => {
+    expect(stepsWithoutAsserts(["step-01"], [a({})])).toEqual(["step-01"]);
   });
 });

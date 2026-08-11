@@ -6,7 +6,7 @@ import { iterEnvRefNames } from "./env-vars.ts";
 export interface SpecEnvScrub {
   /** `[envValue, "${VAR}"]` pairs, sorted long-to-short for safe replacement. */
   map: Array<[string, string]>;
-  /** Refs whose `process.env` value was empty / unset at trace start. */
+  /** Refs unset (or empty) in both `overrides` and `process.env` at trace start. */
   unresolved: string[];
 }
 
@@ -25,10 +25,12 @@ export interface SpecEnvScrub {
  *     `instruction` / `expected` may *also* contain `${ENV}` refs that
  *     don't go through include params.
  *
- * Only refs whose env value is currently non-empty land in the map —
- * scrubbing against an empty string would corrupt unrelated empty strings
- * in the action stream. Names whose env is unset are returned via
- * `unresolved` so the caller can warn the user.
+ * Each ref resolves against `overrides` first, then `process.env` —
+ * `overrides` carries values the invoker injects into the child process,
+ * which beat the parent env there. Only refs that resolve non-empty land in
+ * the map — scrubbing against an empty string would corrupt unrelated empty
+ * strings in the action stream; the rest are returned via `unresolved` so
+ * the caller can warn the user.
  *
  * Longer values sort first so a `${SHORT}` whose value is a substring of a
  * `${LONG}` value doesn't clobber the longer one.
@@ -36,7 +38,11 @@ export interface SpecEnvScrub {
  * `title` is deliberately NOT scanned — it never reaches the recorded action
  * stream.
  */
-export function buildSpecEnvScrub(spec: TestSpec, expanded: ExpandedActionStep[]): SpecEnvScrub {
+export function buildSpecEnvScrub(
+  spec: TestSpec,
+  expanded: ExpandedActionStep[],
+  overrides: Record<string, string> = {},
+): SpecEnvScrub {
   const refNames = new Set<string>();
   for (const step of spec.steps) {
     if (isIncludeStep(step)) {
@@ -54,7 +60,10 @@ export function buildSpecEnvScrub(spec: TestSpec, expanded: ExpandedActionStep[]
   const map: Array<[string, string]> = [];
   const unresolved: string[] = [];
   for (const name of refNames) {
-    const value = process.env[name];
+    // `overrides` carries values the invoker injects into the child process
+    // (e.g. CCQA_RUN_ID), which beat the parent env there — so they beat it
+    // here too, or the map would name a value the child never sees.
+    const value = overrides[name] ?? process.env[name];
     if (typeof value === "string" && value.length > 0) {
       map.push([value, "${" + name + "}"]);
     } else {
@@ -87,8 +96,9 @@ const COMMON_PROSE_VALUES = new Set(["true", "false", "null", "none", "undefined
 export function buildProseEnvScrubMap(
   spec: TestSpec,
   expanded: ExpandedActionStep[],
+  overrides: Record<string, string> = {},
 ): Array<[string, string]> {
-  return buildSpecEnvScrub(spec, expanded).map.filter(
+  return buildSpecEnvScrub(spec, expanded, overrides).map.filter(
     ([value]) =>
       value.length >= MIN_PROSE_SCRUB_LENGTH && !COMMON_PROSE_VALUES.has(value.toLowerCase()),
   );

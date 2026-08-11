@@ -31,6 +31,27 @@ describe("buildSpecEnvScrub", () => {
     expect(out.unresolved).toEqual([]);
   });
 
+  test("an override beats the parent env — the child runs with the injected value", () => {
+    process.env["CCQA_RUN_ID"] = "parent-value";
+    const spec = specOf([{ instruction: "name it item-${CCQA_RUN_ID}", expected: "created" }]);
+    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }), {
+      CCQA_RUN_ID: "injected-session-name",
+    });
+    expect(out.map).toEqual([["injected-session-name", "${CCQA_RUN_ID}"]]);
+    expect(out.unresolved).toEqual([]);
+    delete process.env["CCQA_RUN_ID"];
+  });
+
+  test("an override resolves a ref the parent env leaves unset", () => {
+    delete process.env["CCQA_RUN_ID"];
+    const spec = specOf([{ instruction: "name it item-${CCQA_RUN_ID}", expected: "created" }]);
+    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }), {
+      CCQA_RUN_ID: "injected-session-name",
+    });
+    expect(out.map).toEqual([["injected-session-name", "${CCQA_RUN_ID}"]]);
+    expect(out.unresolved).toEqual([]);
+  });
+
   test("captures refs from `include` params, not only top-level steps", () => {
     process.env["APP_LOGIN_URL"] = "https://idp.example.com";
     process.env["LOGIN_EMAIL"] = "user@example.com";
