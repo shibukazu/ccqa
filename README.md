@@ -206,12 +206,15 @@ end-to-end on its own:
   spec, choose deterministic or live mode, record, run to green.
 - **ccqa-rerecord** — bring a flagged or failing test case back to green:
   read the hub's finding, decide what went stale, repair that, re-record.
+- **ccqa-resolve** — clear everything the hub is holding for a person: read
+  the verdict, order the rows, route each to a product fix, a re-recording or
+  an environment repair.
 
 Install them with the [skills CLI](https://github.com/vercel-labs/skills)
 into a consuming project (or `-g` for all projects):
 
 ```bash
-npx skills add <this-repo> --skill ccqa-record --skill ccqa-rerecord
+npx skills add <this-repo> --skill ccqa-record --skill ccqa-rerecord --skill ccqa-resolve
 ```
 
 ## Documentation
