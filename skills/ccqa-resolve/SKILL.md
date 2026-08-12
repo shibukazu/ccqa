@@ -232,6 +232,11 @@ a keyboard:
 - A service that is down, an account that does not exist, a permission that was
   never granted. Name it and stop.
 
+Whatever the person fixes, their fix is not the outcome. A captured session
+says the login worked; it says nothing about whether the spec runs. When the
+fix lands, come back and take the run above — the row closes on a spec that
+passes against the repaired environment and gets pushed, and on nothing else.
+
 ## 8. Report
 
 One line per row: what you judged it to be and which axes decided that, what
