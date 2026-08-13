@@ -5,7 +5,7 @@
  * preferred over a build plugin.
  *
  * Code a bundler already swallowed is out of reach here — the loader only ever
- * sees the bundle. Those runtimes use `@ccqa/coverage/next` instead.
+ * sees the bundle. Those runtimes use `ccqa-coverage/next` instead.
  */
 
 import * as nodeModule from "node:module";
@@ -35,13 +35,13 @@ export function installLoadHooks(config: CoverageConfig, runtime: CoverageRuntim
   const registerHooks = (nodeModule as unknown as { registerHooks?: RegisterHooks }).registerHooks;
   if (typeof registerHooks !== "function") {
     // Node 22.15 / 23.5 added the synchronous, in-thread hook. Older runtimes
-    // can still be covered through `@ccqa/coverage/next`'s build plugin, so
+    // can still be covered through `ccqa-coverage/next`'s build plugin, so
     // this is a downgrade rather than a failure — but no file in this process
     // will be instrumented via this path, which is a configuration problem
     // worth surfacing without needing CCQA_COVERAGE_DEBUG to see it.
     runtime.uninstrumentedProcess = true;
     process.stderr.write(
-      `[ccqa/coverage] load hooks unavailable on node ${process.version}; no file in this process will be instrumented\n`,
+      `[ccqa-coverage] load hooks unavailable on node ${process.version}; no file in this process will be instrumented\n`,
     );
     return;
   }

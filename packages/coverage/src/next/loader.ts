@@ -22,7 +22,7 @@ export default function ccqaCoverageLoader(this: LoaderContext, source: string):
   if (fileId === undefined) return source;
   const instrumented = transform(source, { fileId });
   if (instrumented === undefined) {
-    this.emitWarning?.(new Error(`@ccqa/coverage could not parse ${fileId}; left uninstrumented`));
+    this.emitWarning?.(new Error(`ccqa-coverage could not parse ${fileId}; left uninstrumented`));
     return source;
   }
   return instrumented;

@@ -1,4 +1,4 @@
-# @ccqa/coverage
+# ccqa-coverage
 
 Instrumentation for the application under test, so `ccqa run --coverage` can
 say which of its files each spec actually reached — including the ones a
@@ -23,7 +23,7 @@ reason to leave the switch off in production rather than "just leaving it on".
 ## Install
 
 ```sh
-pnpm add -D @ccqa/coverage
+pnpm add -D ccqa-coverage
 ```
 
 ## Turn it on
@@ -33,7 +33,7 @@ Three things, and the process is measured:
 ```sh
 CCQA_COVERAGE=1 \
 CCQA_COVERAGE_ENDPOINT=http://<host running ccqa run>:4757 \
-node --import @ccqa/coverage/register server.js
+node --import ccqa-coverage/register server.js
 ```
 
 With `CCQA_COVERAGE` unset the register hook is never loaded and the
@@ -57,7 +57,7 @@ context the instrumentation records into.
 
 ```ts
 // next.config.ts
-import { withCoverage } from "@ccqa/coverage/next";
+import { withCoverage } from "ccqa-coverage/next";
 
 export default withCoverage(nextConfig, { root: import.meta.dirname });
 ```
@@ -73,7 +73,7 @@ What the payload does say is which user acted, and recording that is enough for
 `ccqa` to work out the rest at its end.
 
 ```ts
-import { slackActor } from "@ccqa/coverage/slack";
+import { slackActor } from "ccqa-coverage/slack";
 
 app.use(slackActor());   // after whatever parses the body
 ```
@@ -101,14 +101,14 @@ that has no Temporal at all.
 import {
   createClientInterceptor,
   createActivityInterceptor,
-} from "@ccqa/coverage/temporal";
+} from "ccqa-coverage/temporal";
 
 new Client({ interceptors: { workflow: [createClientInterceptor()] } });
 
 Worker.create({
   interceptors: {
     activity: [() => ({ inbound: createActivityInterceptor() })],
-    workflowModules: ["@ccqa/coverage/temporal/workflow"],
+    workflowModules: ["ccqa-coverage/temporal/workflow"],
   },
 });
 ```
@@ -122,12 +122,12 @@ and are measured normally.
 
 ### If the server is not Node's `http`
 
-`@ccqa/coverage/register` wraps `node:http`, which covers every framework that
+`ccqa-coverage/register` wraps `node:http`, which covers every framework that
 receives its requests from it. Anything else — an edge runtime, a fetch-style
 handler — opens the context itself:
 
 ```ts
-import { coverageMiddleware, withCoverage } from "@ccqa/coverage/middleware";
+import { coverageMiddleware, withCoverage } from "ccqa-coverage/middleware";
 ```
 
 ## Things that will waste your afternoon
@@ -139,7 +139,7 @@ import { coverageMiddleware, withCoverage } from "@ccqa/coverage/middleware";
   pid …` from the process actually serving requests, not just its launcher.
 - **Prefer an absolute path in `--import`.** `NODE_OPTIONS` is inherited by
   every child process, and in a monorepo those include packages that cannot
-  resolve `@ccqa/coverage` at all. `--import file:///abs/path/to/register.js`
+  resolve `ccqa-coverage` at all. `--import file:///abs/path/to/register.js`
   has no such failure mode.
 - **Clear the build cache after adding the plugin.** A bundler that cached its
   modules will not re-run a loader you just added.

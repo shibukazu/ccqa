@@ -32,5 +32,5 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): CoverageConfig
  */
 export function debugLog(config: CoverageConfig, message: string): void {
   if (!config.debug) return;
-  process.stderr.write(`[ccqa/coverage] ${message}\n`);
+  process.stderr.write(`[ccqa-coverage] ${message}\n`);
 }

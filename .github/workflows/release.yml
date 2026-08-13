@@ -77,10 +77,16 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      # The instrumentation SDK moves in lockstep with the CLI. The two agree on
+      # a wire format that only this repository tests, so "which SDK goes with
+      # which CLI" has to have an answer, and the same number is the only one
+      # nobody has to look up. Genuine skew — an application on an older SDK —
+      # is what the push payload's `protocol` field is for.
       - name: Bump version
         id: bump
         run: |
           new_version=$(pnpm version "$BUMP" --no-git-tag-version)
+          pnpm --filter ccqa-coverage exec npm version "${new_version#v}" --no-git-tag-version
           echo "version=${new_version}" >> "$GITHUB_OUTPUT"
           echo "Bumped to ${new_version}"
 
@@ -91,7 +97,7 @@ jobs:
         env:
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
-          git add package.json
+          git add package.json packages/coverage/package.json
           git commit -m "chore: release ${VERSION}"
           git tag "${VERSION}"
 
@@ -117,7 +123,7 @@ jobs:
       # package yet costs the SDK's release and not the CLI's. The SDK installs
       # into the application under test, which is a different tree from the one
       # the CLI runs in — it cannot ship as a subpath of `ccqa`.
-      - name: Publish @ccqa/coverage to npm
+      - name: Publish ccqa-coverage to npm
         if: ${{ env.DRY_RUN != 'true' }}
         working-directory: packages/coverage
         run: |
@@ -138,7 +144,7 @@ jobs:
         if: ${{ env.DRY_RUN == 'true' }}
         run: npx -y npm@latest publish --dry-run --access public
 
-      - name: Dry-run publish @ccqa/coverage
+      - name: Dry-run publish ccqa-coverage
         if: ${{ env.DRY_RUN == 'true' }}
         working-directory: packages/coverage
         run: |

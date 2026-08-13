@@ -134,9 +134,20 @@ export const CoverageConfigSchema = z
   .object({
     origins: z.array(z.string().min(1)).min(1),
     /**
-     * Where instrumented application processes push to, and therefore what
-     * `ccqa run --coverage` binds. The application is pointed at the same
-     * address through its own `CCQA_COVERAGE_ENDPOINT`.
+     * The address `ccqa run --coverage` binds a listener on for the run's
+     * duration, and therefore where instrumented application processes push.
+     * The application is pointed at the same address through its own
+     * `CCQA_COVERAGE_ENDPOINT`.
+     *
+     * Not the hub. The hub stores results and never executes; deciding which
+     * spec a push belongs to needs the ids this run issued and the turns it
+     * opened, which only the run has.
+     *
+     * The default binds loopback, so it fits an application on the same machine
+     * and nothing else. Measuring a deployed one means binding an address it
+     * can reach — on a port its egress rules allow, which is rarely an
+     * arbitrary one — and the sink authenticates nothing, so that address
+     * should not be one the open internet can find.
      */
     sink: z.string().min(1).default("http://127.0.0.1:4757"),
     /**

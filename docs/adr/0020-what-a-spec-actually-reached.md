@@ -75,7 +75,7 @@ the reader to skip the section the answer depends on.
 - Good: outside a spec the cost is one global read per module load and one
   truthiness test per call — the reason no sampling is needed. Everyone who
   came before sampled because they instrumented all production traffic.
-- Bad / cost: a second artefact to keep in step with the CLI. `@ccqa/coverage`
+- Bad / cost: a second artefact to keep in step with the CLI. `ccqa-coverage`
   installs into the application under test and has its own release cadence.
 - Bad / cost: three places cannot be attributed at all — code that runs
   outside any request (schedulers, queue consumers), worker threads, and a

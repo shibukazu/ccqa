@@ -23,6 +23,11 @@ coverage:
   sink: http://127.0.0.1:4757    # optional; this is the default
 ```
 
+`sink` is the address **the run itself binds** for its duration — not the hub.
+The hub stores results and never executes; working out which spec a push
+belongs to needs the ids this run issued and the turns it opened, and only the
+run has those. `ccqa serve` is not involved.
+
 `origins` has no default on purpose. It lists where the spec cookie may go, and
 a spec routinely visits origins that are not the application — an identity
 provider, a payment page. Guessing would hand a test marker to a third party.
@@ -46,15 +51,22 @@ unbundled compile produces — the source is reported instead; a bundle's map
 cannot say which of its inputs the file is, so those stay as they are.
 
 **The server side needs the application instrumented** with
-[`@ccqa/coverage`](../packages/coverage/README.md) and pointed at the sink
+[`ccqa-coverage`](../packages/coverage/README.md) and pointed at the sink
 through `CCQA_COVERAGE_ENDPOINT`. Without it the run still reports the browser
 half.
 
-The default port suits a sink on the same machine. Measuring a deployed
-application usually does not: a deployment's outbound rules are commonly
-limited to the ports it already needs, so pick one the application is allowed
-to reach rather than assuming the default gets through. A blocked sink shows up
-as `droppedPushes` climbing with no server files at all.
+The default binds loopback, which fits an application on the same machine and
+nothing else. Measuring a deployed one means two more things being true:
+
+- **The address is one the application can reach.** It has to be routable from
+  wherever the application runs, on a port its outbound rules allow — commonly
+  only the ones it already needs, so an arbitrary port is a poor assumption.
+- **It is not one anybody else can.** The sink authenticates nothing. Its gate
+  is the set of spec ids the run issued, which stops a stale or invented id
+  from landing in a report, but it is not a reason to expose the port.
+
+A sink the application cannot reach shows up as `droppedPushes` climbing with
+no server files at all.
 
 Then:
 
@@ -82,7 +94,7 @@ coverage:
 The application adds one line, after whatever parses the body:
 
 ```ts
-import { slackActor } from "@ccqa/coverage/slack";
+import { slackActor } from "ccqa-coverage/slack";
 app.use(slackActor());
 ```
 
@@ -117,7 +129,7 @@ could not place. Two of those are words rather than numbers, because "that half
 never answered" and "that half reached nothing" are otherwise the same zero:
 
 - **no instrumented server process reported** — the application is not running
-  with `@ccqa/coverage`, or cannot reach the sink.
+  with `ccqa-coverage`, or cannot reach the sink.
 - **the browser produced no result** — the generated test is missing its
   coverage hooks (regenerate the spec), or the row is a live spec, which drives
   its own browser and is measured on the server side only.

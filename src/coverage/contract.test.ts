@@ -6,7 +6,7 @@ import { COOKIE_NAME, parseSpecId } from "../../packages/coverage/src/wire.ts";
 import type { CoveragePush } from "../../packages/coverage/src/collector.ts";
 
 /**
- * The CLI and `@ccqa/coverage` restate the same wire names and shapes rather
+ * The CLI and `ccqa-coverage` restate the same wire names and shapes rather
  * than share a module — the CLI must not depend on the instrumentation SDK,
  * which installs into the application under test and versions separately.
  *
@@ -15,7 +15,7 @@ import type { CoveragePush } from "../../packages/coverage/src/collector.ts";
  * no server code — which is exactly the answer coverage exists to produce. So
  * the agreement is asserted here instead.
  */
-describe("wire agreement with @ccqa/coverage", () => {
+describe("wire agreement with ccqa-coverage", () => {
   test("both halves name the cookie the same", () => {
     expect(COVERAGE_COOKIE).toBe(COOKIE_NAME);
   });

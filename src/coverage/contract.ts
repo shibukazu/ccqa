@@ -2,7 +2,7 @@
  * The names and shapes ccqa agrees on with the two things it talks to: the
  * instrumented application, and the test process it spawns.
  *
- * Restated from `@ccqa/coverage`'s `wire.ts` rather than imported: the CLI must
+ * Restated from `ccqa-coverage`'s `wire.ts` rather than imported: the CLI must
  * not depend on the instrumentation SDK, which is installed in the application
  * under test and versioned separately. `contract.test.ts` asserts the two still
  * agree — a drift here reports "the spec reached no server code", which is
@@ -29,7 +29,7 @@ export const COVERAGE_ARTIFACTS_ENV = "CCQA_COVERAGE_ARTIFACTS";
  * process's own directory, which is right until the project under test is one
  * package of a workspace and its siblings live above it.
  *
- * Deliberately the name `@ccqa/coverage` already reads for the same thing: the
+ * Deliberately the name `ccqa-coverage` already reads for the same thing: the
  * two halves have to root their paths identically or the same file arrives
  * under two names and the union double-counts it.
  */

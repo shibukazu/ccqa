@@ -5,7 +5,7 @@
  *
  * Register it with the worker:
  *
- *   interceptors: { workflowModules: ["@ccqa/coverage/temporal/workflow"] }
+ *   interceptors: { workflowModules: ["ccqa-coverage/temporal/workflow"] }
  *
  * or, for a pre-built bundle, pass the same specifier to
  * `bundleWorkflowCode({ workflowInterceptorModules })`.

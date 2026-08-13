@@ -4,7 +4,7 @@
  * header map on the way out of a client and on the way into an activity.
  *
  * Three hops, three interceptors. The middle one — the workflow — lives in
- * `@ccqa/coverage/temporal/workflow` because it is evaluated inside a
+ * `ccqa-coverage/temporal/workflow` because it is evaluated inside a
  * deterministic sandbox that has no Node built-ins.
  */
 
