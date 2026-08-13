@@ -21,6 +21,13 @@ describe("buildDriftSystemPrompt", () => {
     expect(out).toMatch(/No drift is a claim, not a default/);
   });
 
+  test("a citation is judged against the control flow guarding it, not its mere existence", () => {
+    const out = buildDriftSystemPrompt(NO_BLOCKS);
+    expect(out).toMatch(/A citation must apply to the case at hand/);
+    expect(out).toMatch(/A comment is not the code/);
+    expect(out).toMatch(/SPEC_CHANGE is the more expensive answer/);
+  });
+
   test("the output contract is a single JSON block with the diagnosis vocabulary", () => {
     const out = buildDriftSystemPrompt(NO_BLOCKS);
     expect(out).toMatch(/"drift": null/);

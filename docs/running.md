@@ -434,6 +434,33 @@ newest audit (or "no drift found") lands there, so the Perspectives tab shows
 every spec's last-known drift status without opening each run individually —
 see [the hub guide](./hub.md#drift-ledger).
 
+### Choosing a model for the audit
+
+The audit is a static read, so it has to follow control flow rather than stop
+at a string match. A line that echoes the spec's wording proves nothing until
+you know what guards it: a comment inside an early-return branch, or a handler
+that rejects the very case the spec exercises, reads like a removed feature to
+a model that stops at the match.
+
+This is where cheaper models fail, and they fail confidently. Measured on one
+`mode: live` spec whose behaviour was implemented but guarded, `haiku`
+answered `SPEC_CHANGE` at 0.95 confidence on three separate occasions —
+citing a different file each time, always a comment sitting inside a branch
+the spec never enters — while `sonnet` and `opus` both found no drift. Same
+prompt, same tools (`Read`, `Grep`, `Glob`), same tree, no turn limit.
+
+| Model    | Verdict | Cost for that one spec |
+|----------|---------|-----------------------:|
+| `haiku`  | wrong   |                  $0.28 |
+| `sonnet` | correct |                  $1.13 |
+| `opus`   | correct |                  $1.52 |
+
+Prefer `sonnet` or above for scheduled audits. What the cheaper tier saves is
+small next to what a false `SPEC_CHANGE` costs: it is the label that sends a
+person to rewrite or retire a spec, and where an auto-fix job acts on the
+ledger, it will rewrite a spec that was correct to begin with. Set the model
+per command with `--model`, or once with `CCQA_MODEL`.
+
 ### Scoping with `--only-affected-by`
 
 When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
