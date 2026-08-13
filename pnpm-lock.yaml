@@ -65,7 +65,7 @@ importers:
         specifier: ^0.3.215
         version: 0.3.215
 
-  packages/coverage:
+  packages/tools:
     dependencies:
       '@temporalio/activity':
         specifier: '>=1.9.0'
