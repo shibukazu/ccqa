@@ -1,13 +1,23 @@
 # ccqa-tools
 
-Instrumentation for the application under test, so `ccqa run --coverage` can
-say which of its files each spec actually reached — including the ones a
-Temporal activity ran in another process.
+What `ccqa` needs installed **inside the application under test**, as one
+dependency with a directory per feature. Today that is coverage; the shape is
+here so the next one does not cost the consuming repository another dependency
+review.
 
-The browser half needs nothing installed: `ccqa` reads V8's own counters. This
-package is the server half.
+Everything in here runs in somebody else's application, which sets the rule for
+what may be added: **near-zero dependencies**. Coverage's only runtime
+dependency is `acorn`, and the Temporal integration is an optional peer. A
+feature that needs more than that belongs in its own package, or every consumer
+of one feature carries the others'.
 
-## What it does
+## Coverage
+
+`ccqa run --coverage` says which files each spec actually reached — including
+the ones a Temporal activity ran in another process. The browser half needs
+nothing installed: `ccqa` reads V8's own counters. This is the server half.
+
+### What it does
 
 `ccqa` sets a cookie on the browser at the start of each spec. Every request
 that browser makes carries it — and nothing else does, which is what lets an
@@ -20,13 +30,13 @@ While no spec is running, an instrumented call is one global read and one
 truthiness test. That is the whole reason this needs no sampling — and the
 reason to leave the switch off in production rather than "just leaving it on".
 
-## Install
+### Install
 
 ```sh
 pnpm add -D ccqa-tools
 ```
 
-## Turn it on
+### Turn it on
 
 Three things, and the process is measured:
 
@@ -130,7 +140,7 @@ handler — opens the context itself:
 import { coverageMiddleware, withCoverage } from "ccqa-tools/coverage/middleware";
 ```
 
-## Things that will waste your afternoon
+### Things that will waste your afternoon
 
 - **A task runner that filters the environment turns this off silently.** If
   the process gets `NODE_OPTIONS` but not `CCQA_COVERAGE` — which is exactly
@@ -149,7 +159,7 @@ import { coverageMiddleware, withCoverage } from "ccqa-tools/coverage/middleware
   is being reported at all — no endpoint set, a push failing, the load hooks
   never installing — print regardless, since those are not debugging detail.
 
-## What it cannot see
+### What it cannot see
 
 Declared up front, because a silent gap reads as "never reached" and that is
 the answer this exists to produce:

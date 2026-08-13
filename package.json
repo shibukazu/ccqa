@@ -71,7 +71,7 @@
     "vitest": "^4.1.2"
   },
   "scripts": {
-    "build": "tsdown",
+    "build": "tsdown && pnpm --filter ccqa-tools build",
     "dev": "node --experimental-strip-types ./bin/ccqa.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p packages/tools",
     "test": "vitest run",
