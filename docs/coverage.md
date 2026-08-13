@@ -18,7 +18,7 @@ so their results are one set.
 ```yaml
 # .ccqa/config.yaml
 coverage:
-  origins:
+  instrumentedOrigins:
     - https://app.example.test   # or ${APP_BASE_URL}
   sink: http://127.0.0.1:4757    # optional; this is the default
 ```
@@ -28,18 +28,25 @@ The hub stores results and never executes; working out which spec a push
 belongs to needs the ids this run issued and the turns it opened, and only the
 run has those. `ccqa serve` is not involved.
 
-`origins` has no default on purpose. It lists where the spec cookie may go, and
-a spec routinely visits origins that are not the application — an identity
-provider, a payment page. Guessing would hand a test marker to a third party.
+`instrumentedOrigins` is where the spec cookie is allowed to go, and has no
+default on purpose. A spec routinely visits origins that are not the
+application — an identity provider, a payment page — so guessing wide hands
+a test marker to a third party, and guessing narrow loses that origin's
+reach entirely.
 
-**In a workspace, widen the root.** Reported paths are relative to the project
-root, and anything resolving above it is dropped rather than guessed at — so a
-sibling package the application imports runs, and is reported by nobody. Point
-`root` at a directory that contains both:
+The name is the rule for adding one: an origin whose server runs the
+instrumentation below. With nothing instrumented yet, list the application's
+own — the cookie is inert until something reads it, and the server half then
+starts reporting the moment you install `ccqa-tools`.
+
+**In a workspace, widen what counts as the project.** Reported paths are
+relative to it, and anything resolving above it is dropped rather than
+guessed at — so a sibling package the application imports runs, and is
+reported by nobody. Point `projectRoot` at a directory that contains both:
 
 ```yaml
 coverage:
-  root: ../..                    # relative to the project root
+  projectRoot: ../..             # relative to the directory holding .ccqa/
 ```
 
 The application's own `CCQA_COVERAGE_ROOT` has to name the same directory. Root
@@ -141,8 +148,8 @@ run rather than about a row: **instrumented processes reported but no spec was
 attributed to them**. An application reports its boot set whether or not a spec
 cookie ever arrives, so without this the rows all say the server reached
 nothing and every counter agrees. It means the cookie is not getting through —
-`coverage.origins` is missing an origin the spec's requests go to, or a server
-that is not `node:http`-based never installed the middleware.
+`coverage.instrumentedOrigins` is missing an origin the spec's requests go to,
+or a server that is not `node:http`-based never installed the middleware.
 
 | Counter | What it means |
 | --- | --- |
@@ -162,9 +169,9 @@ execution reads exactly like "never reached", and telling the two apart is
 the point.
 
 `excludedDependencies` sits apart from them. Dependency code is dropped on
-purpose — nobody writes a test because a library file went unreached — and it
-outnumbers the real gaps by orders of magnitude, so counted alongside them it
-would bury them.
+purpose — nobody writes a test because a library file went unreached — and
+it outnumbers the real gaps by orders of magnitude, so counted alongside
+them it would bury them.
 
 ## What it cannot see
 

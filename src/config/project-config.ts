@@ -123,16 +123,16 @@ export type CoverageActors = z.infer<typeof CoverageActorsSchema>;
 /**
  * Settings for `ccqa run --coverage`, which measures what each spec actually
  * reached in the application under test.
- *
- * `origins` is required and has no default on purpose. It lists where the spec
- * cookie may go, and a spec routinely visits origins that are not the
- * application — an identity provider, a payment page, an analytics host.
- * Guessing here would leak a test marker to a third party, so the set is
- * always stated.
  */
 export const CoverageConfigSchema = z
   .object({
-    origins: z.array(z.string().min(1)).min(1),
+    /**
+     * Where the spec cookie is allowed to go. No default on purpose: a spec
+     * routinely visits origins that are not the application, so guessing wide
+     * hands a test marker to a third party and guessing narrow loses an
+     * origin's reach entirely.
+     */
+    instrumentedOrigins: z.array(z.string().min(1)).min(1),
     /**
      * The address `ccqa run --coverage` binds a listener on for the run's
      * duration, and therefore where instrumented application processes push.
@@ -151,16 +151,16 @@ export const CoverageConfigSchema = z
      */
     sink: z.string().min(1).default("http://127.0.0.1:4757"),
     /**
-     * Directory reported paths are relative to, itself relative to the project
-     * root. Defaults to the project root.
+     * How far "the project" extends: reported paths are relative to it, and
+     * anything resolving above it is dropped rather than guessed at. Resolved
+     * against `--cwd`, and defaults to it.
      *
      * Widen it when the application is one package of a workspace and imports
-     * its siblings: their code runs, but it lives above the project root, and
-     * a path that leaves the root is dropped rather than guessed at. The
-     * application's own `CCQA_COVERAGE_ROOT` has to name the same directory —
-     * root the two halves differently and one file arrives under two names.
+     * its siblings, whose code runs but lives above `--cwd`. The application's
+     * own `CCQA_COVERAGE_ROOT` has to name the same directory — root the two
+     * halves differently and one file arrives under two names.
      */
-    root: z.string().min(1).optional(),
+    projectRoot: z.string().min(1).optional(),
     /** Specs whose flows are attributed by who acted, not by what the request carried. */
     actors: CoverageActorsSchema.default({}),
   })

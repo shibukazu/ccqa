@@ -54,7 +54,7 @@ application pays nothing at all.
 | `CCQA_COVERAGE` | `1` to enable. Any other value is a `<runId>.<specId>` and becomes the ambient spec for a process with no inbound request to read — a worker started per spec. |
 | `CCQA_COVERAGE_ENDPOINT` | Where to push. Unset collects in memory and reports nothing. |
 | `CCQA_COVERAGE_TOKEN` | Sent as a bearer token, but the current `ccqa` sink does not check it. For a relay in front of it, or a future endpoint that does. |
-| `CCQA_COVERAGE_ROOT` | Root that file ids are relative to. Defaults to `process.cwd()`. In a workspace, point it at a directory containing the sibling packages too, and give `ccqa` the same one through `coverage.root`. |
+| `CCQA_COVERAGE_ROOT` | Root that file ids are relative to. Defaults to `process.cwd()`. In a workspace, point it at a directory containing the sibling packages too, and give `ccqa` the same one through `coverage.projectRoot`. |
 | `CCQA_COVERAGE_INCLUDE` | Comma-separated directories to instrument, relative to the root. Defaults to `src`. |
 | `CCQA_COVERAGE_DEBUG` | `1` for diagnostics on stderr. |
 

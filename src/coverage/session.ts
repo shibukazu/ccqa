@@ -44,7 +44,7 @@ const SETTLE_CAP_MS = 10_000;
 
 export interface CoverageSessionOptions {
   runId: string;
-  /** Project root. `coverage.root` is resolved against it. */
+  /** Directory ccqa runs in. `coverage.projectRoot` is resolved against it. */
   cwd: string;
   config: CoverageConfig;
   /** Every spec this run may execute; the sink refuses ids outside this set. */
@@ -84,11 +84,11 @@ export class CoverageSession {
   }
 
   static async start(options: CoverageSessionOptions): Promise<CoverageSession> {
-    const origins = options.config.origins.map((origin) => resolveEnvRefs(origin));
+    const origins = options.config.instrumentedOrigins.map((origin) => resolveEnvRefs(origin));
     const unresolved = origins.filter((origin) => !/^https?:\/\//i.test(origin));
     if (unresolved.length > 0) {
       throw new Error(
-        `coverage.origins must be absolute http(s) URLs after variable substitution; got ${unresolved.join(", ")}`,
+        `coverage.instrumentedOrigins must be absolute http(s) URLs after variable substitution; got ${unresolved.join(", ")}`,
       );
     }
     const bind = new URL(resolveEnvRefs(options.config.sink));
@@ -100,7 +100,7 @@ export class CoverageSession {
       issued,
       actors.tagToKey,
     );
-    const declaredRoot = await resolveRoot(options.cwd, options.config.root);
+    const declaredRoot = await resolveRoot(options.cwd, options.config.projectRoot);
     return new CoverageSession(
       sink,
       options.runId,
@@ -316,15 +316,17 @@ async function resolveRoot(cwd: string, declared: string | undefined): Promise<s
   // indistinguishable from never having configured a root.
   const substituted = resolveEnvRefs(declared).trim();
   if (substituted === "") {
-    throw new Error(`coverage.root "${declared}" resolved to nothing — is the variable set?`);
+    throw new Error(`coverage.projectRoot "${declared}" resolved to nothing — is the variable set?`);
   }
   const root = resolve(cwd, substituted);
   const stats = await stat(root).catch(() => undefined);
   if (stats?.isDirectory() !== true) {
-    throw new Error(`coverage.root must name an existing directory; "${declared}" resolved to ${root}`);
+    throw new Error(`coverage.projectRoot must name an existing directory; "${declared}" resolved to ${root}`);
   }
   if (relative(root, cwd).startsWith("..")) {
-    throw new Error(`coverage.root must contain the project root; ${root} does not contain ${cwd}`);
+    throw new Error(
+      `coverage.projectRoot must contain the directory ccqa runs in; ${root} does not contain ${cwd}`,
+    );
   }
   return root;
 }

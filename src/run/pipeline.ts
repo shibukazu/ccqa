@@ -1062,8 +1062,8 @@ async function startCoverage(
 ): Promise<CoverageSession> {
   if (config === undefined) {
     throw new RunUsageError(
-      "--coverage needs a `coverage:` block in .ccqa/config.yaml naming the origins the spec " +
-        "cookie may be attached to",
+      "--coverage needs a `coverage:` block in .ccqa/config.yaml whose " +
+        "`instrumentedOrigins` names the origins the spec cookie may be attached to",
     );
   }
   let session: CoverageSession;
@@ -1130,7 +1130,7 @@ function reportCoverageHealth(coverage: CoverageSession, rows: readonly ReportSp
     log.warn(
       "instrumented application processes reported, but no spec was attributed to them — the " +
         "spec cookie is not reaching the application, so every spec's server-side reach is zero " +
-        "for that reason rather than because the server ran nothing. Check coverage.origins " +
+        "for that reason rather than because the server ran nothing. Check coverage.instrumentedOrigins " +
         "covers every origin the spec's requests go to, and that a server which is not " +
         "node:http-based installs the middleware itself",
     );
