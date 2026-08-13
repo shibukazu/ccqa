@@ -1118,7 +1118,7 @@ function reportCoverageHealth(coverage: CoverageSession, rows: readonly ReportSp
   if (!coverage.heardFromApplication()) {
     log.warn(
       "no instrumented application process reported — only the browser half was measured. The " +
-        "server needs ccqa-coverage and CCQA_COVERAGE_ENDPOINT pointed at this run's sink",
+        "server needs ccqa-tools and CCQA_COVERAGE_ENDPOINT pointed at this run's sink",
     );
   }
   // An application reports its boot set whether or not a spec cookie ever
@@ -1171,7 +1171,7 @@ function reportCoverageHealth(coverage: CoverageSession, rows: readonly ReportSp
   const malformed = coverage.malformedPushes();
   if (malformed > 0) {
     log.warn(
-      `${malformed} coverage push(es) could not be read — the application's ccqa-coverage and ` +
+      `${malformed} coverage push(es) could not be read — the application's ccqa-tools and ` +
         `this CLI disagree on the wire format`,
     );
   }

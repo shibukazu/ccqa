@@ -75,7 +75,7 @@ the reader to skip the section the answer depends on.
 - Good: outside a spec the cost is one global read per module load and one
   truthiness test per call — the reason no sampling is needed. Everyone who
   came before sampled because they instrumented all production traffic.
-- Bad / cost: a second artefact to keep in step with the CLI. `ccqa-coverage`
+- Bad / cost: a second artefact to keep in step with the CLI. `ccqa-tools`
   installs into the application under test and has its own release cadence.
 - Bad / cost: three places cannot be attributed at all — code that runs
   outside any request (schedulers, queue consumers), worker threads, and a
@@ -95,7 +95,7 @@ set and were counted as unattributed instead.
 ## More information
 
 - `src/coverage/` — the sink, the merge, and the report row.
-- `packages/coverage/` — the instrumentation the application installs.
+- `packages/tools/` — the instrumentation the application installs.
 - Every gap the measurement cannot place is counted and shown next to the
   answer, because an execution that goes missing reads as "never reached",
   which is the answer this whole mechanism exists to produce.

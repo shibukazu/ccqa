@@ -11,7 +11,7 @@
  * entry. A bundle's map lists everything that went into it and cannot say
  * which of them the file "is", so those are left pointing at the output.
  *
- * The server half follows the same 1:1 rule at load time, in `ccqa-coverage`'s
+ * The server half follows the same 1:1 rule at load time, in `ccqa-tools`'s
  * `instrument/origin.ts`. It reaches further: it already holds the code, so it
  * can read an inline map, where this side only reads a sibling `.map`. A
  * package built with an inline map is therefore reported under its source by

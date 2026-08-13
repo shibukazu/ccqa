@@ -151,7 +151,7 @@ export function startCollector(
         // flooding stderr once a second for the life of the process.
         if (consecutiveFailures === 1 || consecutiveFailures % 10 === 0) {
           process.stderr.write(
-            `[ccqa-coverage] push to ${options.endpoint} failed ${consecutiveFailures} times in a row: ${String(error)}\n`,
+            `[ccqa-tools] push to ${options.endpoint} failed ${consecutiveFailures} times in a row: ${String(error)}\n`,
           );
         }
       })

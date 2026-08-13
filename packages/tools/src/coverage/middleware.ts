@@ -1,5 +1,5 @@
 /**
- * Entry points for servers `ccqa-coverage/register` cannot wrap on its own:
+ * Entry points for servers `ccqa-tools/coverage/register` cannot wrap on its own:
  * anything that does not receive its requests from `node:http`.
  *
  * A framework running on plain Node needs none of this — the register hook

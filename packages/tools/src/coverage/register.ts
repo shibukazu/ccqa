@@ -1,6 +1,6 @@
 /**
  * The Node-only half of the package, loaded with
- * `node --import ccqa-coverage/register` (or via `NODE_OPTIONS`).
+ * `node --import ccqa-tools/coverage/register` (or via `NODE_OPTIONS`).
  *
  * Everything here would fail inside a bundler — `node:http`, `node:module`,
  * load-time source rewriting — which is exactly why it is not in `core.ts`.
@@ -43,7 +43,7 @@ if (config.enabled) {
     startCollector({ endpoint, token: process.env[ENV_TOKEN] }, config);
   } else {
     process.stderr.write(
-      `[ccqa-coverage] collection is enabled but ${ENV_ENDPOINT} is not set; results will be discarded\n`,
+      `[ccqa-tools] collection is enabled but ${ENV_ENDPOINT} is not set; results will be discarded\n`,
     );
   }
 

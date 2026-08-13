@@ -144,7 +144,7 @@ export class CoverageSession {
       [COVERAGE_ORIGINS_ENV]: this.origins.join(","),
       [COVERAGE_ARTIFACTS_ENV]: coverageDir,
       // Only when the project asked for a wider root. This name is also the
-      // one `ccqa-coverage` reads, and a server the test process starts
+      // one `ccqa-tools` reads, and a server the test process starts
       // inherits the environment: setting it always would re-root that
       // server's ids while its `include` prefixes stayed relative to the old
       // root, and it would then instrument nothing.

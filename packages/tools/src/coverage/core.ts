@@ -6,7 +6,7 @@
  * bundle, a Temporal workflow sandbox — and each of those rejects a different
  * subset of Node built-ins. `node:http` alone is enough to fail a Next.js
  * webpack build outright. Everything platform-specific lives behind
- * `ccqa-coverage/register`, which only ever loads in real Node.
+ * `ccqa-tools/coverage/register`, which only ever loads in real Node.
  *
  * For the same reason the process-wide state hangs off `globalThis` rather than
  * module scope: a bundler produces several copies of this file per process, and
@@ -48,7 +48,7 @@ export interface ActorBucket {
 
 export interface CoverageRuntime {
   /**
-   * Shape version of this object. Two builds of `ccqa-coverage` can end up in
+   * Shape version of this object. Two builds of `ccqa-tools` can end up in
    * one process (an app dependency and a hoisted transitive one); the first to
    * install wins and the rest defer to it, so the shape has to be recognisable.
    */
@@ -140,7 +140,7 @@ function runtime(): CoverageRuntime | undefined {
 
 /**
  * Installs the process-wide runtime, or returns the one already there.
- * Called by `ccqa-coverage/register`; application code never calls it.
+ * Called by `ccqa-tools/coverage/register`; application code never calls it.
  */
 export function installRuntime(als: ContextStorage<CoverageStore>): CoverageRuntime {
   const g = globals();

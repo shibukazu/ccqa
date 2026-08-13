@@ -9,9 +9,9 @@ import {
   runInSpec,
   type CoverageRuntime,
   type CoverageStore,
-} from "../../packages/coverage/src/core.ts";
-import { createCollectorState, diff } from "../../packages/coverage/src/collector.ts";
-import { slackActor } from "../../packages/coverage/src/presets/slack.ts";
+} from "../../packages/tools/src/coverage/core.ts";
+import { createCollectorState, diff } from "../../packages/tools/src/coverage/collector.ts";
+import { slackActor } from "../../packages/tools/src/coverage/presets/slack.ts";
 
 /**
  * The whole chain, both halves, with nothing faked but the network hop.

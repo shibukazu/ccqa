@@ -2,7 +2,7 @@
  * Next.js integration.
  *
  * Next bundles its server code, so the load hooks in
- * `ccqa-coverage/register` never see the application's own modules — only the
+ * `ccqa-tools/coverage/register` never see the application's own modules — only the
  * bundle. The instrumentation therefore has to happen at build time, while the
  * context that attributes it still comes from the register hook wrapping
  * `node:http`. Both halves are required:
@@ -10,7 +10,7 @@
  *   // next.config.ts
  *   export default withCoverage({ ...yourConfig })
  *
- *   NODE_OPTIONS='--import ccqa-coverage/register' CCQA_COVERAGE=1 next start
+ *   NODE_OPTIONS='--import ccqa-tools/coverage/register' CCQA_COVERAGE=1 next start
  *
  * Only server bundles are instrumented. Instrumenting the client would ship
  * `__ccqaCoverage` calls to browsers, where the front-end side of ccqa's

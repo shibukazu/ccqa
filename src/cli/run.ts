@@ -128,7 +128,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option(
       "--coverage",
-      "Measure what each spec actually reached in the application under test, and record it on the spec's report row. Needs a `coverage:` block in .ccqa/config.yaml naming the origins the spec cookie may go to; the front-end half reads V8's own counters and needs nothing installed, the back-end half needs the application running with ccqa-coverage. Live specs are measured on the server side only: they drive agent-browser, which runs no generated test and so carries none of the browser hooks.",
+      "Measure what each spec actually reached in the application under test, and record it on the spec's report row. Needs a `coverage:` block in .ccqa/config.yaml naming the origins the spec cookie may go to; the front-end half reads V8's own counters and needs nothing installed, the back-end half needs the application running with ccqa-tools. Live specs are measured on the server side only: they drive agent-browser, which runs no generated test and so carries none of the browser hooks.",
     )
     .optionsGroup("Learning:")
     .option(

@@ -13,7 +13,7 @@ export const COOKIE_NAME = "__ccqa_coverage";
 export const BAGGAGE_KEY = "ccqa.coverage";
 
 /** Temporal header key, for the hop from client to workflow to activity. */
-export const TEMPORAL_HEADER = "ccqa-coverage";
+export const TEMPORAL_HEADER = "ccqa-tools";
 
 /**
  * Enables the instrumentation. Unset means the register hook is never loaded

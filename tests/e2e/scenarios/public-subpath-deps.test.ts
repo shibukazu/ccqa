@@ -16,7 +16,7 @@ import { getRepoRoot } from "../_helpers/cli.ts";
  * The build does not enforce this. `tsdown.config.ts` emits every entry from
  * one config, so the bundler is free to hoist shared code into a chunk both the
  * CLI binary and an injected subpath import — and the CLI half pulls in zod and
- * the logger. `packages/coverage/tsdown.config.ts` prevents the same hazard by
+ * the logger. `packages/tools/tsdown.config.ts` prevents the same hazard by
  * building each entry alone, and says why; this is the CLI side's version of
  * that guard, after the fact rather than by construction.
  *

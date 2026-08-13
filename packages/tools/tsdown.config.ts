@@ -12,19 +12,21 @@ import { defineConfig } from "tsdown";
 // Both formats are emitted for every entry. A Next.js server bundle is CJS and
 // `require()`s what it does not bundle; a Temporal workflow bundle is CJS too;
 // a `--import` preload can be either. Shipping one format would strand one.
-// Keys are the built filenames, so they stay as they are while the sources move
-// to mirror the subpaths they serve. A file inside one of those directories and
-// absent from this list — `temporal/header.ts` — is package-private by that fact.
+// Keys are the built paths under dist/, one directory per feature. This package
+// installs into the application under test, so a feature that lands here has to
+// stay near-dependency-free — otherwise every consumer of one feature carries
+// the others'. A file absent from this list, like `coverage/temporal/header.ts`,
+// is package-private by that fact.
 const ENTRIES = {
-  core: "./src/core.ts",
-  register: "./src/register.ts",
-  middleware: "./src/middleware.ts",
-  slack: "./src/presets/slack.ts",
-  collector: "./src/collector.ts",
-  next: "./src/next/index.ts",
-  "next-loader": "./src/next/loader.ts",
-  temporal: "./src/temporal/index.ts",
-  "temporal-workflow": "./src/temporal/workflow.ts",
+  "coverage/core": "./src/coverage/core.ts",
+  "coverage/register": "./src/coverage/register.ts",
+  "coverage/middleware": "./src/coverage/middleware.ts",
+  "coverage/slack": "./src/coverage/presets/slack.ts",
+  "coverage/collector": "./src/coverage/collector.ts",
+  "coverage/next": "./src/coverage/next/index.ts",
+  "coverage/next-loader": "./src/coverage/next/loader.ts",
+  "coverage/temporal": "./src/coverage/temporal/index.ts",
+  "coverage/temporal-workflow": "./src/coverage/temporal/workflow.ts",
 };
 
 export default Object.entries(ENTRIES).map(([name, entry], index) =>

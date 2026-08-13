@@ -51,7 +51,7 @@ unbundled compile produces — the source is reported instead; a bundle's map
 cannot say which of its inputs the file is, so those stay as they are.
 
 **The server side needs the application instrumented** with
-[`ccqa-coverage`](../packages/coverage/README.md) and pointed at the sink
+[`ccqa-tools`](../packages/tools/README.md) and pointed at the sink
 through `CCQA_COVERAGE_ENDPOINT`. Without it the run still reports the browser
 half.
 
@@ -94,7 +94,7 @@ coverage:
 The application adds one line, after whatever parses the body:
 
 ```ts
-import { slackActor } from "ccqa-coverage/slack";
+import { slackActor } from "ccqa-tools/coverage/slack";
 app.use(slackActor());
 ```
 
@@ -129,7 +129,7 @@ could not place. Two of those are words rather than numbers, because "that half
 never answered" and "that half reached nothing" are otherwise the same zero:
 
 - **no instrumented server process reported** — the application is not running
-  with `ccqa-coverage`, or cannot reach the sink.
+  with `ccqa-tools`, or cannot reach the sink.
 - **the browser produced no result** — the generated test is missing its
   coverage hooks (regenerate the spec), or the row is a live spec, which drives
   its own browser and is measured on the server side only.
