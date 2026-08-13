@@ -41,6 +41,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0017](0017-records-the-hub-does-not-judge.md) | Records the hub stores but does not judge: a run kind that advances no ledger, and an opaque key set | accepted |
 | [0018](0018-the-bump-answers-the-hub.md) | The bump answers the hub, and the diff checks the answer | accepted |
 | [0019](0019-what-a-person-may-overrule.md) | A person may overrule a judgement, never a result | accepted |
+| [0020](0020-what-a-spec-actually-reached.md) | Measure what a spec reached, per spec, in a shared environment | accepted |
 
 ## Template
 

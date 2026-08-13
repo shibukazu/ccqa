@@ -6,13 +6,25 @@ function emit(actions: RecordedAction[]): string {
   return emitPlaywrightDraft({ actions, testName: "sample" });
 }
 
-/** The single body line an action compiles to (assumes exactly one). */
+/**
+ * The single body line an action compiles to (assumes exactly one), with the
+ * coverage bookends every draft carries dropped.
+ */
 function line(action: RecordedAction): string {
-  const body = emit([action])
-    .split("\n")
-    .filter((l) => l.startsWith("  "));
+  const body = bodyLines([action]);
   expect(body).toHaveLength(1);
-  return body[0]!.trim();
+  return body[0]!;
+}
+
+/** The emitted statements, minus the coverage bookends and their try/finally. */
+const SCAFFOLD = new Set(["try {", "} finally {", "}"]);
+
+function bodyLines(actions: RecordedAction[]): string[] {
+  return emit(actions)
+    .split("\n")
+    .filter((l) => l.startsWith("  "))
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.includes("ccqaCoverage") && !SCAFFOLD.has(l));
 }
 
 describe("locatorToPlaywright", () => {
@@ -73,6 +85,16 @@ describe("emitPlaywrightDraft — actions", () => {
     expect(script).toContain(`import { test, expect } from "@playwright/test";`);
     expect(script).toContain(`test("sample", async ({ page }) => {`);
     expect(script.trimEnd().endsWith("});")).toBe(true);
+  });
+
+  it("bookends the test: start before any action, stop in a finally", () => {
+    const script = emit([{ action: "navigate", value: "https://example.test/" }]);
+    expect(script).toContain(`from "ccqa/coverage-hooks";`);
+    // Order: V8 reports nothing for a script parsed before collection began,
+    // and a request made before the cookie is attached is attributed to nobody.
+    expect(script.indexOf("ccqaCoverageStart(page)")).toBeLessThan(script.indexOf("page.goto"));
+    // `finally`: a failing spec is exactly the one whose reach a reader wants.
+    expect(script).toMatch(/}\s*finally\s*{\s*await ccqaCoverageStop\(page\);\s*}/);
   });
 
   it("maps interactions 1:1", () => {
@@ -150,7 +172,7 @@ describe("emitPlaywrightDraft — actions", () => {
     expect(line({ action: "wait", locator: { by: "css", value: "3" } })).toBe(
       `await page.waitForTimeout(3000);`,
     );
-    expect(emit([{ action: "wait", locator: { by: "css", value: "--load" } }])).not.toContain("wait");
+    expect(bodyLines([{ action: "wait", locator: { by: "css", value: "--load" } }])).toEqual([]);
   });
 
   it("maps every AssertType to its expect form", () => {

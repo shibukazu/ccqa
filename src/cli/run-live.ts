@@ -17,6 +17,7 @@ import {
   loadAvailableBlocks,
   loadPromptBundleFromHub,
   readSpecFile,
+  specKey,
   type AvailableBlock,
 } from "../store/index.ts";
 import type { HubContext } from "./hub-conn.ts";
@@ -40,7 +41,9 @@ import { formatLiveCost } from "../runtime/live-cost-format.ts";
 import { runLiveExecutor, type LiveRunResult, type LiveStepResult } from "../runtime/live-executor.ts";
 import { generateLiveSessionName } from "../prompts/live.ts";
 import { liveRunToReportResult } from "../report/live-adapter.ts";
-import type { ReportSpecResult } from "../report/schema.ts";
+import type { ReportCoverage, ReportSpecResult } from "../report/schema.ts";
+import { closeMeasurement, specCoverageDir } from "../coverage/session.ts";
+import type { CoverageCollector } from "../targets/types.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import type { RunTeardown } from "./run-teardown.ts";
 import type { IncrementalReport } from "../run/incremental-report.ts";
@@ -81,6 +84,12 @@ export interface RunLiveOptions {
    * behaviour: rows are only returned for the caller's final batch write.
    */
   report?: IncrementalReport;
+  /**
+   * Server-side coverage for live specs. Only the server half: a live spec
+   * drives agent-browser, which runs no generated test and so carries none of
+   * the browser hooks. Present only under `--coverage`.
+   */
+  coverage?: CoverageCollector;
 }
 
 export type LiveSpecRun = {
@@ -95,6 +104,33 @@ export type LiveSpecRun = {
  * agent-browser) and, when `reportDir` is set, run drift audit + failure
  * analysis to produce report rows. Sibling of `runDeterministicSpecs`.
  */
+/**
+ * Brackets one live spec's execution with the measurement.
+ *
+ * The bracket has to hold even when the spec does not run: opening a turn on an
+ * identity and never closing it would leave the next spec waiting on a window
+ * that outlived its owner.
+ */
+async function measureLive<T>(
+  spec: SpecRef,
+  opts: RunLiveOptions,
+  reportDir: string,
+  execute: () => Promise<T>,
+): Promise<{ outcome: T; coverage: ReportCoverage | undefined }> {
+  const collector = opts.coverage;
+  if (collector === undefined) return { outcome: await execute(), coverage: undefined };
+  const dir = specCoverageDir(reportDir, spec.featureName, spec.specName);
+  await collector.beginSpec(spec, dir);
+  let outcome: T;
+  try {
+    outcome = await execute();
+  } catch (err) {
+    await closeMeasurement(collector, spec, dir);
+    throw err;
+  }
+  return { outcome, coverage: await closeMeasurement(collector, spec, dir) };
+}
+
 export async function runLiveSpecs(
   specs: readonly SpecRef[],
   opts: RunLiveOptions,
@@ -149,14 +185,15 @@ export async function runLiveSpecs(
         log.blank();
         log.info(`[${i + 1}/${specs.length}] ${label}`);
       }
-      const outcome = await runOneSpec({ ...spec, opts, userPromptSuffix, cwd });
-      if (outcome.kind !== "run") return { outcome, row: null };
-      const row = await buildLiveReportRow(
-        outcome,
-        { auth, diffProvider, reportDir, blocks },
-        opts,
-        cwd,
+      const measured = await measureLive(spec, opts, reportDir, () =>
+        runOneSpec({ ...spec, opts, userPromptSuffix, cwd }),
       );
+      const { outcome } = measured;
+      if (outcome.kind !== "run") return { outcome, row: null };
+      const row = {
+        ...(await buildLiveReportRow(outcome, { auth, diffProvider, reportDir, blocks }, opts, cwd)),
+        ...(measured.coverage ? { coverage: measured.coverage } : {}),
+      };
       await opts.report?.upsert(row);
       return { outcome, row };
     });

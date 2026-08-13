@@ -699,6 +699,13 @@ const CSS = `
   .artifact-acc > summary { height: 34px; }
   .artifact-pre { margin: 2px 0 8px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   .section-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 4px; }
+  /* reached files: what the spec actually executed, plus what could not be placed */
+  .cov-counts { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px; }
+  .cov-count { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1px 7px; white-space: nowrap; }
+  .cov-count b { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+  .cov-count.cov-warn { color: var(--fail); border-color: var(--fail); }
+  .cov-file { font-family: var(--mono); font-size: 12px; padding: 4px 4px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+  .cov-file:last-child { border-bottom: none; }
   /* live run steps: stacked cards with large before/after frames */
   .step-card { border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); padding: 12px 14px; margin-top: 10px; }
   .step-card.passed { border-left-color: var(--border-strong); }
@@ -1142,6 +1149,27 @@ const CLIENT_JS = `
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
       "acc.assertions": "Assertions",
       "acc.artifacts": "Artifacts",
+      "acc.coverage": "Reached files",
+      "acc.coverage.hint": "Measured, not inferred: V8's counters in the browser and per-request instrumentation on the server.",
+      "cov.frontend": "browser", "cov.backend": "server",
+      "cov.unattributed": "server executions outside this spec's context",
+      "cov.unmappedScripts": "scripts with no usable source map",
+      "cov.unmappedRanges": "executed ranges that mapped nowhere",
+      "cov.outsideProject": "browser sources outside the project",
+      "cov.unresolvedSources": "browser sources that resolved to no project path",
+      "cov.uninstrumentedFiles": "server files that could not be instrumented",
+      "cov.uninstrumentedProcesses": "server processes that instrumented nothing at all",
+      "cov.droppedPushes": "reports the application could not deliver",
+      "cov.unmappedActorEvents": "events from identities this project does not declare",
+      "cov.outsideWindowEvents": "events from a declared identity outside its turn",
+      "cov.excludedDependencies": "dependency sources, excluded on purpose",
+      "cov.route.carrier": "attributed by carrier",
+      "cov.route.actorWindow": "actor-window",
+      "cov.route.events": "events",
+      "cov.noBackend": "no instrumented server process reported",
+      "cov.noFrontend": "the browser produced no result",
+      "cov.frontendStopped": "browser collection stopped early",
+      "cov.unavailable": "Nothing was measured:",
       "art.open": "Open", "art.loadFailed": "could not load (it may have been omitted from the push)",
       "acc.assertions.hint": "Test cases from the recorded spec run",
       "spec.kind.live": "Live", "spec.kind.det": "Deterministic",
@@ -1331,6 +1359,27 @@ const CLIENT_JS = `
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
       "acc.assertions": "アサーション",
       "acc.artifacts": "成果物",
+      "acc.coverage": "到達ファイル",
+      "acc.coverage.hint": "推定ではなく実測。ブラウザは V8 のカウンタ、サーバはリクエスト単位の計装。",
+      "cov.frontend": "ブラウザ", "cov.backend": "サーバ",
+      "cov.unattributed": "この spec の文脈外で走ったサーバ実行",
+      "cov.unmappedScripts": "source map を辿れなかったスクリプト",
+      "cov.unmappedRanges": "どこにも対応しなかった実行範囲",
+      "cov.outsideProject": "プロジェクト外に解決したブラウザのソース",
+      "cov.unresolvedSources": "プロジェクト内のパスに解決できなかったブラウザのソース",
+      "cov.uninstrumentedFiles": "計装できなかったサーバのファイル",
+      "cov.uninstrumentedProcesses": "何も計装できなかったサーバのプロセス",
+      "cov.droppedPushes": "アプリが送信できなかった報告",
+      "cov.unmappedActorEvents": "このプロジェクトが宣言していない主体のイベント",
+      "cov.outsideWindowEvents": "宣言済みの主体が持ち時間の外で起こしたイベント",
+      "cov.excludedDependencies": "意図的に除外した依存ライブラリのソース",
+      "cov.route.carrier": "carrier で帰属",
+      "cov.route.actorWindow": "actor-window",
+      "cov.route.events": "件",
+      "cov.noBackend": "計装されたサーバプロセスからの報告なし",
+      "cov.noFrontend": "ブラウザ側の結果なし",
+      "cov.frontendStopped": "ブラウザ側の収集が途中で停止",
+      "cov.unavailable": "計測できませんでした:",
       "art.open": "開く", "art.loadFailed": "読み込めませんでした（push時に省略された可能性があります）",
       "acc.assertions.hint": "記録したスペック実行のテストケース",
       "spec.kind.live": "ライブ", "spec.kind.det": "決定的",
@@ -2531,6 +2580,75 @@ const CLIENT_JS = `
     return wrap;
   }
 
+  // ── run detail: reached files (--coverage) ─────────────────────────
+  //
+  // The gap counters sit above the list on purpose. Every one of them is an
+  // execution the measurement could not place, and an unplaced execution reads
+  // as "never reached" — the exact answer this section exists to give — so they
+  // belong next to the answer rather than in a log nobody opens.
+  function coverageSection(cov) {
+    var wrap = el("div");
+    wrap.appendChild(el("div", "assertions-hint muted", t("acc.coverage.hint")));
+    var gaps = cov.gaps || {};
+    var counts = el("div", "cov-counts");
+    [
+      { label: t("cov.frontend"), value: cov.frontendFiles, always: true },
+      { label: t("cov.backend"), value: cov.backendFiles, always: true },
+    ].forEach(function (count) {
+      var chip = el("span", "cov-count");
+      chip.appendChild(el("b", null, String(count.value || 0)));
+      chip.appendChild(document.createTextNode(" " + count.label));
+      counts.appendChild(chip);
+    });
+    // Which route the attribution came by. The carrier is always live; a
+    // declared identity is shown even at zero events, because a window that
+    // matched nothing is the failure and an omitted chip would hide it.
+    counts.appendChild(el("span", "cov-count muted", t("cov.route.carrier")));
+    (cov.actorWindows || []).forEach(function (w) {
+      var chip = el("span", w.events ? "cov-count" : "cov-count cov-warn");
+      chip.appendChild(document.createTextNode(t("cov.route.actorWindow") + "(" + w.key + ") "));
+      chip.appendChild(el("b", null, String(w.events || 0)));
+      chip.appendChild(document.createTextNode(" " + t("cov.route.events")));
+      counts.appendChild(chip);
+    });
+    // "That half never answered" and "that half reached nothing" render as the
+    // same zero, so the first is said in words.
+    [
+      { shown: cov.backendReported === false, label: t("cov.noBackend") },
+      { shown: cov.frontendReported === false, label: t("cov.noFrontend") },
+      { shown: cov.frontendStopped === true, label: t("cov.frontendStopped") },
+    ].forEach(function (flag) {
+      if (!flag.shown) return;
+      counts.appendChild(el("span", "cov-count cov-warn", flag.label));
+    });
+    [
+      "unattributed", "unmappedScripts", "unmappedRanges",
+      "outsideProject", "unresolvedSources", "uninstrumentedFiles",
+      "uninstrumentedProcesses", "droppedPushes",
+      "unmappedActorEvents", "outsideWindowEvents",
+    ].forEach(function (key) {
+      if (!gaps[key]) return;
+      var chip = el("span", "cov-count");
+      chip.appendChild(el("b", null, String(gaps[key])));
+      chip.appendChild(document.createTextNode(" " + t("cov." + key)));
+      counts.appendChild(chip);
+    });
+    // Last, and outside the gap list: excluded dependencies are not a hole in
+    // the measurement, and next to ones that are they would drown them out.
+    if (cov.excludedDependencies) {
+      var excluded = el("span", "cov-count muted");
+      excluded.appendChild(el("b", null, String(cov.excludedDependencies)));
+      excluded.appendChild(document.createTextNode(" " + t("cov.excludedDependencies")));
+      counts.appendChild(excluded);
+    }
+    wrap.appendChild(counts);
+    // One insertion for a list that can run to thousands of rows.
+    var files = document.createDocumentFragment();
+    (cov.files || []).forEach(function (f) { files.appendChild(el("div", "cov-file", f)); });
+    wrap.appendChild(files);
+    return wrap;
+  }
+
   // The parts a live step and a deterministic step render identically: the
   // status-railed card, a header (#index + instruction + a status badge unless
   // passed), and an optional "expects:"/reasoning meta block. Returns { card,
@@ -2851,6 +2969,18 @@ const CLIENT_JS = `
 
     if (r.assertions && r.assertions.length > 0) {
       body.appendChild(detailsBlock(t("acc.assertions"), r.assertions.length, assertionsSection(r.assertions)));
+      any = true;
+    }
+
+    if (r.coverage) {
+      var covFiles = r.coverage.files || [];
+      body.appendChild(detailsBlock(t("acc.coverage"), covFiles.length, coverageSection(r.coverage)));
+      any = true;
+    } else if (r.coverageUnavailable) {
+      // The run measured coverage but this spec could not be: say so, rather
+      // than leave a row that looks like it reached nothing.
+      body.appendChild(el("div", "section-label", t("acc.coverage")));
+      body.appendChild(el("div", "muted", t("cov.unavailable") + " " + r.coverageUnavailable));
       any = true;
     }
 

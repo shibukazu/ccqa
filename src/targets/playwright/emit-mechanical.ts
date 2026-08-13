@@ -27,6 +27,32 @@ export interface PlaywrightEmitInput {
 /** Module the emitted step-boundary capture calls import from. */
 export const STEP_EVIDENCE_MODULE = "ccqa/step-evidence";
 
+/**
+ * Module the coverage bookends import from. Emitted on every draft — unlike the
+ * step-evidence calls, which need markers — because they are no-ops unless
+ * `ccqa run` turns them on, and a test that only measures when it happened to
+ * be generated with the right flag stops measuring without saying so.
+ */
+export const COVERAGE_MODULE = "ccqa/coverage-hooks";
+export const COVERAGE_START = "ccqaCoverageStart";
+export const COVERAGE_STOP = "ccqaCoverageStop";
+
+export function coverageCall(fn: typeof COVERAGE_START | typeof COVERAGE_STOP): string {
+  return `await ${fn}(page);`;
+}
+
+/** The "keep the coverage bookends" rule for the library-rewrite prompt. */
+export function coveragePreserveRule(): string {
+  return (
+    `**Keep the \`${COVERAGE_MODULE}\` calls and their \`try\`/\`finally\`.** ` +
+    `\`await ${COVERAGE_START}(page);\` must stay the first statement of the test, the spec's ` +
+    `actions must stay inside the \`try\`, and \`await ${COVERAGE_STOP}(page);\` must stay in the ` +
+    `\`finally\`. The first call attaches the cookie that attributes every request this spec makes, ` +
+    `so moving it after the first navigation loses everything before it; the \`finally\` is what ` +
+    `keeps a failing spec's coverage. Do not move either into a page object.`
+  );
+}
+
 /** Capture call emitted when a step is entered / closed. Exported for the coverage gate. */
 export const STEP_EVIDENCE_BEFORE = "ccqaStepBefore";
 export const STEP_EVIDENCE_AFTER = "ccqaStepAfter";
@@ -88,7 +114,19 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   }
   if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
 
-  const body = lines.map((l) => (l === "" ? "" : `  ${l}`)).join("\n");
+  // The start call precedes every action — V8 reports nothing for a script
+  // parsed before collection began, and a request made before the cookie is
+  // attached is attributed to nobody. The stop call sits in a `finally` because
+  // a failing spec is exactly the one whose reach a reader wants, and a bare
+  // trailing call never runs when an assertion throws.
+  const body = [
+    `  ${coverageCall(COVERAGE_START)}`,
+    "  try {",
+    ...lines.map((l) => (l === "" ? "" : `    ${l}`)),
+    "  } finally {",
+    `    ${coverageCall(COVERAGE_STOP)}`,
+    "  }",
+  ].join("\n");
   return [
     `import { test, expect } from "@playwright/test";`,
     // Only imported when there are boundaries to capture, so a marker-less
@@ -98,6 +136,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
           `import { ${STEP_EVIDENCE_BEFORE}, ${STEP_EVIDENCE_AFTER} } from ${j(STEP_EVIDENCE_MODULE)};`,
         ]
       : []),
+    `import { ${COVERAGE_START}, ${COVERAGE_STOP} } from ${j(COVERAGE_MODULE)};`,
     "",
     `test(${j(testName)}, async ({ page }) => {`,
     body,

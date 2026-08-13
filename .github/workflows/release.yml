@@ -113,6 +113,17 @@ jobs:
         if: ${{ env.DRY_RUN != 'true' }}
         run: npx -y npm@latest publish --provenance --access public
 
+      # After the CLI, so a registry that has not been told about the scoped
+      # package yet costs the SDK's release and not the CLI's. The SDK installs
+      # into the application under test, which is a different tree from the one
+      # the CLI runs in — it cannot ship as a subpath of `ccqa`.
+      - name: Publish @ccqa/coverage to npm
+        if: ${{ env.DRY_RUN != 'true' }}
+        working-directory: packages/coverage
+        run: |
+          pnpm build
+          npx -y npm@latest publish --provenance --access public
+
       # After publishing: a release that npm rejected should not be announced.
       # The hub-impact answer leads the body — it is what the person holding a
       # deployed hub has to act on — and gh appends the generated changelog.
@@ -126,3 +137,10 @@ jobs:
       - name: Dry-run publish
         if: ${{ env.DRY_RUN == 'true' }}
         run: npx -y npm@latest publish --dry-run --access public
+
+      - name: Dry-run publish @ccqa/coverage
+        if: ${{ env.DRY_RUN == 'true' }}
+        working-directory: packages/coverage
+        run: |
+          pnpm build
+          npx -y npm@latest publish --dry-run --access public

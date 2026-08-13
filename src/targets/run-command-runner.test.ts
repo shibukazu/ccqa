@@ -52,6 +52,7 @@ function runnerOpts(
     targetId: "ext-run",
     targetConfig: TargetConfigSchema.parse(runCommand !== undefined ? { runCommand } : {}),
     stepEvidence: { supported: false, reason: "test target" },
+    coverageSupport: { supported: false, reason: "test target" },
     onSpecComplete: async () => {},
     ...extra,
   };

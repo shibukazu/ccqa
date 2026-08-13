@@ -15,6 +15,7 @@ import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
 import type {
   GenerateResult,
   RunnerOptions,
+  CoverageSupport,
   StepEvidenceSupport,
   TargetPlugin,
   TestRunner,
@@ -180,6 +181,7 @@ function emptyDispatch(): TargetDispatch {
 }
 
 const NO_EVIDENCE: StepEvidenceSupport = { supported: false, reason: "test target" };
+const NO_COVERAGE: CoverageSupport = { supported: false, reason: "test target" };
 
 /** A group with the boilerplate config filled in, for the runExternalSpecs cases. */
 function group(runner: TestRunner, specs: ExternalTargetGroup["specs"]): ExternalTargetGroup {
@@ -188,6 +190,7 @@ function group(runner: TestRunner, specs: ExternalTargetGroup["specs"]): Externa
     runner,
     targetConfig: { runCommand: "echo {files}", resources: [], conventions: { guides: [], examples: [] } },
     stepEvidence: NO_EVIDENCE,
+    coverageSupport: NO_COVERAGE,
     specs,
   };
 }

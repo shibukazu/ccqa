@@ -1,0 +1,95 @@
+{
+  "name": "@ccqa/coverage",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Per-spec reach coverage instrumentation for applications under test by ccqa",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shibukazu/ccqa.git",
+    "directory": "packages/coverage"
+  },
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js",
+      "require": "./dist/core.cjs"
+    },
+    "./register": {
+      "types": "./dist/register.d.ts",
+      "import": "./dist/register.js",
+      "require": "./dist/register.cjs"
+    },
+    "./middleware": {
+      "types": "./dist/middleware.d.ts",
+      "import": "./dist/middleware.js",
+      "require": "./dist/middleware.cjs"
+    },
+    "./slack": {
+      "types": "./dist/slack.d.ts",
+      "import": "./dist/slack.js",
+      "require": "./dist/slack.cjs"
+    },
+    "./collector": {
+      "types": "./dist/collector.d.ts",
+      "import": "./dist/collector.js",
+      "require": "./dist/collector.cjs"
+    },
+    "./next": {
+      "types": "./dist/next.d.ts",
+      "import": "./dist/next.js",
+      "require": "./dist/next.cjs"
+    },
+    "./temporal": {
+      "types": "./dist/temporal.d.ts",
+      "import": "./dist/temporal.js",
+      "require": "./dist/temporal.cjs"
+    },
+    "./temporal/workflow": {
+      "types": "./dist/temporal-workflow.d.ts",
+      "import": "./dist/temporal-workflow.js",
+      "require": "./dist/temporal-workflow.cjs"
+    },
+    "./next/loader": {
+      "default": "./dist/next-loader.cjs"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "dependencies": {
+    "acorn": "^8.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsdown": "^0.21.9",
+    "typescript": "^5"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@temporalio/activity": ">=1.9.0",
+    "@temporalio/client": ">=1.9.0",
+    "@temporalio/worker": ">=1.9.0",
+    "@temporalio/workflow": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@temporalio/activity": {
+      "optional": true
+    },
+    "@temporalio/client": {
+      "optional": true
+    },
+    "@temporalio/worker": {
+      "optional": true
+    },
+    "@temporalio/workflow": {
+      "optional": true
+    }
+  }
+}

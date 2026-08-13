@@ -26,6 +26,10 @@
     "./hub-client": {
       "types": "./dist/hub-client/index.d.mts",
       "import": "./dist/hub-client/index.mjs"
+    },
+    "./coverage-hooks": {
+      "types": "./dist/runtime/coverage-hooks.d.mts",
+      "import": "./dist/runtime/coverage-hooks.mjs"
     }
   },
   "files": [
@@ -69,9 +73,9 @@
   "scripts": {
     "build": "tsdown",
     "dev": "node --experimental-strip-types ./bin/ccqa.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p packages/coverage",
     "test": "vitest run",
-    "test:unit": "vitest run src/",
+    "test:unit": "vitest run src/ packages/",
     "test:e2e": "vitest run tests/e2e",
     "release:check": "node --experimental-strip-types src/release/check.ts",
     "prepublishOnly": "pnpm typecheck && pnpm test && pnpm build"

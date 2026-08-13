@@ -44,3 +44,10 @@ export async function resolveSerialGroups(
   }
   return (ref) => bySpec.get(specKey(ref)) ?? [];
 }
+
+/** Every group either lookup gives a spec. Names from different sources never collide. */
+export function mergeGroups(...lookups: readonly GroupLookup[]): GroupLookup {
+  const present = lookups.filter((lookup) => lookup !== NO_GROUPS);
+  if (present.length <= 1) return present[0] ?? NO_GROUPS;
+  return (ref) => present.flatMap((lookup) => lookup(ref));
+}

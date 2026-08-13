@@ -13,13 +13,14 @@ import type { TestSpec } from "../spec/yaml-schema.ts";
 import type { BlockSpec } from "../types.ts";
 import { runPool } from "../runtime/pool.ts";
 import { OUTPUT_TAIL_CAP, TailBuffer } from "../run/output-tail.ts";
+import { closeMeasurement, specCoverageDir } from "../coverage/session.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
 import {
   buildStepDescriptions,
   loadEvidenceForSpec,
   specEvidenceDir,
 } from "../report/evidence.ts";
-import type { ReportArtifact, ReportSpecResult } from "../report/schema.ts";
+import type { ReportArtifact, ReportCoverage, ReportSpecResult } from "../report/schema.ts";
 import {
   ARTIFACTS_DIR_ENV,
   collectSpecArtifacts,
@@ -220,6 +221,26 @@ async function runOneSpec(
     await mkdir(evidenceDir, { recursive: true });
   }
 
+  // A target whose generated tests carry no coverage hooks is not measured at
+  // all: handing it the environment would produce an empty file set, and an
+  // empty file set reads as "this spec reached nothing".
+  const coverage = opts.coverage !== undefined && opts.coverageSupport.supported ? opts.coverage : null;
+  const coverageDir = specCoverageDir(opts.reportDir, featureName, specName);
+  if (coverage) {
+    await rm(coverageDir, { recursive: true, force: true });
+    await mkdir(coverageDir, { recursive: true });
+  }
+
+  const childEnv: Record<string, string> = {
+    [ARTIFACTS_DIR_ENV]: artifactsDir,
+    // Fresh CCQA_RUN_ID per spec, same contract as the vitest runner: specs
+    // that embed `${CCQA_RUN_ID}` in created-content names must not collide
+    // across specs or with a prior run.
+    CCQA_RUN_ID: buildRunId(),
+    ...(evidenceDir ? { [EVIDENCE_DIR_ENV]: evidenceDir } : {}),
+    ...(coverage ? await coverage.beginSpec(ref, coverageDir) : {}),
+  };
+
   const command = substituteArtifactsDir(
     substituteRunCommandFiles(runCommand, testFiles),
     artifactsDir,
@@ -228,19 +249,38 @@ async function runOneSpec(
   log.blank();
 
   const started = Date.now();
-  let outcome: ShellOutcome;
+  let outcome: ShellOutcome | undefined;
+  let spawnFailure: string | undefined;
+  let measured: ReportCoverage | undefined;
   try {
     outcome = await runShellCommand(command, {
       cwd: opts.cwd,
       artifactsDir,
-      evidenceDir,
       logPath: join(artifactsDir, OUTPUT_LOG_FILE),
+      env: childEnv,
     });
   } catch (err) {
-    return didNotExecute(
-      `could not spawn runCommand: ${err instanceof Error ? err.message : String(err)}`,
-      "the runCommand could not be spawned",
-    );
+    spawnFailure = err instanceof Error ? err.message : String(err);
+  } finally {
+    // After the command exits, never during: the application pushes on a timer,
+    // and collection waits for those pushes to stop arriving. In a `finally`
+    // because `beginSpec` may have opened a turn on an identity, and a turn
+    // left open outlives the spec it belonged to.
+    if (coverage) measured = await closeMeasurement(coverage, ref, coverageDir);
+  }
+  const coverageFields = measured
+    ? { coverage: measured }
+    : opts.coverage && !opts.coverageSupport.supported
+      ? { coverageUnavailable: opts.coverageSupport.reason }
+      : {};
+  if (spawnFailure !== undefined || outcome === undefined) {
+    return {
+      ...didNotExecute(
+        `could not spawn runCommand: ${spawnFailure ?? "unknown error"}`,
+        "the runCommand could not be spawned",
+      ),
+      ...coverageFields,
+    };
   }
   const durationMs = Date.now() - started;
   log.blank();
@@ -273,6 +313,7 @@ async function runOneSpec(
       durationMs,
       ...artifactFields,
       ...evidenceFields,
+      ...coverageFields,
     };
   }
   const detail = [
@@ -281,7 +322,13 @@ async function runOneSpec(
   ]
     .filter((p): p is string => p !== null)
     .join("\n");
-  return { ...failedRow(detail), durationMs, ...artifactFields, ...evidenceFields };
+  return {
+    ...failedRow(detail),
+    durationMs,
+    ...artifactFields,
+    ...evidenceFields,
+    ...coverageFields,
+  };
 }
 
 /**
@@ -379,20 +426,12 @@ type ShellOutcome = { exitCode: number; tail: string };
  */
 async function runShellCommand(
   command: string,
-  opts: { cwd: string; artifactsDir: string; evidenceDir: string | null; logPath: string },
+  opts: { cwd: string; artifactsDir: string; logPath: string; env: Record<string, string> },
 ): Promise<ShellOutcome> {
   const child = spawn(command, {
     cwd: opts.cwd,
     shell: true,
-    // Fresh CCQA_RUN_ID per spec, same contract as the vitest runner: specs
-    // that embed `${CCQA_RUN_ID}` in created-content names must not collide
-    // across specs or with a prior run.
-    env: {
-      ...process.env,
-      [ARTIFACTS_DIR_ENV]: opts.artifactsDir,
-      CCQA_RUN_ID: buildRunId(),
-      ...(opts.evidenceDir ? { [EVIDENCE_DIR_ENV]: opts.evidenceDir } : {}),
-    },
+    env: { ...process.env, ...opts.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const tail = new TailBuffer(OUTPUT_TAIL_CAP);

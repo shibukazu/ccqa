@@ -7,7 +7,7 @@ import type { FixMode } from "../diagnose/loop.ts";
 import type { SpecRef } from "../store/index.ts";
 import type { GroupLookup } from "../run/serial-groups.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
-import type { ReportSpecResult } from "../report/schema.ts";
+import type { ReportCoverage, ReportSpecResult } from "../report/schema.ts";
 
 /**
  * Target plugin abstraction: a target turns a spec into runnable test code
@@ -66,6 +66,14 @@ export interface TargetPlugin {
    */
   stepEvidence?: StepEvidenceSupport;
   /**
+   * Whether the target's generated tests carry the `ccqa/coverage-hooks`
+   * bookends, and so can attach the spec cookie and read the browser's
+   * counters. Absent means they cannot: `ccqa run --coverage` then measures
+   * nothing for the target and says so on the row, rather than reporting an
+   * empty file set — which reads as "this spec reached no code at all".
+   */
+  coverage?: CoverageSupport;
+  /**
    * The guidance-prompt kind this target learns under (`<kind>.user` /
    * `<kind>.agent`). Set only by LLM-generating targets (playwright, runn):
    * `ccqa generate --learn-hub-codegen-prompt` refreshes `<guidanceKind>.agent`
@@ -76,6 +84,9 @@ export interface TargetPlugin {
 }
 
 export type StepEvidenceSupport = { supported: true } | { supported: false; reason: string };
+
+/** Same shape, kept as its own name because the two answers are unrelated. */
+export type CoverageSupport = StepEvidenceSupport;
 
 /**
  * Knobs for the target's own verify/fix loop, straight from the CLI flags.
@@ -188,6 +199,20 @@ export interface RunnerOptions {
    * `run()` for the final report, so the callback is purely incremental.
    */
   onSpecComplete: (row: ReportSpecResult) => Promise<void>;
+  /**
+   * Resolved from the plugin's `coverage` (absent ⇒ unsupported), same shape
+   * as `stepEvidence`.
+   */
+  coverageSupport: CoverageSupport;
+  /**
+   * Set by `ccqa run --coverage`. A runner passes `specEnv` to the process it
+   * spawns and calls `collect` once that process has exited — the collection
+   * waits for in-flight pushes, so it must not run while the spec still is.
+   *
+   * Structural, so this module does not have to know the coverage subsystem's
+   * class and a runner test does not have to stand up its HTTP sink.
+   */
+  coverage?: CoverageCollector;
 }
 
 /**
@@ -198,4 +223,16 @@ export interface RunnerOptions {
  */
 export interface TestRunner {
   run(specs: readonly SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]>;
+}
+
+/**
+ * The half of a coverage session a runner uses. See `src/coverage/session.ts`.
+ *
+ * `beginSpec` may wait before it answers — a spec acting as an identity another
+ * spec just released has to let the boundary go quiet first — so it brackets
+ * the spec rather than only describing it.
+ */
+export interface CoverageCollector {
+  beginSpec(ref: SpecRef, artifactsDir: string): Promise<Record<string, string>>;
+  collect(ref: SpecRef, artifactsDir: string): Promise<ReportCoverage>;
 }

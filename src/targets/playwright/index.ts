@@ -12,6 +12,11 @@ import {
   specDirRel,
 } from "../llm-engine.ts";
 import {
+  COVERAGE_MODULE,
+  COVERAGE_START,
+  COVERAGE_STOP,
+  coverageCall,
+  coveragePreserveRule,
   emitPlaywrightDraft,
   STEP_EVIDENCE_AFTER,
   STEP_EVIDENCE_BEFORE,
@@ -46,6 +51,9 @@ export const playwrightTarget: TargetPlugin = {
   // a run produces the same per-step before/after screenshots agent-browser
   // does — `ccqa run` sets CCQA_EVIDENCE_DIR for these specs.
   stepEvidence: { supported: true },
+  // The emitter also injects the `ccqa/coverage-hooks` bookends, so a spec on
+  // this target can attach the coverage cookie and read the browser's counters.
+  coverage: { supported: true },
   guidanceKind: PLAYWRIGHT_TARGET,
 };
 
@@ -97,8 +105,12 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
           target: PLAYWRIGHT_TARGET,
           taskInstructions: playwrightTaskInstructions(draftPath),
           draft: { path: draftPath, contents: draft },
-          // Only injected when the draft actually has markers to preserve.
-          ...(stepMarkers.length > 0 ? { draftInvariant: stepEvidencePreserveRule() } : {}),
+          // The step-evidence half is only injected when the draft actually has
+          // markers to preserve; the coverage bookends are always there.
+          draftInvariant: [
+            ...(stepMarkers.length > 0 ? [stepEvidencePreserveRule()] : []),
+            coveragePreserveRule(),
+          ].join("\n\n"),
         })
       : await finalizePreparedFiles({
           ctx,
@@ -108,27 +120,23 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
           warnings: [],
         });
 
-  // Gate: every step must keep both capture calls in the written test. The
-  // deterministic emit always has them; the library-rewrite pass can drop them
-  // when it restructures into page objects, which silently costs the spec its
-  // report screenshots — so verify the files on disk and warn, per step.
-  const missing = await missingStepEvidence(result, stepMarkers);
+  const missing = await missingInjectedCalls(result, stepMarkers);
   for (const w of missing) log.warn(w);
   return { ...result, warnings: [...result.warnings, ...missing] };
 }
 
 /**
- * Per-step warning for any `ccqa/step-evidence` boundary call absent from the
- * generated test files — the report would then miss that step's screenshots.
- * Reads the written test files (the LLM pass may have relocated them); a file
- * that can't be read is reported as missing all its steps rather than passing
- * silently.
+ * Warnings for calls the emitter injected that the written test no longer has.
+ * The deterministic emit always has them; the library-rewrite pass can drop
+ * them when it restructures into page objects, which silently costs the spec
+ * its screenshots or its coverage. Reads the files from disk (the LLM pass may
+ * have relocated them); a file that can't be read is reported as missing
+ * everything rather than passing silently.
  */
-async function missingStepEvidence(
+async function missingInjectedCalls(
   result: GenerateResult,
   markers: StepMarker[],
 ): Promise<string[]> {
-  if (markers.length === 0) return [];
   const sources = await Promise.all(
     result.files
       .filter((f) => f.kind === "test")
@@ -136,6 +144,15 @@ async function missingStepEvidence(
   );
   const corpus = sources.join("\n");
   const warnings: string[] = [];
+  if (
+    !corpus.includes(coverageCall(COVERAGE_START)) ||
+    !corpus.includes(coverageCall(COVERAGE_STOP))
+  ) {
+    warnings.push(
+      `generated test is missing its ${COVERAGE_MODULE} bookends (${COVERAGE_START}/${COVERAGE_STOP}) — ` +
+        `\`ccqa run --coverage\` will measure nothing for this spec.`,
+    );
+  }
   for (const m of markers) {
     const hasBefore = corpus.includes(stepEvidenceCall(STEP_EVIDENCE_BEFORE, m));
     const hasAfter = corpus.includes(stepEvidenceCall(STEP_EVIDENCE_AFTER, m));

@@ -8,10 +8,16 @@ import {
   type TargetConfig,
 } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
-import type { StepEvidenceSupport, TargetPlugin, TestRunner } from "../targets/types.ts";
+import type {
+  CoverageSupport,
+  StepEvidenceSupport,
+  TargetPlugin,
+  TestRunner,
+} from "../targets/types.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
 import type { IncrementalReport } from "./incremental-report.ts";
+import type { CoverageCollector } from "../targets/types.ts";
 import * as log from "../cli/logger.ts";
 
 /**
@@ -34,6 +40,8 @@ export interface ExternalTargetGroup {
   targetConfig: TargetConfig;
   /** Resolved from the plugin — absent on the plugin means "no step screenshots". */
   stepEvidence: StepEvidenceSupport;
+  /** Resolved from the plugin — absent on the plugin means "cannot be measured". */
+  coverageSupport: CoverageSupport;
   specs: DispatchedSpec[];
 }
 
@@ -133,6 +141,10 @@ export function groupSpecsByTarget(
           supported: false,
           reason: `the "${plugin.id}" target does not capture step screenshots`,
         },
+        coverageSupport: plugin.coverage ?? {
+          supported: false,
+          reason: `the "${plugin.id}" target's generated tests carry no coverage hooks`,
+        },
         specs: [],
       };
       group.specs.push(entry);
@@ -153,6 +165,8 @@ export interface ExternalRunContext {
   language?: string;
   /** Rows land here as they finish (report.json flush + hub sink under --report-to-hub). */
   report: IncrementalReport;
+  /** Set by `ccqa run --coverage`; see `RunnerOptions.coverage`. */
+  coverage?: CoverageCollector;
 }
 
 /**
@@ -218,6 +232,8 @@ export async function runExternalSpecs(
         targetId: group.targetId,
         targetConfig: group.targetConfig,
         stepEvidence: group.stepEvidence,
+        coverageSupport: group.coverageSupport,
+        ...(ctx.coverage ? { coverage: ctx.coverage } : {}),
         onSpecComplete: async (row) => {
           streamed.push(row);
           await ctx.report.upsert(row);

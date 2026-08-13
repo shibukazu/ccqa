@@ -224,6 +224,7 @@ npx skills add <this-repo> --skill ccqa-record --skill ccqa-rerecord
 | Emit Playwright / runn tests | [Targets](./docs/targets.md) |
 | Drive specs live, with per-project guidance | [Live specs](./docs/live.md) |
 | Sign in once and reuse the session | [Sessions](./docs/sessions.md) |
+| See which files a spec actually reached | [Coverage](./docs/coverage.md) |
 | Run the team hub / script it over HTTP | [Hub](./docs/hub.md) · [API](./docs/hub-api.md) |
 | Understand why it is built this way | [ADR](./docs/adr/README.md) |
 
