@@ -1,0 +1,16 @@
+# No visible text moves — only the accessible name both the prose and the
+# generated selector address the checkbox by. Both surfaces quote it, so the
+# root is the spec (the unscoreable default); label + sub-diagnosis only.
+# tasks/filter-tasks never touches a row checkbox and must stay clean.
+title: >-
+  the row checkbox's accessible name changes — no visible text moved, only
+  the aria-label the spec addresses it by
+mutations:
+  - file: web/src/components/TaskRow.tsx
+    search: 'aria-label={`Mark "${task.title}" done`}'
+    replace: 'aria-label={`Toggle "${task.title}"`}'
+expect:
+  audit:
+    tasks/complete-task:
+      label: TEST_DRIFT
+      subDiagnosis: SELECTOR_DRIFT

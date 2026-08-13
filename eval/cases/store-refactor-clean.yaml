@@ -1,0 +1,23 @@
+# The backend sibling of refactor-bait-clean: a diff in the data layer the
+# project page reads through, with provably identical behaviour (`.get` is
+# `.all()[0]`). The audit must judge across the layer boundary, not react to
+# where the diff sits.
+title: >-
+  the project lookup is rewritten with identical behaviour — a
+  backend-internal refactor the audit must stay silent on
+mutations:
+  - file: server/db/queries/projects.ts
+    search: |-
+      export function getProject(db: DB, id: number): Project | undefined {
+        const row = db.prepare(`${SELECT_WITH_COUNTS} WHERE p.id = ? GROUP BY p.id`).get(id) as
+          | ProjectRow
+          | undefined;
+        return row ? toProject(row) : undefined;
+      }
+    replace: |-
+      export function getProject(db: DB, id: number): Project | undefined {
+        const rows = db.prepare(`${SELECT_WITH_COUNTS} WHERE p.id = ? GROUP BY p.id`).all(id) as ProjectRow[];
+        return rows.length > 0 ? toProject(rows[0]!) : undefined;
+      }
+expect:
+  audit: {}

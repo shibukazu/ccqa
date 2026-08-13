@@ -1,0 +1,16 @@
+# A moved route is SPEC_CHANGE, not TEST_DRIFT: the address is part of what
+# the spec describes (it opens the help path directly), and the vocabulary
+# files a moved route under BEHAVIOUR_CHANGED.
+title: the help page moves to a new route — same page, new address
+mutations:
+  - file: web/src/App.tsx
+    search: '<Route path="/help" element={<HelpPage />} />'
+    replace: '<Route path="/guide" element={<HelpPage />} />'
+  - file: web/src/App.tsx
+    search: '<NavLink to="/help">Help</NavLink>'
+    replace: '<NavLink to="/guide">Help</NavLink>'
+expect:
+  audit:
+    help/read-help:
+      label: SPEC_CHANGE
+      specChangeKind: BEHAVIOUR_CHANGED

@@ -1,0 +1,24 @@
+# Server-only rename of the create response's envelope: the server compiles
+# (res.json is untyped), the client's typed cast misses it, and the add flow
+# breaks only at run time. The intent the spec describes is unchanged, so
+# there is nothing for a static audit to report — but the one flow that
+# POSTs a task must re-run.
+title: >-
+  the create-task response envelope is renamed server-side — the client
+  still reads the old key, so the add flow must re-run
+mutations:
+  - file: server/routes/tasks.ts
+    search: "res.status(201).json({ task });"
+    replace: "res.status(201).json({ data: task });"
+expect:
+  select:
+    auth/login: notNeeded
+    auth/logout: notNeeded
+    help/read-help: notNeeded
+    projects/create-project: notNeeded
+    projects/open-project: notNeeded
+    settings/update-profile: notNeeded
+    tasks/add-task: needed
+    tasks/complete-task: notNeeded
+    tasks/edit-task-notes: notNeeded
+    tasks/filter-tasks: notNeeded

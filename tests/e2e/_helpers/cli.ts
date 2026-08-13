@@ -17,7 +17,19 @@ export type RunCcqaOptions = {
   env?: Record<string, string>;
   pathPrepend?: string[];
   timeoutMs?: number;
+  /** Drop matching keys from the inherited environment before `env` lands. */
+  scrubEnv?: (key: string) => boolean;
+  /** Spawn this instead of what `CCQA_CLI` resolves to (the eval harness pins the dev entry). */
+  command?: { cmd: string; args: string[] };
 };
+
+/** This working tree's ccqa via the dev entry — no build step in between. */
+export function devCcqaCommand(): { cmd: string; args: string[] } {
+  return {
+    cmd: "node",
+    args: ["--experimental-strip-types", resolve(REPO_ROOT, "bin", "ccqa.ts")],
+  };
+}
 
 // Resolves which binary to invoke for `ccqa`. Controlled by CCQA_CLI env var
 // so the same E2E suite can be retargeted across migration phases:
@@ -31,20 +43,26 @@ export function resolveCcqaCommand(): { cmd: string; args: string[] } {
     if (!cmd) throw new Error("CCQA_CLI is empty after trim");
     return { cmd, args: rest };
   }
-  return {
-    cmd: "node",
-    args: ["--experimental-strip-types", resolve(REPO_ROOT, "bin", "ccqa.ts")],
-  };
+  return devCcqaCommand();
 }
+
+/** The child hit the caller's deadline — distinguishable from the CLI failing. */
+export class CcqaTimeoutError extends Error {}
 
 export function runCcqa(
   args: string[],
   opts: RunCcqaOptions,
 ): Promise<RunCcqaResult> {
-  const { cmd, args: prefixArgs } = resolveCcqaCommand();
+  const { cmd, args: prefixArgs } = opts.command ?? resolveCcqaCommand();
   const finalArgs = [...prefixArgs, ...args];
 
-  const baseEnv: NodeJS.ProcessEnv = { ...process.env, ...(opts.env ?? {}) };
+  const baseEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (opts.scrubEnv) {
+    for (const key of Object.keys(baseEnv)) {
+      if (opts.scrubEnv(key)) delete baseEnv[key];
+    }
+  }
+  Object.assign(baseEnv, opts.env ?? {});
   if (opts.pathPrepend && opts.pathPrepend.length > 0) {
     const sep = process.platform === "win32" ? ";" : ":";
     baseEnv.PATH = [...opts.pathPrepend, baseEnv.PATH ?? ""].join(sep);
@@ -70,14 +88,17 @@ export function runCcqa(
 
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error(`runCcqa timed out after ${opts.timeoutMs ?? 60_000}ms`));
+      reject(new CcqaTimeoutError(`runCcqa timed out after ${opts.timeoutMs ?? 60_000}ms`));
     }, opts.timeoutMs ?? 60_000);
 
     child.on("error", (err) => {
       clearTimeout(timeout);
       reject(err);
     });
-    child.on("exit", (code) => {
+    // "close", not "exit": exit fires when the process dies, possibly before
+    // the last stdout chunks are delivered — large JSON reports came back
+    // truncated. close waits for the stdio streams to drain.
+    child.on("close", (code) => {
       clearTimeout(timeout);
       resolvePromise({ stdout, stderr, exitCode: code ?? -1 });
     });

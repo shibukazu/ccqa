@@ -1,0 +1,13 @@
+title: save notes on a task
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: open the "Website redesign" project
+    expected: the task list is visible
+  - instruction: open the "Update the pricing page" task
+    expected: the task page shows its title and a "Notes" field
+  - instruction: fill the "Notes" field and click "Save"
+    expected: the page confirms with "Changes saved"

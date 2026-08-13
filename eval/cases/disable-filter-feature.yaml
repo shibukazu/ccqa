@@ -1,0 +1,22 @@
+# The vocabulary counts deliberate disabling as FEATURE_REMOVED. The bait is
+# that every string the spec names still greps in FilterBar.tsx — the audit
+# has to read reachability, not presence.
+title: >-
+  the filter bar is switched off, not deleted — the code remains but the
+  buttons never render
+mutations:
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: "export function ProjectDetailPage() {"
+    replace: |-
+      // The filter bar is hidden while its interaction is redesigned.
+      const SHOW_FILTERS = false;
+
+      export function ProjectDetailPage() {
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: "<FilterBar value={filter} onChange={setFilter} />"
+    replace: "{SHOW_FILTERS ? <FilterBar value={filter} onChange={setFilter} /> : null}"
+expect:
+  audit:
+    tasks/filter-tasks:
+      label: SPEC_CHANGE
+      specChangeKind: FEATURE_REMOVED

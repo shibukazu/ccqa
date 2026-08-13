@@ -1,0 +1,13 @@
+title: add a task to a project
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: open the "Website redesign" project
+    expected: the task list is visible
+  - instruction: type "Review the launch checklist" into the "Add a task" field
+    expected: the field holds the typed value
+  - instruction: submit the new task with the "Add task" button
+    expected: the list shows "Review the launch checklist" and the progress reads "1 of 4 done"

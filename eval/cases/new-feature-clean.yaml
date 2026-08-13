@@ -1,0 +1,29 @@
+# A new nav item and page appear; nothing any existing spec asserts moves.
+# The "Settings" and "Help" links the specs use are untouched.
+title: a new page appears that no spec covers — existing specs must stay clean
+mutations:
+  - file: web/src/App.tsx
+    search: '<Route path="/settings" element={<SettingsPage />} />'
+    replace: |-
+      <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/activity" element={<ActivityPage />} />
+  - file: web/src/App.tsx
+    search: '<NavLink to="/help">Help</NavLink>'
+    replace: |-
+      <NavLink to="/help">Help</NavLink>
+                <NavLink to="/activity">Activity</NavLink>
+  - file: web/src/App.tsx
+    search: "function AuthenticatedLayout() {"
+    replace: |-
+      function ActivityPage() {
+        return (
+          <section>
+            <h1>Activity</h1>
+            <p className="page-subtitle">Recent changes across your projects will appear here.</p>
+          </section>
+        );
+      }
+
+      function AuthenticatedLayout() {
+expect:
+  audit: {}

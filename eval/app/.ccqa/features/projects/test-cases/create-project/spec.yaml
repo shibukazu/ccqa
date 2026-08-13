@@ -1,0 +1,11 @@
+title: create a project from the list
+steps:
+  - include: login
+    params:
+      APP_URL: ${APP_URL}
+      EMAIL: ${APP_EMAIL}
+      PASSWORD: ${APP_PASSWORD}
+  - instruction: click the "New project" button
+    expected: the "Project name" field appears
+  - instruction: fill the "Project name" field with "Marketing site" and click "Create project"
+    expected: the list shows "Marketing site"

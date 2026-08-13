@@ -1,0 +1,22 @@
+# Regression pin, not a model measurement: a change inside a spec's own
+# directory is answered mechanically (see partitionChanges in
+# src/select/analyze.ts) — no model call, and it must stay that way.
+title: >-
+  a spec's own file changes — that spec re-runs (mechanical set membership,
+  no model call)
+mutations:
+  - file: .ccqa/features/tasks/test-cases/add-task/spec.yaml
+    search: "title: add a task to a project"
+    replace: "title: add one task to a project"
+expect:
+  select:
+    auth/login: notNeeded
+    auth/logout: notNeeded
+    help/read-help: notNeeded
+    projects/create-project: notNeeded
+    projects/open-project: notNeeded
+    settings/update-profile: notNeeded
+    tasks/add-task: needed
+    tasks/complete-task: notNeeded
+    tasks/edit-task-notes: notNeeded
+    tasks/filter-tasks: notNeeded

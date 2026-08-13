@@ -1,0 +1,29 @@
+title: the filter feature is removed outright — the spec asks about something gone
+mutations:
+  - file: web/src/components/FilterBar.tsx
+    delete: true
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: 'import { useEffect, useMemo, useState, type FormEvent } from "react";'
+    replace: 'import { useEffect, useState, type FormEvent } from "react";'
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: 'import { FilterBar, type TaskFilter } from "../components/FilterBar";'
+    replace: ""
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: 'const [filter, setFilter] = useState<TaskFilter>("all");'
+    replace: ""
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: |-
+      const visibleTasks = useMemo(() => {
+          if (filter === "open") return tasks.filter((task) => !task.done);
+          if (filter === "completed") return tasks.filter((task) => task.done);
+          return tasks;
+        }, [tasks, filter]);
+    replace: const visibleTasks = tasks;
+  - file: web/src/pages/ProjectDetailPage.tsx
+    search: "<FilterBar value={filter} onChange={setFilter} />"
+    replace: ""
+expect:
+  audit:
+    tasks/filter-tasks:
+      label: SPEC_CHANGE
+      specChangeKind: FEATURE_REMOVED
