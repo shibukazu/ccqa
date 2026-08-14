@@ -594,7 +594,7 @@ collapsing them would lose exactly the case that matters.
 | `needsRepair` | Drift, an audit that could not decide, or a failed run | **A person** |
 | `inProgress` | A job holds it, or the audit has not caught up with the deploy | Wait |
 | `verified` | Cleared by the audit, last run passed against this deploy | Nobody |
-| `manuallyVerified` | A person checked it by hand (`ccqa hub attest`) and that still covers this deploy | Nobody, until it lapses |
+| `manuallyVerified` | A person checked it by hand (`ccqa hub attest`) and that still covers this deploy | Nobody; on lapse it rejoins the cycle |
 
 Only `rerunNeeded` runs; nothing opts into the other four.
 
@@ -616,8 +616,10 @@ uncovered as a result a deploy invalidated, and the action is identical.
 
 **A failed spec is `needsRepair`, and no flag opts into it.** Re-running it
 teaches nothing until the code it exercises moves or the spec is fixed, and a
-live spec costs dollars a go. It leaves that state when a deploy reaches it
-again, or when the spec is updated.
+live spec costs dollars a go. It leaves that state when a person repairs it,
+or when they attest that the failure was environmental — and once that
+attestation lapses the spec rejoins the cycle rather than falling back onto
+the red they already answered (ADR-0020).
 
 **A spec the audit rejected is `needsRepair` too.** Re-running cannot repair a
 spec that no longer describes the code: it would fail for the reason the audit

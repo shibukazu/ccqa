@@ -137,19 +137,15 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       deployTimes,
     );
     if (auditMoved && audit.audit !== "due") audit = { audit: "due" };
-    // `failed` is left alone: a red result is current information about the
-    // product whatever the spec has done since, and re-running it before a
-    // person looks teaches nothing.
+    // A spec edit does not touch `failed`: a red is current information about
+    // the product whatever the spec has done since.
     if (runMoved && execution.execution === "passed") execution = { execution: "stale" };
 
-    const held = heldBy(locks, spec.key, now);
-    let verdict = decide(audit.audit, execution.execution, held);
-
-    // A person's word overrides the machine's answer, never the axes: both
-    // are shipped unchanged so the reader can see what the attestation is
-    // standing in for. One that no longer covers is kept visible with the
-    // reason it lapsed — the person deciding whether to attest again needs
-    // to know what changed since they last looked.
+    // A person's word overrides the machine's answer, never the axes while it
+    // covers: both are shipped unchanged so the reader can see what the
+    // attestation is standing in for. One that no longer covers is kept
+    // visible with the reason it lapsed — the person deciding whether to
+    // attest again needs to know what changed since they last looked.
     const manualState = readAttestation(
       attestations.specs[spec.key],
       spec,
@@ -158,6 +154,18 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       log,
       deployTimes,
     );
+
+    // Once their word lapses, the spec rejoins the cycle rather than falling
+    // back onto the red they had already answered: `needsRepair` is never
+    // re-run, so that fall-back strands it for good (ADR-0020). A red recorded
+    // after they looked outranks their word, and keeps the spec parked.
+    const lapsedOverRed =
+      manualState?.kind === "lapsed" && manualState.because !== "newerRed";
+    if (execution.execution === "failed" && lapsedOverRed) execution = { execution: "stale" };
+
+    const held = heldBy(locks, spec.key, now);
+    let verdict = decide(audit.audit, execution.execution, held);
+
     if (manualState?.kind === "covers" && !held && verdict !== "verified") {
       verdict = "manuallyVerified";
     }
@@ -298,8 +306,10 @@ function auditState(
  * buckets advance from the same terminal-run trigger, so the run that wrote
  * `run` wrote exactly one of `green` or `red`.
  *
- * `failed` outranks `stale`: a red result is current information whatever has
- * deployed since, and re-running it teaches nothing until someone repairs it.
+ * `failed` outranks `stale` here: a red result is current information whatever
+ * has deployed since, and re-running it teaches nothing until someone repairs
+ * it. Its caller retires a red a lapsed attestation already answered
+ * (ADR-0020) — this function does not know about attestations.
  */
 function executionState(
   coords: { lastRun: SpecLedgerEntry | null; lastRed: SpecLedgerEntry | null },
