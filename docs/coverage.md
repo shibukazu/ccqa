@@ -11,9 +11,17 @@ so their results are one set.
 
 ## What you need
 
-**The browser side works on its own.** Regenerate the spec (`ccqa record` or
-`ccqa generate`) so the emitted test carries the coverage calls, and add a
-`coverage:` block:
+**The browser side works on its own.** Nothing is emitted into the generated
+tests and nothing has to be regenerated: under `--coverage` the run attaches
+to the browser the target drives (over the Chrome DevTools Protocol), plants
+the spec cookie, and reads V8's counters from outside. Every browser-driving
+target is measured the same way — how the run reaches each target's browser
+is the target's own declaration (`browserCoverage`), and it is the only
+per-target piece. This half needs Node 22+ for the run itself (the CDP
+transport); on an older Node the attach fails and the row says so, rather
+than reporting an empty file set.
+
+Add a `coverage:` block:
 
 ```yaml
 # .ccqa/config.yaml
@@ -137,11 +145,11 @@ never answered" and "that half reached nothing" are otherwise the same zero:
 
 - **no instrumented server process reported** — the application is not running
   with `ccqa-tools`, or cannot reach the sink.
-- **the browser produced no result** — the generated test is missing its
-  coverage hooks (regenerate the spec), or the row is a live spec, which drives
-  its own browser and is measured on the server side only.
-- **browser collection stopped early** — the driver refused a read mid-spec,
-  so everything after that point went unseen.
+- **the browser produced no result** — the run could not attach to the
+  target's browser (the row's `coverageUnavailable` says why), or the target
+  declared no browser to measure.
+- **browser collection stopped early** — the browser went away mid-spec, so
+  everything after that point went unseen.
 
 One more is said only at the end of the run, because it is a fact about the
 run rather than about a row: **instrumented processes reported but no spec was
@@ -183,9 +191,9 @@ them it would bury them.
 - Module top level. It runs once, so the first spec to import a module would
   otherwise own it and a spec's result would depend on execution order. Kept in
   a separate set.
-- The browser half of a live spec. Live specs drive agent-browser, which runs
-  no generated test and so carries none of the hooks; their server half is
-  measured normally. A target whose generated tests lack the hooks says it was
-  not measured rather than reporting an empty result.
+- The tail of what a page ran right before an external test process closed it.
+  The engine drains counters on a short interval; what executed inside the
+  final one is gone with the page. Live specs have no such tail — their
+  browser outlives the spec, and the engine takes its final read first.
 - Work that lands more than ten seconds after a spec's test process exits. The
   run waits for the application to stop reporting, but not indefinitely.

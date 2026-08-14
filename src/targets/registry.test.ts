@@ -20,6 +20,7 @@ function fakePlugin(id: string): TargetPlugin {
     generate: (): Promise<GenerateResult> => {
       throw new Error("not under test");
     },
+    browserCoverage: { browser: "none", reason: "test target" },
   };
 }
 

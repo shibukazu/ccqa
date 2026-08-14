@@ -6,25 +6,20 @@ function emit(actions: RecordedAction[]): string {
   return emitPlaywrightDraft({ actions, testName: "sample" });
 }
 
-/**
- * The single body line an action compiles to (assumes exactly one), with the
- * coverage bookends every draft carries dropped.
- */
+/** The single body line an action compiles to (assumes exactly one). */
 function line(action: RecordedAction): string {
   const body = bodyLines([action]);
   expect(body).toHaveLength(1);
   return body[0]!;
 }
 
-/** The emitted statements, minus the coverage bookends and their try/finally. */
-const SCAFFOLD = new Set(["try {", "} finally {", "}"]);
-
+/** The emitted statements, without the test's own indentation. */
 function bodyLines(actions: RecordedAction[]): string[] {
   return emit(actions)
     .split("\n")
     .filter((l) => l.startsWith("  "))
     .map((l) => l.trim())
-    .filter((l) => l.length > 0 && !l.includes("ccqaCoverage") && !SCAFFOLD.has(l));
+    .filter((l) => l.length > 0);
 }
 
 describe("locatorToPlaywright", () => {
@@ -87,14 +82,12 @@ describe("emitPlaywrightDraft — actions", () => {
     expect(script.trimEnd().endsWith("});")).toBe(true);
   });
 
-  it("bookends the test: start before any action, stop in a finally", () => {
+  it("emits no coverage code — measurement attaches from outside the test", () => {
+    // Under `--coverage` the run owns the browser and attaches to it over CDP
+    // (see the target's `browserCoverage`), so nothing measurement-related may
+    // land in the generated file for an LLM rewrite to drop.
     const script = emit([{ action: "navigate", value: "https://example.test/" }]);
-    expect(script).toContain(`from "ccqa/coverage-hooks";`);
-    // Order: V8 reports nothing for a script parsed before collection began,
-    // and a request made before the cookie is attached is attributed to nobody.
-    expect(script.indexOf("ccqaCoverageStart(page)")).toBeLessThan(script.indexOf("page.goto"));
-    // `finally`: a failing spec is exactly the one whose reach a reader wants.
-    expect(script).toMatch(/}\s*finally\s*{\s*await ccqaCoverageStop\(page\);\s*}/);
+    expect(script).not.toContain("coverage");
   });
 
   it("maps interactions 1:1", () => {

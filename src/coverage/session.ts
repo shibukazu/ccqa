@@ -1,7 +1,7 @@
 /**
  * One run's coverage measurement: the sink the application pushes to, the
- * environment each spec's test process needs, and the merge of what both sides
- * reported into a report row.
+ * acquisition engine each spec's browser is armed with, and the merge of what
+ * both sides reported into a report row.
  *
  * The two sides never talk to each other. The browser writes what it reached
  * into the spec's coverage directory; instrumented server processes push what
@@ -10,7 +10,6 @@
 
 import { access, readFile, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
-
 
 import { ACTOR_DRAIN_MS, NO_ACTORS, type ActorPlan } from "./actors.ts";
 import type { CoverageConfig } from "../config/project-config.ts";
@@ -21,14 +20,8 @@ import { specKey, type SpecRef } from "../store/index.ts";
 import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
 import { CoverageSink } from "./sink.ts";
-import {
-  COVERAGE_ARTIFACTS_ENV,
-  COVERAGE_ORIGINS_ENV,
-  COVERAGE_ROOT_ENV,
-  COVERAGE_SPEC_ENV,
-  FRONTEND_COVERAGE_FILE,
-  type FrontendCoverage,
-} from "./contract.ts";
+import { startBrowserCoverage, type BrowserCoverageHandle } from "./browser/engine.ts";
+import { FRONTEND_COVERAGE_FILE, type FrontendCoverage } from "./contract.ts";
 
 /**
  * The application pushes on a timer, so the last second of a spec is still in
@@ -60,8 +53,8 @@ export class CoverageSession {
   private readonly runId: string;
   /** What reported paths are relative to, and what they are checked against. */
   private readonly root: string;
-  /** Set only when the project widened the root; see `specEnv`. */
-  private readonly declaredRoot: string | undefined;
+  /** Where ccqa runs — the engine's base for resolving bundler-relative paths. */
+  private readonly cwd: string;
   private readonly actors: ActorPlan;
   readonly origins: readonly string[];
 
@@ -71,14 +64,14 @@ export class CoverageSession {
     sink: CoverageSink,
     runId: string,
     root: string,
-    declaredRoot: string | undefined,
+    cwd: string,
     actors: ActorPlan,
     origins: readonly string[],
   ) {
     this.sink = sink;
     this.runId = runId;
     this.root = root;
-    this.declaredRoot = declaredRoot;
+    this.cwd = cwd;
     this.actors = actors;
     this.origins = origins;
   }
@@ -105,7 +98,7 @@ export class CoverageSession {
       sink,
       options.runId,
       declaredRoot ?? options.cwd,
-      declaredRoot,
+      options.cwd,
       actors,
       origins,
     );
@@ -116,14 +109,14 @@ export class CoverageSession {
   }
 
   /**
-   * Opens the spec's measurement and returns what its test process needs.
+   * Opens the spec's measurement.
    *
    * Waits out the drain first, when the spec acts as an identity another spec
    * just finished acting as: the two clocks involved make an event near the
    * boundary ambiguous, and a quiet gap is the only thing that resolves it
    * without either side having to trust the other's time.
    */
-  async beginSpec(ref: SpecRef, coverageDir: string): Promise<Record<string, string>> {
+  async beginSpec(ref: SpecRef): Promise<void> {
     const specId = specIdFor(this.runId, ref);
     for (const window of this.actors.windowsForSpec.get(specKey(ref)) ?? []) {
       const closedAt = this.sink.lastClosedAt(window.tag);
@@ -134,22 +127,23 @@ export class CoverageSession {
       }
       this.sink.openWindow(window, specId);
     }
-    return this.specEnv(ref, coverageDir);
   }
 
-  /** What a spec's test process needs to attach the cookie and report back. */
-  private specEnv(ref: SpecRef, coverageDir: string): Record<string, string> {
-    return {
-      [COVERAGE_SPEC_ENV]: specIdFor(this.runId, ref),
-      [COVERAGE_ORIGINS_ENV]: this.origins.join(","),
-      [COVERAGE_ARTIFACTS_ENV]: coverageDir,
-      // Only when the project asked for a wider root. This name is also the
-      // one `ccqa-tools` reads, and a server the test process starts
-      // inherits the environment: setting it always would re-root that
-      // server's ids while its `include` prefixes stayed relative to the old
-      // root, and it would then instrument nothing.
-      ...(this.declaredRoot === undefined ? {} : { [COVERAGE_ROOT_ENV]: this.declaredRoot }),
-    };
+  /**
+   * Attaches the acquisition engine to the browser the spec's target drives.
+   * Everything spec-specific the engine needs — the id, the cookie's
+   * destinations, the roots — lives here, so the caller only supplies where
+   * the browser is.
+   */
+  armBrowser(ref: SpecRef, cdpUrl: string, coverageDir: string): Promise<BrowserCoverageHandle> {
+    return startBrowserCoverage({
+      cdpUrl,
+      specId: specIdFor(this.runId, ref),
+      origins: this.origins,
+      coverageDir,
+      roots: { base: this.cwd, root: this.root },
+      warn: (text) => log.warn(`coverage: ${text}`),
+    });
   }
 
   /** Merges both sides once the spec's pushes have stopped arriving. */
@@ -360,8 +354,9 @@ async function readFrontend(
   try {
     raw = await readFile(join(coverageDir, FRONTEND_COVERAGE_FILE), "utf8");
   } catch {
-    // Absent whenever the generated test never called the hooks. The row says
-    // so through `frontendReported`; the back-end half still counts.
+    // Absent whenever no engine ever wrote here — an unmeasured target, or an
+    // attach that failed. The row says so through `frontendReported`; the
+    // back-end half still counts.
     return undefined;
   }
   try {

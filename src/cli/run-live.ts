@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import * as log from "./logger.ts";
@@ -43,6 +43,8 @@ import { generateLiveSessionName } from "../prompts/live.ts";
 import { liveRunToReportResult } from "../report/live-adapter.ts";
 import type { ReportCoverage, ReportSpecResult } from "../report/schema.ts";
 import { closeMeasurement, specCoverageDir } from "../coverage/session.ts";
+import { acquireAgentBrowserEndpoint } from "../targets/agent-browser/browser-endpoint.ts";
+import { errMessage } from "../run/errors.ts";
 import type { CoverageCollector } from "../targets/types.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import type { RunTeardown } from "./run-teardown.ts";
@@ -85,9 +87,10 @@ export interface RunLiveOptions {
    */
   report?: IncrementalReport;
   /**
-   * Server-side coverage for live specs. Only the server half: a live spec
-   * drives agent-browser, which runs no generated test and so carries none of
-   * the browser hooks. Present only under `--coverage`.
+   * Coverage for live specs, both halves: the browser through the engine
+   * attached to agent-browser's own browser (see runOneSpec), the server
+   * through the cookie that attachment plants. Present only under
+   * `--coverage`.
    */
   coverage?: CoverageCollector;
 }
@@ -114,21 +117,24 @@ export type LiveSpecRun = {
 async function measureLive<T>(
   spec: SpecRef,
   opts: RunLiveOptions,
-  reportDir: string,
+  coverageDir: string,
   execute: () => Promise<T>,
 ): Promise<{ outcome: T; coverage: ReportCoverage | undefined }> {
   const collector = opts.coverage;
   if (collector === undefined) return { outcome: await execute(), coverage: undefined };
-  const dir = specCoverageDir(reportDir, spec.featureName, spec.specName);
-  await collector.beginSpec(spec, dir);
+  // Recreated per run so a previous run's browser result can't leak into
+  // this row — the engine (armed inside `execute`) writes into it.
+  await rm(coverageDir, { recursive: true, force: true });
+  await mkdir(coverageDir, { recursive: true });
+  await collector.beginSpec(spec);
   let outcome: T;
   try {
     outcome = await execute();
   } catch (err) {
-    await closeMeasurement(collector, spec, dir);
+    await closeMeasurement(collector, spec, coverageDir);
     throw err;
   }
-  return { outcome, coverage: await closeMeasurement(collector, spec, dir) };
+  return { outcome, coverage: await closeMeasurement(collector, spec, coverageDir) };
 }
 
 export async function runLiveSpecs(
@@ -185,14 +191,23 @@ export async function runLiveSpecs(
         log.blank();
         log.info(`[${i + 1}/${specs.length}] ${label}`);
       }
-      const measured = await measureLive(spec, opts, reportDir, () =>
-        runOneSpec({ ...spec, opts, userPromptSuffix, cwd }),
+      // Derived once and handed to both halves: the engine writes into the
+      // directory `measureLive` recreates and then reads back.
+      const coverageDir = specCoverageDir(reportDir, spec.featureName, spec.specName);
+      const measured = await measureLive(spec, opts, coverageDir, () =>
+        runOneSpec({ ...spec, opts, userPromptSuffix, cwd, coverageDir }),
       );
       const { outcome } = measured;
       if (outcome.kind !== "run") return { outcome, row: null };
       const row = {
         ...(await buildLiveReportRow(outcome, { auth, diffProvider, reportDir, blocks }, opts, cwd)),
-        ...(measured.coverage ? { coverage: measured.coverage } : {}),
+        ...(outcome.coverageBroken !== undefined
+          ? {
+              coverageUnavailable: `could not attach to the live browser: ${outcome.coverageBroken}`,
+            }
+          : measured.coverage
+            ? { coverage: measured.coverage }
+            : {}),
       };
       await opts.report?.upsert(row);
       return { outcome, row };
@@ -284,6 +299,13 @@ type SpecRunOutcome =
        * re-read blocks from disk, which a mid-run edit could have changed. */
       envScrubMap: Array<[string, string]>;
       result: LiveRunResult;
+      /**
+       * Why the browser engine never attached, when it didn't. The row then
+       * says `coverageUnavailable` instead of carrying a server-only result
+       * that reads as "the spec reached almost nothing" — the same rule the
+       * external runner applies.
+       */
+      coverageBroken?: string;
     }
   | {
       kind: "error";
@@ -417,8 +439,10 @@ async function runOneSpec(args: {
   opts: RunLiveOptions;
   userPromptSuffix: string | null;
   cwd: string;
+  /** Where the acquisition engine writes; the caller reads it back after. */
+  coverageDir: string;
 }): Promise<SpecRunOutcome> {
-  const { featureName, specName, opts, userPromptSuffix, cwd } = args;
+  const { featureName, specName, opts, userPromptSuffix, cwd, coverageDir } = args;
   const specDir = getSpecDir(featureName, specName, cwd);
 
   let specContent: string;
@@ -465,6 +489,33 @@ async function runOneSpec(args: {
     verifyUrl = resolution.verifyUrl ?? null;
     cleanupSession = resolution.cleanup;
     log.meta("state", spec.session.join(", "));
+  }
+
+  // Under --coverage, the shared acquisition engine attaches to this spec's
+  // browser before the agent starts driving it. The session was created just
+  // above and its browser pre-warmed by the acquisition, so state restored by
+  // the executor lands in a warm browser — the executor's own recovery shape.
+  // Failure is loud on the log but does not stop the spec: the run was asked
+  // for, the measurement was not what makes it useful.
+  let browserEngine: { stop(): Promise<void> } | undefined;
+  let coverageBroken: string | undefined;
+  if (opts.coverage) {
+    try {
+      const handle = await acquireAgentBrowserEndpoint({
+        cwd,
+        featureName,
+        specName,
+        driverSession: sessionName,
+      });
+      browserEngine = await opts.coverage.armBrowser(
+        { featureName, specName },
+        handle.cdpUrl,
+        coverageDir,
+      );
+    } catch (err) {
+      coverageBroken = errMessage(err);
+      log.warn(`coverage: could not attach to the live browser (${coverageBroken})`);
+    }
   }
 
   try {
@@ -515,8 +566,13 @@ async function runOneSpec(args: {
       specYaml: specContent,
       envScrubMap,
       result,
+      ...(coverageBroken === undefined ? {} : { coverageBroken }),
     };
   } finally {
+    // The engine's final take needs the browser, so it stops strictly before
+    // the session is closed — this ordering is what makes live measurement
+    // lossless where the external-runner path can only bound the tail.
+    if (browserEngine) await browserEngine.stop().catch(() => undefined);
     if (cleanupSession) await cleanupSession();
     opts.teardown?.untrackSession(sessionName);
     // Close the agent-browser session now that the spec is done — otherwise

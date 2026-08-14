@@ -892,6 +892,7 @@ export async function executeRun(
     ...(opts.language ? { language: opts.language } : {}),
     report: incrementalReport,
     ...(coverage ? { coverage } : {}),
+    ...(opts.teardown ? { teardown: opts.teardown } : {}),
   });
 
 
@@ -1079,24 +1080,20 @@ async function startCoverage(
     throw new RunUsageError(`could not start coverage collection: ${errMessage(err)}`);
   }
   log.meta("coverage", `sink ${session.sinkUrl} → ${session.origins.join(", ")}`);
-  const unmeasured = dispatch.external.filter((g) => !g.coverageSupport.supported).length;
+  const unmeasured = dispatch.external.filter((g) => g.browserCoverage.browser === "none").length;
   if (unmeasured > 0) {
     log.warn(
-      `${unmeasured} target(s) generate tests without the coverage hooks; their specs are reported ` +
+      `${unmeasured} target(s) declare no browser to measure; their specs are reported ` +
         `as unmeasured rather than as reaching nothing`,
     );
   }
-  // Live specs drive agent-browser, which runs no generated test and so carries
-  // none of the browser hooks. Said once rather than per row, because it is a
-  // property of how live specs work and not something a row did wrong.
-  log.meta("coverage", "live specs are measured on the server side only");
   teardown?.onFinalize(() => session.close());
   return session;
 }
 
 /**
  * A run that measured coverage still leaves rows without any — a spec on a
- * target with no coverage hooks, or one that never executed. Saying why keeps
+ * target that declares no browser, or one that never executed. Saying why keeps
  * the reader from reading a blank as "this spec reached nothing".
  */
 function explainMissingCoverage(row: ReportSpecResult): ReportSpecResult {
@@ -1539,7 +1536,7 @@ function createRerunExecutor(ctx: {
         targetId: group.targetId,
         targetConfig: group.targetConfig,
         stepEvidence: group.stepEvidence,
-        coverageSupport: group.coverageSupport,
+        browserCoverage: group.browserCoverage,
         onSpecComplete: async () => {},
       });
       return row?.status === "passed" ? "passed" : "failed";

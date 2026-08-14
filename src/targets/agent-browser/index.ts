@@ -1,6 +1,7 @@
 import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
 import { getTestScript } from "../../store/index.ts";
 import type { TargetPlugin } from "../types.ts";
+import { acquireAgentBrowserEndpoint } from "./browser-endpoint.ts";
 import { generateAgentBrowserTest } from "./generate.ts";
 
 /**
@@ -21,4 +22,9 @@ export const agentBrowserTarget: TargetPlugin = {
   // reporting, and the mode-scoped CLI flags. Wrapping those in a TestRunner
   // would only add an adapter with a single caller — see
   // src/run/target-dispatch.ts, which routes agent-browser specs there.
+  //
+  // The live path supplies `driverSession`; the det (vitest replay) path does
+  // not attach the engine yet — its replay creates the session inside the
+  // child process, out of the parent's sight.
+  browserCoverage: { browser: "cdp", cdpEndpoint: acquireAgentBrowserEndpoint },
 };

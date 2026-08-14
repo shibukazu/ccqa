@@ -66,13 +66,12 @@ export interface TargetPlugin {
    */
   stepEvidence?: StepEvidenceSupport;
   /**
-   * Whether the target's generated tests carry the `ccqa/coverage-hooks`
-   * bookends, and so can attach the spec cookie and read the browser's
-   * counters. Absent means they cannot: `ccqa run --coverage` then measures
-   * nothing for the target and says so on the row, rather than reporting an
-   * empty file set — which reads as "this spec reached no code at all".
+   * How `ccqa run --coverage` reaches the browser this target drives.
+   * Required, never optional: an author adding a target must answer, because
+   * a forgotten answer is indistinguishable from "no browser" and the row
+   * would then claim the spec reached nothing.
    */
-  coverage?: CoverageSupport;
+  browserCoverage: BrowserCoverageDecl;
   /**
    * The guidance-prompt kind this target learns under (`<kind>.user` /
    * `<kind>.agent`). Set only by LLM-generating targets (playwright, runn):
@@ -85,8 +84,40 @@ export interface TargetPlugin {
 
 export type StepEvidenceSupport = { supported: true } | { supported: false; reason: string };
 
-/** Same shape, kept as its own name because the two answers are unrelated. */
-export type CoverageSupport = StepEvidenceSupport;
+/**
+ * A target's answer to "where is your browser?".
+ *
+ * All of acquisition — the spec cookie, V8's counters, taking them before
+ * navigations — is one shared CDP engine, so `cdp` only obliges the target to
+ * produce the endpoint: the handful of lines that genuinely differ per target
+ * (agent-browser asks its CLI; playwright has ccqa launch the server its tests
+ * then connect to). `none` obliges it to explain, and the reason lands on every
+ * report row as `coverageUnavailable`, so a lazy "none" is visible to the user
+ * rather than a silent gap.
+ */
+export type BrowserCoverageDecl =
+  | { browser: "cdp"; cdpEndpoint(ctx: CdpEndpointContext): Promise<CdpBrowserHandle> }
+  | { browser: "none"; reason: string };
+
+export interface CdpEndpointContext {
+  cwd: string;
+  featureName: string;
+  specName: string;
+  /** The driver session the caller already owns, for targets that have one (agent-browser). */
+  driverSession?: string;
+}
+
+/** A reachable browser, plus whatever the target's own tooling needs to use it. */
+export interface CdpBrowserHandle {
+  /** `host:port`, an `http://` endpoint, or a ws URL of the DevTools socket. */
+  cdpUrl: string;
+  /** Extra environment for the spec's process (e.g. where to connect). */
+  env?: Record<string, string>;
+  /** Amends the spec's run command so its tooling uses this browser. */
+  amendCommand?(command: string): string;
+  /** Must be idempotent: it runs from the runner's `finally` *and* the signal teardown. */
+  dispose(): Promise<void>;
+}
 
 /**
  * Knobs for the target's own verify/fix loop, straight from the CLI flags.
@@ -172,6 +203,13 @@ export interface RunnerOptions {
   cwd: string;
   /** Directory report.json + evidence land in; runners may write artifacts under it. */
   reportDir: string;
+  /**
+   * The run's signal teardown. A runner that acquires something a `finally`
+   * cannot protect — node bypasses `finally` on an unhandled signal, and a
+   * coverage browser handle owns a process and a file in the consumer's repo —
+   * registers its disposal here.
+   */
+  teardown?: RunTeardown;
   /** Max specs executed in parallel. */
   concurrency: number;
   /**
@@ -199,15 +237,13 @@ export interface RunnerOptions {
    * `run()` for the final report, so the callback is purely incremental.
    */
   onSpecComplete: (row: ReportSpecResult) => Promise<void>;
+  /** The target's `browserCoverage` declaration, passed through verbatim. */
+  browserCoverage: BrowserCoverageDecl;
   /**
-   * Resolved from the plugin's `coverage` (absent ⇒ unsupported), same shape
-   * as `stepEvidence`.
-   */
-  coverageSupport: CoverageSupport;
-  /**
-   * Set by `ccqa run --coverage`. A runner passes `specEnv` to the process it
-   * spawns and calls `collect` once that process has exited — the collection
-   * waits for in-flight pushes, so it must not run while the spec still is.
+   * Set by `ccqa run --coverage`. A runner brackets each spec with
+   * `beginSpec`/`collect`, and between them attaches the acquisition engine
+   * to the browser the target's `cdpEndpoint` names — the collection waits
+   * for in-flight pushes, so it must not run while the spec still is.
    *
    * Structural, so this module does not have to know the coverage subsystem's
    * class and a runner test does not have to stand up its HTTP sink.
@@ -230,9 +266,11 @@ export interface TestRunner {
  *
  * `beginSpec` may wait before it answers — a spec acting as an identity another
  * spec just released has to let the boundary go quiet first — so it brackets
- * the spec rather than only describing it.
+ * the spec rather than only describing it. `armBrowser` attaches the shared
+ * acquisition engine to the browser named by the target's `cdpEndpoint`.
  */
 export interface CoverageCollector {
-  beginSpec(ref: SpecRef, artifactsDir: string): Promise<Record<string, string>>;
+  beginSpec(ref: SpecRef): Promise<void>;
+  armBrowser(ref: SpecRef, cdpUrl: string, artifactsDir: string): Promise<{ stop(): Promise<void> }>;
   collect(ref: SpecRef, artifactsDir: string): Promise<ReportCoverage>;
 }

@@ -1,6 +1,5 @@
 /**
- * The names and shapes ccqa agrees on with the two things it talks to: the
- * instrumented application, and the test process it spawns.
+ * The names and shapes ccqa agrees on with the instrumented application.
  *
  * Restated from `ccqa-tools`'s `wire.ts` rather than imported: the CLI must
  * not depend on the instrumentation SDK, which is installed in the application
@@ -11,31 +10,12 @@
  * Not named `wire.ts` like its counterpart, deliberately. The one moment anyone
  * opens both is while working out why the sink saw nothing, and two tabs with
  * one name is the wrong thing to hand them.
- *
- * Nothing here imports anything: `ccqa/coverage-hooks` is a public subpath
- * that runs inside a consumer's test process and pulls this file in.
  */
 
-/** Set on the browser by ccqa at spec start, scoped to the target origins. */
+/** Set on the browser by the acquisition engine, scoped to the instrumented origins. */
 export const COVERAGE_COOKIE = "__ccqa_coverage";
 
-/** Set on the spec's test process by `ccqa run --coverage`. */
-export const COVERAGE_SPEC_ENV = "CCQA_COVERAGE_SPEC";
-export const COVERAGE_ORIGINS_ENV = "CCQA_COVERAGE_ORIGINS";
-export const COVERAGE_ARTIFACTS_ENV = "CCQA_COVERAGE_ARTIFACTS";
-
-/**
- * Absolute directory reported paths are relative to. Defaults to the test
- * process's own directory, which is right until the project under test is one
- * package of a workspace and its siblings live above it.
- *
- * Deliberately the name `ccqa-tools` already reads for the same thing: the
- * two halves have to root their paths identically or the same file arrives
- * under two names and the union double-counts it.
- */
-export const COVERAGE_ROOT_ENV = "CCQA_COVERAGE_ROOT";
-
-/** What `ccqa/coverage-hooks` leaves for the run to read back. */
+/** What the browser engine leaves for the run to read back at collect time. */
 export const FRONTEND_COVERAGE_FILE = "coverage-frontend.json";
 
 export interface FrontendCoverage {

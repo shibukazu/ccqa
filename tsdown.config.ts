@@ -19,7 +19,6 @@ export default defineConfig({
     "bin/ccqa": "./bin/ccqa.ts",
     "runtime/test-helpers": "./src/runtime/test-helpers.ts",
     "runtime/step-evidence": "./src/runtime/step-evidence.ts",
-    "runtime/coverage-hooks": "./src/runtime/coverage-hooks.ts",
     "runtime/vitest.config": "./src/runtime/vitest.config.ts",
     "hub-client/index": "./src/hub-client/index.ts",
   },

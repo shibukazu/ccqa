@@ -28,6 +28,9 @@ export const runnTarget: TargetPlugin = {
   // runn drives an API scenario — there is no browser to screenshot, so the
   // report records this reason instead of showing an empty evidence section.
   stepEvidence: { supported: false, reason: "runn runs API scenarios, which have no screen to capture" },
+  // Same fact, different consequence: with no browser there is nothing to
+  // attach coverage acquisition to, and no cookie carrier for the server half.
+  browserCoverage: { browser: "none", reason: "runn runs API scenarios; there is no browser to measure" },
   guidanceKind: RUNN_TARGET,
 };
 

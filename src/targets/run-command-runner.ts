@@ -28,7 +28,8 @@ import {
   specArtifactsDir,
   substituteArtifactsDir,
 } from "./run-artifacts.ts";
-import type { RunnerOptions, TestRunner } from "./types.ts";
+import type { CdpBrowserHandle, RunnerOptions, TestRunner } from "./types.ts";
+import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
 
 /**
@@ -221,12 +222,15 @@ async function runOneSpec(
     await mkdir(evidenceDir, { recursive: true });
   }
 
-  // A target whose generated tests carry no coverage hooks is not measured at
-  // all: handing it the environment would produce an empty file set, and an
+  // A target that declared no browser is not measured at all: measuring only
+  // the server half with no carrier would produce an empty file set, and an
   // empty file set reads as "this spec reached nothing".
-  const coverage = opts.coverage !== undefined && opts.coverageSupport.supported ? opts.coverage : null;
+  const measurement =
+    opts.coverage !== undefined && opts.browserCoverage.browser === "cdp"
+      ? { collector: opts.coverage, cdpEndpoint: opts.browserCoverage.cdpEndpoint }
+      : null;
   const coverageDir = specCoverageDir(opts.reportDir, featureName, specName);
-  if (coverage) {
+  if (measurement) {
     await rm(coverageDir, { recursive: true, force: true });
     await mkdir(coverageDir, { recursive: true });
   }
@@ -238,13 +242,44 @@ async function runOneSpec(
     // across specs or with a prior run.
     CCQA_RUN_ID: buildRunId(),
     ...(evidenceDir ? { [EVIDENCE_DIR_ENV]: evidenceDir } : {}),
-    ...(coverage ? await coverage.beginSpec(ref, coverageDir) : {}),
   };
 
-  const command = substituteArtifactsDir(
+  let command = substituteArtifactsDir(
     substituteRunCommandFiles(runCommand, testFiles),
     artifactsDir,
   );
+
+  // The browser is stood up and the engine attached before the command is
+  // spawned: the ordering is the whole guarantee that no script runs before
+  // the profiler is on and no request leaves before the cookie exists.
+  let browserHandle: CdpBrowserHandle | undefined;
+  let browserEngine: { stop(): Promise<void> } | undefined;
+  let attachError: string | undefined;
+  if (measurement) {
+    await measurement.collector.beginSpec(ref);
+    try {
+      browserHandle = await measurement.cdpEndpoint({ cwd: opts.cwd, featureName, specName });
+      // Registered with the signal teardown as well as disposed in the
+      // `finally` below: node bypasses `finally` on an unhandled signal, and
+      // a playwright handle owns a browser process and a config file written
+      // into the consumer's repo. `dispose` is idempotent for this reason.
+      const acquired = browserHandle;
+      opts.teardown?.onFinalize(() => acquired.dispose());
+      browserEngine = await measurement.collector.armBrowser(
+        ref,
+        browserHandle.cdpUrl,
+        coverageDir,
+      );
+      if (browserHandle.amendCommand) command = browserHandle.amendCommand(command);
+      Object.assign(childEnv, browserHandle.env);
+    } catch (err) {
+      // Requested measurement that cannot happen stops the spec's coverage
+      // loudly on the row, never silently narrows it.
+      attachError = errMessage(err);
+      log.warn(`coverage: could not attach to the target's browser (${attachError})`);
+    }
+  }
+
   log.meta("command", command);
   log.blank();
 
@@ -265,14 +300,14 @@ async function runOneSpec(
     // After the command exits, never during: the application pushes on a timer,
     // and collection waits for those pushes to stop arriving. In a `finally`
     // because `beginSpec` may have opened a turn on an identity, and a turn
-    // left open outlives the spec it belonged to.
-    if (coverage) measured = await closeMeasurement(coverage, ref, coverageDir);
+    // left open outlives the spec it belonged to — which is why this runs even
+    // when the browser never attached. The engine stops first (its final take
+    // needs the browser), the browser is torn down last.
+    if (browserEngine) await browserEngine.stop().catch(() => undefined);
+    if (measurement) measured = await closeMeasurement(measurement.collector, ref, coverageDir);
+    if (browserHandle) await browserHandle.dispose().catch(() => undefined);
   }
-  const coverageFields = measured
-    ? { coverage: measured }
-    : opts.coverage && !opts.coverageSupport.supported
-      ? { coverageUnavailable: opts.coverageSupport.reason }
-      : {};
+  const coverageFields = coverageRowFields(opts, measured, attachError);
   if (spawnFailure !== undefined || outcome === undefined) {
     return {
       ...didNotExecute(
@@ -329,6 +364,26 @@ async function runOneSpec(
     ...evidenceFields,
     ...coverageFields,
   };
+}
+
+/**
+ * What the row says about measurement. A half-measured row (the server side
+ * only, because the browser never attached) would read as "this spec reached
+ * almost nothing", so a failed attach reports its reason instead of numbers.
+ */
+function coverageRowFields(
+  opts: RunnerOptions,
+  measured: ReportCoverage | undefined,
+  attachError: string | undefined,
+): Pick<ReportSpecResult, "coverage" | "coverageUnavailable"> {
+  if (attachError !== undefined) {
+    return { coverageUnavailable: `could not attach to the target's browser: ${attachError}` };
+  }
+  if (measured !== undefined) return { coverage: measured };
+  if (opts.coverage !== undefined && opts.browserCoverage.browser === "none") {
+    return { coverageUnavailable: opts.browserCoverage.reason };
+  }
+  return {};
 }
 
 /**
