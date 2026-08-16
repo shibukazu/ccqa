@@ -82,6 +82,7 @@ const SUMMARY_ORDER = rankedOrder<SpecVerdict>({
 });
 
 export interface RerunSelection {
+  /** Ordered least-recently-run first (never-run first); see `selectSpecsNeedingRerun`. */
   selected: SpecRef[];
   /** "3 rerunNeeded, 12 verified" — every offered spec accounted for. */
   summary: string;
@@ -126,7 +127,7 @@ export function selectSpecsNeedingRerun(
   report: RerunReport,
 ): RerunSelection {
   const counts = new Map<SpecVerdict, number>();
-  const selected: SpecRef[] = [];
+  const selected: Array<{ spec: SpecRef; lastRunAt: string }> = [];
   let excludedInProgress = 0;
   let excludedUnknownToHub = 0;
   let excludedAssumedReached = 0;
@@ -139,7 +140,7 @@ export function selectSpecsNeedingRerun(
     const verdict = entry?.verdict ?? "inProgress";
     counts.set(verdict, (counts.get(verdict) ?? 0) + 1);
     if (verdict === "rerunNeeded") {
-      selected.push(spec);
+      selected.push({ spec, lastRunAt: entry?.lastRun?.at ?? "" });
     } else if (verdict === "inProgress") {
       excludedInProgress++;
       if (!entry) {
@@ -150,8 +151,16 @@ export function selectSpecsNeedingRerun(
       }
     }
   }
+  // Least-recently-run first (never-run first; ISO timestamps compare
+  // lexicographically, sort stability keeps catalog order on ties). This order
+  // flows through to the printed plan, and pipelines that consume the plan cap
+  // it at N specs — a fixed catalog order would starve the same trailing specs
+  // every cycle after a mass invalidation. Wall-clock is fine here where it is
+  // not for the staleness verdict (ADR-0010): every spec in `selected` already
+  // needs a re-run, so a mis-ranking delays it, never excuses it.
+  selected.sort((a, b) => a.lastRunAt.localeCompare(b.lastRunAt));
   return {
-    selected,
+    selected: selected.map((s) => s.spec),
     summary: formatCounts(SUMMARY_ORDER, counts),
     excludedInProgress,
     excludedUnknownToHub,

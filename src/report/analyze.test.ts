@@ -20,6 +20,10 @@ function claudeResult(result: string): Awaited<ReturnType<typeof invokeClaudeStr
   return { result, isError: false, errorDetail: null, cost: NO_COST };
 }
 
+function claudeError(): Awaited<ReturnType<typeof invokeClaudeStreaming>> {
+  return { result: "", isError: true, errorDetail: "transient failure", cost: NO_COST };
+}
+
 const MINIMAL_INPUT = { specYaml: "title: x", diffPatch: null, changedFiles: null, baseRef: null };
 const MINIMAL_OPTIONS = { getFileDiff: () => null };
 
@@ -145,6 +149,42 @@ describe("analyzeFailure", () => {
     const { analysis } = await analyzeFailure(MINIMAL_INPUT, MINIMAL_OPTIONS);
     expect(analysis.label).toBe("UNKNOWN");
     expect(analysis.reasoning).toContain("no parseable JSON");
+  });
+
+  test("an errored invocation is retried once and the retry's answer is used", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(invokeClaudeStreaming)
+        .mockResolvedValueOnce(claudeError())
+        .mockResolvedValueOnce(claudeResult('```json\n{"label":"PRODUCT_BUG","confidence":0.9}\n```'));
+      const pending = analyzeFailure(MINIMAL_INPUT, MINIMAL_OPTIONS);
+      await vi.runAllTimersAsync();
+      const { analysis, sdkError } = await pending;
+      expect(analysis.label).toBe("PRODUCT_BUG");
+      expect(sdkError).toBe(false);
+      expect(invokeClaudeStreaming).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a second error settles for UNKNOWN, and the reasoning says the retry happened", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(invokeClaudeStreaming).mockResolvedValue(claudeError());
+      const pending = analyzeFailure(MINIMAL_INPUT, MINIMAL_OPTIONS);
+      await vi.runAllTimersAsync();
+      const { analysis, sdkError } = await pending;
+      expect(analysis.label).toBe("UNKNOWN");
+      expect(analysis.confidence).toBe(0);
+      expect(analysis.reasoning).toBe("Claude returned an error result (after 1 retry)");
+      expect(sdkError).toBe(true);
+      // Exactly two calls: the cap is what keeps a persistent outage from
+      // multiplying the run's Claude spend.
+      expect(invokeClaudeStreaming).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("a resolved value the classifier quoted is masked in its prose, never in a file path", async () => {

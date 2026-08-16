@@ -256,8 +256,10 @@ export type LastGreenEntry = z.infer<typeof LastGreenEntrySchema>;
  * One spec's record of a single run, as stored in a ledger bucket. Identical
  * to `LastGreenEntry` plus the commit the environment was running at the time
  * — without it a bucket entry can be ordered in wall-clock time but not
- * *positioned* against the deploy log, which is the only ordering re-run
- * selection may use (ADR-0010).
+ * *positioned* against the deploy log, which is the only ordering the
+ * staleness verdict may use (ADR-0010). Wall-clock order is fit only for
+ * scheduling within an already-decided set, where a mis-ranking delays a
+ * spec rather than excusing it.
  */
 export const SpecLedgerEntrySchema = LastGreenEntrySchema.extend({
   /** The run's `deployedSha`; absent on entries written before ADR-0010. */
