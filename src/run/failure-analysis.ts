@@ -23,8 +23,9 @@ import type { DiffProvider } from "./diff-provider.ts";
  * diff — so report rows and CI logs look the same whichever target a
  * project's specs use.
  *
- * One Claude call per failing spec, which reads the source itself rather than
- * deferring to a drift audit run beforehand. It is still one *phase*:
+ * One Claude call per failing spec (two when the first errors and is retried
+ * once), which reads the source itself rather than deferring to a drift audit
+ * run beforehand. It is still one *phase*:
  * `beginFailureAnalysis` hands back the state every path shares, so a mixed
  * run prints one `failure analysis` banner in one place rather than one per
  * execution path. It runs after every spec has executed, so no Claude turn is

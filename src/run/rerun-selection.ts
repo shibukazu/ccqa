@@ -155,7 +155,9 @@ export function selectSpecsNeedingRerun(
   // lexicographically, sort stability keeps catalog order on ties). This order
   // flows through to the printed plan, and pipelines that consume the plan cap
   // it at N specs — a fixed catalog order would starve the same trailing specs
-  // every cycle after a mass invalidation.
+  // every cycle after a mass invalidation. Wall-clock is fine here where it is
+  // not for the staleness verdict (ADR-0010): every spec in `selected` already
+  // needs a re-run, so a mis-ranking delays it, never excuses it.
   selected.sort((a, b) => a.lastRunAt.localeCompare(b.lastRunAt));
   return {
     selected: selected.map((s) => s.spec),
