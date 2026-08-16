@@ -107,7 +107,7 @@ ${stepsText}
 - Do not invent success when blocked: fail honestly with a short reason.
 - **Evidence discipline**: when the assertion target is a specific row / message / banner / URL, scroll it into view (or focus the relevant pane) before letting the step end. The "after" screenshot is captured for you automatically — your job is to make sure that screenshot shows the thing your STEP_RESULT line is talking about.
 
-### Waiting for asynchronous responses (BUDGETED)
+### Waiting for asynchronous responses
 
 Some expected outcomes arrive asynchronously — an automated reply, a background job finishing, a list refreshing. Waiting for them is fine, but the wait has a budget:
 

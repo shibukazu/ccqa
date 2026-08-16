@@ -152,10 +152,11 @@ export function selectSpecsNeedingRerun(
     }
   }
   // Least-recently-run first (never-run first; ISO timestamps compare
-  // lexicographically, sort stability keeps catalog order on ties). Callers
-  // that cap the plan at N specs cut the tail, so a fixed catalog order would
-  // starve the same trailing specs every cycle after a mass invalidation.
-  selected.sort((a, b) => (a.lastRunAt < b.lastRunAt ? -1 : a.lastRunAt > b.lastRunAt ? 1 : 0));
+  // lexicographically, sort stability keeps catalog order on ties). This order
+  // flows through to the printed plan, and pipelines that consume the plan cap
+  // it at N specs — a fixed catalog order would starve the same trailing specs
+  // every cycle after a mass invalidation.
+  selected.sort((a, b) => a.lastRunAt.localeCompare(b.lastRunAt));
   return {
     selected: selected.map((s) => s.spec),
     summary: formatCounts(SUMMARY_ORDER, counts),
