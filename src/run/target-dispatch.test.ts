@@ -13,6 +13,7 @@ import { createIncrementalReport, type ReportEnvelope } from "./incremental-repo
 import { resolveTargetFrom } from "../targets/registry.ts";
 import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
 import type {
+  BrowserCoverageDecl,
   GenerateResult,
   RunnerOptions,
   StepEvidenceSupport,
@@ -64,6 +65,7 @@ function fakePlugin(id: string, runner?: TestRunner): TargetPlugin {
     generate: (): Promise<GenerateResult> => {
       throw new Error("not under test");
     },
+    browserCoverage: { browser: "none", reason: "test target" },
     ...(runner ? { runner } : {}),
   };
 }
@@ -180,6 +182,7 @@ function emptyDispatch(): TargetDispatch {
 }
 
 const NO_EVIDENCE: StepEvidenceSupport = { supported: false, reason: "test target" };
+const NO_COVERAGE: BrowserCoverageDecl = { browser: "none", reason: "test target" };
 
 /** A group with the boilerplate config filled in, for the runExternalSpecs cases. */
 function group(runner: TestRunner, specs: ExternalTargetGroup["specs"]): ExternalTargetGroup {
@@ -188,6 +191,7 @@ function group(runner: TestRunner, specs: ExternalTargetGroup["specs"]): Externa
     runner,
     targetConfig: { runCommand: "echo {files}", resources: [], conventions: { guides: [], examples: [] } },
     stepEvidence: NO_EVIDENCE,
+    browserCoverage: NO_COVERAGE,
     specs,
   };
 }

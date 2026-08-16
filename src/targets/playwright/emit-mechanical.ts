@@ -27,7 +27,7 @@ export interface PlaywrightEmitInput {
 /** Module the emitted step-boundary capture calls import from. */
 export const STEP_EVIDENCE_MODULE = "ccqa/step-evidence";
 
-/** Capture call emitted when a step is entered / closed. Exported for the coverage gate. */
+/** Capture call emitted when a step is entered / closed. Exported for the generation gate. */
 export const STEP_EVIDENCE_BEFORE = "ccqaStepBefore";
 export const STEP_EVIDENCE_AFTER = "ccqaStepAfter";
 
@@ -88,6 +88,9 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   }
   if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
 
+  // Nothing coverage-related is emitted: under `--coverage` the run attaches
+  // to the browser from outside (see the target's `browserCoverage`), so the
+  // generated test carries no measurement code an LLM rewrite could drop.
   const body = lines.map((l) => (l === "" ? "" : `  ${l}`)).join("\n");
   return [
     `import { test, expect } from "@playwright/test";`,

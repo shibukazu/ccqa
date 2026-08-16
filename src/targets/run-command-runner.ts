@@ -13,13 +13,14 @@ import type { TestSpec } from "../spec/yaml-schema.ts";
 import type { BlockSpec } from "../types.ts";
 import { runPool } from "../runtime/pool.ts";
 import { OUTPUT_TAIL_CAP, TailBuffer } from "../run/output-tail.ts";
+import { closeMeasurement, specCoverageDir } from "../coverage/session.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
 import {
   buildStepDescriptions,
   loadEvidenceForSpec,
   specEvidenceDir,
 } from "../report/evidence.ts";
-import type { ReportArtifact, ReportSpecResult } from "../report/schema.ts";
+import type { ReportArtifact, ReportCoverage, ReportSpecResult } from "../report/schema.ts";
 import {
   ARTIFACTS_DIR_ENV,
   collectSpecArtifacts,
@@ -27,7 +28,8 @@ import {
   specArtifactsDir,
   substituteArtifactsDir,
 } from "./run-artifacts.ts";
-import type { RunnerOptions, TestRunner } from "./types.ts";
+import type { CdpBrowserHandle, RunnerOptions, TestRunner } from "./types.ts";
+import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
 
 /**
@@ -220,27 +222,100 @@ async function runOneSpec(
     await mkdir(evidenceDir, { recursive: true });
   }
 
-  const command = substituteArtifactsDir(
+  // A target that declared no browser is not measured at all: measuring only
+  // the server half with no carrier would produce an empty file set, and an
+  // empty file set reads as "this spec reached nothing".
+  const measurement =
+    opts.coverage !== undefined && opts.browserCoverage.browser === "cdp"
+      ? { collector: opts.coverage, cdpEndpoint: opts.browserCoverage.cdpEndpoint }
+      : null;
+  const coverageDir = specCoverageDir(opts.reportDir, featureName, specName);
+  if (measurement) {
+    await rm(coverageDir, { recursive: true, force: true });
+    await mkdir(coverageDir, { recursive: true });
+  }
+
+  const childEnv: Record<string, string> = {
+    [ARTIFACTS_DIR_ENV]: artifactsDir,
+    // Fresh CCQA_RUN_ID per spec, same contract as the vitest runner: specs
+    // that embed `${CCQA_RUN_ID}` in created-content names must not collide
+    // across specs or with a prior run.
+    CCQA_RUN_ID: buildRunId(),
+    ...(evidenceDir ? { [EVIDENCE_DIR_ENV]: evidenceDir } : {}),
+  };
+
+  let command = substituteArtifactsDir(
     substituteRunCommandFiles(runCommand, testFiles),
     artifactsDir,
   );
+
+  // The browser is stood up and the engine attached before the command is
+  // spawned: the ordering is the whole guarantee that no script runs before
+  // the profiler is on and no request leaves before the cookie exists.
+  let browserHandle: CdpBrowserHandle | undefined;
+  let browserEngine: { stop(): Promise<void> } | undefined;
+  let attachError: string | undefined;
+  if (measurement) {
+    await measurement.collector.beginSpec(ref);
+    try {
+      browserHandle = await measurement.cdpEndpoint({ cwd: opts.cwd, featureName, specName });
+      // Registered with the signal teardown as well as disposed in the
+      // `finally` below: node bypasses `finally` on an unhandled signal, and
+      // a playwright handle owns a browser process and a config file written
+      // into the consumer's repo. `dispose` is idempotent for this reason.
+      const acquired = browserHandle;
+      opts.teardown?.onFinalize(() => acquired.dispose());
+      browserEngine = await measurement.collector.armBrowser(
+        ref,
+        browserHandle.cdpUrl,
+        coverageDir,
+      );
+      if (browserHandle.amendCommand) command = browserHandle.amendCommand(command);
+      Object.assign(childEnv, browserHandle.env);
+    } catch (err) {
+      // Requested measurement that cannot happen stops the spec's coverage
+      // loudly on the row, never silently narrows it.
+      attachError = errMessage(err);
+      log.warn(`coverage: could not attach to the target's browser (${attachError})`);
+    }
+  }
+
   log.meta("command", command);
   log.blank();
 
   const started = Date.now();
-  let outcome: ShellOutcome;
+  let outcome: ShellOutcome | undefined;
+  let spawnFailure: string | undefined;
+  let measured: ReportCoverage | undefined;
   try {
     outcome = await runShellCommand(command, {
       cwd: opts.cwd,
       artifactsDir,
-      evidenceDir,
       logPath: join(artifactsDir, OUTPUT_LOG_FILE),
+      env: childEnv,
     });
   } catch (err) {
-    return didNotExecute(
-      `could not spawn runCommand: ${err instanceof Error ? err.message : String(err)}`,
-      "the runCommand could not be spawned",
-    );
+    spawnFailure = err instanceof Error ? err.message : String(err);
+  } finally {
+    // After the command exits, never during: the application pushes on a timer,
+    // and collection waits for those pushes to stop arriving. In a `finally`
+    // because `beginSpec` may have opened a turn on an identity, and a turn
+    // left open outlives the spec it belonged to — which is why this runs even
+    // when the browser never attached. The engine stops first (its final take
+    // needs the browser), the browser is torn down last.
+    if (browserEngine) await browserEngine.stop().catch(() => undefined);
+    if (measurement) measured = await closeMeasurement(measurement.collector, ref, coverageDir);
+    if (browserHandle) await browserHandle.dispose().catch(() => undefined);
+  }
+  const coverageFields = coverageRowFields(opts, measured, attachError);
+  if (spawnFailure !== undefined || outcome === undefined) {
+    return {
+      ...didNotExecute(
+        `could not spawn runCommand: ${spawnFailure ?? "unknown error"}`,
+        "the runCommand could not be spawned",
+      ),
+      ...coverageFields,
+    };
   }
   const durationMs = Date.now() - started;
   log.blank();
@@ -273,6 +348,7 @@ async function runOneSpec(
       durationMs,
       ...artifactFields,
       ...evidenceFields,
+      ...coverageFields,
     };
   }
   const detail = [
@@ -281,7 +357,33 @@ async function runOneSpec(
   ]
     .filter((p): p is string => p !== null)
     .join("\n");
-  return { ...failedRow(detail), durationMs, ...artifactFields, ...evidenceFields };
+  return {
+    ...failedRow(detail),
+    durationMs,
+    ...artifactFields,
+    ...evidenceFields,
+    ...coverageFields,
+  };
+}
+
+/**
+ * What the row says about measurement. A half-measured row (the server side
+ * only, because the browser never attached) would read as "this spec reached
+ * almost nothing", so a failed attach reports its reason instead of numbers.
+ */
+function coverageRowFields(
+  opts: RunnerOptions,
+  measured: ReportCoverage | undefined,
+  attachError: string | undefined,
+): Pick<ReportSpecResult, "coverage" | "coverageUnavailable"> {
+  if (attachError !== undefined) {
+    return { coverageUnavailable: `could not attach to the target's browser: ${attachError}` };
+  }
+  if (measured !== undefined) return { coverage: measured };
+  if (opts.coverage !== undefined && opts.browserCoverage.browser === "none") {
+    return { coverageUnavailable: opts.browserCoverage.reason };
+  }
+  return {};
 }
 
 /**
@@ -379,20 +481,12 @@ type ShellOutcome = { exitCode: number; tail: string };
  */
 async function runShellCommand(
   command: string,
-  opts: { cwd: string; artifactsDir: string; evidenceDir: string | null; logPath: string },
+  opts: { cwd: string; artifactsDir: string; logPath: string; env: Record<string, string> },
 ): Promise<ShellOutcome> {
   const child = spawn(command, {
     cwd: opts.cwd,
     shell: true,
-    // Fresh CCQA_RUN_ID per spec, same contract as the vitest runner: specs
-    // that embed `${CCQA_RUN_ID}` in created-content names must not collide
-    // across specs or with a prior run.
-    env: {
-      ...process.env,
-      [ARTIFACTS_DIR_ENV]: opts.artifactsDir,
-      CCQA_RUN_ID: buildRunId(),
-      ...(opts.evidenceDir ? { [EVIDENCE_DIR_ENV]: opts.evidenceDir } : {}),
-    },
+    env: { ...process.env, ...opts.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const tail = new TailBuffer(OUTPUT_TAIL_CAP);

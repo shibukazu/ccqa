@@ -8,10 +8,17 @@ import {
   type TargetConfig,
 } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
-import type { StepEvidenceSupport, TargetPlugin, TestRunner } from "../targets/types.ts";
+import type {
+  BrowserCoverageDecl,
+  StepEvidenceSupport,
+  TargetPlugin,
+  TestRunner,
+} from "../targets/types.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
 import type { IncrementalReport } from "./incremental-report.ts";
+import type { CoverageCollector } from "../targets/types.ts";
+import type { RunTeardown } from "../cli/run-teardown.ts";
 import * as log from "../cli/logger.ts";
 
 /**
@@ -34,6 +41,8 @@ export interface ExternalTargetGroup {
   targetConfig: TargetConfig;
   /** Resolved from the plugin — absent on the plugin means "no step screenshots". */
   stepEvidence: StepEvidenceSupport;
+  /** The target's required declaration, passed through verbatim. */
+  browserCoverage: BrowserCoverageDecl;
   specs: DispatchedSpec[];
 }
 
@@ -133,6 +142,7 @@ export function groupSpecsByTarget(
           supported: false,
           reason: `the "${plugin.id}" target does not capture step screenshots`,
         },
+        browserCoverage: plugin.browserCoverage,
         specs: [],
       };
       group.specs.push(entry);
@@ -153,6 +163,10 @@ export interface ExternalRunContext {
   language?: string;
   /** Rows land here as they finish (report.json flush + hub sink under --report-to-hub). */
   report: IncrementalReport;
+  /** Set by `ccqa run --coverage`; see `RunnerOptions.coverage`. */
+  coverage?: CoverageCollector;
+  /** The run's signal teardown; see `RunnerOptions.teardown`. */
+  teardown?: RunTeardown;
 }
 
 /**
@@ -218,6 +232,9 @@ export async function runExternalSpecs(
         targetId: group.targetId,
         targetConfig: group.targetConfig,
         stepEvidence: group.stepEvidence,
+        browserCoverage: group.browserCoverage,
+        ...(ctx.coverage ? { coverage: ctx.coverage } : {}),
+        ...(ctx.teardown ? { teardown: ctx.teardown } : {}),
         onSpecComplete: async (row) => {
           streamed.push(row);
           await ctx.report.upsert(row);

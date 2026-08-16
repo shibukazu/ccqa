@@ -223,6 +223,7 @@ npx skills add <this-repo> --skill ccqa-record --skill ccqa-rerecord --skill ccq
 | Playwright / runn のテストを生成する | [Targets](./targets.md) |
 | live モードで動かす | [Live specs](./live.md) |
 | 1 度ログインしてセッションを使い回す | [Sessions](./sessions.md) |
+| spec が実際にどのファイルを通ったか見る | [Coverage](./coverage.md) |
 | チームの hub を立てる・HTTP で操作する | [Hub](./hub.md) · [API](./hub-api.md) |
 | なぜこの作りなのかを知る | [ADR](./adr/README.md) |
 

@@ -18,6 +18,7 @@ import {
   stepEvidenceCall,
   stepEvidencePreserveRule,
 } from "./emit-mechanical.ts";
+import { acquirePlaywrightBrowser } from "./browser-server.ts";
 import { runCommandRunner } from "../run-command-runner.ts";
 import type { GenerateContext, GenerateResult, SpecRef, TargetPlugin } from "../types.ts";
 import * as log from "../../cli/logger.ts";
@@ -46,6 +47,10 @@ export const playwrightTarget: TargetPlugin = {
   // a run produces the same per-step before/after screenshots agent-browser
   // does — `ccqa run` sets CCQA_EVIDENCE_DIR for these specs.
   stepEvidence: { supported: true },
+  // `playwright test` launches its browser inside a process ccqa does not own,
+  // so ccqa launches the browser instead and a generated config wrapper makes
+  // the tests connect to it. Nothing is emitted into the tests themselves.
+  browserCoverage: { browser: "cdp", cdpEndpoint: acquirePlaywrightBrowser },
   guidanceKind: PLAYWRIGHT_TARGET,
 };
 
@@ -98,7 +103,7 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
           taskInstructions: playwrightTaskInstructions(draftPath),
           draft: { path: draftPath, contents: draft },
           // Only injected when the draft actually has markers to preserve.
-          ...(stepMarkers.length > 0 ? { draftInvariant: stepEvidencePreserveRule() } : {}),
+          draftInvariant: stepMarkers.length > 0 ? stepEvidencePreserveRule() : "",
         })
       : await finalizePreparedFiles({
           ctx,
@@ -108,27 +113,23 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
           warnings: [],
         });
 
-  // Gate: every step must keep both capture calls in the written test. The
-  // deterministic emit always has them; the library-rewrite pass can drop them
-  // when it restructures into page objects, which silently costs the spec its
-  // report screenshots — so verify the files on disk and warn, per step.
-  const missing = await missingStepEvidence(result, stepMarkers);
+  const missing = await missingInjectedCalls(result, stepMarkers);
   for (const w of missing) log.warn(w);
   return { ...result, warnings: [...result.warnings, ...missing] };
 }
 
 /**
- * Per-step warning for any `ccqa/step-evidence` boundary call absent from the
- * generated test files — the report would then miss that step's screenshots.
- * Reads the written test files (the LLM pass may have relocated them); a file
- * that can't be read is reported as missing all its steps rather than passing
- * silently.
+ * Warnings for calls the emitter injected that the written test no longer has.
+ * The deterministic emit always has them; the library-rewrite pass can drop
+ * them when it restructures into page objects, which silently costs the spec
+ * its screenshots. Reads the files from disk (the LLM pass may have relocated
+ * them); a file that can't be read is reported as missing everything rather
+ * than passing silently.
  */
-async function missingStepEvidence(
+async function missingInjectedCalls(
   result: GenerateResult,
   markers: StepMarker[],
 ): Promise<string[]> {
-  if (markers.length === 0) return [];
   const sources = await Promise.all(
     result.files
       .filter((f) => f.kind === "test")

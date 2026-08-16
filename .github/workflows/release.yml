@@ -77,10 +77,16 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      # The instrumentation SDK moves in lockstep with the CLI. The two agree on
+      # a wire format that only this repository tests, so "which SDK goes with
+      # which CLI" has to have an answer, and the same number is the only one
+      # nobody has to look up. Genuine skew — an application on an older SDK —
+      # is what the push payload's `protocol` field is for.
       - name: Bump version
         id: bump
         run: |
           new_version=$(pnpm version "$BUMP" --no-git-tag-version)
+          pnpm --filter ccqa-tools exec npm version "${new_version#v}" --no-git-tag-version
           echo "version=${new_version}" >> "$GITHUB_OUTPUT"
           echo "Bumped to ${new_version}"
 
@@ -91,7 +97,7 @@ jobs:
         env:
           VERSION: ${{ steps.bump.outputs.version }}
         run: |
-          git add package.json
+          git add package.json packages/tools/package.json
           git commit -m "chore: release ${VERSION}"
           git tag "${VERSION}"
 
@@ -113,6 +119,17 @@ jobs:
         if: ${{ env.DRY_RUN != 'true' }}
         run: npx -y npm@latest publish --provenance --access public
 
+      # After the CLI, so a failure here costs this package's release and not
+      # the CLI's. It installs into the application under test, which is a
+      # different tree from the one the CLI runs in — it cannot ship as a
+      # subpath of `ccqa` without dragging the CLI's dependencies along.
+      - name: Publish ccqa-tools to npm
+        if: ${{ env.DRY_RUN != 'true' }}
+        working-directory: packages/tools
+        run: |
+          pnpm build
+          npx -y npm@latest publish --provenance --access public
+
       # After publishing: a release that npm rejected should not be announced.
       # The hub-impact answer leads the body — it is what the person holding a
       # deployed hub has to act on — and gh appends the generated changelog.
@@ -126,3 +143,10 @@ jobs:
       - name: Dry-run publish
         if: ${{ env.DRY_RUN == 'true' }}
         run: npx -y npm@latest publish --dry-run --access public
+
+      - name: Dry-run publish ccqa-tools
+        if: ${{ env.DRY_RUN == 'true' }}
+        working-directory: packages/tools
+        run: |
+          pnpm build
+          npx -y npm@latest publish --dry-run --access public

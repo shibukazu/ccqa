@@ -1,0 +1,95 @@
+{
+  "name": "ccqa-tools",
+  "version": "1.35.0",
+  "type": "module",
+  "description": "Instrumentation the application under test installs, for ccqa. Currently: per-spec reach coverage.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shibukazu/ccqa.git",
+    "directory": "packages/tools"
+  },
+  "license": "MIT",
+  "exports": {
+    "./coverage": {
+      "types": "./dist/coverage/core.d.ts",
+      "import": "./dist/coverage/core.js",
+      "require": "./dist/coverage/core.cjs"
+    },
+    "./coverage/register": {
+      "types": "./dist/coverage/register.d.ts",
+      "import": "./dist/coverage/register.js",
+      "require": "./dist/coverage/register.cjs"
+    },
+    "./coverage/middleware": {
+      "types": "./dist/coverage/middleware.d.ts",
+      "import": "./dist/coverage/middleware.js",
+      "require": "./dist/coverage/middleware.cjs"
+    },
+    "./coverage/slack": {
+      "types": "./dist/coverage/slack.d.ts",
+      "import": "./dist/coverage/slack.js",
+      "require": "./dist/coverage/slack.cjs"
+    },
+    "./coverage/collector": {
+      "types": "./dist/coverage/collector.d.ts",
+      "import": "./dist/coverage/collector.js",
+      "require": "./dist/coverage/collector.cjs"
+    },
+    "./coverage/next": {
+      "types": "./dist/coverage/next.d.ts",
+      "import": "./dist/coverage/next.js",
+      "require": "./dist/coverage/next.cjs"
+    },
+    "./coverage/next/loader": {
+      "default": "./dist/coverage/next-loader.cjs"
+    },
+    "./coverage/temporal": {
+      "types": "./dist/coverage/temporal.d.ts",
+      "import": "./dist/coverage/temporal.js",
+      "require": "./dist/coverage/temporal.cjs"
+    },
+    "./coverage/temporal/workflow": {
+      "types": "./dist/coverage/temporal-workflow.d.ts",
+      "import": "./dist/coverage/temporal-workflow.js",
+      "require": "./dist/coverage/temporal-workflow.cjs"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "dependencies": {
+    "acorn": "^8.15.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsdown": "^0.21.9",
+    "typescript": "^5"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@temporalio/activity": ">=1.9.0",
+    "@temporalio/client": ">=1.9.0",
+    "@temporalio/worker": ">=1.9.0",
+    "@temporalio/workflow": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@temporalio/activity": {
+      "optional": true
+    },
+    "@temporalio/client": {
+      "optional": true
+    },
+    "@temporalio/worker": {
+      "optional": true
+    },
+    "@temporalio/workflow": {
+      "optional": true
+    }
+  }
+}

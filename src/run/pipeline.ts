@@ -37,7 +37,8 @@ import { LAST_GREEN, resolveAnalysisBase, type GitContext } from "./git-context.
 import { createLastGreenResolver, fetchLastGreenLedger } from "./last-green.ts";
 import { tryDeployHeadSha } from "./deploy-head.ts";
 import { formatDryRunLines } from "./dry-run.ts";
-import { resolveSerialGroups, type GroupLookup } from "./serial-groups.ts";
+import { mergeGroups, resolveSerialGroups, type GroupLookup } from "./serial-groups.ts";
+import { actorGroups, resolveActors, NO_ACTORS, type ActorPlan } from "../coverage/actors.ts";
 import {
   fetchRerunReport,
   requireRerunProfile,
@@ -61,7 +62,8 @@ import {
   type SpecWithMode,
 } from "./spec-catalog.ts";
 import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
-import { loadProjectConfig } from "../config/project-config.ts";
+import { loadProjectConfig, type CoverageConfig } from "../config/project-config.ts";
+import { CoverageSession } from "../coverage/session.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
 import { detectBranch, getGitHead } from "../cli/git-branch.ts";
@@ -170,6 +172,8 @@ export interface RunOptions {
   hubHeader?: string[];
   /** Opt-in for incremental hub push during the run (see run.ts --report-to-hub help). */
   reportToHub?: boolean;
+  /** Measure what each spec actually reached. See `--coverage`. */
+  coverage?: boolean;
   project?: string;
   /** Reap agent-browser sessions / flush the report on SIGINT/SIGTERM. See run-teardown.ts. */
   teardown?: RunTeardown;
@@ -611,7 +615,17 @@ export async function executeRun(
   // SIGINT/SIGTERM; a hard kill is covered by the hold's own expiry.
   const catalog = await readSpecs(specs, cwd);
   const projectConfig = await loadProjectConfig(cwd);
-  const resources = await resolveSerialGroups(projectConfig.serialGroups, cwd);
+  // Only under --coverage: an identity's turn has to be exclusive for the
+  // attribution to mean anything, but that is a cost the measurement asks for
+  // and an ordinary run must not pay.
+  const actors =
+    opts.coverage === true && forExecution
+      ? await resolveActors(projectConfig.coverage?.actors ?? {}, cwd)
+      : NO_ACTORS;
+  const resources = mergeGroups(
+    await resolveSerialGroups(projectConfig.serialGroups, cwd),
+    actorGroups(actors),
+  );
 
   const declared = [...new Set(specs.flatMap(resources))];
   if (declared.length > 0) log.meta("serial groups", declared.join(", "));
@@ -683,6 +697,14 @@ export async function executeRun(
       dispatch.external.map((g) => `${g.targetId} ${g.specs.length}`).join(" / "),
     );
   }
+
+  // Not on a dry run: it resolves no `${VAR}`, so every value coverage reads —
+  // the origins, the identities — would be empty and fail validation on a run
+  // that was never going to measure anything.
+  const coverage =
+    opts.coverage && forExecution
+      ? await startCoverage(cwd, projectConfig.coverage, actors, dispatch, opts.teardown)
+      : undefined;
 
   // Warn when a mode-scoped flag can't apply, rather than silently ignoring
   // it. These flags only affect agent-browser specs of the given mode —
@@ -818,6 +840,7 @@ export async function executeRun(
       triageUserPromptHash,
       deployedSha,
       opts,
+      coverage,
     }),
     hubSink,
     currentReportCost,
@@ -869,7 +892,10 @@ export async function executeRun(
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
     report: incrementalReport,
+    ...(coverage ? { coverage } : {}),
+    ...(opts.teardown ? { teardown: opts.teardown } : {}),
   });
+
 
   const liveOpts: RunLiveOptions = {
     ...(opts.model ? { model: opts.model } : {}),
@@ -881,6 +907,7 @@ export async function executeRun(
     concurrency: opts.concurrency ?? 1,
     resources,
     ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
+    ...(coverage ? { coverage } : {}),
     diffProvider,
     hubContext: hubCtx,
     customPrompt,
@@ -889,6 +916,11 @@ export async function executeRun(
     report: incrementalReport,
   };
   const live = await runLiveSpecs(liveSpecs, liveOpts);
+
+  // After every phase, not after the external one: live specs are measured too,
+  // and reporting between the two would call the server half missing on a run
+  // whose only measured specs had not started yet.
+  if (coverage) reportCoverageHealth(coverage, [...externalRows, ...live.reportResults]);
 
   let overallExitCode: 0 | 1 = det.exitCode !== 0 ? 1 : 0;
   if (live.failedCount > 0) overallExitCode = 1;
@@ -934,12 +966,13 @@ export async function executeRun(
     );
     report = await writeUnifiedReport({
       reportDir,
-      results,
+      results: coverage ? results.map(explainMissingCoverage) : results,
       git,
       customPromptVersion,
       triageUserPromptHash,
       deployedSha,
       opts,
+      coverage,
     });
     // The authoritative report is on disk; a later teardown flush (normal exit
     // or a signal arriving now) must not overwrite it with the provisional one.
@@ -960,6 +993,7 @@ export async function executeRun(
         triageUserPromptHash,
         deployedSha,
         opts,
+        coverage,
       });
       // Deterministic rows are the only ones that never passed through the
       // mid-run sink (external/live rows already pushed their files with their
@@ -1019,11 +1053,130 @@ export async function executeRun(
 }
 
 /**
- * Compact, prompt-friendly summary of one ccqa run for the live agent-prompt
- * update step. One section per spec: header line + per-step verdicts (see
- * `liveStepSummaryLine`). Kept to a few KB even with many specs/steps so the
- * prompt cache can absorb the bulk.
+ * Starts the run's coverage measurement before any spec runs: the sink has to
+ * be listening before the first request reaches the application, and the set
+ * of spec ids it will accept is only known once dispatch has resolved.
  */
+async function startCoverage(
+  cwd: string,
+  config: CoverageConfig | undefined,
+  actors: ActorPlan,
+  dispatch: TargetDispatch,
+  teardown: RunTeardown | undefined,
+): Promise<CoverageSession> {
+  if (config === undefined) {
+    throw new RunUsageError(
+      "--coverage needs a `coverage:` block in .ccqa/config.yaml whose " +
+        "`instrumentedOrigins` names the origins the spec cookie may be attached to",
+    );
+  }
+  let session: CoverageSession;
+  try {
+    session = await CoverageSession.start({
+      runId: buildRunId(),
+      cwd,
+      config,
+      actors,
+      specs: dispatch.external.flatMap((g) => g.specs),
+    });
+  } catch (err) {
+    throw new RunUsageError(`could not start coverage collection: ${errMessage(err)}`);
+  }
+  log.meta("coverage", `sink ${session.sinkUrl} → ${session.origins.join(", ")}`);
+  const unmeasured = dispatch.external.filter((g) => g.browserCoverage.browser === "none").length;
+  if (unmeasured > 0) {
+    log.warn(
+      `${unmeasured} target(s) declare no browser to measure; their specs are reported ` +
+        `as unmeasured rather than as reaching nothing`,
+    );
+  }
+  teardown?.onFinalize(() => session.close());
+  return session;
+}
+
+/**
+ * A run that measured coverage still leaves rows without any — a spec on a
+ * target that declares no browser, or one that never executed. Saying why keeps
+ * the reader from reading a blank as "this spec reached nothing".
+ */
+function explainMissingCoverage(row: ReportSpecResult): ReportSpecResult {
+  if (row.coverage !== undefined || row.coverageUnavailable !== undefined) return row;
+  return {
+    ...row,
+    // Failure is not the discriminator: a spec that ran and failed an assertion
+    // still ran, and telling its reader it never executed is a plain untruth.
+    // What is left here is a target the measurement does not cover.
+    coverageUnavailable:
+      row.status === "skipped"
+        ? "the spec did not execute"
+        : "this target is not measured by --coverage yet",
+  };
+}
+
+/** Everything the measurement could not place; silence here reads as "never reached". */
+function reportCoverageHealth(coverage: CoverageSession, rows: readonly ReportSpecResult[]): void {
+  if (!coverage.heardFromApplication()) {
+    log.warn(
+      "no instrumented application process reported — only the browser half was measured. The " +
+        "server needs ccqa-tools and CCQA_COVERAGE_ENDPOINT pointed at this run's sink",
+    );
+  }
+  // An application reports its boot set whether or not a spec cookie ever
+  // arrives, so the check above passes while every spec is credited with
+  // reaching no server code at all — and no gap counter moves, because the
+  // requests were never attributed to a spec in the first place.
+  const measured = rows.filter((row) => row.coverage !== undefined).length;
+  if (measured > 0 && coverage.heardFromApplication() && coverage.attributedSpecs() === 0) {
+    log.warn(
+      "instrumented application processes reported, but no spec was attributed to them — the " +
+        "spec cookie is not reaching the application, so every spec's server-side reach is zero " +
+        "for that reason rather than because the server ran nothing. Check coverage.instrumentedOrigins " +
+        "covers every origin the spec's requests go to, and that a server which is not " +
+        "node:http-based installs the middleware itself",
+    );
+  }
+  const boot = coverage.boot();
+  if (boot.length > 0) {
+    log.meta("coverage", `${boot.length} file(s) reached only at module load, attributed to no spec`);
+  }
+  // Loud on its own, and never expressed as a file count: one of these hides
+  // every file its process ran, and "1 file" reads as a rounding error.
+  const blind = coverage.uninstrumentedProcesses();
+  if (blind > 0) {
+    log.warn(
+      `${blind} application process(es) instrumented nothing at all — every file they ran is ` +
+        `missing from this run, not just some. Load hooks need node 22.15+ (23.5+ on 23.x); ` +
+        `bundled code needs the build plugin instead`,
+    );
+  }
+  // Something other than this run drove an identity the run had claimed, so
+  // what it reached is missing from a spec whose row reads as complete.
+  for (const [key, count] of coverage.outsideWindowEvents()) {
+    log.warn(
+      `${count} event(s) from ${key} arrived outside this run's turns — another job or a person ` +
+        `used that identity while it was being measured, and what they triggered is attributed to nobody`,
+    );
+  }
+  const unmapped = coverage.unmappedActorEvents();
+  if (unmapped > 0) {
+    log.meta(
+      "coverage",
+      `${unmapped} event(s) from identities this project does not declare, attributed to no spec`,
+    );
+  }
+  const rejected = coverage.rejectedPushes();
+  if (rejected > 0) {
+    log.warn(`${rejected} coverage push(es) named a spec id this run never issued — dropped`);
+  }
+  const malformed = coverage.malformedPushes();
+  if (malformed > 0) {
+    log.warn(
+      `${malformed} coverage push(es) could not be read — the application's ccqa-tools and ` +
+        `this CLI disagree on the wire format`,
+    );
+  }
+}
+
 export function buildLiveRunSummary(results: readonly ReportSpecResult[]): string {
   const sections: string[] = [];
   for (const r of results) {
@@ -1386,6 +1539,7 @@ function createRerunExecutor(ctx: {
         targetId: group.targetId,
         targetConfig: group.targetConfig,
         stepEvidence: group.stepEvidence,
+        browserCoverage: group.browserCoverage,
         onSpecComplete: async () => {},
       });
       return row?.status === "passed" ? "passed" : "failed";
@@ -1408,8 +1562,10 @@ function buildReportEnvelope(args: {
   triageUserPromptHash: string | null;
   deployedSha: string | null;
   opts: RunOptions;
+  /** The run's coverage session; carries the enumerated universe when set. */
+  coverage?: CoverageSession | null;
 }): ReportEnvelope {
-  const { git, customPromptVersion, triageUserPromptHash, deployedSha, opts } = args;
+  const { git, customPromptVersion, triageUserPromptHash, deployedSha, opts, coverage } = args;
   const runUrl = githubRunUrl();
   return {
     schemaVersion: 1,
@@ -1441,6 +1597,9 @@ function buildReportEnvelope(args: {
     // Always present (unlike the fields above), so the incremental writer can
     // refresh it on each flush without moving the key ahead of `results`.
     cost: currentReportCost(),
+    // The denominator the hub's file tree is drawn from. Omitted (not null)
+    // without --coverage or without coverage.include — see the schema comment.
+    ...(coverage?.universe ? { coverageUniverse: coverage.universe } : {}),
   };
 }
 
@@ -1453,10 +1612,11 @@ async function writeUnifiedReport(args: {
   triageUserPromptHash: string | null;
   deployedSha: string | null;
   opts: RunOptions;
+  coverage?: CoverageSession | null;
 }): Promise<RunReportData> {
-  const { reportDir, results, git, customPromptVersion, triageUserPromptHash, deployedSha, opts } = args;
+  const { reportDir, results, git, customPromptVersion, triageUserPromptHash, deployedSha, opts, coverage } = args;
   const data: RunReportData = {
-    ...buildReportEnvelope({ git, customPromptVersion, triageUserPromptHash, deployedSha, opts }),
+    ...buildReportEnvelope({ git, customPromptVersion, triageUserPromptHash, deployedSha, opts, coverage }),
     results,
   };
 

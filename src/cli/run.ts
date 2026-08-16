@@ -126,6 +126,10 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       "--report-to-hub",
       "Incrementally push the run report to the hub as the run progresses (open → patch per spec → finalize). Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN). Without it, hub credentials are used only to fetch variables/sessions/prompts, not to push.",
     )
+    .option(
+      "--coverage",
+      "Measure what each spec actually reached in the application under test, and record it on the spec's report row. Needs a `coverage:` block in .ccqa/config.yaml naming the instrumented origins the spec cookie may go to. The browser half attaches to the target's browser from outside (nothing is emitted into generated tests; needs node 22+); the server half needs the application running with ccqa-tools.",
+    )
     .optionsGroup("Learning:")
     .option(
       "--learn-hub-live-prompt",

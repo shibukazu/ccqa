@@ -309,6 +309,84 @@ export const ReportArtifactSchema = z.object({
 export type ReportArtifact = z.infer<typeof ReportArtifactSchema>;
 
 /**
+ * Everything one spec's measurement could not place.
+ *
+ * These are load-bearing, not diagnostics. An execution nobody could attribute
+ * is indistinguishable from one that never happened, and "never happened" is
+ * the answer this measurement exists to produce — so each way of losing one is
+ * counted separately and shown next to the result (ADR-0021).
+ */
+export const CoverageGapsSchema = z.object({
+  /** Server executions that ran while this spec was open but outside its context. */
+  unattributed: z.number(),
+  /** Browser scripts that ran but could not be traced back to a source file. */
+  unmappedScripts: z.number(),
+  /** Executed ranges that mapped to no original source. */
+  unmappedRanges: z.number(),
+  /** Browser sources that resolved to a path the project does not contain. */
+  outsideProject: z.number(),
+  /** Browser sources whose name could not be turned into a project path at all. */
+  unresolvedSources: z.number(),
+  /** Server files the instrumentation could not rewrite — they can never report. */
+  uninstrumentedFiles: z.number(),
+  /**
+   * Application processes that instrumented nothing at all. One of these hides
+   * every file the process ran, so it is never folded into the file count.
+   */
+  uninstrumentedProcesses: z.number(),
+  /** Pushes the application could not deliver to the sink while this run was measuring. */
+  droppedPushes: z.number(),
+  /**
+   * Events from identities the project never declared — other traffic on a
+   * shared environment. Their reach belongs to no spec, and the identity itself
+   * is dropped on arrival rather than recorded.
+   */
+  unmappedActorEvents: z.number().default(0),
+  /**
+   * Events from a declared identity that arrived outside every turn this run
+   * gave it. Something other than the run drove that identity, and what it
+   * reached is missing from a spec whose row otherwise looks complete.
+   */
+  outsideWindowEvents: z.number().default(0),
+});
+export type CoverageGaps = z.infer<typeof CoverageGapsSchema>;
+
+/**
+ * What one spec's execution actually reached: V8's own counters for the
+ * browser and per-request instrumentation for the server, unioned on the spec
+ * id both sides carry (ADR-0021).
+ *
+ * `backendReported` / `frontendReported` separate "reached nothing" from "that
+ * half never answered", which otherwise render identically as zero.
+ */
+export const ReportCoverageSchema = z.object({
+  /** Union of both sides, as project-relative posix paths. */
+  files: z.array(z.string()),
+  frontendFiles: z.number(),
+  backendFiles: z.number(),
+  /** Whether any instrumented application process reported during this run. */
+  backendReported: z.boolean(),
+  /** Whether the browser hooks produced a result for this spec. */
+  frontendReported: z.boolean(),
+  /** Whether browser collection died mid-spec, so what follows was never seen. */
+  frontendStopped: z.boolean(),
+  /**
+   * Identities this spec acted as, and how many of their events it was credited
+   * with. Present and zero when a declared identity produced nothing — which is
+   * the difference between "the flow reached nothing" and "nothing reached us".
+   */
+  actorWindows: z.array(z.object({ key: z.string(), events: z.number() })).default([]),
+  /**
+   * Browser sources dropped because they are dependency code. Outside `gaps`
+   * deliberately: nobody writes a test because a library file went unreached,
+   * and mixed in with the real holes it buries them under its own magnitude.
+   */
+  excludedDependencies: z.number(),
+  gaps: CoverageGapsSchema,
+});
+export type ReportCoverage = z.infer<typeof ReportCoverageSchema>;
+
+/**
  * Per-step / per-run cost+usage record, pulled from the SDK's `result` message.
  * Every numeric field is nullable so the report can carry partial telemetry
  * (e.g. when the SDK omits a field, or when a step was skipped).
@@ -486,6 +564,18 @@ export const ReportSpecResultSchema = z.object({
    */
   artifacts: z.array(ReportArtifactSchema).optional(),
   /**
+   * Present when the run measured coverage (`--coverage`). Optional (not
+   * nullable) so report.json written before this field existed stays valid
+   * byte-for-byte.
+   */
+  coverage: ReportCoverageSchema.optional(),
+  /**
+   * Why this row has no coverage — a target whose generated tests carry no
+   * coverage hooks. Says so instead of showing an empty file set, which reads
+   * as "this spec reached nothing".
+   */
+  coverageUnavailable: z.string().optional(),
+  /**
    * Set for specs executed in live mode (`mode: live`). The renderer shows the
    * per-step verdicts + before/after screenshots instead of (or in addition
    * to) the vitest assertion list. `assertions` is null for live-only specs.
@@ -528,6 +618,21 @@ export const GitEnvelopeSchema = z.object({
   /** See {@link BaseSourceSchema}. Optional for older report.json. */
   baseSource: BaseSourceSchema.nullable().optional(),
 });
+
+/**
+ * The denominator for the run's coverage measurement: every source file under
+ * `coverage.include`, enumerated by the run from the same checkout the specs
+ * ran against — which is what entitles a viewer to read "absent from every
+ * row's file set" as "uncovered" rather than "unknown". Run-level because it
+ * is a property of the checkout, not of any one spec.
+ */
+export const CoverageUniverseSchema = z.object({
+  /** The directories enumerated, relative to `coverage.projectRoot`. */
+  include: z.array(z.string()),
+  /** Every source file under them, relative to the same root, sorted. */
+  files: z.array(z.string()),
+});
+export type CoverageUniverse = z.infer<typeof CoverageUniverseSchema>;
 
 export const RunReportDataSchema = z.object({
   schemaVersion: z.literal(1),
@@ -593,6 +698,11 @@ export const RunReportDataSchema = z.object({
    * valid. Read the total, not the object's presence.
    */
   cost: ReportCostSchema.nullable().default(null),
+  /**
+   * Present when the run measured coverage and `coverage.include` was set.
+   * Absent (not null) otherwise, keeping older report.json byte-identical.
+   */
+  coverageUniverse: CoverageUniverseSchema.optional(),
   results: z.array(ReportSpecResultSchema),
 });
 export type RunReportData = z.infer<typeof RunReportDataSchema>;

@@ -13,8 +13,8 @@ dist
 *.tgz
 tmp
 
-# code coverage
-coverage
+# code coverage — anchored, or it would also swallow packages/coverage/
+/coverage
 *.lcov
 
 # logs

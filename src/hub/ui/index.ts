@@ -104,6 +104,7 @@ const HTML_BODY = `
     <nav class="nav">
       <a href="#/runs" class="nav-runs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 12h4l3 8 4-16 3 8h4"/></svg> <span data-i18n="nav.runs">Runs</span></a>
       <a href="#/perspectives" class="nav-perspectives"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg> <span data-i18n="nav.perspectives">Perspectives</span></a>
+      <a href="#/coverage" class="nav-coverage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2"/></svg> <span data-i18n="nav.coverage">Coverage</span></a>
       <a href="#/secrets" class="nav-secrets"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><rect x="3" y="11" width="18" height="10" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> <span data-i18n="nav.secrets">Secrets</span></a>
       <a href="#/prompts" class="nav-prompts"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 4h11l5 5v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M14 4v6h6"/><path d="M8 13h6M8 17h6"/></svg> <span data-i18n="nav.prompts">Prompts</span></a>
       <a href="#/jobs" class="nav-jobs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg> <span data-i18n="nav.learning">Learning</span></a>
@@ -224,6 +225,34 @@ const HTML_BODY = `
             <tbody id="persp-tbody"></tbody>
           </table></div></div>
           <p class="empty-note" id="persp-no-hit" hidden data-i18n="perspectives.noHit">No matching cases.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== COVERAGE ===== -->
+    <section id="view-coverage" hidden>
+      <div class="page-bar">
+        <h1 data-i18n="coverage.title">Coverage</h1>
+        <span class="updated" id="cov-asof"></span>
+        <div class="spacer"></div>
+        ${refreshButton("cov-refresh")}
+      </div>
+      <div class="content">
+        <p id="cov-status" class="empty-note" hidden></p>
+        <div id="cov-body" hidden>
+          <div class="ov">
+            <div class="ov-inv" id="cov-inv"></div>
+            <div id="cov-axis"></div>
+            <div class="cov-note" id="cov-note" hidden data-i18n="coverage.noUniverse">This measurement carried no file inventory, so only reached files are shown; nothing can be called uncovered.</div>
+          </div>
+          <div class="toolbar">
+            <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg><input id="cov-q" type="search" data-i18n-ph="coverage.search" aria-label="Filter files"></label>
+            <button class="fchip" id="cov-unc" aria-pressed="false" type="button"><span data-i18n="coverage.filter.uncovered">Uncovered only</span><span class="fcount" id="cov-unc-n"></span></button>
+          </div>
+          <div class="cov-split">
+            <div class="cov-treewrap"><div id="cov-tree"></div><p class="empty-note" id="cov-no-hit" hidden data-i18n="coverage.noHit">No matching files.</p></div>
+            <div class="cov-detail" id="cov-detail"></div>
+          </div>
         </div>
       </div>
     </section>
@@ -597,6 +626,8 @@ const CSS = `
      pass/fail ones, and read as a different kind of thing. */
   .badge.dr-found { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
   .badge.dr-found .d { background: var(--amber); }
+  .badge.uncov { background: var(--amber-bg); color: var(--amber); border-color: var(--amber-border); }
+  .badge.uncov .d { background: var(--amber); }
   .badge.dr-clean { background: var(--pass-bg); color: var(--pass); border-color: var(--pass-border); }
   .badge.dr-clean .d { background: var(--pass); }
   .badge.dr-unknown { background: var(--surface-3); color: var(--muted); border-color: var(--border); }
@@ -699,6 +730,13 @@ const CSS = `
   .artifact-acc > summary { height: 34px; }
   .artifact-pre { margin: 2px 0 8px; padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
   .section-label { font-size: 12px; font-weight: 600; color: var(--muted); margin-top: 4px; }
+  /* reached files: what the spec actually executed, plus what could not be placed */
+  .cov-counts { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0 8px; }
+  .cov-count { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 1px 7px; white-space: nowrap; }
+  .cov-count b { color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+  .cov-count.cov-warn { color: var(--fail); border-color: var(--fail); }
+  .cov-file { font-family: var(--mono); font-size: 12px; padding: 4px 4px; border-bottom: 1px solid var(--border); overflow-wrap: anywhere; }
+  .cov-file:last-child { border-bottom: none; }
   /* live run steps: stacked cards with large before/after frames */
   .step-card { border: 1px solid var(--border); border-left: 3px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); padding: 12px 14px; margin-top: 10px; }
   .step-card.passed { border-left-color: var(--border-strong); }
@@ -992,6 +1030,38 @@ const CSS = `
   .d-note { margin-top: 12px; max-width: 900px; }
 
   .tblcard { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+
+  /* ── coverage: file tree ─────────────────────────────────────────── */
+  .cov-note { font-size: 12.5px; color: var(--amber); background: var(--amber-bg); border: 1px solid var(--amber-border); border-radius: var(--radius-md); padding: 8px 12px; }
+  .cov-split { display: grid; grid-template-columns: minmax(360px, 7fr) 5fr; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+  .cov-treewrap { overflow-y: auto; max-height: 560px; padding: 6px 0; border-right: 1px solid var(--border); }
+  .cov-treewrap ul { list-style: none; margin: 0; padding: 0; }
+  .cov-treewrap ul ul { border-left: 1px solid var(--border); margin-left: 19px; }
+  .cov-row { display: flex; align-items: center; gap: 7px; width: 100%; padding: 3px 14px 3px 8px; border: 0; background: none; text-align: left; font-size: 13px; }
+  .cov-row:hover { background: var(--surface-2); }
+  .cov-row.sel { background: var(--info-bg); box-shadow: inset 2px 0 0 var(--info); }
+  .cov-row .chev { width: 12px; height: 12px; flex: none; color: var(--muted-2); transition: transform 0.15s; }
+  .cov-row .chev.open { transform: rotate(90deg); }
+  .cov-row svg.ic { width: 15px; height: 15px; flex: none; color: var(--muted-2); stroke-width: 1.7; fill: none; stroke: currentColor; }
+  .cov-row .nm { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cov-row .nm.dim { color: var(--muted); }
+  .cov-row .sp { flex: 1; }
+  .cov-row .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .cov-row .dot.ok { background: var(--pass); }
+  .cov-row .dot.no { background: var(--amber-fill); }
+  .cov-row .minibar { width: 60px; height: 5px; border-radius: 3px; background: var(--surface-3); overflow: hidden; flex: none; }
+  .cov-row .minibar i { display: block; height: 100%; background: var(--pass); }
+  .cov-row .frac { font-size: 11px; color: var(--muted); font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 52px; text-align: right; flex: none; }
+  .cov-detail { padding: 16px 18px; overflow-y: auto; max-height: 560px; }
+  .cov-detail .ph { color: var(--muted-2); font-size: 13px; padding: 30px 10px; text-align: center; }
+  .cov-detail h4 { font-size: 13px; font-family: var(--mono); font-weight: 600; margin: 0 0 4px; word-break: break-all; }
+  .cov-detail .meta { font-size: 12.5px; color: var(--muted); margin-bottom: 12px; }
+  .cov-caselist { border-top: 1px solid var(--border); }
+  .cov-caselist a { display: flex; align-items: center; gap: 10px; padding: 8px 2px; border-bottom: 1px solid var(--border); text-decoration: none; font-size: 13px; color: inherit; }
+  .cov-caselist a:hover { background: var(--surface-2); }
+  .cov-caselist .cs { font-family: var(--mono); font-size: 12.5px; flex: 1; min-width: 0; word-break: break-all; }
+  .cov-hint { margin-top: 12px; padding: 9px 13px; border-radius: var(--radius-md); background: var(--amber-bg); border: 1px solid var(--amber-border); color: var(--amber); font-size: 12.5px; }
+  @media (max-width: 900px) { .cov-split { grid-template-columns: 1fr; } .cov-treewrap { border-right: 0; border-bottom: 1px solid var(--border); } }
   /* Badges across a case row must land on one line. Some of these cells carry
      only a badge, others a badge plus a sub-line (sha · when) or a two-line
      explanation, so middle-aligning the cells put each badge at a different
@@ -1113,7 +1183,20 @@ const CLIENT_JS = `
   var I18N = {
     en: {
       "nav.projects": "Projects", "nav.runs": "Runs", "nav.perspectives": "Perspectives", "nav.secrets": "Secrets",
-      "nav.prompts": "Prompts", "nav.learning": "Learning",
+      "nav.prompts": "Prompts", "nav.learning": "Learning", "nav.coverage": "Coverage",
+      "coverage.title": "Coverage",
+      "coverage.loading": "Loading coverage…",
+      "coverage.none": "No run with coverage yet. Run with --coverage and push the report to this hub.",
+      "coverage.search": "Filter by file path…",
+      "coverage.filter.uncovered": "Uncovered only",
+      "coverage.reached": "Reached", "coverage.uncovered": "Uncovered", "coverage.files": "files",
+      "coverage.measured": "measured", "coverage.specsCombined": "specs combined",
+      "coverage.noUniverse": "This measurement carried no file inventory, so only reached files are shown; nothing can be called uncovered.",
+      "coverage.placeholder": "Select a file to see the cases that reach it.",
+      "coverage.fileUncovered": "No case reached this file in this measurement.",
+      "coverage.casesReach": "case(s) reach this file",
+      "coverage.noHit": "No matching files.",
+      "coverage.case": "case", "coverage.cases": "cases",
       "app.project": "project", "app.profile": "profile", "app.disconnect": "Disconnect", "app.noProject": "no project",
       "app.newProfile": "New profile",
       "login.title": "Connect to your hub", "login.sub": "Enter your bearer token to continue.",
@@ -1142,6 +1225,27 @@ const CLIENT_JS = `
       "acc.reasoning": "Reasoning", "acc.evidence": "Evidence", "acc.steps": "Live run steps",
       "acc.assertions": "Assertions",
       "acc.artifacts": "Artifacts",
+      "acc.coverage": "Reached files",
+      "acc.coverage.hint": "Measured, not inferred: V8's counters in the browser and per-request instrumentation on the server.",
+      "cov.frontend": "browser", "cov.backend": "server",
+      "cov.unattributed": "server executions outside this spec's context",
+      "cov.unmappedScripts": "scripts with no usable source map",
+      "cov.unmappedRanges": "executed ranges that mapped nowhere",
+      "cov.outsideProject": "browser sources outside the project",
+      "cov.unresolvedSources": "browser sources that resolved to no project path",
+      "cov.uninstrumentedFiles": "server files that could not be instrumented",
+      "cov.uninstrumentedProcesses": "server processes that instrumented nothing at all",
+      "cov.droppedPushes": "reports the application could not deliver",
+      "cov.unmappedActorEvents": "events from identities this project does not declare",
+      "cov.outsideWindowEvents": "events from a declared identity outside its turn",
+      "cov.excludedDependencies": "dependency sources, excluded on purpose",
+      "cov.route.carrier": "attributed by carrier",
+      "cov.route.actorWindow": "actor-window",
+      "cov.route.events": "events",
+      "cov.noBackend": "no instrumented server process reported",
+      "cov.noFrontend": "the browser produced no result",
+      "cov.frontendStopped": "browser collection stopped early",
+      "cov.unavailable": "Nothing was measured:",
       "art.open": "Open", "art.loadFailed": "could not load (it may have been omitted from the push)",
       "acc.assertions.hint": "Test cases from the recorded spec run",
       "spec.kind.live": "Live", "spec.kind.det": "Deterministic",
@@ -1302,7 +1406,20 @@ const CLIENT_JS = `
     },
     ja: {
       "nav.projects": "プロジェクト", "nav.runs": "実行", "nav.perspectives": "テスト観点", "nav.secrets": "シークレット",
-      "nav.prompts": "プロンプト", "nav.learning": "学習",
+      "nav.prompts": "プロンプト", "nav.learning": "学習", "nav.coverage": "カバレッジ",
+      "coverage.title": "カバレッジ",
+      "coverage.loading": "カバレッジを読み込み中…",
+      "coverage.none": "カバレッジ付きの run がまだありません。--coverage で計測し、レポートをこの hub に push してください。",
+      "coverage.search": "ファイルパスで絞り込み…",
+      "coverage.filter.uncovered": "未到達のみ",
+      "coverage.reached": "到達", "coverage.uncovered": "未到達", "coverage.files": "ファイル",
+      "coverage.measured": "計測", "coverage.specsCombined": "spec 合算",
+      "coverage.noUniverse": "この計測にはファイル台帳が付いていないため、到達したファイルのみ表示しています。未到達は判定できません。",
+      "coverage.placeholder": "ファイルを選択すると、到達しているケースが表示されます",
+      "coverage.fileUncovered": "この計測では、どのケースもこのファイルに到達しませんでした。",
+      "coverage.casesReach": "ケースが到達",
+      "coverage.noHit": "一致するファイルがありません。",
+      "coverage.case": "ケース", "coverage.cases": "ケース",
       "app.project": "プロジェクト", "app.profile": "プロファイル", "app.disconnect": "切断", "app.noProject": "プロジェクト未選択",
       "app.newProfile": "新規プロファイル",
       "login.title": "ハブに接続", "login.sub": "続けるにはベアラートークンを入力してください。",
@@ -1331,6 +1448,27 @@ const CLIENT_JS = `
       "acc.reasoning": "推論", "acc.evidence": "根拠", "acc.steps": "実行ステップ",
       "acc.assertions": "アサーション",
       "acc.artifacts": "成果物",
+      "acc.coverage": "到達ファイル",
+      "acc.coverage.hint": "推定ではなく実測。ブラウザは V8 のカウンタ、サーバはリクエスト単位の計装。",
+      "cov.frontend": "ブラウザ", "cov.backend": "サーバ",
+      "cov.unattributed": "この spec の文脈外で走ったサーバ実行",
+      "cov.unmappedScripts": "source map を辿れなかったスクリプト",
+      "cov.unmappedRanges": "どこにも対応しなかった実行範囲",
+      "cov.outsideProject": "プロジェクト外に解決したブラウザのソース",
+      "cov.unresolvedSources": "プロジェクト内のパスに解決できなかったブラウザのソース",
+      "cov.uninstrumentedFiles": "計装できなかったサーバのファイル",
+      "cov.uninstrumentedProcesses": "何も計装できなかったサーバのプロセス",
+      "cov.droppedPushes": "アプリが送信できなかった報告",
+      "cov.unmappedActorEvents": "このプロジェクトが宣言していない主体のイベント",
+      "cov.outsideWindowEvents": "宣言済みの主体が持ち時間の外で起こしたイベント",
+      "cov.excludedDependencies": "意図的に除外した依存ライブラリのソース",
+      "cov.route.carrier": "carrier で帰属",
+      "cov.route.actorWindow": "actor-window",
+      "cov.route.events": "件",
+      "cov.noBackend": "計装されたサーバプロセスからの報告なし",
+      "cov.noFrontend": "ブラウザ側の結果なし",
+      "cov.frontendStopped": "ブラウザ側の収集が途中で停止",
+      "cov.unavailable": "計測できませんでした:",
       "art.open": "開く", "art.loadFailed": "読み込めませんでした（push時に省略された可能性があります）",
       "acc.assertions.hint": "記録したスペック実行のテストケース",
       "spec.kind.live": "ライブ", "spec.kind.det": "決定的",
@@ -1945,8 +2083,8 @@ const CLIENT_JS = `
 
   // ── view routing ────────────────────────────────────────────────────
 
-  var VIEWS = ["projects", "runs", "detail", "perspectives", "secrets", "prompts", "jobs"];
-  var NAV_FOR_VIEW = { projects: ".nav-projects", secrets: ".nav-secrets", prompts: ".nav-prompts", runs: ".nav-runs", detail: ".nav-runs", jobs: ".nav-jobs", perspectives: ".nav-perspectives" };
+  var VIEWS = ["projects", "runs", "detail", "perspectives", "coverage", "secrets", "prompts", "jobs"];
+  var NAV_FOR_VIEW = { projects: ".nav-projects", secrets: ".nav-secrets", prompts: ".nav-prompts", runs: ".nav-runs", detail: ".nav-runs", jobs: ".nav-jobs", perspectives: ".nav-perspectives", coverage: ".nav-coverage" };
   function showView(id) {
     // Any in-flight job poll belongs to the view we're leaving — bump the token
     // so its next tick is a no-op (see pollJob).
@@ -1965,6 +2103,7 @@ const CLIENT_JS = `
     var gated = !state.project;
     document.querySelector(".nav-runs").classList.toggle("disabled", gated);
     document.querySelector(".nav-perspectives").classList.toggle("disabled", gated);
+    document.querySelector(".nav-coverage").classList.toggle("disabled", gated);
     document.querySelector(".nav-secrets").classList.toggle("disabled", gated);
     document.querySelector(".nav-prompts").classList.toggle("disabled", gated);
     document.querySelector(".nav-jobs").classList.toggle("disabled", gated);
@@ -1981,6 +2120,7 @@ const CLIENT_JS = `
     var m = location.hash.match(/^#\\/runs\\/(.+)$/);
     if (m) { openRunDetail(decodeURIComponent(m[1])); return; }
     if (location.hash === "#/perspectives") { openPerspectives(); return; }
+    if (location.hash === "#/coverage") { openCoverage(); return; }
     if (location.hash === "#/secrets") { openSecrets(); return; }
     if (location.hash === "#/prompts") { openPrompts(); return; }
     var j = location.hash.match(/^#\\/jobs\\/(.+)$/);
@@ -2200,6 +2340,287 @@ const CLIENT_JS = `
         empty.hidden = false;
         empty.textContent = "Error loading runs: " + err.message;
       });
+  }
+
+  // == coverage: file tree =============================================
+  // One run's measurement drawn over the enumerated universe. Everything is
+  // display-side aggregation of report.json — the hub computes nothing new.
+  var covState = { q: "", unc: false, model: null, selected: null, openDirs: null, loadToken: 0 };
+
+  function openCoverage() {
+    if (!state.project) { location.hash = "#/projects"; route(); return; }
+    showView("coverage");
+    if (covState.model) { renderCoverage(); return; }
+    loadCoverage();
+  }
+
+  function loadCoverage() {
+    var token = ++covState.loadToken;
+    var status = document.getElementById("cov-status");
+    document.getElementById("cov-body").hidden = true;
+    status.hidden = false;
+    status.textContent = t("coverage.loading");
+    apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project) + "&kind=run&limit=25")
+      .then(function (data) {
+        // A run still in flight has a report, but a partial one: rows trickle
+        // in per spec and the universe only arrives with the seal.
+        var runs = (data.runs || []).filter(function (r) { return r.status !== "running"; });
+        return covFindReport(runs, 0, token);
+      })
+      .then(function (found) {
+        if (token !== covState.loadToken) return;
+        if (!found) { status.textContent = t("coverage.none"); return; }
+        covState.model = covBuildModel(found.run, found.report);
+        covState.openDirs = null;
+        covState.selected = null;
+        status.hidden = true;
+        document.getElementById("cov-body").hidden = false;
+        renderCoverage();
+      })
+      .catch(function (err) {
+        if (token !== covState.loadToken) return;
+        status.textContent = "Error loading coverage: " + err.message;
+      });
+  }
+
+  // Newest first, stop at the first run whose report actually measured.
+  // Capped: each probe is a full report fetch, and past ten stale runs the
+  // answer is "none recent enough to trust" anyway.
+  function covFindReport(runs, i, token) {
+    if (i >= runs.length || i >= 10 || token !== covState.loadToken) return Promise.resolve(null);
+    var run = runs[i];
+    return apiFetch("/api/v1/runs/" + encodeURIComponent(run.id) + "/report").then(function (report) {
+      var measured = !!report.coverageUniverse || (report.results || []).some(function (r) { return r.coverage; });
+      if (measured) return { run: run, report: report };
+      return covFindReport(runs, i + 1, token);
+    }).catch(function () { return covFindReport(runs, i + 1, token); });
+  }
+
+  function covBuildModel(run, report) {
+    // Null-prototype maps throughout: a path segment named "constructor" or
+    // "__proto__" must stay data, not resolve to an inherited property.
+    var byFile = Object.create(null);
+    var measuredSpecs = 0;
+    (report.results || []).forEach(function (row) {
+      if (!row.coverage) return;
+      measuredSpecs++;
+      var key = row.feature + "/" + row.spec;
+      (row.coverage.files || []).forEach(function (path) {
+        (byFile[path] = byFile[path] || []).push(key);
+      });
+    });
+    // universe ∪ reached: the enumeration's filters can never lose a result.
+    var universe = report.coverageUniverse ? report.coverageUniverse.files : null;
+    var all = Object.create(null);
+    (universe || []).forEach(function (path) { all[path] = true; });
+    Object.keys(byFile).forEach(function (path) { all[path] = true; });
+    var root = { name: "", dirs: Object.create(null), files: [], total: 0, covered: 0 };
+    var fileByPath = Object.create(null);
+    Object.keys(all).sort().forEach(function (path) {
+      var parts = path.split("/");
+      var node = root;
+      for (var i = 0; i < parts.length - 1; i++) {
+        node = node.dirs[parts[i]] = node.dirs[parts[i]] || { name: parts[i], dirs: Object.create(null), files: [], total: 0, covered: 0 };
+      }
+      var f = { name: parts[parts.length - 1], path: path, cases: byFile[path] || [] };
+      node.files.push(f);
+      fileByPath[path] = f;
+    });
+    covAnnotate(root);
+    return { run: run, report: report, root: root, fileByPath: fileByPath, hasUniverse: !!universe, measuredSpecs: measuredSpecs };
+  }
+
+  function covAnnotate(node) {
+    node.total = node.files.length;
+    node.covered = node.files.filter(function (f) { return f.cases.length > 0; }).length;
+    Object.keys(node.dirs).forEach(function (k) {
+      covAnnotate(node.dirs[k]);
+      node.total += node.dirs[k].total;
+      node.covered += node.dirs[k].covered;
+    });
+  }
+
+  function covDefaultOpen(model) {
+    // Root and its first level open by default; deeper stays folded until asked.
+    var open = Object.create(null);
+    open[""] = true;
+    Object.keys(model.root.dirs).forEach(function (k) { open[k] = true; });
+    return open;
+  }
+
+  function covFileVisible(f) {
+    if (covState.unc && f.cases.length > 0) return false;
+    if (covState.q && f.path.toLowerCase().indexOf(covState.q) === -1) return false;
+    return true;
+  }
+
+  function renderCoverage() {
+    var model = covState.model;
+    if (!model) return;
+    if (!covState.openDirs) covState.openDirs = covDefaultOpen(model);
+
+    var uncovered = model.root.total - model.root.covered;
+    var pct = model.root.total ? Math.round((model.root.covered / model.root.total) * 100) : 0;
+    var inv = document.getElementById("cov-inv");
+    clear(inv);
+    inv.appendChild(el("b", null, model.hasUniverse ? pct + "%" : String(model.root.covered)));
+    inv.appendChild(document.createTextNode(
+      model.hasUniverse
+        ? " — " + model.root.covered + " / " + model.root.total + " " + t("coverage.files")
+        : " " + t("coverage.files") + " (" + t("coverage.reached") + ")"
+    ));
+    var axis = document.getElementById("cov-axis");
+    clear(axis);
+    var segments = [{ cls: "sg-verified", state: "reached", count: model.root.covered }];
+    if (model.hasUniverse) segments.push({ cls: "sg-rerunneeded", state: "uncovered", count: uncovered });
+    if (model.root.total > 0) axis.appendChild(ovAxisRow("", segments, "coverage.", model.root.total));
+    document.getElementById("cov-note").hidden = model.hasUniverse;
+    // Without a denominator every shown file is reached — the filter could
+    // only ever produce an empty tree, so it is withdrawn, not just zeroed.
+    var uncChip = document.getElementById("cov-unc");
+    uncChip.hidden = !model.hasUniverse;
+    if (!model.hasUniverse && covState.unc) {
+      covState.unc = false;
+      uncChip.setAttribute("aria-pressed", "false");
+    }
+    document.getElementById("cov-unc-n").textContent = model.hasUniverse ? String(uncovered) : "";
+
+    var asof = document.getElementById("cov-asof");
+    var head = model.report.git && model.report.git.head ? String(model.report.git.head).slice(0, 7) : null;
+    asof.textContent = t("coverage.measured") + ": " + relTime(model.report.createdAt) +
+      (head ? " (" + head + ")" : "") + " - " + model.measuredSpecs + " " + t("coverage.specsCombined");
+
+    // The tree is rebuilt from scratch, which would otherwise snap the pane
+    // back to the top on every toggle deep in the hierarchy.
+    var wrap = document.querySelector(".cov-treewrap");
+    var scroll = wrap ? wrap.scrollTop : 0;
+    var host = document.getElementById("cov-tree");
+    clear(host);
+    var ul = document.createElement("ul");
+    var rootLi = covRenderDir(model.root, "");
+    document.getElementById("cov-no-hit").hidden = !!rootLi;
+    if (rootLi) ul.appendChild(rootLi);
+    host.appendChild(ul);
+    if (wrap) wrap.scrollTop = scroll;
+
+    // The detail pane re-renders with the tree: language toggles, refreshes
+    // and filters would otherwise leave it describing the previous state.
+    var sel = covState.selected ? model.fileByPath[covState.selected] : null;
+    if (sel && covFileVisible(sel)) {
+      covShowDetail(sel);
+    } else {
+      covState.selected = null;
+      var detail = document.getElementById("cov-detail");
+      clear(detail);
+      detail.appendChild(el("div", "ph", t("coverage.placeholder")));
+    }
+  }
+
+  function covRenderDir(node, path) {
+    var filtering = covState.unc || !!covState.q;
+    var isOpen = filtering || !!covState.openDirs[path];
+    // A closed, unfiltered directory renders as a single row \u2014 its counts come
+    // from covAnnotate \u2014 so the subtree is not walked at all. At the 20k-file
+    // ceiling that walk is the whole render cost.
+    var subs = [];
+    var visFiles = [];
+    if (isOpen) {
+      visFiles = node.files.filter(covFileVisible);
+      Object.keys(node.dirs).sort().forEach(function (k) {
+        var sub = covRenderDir(node.dirs[k], path ? path + "/" + k : k);
+        if (sub) subs.push(sub);
+      });
+      if (filtering && visFiles.length === 0 && subs.length === 0) return null;
+    }
+    var li = document.createElement("li");
+    if (path !== "") {
+      var row = el("button", "cov-row");
+      row.type = "button";
+      var chev = chevron();
+      if (isOpen) chev.classList.add("open");
+      row.appendChild(chev);
+      row.appendChild(covIcon(true));
+      row.appendChild(el("span", "nm", node.name + "/"));
+      row.appendChild(el("span", "sp"));
+      var mini = el("span", "minibar");
+      var fill = el("i");
+      fill.style.width = (node.total ? Math.round((node.covered / node.total) * 100) : 0) + "%";
+      mini.appendChild(fill);
+      row.appendChild(mini);
+      row.appendChild(el("span", "frac", node.covered + "/" + node.total));
+      row.addEventListener("click", function () {
+        if (covState.openDirs[path]) delete covState.openDirs[path];
+        else covState.openDirs[path] = true;
+        renderCoverage();
+      });
+      li.appendChild(row);
+    }
+    if (isOpen) {
+      var ul = document.createElement("ul");
+      if (path === "") ul.style.marginLeft = "0";
+      subs.forEach(function (sub) { ul.appendChild(sub); });
+      visFiles.forEach(function (f) { ul.appendChild(covRenderFile(f)); });
+      li.appendChild(ul);
+    }
+    return li;
+  }
+
+  function covRenderFile(f) {
+    var li = document.createElement("li");
+    var row = el("button", "cov-row" + (covState.selected === f.path ? " sel" : ""));
+    row.type = "button";
+    row.appendChild(el("span", "chev"));
+    row.appendChild(covIcon(false));
+    row.appendChild(el("span", "nm" + (f.cases.length > 0 ? " dim" : ""), f.name));
+    row.appendChild(el("span", "sp"));
+    row.appendChild(el("span", "dot " + (f.cases.length > 0 ? "ok" : "no")));
+    row.appendChild(el("span", "frac", f.cases.length > 0
+      ? f.cases.length + " " + (f.cases.length === 1 ? t("coverage.case") : t("coverage.cases"))
+      : "0"));
+    row.addEventListener("click", function () {
+      covState.selected = f.path;
+      renderCoverage();
+    });
+    li.appendChild(row);
+    return li;
+  }
+
+  function covIcon(isDir) {
+    var svg = svgIcon();
+    svg.setAttribute("class", "ic");
+    svg.appendChild(svgPath(isDir
+      ? "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"
+      : "M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"));
+    return svg;
+  }
+
+  function covShowDetail(f) {
+    var host = document.getElementById("cov-detail");
+    clear(host);
+    var title = el("h4", null, f.path);
+    host.appendChild(title);
+    if (f.cases.length === 0) {
+      var meta = el("div", "meta");
+      var badge = el("span", "badge uncov");
+      badge.appendChild(el("span", "d"));
+      badge.appendChild(document.createTextNode(" " + t("coverage.uncovered")));
+      meta.appendChild(badge);
+      host.appendChild(meta);
+      host.appendChild(el("div", "cov-hint", t("coverage.fileUncovered")));
+      return;
+    }
+    host.appendChild(el("div", "meta", f.cases.length + " " + t("coverage.casesReach")));
+    var list = el("div", "cov-caselist");
+    var runId = covState.model.run.id;
+    // No pass/fail here on purpose: this pane answers "what reaches this
+    // file", not "did it pass" — the run page holds the verdicts.
+    f.cases.forEach(function (key) {
+      var a = document.createElement("a");
+      a.href = "#/runs/" + encodeURIComponent(runId);
+      a.appendChild(el("span", "cs", key));
+      list.appendChild(a);
+    });
+    host.appendChild(list);
   }
 
   // Entering the view or refreshing it. The spend readout is a fixed window,
@@ -2531,6 +2952,75 @@ const CLIENT_JS = `
     return wrap;
   }
 
+  // ── run detail: reached files (--coverage) ─────────────────────────
+  //
+  // The gap counters sit above the list on purpose. Every one of them is an
+  // execution the measurement could not place, and an unplaced execution reads
+  // as "never reached" — the exact answer this section exists to give — so they
+  // belong next to the answer rather than in a log nobody opens.
+  function coverageSection(cov) {
+    var wrap = el("div");
+    wrap.appendChild(el("div", "assertions-hint muted", t("acc.coverage.hint")));
+    var gaps = cov.gaps || {};
+    var counts = el("div", "cov-counts");
+    [
+      { label: t("cov.frontend"), value: cov.frontendFiles, always: true },
+      { label: t("cov.backend"), value: cov.backendFiles, always: true },
+    ].forEach(function (count) {
+      var chip = el("span", "cov-count");
+      chip.appendChild(el("b", null, String(count.value || 0)));
+      chip.appendChild(document.createTextNode(" " + count.label));
+      counts.appendChild(chip);
+    });
+    // Which route the attribution came by. The carrier is always live; a
+    // declared identity is shown even at zero events, because a window that
+    // matched nothing is the failure and an omitted chip would hide it.
+    counts.appendChild(el("span", "cov-count muted", t("cov.route.carrier")));
+    (cov.actorWindows || []).forEach(function (w) {
+      var chip = el("span", w.events ? "cov-count" : "cov-count cov-warn");
+      chip.appendChild(document.createTextNode(t("cov.route.actorWindow") + "(" + w.key + ") "));
+      chip.appendChild(el("b", null, String(w.events || 0)));
+      chip.appendChild(document.createTextNode(" " + t("cov.route.events")));
+      counts.appendChild(chip);
+    });
+    // "That half never answered" and "that half reached nothing" render as the
+    // same zero, so the first is said in words.
+    [
+      { shown: cov.backendReported === false, label: t("cov.noBackend") },
+      { shown: cov.frontendReported === false, label: t("cov.noFrontend") },
+      { shown: cov.frontendStopped === true, label: t("cov.frontendStopped") },
+    ].forEach(function (flag) {
+      if (!flag.shown) return;
+      counts.appendChild(el("span", "cov-count cov-warn", flag.label));
+    });
+    [
+      "unattributed", "unmappedScripts", "unmappedRanges",
+      "outsideProject", "unresolvedSources", "uninstrumentedFiles",
+      "uninstrumentedProcesses", "droppedPushes",
+      "unmappedActorEvents", "outsideWindowEvents",
+    ].forEach(function (key) {
+      if (!gaps[key]) return;
+      var chip = el("span", "cov-count");
+      chip.appendChild(el("b", null, String(gaps[key])));
+      chip.appendChild(document.createTextNode(" " + t("cov." + key)));
+      counts.appendChild(chip);
+    });
+    // Last, and outside the gap list: excluded dependencies are not a hole in
+    // the measurement, and next to ones that are they would drown them out.
+    if (cov.excludedDependencies) {
+      var excluded = el("span", "cov-count muted");
+      excluded.appendChild(el("b", null, String(cov.excludedDependencies)));
+      excluded.appendChild(document.createTextNode(" " + t("cov.excludedDependencies")));
+      counts.appendChild(excluded);
+    }
+    wrap.appendChild(counts);
+    // One insertion for a list that can run to thousands of rows.
+    var files = document.createDocumentFragment();
+    (cov.files || []).forEach(function (f) { files.appendChild(el("div", "cov-file", f)); });
+    wrap.appendChild(files);
+    return wrap;
+  }
+
   // The parts a live step and a deterministic step render identically: the
   // status-railed card, a header (#index + instruction + a status badge unless
   // passed), and an optional "expects:"/reasoning meta block. Returns { card,
@@ -2851,6 +3341,18 @@ const CLIENT_JS = `
 
     if (r.assertions && r.assertions.length > 0) {
       body.appendChild(detailsBlock(t("acc.assertions"), r.assertions.length, assertionsSection(r.assertions)));
+      any = true;
+    }
+
+    if (r.coverage) {
+      var covFiles = r.coverage.files || [];
+      body.appendChild(detailsBlock(t("acc.coverage"), covFiles.length, coverageSection(r.coverage)));
+      any = true;
+    } else if (r.coverageUnavailable) {
+      // The run measured coverage but this spec could not be: say so, rather
+      // than leave a row that looks like it reached nothing.
+      body.appendChild(el("div", "section-label", t("acc.coverage")));
+      body.appendChild(el("div", "muted", t("cov.unavailable") + " " + r.coverageUnavailable));
       any = true;
     }
 
@@ -5093,6 +5595,15 @@ const CLIENT_JS = `
   // ── project switching ───────────────────────────────────────────────
 
   function setProject(p) {
+    if (p !== state.project) {
+      // The coverage page caches its model per project; a stale one would
+      // draw the previous project's tree under the new project's header.
+      // Only on a real switch: setLang() calls this with the same project
+      // just to refresh labels.
+      covState.model = null;
+      covState.selected = null;
+      covState.openDirs = null;
+    }
     state.project = p;
     document.getElementById("project-current").textContent = p || "none";
     document.getElementById("sidebar-project").textContent = p || t("app.noProject");
@@ -5435,6 +5946,27 @@ const CLIENT_JS = `
   document.getElementById("persp-q").addEventListener("input", function (e) {
     perspState.q = e.target.value.trim().toLowerCase();
     renderPerspectives();
+  });
+
+  // Debounced, unlike persp-q: each keystroke rebuilds the whole tree, and
+  // the universe can hold thousands of files.
+  var covQTimer = null;
+  document.getElementById("cov-q").addEventListener("input", function (e) {
+    var value = e.target.value.trim().toLowerCase();
+    clearTimeout(covQTimer);
+    covQTimer = setTimeout(function () {
+      covState.q = value;
+      renderCoverage();
+    }, 150);
+  });
+  document.getElementById("cov-unc").addEventListener("click", function () {
+    covState.unc = !covState.unc;
+    document.getElementById("cov-unc").setAttribute("aria-pressed", String(covState.unc));
+    renderCoverage();
+  });
+  document.getElementById("cov-refresh").addEventListener("click", function () {
+    covState.model = null;
+    loadCoverage();
   });
   document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
     b.addEventListener("click", function () {
