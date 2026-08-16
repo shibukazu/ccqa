@@ -18,7 +18,7 @@ import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "6";
+export const DRIFT_PROMPT_VERSION = "7";
 
 /**
  * Project guidance injected into the audit, in the same order the run's
@@ -73,7 +73,9 @@ Ask whether the **intent** the step describes still exists in the product:
 - The intent exists, but the string or selector the spec names is gone or renamed → **TEST_DRIFT**. Cite where the replacement lives.
 - The intent itself is gone, or deliberately different → **SPEC_CHANGE**. Cite the source that shows the new shape.
 
-A renamed button is TEST_DRIFT. A button that no longer exists because the flow was replaced is SPEC_CHANGE. If the source shows a rename you can point at, prefer TEST_DRIFT; if you cannot find where the intent went, SPEC_CHANGE is the most you may claim, and UNKNOWN when even that is a guess.
+A renamed button is TEST_DRIFT. A button that no longer exists because the flow was replaced is SPEC_CHANGE. If the source shows a rename you can point at, prefer TEST_DRIFT.
+
+SPEC_CHANGE is the more expensive answer — it sends a human to rewrite or retire the spec — so it takes the *stronger* evidence, not the weaker. Failing to find where the intent went is not a finding; that is UNKNOWN. Claim SPEC_CHANGE only when you can point at the source that shows the new shape, or at where the implementation would sit if it still existed.
 
 ## Which surface drifted
 
@@ -106,6 +108,8 @@ sit nearby.
 
 - **No drift is a claim, not a default.** Make it after picking the concrete strings from *every* surface you were given — the spec's \`expected\` and the generated code's selectors alike — and finding each of them in the source. Clearing the test case because one surface checked out is the most common way to miss a real finding. If you never looked, the honest answer is UNKNOWN.
 - **A finding needs a citation.** Every TEST_DRIFT and SPEC_CHANGE must carry at least one \`evidence\` entry with a real \`file\`, and a line where you can give one. A label with no citation is a guess wearing a verdict's clothes — answer UNKNOWN instead.
+- **A citation must apply to the case at hand.** Finding the string is not the end of it — read what encloses the line before you cite it. A line inside a guard, behind an early \`return\`, or in a branch this spec's steps never enter says nothing about this spec. Name the conditions that must hold for that line to run, and check the spec puts the product in them. A citation that only proves the line exists is not evidence.
+- **A comment is not the code.** Comments in the product's source say what someone intended, and they rarely restate the conditions they sit under. A line reading "this is not supported", sitting inside a guarded branch, is true only inside that branch. Cite the control flow you traced, not the sentence you found.
 - **Do not report style.** Wording you would have phrased differently is not drift. Report only what would make a replay fail, or what asks about something the product no longer does.
 - \`confidence\` is about the label: how sure you are it is the right one, not how bad the finding is.
 
@@ -115,6 +119,7 @@ sit nearby.
 2. \`Grep\` the source for them, at the page, component or handler the step is about.
 3. For \`include\` steps, confirm the block exists under \`.ccqa/blocks/<name>/spec.yaml\` and that every \`params\` key is declared on it.
 4. When a string is missing, look for what replaced it before concluding. Where it went is what decides the label.
+5. Before citing any line, read the block that encloses it. Which conditions must hold for it to run, and does the spec put the product in those conditions? A line that only runs in a case the spec never enters proves nothing about the spec.
 
 ${guidance.userPromptBlock ?? ""}${guidance.customPromptBlock ?? ""}## Output (STRICT)
 

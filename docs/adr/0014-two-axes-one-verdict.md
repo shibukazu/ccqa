@@ -4,6 +4,8 @@
 - Date: 2026-07-30
 - Amended: 2026-07-31 — `unanswerable` removed; an unplaceable deploy range is
   assumed to have reached the spec (see "Amendment: assume reached")
+- Amended: 2026-08-14 — a red retired by a lapsed attestation reads `stale`
+  rather than `failed`; the verdict table below is unchanged (see ADR-0020)
 
 ## Context and problem statement
 

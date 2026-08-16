@@ -35,13 +35,14 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0011](0011-replace-relatedpaths-with-model-selection.md) | Replace `relatedPaths` glob matching with `ccqa select-specs` model selection | accepted |
 | [0012](0012-flag-names-carry-their-group.md) | Flag names carry their group, and one flag means one thing | accepted |
 | [0013](0013-one-verification-environment.md) | One verification environment; a profile is a value set, not an environment | accepted |
-| [0014](0014-two-axes-one-verdict.md) | Two axes, one verdict; work in flight is a claim, not a state | accepted |
+| [0014](0014-two-axes-one-verdict.md) | Two axes, one verdict; work in flight is a claim, not a state | accepted (execution axis amended by 0020) |
 | [0015](0015-serial-groups-in-one-place.md) | Serial groups live in one place: `.ccqa/config.yaml`, not each spec | accepted |
 | [0016](0016-one-vocabulary-two-answerable-subsets.md) | One vocabulary, two answerable subsets: the run answers all four causes, the audit only two | accepted |
 | [0017](0017-records-the-hub-does-not-judge.md) | Records the hub stores but does not judge: a run kind that advances no ledger, and an opaque key set | accepted |
 | [0018](0018-the-bump-answers-the-hub.md) | The bump answers the hub, and the diff checks the answer | accepted |
-| [0019](0019-what-a-person-may-overrule.md) | A person may overrule a judgement, never a result | accepted |
-| [0020](0020-what-a-spec-actually-reached.md) | Measure what a spec reached, per spec, in a shared environment | accepted |
+| [0019](0019-what-a-person-may-overrule.md) | A person may overrule a judgement, never a result | accepted (lapse behaviour settled by 0020) |
+| [0020](0020-a-lapsed-attestation-hands-the-spec-back.md) | A lapsed attestation hands the spec back to the cycle | accepted |
+| [0021](0021-what-a-spec-actually-reached.md) | Measure what a spec reached, per spec, in a shared environment | accepted |
 
 ## Template
 

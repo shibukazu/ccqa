@@ -1,4 +1,4 @@
-# 0020. Measure what a spec reached, per spec, in a shared environment
+# 0021. Measure what a spec reached, per spec, in a shared environment
 
 - Status: accepted
 - Date: 2026-08-13

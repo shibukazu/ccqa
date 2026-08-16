@@ -203,12 +203,14 @@ hub が要るものは名前で分かります。`--hub-profile`、
   deterministic / live モードの選択、record、green になるまでの実行。
 - **ccqa-rerecord** — 指摘や失敗のあるテストケースを green に戻す: hub の
   指摘の読解、何が古くなったかの判断、修復と再 record。
+- **ccqa-resolve** — hub が人に預けている分をまとめて片付ける: 判定の読解、
+  行の並べ替え、プロダクト修正・再 record・環境修復への振り分け。
 
 [skills CLI](https://github.com/vercel-labs/skills) で利用側プロジェクトに
 インストールします（`-g` で全プロジェクト共通にもできます）。
 
 ```bash
-npx skills add <this-repo> --skill ccqa-record --skill ccqa-rerecord
+npx skills add <this-repo> --skill ccqa-record --skill ccqa-rerecord --skill ccqa-resolve
 ```
 
 ## ドキュメント

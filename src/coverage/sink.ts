@@ -1,6 +1,6 @@
 /**
  * Where instrumented application processes push what they reached. Why they
- * push rather than being scraped is ADR-0020.
+ * push rather than being scraped is ADR-0021.
  *
  * It authenticates nothing. The gate is the set of spec ids this run issued —
  * a token would have to be configured on both sides to add anything, and the

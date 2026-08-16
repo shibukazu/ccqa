@@ -532,6 +532,30 @@ describe("computeRerun: a manual attestation overriding the verdict", () => {
     expect(verdict.manualLapsedByDeploy).toMatchObject({ sha: "sha-1" });
   });
 
+  test("while it covers, the failure is still shipped on the axis it stands in for", () => {
+    const verdict = compute({
+      ledger: ledgerWithFailedRun(ranAt("sha-0", { at: "2026-07-26T06:00:00Z" })),
+      attestations: attested("sha-0"),
+    });
+    expect(verdict.verdict).toBe("manuallyVerified");
+    expect(verdict.execution).toBe("failed");
+  });
+
+  test("a lapse hands the spec back to the normal cycle, not to the red the person already answered", () => {
+    const verdict = compute({
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1),
+      // Recorded before the attestation: the person looked at this failure and
+      // settled it. `needsRepair` here would park the spec forever, since that
+      // verdict is never re-run.
+      ledger: ledgerWithFailedRun(ranAt("sha-0", { at: "2026-07-26T06:00:00Z" })),
+      attestations: attested("sha-0"),
+    });
+    expect(verdict.verdict).toBe("rerunNeeded");
+    expect(verdict.execution).toBe("stale");
+    expect(verdict.manualLapsed?.because).toBe("deployReached");
+  });
+
   test("a red run recorded after the attestation outranks it", () => {
     const verdict = compute({
       ledger: ledgerWithFailedRun(ranAt("sha-0", { at: "2026-07-26T18:00:00Z" })),

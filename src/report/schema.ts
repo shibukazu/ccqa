@@ -314,7 +314,7 @@ export type ReportArtifact = z.infer<typeof ReportArtifactSchema>;
  * These are load-bearing, not diagnostics. An execution nobody could attribute
  * is indistinguishable from one that never happened, and "never happened" is
  * the answer this measurement exists to produce — so each way of losing one is
- * counted separately and shown next to the result (ADR-0020).
+ * counted separately and shown next to the result (ADR-0021).
  */
 export const CoverageGapsSchema = z.object({
   /** Server executions that ran while this spec was open but outside its context. */
@@ -354,7 +354,7 @@ export type CoverageGaps = z.infer<typeof CoverageGapsSchema>;
 /**
  * What one spec's execution actually reached: V8's own counters for the
  * browser and per-request instrumentation for the server, unioned on the spec
- * id both sides carry (ADR-0020).
+ * id both sides carry (ADR-0021).
  *
  * `backendReported` / `frontendReported` separate "reached nothing" from "that
  * half never answered", which otherwise render identically as zero.

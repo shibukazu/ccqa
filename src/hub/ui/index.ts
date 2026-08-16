@@ -4396,6 +4396,13 @@ const CLIENT_JS = `
     return null;
   }
 
+  // Did the last run end red? Read off the ledger the same way the execution
+  // axis reads it, because a red a lapsed attestation retired ships as stale
+  // and the sites that need the failure itself must still find it (ADR-0020).
+  function lastFailed(rr) {
+    return !!(rr && rr.lastRun && rr.lastRed && rr.lastRed.runId === rr.lastRun.runId);
+  }
+
   // The execution axis as one state. "What did it say last time" and "is that
   // still true" are two faces of one question, so the row answers it once and
   // the detail panel keeps the coordinates.
@@ -4926,7 +4933,9 @@ const CLIENT_JS = `
     }
     // Only once the audit has actually cleared the spec: while it is still
     // due, nobody knows yet whether the environment was the only thing wrong.
-    if (rr.audit === "clean" && rr.execution === "failed" && rr.lastRed && rr.lastRed.label === "ENVIRONMENT") {
+    // Read off the ledger, not the axis: an environment red is demoted to
+    // stale so it re-runs (ADR-0020), and the offer has to survive that.
+    if (rr.audit === "clean" && lastFailed(rr) && rr.lastRed.label === "ENVIRONMENT") {
       return buildOverrideOffer("environment", feature, spec);
     }
     return null;
@@ -4966,7 +4975,7 @@ const CLIENT_JS = `
   // report loads — and the whole content if it never arrives.
   function reasonFindingSource(rr, driftEntry) {
     if (auditOpen(rr) && driftEntry && driftEntry.runId && driftEntry.label) return driftEntry;
-    if (rr.execution === "failed" && rr.lastRed && rr.lastRed.runId && rr.lastRed.label) return rr.lastRed;
+    if (lastFailed(rr) && rr.lastRed.runId && rr.lastRed.label) return rr.lastRed;
     return null;
   }
 

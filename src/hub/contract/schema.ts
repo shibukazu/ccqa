@@ -469,12 +469,18 @@ export type AuditState = z.infer<typeof AuditStateSchema>;
 export const ExecutionStateSchema = z.enum([
   /** The last run passed, against the commit deployed now. */
   "passed",
-  /** The last run failed. Stated whatever has deployed since: a red result is current information. */
+  /**
+   * The last run failed, and nobody has answered that failure. Stated whatever
+   * has deployed since: a red result is current information until a person
+   * speaks to it (ADR-0020).
+   */
   "failed",
   /**
    * The last run finished, but a deploy has reached this spec since — or the
    * log cannot place the run, which is treated the same way and named by
-   * `executionAssumedReached`. The result is kept; only its currency is void.
+   * `executionAssumedReached`, or a person's lapsed attestation already
+   * answered the red, which carries no annotation because the deploy log was
+   * never consulted. The result is kept; only its currency is void.
    */
   "stale",
   /**
@@ -816,7 +822,10 @@ export const SpecRerunSchema = z.object({
    * An attestation that exists but no longer covers what is deployed, kept
    * visible with the reason it lapsed instead of silently vanishing — the
    * person deciding whether to attest again needs to know what changed since
-   * they last looked. The verdict is the axes' own answer again.
+   * they last looked. The verdict is the axes' own answer again — with the red
+   * they answered retired to `stale`, so the spec rejoins the cycle rather than
+   * falling back onto it (ADR-0020). A lapse the newer red caused is the
+   * exception: nobody has answered that one.
    */
   manualLapsed: AttestationSchema.extend({ because: AttestationLapseSchema }).optional(),
   /** The deploy that ended the attestation, when `manualLapsed.because === "deployReached"` and the log can name it. */
