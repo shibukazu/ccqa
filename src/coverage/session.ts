@@ -21,6 +21,7 @@ import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
 import { CoverageSink } from "./sink.ts";
 import { startBrowserCoverage, type BrowserCoverageHandle } from "./browser/engine.ts";
+import { enumerateUniverse, type CoverageUniverse } from "./universe.ts";
 import { FRONTEND_COVERAGE_FILE, type FrontendCoverage } from "./contract.ts";
 
 /**
@@ -57,6 +58,8 @@ export class CoverageSession {
   private readonly cwd: string;
   private readonly actors: ActorPlan;
   readonly origins: readonly string[];
+  /** The denominator, enumerated once at start, or undefined when `coverage.include` is unset. */
+  readonly universe: CoverageUniverse | undefined;
 
   // Assigned in the body rather than declared as parameters: node's type
   // stripping runs this file as-is and rejects a parameter property outright.
@@ -67,6 +70,7 @@ export class CoverageSession {
     cwd: string,
     actors: ActorPlan,
     origins: readonly string[],
+    universe: CoverageUniverse | undefined,
   ) {
     this.sink = sink;
     this.runId = runId;
@@ -74,6 +78,7 @@ export class CoverageSession {
     this.cwd = cwd;
     this.actors = actors;
     this.origins = origins;
+    this.universe = universe;
   }
 
   static async start(options: CoverageSessionOptions): Promise<CoverageSession> {
@@ -94,14 +99,15 @@ export class CoverageSession {
       actors.tagToKey,
     );
     const declaredRoot = await resolveRoot(options.cwd, options.config.projectRoot);
-    return new CoverageSession(
-      sink,
-      options.runId,
-      declaredRoot ?? options.cwd,
-      options.cwd,
-      actors,
-      origins,
-    );
+    const root = declaredRoot ?? options.cwd;
+    // Enumerated at start, not at close: the envelope that carries it is built
+    // before the first spec runs (the incremental report), and the tree cannot
+    // change mid-run — the run owns this checkout for its duration.
+    const universe =
+      options.config.include === undefined
+        ? undefined
+        : await enumerateUniverse(root, options.config.include, (text) => log.warn(text));
+    return new CoverageSession(sink, options.runId, root, options.cwd, actors, origins, universe);
   }
 
   get sinkUrl(): string {

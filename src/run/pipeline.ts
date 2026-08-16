@@ -840,6 +840,7 @@ export async function executeRun(
       triageUserPromptHash,
       deployedSha,
       opts,
+      coverage,
     }),
     hubSink,
     currentReportCost,
@@ -971,6 +972,7 @@ export async function executeRun(
       triageUserPromptHash,
       deployedSha,
       opts,
+      coverage,
     });
     // The authoritative report is on disk; a later teardown flush (normal exit
     // or a signal arriving now) must not overwrite it with the provisional one.
@@ -991,6 +993,7 @@ export async function executeRun(
         triageUserPromptHash,
         deployedSha,
         opts,
+        coverage,
       });
       // Deterministic rows are the only ones that never passed through the
       // mid-run sink (external/live rows already pushed their files with their
@@ -1559,8 +1562,10 @@ function buildReportEnvelope(args: {
   triageUserPromptHash: string | null;
   deployedSha: string | null;
   opts: RunOptions;
+  /** The run's coverage session; carries the enumerated universe when set. */
+  coverage?: CoverageSession | null;
 }): ReportEnvelope {
-  const { git, customPromptVersion, triageUserPromptHash, deployedSha, opts } = args;
+  const { git, customPromptVersion, triageUserPromptHash, deployedSha, opts, coverage } = args;
   const runUrl = githubRunUrl();
   return {
     schemaVersion: 1,
@@ -1592,6 +1597,9 @@ function buildReportEnvelope(args: {
     // Always present (unlike the fields above), so the incremental writer can
     // refresh it on each flush without moving the key ahead of `results`.
     cost: currentReportCost(),
+    // The denominator the hub's file tree is drawn from. Omitted (not null)
+    // without --coverage or without coverage.include — see the schema comment.
+    ...(coverage?.universe ? { coverageUniverse: coverage.universe } : {}),
   };
 }
 
@@ -1604,10 +1612,11 @@ async function writeUnifiedReport(args: {
   triageUserPromptHash: string | null;
   deployedSha: string | null;
   opts: RunOptions;
+  coverage?: CoverageSession | null;
 }): Promise<RunReportData> {
-  const { reportDir, results, git, customPromptVersion, triageUserPromptHash, deployedSha, opts } = args;
+  const { reportDir, results, git, customPromptVersion, triageUserPromptHash, deployedSha, opts, coverage } = args;
   const data: RunReportData = {
-    ...buildReportEnvelope({ git, customPromptVersion, triageUserPromptHash, deployedSha, opts }),
+    ...buildReportEnvelope({ git, customPromptVersion, triageUserPromptHash, deployedSha, opts, coverage }),
     results,
   };
 

@@ -49,7 +49,12 @@ export interface FrontendResolutionOptions {
   warn(text: string): void;
 }
 
-const SOURCE_FILE = /\.(?:[cm]?[jt]sx?)$/;
+/**
+ * What counts as a source file. Shared with the universe enumeration
+ * (universe.ts): the denominator must use the same notion of "source file"
+ * as the reached side, or "uncovered" drifts as one definition evolves.
+ */
+export const SOURCE_FILE = /\.(?:[cm]?[jt]sx?)$/;
 
 export class FrontendResolution {
   private readonly specId: string;

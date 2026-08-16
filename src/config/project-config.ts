@@ -161,6 +161,15 @@ export const CoverageConfigSchema = z
      * halves differently and one file arrives under two names.
      */
     projectRoot: z.string().min(1).optional(),
+    /**
+     * Directories (relative to `projectRoot`) whose source files form the
+     * denominator — the universe "uncovered" is judged against. Name the same
+     * directories the application's `CCQA_COVERAGE_INCLUDE` instruments; the
+     * run enumerates them from the checkout it measured, so numerator and
+     * denominator can never drift apart. Absent, no universe is enumerated
+     * and the hub's tree shows reached files only.
+     */
+    include: z.array(z.string().min(1)).optional(),
     /** Specs whose flows are attributed by who acted, not by what the request carried. */
     actors: CoverageActorsSchema.default({}),
   })

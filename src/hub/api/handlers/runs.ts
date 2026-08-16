@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry, type SpecRedLedgerEntry } from "../../contract/schema.ts";
-import { DriftSubDiagnosisSchema, GitEnvelopeSchema, normalizeDiagnosis, ReportCostSchema, ReportKindSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportKind, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
+import { CoverageUniverseSchema, DriftSubDiagnosisSchema, GitEnvelopeSchema, normalizeDiagnosis, ReportCostSchema, ReportKindSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportKind, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { DriftLabel } from "../../../drift/types.ts";
 import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
@@ -185,6 +185,7 @@ const PatchRunRequestSchema = z.object({
       runUrl: z.string().nullable().optional(),
       triageUserPromptHash: z.string().optional(),
       cost: ReportCostSchema.nullable().optional(),
+      coverageUniverse: CoverageUniverseSchema.optional(),
     })
     .partial()
     .optional(),
@@ -460,6 +461,9 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
         ...(reportMeta?.runUrl !== undefined ? { runUrl: reportMeta.runUrl } : {}),
         ...(reportMeta?.triageUserPromptHash !== undefined ? { triageUserPromptHash: reportMeta.triageUserPromptHash } : {}),
         ...(reportMeta?.cost !== undefined ? { cost: reportMeta.cost } : {}),
+        ...(reportMeta?.coverageUniverse !== undefined
+          ? { coverageUniverse: reportMeta.coverageUniverse }
+          : {}),
       };
       const merged = mergeResults(current?.results ?? [], rows);
       specs = countSpecs(merged);

@@ -408,8 +408,9 @@ describe("hub UI: needs re-run", () => {
     // Every filter chip has a count slot, and none carries data-i18n on the
     // button itself — applyStaticI18n's textContent swap would delete it.
     // Three mode chips (all/deterministic/live) plus five verdict chips —
-    // one per SpecVerdictSchema option, same words as the 判定 column.
-    expect(HTML.match(/class="fcount"/g)).toHaveLength(8);
+    // one per SpecVerdictSchema option, same words as the 判定 column — plus
+    // the coverage page's single "uncovered only" chip.
+    expect(HTML.match(/class="fcount"/g)).toHaveLength(9);
     expect(HTML).not.toMatch(/<button class="fchip"[^>]*data-i18n=/);
   });
 

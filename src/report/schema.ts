@@ -619,6 +619,21 @@ export const GitEnvelopeSchema = z.object({
   baseSource: BaseSourceSchema.nullable().optional(),
 });
 
+/**
+ * The denominator for the run's coverage measurement: every source file under
+ * `coverage.include`, enumerated by the run from the same checkout the specs
+ * ran against — which is what entitles a viewer to read "absent from every
+ * row's file set" as "uncovered" rather than "unknown". Run-level because it
+ * is a property of the checkout, not of any one spec.
+ */
+export const CoverageUniverseSchema = z.object({
+  /** The directories enumerated, relative to `coverage.projectRoot`. */
+  include: z.array(z.string()),
+  /** Every source file under them, relative to the same root, sorted. */
+  files: z.array(z.string()),
+});
+export type CoverageUniverse = z.infer<typeof CoverageUniverseSchema>;
+
 export const RunReportDataSchema = z.object({
   schemaVersion: z.literal(1),
   /** Which command produced it. See {@link ReportKindSchema}. */
@@ -683,6 +698,11 @@ export const RunReportDataSchema = z.object({
    * valid. Read the total, not the object's presence.
    */
   cost: ReportCostSchema.nullable().default(null),
+  /**
+   * Present when the run measured coverage and `coverage.include` was set.
+   * Absent (not null) otherwise, keeping older report.json byte-identical.
+   */
+  coverageUniverse: CoverageUniverseSchema.optional(),
   results: z.array(ReportSpecResultSchema),
 });
 export type RunReportData = z.infer<typeof RunReportDataSchema>;

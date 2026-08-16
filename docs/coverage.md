@@ -65,6 +65,29 @@ names. Where the output has a map beside it naming a single source — what an
 unbundled compile produces — the source is reported instead; a bundle's map
 cannot say which of its inputs the file is, so those stay as they are.
 
+**Name the denominator to see what was _not_ reached.** `include` lists the
+source directories the measurement could have reached, relative to
+`projectRoot` — the same directories the application's
+`CCQA_COVERAGE_INCLUDE` names:
+
+```yaml
+coverage:
+  include:
+    - src
+    - packages
+```
+
+The run enumerates them when the measurement starts, from the same checkout
+it measures, and ships the list inside the report — there is no separate
+sync channel to drift out of step. A hub receiving such a report draws the
+full file tree on its Coverage page, unreached files called out. Without
+`include` the hub shows reached files only and calls nothing uncovered.
+
+Vendored and generated directories (`node_modules`, `dist`, `build`, `out`,
+`coverage`, dot-directories) are skipped. An `include` that matches nothing,
+or more than 20,000 files, drops the whole list with a warning rather than
+shipping a denominator that would misreport "uncovered".
+
 **The server side needs the application instrumented** with
 [`ccqa-tools`](../packages/tools/README.md) and pointed at the sink
 through `CCQA_COVERAGE_ENDPOINT`. Without it the run still reports the browser
