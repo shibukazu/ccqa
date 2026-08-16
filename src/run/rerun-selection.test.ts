@@ -96,6 +96,24 @@ describe("selectSpecsNeedingRerun", () => {
     expect(selectSpecsNeedingRerun(specs, verdicts).excludedUnknownToHub).toBe(0);
   });
 
+  test("orders the selection least-recently-run first, never-run ahead of all", () => {
+    // A caller that caps the plan at N specs cuts the tail, so the order has
+    // to put the most-starved specs at the head — otherwise a mass
+    // invalidation leaves the same trailing specs unrun cycle after cycle.
+    const ledger = (at: string) => ({ gitHead: "b".repeat(40), runId: "r", at });
+    const local = [
+      { featureName: "f", specName: "fresh" },
+      { featureName: "f", specName: "never-ran" },
+      { featureName: "f", specName: "stale" },
+    ];
+    const { selected } = selectSpecsNeedingRerun(local, report({
+      "f/fresh": spec("rerunNeeded", { lastRun: ledger("2026-03-01T00:00:00.000Z") }),
+      "f/never-ran": spec("rerunNeeded"),
+      "f/stale": spec("rerunNeeded", { lastRun: ledger("2026-01-01T00:00:00.000Z") }),
+    }));
+    expect(selected.map((s) => s.specName)).toEqual(["never-ran", "stale", "fresh"]);
+  });
+
   test("names the hole behind an `inProgress` spec the audit could not place", () => {
     // The audit's own baseline was unplaceable (ADR-0014's "assumed reached"),
     // so re-running the audit at the same commit would not clear it — the

@@ -107,6 +107,15 @@ ${stepsText}
 - Do not invent success when blocked: fail honestly with a short reason.
 - **Evidence discipline**: when the assertion target is a specific row / message / banner / URL, scroll it into view (or focus the relevant pane) before letting the step end. The "after" screenshot is captured for you automatically — your job is to make sure that screenshot shows the thing your STEP_RESULT line is talking about.
 
+### Waiting for asynchronous responses (BUDGETED)
+
+Some expected outcomes arrive asynchronously — an automated reply, a background job finishing, a list refreshing. Waiting for them is fine, but the wait has a budget:
+
+- Prefer bounded probes (\`agent-browser wait --text "..."\`, or a short pause followed by a fresh \`snapshot\`) over long blind sleeps, and keep a rough running total of how long you have waited within this step.
+- **The total wait within one step must not exceed 3 minutes**, unless the step's own instruction explicitly names a longer wait. Do not keep adding "one more" sleep past the budget.
+- When the budget is spent and the expected outcome has still not appeared, STOP waiting and emit \`STEP_RESULT|<stepId>|fail|...\`. **Never end your turn without a STEP_RESULT because you were still waiting** — a silent timeout is recorded as a protocol failure and hides the real cause from failure analysis.
+- The fail reason must state what you waited for, roughly how long in total, and what you observed instead (e.g. "waited ~3 min for a reply to appear after submitting; none appeared, the view still shows only the submitted item").
+
 ### Output contract (STRICT)
 
 Your final assistant message MUST contain exactly one line of the form:

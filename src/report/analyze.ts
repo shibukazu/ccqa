@@ -125,29 +125,53 @@ function scrubOutcome(
   };
 }
 
+/**
+ * Pause before the single retry of an errored classification call. Long enough
+ * to ride out a transient network/model hiccup, short enough not to stall the
+ * report when the error is persistent.
+ */
+const RETRY_DELAY_MS = 2_000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function classifyFailure(
   input: FailureAnalysisPromptInput,
   options: FailureAnalysisOptions,
 ): Promise<FailureAnalysisOutcome> {
   const prompt = buildFailureAnalysisPrompt(input);
-  const { result: raw, isError } = await invokeClaudeStreaming(
-    {
-      prompt,
-      allowedTools: ["Read", "Grep", "Glob", CHANGED_FILE_DIFF_TOOL],
-      mcpServers: { diff: buildDiffMcpServer(options.getFileDiff) },
-      silenceBashLog: true,
-      maxTurns: 12,
-      ...(options.model ? { model: options.model } : {}),
-      ...(options.cwd ? { cwd: options.cwd } : {}),
-    },
-    () => {},
-  );
+  const invoke = () =>
+    invokeClaudeStreaming(
+      {
+        prompt,
+        allowedTools: ["Read", "Grep", "Glob", CHANGED_FILE_DIFF_TOOL],
+        mcpServers: { diff: buildDiffMcpServer(options.getFileDiff) },
+        silenceBashLog: true,
+        maxTurns: 12,
+        ...(options.model ? { model: options.model } : {}),
+        ...(options.cwd ? { cwd: options.cwd } : {}),
+      },
+      () => {},
+    );
+
+  let { result: raw, isError } = await invoke();
+  // One retry, exactly once: an errored invocation is usually a transient
+  // SDK/network failure, and settling for UNKNOWN 0% on the first miss leaves
+  // the notification unable to say anything but "the run failed". Capped at
+  // one so a persistent outage cannot multiply the run's Claude spend.
+  let retried = false;
+  if (isError) {
+    log.warn("failure analysis: Claude invocation errored — retrying once");
+    await sleep(RETRY_DELAY_MS);
+    ({ result: raw, isError } = await invoke());
+    retried = true;
+  }
 
   if (isError || !raw) {
+    const cause = isError ? "Claude returned an error result" : "Claude returned no output";
     return {
-      analysis: unknownAnalysis(
-        isError ? "Claude returned an error result" : "Claude returned no output",
-      ),
+      analysis: unknownAnalysis(retried ? `${cause} (after 1 retry)` : cause),
       raw: raw ?? "",
       sdkError: isError,
     };
