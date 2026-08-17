@@ -3,6 +3,7 @@ import { createFileAckStore } from "./ack-store.ts";
 import { createFileAttestationStore } from "./attestation-store.ts";
 import { createFileAuditDismissalStore } from "./audit-dismissal-store.ts";
 import { createFileArtifactStore } from "./artifact-store.ts";
+import { createFileCoverageEventStore } from "./coverage-event-store.ts";
 import { createFileDeployStore } from "./deploy-store.ts";
 import { createFileLockStore } from "./lock-store.ts";
 import { createFileDriftLedgerStore } from "./drift-ledger-store.ts";
@@ -34,5 +35,6 @@ export function createFileHubStorage(dataDir: string): HubStorage {
     spend: createFileSpendStore(dataDir),
     attestations: createFileAttestationStore(dataDir),
     auditDismissals: createFileAuditDismissalStore(dataDir),
+    coverageEvents: createFileCoverageEventStore(dataDir),
   };
 }

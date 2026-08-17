@@ -19,6 +19,7 @@ import type { SecretScope } from "../types.ts";
  *   deploys/<project>/<profile>/touch.json       (SpecTouchIndex derived from the log)
  *   acks/<project>/<profile>/<name>.json         (Ack: a consumer's acted-on keys)
  *   spend/<project>.json                         (SpendLog, pruned to its retention window)
+ *   coverage/<project>/events.jsonl              (coverage inbox: stamped encrypted events)
  *
  * IDs and names are validated by their callers (run ids are server-minted
  * UUIDs; project/profile/name come from validated request params) before
@@ -178,4 +179,11 @@ export function ackPath(root: string, project: string, profile: string, name: st
 // One document per project, deliberately not per profile (docs/hub-api.md#spend).
 export function spendPath(root: string, project: string): string {
   return join(root, "spend", `${project}.json`);
+}
+
+// The coverage inbox (ADR-0022): one append-only line-per-event log per
+// project. `.jsonl`, not `.json` — a whole-document rewrite per event would
+// make every append O(stream), and the stream is written once a second.
+export function coverageEventsPath(root: string, project: string): string {
+  return join(root, "coverage", project, "events.jsonl");
 }

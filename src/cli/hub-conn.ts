@@ -71,17 +71,34 @@ export class HubConnectionError extends Error {
 }
 
 /**
+ * The raw connection values (URL, token, extra headers) resolved from flags /
+ * env, for the callers that speak to the hub without the API client — the
+ * coverage inbox posts its own wire shape.
+ */
+export interface HubTransport {
+  baseUrl: string;
+  token: string;
+  headers?: Record<string, string>;
+}
+
+/** `resolveHubClient`'s resolution half: `null` when the URL or token is missing. */
+export function resolveHubTransport(opts: HubConnOptions): HubTransport | null {
+  const baseUrl = opts.hubUrl ?? process.env.CCQA_HUB_URL;
+  const token = opts.hubToken ?? process.env.CCQA_HUB_TOKEN;
+  if (!baseUrl || !token) return null;
+  const headers = resolveHubHeaders(opts.hubHeader);
+  return { baseUrl: baseUrl.replace(/\/+$/, ""), token, ...(headers ? { headers } : {}) };
+}
+
+/**
  * Resolve a hub client from flags / env. Returns `null` (never throws/exits)
  * when either the URL or the token is missing — callers that treat the hub
  * as optional can fall back; callers that require it should use
  * `requireHubClient` instead.
  */
 export function resolveHubClient(opts: HubConnOptions): HubClient | null {
-  const baseUrl = opts.hubUrl ?? process.env.CCQA_HUB_URL;
-  const token = opts.hubToken ?? process.env.CCQA_HUB_TOKEN;
-  if (!baseUrl || !token) return null;
-  const headers = resolveHubHeaders(opts.hubHeader);
-  return createHubClient({ baseUrl: baseUrl.replace(/\/+$/, ""), token, ...(headers ? { headers } : {}) });
+  const transport = resolveHubTransport(opts);
+  return transport === null ? null : createHubClient(transport);
 }
 
 /** Same as `resolveHubClient`, but throws `HubConnectionError` instead of returning `null`. */

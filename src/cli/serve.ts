@@ -69,6 +69,8 @@ async function runServe(opts: ServeOptions): Promise<void> {
     log.warn("CCQA_HUB_ENCRYPTION_KEY is not set — sessions and variables cannot be stored (PUT returns 503)");
   }
 
+  const coverageToken = process.env.CCQA_HUB_COVERAGE_TOKEN;
+
   const dataDir = resolveCwd(opts.dataDir);
   const storage = createHubStorage({ driver: "file", dataDir });
 
@@ -79,6 +81,7 @@ async function runServe(opts: ServeOptions): Promise<void> {
     allowedOrigins: opts.allowOrigin ?? [],
     ...(opts.maxPushMb ? { maxPushBytes: opts.maxPushMb * 1024 * 1024 } : {}),
     ...(opts.maxRunsPerBranch ? { maxRunsPerBranch: opts.maxRunsPerBranch } : {}),
+    ...(coverageToken ? { coverageToken } : {}),
   });
 
   const requestedPort = Number(opts.port);
@@ -101,6 +104,15 @@ async function runServe(opts: ServeOptions): Promise<void> {
     log.header("serve", `port ${boundPort}`);
     log.meta("data-dir", dataDir);
     log.meta("encryption", encryptionKey ? "enabled" : "disabled (no CCQA_HUB_ENCRYPTION_KEY)");
+    // The inbox stores events encrypted, so it needs both its token and the key.
+    log.meta(
+      "coverage inbox",
+      coverageToken && encryptionKey
+        ? "enabled"
+        : coverageToken
+          ? "disabled (no CCQA_HUB_ENCRYPTION_KEY)"
+          : "disabled (no CCQA_HUB_COVERAGE_TOKEN)",
+    );
     // Printed because it deletes — the cap should be visible before history is.
     log.meta("run retention", `${opts.maxRunsPerBranch ?? DEFAULT_MAX_RUNS_PER_BRANCH} per project/branch`);
     // Learning jobs always call Claude. Missing auth doesn't stop the hub —

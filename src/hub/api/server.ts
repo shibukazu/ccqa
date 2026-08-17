@@ -37,6 +37,7 @@ import {
   createPutAuditDismissalHandler,
 } from "./handlers/audit-dismissals.ts";
 import { createGetSpendHandler, createRecordSpendHandler } from "./handlers/spend.ts";
+import { createAppendCoverageEventHandler, createGetCoverageEventsHandler } from "./handlers/coverage.ts";
 import { createGetRerunHandler } from "./handlers/rerun.ts";
 import {
   createDeletePromptHandler,
@@ -77,10 +78,20 @@ export interface HubServerConfig {
   allowedOrigins: string[];
   maxPushBytes?: number;
   maxRunsPerBranch?: number;
+  /** The coverage inbox's append-only credential (ADR-0022); unset refuses application pushes with 503. */
+  coverageToken?: string;
 }
 
 /** Endpoints reachable without a token: the liveness probe and the bundled UI shell. */
 const PUBLIC_PATHS = new Set(["/api/v1/health", "/"]);
+
+/**
+ * Endpoints that authenticate inside their handlers instead of the central
+ * bearer check below: the coverage inbox accepts a second, append-only
+ * credential (ADR-0022) that a single-token check cannot express. Every
+ * handler registered under one of these must enforce auth itself.
+ */
+const SELF_AUTHENTICATED_PATHS = new Set(["/api/v1/coverage/events"]);
 
 export function createHubServer(config: HubServerConfig): Server {
   // The triage-learning queue: a single in-process worker that turns graded
@@ -150,7 +161,7 @@ async function handleRequest(
       return;
     }
 
-    if (!PUBLIC_PATHS.has(url.pathname)) {
+    if (!PUBLIC_PATHS.has(url.pathname) && !SELF_AUTHENTICATED_PATHS.has(url.pathname)) {
       const token = extractToken(req, url);
       if (!isValidToken(token, config.token)) {
         sendError(res, new HttpError(401, "unauthorized", "missing or invalid bearer token"));
@@ -272,6 +283,17 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.get("/api/v1/projects/:project/perspectives", createGetPerspectivesHandler(perspectivesConfig));
   router.patch("/api/v1/projects/:project/perspectives", createPatchPerspectivesNoteHandler(perspectivesConfig));
   router.delete("/api/v1/projects/:project/perspectives", createDeletePerspectivesHandler(perspectivesConfig));
+
+  // The coverage inbox (ADR-0022): stamp, store, serve — never interpret.
+  // Auth lives in the handlers (see SELF_AUTHENTICATED_PATHS).
+  const coverageConfig = {
+    store: storage.coverageEvents,
+    encryptionKey: config.encryptionKey,
+    hubToken: config.token,
+    coverageToken: config.coverageToken,
+  };
+  router.post("/api/v1/coverage/events", createAppendCoverageEventHandler(coverageConfig));
+  router.get("/api/v1/coverage/events", createGetCoverageEventsHandler(coverageConfig));
 
   // Triage-learning jobs: the UI creates one after grading, then polls it.
   router.post("/api/v1/projects/:project/learning-jobs", createCreateLearningJobHandler({ storage, queue }));
