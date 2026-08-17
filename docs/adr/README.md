@@ -42,7 +42,8 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0018](0018-the-bump-answers-the-hub.md) | The bump answers the hub, and the diff checks the answer | accepted |
 | [0019](0019-what-a-person-may-overrule.md) | A person may overrule a judgement, never a result | accepted (lapse behaviour settled by 0020) |
 | [0020](0020-a-lapsed-attestation-hands-the-spec-back.md) | A lapsed attestation hands the spec back to the cycle | accepted |
-| [0021](0021-what-a-spec-actually-reached.md) | Measure what a spec reached, per spec, in a shared environment | accepted |
+| [0021](0021-what-a-spec-actually-reached.md) | Measure what a spec reached, per spec, in a shared environment | accepted (transport amended by 0022) |
+| [0022](0022-coverage-flows-through-an-inbox.md) | Coverage flows through an inbox; interpretation is one resolver | accepted |
 
 ## Template
 
