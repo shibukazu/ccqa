@@ -57,6 +57,13 @@ coverage event stream (`hub` inbox mode) and run report rows (`local` mode),
 newest measurement per spec winning. Diff paths are re-rooted to the
 measurement's own base (`coverage.projectRoot`) before intersecting — the
 two sides must speak the same paths or every comparison silently misses.
+Changes beyond that root are outside what measurement governs and drop out
+of the comparison: they clear specs the way any unreached file does, with
+one warning naming the drop rather than a verdict change — a root
+configured too narrow produces exactly this shape, and the docs call that
+configuration out. The root itself resolves through the same function the
+measurement uses, so a config the measurement would reject cannot quietly
+empty the comparison here.
 
 File granularity over-selects: a change to a widely-imported file selects
 every spec that reached it. That is the correct failure direction — the

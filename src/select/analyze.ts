@@ -1,4 +1,5 @@
 import { relative, resolve } from "node:path";
+import * as log from "../cli/logger.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import { resolveRoot } from "../coverage/session.ts";
 import { execFileP, type ChangedFile } from "../drift/affected.ts";
@@ -170,9 +171,11 @@ interface JudgeInput {
  * the absence of evidence runs the spec); a non-empty intersection means
  * `needed`, with the intersecting paths as the reason; an empty one means
  * `notNeeded` — the measurement accounts for everything the spec reached,
- * and the diff missed all of it. That last claim holds only while some part
- * of the diff survived re-rooting; if none did, every pending spec stays
- * `unknown` instead.
+ * and the diff missed all of it. Changes outside the measured root fall out
+ * of the comparison entirely: the root is the declared boundary of what
+ * measurement governs, so what lies beyond it clears specs quietly — one
+ * warning names the dropped paths, because a root configured too narrow
+ * looks exactly like this and hides real reach (see docs/coverage.md).
  */
 async function judgeWithCoverage(input: JudgeInput): Promise<SpecSelection[]> {
   const { pending, productChanges, cwd, edges } = input;
@@ -185,12 +188,15 @@ async function judgeWithCoverage(input: JudgeInput): Promise<SpecSelection[]> {
   const roots = await resolveCoverageRoots(productChanges, cwd);
   const measuredChanges = rerootChangesForCoverage(productChanges, roots);
 
-  // Every product change re-rooted outside the measured base, so no edge could
-  // ever match — an empty intersection here is missing evidence, not evidence
-  // of absence, and clearing specs against it would skip real regressions.
-  if (productChanges.length > 0 && measuredChanges.length === 0) {
-    return pending.map((s) =>
-      unknownSelection(s, "the changes fell outside the measured root; nothing to compare"),
+  // Not a verdict changer, deliberately: the measured root is the declared
+  // boundary of what measurement governs, and changes beyond it clear specs
+  // the same way any unreached file does. Loud in the log rather than the
+  // verdicts — a root configured too narrow produces exactly this shape.
+  const dropped = productChanges.length - measuredChanges.length;
+  if (dropped > 0) {
+    log.warn(
+      `select-specs: ${dropped} of ${productChanges.length} changed files fall outside ` +
+        "coverage.projectRoot and cannot be compared against measured reach",
     );
   }
 

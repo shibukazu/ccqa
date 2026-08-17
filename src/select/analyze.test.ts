@@ -126,18 +126,20 @@ describe("selectSpecs: coverage judging", () => {
     expect(purchase.reason).toContain("no measurement");
   });
 
-  it("degrades every pending spec to unknown when re-rooting drops the whole diff", async () => {
-    // The only product change is a sibling package's, and with no git repo to
-    // anchor it the re-root drops it. An edge exists, but nothing measurable
-    // remains to hold it against — the spec must not be cleared as notNeeded.
+  it("clears specs quietly when every change falls outside the measured root", async () => {
+    // The measured root is the declared boundary of what measurement governs:
+    // a diff living entirely beyond it clears measured specs like any other
+    // unreached change, and the drop is a log line, not a verdict. A root
+    // configured too narrow produces this same shape — which is why the log
+    // line exists.
     const outsideOnly = [file("packages/lib/src/b.ts", { outsideCwd: true })];
     const edges = edgesOf({ "checkout/purchase-with-card": ["src/features/checkout/page.ts"] });
 
     const report = await selectSpecs({ changed: outsideOnly, specs, cwd: "/repo", base: "main", head: "HEAD", edges });
 
-    for (const s of report.specs) expect(s.verdict).toBe("unknown");
     const purchase = report.specs.find((s) => s.specName === "purchase-with-card")!;
-    expect(purchase.reason).toContain("outside the measured root");
+    expect(purchase.verdict).toBe("notNeeded");
+    expect(purchase.source).toBe("coverage");
   });
 
   it("marks a spec needed off a renamed file's old path, which selection keeps as delete + add", async () => {
