@@ -48,9 +48,9 @@ tell".
 
 The cost profile inverts. A wide deploy that the selector cannot place now
 invalidates nothing instead of everything; audits and re-runs are owed only
-for specs somebody positively judged as touched. The 15-hour all-waiting
-boards disappear, and with them the pressure to fire audits immediately
-after every deploy.
+for specs somebody positively judged as touched. A board that sat at
+all-waiting until the next scheduled audit disappears, and with it the
+pressure to fire audits immediately after every deploy.
 
 The same reading applies everywhere freshness is consulted: a manual
 attestation (ADR-0019) now lapses only when a `needed` or unselected deploy
