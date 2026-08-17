@@ -138,6 +138,10 @@ stream, and the hub's Coverage page resolves the stream on read. In this mode
 the stream is the record; an interrupted run has already delivered everything
 it measured.
 
+Pair it with `--report-to-hub` if the Coverage page's cases should link to
+their run pages: the link needs a run record to point at. Without one the
+links are simply absent — the measurement itself is unaffected.
+
 Local runs need none of this: the default (`--coverage-inbox local`) is the
 loopback sink above, no hub involved, and the report rows carry the results
 as they always did.

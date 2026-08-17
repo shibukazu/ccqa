@@ -259,56 +259,73 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export function createHubClient(opts: HubClientOptions): HubClient {
+async function throwHubApiError(res: Response): Promise<never> {
+  let code = "unknown_error";
+  let message = res.statusText;
+  try {
+    const body = (await res.json()) as { error?: { code?: string; message?: string } };
+    if (body.error?.code) code = body.error.code;
+    if (body.error?.message) message = body.error.message;
+  } catch {
+    // Non-JSON error body — fall back to statusText.
+  }
+  throw new HubApiError(res.status, code, message);
+}
+
+/**
+ * One round trip against a hub, with the client's shared policy: bearer auth,
+ * per-attempt timeout, retries for idempotent methods, `HubApiError` on the
+ * final non-ok answer. Exported for the one caller outside the client
+ * (`CoverageInbox`), whose POSTs are appends a duplicate cannot corrupt —
+ * unlike the client's own POSTs — so it may opt into `retry: "post-once"`,
+ * one extra attempt after a 5xx or network error.
+ */
+export async function hubRequest(
+  opts: HubClientOptions,
+  path: string,
+  init: RequestInit = {},
+  retry?: "post-once",
+): Promise<Response> {
   const baseUrl = opts.baseUrl.replace(/\/+$/, "");
   const doFetch = opts.fetchImpl ?? fetch;
+  const method = (init.method ?? "GET").toUpperCase();
+  const maxAttempts =
+    retry === "post-once" ? 2 : RETRYABLE_METHODS.has(method) ? RETRY_BACKOFF_MS.length + 1 : 1;
 
-  async function throwHubApiError(res: Response): Promise<never> {
-    let code = "unknown_error";
-    let message = res.statusText;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // Bound each attempt so a stalled/reused socket can't hang a poll loop
+    // forever; a caller-supplied signal (e.g. user cancellation) wins.
+    const signal = init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    let res: Response;
     try {
-      const body = (await res.json()) as { error?: { code?: string; message?: string } };
-      if (body.error?.code) code = body.error.code;
-      if (body.error?.message) message = body.error.message;
-    } catch {
-      // Non-JSON error body — fall back to statusText.
-    }
-    throw new HubApiError(res.status, code, message);
-  }
-
-  async function request(path: string, init: RequestInit = {}): Promise<Response> {
-    const method = (init.method ?? "GET").toUpperCase();
-    const maxAttempts = RETRYABLE_METHODS.has(method) ? RETRY_BACKOFF_MS.length + 1 : 1;
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      // Bound each attempt so a stalled/reused socket can't hang a poll loop
-      // forever; a caller-supplied signal (e.g. user cancellation) wins.
-      const signal = init.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-      let res: Response;
-      try {
-        res = await doFetch(`${baseUrl}${path}`, {
-          ...init,
-          signal,
-          headers: { ...opts.headers, ...init.headers, Authorization: `Bearer ${opts.token}` },
-        });
-      } catch (err) {
-        // Transient network/socket error (or timeout abort) — retry GET/DELETE.
-        if (attempt < maxAttempts - 1) {
-          await sleep(RETRY_BACKOFF_MS[attempt]!);
-          continue;
-        }
-        throw err;
-      }
-      if (res.ok) return res;
-      if (res.status >= 500 && attempt < maxAttempts - 1) {
+      res = await doFetch(`${baseUrl}${path}`, {
+        ...init,
+        signal,
+        headers: { ...opts.headers, ...init.headers, Authorization: `Bearer ${opts.token}` },
+      });
+    } catch (err) {
+      // Transient network/socket error (or timeout abort) — retry if allowed.
+      if (attempt < maxAttempts - 1) {
         await sleep(RETRY_BACKOFF_MS[attempt]!);
         continue;
       }
-      // 4xx (or final attempt) — not retryable, or retries exhausted.
-      return throwHubApiError(res);
+      throw err;
     }
-    // Unreachable: the loop always returns or throws.
-    throw new Error("unreachable");
+    if (res.ok) return res;
+    if (res.status >= 500 && attempt < maxAttempts - 1) {
+      await sleep(RETRY_BACKOFF_MS[attempt]!);
+      continue;
+    }
+    // 4xx (or final attempt) — not retryable, or retries exhausted.
+    return throwHubApiError(res);
+  }
+  // Unreachable: the loop always returns or throws.
+  throw new Error("unreachable");
+}
+
+export function createHubClient(opts: HubClientOptions): HubClient {
+  function request(path: string, init: RequestInit = {}): Promise<Response> {
+    return hubRequest(opts, path, init);
   }
 
   async function json<T>(path: string, init?: RequestInit): Promise<T> {

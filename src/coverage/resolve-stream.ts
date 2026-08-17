@@ -52,6 +52,14 @@ export const ResolvedCoverageSchema = z.object({
   boot: z.array(z.string()),
   health: z.object({
     heardFromApplication: z.boolean(),
+    /**
+     * Application pushes whose stamp fell inside the run's listening span,
+     * credited as-is. The endpoint-misconfiguration detector: a stream can
+     * hold pushes from long before the run, so if nothing arrived while it
+     * was measuring this is 0 — check `CCQA_COVERAGE_ENDPOINT` on the
+     * application.
+     */
+    pushesDuringRun: z.number(),
     attributedSpecs: z.number(),
     rejectedPushes: z.number(),
     uninstrumentedFiles: z.number(),
@@ -71,10 +79,14 @@ export type ResolvedCoverage = z.infer<typeof ResolvedCoverageSchema>;
  * collects what the run's own markers establish — which ids it issued, which
  * identity tags were its to hand out, its universe, and when its first and
  * last marker arrived. The second replays the stream through the shared
- * resolver: this run's window markers as they came, and application pushes
- * only when their stamp falls inside the span the run's sink would have been
- * listening (first marker to last marker plus `GRACE_MS`) — a push outside it
- * was another run's audience, not a loss of this one.
+ * resolver: this run's window markers as they came, and every application
+ * push — as-is when its stamp falls inside the span the run's sink would
+ * have been listening (first marker to last marker plus `GRACE_MS`),
+ * stripped of its spec and actor attribution when it does not. A push
+ * outside the span was another run's audience, so its attribution is not
+ * this run's to claim — but the collector never re-sends what an earlier
+ * run acked, so on an always-on hub the boot set and each process's health
+ * figures arrived long before this run began, and only survive here.
  */
 export function resolveStream(events: StoredEvent[], runId: string): ResolvedCoverage {
   const issued = new Set<string>();
@@ -119,6 +131,7 @@ export function resolveStream(events: StoredEvent[], runId: string): ResolvedCov
   const resolver = new CoverageResolver(issued, tagToKey);
   let asOf = 0;
   let lastSeq = 0;
+  let pushesDuringRun = 0;
   for (const event of events) {
     if (event.seq > lastSeq) lastSeq = event.seq;
     const body = event.body;
@@ -132,8 +145,17 @@ export function resolveStream(events: StoredEvent[], runId: string): ResolvedCov
       }
       continue;
     }
-    if (firstMarkerAt === undefined || event.at < firstMarkerAt || event.at > lastMarkerAt + GRACE_MS) continue;
+    if (firstMarkerAt === undefined || event.at < firstMarkerAt || event.at > lastMarkerAt + GRACE_MS) {
+      // Outside the span, but not discarded: stripped of the attribution that
+      // belongs to whichever run was listening, the push still testifies to
+      // the boot set and the process's health — which, on an always-on hub,
+      // were acked before this run began and never re-sent. `asOf` stays
+      // put: these are not this run's measurement moving forward.
+      resolver.apply({ kind: "push", at: event.at, push: { ...body, specs: {}, actors: [] } });
+      continue;
+    }
     asOf = event.at;
+    pushesDuringRun++;
     resolver.apply({ kind: "push", at: event.at, push: body });
   }
 
@@ -159,6 +181,7 @@ export function resolveStream(events: StoredEvent[], runId: string): ResolvedCov
     boot: [...resolver.boot()].sort(),
     health: {
       heardFromApplication: resolver.heardFromApplication(),
+      pushesDuringRun,
       attributedSpecs: resolver.attributedSpecs(),
       rejectedPushes: resolver.rejectedPushes(),
       uninstrumentedFiles: resolver.uninstrumentedFiles(),

@@ -70,6 +70,12 @@ async function runServe(opts: ServeOptions): Promise<void> {
   }
 
   const coverageToken = process.env.CCQA_HUB_COVERAGE_TOKEN;
+  if (coverageToken !== undefined && coverageToken === token) {
+    log.error(
+      "CCQA_HUB_COVERAGE_TOKEN must differ from CCQA_HUB_TOKEN — the same value would make the append-only credential a full hub token",
+    );
+    process.exit(2);
+  }
 
   const dataDir = resolveCwd(opts.dataDir);
   const storage = createHubStorage({ driver: "file", dataDir });

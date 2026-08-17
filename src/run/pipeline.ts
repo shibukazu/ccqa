@@ -955,7 +955,7 @@ export async function executeRun(
   // whose only measured specs had not started yet. Skipped in hub-inbox mode:
   // nothing on this side saw the stream, so the gaps surface at the hub's
   // resolve instead.
-  if (coverage && coverageInbox === undefined) {
+  if (coverage && !coverage.streamsToHub) {
     reportCoverageHealth(coverage, [...externalRows, ...live.reportResults]);
   }
 
@@ -1006,7 +1006,7 @@ export async function executeRun(
       // In hub-inbox mode every row carries no coverage on purpose — the
       // stream is the record — so the missing-coverage explanations would all
       // be untrue.
-      results: coverage && coverageInbox === undefined ? results.map(explainMissingCoverage) : results,
+      results: coverage && !coverage.streamsToHub ? results.map(explainMissingCoverage) : results,
       git,
       customPromptVersion,
       triageUserPromptHash,

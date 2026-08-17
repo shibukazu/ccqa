@@ -9,6 +9,7 @@
 
 import * as log from "../cli/logger.ts";
 import { errMessage } from "../run/errors.ts";
+import { HubApiError, hubRequest, type HubClientOptions } from "../hub-client/index.ts";
 import type { RunEvent } from "./events.ts";
 
 /** `--coverage-inbox` values: where the measurement's two sides meet. */
@@ -24,65 +25,44 @@ export interface RunEventInbox {
   append(event: RunEvent): Promise<void>;
 }
 
-/** Per-attempt fetch timeout, mirroring the hub client's. */
-const REQUEST_TIMEOUT_MS = 30_000;
-
-/** Pause before the one retry, mirroring the hub client's first backoff step. */
-const RETRY_PAUSE_MS = 100;
-
-export interface CoverageInboxOptions {
-  baseUrl: string;
-  token: string;
+export interface CoverageInboxOptions extends HubClientOptions {
   project: string;
-  /** Extra headers sent with every request; never overrides `Authorization`. */
-  headers?: Record<string, string>;
-  /** Override for testing; defaults to the global `fetch`. */
-  fetchImpl?: typeof fetch;
 }
 
 export class CoverageInbox implements RunEventInbox {
-  private readonly url: string;
-  private readonly headers: Record<string, string>;
-  private readonly fetchImpl: typeof fetch;
+  private readonly transport: HubClientOptions;
+  private readonly path: string;
 
   // Assigned in the body rather than declared as parameters: node's type
   // stripping runs this file as-is and rejects a parameter property outright.
   constructor(options: CoverageInboxOptions) {
-    const base = options.baseUrl.replace(/\/+$/, "");
-    this.url = `${base}/api/v1/coverage/events?project=${encodeURIComponent(options.project)}`;
-    this.headers = {
-      ...options.headers,
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${options.token}`,
-    };
-    this.fetchImpl = options.fetchImpl ?? fetch;
+    const { project, ...transport } = options;
+    this.transport = transport;
+    this.path = `/api/v1/coverage/events?project=${encodeURIComponent(project)}`;
   }
 
   /**
    * Appends one event to the project's stream. Never throws: a marker that
    * could not be delivered degrades the resolved answer, and failing the run
-   * over it would cost the test results the run exists for. One retry, then a
-   * warning — markers are low-frequency, so there is no queue to drain.
+   * over it would cost the test results the run exists for. The transport is
+   * the hub client's, with its one opt-in: an append delivered twice resolves
+   * the same as once, so unlike the client's own POSTs it retries once.
    */
   async append(event: RunEvent): Promise<void> {
-    let reason = "";
-    for (let attempt = 0; attempt < 2; attempt++) {
-      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, RETRY_PAUSE_MS));
-      try {
-        const res = await this.fetchImpl(this.url, {
+    try {
+      await hubRequest(
+        this.transport,
+        this.path,
+        {
           method: "POST",
-          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-          headers: this.headers,
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(event),
-        });
-        if (res.ok) return;
-        reason = `status ${res.status}`;
-        // A 4xx answers the same way twice; only a server error earns the retry.
-        if (res.status < 500) break;
-      } catch (err) {
-        reason = errMessage(err);
-      }
+        },
+        "post-once",
+      );
+    } catch (err) {
+      const reason = err instanceof HubApiError ? `status ${err.status}` : errMessage(err);
+      log.warn(`coverage: could not append a ${event.kind} event to the hub inbox (${reason})`);
     }
-    log.warn(`coverage: could not append a ${event.kind} event to the hub inbox (${reason})`);
   }
 }

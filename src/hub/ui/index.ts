@@ -1192,6 +1192,7 @@ const CLIENT_JS = `
       "coverage.reached": "Reached", "coverage.uncovered": "Uncovered", "coverage.files": "files",
       "coverage.measured": "measured", "coverage.specsCombined": "specs combined",
       "coverage.noUniverse": "This measurement carried no file inventory, so only reached files are shown; nothing can be called uncovered.",
+      "coverage.noServerDuringRun": "No instrumented server process reported during this run — check CCQA_COVERAGE_ENDPOINT on the application.",
       "coverage.placeholder": "Select a file to see the cases that reach it.",
       "coverage.fileUncovered": "No case reached this file in this measurement.",
       "coverage.casesReach": "case(s) reach this file",
@@ -1415,6 +1416,7 @@ const CLIENT_JS = `
       "coverage.reached": "到達", "coverage.uncovered": "未到達", "coverage.files": "ファイル",
       "coverage.measured": "計測", "coverage.specsCombined": "spec 合算",
       "coverage.noUniverse": "この計測にはファイル台帳が付いていないため、到達したファイルのみ表示しています。未到達は判定できません。",
+      "coverage.noServerDuringRun": "この実行中、計装済みサーバプロセスからの報告がありませんでした。アプリケーション側の CCQA_COVERAGE_ENDPOINT を確認してください。",
       "coverage.placeholder": "ファイルを選択すると、到達しているケースが表示されます",
       "coverage.fileUncovered": "この計測では、どのケースもこのファイルに到達しませんでした。",
       "coverage.casesReach": "ケースが到達",
@@ -2380,24 +2382,40 @@ const CLIENT_JS = `
       });
   }
 
-  // The stream's resolved answer, or null when nothing streamed. The stream
-  // carries no commit, so the run list is consulted for the sha — a stream
-  // run id with no run record simply shows no sha.
+  // The stream's resolved answer, or null when nothing streamed. Not always
+  // the freshest answer: a local run after a hub-mode one writes its coverage
+  // into report.json, not the stream, so a settled run newer than the
+  // stream's last word is probed first and wins when it measured.
   function covLoadResolved(token) {
     return apiFetch("/api/v1/coverage?project=" + encodeURIComponent(state.project))
       .then(function (data) {
         if (token !== covState.loadToken || !data || !data.resolved) return null;
         var resolved = data.resolved;
-        return apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project))
+        return apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project) + "&kind=run&limit=25")
           .catch(function () { return null; })
           .then(function (list) {
-            var head = null;
-            ((list && list.runs) || []).forEach(function (r) {
-              if (resolved.hubRunId && r.id === resolved.hubRunId && r.gitHead) head = r.gitHead;
+            // Newest first, settled only, and only runs created after the
+            // stream's "as of" — older ones the stream already answers for.
+            var newer = ((list && list.runs) || []).filter(function (r) {
+              return r.status !== "running" && Date.parse(r.createdAt) > resolved.asOf;
+            }).slice(0, 5);
+            return covFindReport(newer, 0, token).then(function (found) {
+              if (found) return covBuildModel(found.run, found.report);
+              return covResolvedGitHead(resolved).then(function (head) {
+                return covModelFromResolved(resolved, head);
+              });
             });
-            return covModelFromResolved(resolved, head);
           });
       })
+      .catch(function () { return null; });
+  }
+
+  // The stream carries no commit; only the linked run record does. One direct
+  // read — a stream run id with no run record simply shows no sha.
+  function covResolvedGitHead(resolved) {
+    if (!resolved.hubRunId) return Promise.resolve(null);
+    return apiFetch("/api/v1/runs/" + encodeURIComponent(resolved.hubRunId))
+      .then(function (run) { return (run && run.gitHead) || null; })
       .catch(function () { return null; });
   }
 
@@ -2438,7 +2456,13 @@ const CLIENT_JS = `
     };
     if (resolved.universe) report.coverageUniverse = { files: resolved.universe.files };
     // The stream's own run id names no run page; only the linked record does.
-    return covBuildModel({ id: resolved.hubRunId || null }, report);
+    var model = covBuildModel({ id: resolved.hubRunId || null }, report);
+    // The endpoint-mismatch detector (ADR-0022): specs measured, yet not one
+    // application push arrived while the run listened — the application is
+    // pushing somewhere else, or not at all.
+    model.noServerDuringRun =
+      !!(resolved.health && resolved.health.pushesDuringRun === 0 && results.length > 0);
+    return model;
   }
 
   // Newest first, stop at the first run whose report actually measured.
@@ -2532,7 +2556,14 @@ const CLIENT_JS = `
     var segments = [{ cls: "sg-verified", state: "reached", count: model.root.covered }];
     if (model.hasUniverse) segments.push({ cls: "sg-rerunneeded", state: "uncovered", count: uncovered });
     if (model.root.total > 0) axis.appendChild(ovAxisRow("", segments, "coverage.", model.root.total));
-    document.getElementById("cov-note").hidden = model.hasUniverse;
+    // One note slot, two conditions. The endpoint warning outranks the
+    // no-universe note: it says the numbers themselves are short, not just
+    // that nothing can be called uncovered.
+    var note = document.getElementById("cov-note");
+    var noteKey = model.noServerDuringRun ? "coverage.noServerDuringRun" : "coverage.noUniverse";
+    note.setAttribute("data-i18n", noteKey);
+    note.textContent = t(noteKey);
+    note.hidden = model.noServerDuringRun ? false : model.hasUniverse;
     // Without a denominator every shown file is reached — the filter could
     // only ever produce an empty tree, so it is withdrawn, not just zeroed.
     var uncChip = document.getElementById("cov-unc");

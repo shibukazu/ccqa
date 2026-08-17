@@ -189,7 +189,7 @@ export function startCollector(
         // Visible without CCQA_COVERAGE_DEBUG: a sink nobody can reach is not
         // a debug-only concern, and throttling keeps a dead sink from
         // flooding stderr once a second for the life of the process.
-        if (consecutiveFailures === 1 || consecutiveFailures % 10 === 0) {
+        if (shouldWarnPushFailure(consecutiveFailures)) {
           process.stderr.write(
             `[ccqa-tools] push to ${options.endpoint} failed ${consecutiveFailures} times in a row: ${String(error)}\n`,
           );
@@ -225,6 +225,21 @@ export function startCollector(
     clearInterval(timer);
     process.off("beforeExit", onBeforeExit);
   };
+}
+
+/**
+ * Which consecutive-failure counts warn: 1, 10, 100, then every 1000th.
+ * Backing off rather than a fixed every-10: the endpoint now has a default,
+ * so a deployed process whose endpoint was never configured fails every tick
+ * for its whole life — a permanent once-per-ten-seconds drone, not a burst.
+ */
+export function shouldWarnPushFailure(consecutiveFailures: number): boolean {
+  return (
+    consecutiveFailures === 1 ||
+    consecutiveFailures === 10 ||
+    consecutiveFailures === 100 ||
+    consecutiveFailures % 1000 === 0
+  );
 }
 
 /**

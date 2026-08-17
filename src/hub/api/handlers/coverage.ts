@@ -11,12 +11,13 @@ import { requireSafeSegment } from "../validate.ts";
  * The coverage inbox (ADR-0022): the hub stamps, stores, serves and expires
  * coverage events — it never looks inside one, except the read-time resolve
  * below, the one bounded amendment ADR-0022 makes to the no-compute rule.
- * Every handler authenticates here rather than in the server's central token
- * check, because the inbox accepts a second credential:
+ * The append authenticates here rather than in the server's central token
+ * check, because it accepts a second credential:
  * `CCQA_HUB_COVERAGE_TOKEN`, the append-only token the instrumented
  * application holds. That token may append pushes and nothing else — in
  * particular no run events, so a leaked application credential cannot forge
- * the markers that bound a run's view of the stream.
+ * the markers that bound a run's view of the stream. The reads stay behind
+ * the central check (see SELF_AUTHENTICATED_ROUTES in server.ts).
  */
 
 // Same bound as the run-local sink (src/coverage/sink.ts): the two inbox
@@ -81,14 +82,11 @@ export function createAppendCoverageEventHandler(config: CoverageHandlerConfig) 
 /**
  * GET /api/v1/coverage/events?project=&sinceSeq= — the stream after `sinceSeq`
  * (exclusive, so a consumer passes back the `lastSeq` it saw), decrypted.
- * Hub bearer token only: what the append-only credential wrote, it must not
- * be able to read back.
+ * Hub bearer token only (the server's central check): what the append-only
+ * credential wrote, it must not be able to read back.
  */
 export function createGetCoverageEventsHandler(config: CoverageHandlerConfig) {
   return async (ctx: RouteContext): Promise<void> => {
-    if (!isValidToken(extractToken(ctx.req, ctx.url), config.hubToken)) {
-      throw new HttpError(401, "unauthorized", "missing or invalid bearer token");
-    }
     const key = requireKey(config);
     const project = requireProjectParam(ctx);
     const sinceSeq = requireSinceSeqParam(ctx.url);
@@ -126,36 +124,47 @@ const RUN_IDS_LIMIT = 20;
 /** Resolved answers kept per handler; one page polls one key, so a handful covers the readers. */
 const RESOLVE_CACHE_LIMIT = 8;
 
+/** The whole body GET /api/v1/coverage serves — memoized as one, so a hit skips the read entirely. */
+export interface CoverageAnswer {
+  resolved: ResolvedCoverage | null;
+  runIds: string[];
+}
+
 /**
- * Memo of resolved answers keyed by stream position (ADR-0022: a resolved
+ * Memo of served answers keyed by stream position (ADR-0022: a resolved
  * answer may be cached keyed by stream position, but the cache is never the
- * record). Any new event moves `lastSeq`, so a stale entry can only ever be
- * served for exactly the stream it was computed from. Least-recently-used
- * beyond `limit`. The resolve function is a parameter so a test can count.
+ * record). Any new event moves the stream's seq, so a stored answer can only
+ * ever be served for exactly the stream it was computed from — which is what
+ * lets the handler answer a hit without reading the stream at all.
+ * Least-recently-used beyond `limit`. `runKey` is the requested runId, or ""
+ * for "the latest run". Unambiguous join: `project` is a safe segment (no
+ * newline) and the trailing element is a number, so `runKey` cannot forge
+ * another key.
  */
-export function createResolveMemo(
-  limit: number,
-  resolve: (events: StoredEvent[], runId: string) => ResolvedCoverage,
-): (project: string, runId: string, lastSeq: number, events: StoredEvent[]) => ResolvedCoverage {
-  const cache = new Map<string, ResolvedCoverage>();
-  return (project, runId, lastSeq, events) => {
-    // Unambiguous join: `project` is a safe segment (no newline) and the
-    // trailing element is a number, so `runId` cannot forge another key.
-    const cacheKey = `${project}\n${runId}\n${lastSeq}`;
-    const hit = cache.get(cacheKey);
-    if (hit !== undefined) {
-      // Re-insert so eviction drops the least recently asked-for answer.
-      cache.delete(cacheKey);
-      cache.set(cacheKey, hit);
+export function createResolveMemo(limit: number): {
+  get(project: string, runKey: string, seq: number): CoverageAnswer | undefined;
+  put(project: string, runKey: string, seq: number, answer: CoverageAnswer): void;
+} {
+  const cache = new Map<string, CoverageAnswer>();
+  const keyOf = (project: string, runKey: string, seq: number) => `${project}\n${runKey}\n${seq}`;
+  return {
+    get(project, runKey, seq) {
+      const cacheKey = keyOf(project, runKey, seq);
+      const hit = cache.get(cacheKey);
+      if (hit !== undefined) {
+        // Re-insert so eviction drops the least recently asked-for answer.
+        cache.delete(cacheKey);
+        cache.set(cacheKey, hit);
+      }
       return hit;
-    }
-    const resolved = resolve(events, runId);
-    cache.set(cacheKey, resolved);
-    if (cache.size > limit) {
-      const oldest = cache.keys().next().value;
-      if (oldest !== undefined) cache.delete(oldest);
-    }
-    return resolved;
+    },
+    put(project, runKey, seq, answer) {
+      cache.set(keyOf(project, runKey, seq), answer);
+      if (cache.size > limit) {
+        const oldest = cache.keys().next().value;
+        if (oldest !== undefined) cache.delete(oldest);
+      }
+    },
   };
 }
 
@@ -164,23 +173,36 @@ export function createResolveMemo(
  * run by the shared resolver (resolve-stream.ts); this handler only reads,
  * memoizes and serves. `runId` omitted means the run the stream most
  * recently heard a spec-open from — the page's default view; naming one
- * serves history. Hub bearer token only, like the raw read.
+ * serves history. Hub bearer token only (the central check), like the raw
+ * read.
  */
 export function createResolveCoverageHandler(config: CoverageHandlerConfig) {
-  const memo = createResolveMemo(RESOLVE_CACHE_LIMIT, resolveStream);
+  const memo = createResolveMemo(RESOLVE_CACHE_LIMIT);
   return async (ctx: RouteContext): Promise<void> => {
-    if (!isValidToken(extractToken(ctx.req, ctx.url), config.hubToken)) {
-      throw new HttpError(401, "unauthorized", "missing or invalid bearer token");
-    }
     const key = requireKey(config);
     const project = requireProjectParam(ctx);
     const requested = ctx.url.searchParams.get("runId");
+    const runKey = requested !== null && requested !== "" ? requested : "";
+
+    // The cheap probe first: pages poll this endpoint, and most polls find
+    // the stream where they left it — those must not pay for a full read
+    // and decrypt of the stream just to serve the answer already computed.
+    const seq = await config.store.currentSeq(project);
+    const hit = memo.get(project, runKey, seq);
+    if (hit !== undefined) {
+      sendJson(ctx.res, 200, hit);
+      return;
+    }
 
     const { events, lastSeq } = await readStream(config, key, project, 0);
     const runIds = listRunIds(events).slice(0, RUN_IDS_LIMIT);
-    const runId = requested !== null && requested !== "" ? requested : runIds[0];
-    const resolved = runId === undefined || events.length === 0 ? null : memo(project, runId, lastSeq, events);
-    sendJson(ctx.res, 200, { resolved, runIds });
+    const runId = runKey !== "" ? runKey : runIds[0];
+    const resolved = runId === undefined || events.length === 0 ? null : resolveStream(events, runId);
+    const answer: CoverageAnswer = { resolved, runIds };
+    // Keyed at the seq the read actually saw — an event landing between the
+    // probe and the read must not pin this answer to the older position.
+    memo.put(project, runKey, lastSeq, answer);
+    sendJson(ctx.res, 200, answer);
   };
 }
 

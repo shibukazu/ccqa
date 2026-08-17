@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -76,6 +76,61 @@ describe("coverage event store", () => {
     expect(result.entries.map((e) => e.seq)).toEqual([3, 4, 5, 6]);
     expect(result.lastSeq).toBe(6);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('coverage inbox for "demo"'));
+  });
+
+  test("byte retention drops the oldest events once the stream outgrows the cap", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // Pinned so every stored line has the same width and the cut is exact:
+    // each line is 54 bytes, so a 200-byte cap prunes back to 180 = 3 lines.
+    vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);
+    const store = createFileCoverageEventStore(dataDir, { maxBytes: 200 });
+    for (let i = 1; i <= 5; i++) await store.append("demo", payload(`event-${i}`));
+
+    const result = await store.read("demo", 0);
+    expect(result.entries.map((e) => e.seq)).toEqual([3, 4, 5]);
+    expect(result.lastSeq).toBe(5);
+    const raw = await readFile(coverageEventsPath(dataDir, "demo"), "utf8");
+    expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(200);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('coverage inbox for "demo"'));
+  });
+
+  test("an append after a crashed partial write starts on a fresh line", async () => {
+    const first = createFileCoverageEventStore(dataDir);
+    await first.append("demo", payload("one"));
+    await appendFile(coverageEventsPath(dataDir, "demo"), '{"seq":2,"at":123,"pay');
+
+    // A fresh store, as after a crash — the state must notice the missing
+    // trailing newline, or the next append welds itself onto the fragment.
+    const second = createFileCoverageEventStore(dataDir);
+    const stamp = await second.append("demo", payload("two"));
+    expect(stamp.seq).toBe(2);
+
+    const result = await second.read("demo", 0);
+    expect(texts(result.entries)).toEqual(["one", "two"]);
+    expect(result.skipped).toBe(1);
+  });
+
+  test("read prunes an idle stream and never serves events past retention", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const base = Date.now();
+    const now = vi.spyOn(Date, "now").mockReturnValue(base);
+    const store = createFileCoverageEventStore(dataDir);
+    await store.append("demo", payload("old-1"));
+    await store.append("demo", payload("old-2"));
+
+    // Inside the prune's hour of slack: the file still holds the events,
+    // but the read already withholds them.
+    now.mockReturnValue(base + COVERAGE_RETENTION_DAYS * DAY_MS + 30 * 60 * 1000);
+    const withheld = await store.read("demo", 0);
+    expect(withheld.entries).toEqual([]);
+    expect(withheld.lastSeq).toBe(2);
+
+    // Past the slack, the read itself rewrites the file — no append needed.
+    now.mockReturnValue(base + (COVERAGE_RETENTION_DAYS + 1) * DAY_MS);
+    const pruned = await store.read("demo", 0);
+    expect(pruned.entries).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped 2 events"));
+    expect(await readFile(coverageEventsPath(dataDir, "demo"), "utf8")).toBe("");
   });
 
   test("age retention drops events past the retention window", async () => {

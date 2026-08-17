@@ -9,6 +9,7 @@ import {
   DEFAULT_ENDPOINT,
   diff,
   evict,
+  shouldWarnPushFailure,
   startCollector,
   type CollectorState,
   type CoveragePush,
@@ -176,6 +177,15 @@ describe("push", () => {
     fetchSpy.mockRestore();
     expect(headers["x-gate"]).toBe("open");
     expect(headers.authorization).toBe("Bearer tok");
+  });
+});
+
+describe("shouldWarnPushFailure", () => {
+  it("warns at 1, 10, 100, then every 1000th failure", () => {
+    // The endpoint defaults now, so a never-configured deployment fails every
+    // tick forever — the warning has to fade out, not drone every tenth tick.
+    const warned = [1, 2, 9, 10, 11, 100, 500, 1000, 1500, 2000].filter(shouldWarnPushFailure);
+    expect(warned).toEqual([1, 10, 100, 1000, 2000]);
   });
 });
 

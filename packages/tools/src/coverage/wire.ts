@@ -29,7 +29,11 @@ export const ENV_NAME = "CCQA_COVERAGE";
 /** Where the collector pushes to. Unset means the run's loopback inbox. */
 export const ENV_ENDPOINT = "CCQA_COVERAGE_ENDPOINT";
 
-/** The current ccqa sink does not check this. Carried for a relay in front of it, or a future endpoint that does. */
+/**
+ * Sent as a bearer token. The hub's coverage inbox verifies it; the loopback
+ * sink a local run binds does not check it, as before — there it is carried
+ * for a relay in front of the sink.
+ */
 export const ENV_TOKEN = "CCQA_COVERAGE_TOKEN";
 
 /**

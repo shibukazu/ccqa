@@ -172,6 +172,16 @@ export class CoverageSession {
   }
 
   /**
+   * True in hub mode: the facts leave as a stream, rows carry no coverage,
+   * and the run-side health read-outs below answer empty. The one mode flag
+   * callers should consult, so the answer cannot drift from what `start`
+   * actually wired.
+   */
+  get streamsToHub(): boolean {
+    return this.inbox !== undefined;
+  }
+
+  /**
    * Opens the spec's measurement.
    *
    * Waits out the drain first, when the spec acts as an identity another spec
@@ -351,8 +361,12 @@ export class CoverageSession {
     coverageDir: string,
   ): Promise<void> {
     for (const window of this.actors.windowsForSpec.get(specKey(ref)) ?? []) {
-      this.windowClosedAt.set(window.tag, Date.now());
       await inbox.append({ kind: "window-close", runId: this.runId, tag: window.tag });
+      // Recorded only after the append resolves: the hub stamps the close
+      // before the ack returns, so a drain measured from here spans at least
+      // as long on the hub's clock — the only erosion left is the ack's
+      // return leg, not the whole POST.
+      this.windowClosedAt.set(window.tag, Date.now());
     }
     const frontend = await readFrontend(coverageDir, specId);
     if (frontend !== undefined) {

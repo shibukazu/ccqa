@@ -54,12 +54,37 @@ describe("resolveStream", () => {
     const a = resolveStream(events, RUN_A);
     expect(a.specs).toEqual([{ specId: SPEC_A, files: ["src/a.ts"], actorEvents: {} }]);
     expect(a.health.rejectedPushes).toBe(0);
+    expect(a.health.pushesDuringRun).toBe(1);
     expect(a.asOf).toBe(5_000);
 
     const b = resolveStream(events, RUN_B);
     expect(b.specs).toEqual([{ specId: SPEC_B, files: ["src/b.ts"], actorEvents: {} }]);
     expect(b.health.rejectedPushes).toBe(1);
+    expect(b.health.pushesDuringRun).toBe(1);
     expect(b.lastSeq).toBe(6);
+  });
+
+  test("a push acked before the run began still supplies boot and process health", () => {
+    // An always-on collector never re-sends what an earlier run acked, so on
+    // a long-lived hub the boot set and health figures predate every run.
+    const events = stream(
+      push(100, {
+        boot: ["src/boot.ts"],
+        specs: { [SPEC_A]: ["src/stale.ts"] },
+        uninstrumentedProcess: true,
+      }),
+      [50_000, { kind: "spec-open", runId: RUN_A, specId: SPEC_A }],
+      [51_000, { kind: "spec-close", runId: RUN_A, specId: SPEC_A }],
+    );
+    const resolved = resolveStream(events, RUN_A);
+    expect(resolved.boot).toEqual(["src/boot.ts"]);
+    expect(resolved.health.heardFromApplication).toBe(true);
+    expect(resolved.health.uninstrumentedProcesses).toBe(1);
+    // The attribution half was another run's audience: stripped, not claimed.
+    expect(resolved.specs[0]?.files).toEqual([]);
+    expect(resolved.health.rejectedPushes).toBe(0);
+    expect(resolved.health.pushesDuringRun).toBe(0);
+    expect(resolved.asOf).toBe(51_000);
   });
 
   test("a late push lands inside the grace and not one tick past it", () => {

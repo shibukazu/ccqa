@@ -90,12 +90,14 @@ export interface HubServerConfig {
 const PUBLIC_PATHS = new Set(["/api/v1/health", "/"]);
 
 /**
- * Endpoints that authenticate inside their handlers instead of the central
- * bearer check below: the coverage inbox accepts a second, append-only
- * credential (ADR-0022) that a single-token check cannot express. Every
- * handler registered under one of these must enforce auth itself.
+ * Requests ("METHOD pathname") that authenticate inside their handlers
+ * instead of the central bearer check below: the coverage append accepts a
+ * second, append-only credential (ADR-0022) that a single-token check cannot
+ * express. Keyed by method so the sibling reads under the same path stay
+ * behind the central check. Every handler registered here must enforce auth
+ * itself.
  */
-const SELF_AUTHENTICATED_PATHS = new Set(["/api/v1/coverage/events"]);
+const SELF_AUTHENTICATED_ROUTES = new Set(["POST /api/v1/coverage/events"]);
 
 export function createHubServer(config: HubServerConfig): Server {
   // The triage-learning queue: a single in-process worker that turns graded
@@ -159,13 +161,14 @@ async function handleRequest(
     if (applyCors(req, res, config.allowedOrigins)) return;
 
     const url = new URL(req.url ?? "/", "http://localhost");
-    const matched = router.match(req.method ?? "GET", url.pathname);
+    const method = req.method ?? "GET";
+    const matched = router.match(method, url.pathname);
     if (!matched) {
       sendError(res, new HttpError(404, "not_found", `no route for ${req.method} ${url.pathname}`));
       return;
     }
 
-    if (!PUBLIC_PATHS.has(url.pathname) && !SELF_AUTHENTICATED_PATHS.has(url.pathname)) {
+    if (!PUBLIC_PATHS.has(url.pathname) && !SELF_AUTHENTICATED_ROUTES.has(`${method} ${url.pathname}`)) {
       const token = extractToken(req, url);
       if (!isValidToken(token, config.token)) {
         sendError(res, new HttpError(401, "unauthorized", "missing or invalid bearer token"));
@@ -289,7 +292,8 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.delete("/api/v1/projects/:project/perspectives", createDeletePerspectivesHandler(perspectivesConfig));
 
   // The coverage inbox (ADR-0022): stamp, store, serve — never interpret.
-  // Auth lives in the handlers (see SELF_AUTHENTICATED_PATHS).
+  // The append's auth lives in its handler (see SELF_AUTHENTICATED_ROUTES);
+  // the reads stay behind the central bearer check.
   const coverageConfig = {
     store: storage.coverageEvents,
     encryptionKey: config.encryptionKey,

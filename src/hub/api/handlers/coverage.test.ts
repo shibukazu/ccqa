@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ResolvedCoverage } from "../../../coverage/resolve-stream.ts";
 import { createFileHubStorage } from "../../core/storage/file/index.ts";
 import { coverageEventsPath } from "../../core/storage/file/paths.ts";
@@ -196,55 +196,49 @@ describe("coverage inbox API", () => {
     expect(await (await getResolved(baseUrl, TOKEN)).json()).toEqual({ resolved: null, runIds: [] });
     expect((await getResolved(baseUrl, APP_TOKEN)).status).toBe(401);
   });
+
+  test("a poll at an unmoved stream position answers from the memo without reading the store", async () => {
+    const storage = createFileHubStorage(dataDir);
+    const read = vi.spyOn(storage.coverageEvents, "read");
+    const baseUrl = await startHub({ storage });
+    await post(baseUrl, TOKEN, RUN_EVENT);
+
+    const first = (await (await getResolved(baseUrl, TOKEN)).json()) as { resolved: ResolvedCoverage | null };
+    const readsAfterFirst = read.mock.calls.length;
+    expect(readsAfterFirst).toBeGreaterThan(0);
+
+    const second = (await (await getResolved(baseUrl, TOKEN)).json()) as { resolved: ResolvedCoverage | null };
+    expect(read.mock.calls.length).toBe(readsAfterFirst);
+    expect(second).toEqual(first);
+
+    // A new event moves the stream, so the next poll pays for the read again.
+    await post(baseUrl, TOKEN, { kind: "spec-close", runId: "run-1", specId: "demo/example" });
+    await getResolved(baseUrl, TOKEN);
+    expect(read.mock.calls.length).toBeGreaterThan(readsAfterFirst);
+  });
 });
 
 describe("createResolveMemo", () => {
-  const answer = (runId: string): ResolvedCoverage => ({
-    runId,
-    asOf: 0,
-    lastSeq: 0,
-    specs: [],
-    boot: [],
-    health: {
-      heardFromApplication: false,
-      attributedSpecs: 0,
-      rejectedPushes: 0,
-      uninstrumentedFiles: 0,
-      uninstrumentedProcesses: 0,
-      droppedPushes: 0,
-      unmappedActorEvents: 0,
-      outsideWindowEvents: {},
-      specsMeasured: 0,
-    },
-  });
+  const answer = (id: string): { resolved: null; runIds: string[] } => ({ resolved: null, runIds: [id] });
 
-  test("computes once per stream position and again when the stream moves", () => {
-    let computes = 0;
-    const memo = createResolveMemo(8, (_events, runId) => {
-      computes += 1;
-      return answer(runId);
-    });
-    expect(memo("p", "run-1", 3, [])).toEqual(memo("p", "run-1", 3, []));
-    expect(computes).toBe(1);
-    memo("p", "run-1", 4, []); // a new event moved lastSeq
-    memo("p", "run-2", 3, []); // another run over the same stream
-    expect(computes).toBe(3);
+  test("serves a stored answer only for exactly its stream position", () => {
+    const memo = createResolveMemo(8);
+    const stored = answer("run-1");
+    memo.put("p", "run-1", 3, stored);
+    expect(memo.get("p", "run-1", 3)).toBe(stored);
+    expect(memo.get("p", "run-1", 4)).toBeUndefined(); // a new event moved the stream
+    expect(memo.get("p", "run-2", 3)).toBeUndefined(); // another run over the same stream
+    expect(memo.get("p", "", 3)).toBeUndefined(); // the latest-run view is its own key
   });
 
   test("evicts the least recently used answer past the limit", () => {
-    let computes = 0;
-    const memo = createResolveMemo(2, (_events, runId) => {
-      computes += 1;
-      return answer(runId);
-    });
-    memo("p", "a", 1, []);
-    memo("p", "b", 1, []);
-    memo("p", "a", 1, []); // refreshes "a", so "b" is now the oldest
-    memo("p", "c", 1, []); // evicts "b"
-    expect(computes).toBe(3);
-    memo("p", "a", 1, []); // still cached
-    expect(computes).toBe(3);
-    memo("p", "b", 1, []); // was evicted, computes again
-    expect(computes).toBe(4);
+    const memo = createResolveMemo(2);
+    memo.put("p", "a", 1, answer("a"));
+    memo.put("p", "b", 1, answer("b"));
+    memo.get("p", "a", 1); // refreshes "a", so "b" is now the oldest
+    memo.put("p", "c", 1, answer("c")); // evicts "b"
+    expect(memo.get("p", "a", 1)).toBeDefined();
+    expect(memo.get("p", "b", 1)).toBeUndefined();
+    expect(memo.get("p", "c", 1)).toBeDefined();
   });
 });

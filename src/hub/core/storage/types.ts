@@ -71,6 +71,12 @@ export interface CoverageEventStore {
     lastSeq: number;
     skipped: number;
   }>;
+  /**
+   * The highest seq the stream has stamped (0 when empty), without reading
+   * the stream — the cheap "did anything move?" probe a cached resolve
+   * checks before paying for a full read.
+   */
+  currentSeq(project: string): Promise<number>;
 }
 
 /**

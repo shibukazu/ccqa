@@ -13,6 +13,14 @@ import { coverageEventsPath } from "./paths.ts";
 export const COVERAGE_MAX_EVENTS = 200_000;
 
 /**
+ * Hard cap on a project's stored stream in bytes. Half of V8's ~512 MB string
+ * limit: past that, `readFile(path, "utf8")` itself throws, taking down not
+ * just reads but the prune and the state load — the stream must be cut well
+ * before it can grow anywhere near the point where it stops being repairable.
+ */
+export const COVERAGE_MAX_BYTES = 256 * 1024 * 1024;
+
+/**
  * How long a coverage event is kept. Two weeks comfortably outlives the window
  * in which anything still resolves the stream (a run plus its consumers) —
  * the retention bound the inbox promises its payloads expire with (ADR-0022).
@@ -30,6 +38,7 @@ const PRUNE_AGE_SLACK_MS = 60 * 60 * 1000;
 /** Retention bounds, overridable so tests can exercise the prune cheaply. */
 export interface CoverageRetentionCaps {
   maxEvents: number;
+  maxBytes: number;
   retentionMs: number;
 }
 
@@ -50,7 +59,11 @@ interface StoredLine {
 interface StreamState {
   nextSeq: number;
   count: number;
+  /** Size of the file, tracked so the byte cap never has to re-stat or re-read to fire. */
+  bytes: number;
   oldestAt: number | null;
+  /** False when the file ends in a partial line (an append died mid-write); see `append`. */
+  endsWithNewline: boolean;
 }
 
 /**
@@ -65,8 +78,12 @@ export function createFileCoverageEventStore(
   caps?: Partial<CoverageRetentionCaps>,
 ): CoverageEventStore {
   const maxEvents = caps?.maxEvents ?? COVERAGE_MAX_EVENTS;
+  const maxBytes = caps?.maxBytes ?? COVERAGE_MAX_BYTES;
   const retentionMs = caps?.retentionMs ?? COVERAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
   const pruneBatch = Math.min(PRUNE_COUNT_BATCH, Math.max(1, Math.floor(maxEvents / 10)));
+  // Same amortization idea as the count batch: an over-bytes prune cuts a
+  // tenth below the cap, so the next append can't immediately re-trigger it.
+  const pruneBytesTarget = maxBytes - Math.max(1, Math.floor(maxBytes / 10));
   const states = new Map<string, StreamState>();
 
   async function loadState(project: string, path: string): Promise<StreamState> {
@@ -75,8 +92,17 @@ export function createFileCoverageEventStore(
     // Seq resumes from the highest stored one, not the line count: retention
     // drops lines from the head, and a seq must never be reissued — the
     // resolve cache keys off it (events.ts).
-    const state: StreamState = { nextSeq: 1, count: 0, oldestAt: null };
-    for (const line of await readLines(path)) {
+    const raw = await readRaw(path);
+    const state: StreamState = {
+      nextSeq: 1,
+      count: 0,
+      bytes: Buffer.byteLength(raw),
+      oldestAt: null,
+      endsWithNewline: raw === "" || raw.endsWith("\n"),
+    };
+    for (const rawLine of nonEmptyLines(raw)) {
+      const line = parseLine(rawLine);
+      if (line === null) continue;
       if (line.seq >= state.nextSeq) state.nextSeq = line.seq + 1;
       state.count += 1;
       if (state.oldestAt === null || line.at < state.oldestAt) state.oldestAt = line.at;
@@ -87,26 +113,31 @@ export function createFileCoverageEventStore(
 
   async function pruneIfDue(project: string, path: string, state: StreamState, now: number): Promise<void> {
     const overCount = state.count > maxEvents;
+    const overBytes = state.bytes > maxBytes;
     const overAge = state.oldestAt !== null && state.oldestAt < now - retentionMs - PRUNE_AGE_SLACK_MS;
-    if (!overCount && !overAge) return;
+    if (!overCount && !overBytes && !overAge) return;
 
     const lines = await readLines(path);
     const cutoff = now - retentionMs;
     const fresh = lines.filter((l) => l.at >= cutoff);
     const keep = overCount ? Math.max(0, maxEvents - pruneBatch) : maxEvents;
-    const kept = fresh.length > keep ? fresh.slice(fresh.length - keep) : fresh;
+    let kept = fresh.length > keep ? fresh.slice(fresh.length - keep) : fresh;
+    if (overBytes) kept = newestWithinBytes(kept, pruneBytesTarget);
 
-    await writeBytes(
-      path,
-      new TextEncoder().encode(kept.map((l) => JSON.stringify(l)).join("\n") + (kept.length > 0 ? "\n" : "")),
+    const encoded = new TextEncoder().encode(
+      kept.map((l) => JSON.stringify(l)).join("\n") + (kept.length > 0 ? "\n" : ""),
     );
+    await writeBytes(path, encoded);
     const dropped = state.count - kept.length;
     state.count = kept.length;
+    state.bytes = encoded.byteLength;
     state.oldestAt = kept[0]?.at ?? null;
+    state.endsWithNewline = true;
     if (dropped > 0) {
       console.warn(
         `hub: coverage inbox for "${project}": dropped ${dropped} events past retention ` +
-          `(${maxEvents} events / ${Math.round(retentionMs / 86_400_000)} days)`,
+          `(${maxEvents} events / ${Math.round(maxBytes / 1_048_576)} MiB / ` +
+          `${Math.round(retentionMs / 86_400_000)} days)`,
       );
     }
   }
@@ -123,9 +154,15 @@ export function createFileCoverageEventStore(
         const stamp = { seq: state.nextSeq, at: Date.now() };
         const line: StoredLine = { ...stamp, payload: Buffer.from(payload).toString("base64") };
         await mkdir(dirname(path), { recursive: true });
-        await appendFile(path, JSON.stringify(line) + "\n");
+        // A crashed append can leave a partial line with no trailing newline;
+        // appending onto it would weld two events into one unparseable line.
+        // Starting on a fresh line sacrifices only the fragment.
+        const text = (state.endsWithNewline ? "" : "\n") + JSON.stringify(line) + "\n";
+        await appendFile(path, text);
         state.nextSeq += 1;
         state.count += 1;
+        state.bytes += Buffer.byteLength(text);
+        state.endsWithNewline = true;
         if (state.oldestAt === null) state.oldestAt = stamp.at;
         await pruneIfDue(project, path, state, stamp.at);
         return stamp;
@@ -135,10 +172,17 @@ export function createFileCoverageEventStore(
     async read(project, sinceSeq) {
       assertSafeName(project, "project");
       const path = coverageEventsPath(root, project);
-      // Answered from the file alone (no in-memory state): a read races only
-      // against the append-in-flight partial line, which parseLine already
-      // treats as skipped.
+      const now = Date.now();
+      // Retention must not depend on appends still happening — a stream
+      // nothing writes to anymore would otherwise keep its events forever.
+      // The prune joins the append chain; the raw read below stays outside
+      // it, racing only against an append-in-flight partial line, which
+      // parseLine already treats as skipped.
+      await serialize(path, async () => {
+        await pruneIfDue(project, path, await loadState(project, path), now);
+      });
       const raw = await readRaw(path);
+      const cutoff = now - retentionMs;
       const entries: { seq: number; at: number; payload: Uint8Array }[] = [];
       let lastSeq = 0;
       let skipped = 0;
@@ -150,12 +194,36 @@ export function createFileCoverageEventStore(
         }
         if (line.seq > lastSeq) lastSeq = line.seq;
         if (line.seq <= sinceSeq) continue;
+        // The prune amortizes with slack; the retention promise doesn't — an
+        // event past the window is never served, rewritten away or not.
+        if (line.at < cutoff) continue;
         entries.push({ seq: line.seq, at: line.at, payload: new Uint8Array(Buffer.from(line.payload, "base64")) });
       }
       entries.sort((a, b) => a.seq - b.seq);
       return { entries, lastSeq, skipped };
     },
+
+    async currentSeq(project) {
+      assertSafeName(project, "project");
+      const cached = states.get(project);
+      if (cached) return cached.nextSeq - 1;
+      const path = coverageEventsPath(root, project);
+      // Joins the append chain so this load can't race an append's own load
+      // and leave two state objects claiming the same stream.
+      const state = await serialize(path, () => loadState(project, path));
+      return state.nextSeq - 1;
+    },
   };
+}
+
+/** The longest tail of `lines` whose serialized size (newlines included) fits in `budget`. */
+function newestWithinBytes(lines: StoredLine[], budget: number): StoredLine[] {
+  let total = 0;
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    total += Buffer.byteLength(JSON.stringify(lines[i])) + 1;
+    if (total > budget) return lines.slice(i + 1);
+  }
+  return lines;
 }
 
 async function readRaw(path: string): Promise<string> {
