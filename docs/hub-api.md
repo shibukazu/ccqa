@@ -440,6 +440,8 @@ interface SpecRerun {
   // couldn't place the audit/run, not for the ordinary reasons. Both can be
   // set at once. `unknownDeployedSha`/`ambiguousDeployedSha` describe the
   // *run's* deployed sha, so only `executionAssumedReached` carries them.
+  // "selectionUnknown" is not produced since ADR-0023 (an undecided
+  // judgement counts as not reached); it can still appear from older hubs.
   auditAssumedReached?: "noSelectionInRange" | "selectionUnknown" | "noDeployLog"
                        | "deployedShaNotInLog" | "gapInRange";
   executionAssumedReached?: /* same set as auditAssumedReached, plus */

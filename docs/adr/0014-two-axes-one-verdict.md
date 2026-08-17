@@ -4,6 +4,9 @@
 - Date: 2026-07-30
 - Amended: 2026-07-31 — `unanswerable` removed; an unplaceable deploy range is
   assumed to have reached the spec (see "Amendment: assume reached")
+- Amended: 2026-08-17 — a selection that answered `unknown` for a spec no
+  longer counts as a reach; only holes in the record itself are still assumed
+  reached (ADR-0023)
 - Amended: 2026-08-14 — a red retired by a lapsed attestation reads `stale`
   rather than `failed`; the verdict table below is unchanged (see ADR-0020)
 

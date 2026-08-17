@@ -398,8 +398,8 @@ export type DeployInput = Omit<DeployEntry, "index" | "gapBefore">;
  *
  * This is the whole re-run computation, not an accelerator for it. Each spec's
  * baseline sits at a different position in the log, so the question is always
- * "since *this* spec last ran, was it ever needed" — two integer comparisons
- * against the positions kept here. Re-deriving it per read is impossible
+ * "since *this* spec last ran, was it ever needed" — one integer comparison
+ * against the `needed` position kept here. Re-deriving it per read is impossible
  * anyway: the selections were made by a model against each deploy's diff, and
  * neither the diff nor the model is available at read time.
  *
@@ -430,8 +430,10 @@ export const SpecTouchSchema = z.object({
     .optional(),
   /**
    * Position of the newest deploy whose selection answered `unknown` here.
-   * Kept apart from `needed` so an undecided deploy cannot read as a clean
-   * one: a baseline behind it is assumed reached, never cleared.
+   * Record-only since ADR-0023: freshness reads an undecided judgment as
+   * "did not reach", so this position moves no verdict. Nothing reads it
+   * back today; it stays recorded so what the selector answered is not
+   * lost, and so reverting ADR-0023 would not need a data migration.
    */
   undecidedIndex: z.number().int().nonnegative().optional(),
 });
@@ -530,7 +532,11 @@ export type SpecVerdict = z.infer<typeof SpecVerdictSchema>;
 export const RerunUnknownReasonSchema = z.enum([
   /** A deploy in range was recorded without a spec selection, so its effect on this spec is unrecorded. */
   "noSelectionInRange",
-  /** A selection in range answered `unknown` for this spec — the selector could not tell. */
+  /**
+   * A selection in range answered `unknown` for this spec. Not produced
+   * since ADR-0023 — an undecided judgment counts as not reached — but a
+   * client can still read it from an older hub.
+   */
   "selectionUnknown",
   /** Nothing has ever been recorded in this profile's deploy log. */
   "noDeployLog",

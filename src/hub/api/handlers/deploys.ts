@@ -57,7 +57,7 @@ export function createRecordDeployHandler(storage: HubStorage) {
 
 /**
  * Record what this deploy's selection decided, so a later read can answer each
- * spec's own range with two integer comparisons.
+ * spec's own range by comparing positions.
  *
  * It does not fail the request: the log is the record of what shipped and has
  * to land even if the fold cannot. What a lost fold must not do is *look* like
