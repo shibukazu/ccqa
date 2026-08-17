@@ -45,6 +45,38 @@ export interface HubStorage {
   spend: SpendStore;
   attestations: AttestationStore;
   auditDismissals: AuditDismissalStore;
+  coverageEvents: CoverageEventStore;
+}
+
+/**
+ * The per-project coverage inbox (ADR-0022): an append-only stream of stamped
+ * payloads the hub never looks inside. Payloads cross this boundary already
+ * encrypted — like the secret stores, encryption happens one layer up
+ * (`core/crypto.ts`), so the backend never learns what an event holds.
+ */
+export interface CoverageEventStore {
+  /** Stamp the next `{seq, at}` onto `payload` and append it to the project's stream. */
+  append(project: string, payload: Uint8Array): Promise<{ seq: number; at: number }>;
+  /**
+   * Stamped payloads with `seq > sinceSeq`, oldest first, plus the highest seq
+   * the stream holds (0 when empty). A line that cannot be read — a partial
+   * line from an append in flight, corruption — is counted in `skipped`, never
+   * returned: the count tells the consumer the stream has holes.
+   */
+  read(
+    project: string,
+    sinceSeq: number,
+  ): Promise<{
+    entries: { seq: number; at: number; payload: Uint8Array }[];
+    lastSeq: number;
+    skipped: number;
+  }>;
+  /**
+   * The highest seq the stream has stamped (0 when empty), without reading
+   * the stream — the cheap "did anything move?" probe a cached resolve
+   * checks before paying for a full read.
+   */
+  currentSeq(project: string): Promise<number>;
 }
 
 /**

@@ -11,6 +11,7 @@ import {
   type RunOptions,
 } from "../run/pipeline.ts";
 import { EXPLAIN_RERUN_MODES, type ExplainRerunMode } from "../run/explain-rerun.ts";
+import { COVERAGE_INBOX_MODES, type CoverageInboxMode } from "../coverage/inbox.ts";
 import { addHubOptions, addLanguageOption, addProfileOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { createRunTeardown, installTeardownSignalHandlers } from "./run-teardown.ts";
@@ -129,6 +130,15 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     .option(
       "--coverage",
       "Measure what each spec actually reached in the application under test, and record it on the spec's report row. Needs a `coverage:` block in .ccqa/config.yaml naming the instrumented origins the spec cookie may go to. The browser half attaches to the target's browser from outside (nothing is emitted into generated tests; needs node 22+); the server half needs the application running with ccqa-tools.",
+    )
+    .option(
+      "--coverage-inbox <where>",
+      "With --coverage: where the measurement's two sides meet. 'local' (default) binds a loopback inbox on this machine for the run's duration; 'hub' appends every event to the hub's durable coverage inbox instead — nothing listens on the runner, report.json carries no coverage, and the hub resolves per-spec results on read (requires a hub connection).",
+      (raw): CoverageInboxMode => {
+        if ((COVERAGE_INBOX_MODES as readonly string[]).includes(raw)) return raw as CoverageInboxMode;
+        throw new Error(`--coverage-inbox must be one of ${COVERAGE_INBOX_MODES.join(" | ")}`);
+      },
+      "local" as CoverageInboxMode,
     )
     .optionsGroup("Learning:")
     .option(

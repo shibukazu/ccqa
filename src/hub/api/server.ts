@@ -37,6 +37,11 @@ import {
   createPutAuditDismissalHandler,
 } from "./handlers/audit-dismissals.ts";
 import { createGetSpendHandler, createRecordSpendHandler } from "./handlers/spend.ts";
+import {
+  createAppendCoverageEventHandler,
+  createGetCoverageEventsHandler,
+  createResolveCoverageHandler,
+} from "./handlers/coverage.ts";
 import { createGetRerunHandler } from "./handlers/rerun.ts";
 import {
   createDeletePromptHandler,
@@ -77,10 +82,22 @@ export interface HubServerConfig {
   allowedOrigins: string[];
   maxPushBytes?: number;
   maxRunsPerBranch?: number;
+  /** The coverage inbox's append-only credential (ADR-0022); unset refuses application pushes with 503. */
+  coverageToken?: string;
 }
 
 /** Endpoints reachable without a token: the liveness probe and the bundled UI shell. */
 const PUBLIC_PATHS = new Set(["/api/v1/health", "/"]);
+
+/**
+ * Requests ("METHOD pathname") that authenticate inside their handlers
+ * instead of the central bearer check below: the coverage append accepts a
+ * second, append-only credential (ADR-0022) that a single-token check cannot
+ * express. Keyed by method so the sibling reads under the same path stay
+ * behind the central check. Every handler registered here must enforce auth
+ * itself.
+ */
+const SELF_AUTHENTICATED_ROUTES = new Set(["POST /api/v1/coverage/events"]);
 
 export function createHubServer(config: HubServerConfig): Server {
   // The triage-learning queue: a single in-process worker that turns graded
@@ -144,13 +161,14 @@ async function handleRequest(
     if (applyCors(req, res, config.allowedOrigins)) return;
 
     const url = new URL(req.url ?? "/", "http://localhost");
-    const matched = router.match(req.method ?? "GET", url.pathname);
+    const method = req.method ?? "GET";
+    const matched = router.match(method, url.pathname);
     if (!matched) {
       sendError(res, new HttpError(404, "not_found", `no route for ${req.method} ${url.pathname}`));
       return;
     }
 
-    if (!PUBLIC_PATHS.has(url.pathname)) {
+    if (!PUBLIC_PATHS.has(url.pathname) && !SELF_AUTHENTICATED_ROUTES.has(`${method} ${url.pathname}`)) {
       const token = extractToken(req, url);
       if (!isValidToken(token, config.token)) {
         sendError(res, new HttpError(401, "unauthorized", "missing or invalid bearer token"));
@@ -272,6 +290,22 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.get("/api/v1/projects/:project/perspectives", createGetPerspectivesHandler(perspectivesConfig));
   router.patch("/api/v1/projects/:project/perspectives", createPatchPerspectivesNoteHandler(perspectivesConfig));
   router.delete("/api/v1/projects/:project/perspectives", createDeletePerspectivesHandler(perspectivesConfig));
+
+  // The coverage inbox (ADR-0022): stamp, store, serve — never interpret.
+  // The append's auth lives in its handler (see SELF_AUTHENTICATED_ROUTES);
+  // the reads stay behind the central bearer check.
+  const coverageConfig = {
+    store: storage.coverageEvents,
+    encryptionKey: config.encryptionKey,
+    hubToken: config.token,
+    coverageToken: config.coverageToken,
+  };
+  router.post("/api/v1/coverage/events", createAppendCoverageEventHandler(coverageConfig));
+  router.get("/api/v1/coverage/events", createGetCoverageEventsHandler(coverageConfig));
+  // The read-time resolve (ADR-0022's bounded amendment): a pure function
+  // over the stored stream, memoized by stream position, never stored back.
+  // Bearer-only, so it stays under the central token check as well.
+  router.get("/api/v1/coverage", createResolveCoverageHandler(coverageConfig));
 
   // Triage-learning jobs: the UI creates one after grading, then polls it.
   router.post("/api/v1/projects/:project/learning-jobs", createCreateLearningJobHandler({ storage, queue }));

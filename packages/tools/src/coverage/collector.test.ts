@@ -4,13 +4,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { installRuntime, type CoverageRuntime, type CoverageStore } from "./core.ts";
 import {
+  collectorOptionsFromEnv,
   createCollectorState,
+  DEFAULT_ENDPOINT,
   diff,
   evict,
+  shouldWarnPushFailure,
   startCollector,
   type CollectorState,
   type CoveragePush,
 } from "./collector.ts";
+import { ENV_HEADER } from "./wire.ts";
 
 const RUNTIME_KEY = Symbol.for("ccqa.coverage.runtime");
 
@@ -127,6 +131,61 @@ describe("exit flush", () => {
     stop();
     fetchSpy.mockRestore();
     expect(attempts).toBe(1);
+  });
+});
+
+describe("collectorOptionsFromEnv", () => {
+  it("defaults the endpoint to the loopback inbox when none is set", () => {
+    expect(collectorOptionsFromEnv({}).endpoint).toBe(DEFAULT_ENDPOINT);
+  });
+
+  it("parses the extra header on the first colon, trimming both sides", () => {
+    const options = collectorOptionsFromEnv({ [ENV_HEADER]: " x-gate : a:b " });
+    expect(options.header).toEqual({ name: "x-gate", value: "a:b" });
+  });
+
+  it("warns about a header with no name instead of dropping it silently", () => {
+    const write = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const options = collectorOptionsFromEnv({ [ENV_HEADER]: ":secret" });
+
+    expect(options.header).toBeUndefined();
+    expect(write).toHaveBeenCalledOnce();
+    write.mockRestore();
+  });
+});
+
+describe("push", () => {
+  it("sends the configured extra header alongside the token", async () => {
+    const runtime = install();
+    runtime.buckets.set("run1.spec-a", new Set(["src/a.ts"]));
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    const before = process.listeners("beforeExit").length;
+    const stop = startCollector({
+      endpoint: "http://127.0.0.1:1/",
+      token: "tok",
+      header: { name: "x-gate", value: "open" },
+      intervalMs: 3_600_000,
+    });
+    const onBeforeExit = process.listeners("beforeExit")[before] as () => Promise<void>;
+
+    await onBeforeExit();
+
+    stop();
+    const headers = (fetchSpy.mock.calls[0]?.[1] as RequestInit).headers as Record<string, string>;
+    fetchSpy.mockRestore();
+    expect(headers["x-gate"]).toBe("open");
+    expect(headers.authorization).toBe("Bearer tok");
+  });
+});
+
+describe("shouldWarnPushFailure", () => {
+  it("warns at 1, 10, 100, then every 1000th failure", () => {
+    // The endpoint defaults now, so a never-configured deployment fails every
+    // tick forever — the warning has to fade out, not drone every tenth tick.
+    const warned = [1, 2, 9, 10, 11, 100, 500, 1000, 1500, 2000].filter(shouldWarnPushFailure);
+    expect(warned).toEqual([1, 10, 100, 1000, 2000]);
   });
 });
 

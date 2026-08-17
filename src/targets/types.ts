@@ -268,9 +268,11 @@ export interface TestRunner {
  * spec just released has to let the boundary go quiet first — so it brackets
  * the spec rather than only describing it. `armBrowser` attaches the shared
  * acquisition engine to the browser named by the target's `cdpEndpoint`.
+ * `collect` resolves undefined when the run streams to the hub inbox
+ * (ADR-0022): the stream is the record there, so the row carries no coverage.
  */
 export interface CoverageCollector {
   beginSpec(ref: SpecRef): Promise<void>;
   armBrowser(ref: SpecRef, cdpUrl: string, artifactsDir: string): Promise<{ stop(): Promise<void> }>;
-  collect(ref: SpecRef, artifactsDir: string): Promise<ReportCoverage>;
+  collect(ref: SpecRef, artifactsDir: string): Promise<ReportCoverage | undefined>;
 }

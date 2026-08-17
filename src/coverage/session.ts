@@ -20,6 +20,7 @@ import { specKey, type SpecRef } from "../store/index.ts";
 import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
 import { CoverageSink } from "./sink.ts";
+import type { RunEventInbox } from "./inbox.ts";
 import { startBrowserCoverage, type BrowserCoverageHandle } from "./browser/engine.ts";
 import { enumerateUniverse, type CoverageUniverse } from "./universe.ts";
 import { FRONTEND_COVERAGE_FILE, type FrontendCoverage } from "./contract.ts";
@@ -45,12 +46,29 @@ export interface CoverageSessionOptions {
   specs: readonly SpecRef[];
   /** Identities whose turns this run hands out. Empty unless the config declares any. */
   actors?: ActorPlan;
+  /**
+   * Set by `--coverage-inbox hub`: no local sink is bound, the run appends its
+   * facts here instead, and report rows carry no coverage (ADR-0022).
+   */
+  inbox?: RunEventInbox;
 }
 
 export class CoverageSession {
   private readonly existing = new Map<string, boolean>();
 
-  private readonly sink: CoverageSink;
+  /**
+   * Undefined in hub mode: nothing binds on the runner, and every read-side
+   * answer here stays empty — interpretation lives in the hub's resolve
+   * (ADR-0022).
+   */
+  private readonly sink: CoverageSink | undefined;
+  private readonly inbox: RunEventInbox | undefined;
+  /**
+   * Hub mode's stand-in for the sink's window log: when each identity's turn
+   * last closed, on this process's clock, which is all the drain scheduling
+   * ever compared against.
+   */
+  private readonly windowClosedAt = new Map<string, number>();
   private readonly runId: string;
   /** What reported paths are relative to, and what they are checked against. */
   private readonly root: string;
@@ -58,13 +76,18 @@ export class CoverageSession {
   private readonly cwd: string;
   private readonly actors: ActorPlan;
   readonly origins: readonly string[];
-  /** The denominator, enumerated once at start, or undefined when `coverage.include` is unset. */
+  /**
+   * The denominator, enumerated once at start, or undefined when
+   * `coverage.include` is unset — and always in hub mode, where it travels as
+   * a `universe` event instead of riding the report envelope.
+   */
   readonly universe: CoverageUniverse | undefined;
 
   // Assigned in the body rather than declared as parameters: node's type
   // stripping runs this file as-is and rejects a parameter property outright.
   private constructor(
-    sink: CoverageSink,
+    sink: CoverageSink | undefined,
+    inbox: RunEventInbox | undefined,
     runId: string,
     root: string,
     cwd: string,
@@ -73,6 +96,7 @@ export class CoverageSession {
     universe: CoverageUniverse | undefined,
   ) {
     this.sink = sink;
+    this.inbox = inbox;
     this.runId = runId;
     this.root = root;
     this.cwd = cwd;
@@ -89,15 +113,18 @@ export class CoverageSession {
         `coverage.instrumentedOrigins must be absolute http(s) URLs after variable substitution; got ${unresolved.join(", ")}`,
       );
     }
-    const bind = new URL(resolveEnvRefs(options.config.sink));
     const actors = options.actors ?? NO_ACTORS;
-    const issued = new Set(options.specs.map((spec) => specIdFor(options.runId, spec)));
-    const sink = await CoverageSink.start(
-      bind.hostname,
-      bind.port === "" ? 80 : Number(bind.port),
-      issued,
-      actors.tagToKey,
-    );
+    let sink: CoverageSink | undefined;
+    if (options.inbox === undefined) {
+      const bind = new URL(resolveEnvRefs(options.config.sink));
+      const issued = new Set(options.specs.map((spec) => specIdFor(options.runId, spec)));
+      sink = await CoverageSink.start(
+        bind.hostname,
+        bind.port === "" ? 80 : Number(bind.port),
+        issued,
+        actors.tagToKey,
+      );
+    }
     const declaredRoot = await resolveRoot(options.cwd, options.config.projectRoot);
     const root = declaredRoot ?? options.cwd;
     // Enumerated at start, not at close: the envelope that carries it is built
@@ -107,11 +134,51 @@ export class CoverageSession {
       options.config.include === undefined
         ? undefined
         : await enumerateUniverse(root, options.config.include, (text) => log.warn(text));
-    return new CoverageSession(sink, options.runId, root, options.cwd, actors, origins, universe);
+    if (options.inbox !== undefined && universe !== undefined) {
+      await options.inbox.append({
+        kind: "universe",
+        runId: options.runId,
+        include: [...universe.include],
+        files: [...universe.files],
+      });
+    }
+    return new CoverageSession(
+      sink,
+      options.inbox,
+      options.runId,
+      root,
+      options.cwd,
+      actors,
+      origins,
+      // Streamed above rather than exposed: in hub mode the envelope must not
+      // carry it — the stream is the record.
+      options.inbox === undefined ? universe : undefined,
+    );
   }
 
+  /**
+   * Ties the stream's run id to the hub's run record. The session starts
+   * before the hub assigns that id, so the link is appended once it exists;
+   * local mode has no stream to link.
+   */
+  async linkHubRun(hubRunId: string): Promise<void> {
+    if (this.inbox === undefined) return;
+    await this.inbox.append({ kind: "run-link", runId: this.runId, hubRunId });
+  }
+
+  /** Where the local sink listens. Hub mode binds nothing, so there is no URL. */
   get sinkUrl(): string {
-    return this.sink.url;
+    return this.sink?.url ?? "";
+  }
+
+  /**
+   * True in hub mode: the facts leave as a stream, rows carry no coverage,
+   * and the run-side health read-outs below answer empty. The one mode flag
+   * callers should consult, so the answer cannot drift from what `start`
+   * actually wired.
+   */
+  get streamsToHub(): boolean {
+    return this.inbox !== undefined;
   }
 
   /**
@@ -124,14 +191,32 @@ export class CoverageSession {
    */
   async beginSpec(ref: SpecRef): Promise<void> {
     const specId = specIdFor(this.runId, ref);
+    if (this.inbox !== undefined) {
+      await this.inbox.append({ kind: "spec-open", runId: this.runId, specId });
+    }
     for (const window of this.actors.windowsForSpec.get(specKey(ref)) ?? []) {
-      const closedAt = this.sink.lastClosedAt(window.tag);
+      // The drain is a pause this process schedules, so it compares its own
+      // stamps in either mode — only the interpretation moved to the hub.
+      const closedAt =
+        this.inbox === undefined
+          ? this.sink!.lastClosedAt(window.tag)
+          : this.windowClosedAt.get(window.tag);
       const wait = closedAt === undefined ? 0 : closedAt + ACTOR_DRAIN_MS - Date.now();
       if (wait > 0) {
         log.meta("coverage", `waiting ${Math.ceil(wait / 1000)}s for ${window.key} to go quiet`);
         await new Promise((resolve) => setTimeout(resolve, wait));
       }
-      this.sink.openWindow(window, specId);
+      if (this.inbox === undefined) {
+        this.sink!.openWindow(window, specId);
+      } else {
+        await this.inbox.append({
+          kind: "window-open",
+          runId: this.runId,
+          tag: window.tag,
+          key: window.key,
+          specId,
+        });
+      }
     }
   }
 
@@ -152,16 +237,29 @@ export class CoverageSession {
     });
   }
 
-  /** Merges both sides once the spec's pushes have stopped arriving. */
-  async collect(ref: SpecRef, coverageDir: string): Promise<ReportCoverage> {
+  /**
+   * Merges both sides once the spec's pushes have stopped arriving.
+   *
+   * In hub mode there is nothing to merge: the run appends what it alone can
+   * state — its markers and the browser half — and resolves nothing, so the
+   * row gets no coverage. There is no settle either: settling existed to read
+   * a complete file set before the row was written, and late pushes land on
+   * the hub whenever they arrive, attributed by the spec id they carry.
+   */
+  async collect(ref: SpecRef, coverageDir: string): Promise<ReportCoverage | undefined> {
     const specId = specIdFor(this.runId, ref);
+    if (this.inbox !== undefined) {
+      await this.streamSpecClose(this.inbox, ref, specId, coverageDir);
+      return undefined;
+    }
+    const sink = this.sink!;
     await this.settle(specId);
     // Closed only now: the work a spec's last action triggers arrives after the
     // test process is gone, and settle is what waits for it.
     const owned = this.actors.windowsForSpec.get(specKey(ref)) ?? [];
-    for (const window of owned) this.sink.closeWindow(window.tag);
-    const matched = this.sink.actorEventsFor(specId);
-    const backend = this.sink.filesFor(specId);
+    for (const window of owned) sink.closeWindow(window.tag);
+    const matched = sink.actorEventsFor(specId);
+    const backend = sink.filesFor(specId);
     const frontend = await readFrontend(coverageDir, specId);
     // Only the browser half is checked against the working tree. Its paths come
     // out of source maps, which also describe the framework's own build output;
@@ -173,7 +271,7 @@ export class CoverageSession {
       files: [...files].sort(),
       frontendFiles: inProject.length,
       backendFiles: backend?.size ?? 0,
-      backendReported: this.sink.heardFromApplication(),
+      backendReported: sink.heardFromApplication(),
       frontendReported: frontend !== undefined,
       frontendStopped: frontend?.stopped ?? false,
       // Listed even at zero: a declared window that matched nothing is the
@@ -184,67 +282,100 @@ export class CoverageSession {
       })),
       excludedDependencies: frontend?.excludedDependencies ?? 0,
       gaps: {
-        unattributed: this.sink.unattributedFor(specId),
+        unattributed: sink.unattributedFor(specId),
         unmappedScripts: frontend?.unmappedScripts ?? 0,
         unmappedRanges: frontend?.unmappedRanges ?? 0,
         outsideProject: (frontend?.files.length ?? 0) - inProject.length,
         unresolvedSources: frontend?.unresolvedSources ?? 0,
-        uninstrumentedFiles: this.sink.uninstrumentedFiles(),
-        uninstrumentedProcesses: this.sink.uninstrumentedProcesses(),
-        droppedPushes: this.sink.droppedPushes(),
-        unmappedActorEvents: this.sink.unmappedActorEvents(),
+        uninstrumentedFiles: sink.uninstrumentedFiles(),
+        uninstrumentedProcesses: sink.uninstrumentedProcesses(),
+        droppedPushes: sink.droppedPushes(),
+        unmappedActorEvents: sink.unmappedActorEvents(),
         // This spec's own identities only. Summing the run's would make every
         // later row inherit it, and the last spec always look the worst.
         outsideWindowEvents: owned.reduce(
-          (sum, window) => sum + (this.sink.outsideWindowEvents().get(window.key) ?? 0),
+          (sum, window) => sum + (sink.outsideWindowEvents().get(window.key) ?? 0),
           0,
         ),
       },
     };
   }
 
+  // The read-outs below answer empty in hub mode — nothing here saw the
+  // stream, and the run's health reporting is skipped there for that reason.
+
   /** Files reached at module top level, across the whole run. */
   boot(): string[] {
-    return [...this.sink.boot()].sort();
+    return this.sink === undefined ? [] : [...this.sink.boot()].sort();
   }
 
   /** Whether any instrumented application process reported at all. */
   heardFromApplication(): boolean {
-    return this.sink.heardFromApplication();
+    return this.sink?.heardFromApplication() ?? false;
   }
 
   /** Specs some application process attributed a file to. */
   attributedSpecs(): number {
-    return this.sink.attributedSpecs();
+    return this.sink?.attributedSpecs() ?? 0;
   }
 
   /** Declared identities that acted outside the turns this run gave them. */
   outsideWindowEvents(): ReadonlyMap<string, number> {
-    return this.sink.outsideWindowEvents();
+    return this.sink?.outsideWindowEvents() ?? new Map();
   }
 
   /** Events from identities this project never declared. */
   unmappedActorEvents(): number {
-    return this.sink.unmappedActorEvents();
+    return this.sink?.unmappedActorEvents() ?? 0;
   }
 
   /** Pushes naming a spec id this run never issued — a stale or forged cookie. */
   rejectedPushes(): number {
-    return this.sink.rejectedPushes();
+    return this.sink?.rejectedPushes() ?? 0;
   }
 
   /** Pushes the sink could not read — the two halves' wire formats disagree. */
   malformedPushes(): number {
-    return this.sink.malformedPushes();
+    return this.sink?.malformedPushes() ?? 0;
   }
 
   /** Application processes that instrumented nothing at all. */
   uninstrumentedProcesses(): number {
-    return this.sink.uninstrumentedProcesses();
+    return this.sink?.uninstrumentedProcesses() ?? 0;
   }
 
   async close(): Promise<void> {
-    await this.sink.close();
+    await this.sink?.close();
+  }
+
+  /**
+   * Hub-mode close: everything the run alone can state about this spec goes
+   * to the inbox. Windows close now, on this process's stamps — actor events
+   * match on the instant the work was asked for, so a spec's asynchronous
+   * tail still lands inside the turn that caused it.
+   */
+  private async streamSpecClose(
+    inbox: RunEventInbox,
+    ref: SpecRef,
+    specId: string,
+    coverageDir: string,
+  ): Promise<void> {
+    for (const window of this.actors.windowsForSpec.get(specKey(ref)) ?? []) {
+      await inbox.append({ kind: "window-close", runId: this.runId, tag: window.tag });
+      // Recorded only after the append resolves: the hub stamps the close
+      // before the ack returns, so a drain measured from here spans at least
+      // as long on the hub's clock — the only erosion left is the ack's
+      // return leg, not the whole POST.
+      this.windowClosedAt.set(window.tag, Date.now());
+    }
+    const frontend = await readFrontend(coverageDir, specId);
+    if (frontend !== undefined) {
+      // The existence check is part of resolving the browser half, and only
+      // the run holds the checkout to resolve against.
+      const files = [...new Set(await this.keepExisting(frontend.files))].sort();
+      await inbox.append({ kind: "browser", runId: this.runId, specId, files });
+    }
+    await inbox.append({ kind: "spec-close", runId: this.runId, specId });
   }
 
   /** Keeps the paths that name a file in the working tree, cached per session. */
@@ -264,16 +395,18 @@ export class CoverageSession {
     return paths.filter((path) => this.existing.get(path) === true);
   }
 
+  /** Local mode only; hub mode never settles (see `collect`). */
   private async settle(specId: string): Promise<void> {
+    const sink = this.sink!;
     // Nothing has ever pushed: the application is not instrumented, or cannot
     // reach the sink. Waiting a second per spec would buy nothing.
-    if (!this.sink.heardFromApplication()) return;
+    if (!sink.heardFromApplication()) return;
     const deadline = Date.now() + SETTLE_CAP_MS;
-    let previous = this.sink.filesFor(specId)?.size ?? 0;
+    let previous = sink.filesFor(specId)?.size ?? 0;
     let quiet = 0;
     while (Date.now() < deadline && quiet < SETTLE_QUIET_POLLS) {
       await new Promise((resolve) => setTimeout(resolve, SETTLE_POLL_MS));
-      const size = this.sink.filesFor(specId)?.size ?? 0;
+      const size = sink.filesFor(specId)?.size ?? 0;
       quiet = size === previous ? quiet + 1 : 0;
       previous = size;
     }

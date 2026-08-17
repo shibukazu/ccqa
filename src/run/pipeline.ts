@@ -52,7 +52,12 @@ import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import type { LiveReportStep, ReportSpecResult, RunReportData } from "../report/schema.ts";
 import { currentReportCost } from "../report/run-cost.ts";
 import { resolveProfileEnv } from "../cli/options.ts";
-import { resolveHubContextOrNull, HubConnectionError, type HubContext } from "../cli/hub-conn.ts";
+import {
+  resolveHubContextOrNull,
+  resolveHubTransport,
+  HubConnectionError,
+  type HubContext,
+} from "../cli/hub-conn.ts";
 import { HubApiError } from "../hub-client/index.ts";
 import { resolveProjectOrThrow, ProjectNameError } from "../cli/resolve-project.ts";
 import {
@@ -64,6 +69,7 @@ import {
 import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
 import { loadProjectConfig, type CoverageConfig } from "../config/project-config.ts";
 import { CoverageSession } from "../coverage/session.ts";
+import { CoverageInbox, type CoverageInboxMode } from "../coverage/inbox.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
 import { detectBranch, getGitHead } from "../cli/git-branch.ts";
@@ -174,6 +180,8 @@ export interface RunOptions {
   reportToHub?: boolean;
   /** Measure what each spec actually reached. See `--coverage`. */
   coverage?: boolean;
+  /** Where the measurement's events meet: a run-local sink (default) or the hub's inbox. See `--coverage-inbox`. */
+  coverageInbox?: CoverageInboxMode;
   project?: string;
   /** Reap agent-browser sessions / flush the report on SIGINT/SIGTERM. See run-teardown.ts. */
   teardown?: RunTeardown;
@@ -454,6 +462,28 @@ export async function executeRun(
   if (opts.learnHubLivePrompt && hubCtx == null) {
     throw new RunUsageError(needsHubConnection("--learn-hub-live-prompt"));
   }
+  // Same contract as --report-to-hub: the flag opted into delivering the
+  // measurement to the hub, so a missing connection is a usage error checked
+  // before anything is spent. The client is built here for the same reason.
+  let coverageInbox: CoverageInbox | undefined;
+  if (opts.coverageInbox === "hub") {
+    if (opts.coverage !== true) {
+      throw new RunUsageError(
+        "--coverage-inbox hub does nothing without --coverage — there is no measurement to stream",
+      );
+    }
+    const transport = resolveHubTransport(opts);
+    if (transport === null) {
+      throw new RunUsageError(needsHubConnection("--coverage-inbox hub"));
+    }
+    let project: string;
+    try {
+      project = resolveProjectOrThrow(opts.project, cwd);
+    } catch (err) {
+      throw new RunUsageError(errMessage(err));
+    }
+    coverageInbox = new CoverageInbox({ ...transport, project });
+  }
 
   // Everything this run needs from the hub, in one batch of independent round
   // trips: the two failure-analysis prompt layers (`triage.user` guidance and
@@ -703,7 +733,7 @@ export async function executeRun(
   // that was never going to measure anything.
   const coverage =
     opts.coverage && forExecution
-      ? await startCoverage(cwd, projectConfig.coverage, actors, dispatch, opts.teardown)
+      ? await startCoverage(cwd, projectConfig.coverage, actors, dispatch, opts.teardown, coverageInbox)
       : undefined;
 
   // Warn when a mode-scoped flag can't apply, rather than silently ignoring
@@ -778,6 +808,9 @@ export async function executeRun(
       });
       hubRunId = opened.id;
       log.info(`hub: incremental run opened (${opened.id})`);
+      // The coverage stream and the hub's run records are separate id spaces;
+      // the link is what lets a resolved measurement point at its run page.
+      await coverage?.linkHubRun(opened.id);
       const runId = opened.id;
       // `openRun` above carries no row/label data, so an old hub accepts it
       // even when it can't accept this release's report shape — there is no
@@ -919,8 +952,12 @@ export async function executeRun(
 
   // After every phase, not after the external one: live specs are measured too,
   // and reporting between the two would call the server half missing on a run
-  // whose only measured specs had not started yet.
-  if (coverage) reportCoverageHealth(coverage, [...externalRows, ...live.reportResults]);
+  // whose only measured specs had not started yet. Skipped in hub-inbox mode:
+  // nothing on this side saw the stream, so the gaps surface at the hub's
+  // resolve instead.
+  if (coverage && !coverage.streamsToHub) {
+    reportCoverageHealth(coverage, [...externalRows, ...live.reportResults]);
+  }
 
   let overallExitCode: 0 | 1 = det.exitCode !== 0 ? 1 : 0;
   if (live.failedCount > 0) overallExitCode = 1;
@@ -966,7 +1003,10 @@ export async function executeRun(
     );
     report = await writeUnifiedReport({
       reportDir,
-      results: coverage ? results.map(explainMissingCoverage) : results,
+      // In hub-inbox mode every row carries no coverage on purpose — the
+      // stream is the record — so the missing-coverage explanations would all
+      // be untrue.
+      results: coverage && !coverage.streamsToHub ? results.map(explainMissingCoverage) : results,
       git,
       customPromptVersion,
       triageUserPromptHash,
@@ -1055,7 +1095,8 @@ export async function executeRun(
 /**
  * Starts the run's coverage measurement before any spec runs: the sink has to
  * be listening before the first request reaches the application, and the set
- * of spec ids it will accept is only known once dispatch has resolved.
+ * of spec ids it will accept is only known once dispatch has resolved. With
+ * an `inbox`, nothing binds — the run streams its events to the hub instead.
  */
 async function startCoverage(
   cwd: string,
@@ -1063,6 +1104,7 @@ async function startCoverage(
   actors: ActorPlan,
   dispatch: TargetDispatch,
   teardown: RunTeardown | undefined,
+  inbox: CoverageInbox | undefined,
 ): Promise<CoverageSession> {
   if (config === undefined) {
     throw new RunUsageError(
@@ -1078,11 +1120,17 @@ async function startCoverage(
       config,
       actors,
       specs: dispatch.external.flatMap((g) => g.specs),
+      ...(inbox ? { inbox } : {}),
     });
   } catch (err) {
     throw new RunUsageError(`could not start coverage collection: ${errMessage(err)}`);
   }
-  log.meta("coverage", `sink ${session.sinkUrl} → ${session.origins.join(", ")}`);
+  if (inbox !== undefined) {
+    // No sink URL to print: nothing listens on this machine (ADR-0022).
+    log.meta("coverage", `streaming to hub inbox → ${session.origins.join(", ")}`);
+  } else {
+    log.meta("coverage", `sink ${session.sinkUrl} → ${session.origins.join(", ")}`);
+  }
   const unmeasured = dispatch.external.filter((g) => g.browserCoverage.browser === "none").length;
   if (unmeasured > 0) {
     log.warn(
