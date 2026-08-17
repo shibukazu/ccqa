@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { judgeStepOutcome, scrubLiveStepText, type LiveStepResult } from "./live-executor.ts";
+import {
+  judgeStepOutcome,
+  scrubLiveStepText,
+  shouldAskForVerdict,
+  type LiveStepResult,
+} from "./live-executor.ts";
 
 const step = { id: "step-01", source: "spec", instruction: "open the page", expected: "it opens" };
 
@@ -73,5 +78,28 @@ describe("scrubLiveStepText", () => {
 
     expect(scrubbed.reasoning).toBe("signed in as ${LOGIN_EMAIL}, the app opened");
     expect(scrubbed.commands).toEqual(['agent-browser fill "#email" "${LOGIN_EMAIL}"']);
+  });
+});
+
+describe("shouldAskForVerdict", () => {
+  const asked = (over: Partial<Parameters<typeof shouldAskForVerdict>[0]>) =>
+    shouldAskForVerdict({ judged: null, isError: false, transcript: "I waited; nothing.", ...over });
+
+  test("asks when a clean turn left a report but no verdict", () => {
+    expect(asked({})).toBe(true);
+  });
+
+  test("does not ask when the model already ruled", () => {
+    expect(asked({ judged: { stepId: "step-01", status: "pass", reasoning: "ok" } })).toBe(false);
+  });
+
+  test("does not ask when the invocation errored or hit the ceiling", () => {
+    // The failure is itself the answer, and re-judging it could turn a host
+    // timeout into a pass.
+    expect(asked({ isError: true })).toBe(false);
+  });
+
+  test("does not ask when nothing was written — there is nothing to judge from", () => {
+    expect(asked({ transcript: "   \n  " })).toBe(false);
   });
 });

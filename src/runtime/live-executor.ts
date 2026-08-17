@@ -11,6 +11,7 @@ import {
   buildLiveSystemPromptPrefix,
   buildLiveSystemPromptStepSection,
   buildLiveUserPrompt,
+  buildStepVerdictPrompt,
 } from "../prompts/live.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
 import { describeKill, killSessionDaemon } from "./agent-browser-daemon.ts";
@@ -351,18 +352,26 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
+    let judged = findLastStepResult(transcript);
+    // Ending the turn with no verdict is the model dropping the protocol rather
+    // than an outcome of the step, and the prompt forbidding it is not enough.
+    let salvaged = false;
+    if (shouldAskForVerdict({ judged, isError, transcript })) {
+      const verdict = await requestStepVerdict(step, transcript);
+      judged = findLastStepResult(verdict.text);
+      salvaged = judged !== null;
+      if (salvaged) transcriptParts.push(verdict.text);
+      else log.warn(`${step.id} gave no STEP_RESULT, and none when asked for one`);
+      cost = sumCosts([cost, verdict.cost]);
+    }
+
     // The transcript is model prose plus whatever page text it quoted, and the
     // failure-analysis excerpt reads this file back into report.json — so it is
     // scrubbed on the way to disk, not at some later reader.
-    const scrubbed = scrubEnvValues(transcript, input.envScrubMap);
+    const scrubbed = scrubEnvValues(transcriptParts.join("\n"), input.envScrubMap);
     await writeFile(paths.logTxt, scrubbed || "(no assistant text captured)", "utf-8");
 
-    const { status, reasoning } = judgeStepOutcome({
-      step,
-      isError,
-      errorDetail,
-      judged: findLastStepResult(transcript),
-    });
+    const { status, reasoning } = judgeStepOutcome({ step, isError, errorDetail, judged, salvaged });
 
     return {
       status,
@@ -372,6 +381,46 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       cost,
       commands: commandParts.slice(-MAX_LEARNED_COMMANDS),
     };
+  }
+
+  /**
+   * Ask for the verdict alone. No tools and one turn: this converts what the
+   * model already reported into the line it owed, rather than sending it back
+   * to a page whose step is over.
+   */
+  async function requestStepVerdict(
+    step: ExpandedActionStep,
+    transcript: string,
+  ): Promise<{ text: string; cost: LiveStepCost }> {
+    // Read the streamed text, not only the SDK's closing `result`: the verdict
+    // is a line the model says, and a run whose result message never arrives
+    // would otherwise lose one it did give.
+    const said: string[] = [];
+    try {
+      const result = await invokeClaudeStreaming(
+        {
+          prompt: buildStepVerdictPrompt(step, transcript),
+          model: input.model,
+          allowedTools: [],
+          disableBuiltinTools: true,
+          disableThinking: true,
+          maxTurns: 1,
+          timeoutMs: VERDICT_TIMEOUT_MS,
+        },
+        (msg: SDKMessage) => {
+          if (msg.type !== "assistant") return;
+          for (const block of msg.message.content ?? []) {
+            if (block.type === "text" && block.text) said.push(block.text);
+          }
+        },
+      );
+      // On an error `result` carries the failure text, which is ccqa's own
+      // words — appending it would file them as the model's report.
+      if (!result.isError) said.push(result.result);
+      return { text: said.join("\n"), cost: toReportCost(result.cost) };
+    } catch {
+      return { text: said.join("\n"), cost: emptyStepCost() };
+    }
   }
 
   const durationMs = Date.now() - startedAt.getTime();
@@ -411,6 +460,26 @@ const MAX_LEARNED_COMMANDS = 15;
  */
 const STEP_ATTEMPT_TIMEOUT_MS = 8 * 60_000;
 
+/**
+ * One text-only turn, so this only guards against the call hanging — kept far
+ * below the step ceiling so asking for a verdict cannot meaningfully extend it.
+ */
+const VERDICT_TIMEOUT_MS = 60_000;
+
+/**
+ * A missing verdict is worth asking about only when the model left something to
+ * judge and the invocation itself is not the answer: an error or a spent
+ * ceiling already says what became of the step, and a turn with no prose at all
+ * would only trade a precise "STEP_RESULT missing" for an invented sentence.
+ */
+export function shouldAskForVerdict(input: {
+  judged: ReturnType<typeof findLastStepResult>;
+  isError: boolean;
+  transcript: string;
+}): boolean {
+  return input.judged === null && !input.isError && input.transcript.trim().length > 0;
+}
+
 /** Env override so a slow environment can be tuned without a release. */
 function stepAttemptTimeoutMs(): number {
   const raw = Number(process.env["CCQA_LIVE_STEP_TIMEOUT_MS"]);
@@ -437,11 +506,15 @@ function emptyStepCost(): LiveStepCost {
  * hide "we never got SDK telemetry" from the report).
  */
 function sumStepCosts(steps: LiveStepResult[]): LiveRunCost {
+  return sumCosts(steps.map((s) => s.cost));
+}
+
+function sumCosts(costs: LiveStepCost[]): LiveRunCost {
   const sum = (pick: (c: LiveStepCost) => number | null): number | null => {
     let total = 0;
     let seen = false;
-    for (const s of steps) {
-      const v = pick(s.cost);
+    for (const c of costs) {
+      const v = pick(c);
       if (v !== null) {
         total += v;
         seen = true;
@@ -450,7 +523,7 @@ function sumStepCosts(steps: LiveStepResult[]): LiveRunCost {
     return seen ? total : null;
   };
   const modelSet = new Set<string>();
-  for (const s of steps) for (const m of s.cost.models) modelSet.add(m);
+  for (const c of costs) for (const m of c.models) modelSet.add(m);
   return {
     totalCostUsd: sum((c) => c.totalCostUsd),
     durationApiMs: sum((c) => c.durationApiMs),
@@ -469,6 +542,12 @@ interface JudgeInput {
   /** Why the invocation failed, when known; see `InvokeClaudeStreamingResult`. */
   errorDetail: string | null;
   judged: ReturnType<typeof findLastStepResult>;
+  /**
+   * The verdict was reconstructed after the step ended, from the model's own
+   * narrative with no page to check. Marked so a reader does not take it for
+   * something the model confirmed while it still had the browser.
+   */
+  salvaged?: boolean;
 }
 
 /**
@@ -477,7 +556,7 @@ interface JudgeInput {
  * Kept as a pure helper so the executor loop stays readable and the
  * branches are individually testable.
  */
-export function judgeStepOutcome({ step, isError, errorDetail, judged }: JudgeInput): {
+export function judgeStepOutcome({ step, isError, errorDetail, judged, salvaged }: JudgeInput): {
   status: "passed" | "failed";
   reasoning: string;
 } {
@@ -501,7 +580,7 @@ export function judgeStepOutcome({ step, isError, errorDetail, judged }: JudgeIn
     judged.stepId === step.id
       ? baseReason
       : `(stepId mismatch: model wrote ${judged.stepId}) ${baseReason}`;
-  return { status, reasoning };
+  return { status, reasoning: salvaged ? `(verdict given after the step ended) ${reasoning}` : reasoning };
 }
 
 /**
