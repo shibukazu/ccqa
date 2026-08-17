@@ -11,7 +11,7 @@ import { spawnAB } from "./spawn-ab.ts";
 vi.mock("./spawn-ab.ts", () => ({ spawnAB: vi.fn() }));
 
 const mockedSpawnAB = vi.mocked(spawnAB);
-const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
+const ok = (stdout = "") => ({ status: 0, stdout, stderr: "", wedged: false });
 
 beforeEach(() => mockedSpawnAB.mockReset());
 
@@ -29,11 +29,11 @@ describe("loadStateIntoSession", () => {
   });
 
   it("reports the error and skips state load when the daemon fails to boot", () => {
-    mockedSpawnAB.mockReturnValue({ status: 1, stdout: "", stderr: "boot failed" });
+    mockedSpawnAB.mockReturnValue({ status: 1, stdout: "", stderr: "boot failed", wedged: false });
 
     const res = loadStateIntoSession("sess", "/tmp/s.json");
 
-    expect(res).toEqual({ ok: false, error: "boot failed" });
+    expect(res).toEqual({ ok: false, error: "boot failed", wedged: false });
     expect(mockedSpawnAB).toHaveBeenCalledTimes(1); // never reached `state load`
   });
 });
@@ -76,7 +76,7 @@ describe("verifySessionRestores", () => {
     mockedSpawnAB
       .mockReturnValueOnce(ok()) // open about:blank
       .mockReturnValueOnce(ok()) // state load
-      .mockReturnValueOnce({ status: 1, stdout: "", stderr: "nav failed" }) // open verifyUrl
+      .mockReturnValueOnce({ status: 1, stdout: "", stderr: "nav failed", wedged: false }) // open verifyUrl
       .mockReturnValue(ok()); // close (and any trailing calls)
 
     const res = verifySessionRestores("/tmp/s.json", "https://app.example/home");
@@ -99,15 +99,29 @@ describe("checkLiveSessionHealth", () => {
     expect(checkLiveSessionHealth("sess")).toEqual({ healthy: true });
   });
 
-  it("is unhealthy when the probe exits non-zero (wedged/restarted daemon)", () => {
-    mockedSpawnAB.mockReturnValueOnce({ status: 1, stdout: "", stderr: "no session" });
-    expect(checkLiveSessionHealth("sess").healthy).toBe(false);
+  it("reports a cut-off probe as unresponsive — the remedy is to kill the daemon", () => {
+    mockedSpawnAB.mockReturnValueOnce({ status: null, stdout: "", stderr: "timed out", wedged: true });
+    expect(checkLiveSessionHealth("sess")).toEqual({
+      healthy: false,
+      kind: "unresponsive",
+      reason: "timed out",
+    });
   });
 
-  it("is unhealthy on a blank/absent page (restart lost the page + state)", () => {
+  it("keeps an answered error responsive — killing a daemon that replied helps nothing", () => {
+    mockedSpawnAB.mockReturnValueOnce({ status: 1, stdout: "", stderr: "no session", wedged: false });
+    expect(checkLiveSessionHealth("sess")).toEqual({
+      healthy: false,
+      kind: "errored",
+      reason: "no session",
+    });
+  });
+
+  it("reports a blank page as responsive — the remedy is to put the state back", () => {
     mockedSpawnAB.mockReturnValueOnce(ok(JSON.stringify("about:blank")));
     expect(checkLiveSessionHealth("sess")).toEqual({
       healthy: false,
+      kind: "blank",
       reason: expect.stringContaining("about:blank"),
     });
   });
@@ -124,9 +138,15 @@ describe("recoverLiveSession", () => {
   });
 
   it("surfaces the injection error and skips the re-open when re-injection fails", () => {
-    mockedSpawnAB.mockReturnValueOnce({ status: 1, stdout: "", stderr: "boot failed" });
+    mockedSpawnAB.mockReturnValueOnce({ status: 1, stdout: "", stderr: "boot failed", wedged: false });
     const res = recoverLiveSession("sess", "/tmp/s.json", "https://app.example/home");
-    expect(res).toEqual({ ok: false, error: "boot failed" });
+    expect(res).toEqual({ ok: false, error: "boot failed", wedged: false });
     expect(mockedSpawnAB).toHaveBeenCalledTimes(1); // never reached the re-open
+  });
+
+  it("still brings the browser back when the session has no saved state", () => {
+    mockedSpawnAB.mockReturnValue(ok());
+    expect(recoverLiveSession("sess", null, null).ok).toBe(true);
+    expect(mockedSpawnAB.mock.calls).toEqual([[["--session", "sess", "open", "about:blank"]]]);
   });
 });

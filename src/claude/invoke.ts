@@ -56,6 +56,12 @@ export interface ClaudeInvokeOptions {
    */
   mcpServers?: Options["mcpServers"];
   maxTurns?: number;
+  /**
+   * Wall-clock ceiling on the invocation. `maxTurns` bounds how much the model
+   * may do, not how long it may take: a turn blocked on a wedged tool, or
+   * waiting on a notification that never arrives, runs until the process dies.
+   */
+  timeoutMs?: number;
   env?: Record<string, string>;
   /**
    * Claude model alias ('sonnet' | 'opus' | 'haiku') or full model ID
@@ -249,6 +255,13 @@ function warnOnceIfNativeBinaryMissing(): void {
   if (missing) log.warn(missingNativeBinaryMessage(missing));
 }
 
+/** Whole minutes read best, but the ceiling is set in ms and may be seconds. */
+function formatDuration(ms: number): string {
+  if (ms < 60_000 || ms % 60_000 !== 0) return `${Math.round(ms / 1000)}s`;
+  const minutes = ms / 60_000;
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
 export async function invokeClaudeStreaming(
   options: ClaudeInvokeOptions,
   onEvent: (msg: SDKMessage) => void,
@@ -261,6 +274,7 @@ export async function invokeClaudeStreaming(
     disableThinking = false,
     mcpServers,
     maxTurns,
+    timeoutMs,
     env,
     model,
     cwd,
@@ -274,6 +288,8 @@ export async function invokeClaudeStreaming(
   const resolvedModel = resolveModel(model);
 
   const mergedEnv = buildInvocationEnv(env);
+
+  const abortController = new AbortController();
 
   // Track the last agent-browser tool_use_id so the post-tool hooks can roll
   // it back at most once. `claimAbToolUse` atomically tests-and-clears the id
@@ -292,6 +308,7 @@ export async function invokeClaudeStreaming(
     allowedTools: allowedTools ?? ["Bash(*)"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
+    abortController,
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(cwd ? { cwd } : {}),
     ...(mergedEnv ? { env: mergedEnv } : {}),
@@ -429,7 +446,13 @@ export async function invokeClaudeStreaming(
 
   warnOnceIfNativeBinaryMissing();
 
+  // Unref'd so a pending ceiling never holds the process open on its own.
+  const capTimer =
+    timeoutMs === undefined ? null : setTimeout(() => abortController.abort(), timeoutMs);
+  capTimer?.unref?.();
+
   let result = "";
+  let answered = false;
   let isError = false;
   let errorDetail: string | null = null;
   let cost: ClaudeInvocationCost = {
@@ -465,6 +488,7 @@ export async function invokeClaudeStreaming(
       }
 
       if (msg.type === "result") {
+        answered = true;
         isError = msg.is_error ?? false;
         if (msg.subtype === "success") {
           result = msg.result;
@@ -483,6 +507,17 @@ export async function invokeClaudeStreaming(
     if (!result) {
       result = errorDetail;
     }
+  } finally {
+    if (capTimer) clearTimeout(capTimer);
+  }
+
+  // Stamped over whatever the abort surfaced as, which says nothing about why.
+  // Gated on `answered` because the ceiling can fire between the last message
+  // and the timer being cleared, and a finished invocation is not a timeout.
+  if (abortController.signal.aborted && timeoutMs !== undefined && !answered) {
+    isError = true;
+    errorDetail = `stopped after ${formatDuration(timeoutMs)} (host time limit)`;
+    result = errorDetail;
   }
 
   tallyInvocation(cost);

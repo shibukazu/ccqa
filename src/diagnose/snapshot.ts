@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 
+import { killSessionDaemon } from "../runtime/agent-browser-daemon.ts";
+
 const require = createRequire(import.meta.url);
 
 const SNAPSHOT_TIMEOUT_MS = 10_000;
@@ -83,20 +85,22 @@ function truncate(s: string, maxBytes: number): string {
  * Close an agent-browser session by name. Used before/after a `ccqa generate`
  * run so a wedged daemon from a previous attempt can't hang the next one.
  *
- * Always resolves; never throws. If the binary is missing, the session
- * doesn't exist, or the call exceeds {@link CLOSE_TIMEOUT_MS}, we silently
- * return — close is best-effort cleanup, not a precondition.
+ * Always resolves; never throws. If the binary is missing or the session
+ * doesn't exist, we silently return — close is best-effort cleanup, not a
+ * precondition.
  */
 export async function closeSession(sessionName: string): Promise<void> {
   const abBin = resolveAgentBrowserBin();
   if (!abBin) return;
 
+  let unanswered = false;
   await new Promise<void>((resolve) => {
     const child = spawn(process.execPath, [abBin, "close"], {
       env: { ...process.env, AGENT_BROWSER_SESSION: sessionName },
       stdio: "ignore",
     });
     const timer = setTimeout(() => {
+      unanswered = true;
       child.kill("SIGTERM");
     }, CLOSE_TIMEOUT_MS);
     const finish = () => {
@@ -106,4 +110,10 @@ export async function closeSession(sessionName: string): Promise<void> {
     child.on("error", finish);
     child.on("exit", finish);
   });
+
+  // Only a close that never answered means the daemon is still there — `close`
+  // travels over the socket it stopped reading, and killing the client frees
+  // nothing. A non-zero exit is the ordinary "no such session" of a pre-run
+  // cleanup, where there is nothing to reach.
+  if (unanswered) await killSessionDaemon(sessionName);
 }

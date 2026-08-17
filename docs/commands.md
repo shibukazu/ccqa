@@ -62,6 +62,7 @@ look before letting a selection decide what a paid run covers.
 | `CCQA_HUB_ENCRYPTION_KEY` | `ccqa serve` | 64 hex characters. Optional, but without it the hub returns 503 for session and variable writes — they are never stored in the clear. See [Encryption](./hub.md#encryption). |
 | `CCQA_MODEL` | anything that calls Claude | Default model. Same as `-m/--model`. |
 | `CCQA_COST_FILE` | anything that calls Claude | Path to append one JSON line per invocation to. See [What a command cost](#what-a-command-cost). |
+| `CCQA_LIVE_STEP_TIMEOUT_MS` | `ccqa run` on a live spec | Wall-clock ceiling on one step attempt, in milliseconds. Defaults to 8 minutes. A step that hits it is recorded as failed with the limit named as the reason. |
 | `ANTHROPIC_API_KEY` | anything that calls Claude | One of the accepted credentials, alongside `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` and a local `claude` login. In CI there is nothing to log into, so one of these must be set. |
 | `ANTHROPIC_BASE_URL` | anything that calls Claude | Endpoint to send requests to. Forwarded verbatim; see [Pointing at another endpoint](#pointing-at-another-endpoint). |
 | `ANTHROPIC_AUTH_TOKEN` | anything that calls Claude | Sent as `Authorization: Bearer <token>`, when a bearer token is used instead of an API key. |

@@ -321,7 +321,7 @@ describe("validateActions", () => {
   });
 
   test("hard timeout triggers exactly one retry; pass on retry is treated as success", () => {
-    const timeout = { status: null, stdout: "", stderr: "\n[ccqa] agent-browser killed after hard timeout" };
+    const timeout = { status: null, stdout: "", stderr: "[ccqa] agent-browser killed after hard timeout", wedged: true };
     mockedSpawnAB
       .mockReturnValueOnce(OK)       // navigate
       .mockReturnValueOnce(timeout)  // click fails with SIGTERM
@@ -336,7 +336,7 @@ describe("validateActions", () => {
   });
 
   test("hard timeout still fails after one retry — drop and arm cascade", () => {
-    const timeout = { status: null, stdout: "", stderr: "\n[ccqa] agent-browser killed after hard timeout" };
+    const timeout = { status: null, stdout: "", stderr: "[ccqa] agent-browser killed after hard timeout", wedged: true };
     const tail: RecordedAction[] = [
       { action: "navigate", value: "/", stepId: "step-01" },
       { action: "click", locator: css("[aria-label='X']"), stepId: "step-01" },

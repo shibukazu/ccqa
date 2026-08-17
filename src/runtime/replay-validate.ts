@@ -267,7 +267,7 @@ function runValidationAction(
     return { skipped: false, ok, reason };
   }
   let result = spawnAB(built);
-  if (result.status !== 0 && looksLikeHardTimeout(result)) {
+  if (result.status !== 0 && result.wedged === true) {
     // Hard-timeout retry, capped at 1: agent-browser's daemon occasionally
     // drops a request under load. One extra attempt is cheaper than re-tracing.
     result = spawnAB(built);
@@ -456,10 +456,6 @@ function rescueLostSteps(
   return { kept: newKept, dropped: newDropped, rescuedSteps };
 }
 
-/** Did this agent-browser invocation get SIGTERM'd by the ccqa hard-timeout watchdog? */
-function looksLikeHardTimeout(result: { stderr: string }): boolean {
-  return result.stderr.includes("agent-browser killed after hard timeout");
-}
 
 /**
  * Passive (read-only) actions whose only effect is observation. When a

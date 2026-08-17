@@ -13,6 +13,7 @@ import {
   buildLiveUserPrompt,
 } from "../prompts/live.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
+import { describeKill, killSessionDaemon } from "./agent-browser-daemon.ts";
 import { scrubEnvValues } from "./env-scrub.ts";
 import { stepArtifactPaths } from "./live-artifacts.ts";
 import { findLastStepResult } from "./live-result-parse.ts";
@@ -177,7 +178,17 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
   // rather than relying on a `--state` flag racing the daemon boot.
   if (statePath) {
     const injected = loadStateIntoSession(input.sessionName, statePath);
-    if (!injected.ok) {
+    if (!injected.ok && injected.wedged) {
+      // The run's first command went unanswered, so every step would fail
+      // against this same daemon. Force it out and try once more rather than
+      // handing the spec a session nobody can drive.
+      const kill = await killSessionDaemon(input.sessionName);
+      log.warn(`session state restore failed: ${injected.error}; ${describeKill(kill)}`);
+      if (kill.killed) {
+        const retried = loadStateIntoSession(input.sessionName, statePath);
+        if (!retried.ok) log.warn(`session state restore failed again: ${retried.error}`);
+      }
+    } else if (!injected.ok) {
       log.warn(`session state restore failed: ${injected.error}`);
     }
   }
@@ -210,25 +221,34 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       lastOutcome = await executeStepAttempt(step, paths, systemPrompt, userPrompt);
       if (lastOutcome.status === "passed") break;
 
-      // Session-loss recovery. A step can fail because the agent-browser daemon
-      // crashed/restarted mid-step, dropping the in-memory auth-state injected
-      // at run start — the step then fails at a sign-in wall, not on its own
-      // merits. Probe the session (cheap, non-navigating) only after a failure,
-      // and only once per step; if it's no longer signed in, re-inject the
-      // saved state and grant a free extra attempt. Gated by the probe so a
-      // plain failure (wrong selector, real assertion miss) on a healthy
-      // session is left untouched — the model retries on its current page.
-      if (!recoveredOnce && statePath && verifyUrl) {
+      // Session-loss recovery. A step can fail because its browser broke rather
+      // than because the step was wrong: the daemon stopped answering, or it
+      // restarted and dropped the in-memory auth-state injected at run start.
+      // Probe (cheap, non-navigating) only after a failure and only once per
+      // step, so a plain failure — wrong selector, real assertion miss — on a
+      // healthy session is left alone and the model retries on its current page.
+      if (!recoveredOnce) {
+        // Telling the kinds apart needs the probe, so it always runs; spending
+        // the slot here is what keeps this to once per step either way.
+        recoveredOnce = true;
         const health = checkLiveSessionHealth(input.sessionName);
-        if (!health.healthy) {
+        // A blank page with no saved state has nothing to put back, and its
+        // browser is still there — the other kinds leave the session unusable.
+        if (!health.healthy && (health.kind !== "blank" || statePath)) {
+          const kill =
+            health.kind === "unresponsive" ? await killSessionDaemon(input.sessionName) : null;
           log.warn(
-            `session lost mid-step for ${step.id} (${health.reason}); re-injecting auth-state and retrying`,
+            `session broken during ${step.id} (${health.reason}); ` +
+              (kill ? describeKill(kill) : "re-injecting auth-state"),
           );
-          const rec = recoverLiveSession(input.sessionName, statePath, verifyUrl);
-          if (!rec.ok) log.warn(`session recovery failed: ${rec.error}`);
-          recoveredOnce = true;
-          attempt++;
-          continue;
+          // Every command below goes through the socket the daemon is ignoring,
+          // so a kill that failed makes the retry pure cost.
+          if (!kill || kill.killed) {
+            const rec = recoverLiveSession(input.sessionName, statePath, verifyUrl);
+            if (!rec.ok) log.warn(`session recovery failed: ${rec.error}`);
+            attempt++;
+            continue;
+          }
         }
       }
 
@@ -301,6 +321,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
           model: input.model,
           envScrubMap: input.envScrubMap,
           relaxAbConstraints: true,
+          timeoutMs: stepAttemptTimeoutMs(),
         },
         (msg: SDKMessage) => {
           if (msg.type !== "assistant") return;
@@ -381,6 +402,20 @@ interface StepAttemptOutcome {
  * are the winning path — exactly the shortcut a later run should reuse.
  */
 const MAX_LEARNED_COMMANDS = 15;
+
+/**
+ * Wall-clock ceiling on one step attempt. The prompt's own ~3 minute wait
+ * budget cannot end a step, because a model parked on a notification never
+ * comes back to read it. Sized off measured runs: the longest passing step was
+ * 4 minutes, against a wedged one that ran 15.
+ */
+const STEP_ATTEMPT_TIMEOUT_MS = 8 * 60_000;
+
+/** Env override so a slow environment can be tuned without a release. */
+function stepAttemptTimeoutMs(): number {
+  const raw = Number(process.env["CCQA_LIVE_STEP_TIMEOUT_MS"]);
+  return Number.isFinite(raw) && raw > 0 ? raw : STEP_ATTEMPT_TIMEOUT_MS;
+}
 
 function emptyStepCost(): LiveStepCost {
   return {
