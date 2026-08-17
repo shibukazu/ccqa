@@ -157,3 +157,28 @@ Execute the instruction in the running browser session, then judge whether the e
 export function buildLiveUserPrompt(step: ExpandedActionStep): string {
   return `Execute step ${step.id} and emit your STEP_RESULT verdict as instructed in the system prompt.`;
 }
+
+/**
+ * Asked after a turn that ended without a verdict. The step is over and the
+ * browser is not offered again: this converts what the model already reported
+ * into the line it owed, and a wait that ran out is a fail, not a retry.
+ */
+export function buildStepVerdictPrompt(step: ExpandedActionStep, transcript: string): string {
+  return `You were executing step ${step.id} of a browser test and ended your turn without the required STEP_RESULT line.
+
+- **Instruction**: ${step.instruction}
+- **Expected**: ${step.expected}
+
+This is what you reported while working on it:
+
+<report>
+${transcript.trim() || "(you wrote nothing)"}
+</report>
+
+Reply with exactly one line and nothing else:
+
+STEP_RESULT|${step.id}|pass|<one-line reason>
+STEP_RESULT|${step.id}|fail|<one-line reason>
+
+Judge only from the report above — you cannot look at the page again. Answer \`pass\` only where the report contains positive evidence that the expected outcome held. If you were still waiting for something that never appeared, if the evidence is absent, or if you cannot tell, answer \`fail\` and say what you were waiting for and what you saw instead.`;
+}

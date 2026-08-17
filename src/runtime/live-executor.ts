@@ -11,6 +11,7 @@ import {
   buildLiveSystemPromptPrefix,
   buildLiveSystemPromptStepSection,
   buildLiveUserPrompt,
+  buildStepVerdictPrompt,
 } from "../prompts/live.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
 import { describeKill, killSessionDaemon } from "./agent-browser-daemon.ts";
@@ -351,18 +352,30 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
+    let judged = findLastStepResult(transcript);
+    // Ending the turn with no verdict is the model dropping the protocol, not
+    // an outcome of the step — the prompt already forbids it, which is what
+    // makes asking again the only lever left. An invocation that errored or hit
+    // the ceiling is excluded: those are answers about the step in themselves.
+    if (!judged && !isError) {
+      const verdict = await requestStepVerdict(step, transcript);
+      if (verdict.text) transcriptParts.push(verdict.text);
+      judged = findLastStepResult(verdict.text);
+      cost = sumCosts([cost, verdict.cost]);
+      log.warn(
+        judged
+          ? `${step.id} ended without a STEP_RESULT; the verdict was asked for separately`
+          : `${step.id} ended without a STEP_RESULT and did not give one when asked`,
+      );
+    }
+
     // The transcript is model prose plus whatever page text it quoted, and the
     // failure-analysis excerpt reads this file back into report.json — so it is
     // scrubbed on the way to disk, not at some later reader.
-    const scrubbed = scrubEnvValues(transcript, input.envScrubMap);
+    const scrubbed = scrubEnvValues(transcriptParts.join("\n"), input.envScrubMap);
     await writeFile(paths.logTxt, scrubbed || "(no assistant text captured)", "utf-8");
 
-    const { status, reasoning } = judgeStepOutcome({
-      step,
-      isError,
-      errorDetail,
-      judged: findLastStepResult(transcript),
-    });
+    const { status, reasoning } = judgeStepOutcome({ step, isError, errorDetail, judged });
 
     return {
       status,
@@ -372,6 +385,36 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       cost,
       commands: commandParts.slice(-MAX_LEARNED_COMMANDS),
     };
+  }
+
+  /**
+   * Ask for the verdict alone. No tools and one turn: this converts what the
+   * model already reported into the line it owed, rather than sending it back
+   * to a page whose step is over.
+   */
+  async function requestStepVerdict(
+    step: ExpandedActionStep,
+    transcript: string,
+  ): Promise<{ text: string; cost: LiveStepCost }> {
+    try {
+      const result = await invokeClaudeStreaming(
+        {
+          prompt: buildStepVerdictPrompt(step, transcript),
+          model: input.model,
+          envScrubMap: input.envScrubMap,
+          allowedTools: [],
+          disableBuiltinTools: true,
+          disableThinking: true,
+          maxTurns: 1,
+          timeoutMs: VERDICT_TIMEOUT_MS,
+        },
+        () => {},
+      );
+      return { text: result.result, cost: toReportCost(result.cost) };
+    } catch (err) {
+      log.warn(`could not ask for ${step.id}'s verdict: ${err instanceof Error ? err.message : String(err)}`);
+      return { text: "", cost: emptyStepCost() };
+    }
   }
 
   const durationMs = Date.now() - startedAt.getTime();
@@ -411,6 +454,9 @@ const MAX_LEARNED_COMMANDS = 15;
  */
 const STEP_ATTEMPT_TIMEOUT_MS = 8 * 60_000;
 
+/** One text-only turn; a ceiling here only guards against the call hanging. */
+const VERDICT_TIMEOUT_MS = 2 * 60_000;
+
 /** Env override so a slow environment can be tuned without a release. */
 function stepAttemptTimeoutMs(): number {
   const raw = Number(process.env["CCQA_LIVE_STEP_TIMEOUT_MS"]);
@@ -437,11 +483,15 @@ function emptyStepCost(): LiveStepCost {
  * hide "we never got SDK telemetry" from the report).
  */
 function sumStepCosts(steps: LiveStepResult[]): LiveRunCost {
+  return sumCosts(steps.map((s) => s.cost));
+}
+
+function sumCosts(costs: LiveStepCost[]): LiveRunCost {
   const sum = (pick: (c: LiveStepCost) => number | null): number | null => {
     let total = 0;
     let seen = false;
-    for (const s of steps) {
-      const v = pick(s.cost);
+    for (const c of costs) {
+      const v = pick(c);
       if (v !== null) {
         total += v;
         seen = true;
@@ -450,7 +500,7 @@ function sumStepCosts(steps: LiveStepResult[]): LiveRunCost {
     return seen ? total : null;
   };
   const modelSet = new Set<string>();
-  for (const s of steps) for (const m of s.cost.models) modelSet.add(m);
+  for (const c of costs) for (const m of c.models) modelSet.add(m);
   return {
     totalCostUsd: sum((c) => c.totalCostUsd),
     durationApiMs: sum((c) => c.durationApiMs),

@@ -3,6 +3,7 @@ import {
   buildLiveSystemPromptPrefix,
   buildLiveSystemPromptStepSection,
   buildLiveUserPrompt,
+  buildStepVerdictPrompt,
   generateLiveSessionName,
 } from "./live.ts";
 import type { ExpandedActionStep } from "../spec/expand.ts";
@@ -125,6 +126,28 @@ describe("buildLiveSystemPromptStepSection", () => {
 describe("buildLiveUserPrompt", () => {
   test("references the stepId so the model knows which step to judge", () => {
     expect(buildLiveUserPrompt(STEPS[1]!)).toContain("step-02");
+  });
+});
+
+describe("buildStepVerdictPrompt", () => {
+  const prompt = buildStepVerdictPrompt(STEPS[2]!, "waited ~3 min; no reply appeared");
+
+  test("carries the step's own id, instruction and expectation into both verdict lines", () => {
+    expect(prompt).toContain("STEP_RESULT|step-03|pass|");
+    expect(prompt).toContain("STEP_RESULT|step-03|fail|");
+    expect(prompt).toContain("INSTRUCTION_C");
+    expect(prompt).toContain("EXPECTED_C");
+  });
+
+  test("quotes back what the model reported, since it cannot look again", () => {
+    expect(prompt).toContain("waited ~3 min; no reply appeared");
+    expect(prompt).toContain("cannot look at the page again");
+  });
+
+  test("makes absent evidence a fail, so the salvage cannot manufacture a pass", () => {
+    // Without this the retry would turn every dropped verdict into a green step.
+    expect(prompt).toMatch(/pass.{0,40}only where the report contains positive evidence/s);
+    expect(prompt).toMatch(/cannot tell, answer `fail`/);
   });
 });
 
