@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 
+import { killSessionDaemon } from "../runtime/agent-browser-daemon.ts";
+
 const require = createRequire(import.meta.url);
 
 const SNAPSHOT_TIMEOUT_MS = 10_000;
@@ -83,15 +85,15 @@ function truncate(s: string, maxBytes: number): string {
  * Close an agent-browser session by name. Used before/after a `ccqa generate`
  * run so a wedged daemon from a previous attempt can't hang the next one.
  *
- * Always resolves; never throws. If the binary is missing, the session
- * doesn't exist, or the call exceeds {@link CLOSE_TIMEOUT_MS}, we silently
- * return — close is best-effort cleanup, not a precondition.
+ * Always resolves; never throws. If the binary is missing or the session
+ * doesn't exist, we silently return — close is best-effort cleanup, not a
+ * precondition.
  */
 export async function closeSession(sessionName: string): Promise<void> {
   const abBin = resolveAgentBrowserBin();
   if (!abBin) return;
 
-  await new Promise<void>((resolve) => {
+  const closed = await new Promise<boolean>((resolve) => {
     const child = spawn(process.execPath, [abBin, "close"], {
       env: { ...process.env, AGENT_BROWSER_SESSION: sessionName },
       stdio: "ignore",
@@ -99,11 +101,16 @@ export async function closeSession(sessionName: string): Promise<void> {
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
     }, CLOSE_TIMEOUT_MS);
-    const finish = () => {
+    const finish = (ok: boolean) => {
       clearTimeout(timer);
-      resolve();
+      resolve(ok);
     };
-    child.on("error", finish);
-    child.on("exit", finish);
+    child.on("error", () => finish(false));
+    child.on("exit", (code) => finish(code === 0));
   });
+
+  // `close` is itself a command over the daemon's socket, so a daemon that has
+  // stopped answering outlives this call — killing the client on timeout frees
+  // nothing. Reach it by pid instead, or it keeps its browser alive for good.
+  if (!closed) await killSessionDaemon(sessionName);
 }

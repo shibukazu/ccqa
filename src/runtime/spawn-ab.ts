@@ -7,7 +7,18 @@ import { resolveAgentBrowserBin } from "./agent-browser-bin.ts";
 // binary), or a state loaded here is invisible to the session Claude drives.
 const AB = resolveAgentBrowserBin();
 
-export type Result = { status: number | null; stdout: string; stderr: string };
+export type Result = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+  /**
+   * The command was cut off at {@link PROCESS_HARD_TIMEOUT_MS} rather than
+   * answering — the only signal separating a daemon that stopped reading its
+   * socket from one that answered with an error. Absent on a synthesized
+   * result, which never ran a command to be cut off.
+   */
+  wedged?: boolean;
+};
 
 // agent-browser surfaces EAGAIN (os error 35 / "Resource temporarily
 // unavailable") when its state file is being written by a concurrent
@@ -49,12 +60,14 @@ export function sleepSync(ms: number): void {
 
 function spawnABOnce(args: string[]): Result {
   const result = spawnSync(AB, args, { stdio: "pipe", timeout: PROCESS_HARD_TIMEOUT_MS });
+  const wedged = result.signal === "SIGTERM";
   return {
     status: result.status,
     stdout: result.stdout?.toString() ?? "",
     stderr:
       (result.stderr?.toString() ?? "") +
-      (result.signal === "SIGTERM" ? "\n[ccqa] agent-browser killed after hard timeout" : ""),
+      (wedged ? "\n[ccqa] agent-browser killed after hard timeout" : ""),
+    wedged,
   };
 }
 

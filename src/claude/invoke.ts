@@ -56,6 +56,12 @@ export interface ClaudeInvokeOptions {
    */
   mcpServers?: Options["mcpServers"];
   maxTurns?: number;
+  /**
+   * Wall-clock ceiling on the invocation. `maxTurns` bounds how much the model
+   * may do, not how long it may take: a turn blocked on a wedged tool, or
+   * waiting on a notification that never arrives, runs until the process dies.
+   */
+  timeoutMs?: number;
   env?: Record<string, string>;
   /**
    * Claude model alias ('sonnet' | 'opus' | 'haiku') or full model ID
@@ -261,6 +267,7 @@ export async function invokeClaudeStreaming(
     disableThinking = false,
     mcpServers,
     maxTurns,
+    timeoutMs,
     env,
     model,
     cwd,
@@ -274,6 +281,8 @@ export async function invokeClaudeStreaming(
   const resolvedModel = resolveModel(model);
 
   const mergedEnv = buildInvocationEnv(env);
+
+  const abortController = new AbortController();
 
   // Track the last agent-browser tool_use_id so the post-tool hooks can roll
   // it back at most once. `claimAbToolUse` atomically tests-and-clears the id
@@ -292,6 +301,7 @@ export async function invokeClaudeStreaming(
     allowedTools: allowedTools ?? ["Bash(*)"],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
+    abortController,
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(cwd ? { cwd } : {}),
     ...(mergedEnv ? { env: mergedEnv } : {}),
@@ -429,6 +439,11 @@ export async function invokeClaudeStreaming(
 
   warnOnceIfNativeBinaryMissing();
 
+  // Unref'd so a pending ceiling never holds the process open on its own.
+  const capTimer =
+    timeoutMs === undefined ? null : setTimeout(() => abortController.abort(), timeoutMs);
+  capTimer?.unref?.();
+
   let result = "";
   let isError = false;
   let errorDetail: string | null = null;
@@ -483,6 +498,14 @@ export async function invokeClaudeStreaming(
     if (!result) {
       result = errorDetail;
     }
+  } finally {
+    if (capTimer) clearTimeout(capTimer);
+  }
+
+  // Stamped over whatever the abort surfaced as, which says nothing about why.
+  if (abortController.signal.aborted && timeoutMs !== undefined) {
+    isError = true;
+    errorDetail = `stopped after ${Math.round(timeoutMs / 60_000)} minutes (host time limit)`;
   }
 
   tallyInvocation(cost);

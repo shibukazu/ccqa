@@ -143,6 +143,12 @@ export async function removeTempStateDir(statePath: string): Promise<void> {
 export interface StateInjectionResult {
   ok: boolean;
   error?: string;
+  /**
+   * The failing command was cut off rather than answered. Only then is killing
+   * the daemon and retrying worth it: a state file the daemon rejected will be
+   * rejected again by its replacement.
+   */
+  wedged?: boolean;
 }
 
 /**
@@ -165,15 +171,31 @@ export interface StateInjectionResult {
  * than throwing; the caller decides whether an un-restored session is fatal.
  */
 export function loadStateIntoSession(sessionName: string, statePath: string): StateInjectionResult {
-  // Boot the daemon without navigating, so the state attaches to the session
-  // rather than racing a page load.
-  const boot = spawnAB(["--session", sessionName, "open", "about:blank"]);
-  if (boot.status !== 0) {
-    return { ok: false, error: (boot.stderr || boot.stdout || `open exited ${boot.status}`).trim() };
-  }
+  const boot = bootSession(sessionName);
+  if (!boot.ok) return boot;
   const load = spawnAB(["--session", sessionName, "state", "load", statePath]);
   if (load.status !== 0) {
-    return { ok: false, error: (load.stderr || load.stdout || `state load exited ${load.status}`).trim() };
+    return {
+      ok: false,
+      error: (load.stderr || load.stdout || `state load exited ${load.status}`).trim(),
+      wedged: load.wedged,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * Bring up the session's daemon and browser without navigating, so whatever
+ * the caller attaches next lands on the session rather than racing a page load.
+ */
+function bootSession(sessionName: string): StateInjectionResult {
+  const boot = spawnAB(["--session", sessionName, "open", "about:blank"]);
+  if (boot.status !== 0) {
+    return {
+      ok: false,
+      error: (boot.stderr || boot.stdout || `open exited ${boot.status}`).trim(),
+      wedged: boot.wedged,
+    };
   }
   return { ok: true };
 }
@@ -264,7 +286,12 @@ export function verifySessionRestores(statePath: string, verifyUrl: string): Ses
   }
 }
 
-export type LiveSessionHealth = { healthy: true } | { healthy: false; reason: string };
+export type LiveSessionHealth =
+  | { healthy: true }
+  // The remedies are opposites: an unresponsive daemon has to be killed before
+  // anything reaches the session, while one that merely restarted answers fine
+  // and only lost the auth-state it held in memory.
+  | { healthy: false; unresponsive: boolean; reason: string };
 
 /**
  * Non-destructive mid-run health probe of an already-running live session.
@@ -285,40 +312,41 @@ export type LiveSessionHealth = { healthy: true } | { healthy: false; reason: st
  * false "unhealthy" would re-inject the saved state and wipe auth the spec
  * acquired live — breaking a spec that was fine. Missing a same-origin-ish
  * sign-in wall just leaves that step failing as before (no regression), so the
- * asymmetry favours only firing on a provably dead daemon. `verifyUrl` is still
- * required (it's the re-anchor target for recovery) but no longer compared here.
+ * asymmetry favours only firing on a provably dead daemon.
  */
 export function checkLiveSessionHealth(sessionName: string): LiveSessionHealth {
   const probe = spawnAB(["--session", sessionName, "eval", "location.href"]);
   if (probe.status !== 0) {
-    return { healthy: false, reason: (probe.stderr || probe.stdout || `probe exited ${probe.status}`).trim() };
+    return {
+      healthy: false,
+      unresponsive: probe.wedged === true,
+      reason: (probe.stderr || probe.stdout || `probe exited ${probe.status}`).trim(),
+    };
   }
   const href = unwrapEvalString(probe.stdout);
   if (!href || href === "about:blank" || href.startsWith("chrome://") || href.startsWith("chrome-error://")) {
-    return { healthy: false, reason: `blank/absent page (${href || "empty"})` };
+    return { healthy: false, unresponsive: false, reason: `blank/absent page (${href || "empty"})` };
   }
   return { healthy: true };
 }
 
 /**
- * Recover a live session whose daemon was replaced mid-run (detected by
- * {@link checkLiveSessionHealth}). The restart drops the in-memory auth-state
- * injected at run start, so the session fell to a sign-in wall. Re-boot +
- * re-attach the saved state ({@link loadStateIntoSession} is idempotent —
- * `state load` is load-only, never writes back) and then navigate to
- * `verifyUrl`, a known signed-in page, so the retrying model has an
- * authenticated anchor to continue from instead of a login screen. Returns the
- * injection result; the trailing `open` is best-effort (a failed nav still
- * leaves the state attached for the model's own next navigation).
+ * Put a live session back on its feet after {@link checkLiveSessionHealth}
+ * found it broken: boot its browser, re-attach the saved state if it has one,
+ * and anchor on `verifyUrl` so a retrying model resumes from a signed-in page.
+ *
+ * An unresponsive daemon must already have been killed by the caller — every
+ * command below goes through the socket it is ignoring. The trailing `open` is
+ * best-effort; a failed nav still leaves a usable session behind.
  */
 export function recoverLiveSession(
   sessionName: string,
-  statePath: string,
-  verifyUrl: string,
+  statePath: string | null,
+  verifyUrl: string | null,
 ): StateInjectionResult {
-  const injected = loadStateIntoSession(sessionName, statePath);
-  if (!injected.ok) return injected;
-  spawnAB(["--session", sessionName, "open", verifyUrl]);
+  const restored = statePath ? loadStateIntoSession(sessionName, statePath) : bootSession(sessionName);
+  if (!restored.ok) return restored;
+  if (verifyUrl) spawnAB(["--session", sessionName, "open", verifyUrl]);
   return { ok: true };
 }
 
