@@ -353,20 +353,16 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
     let judged = findLastStepResult(transcript);
-    // Ending the turn with no verdict is the model dropping the protocol, not
-    // an outcome of the step — the prompt already forbids it, which is what
-    // makes asking again the only lever left. An invocation that errored or hit
-    // the ceiling is excluded: those are answers about the step in themselves.
-    if (!judged && !isError) {
+    // Ending the turn with no verdict is the model dropping the protocol rather
+    // than an outcome of the step, and the prompt forbidding it is not enough.
+    let salvaged = false;
+    if (shouldAskForVerdict({ judged, isError, transcript })) {
       const verdict = await requestStepVerdict(step, transcript);
-      if (verdict.text) transcriptParts.push(verdict.text);
       judged = findLastStepResult(verdict.text);
+      salvaged = judged !== null;
+      if (salvaged) transcriptParts.push(verdict.text);
+      else log.warn(`${step.id} gave no STEP_RESULT, and none when asked for one`);
       cost = sumCosts([cost, verdict.cost]);
-      log.warn(
-        judged
-          ? `${step.id} ended without a STEP_RESULT; the verdict was asked for separately`
-          : `${step.id} ended without a STEP_RESULT and did not give one when asked`,
-      );
     }
 
     // The transcript is model prose plus whatever page text it quoted, and the
@@ -375,7 +371,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     const scrubbed = scrubEnvValues(transcriptParts.join("\n"), input.envScrubMap);
     await writeFile(paths.logTxt, scrubbed || "(no assistant text captured)", "utf-8");
 
-    const { status, reasoning } = judgeStepOutcome({ step, isError, errorDetail, judged });
+    const { status, reasoning } = judgeStepOutcome({ step, isError, errorDetail, judged, salvaged });
 
     return {
       status,
@@ -396,24 +392,34 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     step: ExpandedActionStep,
     transcript: string,
   ): Promise<{ text: string; cost: LiveStepCost }> {
+    // Read the streamed text, not only the SDK's closing `result`: the verdict
+    // is a line the model says, and a run whose result message never arrives
+    // would otherwise lose one it did give.
+    const said: string[] = [];
     try {
       const result = await invokeClaudeStreaming(
         {
           prompt: buildStepVerdictPrompt(step, transcript),
           model: input.model,
-          envScrubMap: input.envScrubMap,
           allowedTools: [],
           disableBuiltinTools: true,
           disableThinking: true,
           maxTurns: 1,
           timeoutMs: VERDICT_TIMEOUT_MS,
         },
-        () => {},
+        (msg: SDKMessage) => {
+          if (msg.type !== "assistant") return;
+          for (const block of msg.message.content ?? []) {
+            if (block.type === "text" && block.text) said.push(block.text);
+          }
+        },
       );
-      return { text: result.result, cost: toReportCost(result.cost) };
-    } catch (err) {
-      log.warn(`could not ask for ${step.id}'s verdict: ${err instanceof Error ? err.message : String(err)}`);
-      return { text: "", cost: emptyStepCost() };
+      // On an error `result` carries the failure text, which is ccqa's own
+      // words — appending it would file them as the model's report.
+      if (!result.isError) said.push(result.result);
+      return { text: said.join("\n"), cost: toReportCost(result.cost) };
+    } catch {
+      return { text: said.join("\n"), cost: emptyStepCost() };
     }
   }
 
@@ -454,8 +460,25 @@ const MAX_LEARNED_COMMANDS = 15;
  */
 const STEP_ATTEMPT_TIMEOUT_MS = 8 * 60_000;
 
-/** One text-only turn; a ceiling here only guards against the call hanging. */
-const VERDICT_TIMEOUT_MS = 2 * 60_000;
+/**
+ * One text-only turn, so this only guards against the call hanging — kept far
+ * below the step ceiling so asking for a verdict cannot meaningfully extend it.
+ */
+const VERDICT_TIMEOUT_MS = 60_000;
+
+/**
+ * A missing verdict is worth asking about only when the model left something to
+ * judge and the invocation itself is not the answer: an error or a spent
+ * ceiling already says what became of the step, and a turn with no prose at all
+ * would only trade a precise "STEP_RESULT missing" for an invented sentence.
+ */
+export function shouldAskForVerdict(input: {
+  judged: ReturnType<typeof findLastStepResult>;
+  isError: boolean;
+  transcript: string;
+}): boolean {
+  return input.judged === null && !input.isError && input.transcript.trim().length > 0;
+}
 
 /** Env override so a slow environment can be tuned without a release. */
 function stepAttemptTimeoutMs(): number {
@@ -519,6 +542,12 @@ interface JudgeInput {
   /** Why the invocation failed, when known; see `InvokeClaudeStreamingResult`. */
   errorDetail: string | null;
   judged: ReturnType<typeof findLastStepResult>;
+  /**
+   * The verdict was reconstructed after the step ended, from the model's own
+   * narrative with no page to check. Marked so a reader does not take it for
+   * something the model confirmed while it still had the browser.
+   */
+  salvaged?: boolean;
 }
 
 /**
@@ -527,7 +556,7 @@ interface JudgeInput {
  * Kept as a pure helper so the executor loop stays readable and the
  * branches are individually testable.
  */
-export function judgeStepOutcome({ step, isError, errorDetail, judged }: JudgeInput): {
+export function judgeStepOutcome({ step, isError, errorDetail, judged, salvaged }: JudgeInput): {
   status: "passed" | "failed";
   reasoning: string;
 } {
@@ -551,7 +580,7 @@ export function judgeStepOutcome({ step, isError, errorDetail, judged }: JudgeIn
     judged.stepId === step.id
       ? baseReason
       : `(stepId mismatch: model wrote ${judged.stepId}) ${baseReason}`;
-  return { status, reasoning };
+  return { status, reasoning: salvaged ? `(verdict given after the step ended) ${reasoning}` : reasoning };
 }
 
 /**

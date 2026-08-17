@@ -132,11 +132,18 @@ describe("buildLiveUserPrompt", () => {
 describe("buildStepVerdictPrompt", () => {
   const prompt = buildStepVerdictPrompt(STEPS[2]!, "waited ~3 min; no reply appeared");
 
-  test("carries the step's own id, instruction and expectation into both verdict lines", () => {
-    expect(prompt).toContain("STEP_RESULT|step-03|pass|");
-    expect(prompt).toContain("STEP_RESULT|step-03|fail|");
+  test("carries the step's own id, instruction and expectation", () => {
+    expect(prompt).toContain("STEP_RESULT|step-03|");
     expect(prompt).toContain("INSTRUCTION_C");
     expect(prompt).toContain("EXPECTED_C");
+  });
+
+  test("shows one templated line, not a pass line and a fail line", () => {
+    // Two literal templates invite the model to echo both, and the parser takes
+    // the last — which would pin every salvaged verdict to the fail template.
+    expect(prompt).not.toContain("STEP_RESULT|step-03|pass|");
+    expect(prompt).not.toContain("STEP_RESULT|step-03|fail|");
+    expect(prompt.match(/STEP_RESULT\|/g)).toHaveLength(1);
   });
 
   test("quotes back what the model reported, since it cannot look again", () => {
