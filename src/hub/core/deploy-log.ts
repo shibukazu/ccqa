@@ -61,10 +61,11 @@ export function appendDeploy(current: DeployLog | null, input: DeployInput): Dep
 /**
  * Fold one deploy's selection into the touch index.
  *
- * Only the two positions that decide a verdict move: the newest deploy that
- * needed a spec, and the newest that could not decide it. A `notNeeded` writes
- * neither — it is the absence of a marker at this position, which is exactly
- * what a later baseline comparison reads it as.
+ * Only `needed` moves a position a verdict reads. An `unknown` records the
+ * newest undecided position too, but that one is record-only (ADR-0023) —
+ * freshness reads an undecided judgment as "did not reach". A `notNeeded`
+ * writes neither — it is the absence of a marker at this position, which is
+ * exactly what a later baseline comparison reads it as.
  *
  * Positions only ever advance. Deploys are folded in log order, so a spec
  * needed at #7 and cleared at #9 keeps `needed.index: 7`: a baseline at #5

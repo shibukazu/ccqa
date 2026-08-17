@@ -44,6 +44,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0020](0020-a-lapsed-attestation-hands-the-spec-back.md) | A lapsed attestation hands the spec back to the cycle | accepted |
 | [0021](0021-what-a-spec-actually-reached.md) | Measure what a spec reached, per spec, in a shared environment | accepted (transport amended by 0022) |
 | [0022](0022-coverage-flows-through-an-inbox.md) | Coverage flows through an inbox; interpretation is one resolver | accepted |
+| [0023](0023-an-undecided-selection-is-not-a-reach.md) | An undecided selection is not a reach | accepted |
 
 ## Template
 

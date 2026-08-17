@@ -1479,13 +1479,13 @@ describe("hub API server", () => {
         touchedByDeploy: { index: 1, sha: "d2" },
       });
       expect(after.specs["f/b"].verdict).toBe("verified");
-      // The selector could not tell, so the deploy is assumed to have reached
-      // it — with the hole named, not folded into the verdict.
+      // The selector could not tell. An undecided judgment is not a reach
+      // (ADR-0023), so the spec stays verified like a `notNeeded` one.
       expect(after.specs["f/unscoped"]).toMatchObject({
-        verdict: "rerunNeeded",
-        execution: "stale",
-        executionAssumedReached: "selectionUnknown",
+        verdict: "verified",
+        execution: "passed",
       });
+      expect(after.specs["f/unscoped"].executionAssumedReached).toBeUndefined();
       expect(after.specs["f/a"].lastGreen.gitHead).toBe("e".repeat(40));
     });
 

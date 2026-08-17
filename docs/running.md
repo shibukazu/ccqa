@@ -480,8 +480,11 @@ When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
    entirely, and every remaining spec clears as `notNeeded`, when nothing
    outside `.ccqa/` changed.
 3. Specs the selector could not decide come back `unknown` and stay in
-   scope — the safe reading of "I don't know" is to run it, never to skip
-   it.
+   scope — for a one-shot local selection, the safe reading of "I don't
+   know" is to run it. The hub's deploy ledger reads the same answer the
+   other way (ADR-0023): an undecided deploy does not put a spec back into
+   the audit/re-run cycle, because one wide deploy answering `unknown` for
+   everything would otherwise invalidate the whole suite at once.
 
 Changes outside the cwd hosting `.ccqa/` are reported but never attributed
 to a spec — a sibling package's own `.ccqa/` names its own specs and blocks,
@@ -493,6 +496,10 @@ not this project's.
 instead of from a diff. Per spec: has a deploy landed on the code it covers
 since the audit last read it? It needs a hub connection and `--hub-profile`,
 for the same reason the run side does — the deploy log is per profile.
+
+Only a `needed` judgement (or a deploy recorded with no selection at all)
+counts as reach. A deploy whose selection answered `unknown` for a spec
+does not make that spec due (ADR-0023).
 
 A spec that has **never been audited** is always included, with no diff
 consulted. There is no baseline for one to narrow away, which is how a spec no

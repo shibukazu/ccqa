@@ -111,6 +111,18 @@ describe("computeRerun: the run axis, with the audit already current", () => {
     expect(verdict.touchedByDeploy).toBeUndefined();
   });
 
+  test("a selection in range answered unknown: not a reach, the spec stays verified (ADR-0023)", () => {
+    const verdict = compute({
+      log: log(deploy(0), deploy(1)),
+      touchIndex: { "f/s": { undecidedIndex: 1 } },
+    });
+    expect(verdict).toMatchObject({
+      verdict: "verified",
+      execution: "passed",
+    });
+    expect(verdict.executionAssumedReached).toBeUndefined();
+  });
+
   test("a touch at the baseline itself does not count against it", () => {
     expect(compute({ touchIndex: touchedAt(0) }).verdict).toBe("verified");
   });
@@ -231,18 +243,6 @@ describe("computeRerun: the run axis, with the audit already current", () => {
         verdict: "rerunNeeded",
         execution: "stale",
         executionAssumedReached: "gapInRange",
-      });
-    });
-
-    test("selectionUnknown: a selection in range answered unknown for this spec", () => {
-      const verdict = compute({
-        log: log(deploy(0), deploy(1)),
-        touchIndex: { "f/s": { undecidedIndex: 1 } },
-      });
-      expect(verdict).toMatchObject({
-        verdict: "rerunNeeded",
-        execution: "stale",
-        executionAssumedReached: "selectionUnknown",
       });
     });
 
