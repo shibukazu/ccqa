@@ -5,7 +5,7 @@ import type { HubCoverageAnswer } from "../hub-client/index.ts";
 import { errMessage } from "../run/errors.ts";
 
 /**
- * The measured reach edges spec selection intersects a diff with (ADR-0023).
+ * The measured reach edges spec selection intersects a diff with (ADR-0024).
  *
  * Two hub-side stores can hold a spec's reach, depending on which inbox a
  * project's runs fed: the coverage event stream (`--coverage-inbox hub`) and

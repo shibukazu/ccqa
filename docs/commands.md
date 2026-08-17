@@ -71,7 +71,7 @@ Which commands call Claude, and therefore need a credential: `draft`,
 `perspectives`, `record`, `generate`, `audit`, `run` on a `mode: live`
 spec, and `run --on-fail-explain`. A deterministic `ccqa run` calls no
 model at all, and neither do `select-specs` and `hub deploy record` — their
-spec selection reads measured coverage from the hub instead (ADR-0023).
+spec selection reads measured coverage from the hub instead (ADR-0024).
 
 `serve` belongs on that list too, but for a different reason: the hub does no
 model work of its own except the prompt-learning job a human starts from the

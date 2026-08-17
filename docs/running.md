@@ -474,7 +474,7 @@ When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
    block it includes, marks that spec `needed` — set membership, no
    measurement consulted. Everything left undecided is intersected with the
    files its last measured run actually reached — the coverage each spec's
-   most recent `ccqa run --coverage` left on the hub (ADR-0023) — and
+   most recent `ccqa run --coverage` left on the hub (ADR-0024) — and
    answers `needed` / `notNeeded` / `unknown` (the selector's own
    vocabulary, not the re-run verdict's). The intersection is skipped
    entirely, and every remaining spec clears as `notNeeded`, when nothing
@@ -482,7 +482,11 @@ When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
 3. A spec with no measurement to consult — never measured, measured longer
    ago than the hub retains, or no hub connection at all — comes back
    `unknown` and stays in scope: an unmeasured edge is not an unreached
-   one, so the absence of evidence runs the spec.
+   one, so for a one-shot local selection the absence of evidence runs the
+   spec. The hub's deploy ledger reads the same answer the other way
+   (ADR-0023): an undecided deploy does not put a spec back into the
+   audit/re-run cycle, because one wide deploy answering `unknown` for
+   everything would otherwise invalidate the whole suite at once.
 
 Changes outside the cwd hosting `.ccqa/` are reported but never attributed
 to a spec — a sibling package's own `.ccqa/` names its own specs and blocks,
@@ -502,6 +506,10 @@ spec that reached it), which is the safe direction.
 instead of from a diff. Per spec: has a deploy landed on the code it covers
 since the audit last read it? It needs a hub connection and `--hub-profile`,
 for the same reason the run side does — the deploy log is per profile.
+
+Only a `needed` judgement (or a deploy recorded with no selection at all)
+counts as reach. A deploy whose selection answered `unknown` for a spec
+does not make that spec due (ADR-0023).
 
 A spec that has **never been audited** is always included, with no diff
 consulted. There is no baseline for one to narrow away, which is how a spec no

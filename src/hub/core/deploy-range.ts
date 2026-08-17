@@ -85,13 +85,13 @@ export function freshness(baselineSha: string, key: string, range: RangeLookup):
   // here on contain one" flag stands in for scanning it.
   //
   // Ordered by how much of the range each defect invalidates: missing deploys
-  // first, then deploys nobody judged, then a deploy that was judged and came
-  // back undecided for this spec.
+  // first, then deploys nobody judged. A deploy the selector judged and left
+  // `unknown` for this spec is *not* a defect: an undecided judgment counts
+  // as not reached (ADR-0023). Counting it as reached let one wide deploy
+  // invalidate every spec at once, and the cycle spent more re-verifying
+  // green specs than the missed-reach risk was worth.
   if (range.gapFromPos[baselinePos + 1]) return unanswerable("gapInRange");
   if (range.noSelectionFromPos[baselinePos + 1]) return unanswerable("noSelectionInRange");
-  if (touch?.undecidedIndex !== undefined && touch.undecidedIndex > baselineIndex) {
-    return unanswerable("selectionUnknown");
-  }
   return { kind: "current" };
 }
 

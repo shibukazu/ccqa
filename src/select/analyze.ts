@@ -30,7 +30,7 @@ export interface SelectSpecsInput {
  * measured reach. A change to a spec's own file, or to a block it includes,
  * means that spec must re-run — reach cannot see the test's own definition,
  * so no measurement is consulted for it. Everything else intersects the diff
- * with the files the spec's last measured run actually reached (ADR-0023);
+ * with the files the spec's last measured run actually reached (ADR-0024);
  * a spec with no measurement stays `unknown`, because an unmeasured edge is
  * not an unreached one.
  */
@@ -244,7 +244,7 @@ export interface MeasuredChange {
 
 /**
  * Re-root diff paths to the measurement's own base. The two sides must speak
- * the same paths or every intersection silently misses (ADR-0023): the diff
+ * the same paths or every intersection silently misses (ADR-0024): the diff
  * is cwd-relative (repo-root relative for `outsideCwd` entries) while
  * measured files are `coverage.projectRoot`-relative. A file resolving
  * outside the coverage root is dropped — the measurement drops those files

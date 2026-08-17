@@ -39,7 +39,7 @@ export interface CollectChangedOptions {
  * --only-affected-by <ref>`; `ccqa audit` uses the same call.
  *
  * The decision is made by `ccqa select-specs`, which intersects the diff with
- * each spec's last measured reach from the hub (ADR-0023). Deterministic and
+ * each spec's last measured reach from the hub (ADR-0024). Deterministic and
  * free — no model call — and wrong in only one direction: a spec without a
  * measurement comes back `unknown` and runs.
  *

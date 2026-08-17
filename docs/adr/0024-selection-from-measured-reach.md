@@ -1,4 +1,4 @@
-# 0023. Spec selection reads measured reach, not a model's guess
+# 0024. Spec selection reads measured reach, not a model's guess
 
 - Status: accepted
 - Date: 2026-08-17

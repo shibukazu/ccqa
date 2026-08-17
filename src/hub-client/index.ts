@@ -150,7 +150,7 @@ export interface HubClient {
   /**
    * The project's coverage event stream, resolved for one run — `runId`
    * omitted means the most recently measured run. Spec selection reads its
-   * reach edges through this (ADR-0023).
+   * reach edges through this (ADR-0024).
    */
   getCoverage(project: string, q?: { runId?: string }): Promise<HubCoverageAnswer>;
 

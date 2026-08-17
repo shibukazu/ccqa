@@ -305,7 +305,7 @@ from then on, and nothing rewrites the ones already stored.
 The hub has no checkout, never runs `git`, and never calls a git host, so it
 cannot work out what a deploy changed or which specs it reaches. The
 consuming deploy job tells it both: the changed paths, and (optionally) which
-specs `ccqa select-specs` decided the deploy reaches (ADR-0010, ADR-0023) by
+specs `ccqa select-specs` decided the deploy reaches (ADR-0010, ADR-0024) by
 intersecting the diff with the measured coverage stored on the hub. The hub
 answers "which specs are worth running?" as set arithmetic over that log, the
 spec ledger, and the per-deploy selections submitted alongside it.
@@ -440,6 +440,8 @@ interface SpecRerun {
   // couldn't place the audit/run, not for the ordinary reasons. Both can be
   // set at once. `unknownDeployedSha`/`ambiguousDeployedSha` describe the
   // *run's* deployed sha, so only `executionAssumedReached` carries them.
+  // "selectionUnknown" is not produced since ADR-0023 (an undecided
+  // judgement counts as not reached); it can still appear from older hubs.
   auditAssumedReached?: "noSelectionInRange" | "selectionUnknown" | "noDeployLog"
                        | "deployedShaNotInLog" | "gapInRange";
   executionAssumedReached?: /* same set as auditAssumedReached, plus */
