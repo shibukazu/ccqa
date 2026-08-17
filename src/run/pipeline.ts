@@ -568,7 +568,7 @@ export async function executeRun(
     // Each filter narrows what the previous one left, so passing both means
     // "stale AND affected". The hub verdicts run first because they are
     // already fetched: whatever they drop is one less spec for the selector
-    // below to spend model tokens reasoning about.
+    // below to hold against the diff.
     if (rerunReport) {
       const selection = selectSpecsNeedingRerun(specs, rerunReport);
       specs = selection.selected;
@@ -587,9 +587,10 @@ export async function executeRun(
         await collectChangedSpecs(specs, {
           cwd,
           base: opts.onlyAffectedBy,
-          // Selection sees every spec plus the whole diff — the largest
-          // input of any call here, so -m must reach it like the rest.
-          ...(opts.model ? { model: opts.model } : {}),
+          // Selection intersects the diff with measured coverage from the
+          // hub; without a connection undecided specs degrade to unknown
+          // and run.
+          hub: hubCtx,
         })
       ).specs;
     }

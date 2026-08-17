@@ -22,6 +22,7 @@ import type {
   SpendLogResponse,
   TriageCase,
 } from "../hub/contract/schema.ts";
+import type { ResolvedCoverage } from "../coverage/resolve-stream.ts";
 import type { PromptName } from "../prompts/prompt-names.ts";
 import type { LabelsExport, ReportSpecResult } from "../report/schema.ts";
 import type { ReportEnvelope } from "../run/incremental-report.ts";
@@ -86,6 +87,17 @@ export interface HubPromptMeta {
   meta: Record<string, unknown>;
 }
 
+/**
+ * What `GET /api/v1/coverage` answers: one run's resolved view of the
+ * project's coverage event stream, plus every run the stream retains (newest
+ * first, bounded server-side). `resolved` is null when the stream holds no
+ * measured run.
+ */
+export interface HubCoverageAnswer {
+  resolved: ResolvedCoverage | null;
+  runIds: string[];
+}
+
 export interface HubClient {
   /**
    * Push a report directory (as a tar.gz) for an already-finished `ccqa run`.
@@ -130,10 +142,17 @@ export interface HubClient {
   }): Promise<Run>;
   /** Add finished spec rows (+ evidence) to a running run; `done` closes it. */
   patchRun(id: string, body: PatchRunRequest): Promise<Run>;
-  listRuns(q?: { project?: string; branch?: string; status?: RunStatus; limit?: number }): Promise<Run[]>;
+  listRuns(q?: { project?: string; branch?: string; status?: RunStatus; kind?: Run["kind"]; limit?: number }): Promise<Run[]>;
   getRun(id: string): Promise<Run>;
   getReport(id: string): Promise<unknown>;
   downloadArtifacts(id: string): Promise<Uint8Array>;
+
+  /**
+   * The project's coverage event stream, resolved for one run — `runId`
+   * omitted means the most recently measured run. Spec selection reads its
+   * reach edges through this (ADR-0023).
+   */
+  getCoverage(project: string, q?: { runId?: string }): Promise<HubCoverageAnswer>;
 
   getTriage(id: string): Promise<RunTriage>;
   putActualCause(
@@ -397,6 +416,9 @@ export function createHubClient(opts: HubClientOptions): HubClient {
     },
     downloadArtifacts(id) {
       return bytes(`/api/v1/runs/${encodeURIComponent(id)}/artifacts`);
+    },
+    getCoverage(project, q = {}) {
+      return json(`/api/v1/coverage?${queryString({ project, runId: q.runId })}`);
     },
 
     getTriage(id) {

@@ -1,18 +1,21 @@
 import { Command } from "commander";
 import { getChangedFilesBetween, type ChangedFile } from "../drift/affected.ts";
 import { selectSpecs } from "../select/analyze.ts";
+import { loadCoverageEdges } from "../select/coverage-edges.ts";
 import { loadSpecInventory, type SpecDescription } from "../select/inventory.ts";
 import { specsToRun, type SelectReport, type SelectVerdict } from "../select/types.ts";
+import { hubHeaderOption, hubTokenOption, hubUrlOption, resolveHubClient, type HubConnOptions } from "./hub-conn.ts";
 import * as log from "./logger.ts";
+import { needsHubConnection } from "./open-hub-run.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
-import { withCostReporting } from "./cost-line.ts";
+import { resolveProject } from "./resolve-project.ts";
 
-interface SelectSpecsOptions {
+interface SelectSpecsOptions extends HubConnOptions {
   /** requiredOption — commander exits before the action runs if this is missing. */
   base: string;
   head?: string;
   cwd?: string;
-  model?: string;
+  project?: string;
   format?: string;
 }
 
@@ -20,7 +23,9 @@ const DEFAULT_HEAD = "HEAD";
 
 export const selectSpecsCommand = new Command("select-specs")
   .description(
-    "Decide which specs a range of commits reaches. Reads the diff and the spec inventory and returns one verdict per spec: needed | notNeeded | unknown.",
+    "Decide which specs a range of commits reaches. Intersects the diff with each spec's last " +
+      "measured reach from the hub (`ccqa run --coverage`) and returns one verdict per spec: " +
+      "needed | notNeeded | unknown. Requires a hub connection; a spec with no measurement is unknown, which runs.",
   )
   .requiredOption(
     "--base <ref>",
@@ -29,33 +34,46 @@ export const selectSpecsCommand = new Command("select-specs")
   .option("--head <ref>", `Commit the range ends at (default: ${DEFAULT_HEAD})`)
   .option(
     "--cwd <path>",
-    "Working directory used as both the .ccqa root and the codebase Claude reads. Changes outside it are reported but never attributed to a spec. Defaults to process.cwd().",
+    "Working directory used as the .ccqa root. Changes outside it are reported but never attributed to a spec. Defaults to process.cwd().",
   )
   .option(
-    "-m, --model <name>",
-    "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+    "--project <name>",
+    "Project whose coverage measurements are read from the hub. Defaults to the current directory's name.",
   )
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .option(...hubHeaderOption)
   .option("--format <fmt>", "Output format: text | json", "text")
-  .action(async (opts: SelectSpecsOptions) => {
-    await withCostReporting("select-specs", () => runSelectSpecs(opts));
-  });
+  .action(runSelectSpecs);
 
 async function runSelectSpecs(opts: SelectSpecsOptions): Promise<void> {
   const format = parseFormat(opts.format);
   const cwd = resolveCwd(opts.cwd);
   const head = opts.head ?? DEFAULT_HEAD;
 
-  // Independent inputs — the spec tree (fs) and the diff (a git
-  // subprocess) — read concurrently rather than one after the other.
-  const [specsResult, changedResult] = await Promise.all([
+  // The verdicts rest on measured reach stored on the hub, so no hub means
+  // no decision — checked before any local work is spent.
+  const hub = resolveHubClient(opts);
+  if (!hub) {
+    log.error(needsHubConnection("select-specs"));
+    process.exit(2);
+  }
+  const project = resolveProject({ project: opts.project, cwd: opts.cwd });
+
+  // Independent inputs — the spec tree (fs), the diff (a git subprocess) and
+  // the coverage edges (the hub) — read concurrently rather than in sequence.
+  const [specsResult, changedResult, edges] = await Promise.all([
     loadSpecInventory(cwd).then(
       (specs) => ({ ok: true as const, specs }),
       (e: unknown) => ({ ok: false as const, error: e as Error }),
     ),
-    getChangedFilesBetween(opts.base, head, cwd).then(
+    // Renames stay delete + add: the diff is intersected with reach measured
+    // before the rename, and only the old path can match an edge.
+    getChangedFilesBetween(opts.base, head, cwd, { detectRenames: false }).then(
       (changed) => ({ ok: true as const, changed }),
       (e: unknown) => ({ ok: false as const, error: e as Error }),
     ),
+    loadCoverageEdges({ hub, project }),
   ]);
 
   if (!specsResult.ok) {
@@ -79,18 +97,13 @@ async function runSelectSpecs(opts: SelectSpecsOptions): Promise<void> {
   if (format === "text") {
     log.header("select-specs", `${opts.base} → ${head}`);
     if (opts.cwd) log.meta("cwd", cwd);
+    log.meta("project", project);
     log.meta("changed-files", changed.length);
     log.meta("specs", specs.length);
+    log.meta("measured-specs", edges.size);
   }
 
-  const report = await selectSpecs({
-    changed,
-    specs,
-    cwd,
-    base: opts.base,
-    head,
-    ...(opts.model ? { model: opts.model } : {}),
-  });
+  const report = await selectSpecs({ changed, specs, cwd, base: opts.base, head, edges });
 
   process.stdout.write(format === "json" ? `${JSON.stringify(report, null, 2)}\n` : renderText(report));
   process.exit(0);

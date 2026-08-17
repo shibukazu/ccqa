@@ -149,10 +149,11 @@ deploy lands
 
 The audit costs cents; a live spec costs dollars. Filtering first leaves
 a run whose failures are worth reading. `deploy record` decides which specs
-the range reaches unless you pass `--no-select-specs`; a range recorded
-without that decision is assumed reached — a full audit sweep and a full run
-of everything behind it, not a question mark — and nothing fills the hole in
-later.
+the range reaches — by intersecting the diff with the coverage measured runs
+recorded, no model call — unless you pass `--no-select-specs`; a range
+recorded without that decision is assumed reached — a full audit sweep and a
+full run of everything behind it, not a question mark — and nothing fills
+the hole in later.
 
 | Job | Trigger | Question it answers |
 |---|---|---|

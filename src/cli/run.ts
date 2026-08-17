@@ -45,7 +45,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     .optionsGroup("Which specs to run:")
     .option(
       "--only-affected-by <ref>",
-      "Only specs `ccqa select-specs` judges reached by the diff against <ref> (e.g. origin/main). In pull_request CI, pass $GITHUB_BASE_REF. Cannot be combined with an explicit spec id.",
+      "Only specs `ccqa select-specs` decides the diff against <ref> reaches (e.g. origin/main), by intersecting it with each spec's measured coverage from the hub. In pull_request CI, pass $GITHUB_BASE_REF. Cannot be combined with an explicit spec id.",
     )
     .option(
       "--only-hub-rerun-needed",
