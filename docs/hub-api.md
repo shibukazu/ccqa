@@ -834,6 +834,41 @@ DELETE /api/v1/projects/:project/perspectives
   → 204
 ```
 
+## Coverage inbox
+
+The append-only coverage event stream (ADR-0022): instrumented applications
+and the run both append; the hub stamps arrival order, stores each event
+encrypted at rest, and interprets nothing at write time. Interpretation is
+`GET /api/v1/coverage`, which replays one run's view of the stream through
+the shared resolver on read — the same function the CLI runs locally — and
+caches the answer keyed by stream position.
+
+Appending accepts a second credential: `CCQA_HUB_COVERAGE_TOKEN`, set on
+`ccqa serve`, authorizes application pushes and nothing else — it cannot
+read, and it cannot write the run's own marker events, so the credential a
+deployed application holds can at worst inject fake measurements. The hub's
+bearer token accepts every event kind. Both require the encryption key:
+actor events can carry identity tags, so the stream is never stored in the
+clear.
+
+```
+POST /api/v1/coverage/events?project=<name>
+  Content-Type: application/json
+  body: an application push (protocol: 1, the collector's wire shape) or a
+        run event (schema: src/coverage/events.ts)
+  → 204 | 400 (malformed) | 401 | 403 (append token sent a run event)
+      | 503 (no coverage token / no encryption key configured)
+
+GET /api/v1/coverage/events?project=<name>&sinceSeq=<n>
+  bearer token only
+  → 200 { events, lastSeq, skipped }
+
+GET /api/v1/coverage?project=<name>[&runId=<id>]
+  bearer token only; runId defaults to the stream's most recent run
+  → 200 { resolved, runIds }   (resolved is null on an empty stream;
+      schema: src/coverage/resolve-stream.ts)
+```
+
 ## Learning jobs
 
 Turn graded triage into an improved calibration note. A job scans a

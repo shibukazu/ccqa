@@ -808,6 +808,9 @@ export async function executeRun(
       });
       hubRunId = opened.id;
       log.info(`hub: incremental run opened (${opened.id})`);
+      // The coverage stream and the hub's run records are separate id spaces;
+      // the link is what lets a resolved measurement point at its run page.
+      await coverage?.linkHubRun(opened.id);
       const runId = opened.id;
       // `openRun` above carries no row/label data, so an old hub accepts it
       // even when it can't accept this release's report shape — there is no

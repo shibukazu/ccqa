@@ -26,11 +26,17 @@ export const TEMPORAL_HEADER = "ccqa-tools";
  */
 export const ENV_NAME = "CCQA_COVERAGE";
 
-/** Where the collector pushes to. Unset means collect in memory only. */
+/** Where the collector pushes to. Unset means the run's loopback inbox. */
 export const ENV_ENDPOINT = "CCQA_COVERAGE_ENDPOINT";
 
 /** The current ccqa sink does not check this. Carried for a relay in front of it, or a future endpoint that does. */
 export const ENV_TOKEN = "CCQA_COVERAGE_TOKEN";
+
+/**
+ * One extra `name:value` header sent with every push, for a load balancer
+ * that gates the endpoint on a header.
+ */
+export const ENV_HEADER = "CCQA_COVERAGE_HEADER";
 
 /** Absolute path file ids are made relative to. Defaults to `process.cwd()`. */
 export const ENV_ROOT = "CCQA_COVERAGE_ROOT";

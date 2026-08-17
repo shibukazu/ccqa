@@ -1,4 +1,5 @@
 import { InboxBodySchema, type StoredEvent } from "../../../coverage/events.ts";
+import { listRunIds, resolveStream, type ResolvedCoverage } from "../../../coverage/resolve-stream.ts";
 import { decodeEncryptedBlob, decrypt, encodeEncryptedBlob, encrypt } from "../../core/crypto.ts";
 import type { CoverageEventStore } from "../../core/storage/types.ts";
 import { extractToken, isValidToken } from "../auth.ts";
@@ -8,12 +9,14 @@ import { requireSafeSegment } from "../validate.ts";
 
 /**
  * The coverage inbox (ADR-0022): the hub stamps, stores, serves and expires
- * coverage events — it never looks inside one. Both handlers authenticate
- * here rather than in the server's central token check, because the inbox
- * accepts a second credential: `CCQA_HUB_COVERAGE_TOKEN`, the append-only
- * token the instrumented application holds. That token may append pushes and
- * nothing else — in particular no run events, so a leaked application
- * credential cannot forge the markers that bound a run's view of the stream.
+ * coverage events — it never looks inside one, except the read-time resolve
+ * below, the one bounded amendment ADR-0022 makes to the no-compute rule.
+ * Every handler authenticates here rather than in the server's central token
+ * check, because the inbox accepts a second credential:
+ * `CCQA_HUB_COVERAGE_TOKEN`, the append-only token the instrumented
+ * application holds. That token may append pushes and nothing else — in
+ * particular no run events, so a leaked application credential cannot forge
+ * the markers that bound a run's view of the stream.
  */
 
 // Same bound as the run-local sink (src/coverage/sink.ts): the two inbox
@@ -89,22 +92,95 @@ export function createGetCoverageEventsHandler(config: CoverageHandlerConfig) {
     const key = requireKey(config);
     const project = requireProjectParam(ctx);
     const sinceSeq = requireSinceSeqParam(ctx.url);
+    sendJson(ctx.res, 200, await readStream(config, key, project, sinceSeq));
+  };
+}
 
-    const { entries, lastSeq, skipped } = await config.store.read(project, sinceSeq);
-    const events: StoredEvent[] = [];
-    let unreadable = 0;
-    for (const entry of entries) {
-      // A rotated key or a corrupt payload loses that event, not the read;
-      // it joins the store-level skips in the count the consumer sees.
-      try {
-        const plain = decrypt(decodeEncryptedBlob(entry.payload), key);
-        const body = InboxBodySchema.parse(JSON.parse(new TextDecoder().decode(plain)));
-        events.push({ seq: entry.seq, at: entry.at, body });
-      } catch {
-        unreadable += 1;
-      }
+/** The stored stream after `sinceSeq` (exclusive), decrypted and parsed. */
+async function readStream(
+  config: CoverageHandlerConfig,
+  key: Buffer,
+  project: string,
+  sinceSeq: number,
+): Promise<{ events: StoredEvent[]; lastSeq: number; skipped: number }> {
+  const { entries, lastSeq, skipped } = await config.store.read(project, sinceSeq);
+  const events: StoredEvent[] = [];
+  let unreadable = 0;
+  for (const entry of entries) {
+    // A rotated key or a corrupt payload loses that event, not the read;
+    // it joins the store-level skips in the count the consumer sees.
+    try {
+      const plain = decrypt(decodeEncryptedBlob(entry.payload), key);
+      const body = InboxBodySchema.parse(JSON.parse(new TextDecoder().decode(plain)));
+      events.push({ seq: entry.seq, at: entry.at, body });
+    } catch {
+      unreadable += 1;
     }
-    sendJson(ctx.res, 200, { events, lastSeq, skipped: skipped + unreadable });
+  }
+  return { events, lastSeq, skipped: skipped + unreadable };
+}
+
+/** Newest runs the resolve read offers; past twenty the answer is history nobody pages through. */
+const RUN_IDS_LIMIT = 20;
+
+/** Resolved answers kept per handler; one page polls one key, so a handful covers the readers. */
+const RESOLVE_CACHE_LIMIT = 8;
+
+/**
+ * Memo of resolved answers keyed by stream position (ADR-0022: a resolved
+ * answer may be cached keyed by stream position, but the cache is never the
+ * record). Any new event moves `lastSeq`, so a stale entry can only ever be
+ * served for exactly the stream it was computed from. Least-recently-used
+ * beyond `limit`. The resolve function is a parameter so a test can count.
+ */
+export function createResolveMemo(
+  limit: number,
+  resolve: (events: StoredEvent[], runId: string) => ResolvedCoverage,
+): (project: string, runId: string, lastSeq: number, events: StoredEvent[]) => ResolvedCoverage {
+  const cache = new Map<string, ResolvedCoverage>();
+  return (project, runId, lastSeq, events) => {
+    // Unambiguous join: `project` is a safe segment (no newline) and the
+    // trailing element is a number, so `runId` cannot forge another key.
+    const cacheKey = `${project}\n${runId}\n${lastSeq}`;
+    const hit = cache.get(cacheKey);
+    if (hit !== undefined) {
+      // Re-insert so eviction drops the least recently asked-for answer.
+      cache.delete(cacheKey);
+      cache.set(cacheKey, hit);
+      return hit;
+    }
+    const resolved = resolve(events, runId);
+    cache.set(cacheKey, resolved);
+    if (cache.size > limit) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    return resolved;
+  };
+}
+
+/**
+ * GET /api/v1/coverage?project=[&runId=] — the stream, interpreted for one
+ * run by the shared resolver (resolve-stream.ts); this handler only reads,
+ * memoizes and serves. `runId` omitted means the run the stream most
+ * recently heard a spec-open from — the page's default view; naming one
+ * serves history. Hub bearer token only, like the raw read.
+ */
+export function createResolveCoverageHandler(config: CoverageHandlerConfig) {
+  const memo = createResolveMemo(RESOLVE_CACHE_LIMIT, resolveStream);
+  return async (ctx: RouteContext): Promise<void> => {
+    if (!isValidToken(extractToken(ctx.req, ctx.url), config.hubToken)) {
+      throw new HttpError(401, "unauthorized", "missing or invalid bearer token");
+    }
+    const key = requireKey(config);
+    const project = requireProjectParam(ctx);
+    const requested = ctx.url.searchParams.get("runId");
+
+    const { events, lastSeq } = await readStream(config, key, project, 0);
+    const runIds = listRunIds(events).slice(0, RUN_IDS_LIMIT);
+    const runId = requested !== null && requested !== "" ? requested : runIds[0];
+    const resolved = runId === undefined || events.length === 0 ? null : memo(project, runId, lastSeq, events);
+    sendJson(ctx.res, 200, { resolved, runIds });
   };
 }
 

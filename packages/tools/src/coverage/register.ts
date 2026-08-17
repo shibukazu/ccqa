@@ -13,10 +13,10 @@ import https from "node:https";
 import type { IncomingMessage } from "node:http";
 
 import { installRuntime, openBucket, type CoverageRuntime, type CoverageStore } from "./core.ts";
-import { startCollector } from "./collector.ts";
+import { collectorOptionsFromEnv, startCollector } from "./collector.ts";
 import { installLoadHooks } from "./instrument/hooks.ts";
 import { debugLog, readConfig } from "./runtime-env.ts";
-import { ENV_ENDPOINT, ENV_TOKEN, readBaggage, readCookie } from "./wire.ts";
+import { readBaggage, readCookie } from "./wire.ts";
 
 const config = readConfig();
 
@@ -38,14 +38,7 @@ if (config.enabled) {
     });
   }
 
-  const endpoint = process.env[ENV_ENDPOINT];
-  if (endpoint) {
-    startCollector({ endpoint, token: process.env[ENV_TOKEN] }, config);
-  } else {
-    process.stderr.write(
-      `[ccqa-tools] collection is enabled but ${ENV_ENDPOINT} is not set; results will be discarded\n`,
-    );
-  }
+  startCollector(collectorOptionsFromEnv(process.env, config), config);
 
   debugLog(config, `armed in pid ${process.pid}`);
 }

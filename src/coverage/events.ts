@@ -18,6 +18,13 @@ import { PushSchema } from "./resolver.ts";
  */
 
 export const RunEventSchema = z.discriminatedUnion("kind", [
+  /**
+   * Ties the stream's run id to the hub's run record. The coverage session
+   * starts before the hub assigns that record its id, so the link arrives as
+   * its own event once the record exists — without it the resolved answer
+   * has no run page to point at.
+   */
+  z.object({ kind: z.literal("run-link"), runId: z.string(), hubRunId: z.string() }),
   /** A spec's measurement opened; its id is now issued. */
   z.object({ kind: z.literal("spec-open"), runId: z.string(), specId: z.string() }),
   z.object({ kind: z.literal("spec-close"), runId: z.string(), specId: z.string() }),

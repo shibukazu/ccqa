@@ -3,8 +3,10 @@ import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import type { ResolvedCoverage } from "../../../coverage/resolve-stream.ts";
 import { createFileHubStorage } from "../../core/storage/file/index.ts";
 import { coverageEventsPath } from "../../core/storage/file/paths.ts";
+import { createResolveMemo } from "./coverage.ts";
 import { createHubServer, type HubServerConfig } from "../server.ts";
 
 const TOKEN = "hub-token";
@@ -145,5 +147,104 @@ describe("coverage inbox API", () => {
   test("a body that is neither a push nor a run event is 400", async () => {
     const baseUrl = await startHub();
     expect((await post(baseUrl, TOKEN, { nope: true })).status).toBe(400);
+  });
+
+  // == GET /api/v1/coverage — the read-time resolve (ADR-0022) ==========
+
+  function getResolved(baseUrl: string, token: string | null, query = ""): Promise<Response> {
+    return fetch(`${baseUrl}/api/v1/coverage?project=demo${query}`, {
+      headers: token === null ? {} : { Authorization: `Bearer ${token}` },
+    });
+  }
+
+  test("resolves the stream for a run: markers gate the push, both halves land", async () => {
+    const baseUrl = await startHub();
+    await post(baseUrl, TOKEN, RUN_EVENT); // spec-open run-1 demo/example
+    await post(baseUrl, APP_TOKEN, PUSH); // arrives inside run-1's marker span
+    await post(baseUrl, TOKEN, { kind: "browser", runId: "run-1", specId: "demo/example", files: ["src/web.ts"] });
+    await post(baseUrl, TOKEN, { kind: "spec-close", runId: "run-1", specId: "demo/example" });
+
+    const res = await getResolved(baseUrl, TOKEN);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { resolved: ResolvedCoverage | null; runIds: string[] };
+    expect(body.runIds).toEqual(["run-1"]);
+    expect(body.resolved?.runId).toBe("run-1");
+    expect(body.resolved?.lastSeq).toBe(4);
+    expect(body.resolved?.specs).toEqual([
+      { specId: "demo/example", files: ["src/a.ts", "src/web.ts"], actorEvents: {} },
+    ]);
+    expect(body.resolved?.boot).toEqual(["src/boot.ts"]);
+    expect(body.resolved?.health.heardFromApplication).toBe(true);
+  });
+
+  test("runId omitted picks the run that last opened a spec; naming one serves history", async () => {
+    const baseUrl = await startHub();
+    await post(baseUrl, TOKEN, RUN_EVENT);
+    await post(baseUrl, TOKEN, { kind: "spec-open", runId: "run-2", specId: "demo/other" });
+
+    const latest = (await (await getResolved(baseUrl, TOKEN)).json()) as { resolved: ResolvedCoverage | null; runIds: string[] };
+    expect(latest.runIds).toEqual(["run-2", "run-1"]);
+    expect(latest.resolved?.runId).toBe("run-2");
+
+    const named = (await (await getResolved(baseUrl, TOKEN, "&runId=run-1")).json()) as { resolved: ResolvedCoverage | null };
+    expect(named.resolved?.runId).toBe("run-1");
+    expect(named.resolved?.specs[0]?.specId).toBe("demo/example");
+  });
+
+  test("an empty stream resolves to null, and the app token cannot read the resolve", async () => {
+    const baseUrl = await startHub();
+    expect(await (await getResolved(baseUrl, TOKEN)).json()).toEqual({ resolved: null, runIds: [] });
+    expect((await getResolved(baseUrl, APP_TOKEN)).status).toBe(401);
+  });
+});
+
+describe("createResolveMemo", () => {
+  const answer = (runId: string): ResolvedCoverage => ({
+    runId,
+    asOf: 0,
+    lastSeq: 0,
+    specs: [],
+    boot: [],
+    health: {
+      heardFromApplication: false,
+      attributedSpecs: 0,
+      rejectedPushes: 0,
+      uninstrumentedFiles: 0,
+      uninstrumentedProcesses: 0,
+      droppedPushes: 0,
+      unmappedActorEvents: 0,
+      outsideWindowEvents: {},
+      specsMeasured: 0,
+    },
+  });
+
+  test("computes once per stream position and again when the stream moves", () => {
+    let computes = 0;
+    const memo = createResolveMemo(8, (_events, runId) => {
+      computes += 1;
+      return answer(runId);
+    });
+    expect(memo("p", "run-1", 3, [])).toEqual(memo("p", "run-1", 3, []));
+    expect(computes).toBe(1);
+    memo("p", "run-1", 4, []); // a new event moved lastSeq
+    memo("p", "run-2", 3, []); // another run over the same stream
+    expect(computes).toBe(3);
+  });
+
+  test("evicts the least recently used answer past the limit", () => {
+    let computes = 0;
+    const memo = createResolveMemo(2, (_events, runId) => {
+      computes += 1;
+      return answer(runId);
+    });
+    memo("p", "a", 1, []);
+    memo("p", "b", 1, []);
+    memo("p", "a", 1, []); // refreshes "a", so "b" is now the oldest
+    memo("p", "c", 1, []); // evicts "b"
+    expect(computes).toBe(3);
+    memo("p", "a", 1, []); // still cached
+    expect(computes).toBe(3);
+    memo("p", "b", 1, []); // was evicted, computes again
+    expect(computes).toBe(4);
   });
 });

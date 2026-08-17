@@ -16,13 +16,53 @@ import {
   type CoverageRuntime,
 } from "./core.ts";
 import { debugLog, type CoverageConfig } from "./runtime-env.ts";
+import { ENV_ENDPOINT, ENV_HEADER, ENV_TOKEN } from "./wire.ts";
 
 export interface CollectorOptions {
   endpoint: string;
   token?: string | undefined;
+  /** One extra header on every push, for a gateway in front of the endpoint. */
+  header?: { name: string; value: string } | undefined;
   intervalMs?: number;
   /** Drops a spec's bucket this long after its last change and last flush. */
   idleTtlMs?: number;
+}
+
+/** The loopback inbox a local `ccqa run --coverage` binds — its default too. */
+export const DEFAULT_ENDPOINT = "http://127.0.0.1:4757";
+
+/**
+ * Env → options, at register time. The endpoint defaults to the run's
+ * loopback inbox, so a local stack needs no endpoint configuration at all;
+ * only a deployed environment writes one.
+ */
+export function collectorOptionsFromEnv(
+  env: NodeJS.ProcessEnv,
+  config?: CoverageConfig,
+): CollectorOptions {
+  const endpoint = env[ENV_ENDPOINT] || DEFAULT_ENDPOINT;
+  if (config && !env[ENV_ENDPOINT]) {
+    debugLog(config, `endpoint defaulted to ${DEFAULT_ENDPOINT}`);
+  }
+  return { endpoint, token: env[ENV_TOKEN], header: parseHeader(env[ENV_HEADER]) };
+}
+
+/**
+ * `name:value` for the one extra push header, split on the first colon so the
+ * value may contain more. Malformed input is warned about rather than silently
+ * dropped: the header exists to pass a gateway, and a push missing it fails
+ * looking exactly like an unreachable sink. The value may be a gateway secret,
+ * so the warning names the variable and never echoes its content.
+ */
+export function parseHeader(raw: string | undefined): { name: string; value: string } | undefined {
+  if (!raw) return undefined;
+  const colon = raw.indexOf(":");
+  const name = colon < 0 ? "" : raw.slice(0, colon).trim();
+  if (name === "") {
+    process.stderr.write(`[ccqa-tools] ignoring ${ENV_HEADER}: expected "name:value"\n`);
+    return undefined;
+  }
+  return { name, value: raw.slice(colon + 1).trim() };
 }
 
 export interface CoveragePush {
@@ -308,6 +348,7 @@ function dropQuiet(
 async function post(options: CollectorOptions, payload: CoveragePush): Promise<void> {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (options.token) headers.authorization = `Bearer ${options.token}`;
+  if (options.header) headers[options.header.name] = options.header.value;
   const intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
   const response = await fetch(options.endpoint, {
     method: "POST",

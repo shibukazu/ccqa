@@ -31,10 +31,10 @@ coverage:
   sink: http://127.0.0.1:4757    # optional; this is the default
 ```
 
-`sink` is the address **the run itself binds** for its duration — not the hub.
-The hub stores results and never executes; working out which spec a push
-belongs to needs the ids this run issued and the turns it opened, and only the
-run has those. `ccqa serve` is not involved.
+`sink` is the address **the run itself binds** for its duration. That is the
+default shape — application and run meeting on one machine — and one of two.
+Where they cannot share a machine, the hub can host the meeting point
+instead: see "A deployed application: the hub inbox" below.
 
 `instrumentedOrigins` is where the spec cookie is allowed to go, and has no
 default on purpose. A spec routinely visits origins that are not the
@@ -91,26 +91,56 @@ shipping a denominator that would misreport "uncovered".
 **The server side needs the application instrumented** with
 [`ccqa-tools`](../packages/tools/README.md) and pointed at the sink
 through `CCQA_COVERAGE_ENDPOINT`. Without it the run still reports the browser
-half.
+half. The variable defaults to `http://127.0.0.1:4757` — the sink's own
+default bind — so an application on the same machine needs no endpoint
+configuration; only a deployed one sets it. If a gateway in front of the
+endpoint gates on a header, set `CCQA_COVERAGE_HEADER` to a single
+`name:value` pair and the collector sends it with every push.
 
 The default binds loopback, which fits an application on the same machine and
-nothing else. Measuring a deployed one means two more things being true:
-
-- **The address is one the application can reach.** It has to be routable from
-  wherever the application runs, on a port its outbound rules allow — commonly
-  only the ones it already needs, so an arbitrary port is a poor assumption.
-- **It is not one anybody else can.** The sink authenticates nothing. Its gate
-  is the set of spec ids the run issued, which stops a stale or invented id
-  from landing in a report, but it is not a reason to expose the port.
-
-A sink the application cannot reach shows up as `droppedPushes` climbing with
-no server files at all.
+nothing else. A sink the application cannot reach shows up as `droppedPushes`
+climbing with no server files at all.
 
 Then:
 
 ```sh
 ccqa run --coverage
 ```
+
+## A deployed application: the hub inbox
+
+A deployed application and the machine running `ccqa run` usually cannot meet
+on a loopback port: the runner may be ephemeral, its address different every
+run, its network closed to inbound traffic. `--coverage-inbox hub` moves the
+meeting point to the hub (ADR-0022):
+
+```sh
+ccqa run --coverage --coverage-inbox hub
+```
+
+Coverage becomes an append-only event stream the hub stores. The application
+pushes to a **stable** URL — the same body it always pushed, so a collector
+already deployed keeps working:
+
+```sh
+CCQA_COVERAGE_ENDPOINT=https://hub.example.test/api/v1/coverage/events?project=my-app
+CCQA_COVERAGE_TOKEN=<append-only token>       # CCQA_HUB_COVERAGE_TOKEN on the hub
+CCQA_COVERAGE_HEADER=name:value               # only if a gateway gates on one
+```
+
+The token is deliberately not the hub's bearer token: it can append coverage
+events and nothing else, so the credential sitting in an application's
+environment can at worst inject fake measurements — it reads nothing and
+cannot forge the run's own markers. The run, for its part, binds no sink and
+writes no coverage into the report: it appends its own facts — spec and
+window markers, the browser half, the enumerated universe — to the same
+stream, and the hub's Coverage page resolves the stream on read. In this mode
+the stream is the record; an interrupted run has already delivered everything
+it measured.
+
+Local runs need none of this: the default (`--coverage-inbox local`) is the
+loopback sink above, no hub involved, and the report rows carry the results
+as they always did.
 
 ## Flows a webhook drives
 

@@ -37,7 +37,11 @@ import {
   createPutAuditDismissalHandler,
 } from "./handlers/audit-dismissals.ts";
 import { createGetSpendHandler, createRecordSpendHandler } from "./handlers/spend.ts";
-import { createAppendCoverageEventHandler, createGetCoverageEventsHandler } from "./handlers/coverage.ts";
+import {
+  createAppendCoverageEventHandler,
+  createGetCoverageEventsHandler,
+  createResolveCoverageHandler,
+} from "./handlers/coverage.ts";
 import { createGetRerunHandler } from "./handlers/rerun.ts";
 import {
   createDeletePromptHandler,
@@ -294,6 +298,10 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   };
   router.post("/api/v1/coverage/events", createAppendCoverageEventHandler(coverageConfig));
   router.get("/api/v1/coverage/events", createGetCoverageEventsHandler(coverageConfig));
+  // The read-time resolve (ADR-0022's bounded amendment): a pure function
+  // over the stored stream, memoized by stream position, never stored back.
+  // Bearer-only, so it stays under the central token check as well.
+  router.get("/api/v1/coverage", createResolveCoverageHandler(coverageConfig));
 
   // Triage-learning jobs: the UI creates one after grading, then polls it.
   router.post("/api/v1/projects/:project/learning-jobs", createCreateLearningJobHandler({ storage, queue }));

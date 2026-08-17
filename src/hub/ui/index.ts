@@ -2343,8 +2343,8 @@ const CLIENT_JS = `
   }
 
   // == coverage: file tree =============================================
-  // One run's measurement drawn over the enumerated universe. Everything is
-  // display-side aggregation of report.json — the hub computes nothing new.
+  // One run's measurement drawn over the enumerated universe. The hub's
+  // resolve endpoint answers first (ADR-0022); the page only colours it.
   var covState = { q: "", unc: false, model: null, selected: null, openDirs: null, loadToken: 0 };
 
   function openCoverage() {
@@ -2360,17 +2360,14 @@ const CLIENT_JS = `
     document.getElementById("cov-body").hidden = true;
     status.hidden = false;
     status.textContent = t("coverage.loading");
-    apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project) + "&kind=run&limit=25")
-      .then(function (data) {
-        // A run still in flight has a report, but a partial one: rows trickle
-        // in per spec and the universe only arrives with the seal.
-        var runs = (data.runs || []).filter(function (r) { return r.status !== "running"; });
-        return covFindReport(runs, 0, token);
-      })
-      .then(function (found) {
+    covLoadResolved(token)
+      // Runs that measured locally streamed nothing; their answer still rides
+      // report.json, so the probe stays as the fallback for them.
+      .then(function (model) { return model || covLoadFromReports(token); })
+      .then(function (model) {
         if (token !== covState.loadToken) return;
-        if (!found) { status.textContent = t("coverage.none"); return; }
-        covState.model = covBuildModel(found.run, found.report);
+        if (!model) { status.textContent = t("coverage.none"); return; }
+        covState.model = model;
         covState.openDirs = null;
         covState.selected = null;
         status.hidden = true;
@@ -2381,6 +2378,67 @@ const CLIENT_JS = `
         if (token !== covState.loadToken) return;
         status.textContent = "Error loading coverage: " + err.message;
       });
+  }
+
+  // The stream's resolved answer, or null when nothing streamed. The stream
+  // carries no commit, so the run list is consulted for the sha — a stream
+  // run id with no run record simply shows no sha.
+  function covLoadResolved(token) {
+    return apiFetch("/api/v1/coverage?project=" + encodeURIComponent(state.project))
+      .then(function (data) {
+        if (token !== covState.loadToken || !data || !data.resolved) return null;
+        var resolved = data.resolved;
+        return apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project))
+          .catch(function () { return null; })
+          .then(function (list) {
+            var head = null;
+            ((list && list.runs) || []).forEach(function (r) {
+              if (resolved.hubRunId && r.id === resolved.hubRunId && r.gitHead) head = r.gitHead;
+            });
+            return covModelFromResolved(resolved, head);
+          });
+      })
+      .catch(function () { return null; });
+  }
+
+  function covLoadFromReports(token) {
+    return apiFetch("/api/v1/runs?project=" + encodeURIComponent(state.project) + "&kind=run&limit=25")
+      .then(function (data) {
+        // A run still in flight has a report, but a partial one: rows trickle
+        // in per spec and the universe only arrives with the seal.
+        var runs = (data.runs || []).filter(function (r) { return r.status !== "running"; });
+        return covFindReport(runs, 0, token);
+      })
+      .then(function (found) {
+        if (!found) return null;
+        return covBuildModel(found.run, found.report);
+      });
+  }
+
+  // Reshapes the resolved answer into the {results, coverageUniverse} the
+  // report-based model builder already consumes, so one tree renderer serves
+  // both sources.
+  function covModelFromResolved(resolved, gitHead) {
+    var results = (resolved.specs || []).map(function (s) {
+      // Spec ids are "<runId>.<feature>/<spec>" (the run id keeps a stale
+      // cookie out); the page is already scoped to one run, so drop it.
+      var key = s.specId;
+      if (key.indexOf(resolved.runId + ".") === 0) key = key.slice(resolved.runId.length + 1);
+      var slash = key.indexOf("/");
+      return {
+        feature: slash === -1 ? key : key.slice(0, slash),
+        spec: slash === -1 ? "" : key.slice(slash + 1),
+        coverage: { files: s.files || [] },
+      };
+    });
+    var report = {
+      results: results,
+      createdAt: new Date(resolved.asOf).toISOString(),
+      git: { head: gitHead },
+    };
+    if (resolved.universe) report.coverageUniverse = { files: resolved.universe.files };
+    // The stream's own run id names no run page; only the linked record does.
+    return covBuildModel({ id: resolved.hubRunId || null }, report);
   }
 
   // Newest first, stop at the first run whose report actually measured.
@@ -2613,12 +2671,18 @@ const CLIENT_JS = `
     var list = el("div", "cov-caselist");
     var runId = covState.model.run.id;
     // No pass/fail here on purpose: this pane answers "what reaches this
-    // file", not "did it pass" — the run page holds the verdicts.
+    // file", not "did it pass" — the run page holds the verdicts. A model
+    // with no linked run record gets plain rows: no link beats a dead one.
     f.cases.forEach(function (key) {
-      var a = document.createElement("a");
-      a.href = "#/runs/" + encodeURIComponent(runId);
-      a.appendChild(el("span", "cs", key));
-      list.appendChild(a);
+      var row;
+      if (runId) {
+        row = document.createElement("a");
+        row.href = "#/runs/" + encodeURIComponent(runId);
+      } else {
+        row = el("div");
+      }
+      row.appendChild(el("span", "cs", key));
+      list.appendChild(row);
     });
     host.appendChild(list);
   }

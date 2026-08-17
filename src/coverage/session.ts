@@ -156,6 +156,16 @@ export class CoverageSession {
     );
   }
 
+  /**
+   * Ties the stream's run id to the hub's run record. The session starts
+   * before the hub assigns that id, so the link is appended once it exists;
+   * local mode has no stream to link.
+   */
+  async linkHubRun(hubRunId: string): Promise<void> {
+    if (this.inbox === undefined) return;
+    await this.inbox.append({ kind: "run-link", runId: this.runId, hubRunId });
+  }
+
   /** Where the local sink listens. Hub mode binds nothing, so there is no URL. */
   get sinkUrl(): string {
     return this.sink?.url ?? "";
