@@ -255,6 +255,13 @@ function warnOnceIfNativeBinaryMissing(): void {
   if (missing) log.warn(missingNativeBinaryMessage(missing));
 }
 
+/** Whole minutes read best, but the ceiling is set in ms and may be seconds. */
+function formatDuration(ms: number): string {
+  if (ms < 60_000 || ms % 60_000 !== 0) return `${Math.round(ms / 1000)}s`;
+  const minutes = ms / 60_000;
+  return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+}
+
 export async function invokeClaudeStreaming(
   options: ClaudeInvokeOptions,
   onEvent: (msg: SDKMessage) => void,
@@ -445,6 +452,7 @@ export async function invokeClaudeStreaming(
   capTimer?.unref?.();
 
   let result = "";
+  let answered = false;
   let isError = false;
   let errorDetail: string | null = null;
   let cost: ClaudeInvocationCost = {
@@ -480,6 +488,7 @@ export async function invokeClaudeStreaming(
       }
 
       if (msg.type === "result") {
+        answered = true;
         isError = msg.is_error ?? false;
         if (msg.subtype === "success") {
           result = msg.result;
@@ -503,9 +512,12 @@ export async function invokeClaudeStreaming(
   }
 
   // Stamped over whatever the abort surfaced as, which says nothing about why.
-  if (abortController.signal.aborted && timeoutMs !== undefined) {
+  // Gated on `answered` because the ceiling can fire between the last message
+  // and the timer being cleared, and a finished invocation is not a timeout.
+  if (abortController.signal.aborted && timeoutMs !== undefined && !answered) {
     isError = true;
-    errorDetail = `stopped after ${Math.round(timeoutMs / 60_000)} minutes (host time limit)`;
+    errorDetail = `stopped after ${formatDuration(timeoutMs)} (host time limit)`;
+    result = errorDetail;
   }
 
   tallyInvocation(cost);

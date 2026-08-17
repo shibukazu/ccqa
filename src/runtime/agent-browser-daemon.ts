@@ -15,10 +15,10 @@ import { setTimeout as delay } from "node:timers/promises";
 /** Measured against agent-browser 0.26-0.34. */
 export function agentBrowserRuntimeDir(): string {
   const explicit = process.env["AGENT_BROWSER_SOCKET_DIR"];
-  if (explicit) return explicit;
   const xdg = process.env["XDG_RUNTIME_DIR"];
-  if (xdg) return join(xdg, "agent-browser");
-  return join(homedir(), ".agent-browser");
+  const base = explicit ?? (xdg ? join(xdg, "agent-browser") : join(homedir(), ".agent-browser"));
+  const namespace = process.env["AGENT_BROWSER_NAMESPACE"];
+  return namespace ? join(base, "namespaces", namespace, "run") : base;
 }
 
 /** The daemon pid agent-browser recorded for `sessionName`, if it wrote one. */
@@ -45,7 +45,11 @@ function isAlive(pid: number): boolean {
 
 /**
  * A pid file outlives an unclean exit, so its number may since have been handed
- * to something else. Where `ps` cannot answer, decline rather than guess.
+ * to something else. Where `ps` cannot answer — Windows has none — decline
+ * rather than guess, which makes the kill a no-op instead of a hazard.
+ *
+ * Residual risk this cannot cover: a pid recycled onto *another session's*
+ * daemon has identical argv and passes.
  */
 function looksLikeAgentBrowser(pid: number): boolean {
   const ps = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8" });
@@ -102,14 +106,23 @@ export async function killSessionDaemon(sessionName: string): Promise<DaemonKill
 
   // Read parentage while the daemon still holds it: SIGKILL reparents whatever
   // survives, and an ownerless browser is what the sweep below exists to stop.
+  // Being its child is the whole test — the browser may be any executable the
+  // session was pointed at.
   const owned = childPids(pid);
   try {
     process.kill(pid, "SIGKILL");
   } catch {
     // Raced with its own exit; the sweep still runs.
   }
+  // SIGKILL is asynchronous — the pid stays visible until the kernel reaps it,
+  // so this has to wait rather than report a successful kill as a failure.
+  for (const wait of TERM_POLL_MS) {
+    if (!isAlive(pid)) break;
+    await delay(wait);
+  }
+  if (isAlive(pid)) return { killed: false, reason: `pid ${pid} survived SIGKILL` };
   for (const child of owned) {
-    if (isAlive(child) && looksLikeAgentBrowser(child)) {
+    if (isAlive(child)) {
       try {
         process.kill(child, "SIGTERM");
       } catch {

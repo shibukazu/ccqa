@@ -93,24 +93,27 @@ export async function closeSession(sessionName: string): Promise<void> {
   const abBin = resolveAgentBrowserBin();
   if (!abBin) return;
 
-  const closed = await new Promise<boolean>((resolve) => {
+  let unanswered = false;
+  await new Promise<void>((resolve) => {
     const child = spawn(process.execPath, [abBin, "close"], {
       env: { ...process.env, AGENT_BROWSER_SESSION: sessionName },
       stdio: "ignore",
     });
     const timer = setTimeout(() => {
+      unanswered = true;
       child.kill("SIGTERM");
     }, CLOSE_TIMEOUT_MS);
-    const finish = (ok: boolean) => {
+    const finish = () => {
       clearTimeout(timer);
-      resolve(ok);
+      resolve();
     };
-    child.on("error", () => finish(false));
-    child.on("exit", (code) => finish(code === 0));
+    child.on("error", finish);
+    child.on("exit", finish);
   });
 
-  // `close` is itself a command over the daemon's socket, so a daemon that has
-  // stopped answering outlives this call — killing the client on timeout frees
-  // nothing. Reach it by pid instead, or it keeps its browser alive for good.
-  if (!closed) await killSessionDaemon(sessionName);
+  // Only a close that never answered means the daemon is still there — `close`
+  // travels over the socket it stopped reading, and killing the client frees
+  // nothing. A non-zero exit is the ordinary "no such session" of a pre-run
+  // cleanup, where there is nothing to reach.
+  if (unanswered) await killSessionDaemon(sessionName);
 }

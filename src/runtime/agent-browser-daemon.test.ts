@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,15 +12,30 @@ vi.mock("node:child_process", () => ({ spawnSync: vi.fn() }));
 const mockedSpawnSync = vi.mocked(spawnSync);
 const psOut = (stdout: string) => ({ status: 0, stdout }) as unknown as ReturnType<typeof spawnSync>;
 
-const savedEnv = { ...process.env };
+const OWNED_ENV = ["AGENT_BROWSER_SOCKET_DIR", "XDG_RUNTIME_DIR", "AGENT_BROWSER_NAMESPACE"];
+const savedEnv = new Map(OWNED_ENV.map((k) => [k, process.env[k]]));
+let scratch: string | null = null;
+
+/** A runtime dir holding one pid file, pointed at by the env for this test. */
+function runtimeDirWith(session: string, pid: string): void {
+  scratch = mkdtempSync(join(tmpdir(), "ccqa-daemon-"));
+  process.env["AGENT_BROWSER_SOCKET_DIR"] = scratch;
+  writeFileSync(join(scratch, `${session}.pid`), pid);
+}
 
 beforeEach(() => {
   mockedSpawnSync.mockReset();
-  delete process.env["AGENT_BROWSER_SOCKET_DIR"];
-  delete process.env["XDG_RUNTIME_DIR"];
+  for (const key of OWNED_ENV) delete process.env[key];
 });
 afterEach(() => {
-  process.env = { ...savedEnv };
+  // Restoring keys individually keeps Node's live env object, which spawned
+  // children inherit; replacing it wholesale would not propagate.
+  for (const [key, value] of savedEnv) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  if (scratch) rmSync(scratch, { recursive: true, force: true });
+  scratch = null;
 });
 
 describe("agentBrowserRuntimeDir", () => {
@@ -40,14 +55,18 @@ describe("agentBrowserRuntimeDir", () => {
   it("falls back to the home directory", () => {
     expect(agentBrowserRuntimeDir()).toMatch(/\.agent-browser$/);
   });
+
+  it("nests a namespace under whichever base won", () => {
+    process.env["AGENT_BROWSER_SOCKET_DIR"] = "/run/sockets";
+    process.env["AGENT_BROWSER_NAMESPACE"] = "probe";
+    expect(agentBrowserRuntimeDir()).toBe(join("/run/sockets", "namespaces", "probe", "run"));
+  });
 });
 
 describe("readDaemonPid", () => {
   it("reads the pid, and rejects a file that does not hold one", () => {
-    const dir = mkdtempSync(join(tmpdir(), "ccqa-daemon-"));
-    process.env["AGENT_BROWSER_SOCKET_DIR"] = dir;
-    writeFileSync(join(dir, "good.pid"), "4321\n");
-    writeFileSync(join(dir, "junk.pid"), "not-a-pid");
+    runtimeDirWith("good", "4321\n");
+    writeFileSync(join(process.env["AGENT_BROWSER_SOCKET_DIR"]!, "junk.pid"), "not-a-pid");
     expect(readDaemonPid("good")).toBe(4321);
     expect(readDaemonPid("junk")).toBeNull();
     expect(readDaemonPid("absent")).toBeNull();
@@ -57,9 +76,7 @@ describe("readDaemonPid", () => {
 describe("killSessionDaemon", () => {
   it("refuses to signal a pid that is no longer agent-browser", async () => {
     // A pid file outlives an unclean exit, so its number may have been reused.
-    const dir = mkdtempSync(join(tmpdir(), "ccqa-daemon-"));
-    process.env["AGENT_BROWSER_SOCKET_DIR"] = dir;
-    writeFileSync(join(dir, "sess.pid"), String(process.pid));
+    runtimeDirWith("sess", String(process.pid));
     mockedSpawnSync.mockReturnValue(psOut("/usr/bin/some-unrelated-process\n"));
     const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
 
@@ -72,9 +89,7 @@ describe("killSessionDaemon", () => {
   });
 
   it("stops at SIGTERM when the daemon exits, so its browser goes down with it", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ccqa-daemon-"));
-    process.env["AGENT_BROWSER_SOCKET_DIR"] = dir;
-    writeFileSync(join(dir, "sess.pid"), "4321");
+    runtimeDirWith("sess", "4321");
     mockedSpawnSync.mockReturnValue(psOut("/path/to/agent-browser-linux-x64\n"));
 
     let alive = true;

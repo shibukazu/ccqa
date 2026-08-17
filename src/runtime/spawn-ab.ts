@@ -60,7 +60,9 @@ export function sleepSync(ms: number): void {
 
 function spawnABOnce(args: string[]): Result {
   const result = spawnSync(AB, args, { stdio: "pipe", timeout: PROCESS_HARD_TIMEOUT_MS });
-  const wedged = result.signal === "SIGTERM";
+  // ETIMEDOUT, not the SIGTERM it is delivered with: an interrupted run signals
+  // the whole process group, and a healthy daemon must not be read as wedged.
+  const wedged = (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
   return {
     status: result.status,
     stdout: result.stdout?.toString() ?? "",

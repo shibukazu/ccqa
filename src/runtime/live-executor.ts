@@ -184,8 +184,10 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       // handing the spec a session nobody can drive.
       const kill = await killSessionDaemon(input.sessionName);
       log.warn(`session state restore failed: ${injected.error}; ${describeKill(kill)}`);
-      const retried = kill.killed ? loadStateIntoSession(input.sessionName, statePath) : injected;
-      if (!retried.ok) log.warn(`session state restore still failing: ${retried.error}`);
+      if (kill.killed) {
+        const retried = loadStateIntoSession(input.sessionName, statePath);
+        if (!retried.ok) log.warn(`session state restore failed again: ${retried.error}`);
+      }
     } else if (!injected.ok) {
       log.warn(`session state restore failed: ${injected.error}`);
     }
@@ -226,21 +228,27 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       // step, so a plain failure — wrong selector, real assertion miss — on a
       // healthy session is left alone and the model retries on its current page.
       if (!recoveredOnce) {
+        // Telling the kinds apart needs the probe, so it always runs; spending
+        // the slot here is what keeps this to once per step either way.
+        recoveredOnce = true;
         const health = checkLiveSessionHealth(input.sessionName);
-        // A blank page is only worth acting on when there is state to put back:
-        // without it the recovery is a no-op and the extra attempt just burns a
-        // turn. An unresponsive daemon always is — nothing else can proceed.
-        if (!health.healthy && (health.unresponsive || statePath)) {
-          const kill = health.unresponsive ? await killSessionDaemon(input.sessionName) : null;
+        // A blank page with no saved state has nothing to put back, and its
+        // browser is still there — the other kinds leave the session unusable.
+        if (!health.healthy && (health.kind !== "blank" || statePath)) {
+          const kill =
+            health.kind === "unresponsive" ? await killSessionDaemon(input.sessionName) : null;
           log.warn(
             `session broken during ${step.id} (${health.reason}); ` +
-              `${kill ? describeKill(kill) : "re-injecting auth-state"} and retrying`,
+              (kill ? describeKill(kill) : "re-injecting auth-state"),
           );
-          const rec = recoverLiveSession(input.sessionName, statePath, verifyUrl);
-          if (!rec.ok) log.warn(`session recovery failed: ${rec.error}`);
-          recoveredOnce = true;
-          attempt++;
-          continue;
+          // Every command below goes through the socket the daemon is ignoring,
+          // so a kill that failed makes the retry pure cost.
+          if (!kill || kill.killed) {
+            const rec = recoverLiveSession(input.sessionName, statePath, verifyUrl);
+            if (!rec.ok) log.warn(`session recovery failed: ${rec.error}`);
+            attempt++;
+            continue;
+          }
         }
       }
 

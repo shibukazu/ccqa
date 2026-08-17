@@ -288,10 +288,11 @@ export function verifySessionRestores(statePath: string, verifyUrl: string): Ses
 
 export type LiveSessionHealth =
   | { healthy: true }
-  // The remedies are opposites: an unresponsive daemon has to be killed before
-  // anything reaches the session, while one that merely restarted answers fine
-  // and only lost the auth-state it held in memory.
-  | { healthy: false; unresponsive: boolean; reason: string };
+  // Each kind takes a different remedy: `unresponsive` must be killed before
+  // anything reaches the session at all, `errored` needs its browser booted
+  // again, and `blank` kept its browser and only lost the auth-state a restart
+  // held in memory.
+  | { healthy: false; kind: "unresponsive" | "errored" | "blank"; reason: string };
 
 /**
  * Non-destructive mid-run health probe of an already-running live session.
@@ -319,13 +320,13 @@ export function checkLiveSessionHealth(sessionName: string): LiveSessionHealth {
   if (probe.status !== 0) {
     return {
       healthy: false,
-      unresponsive: probe.wedged === true,
+      kind: probe.wedged === true ? "unresponsive" : "errored",
       reason: (probe.stderr || probe.stdout || `probe exited ${probe.status}`).trim(),
     };
   }
   const href = unwrapEvalString(probe.stdout);
   if (!href || href === "about:blank" || href.startsWith("chrome://") || href.startsWith("chrome-error://")) {
-    return { healthy: false, unresponsive: false, reason: `blank/absent page (${href || "empty"})` };
+    return { healthy: false, kind: "blank", reason: `blank/absent page (${href || "empty"})` };
   }
   return { healthy: true };
 }

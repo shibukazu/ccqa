@@ -103,7 +103,7 @@ describe("checkLiveSessionHealth", () => {
     mockedSpawnAB.mockReturnValueOnce({ status: null, stdout: "", stderr: "timed out", wedged: true });
     expect(checkLiveSessionHealth("sess")).toEqual({
       healthy: false,
-      unresponsive: true,
+      kind: "unresponsive",
       reason: "timed out",
     });
   });
@@ -112,7 +112,7 @@ describe("checkLiveSessionHealth", () => {
     mockedSpawnAB.mockReturnValueOnce({ status: 1, stdout: "", stderr: "no session", wedged: false });
     expect(checkLiveSessionHealth("sess")).toEqual({
       healthy: false,
-      unresponsive: false,
+      kind: "errored",
       reason: "no session",
     });
   });
@@ -121,7 +121,7 @@ describe("checkLiveSessionHealth", () => {
     mockedSpawnAB.mockReturnValueOnce(ok(JSON.stringify("about:blank")));
     expect(checkLiveSessionHealth("sess")).toEqual({
       healthy: false,
-      unresponsive: false,
+      kind: "blank",
       reason: expect.stringContaining("about:blank"),
     });
   });
