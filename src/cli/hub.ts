@@ -18,8 +18,10 @@ import { errMessage } from "../run/errors.ts";
 import { capDeployPaths } from "./deploy-paths.ts";
 import { getChangedFilesBetween, type ChangedFile } from "../drift/affected.ts";
 import { selectSpecs } from "../select/analyze.ts";
+import { loadCoverageEdges } from "../select/coverage-edges.ts";
 import { loadSpecInventory } from "../select/inventory.ts";
 import type { DeploySelection } from "../hub/contract/schema.ts";
+import { MAX_TOUCHED_BY } from "../hub/core/deploy-log.ts";
 import { parseSpecPath, specKey } from "../store/index.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { sessionCaptureCommand } from "./session.ts";
@@ -27,7 +29,7 @@ import { resolveProject } from "./resolve-project.ts";
 import { hubTokenOption, hubUrlOption, resolveHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
 import { detectBranch } from "./git-branch.ts";
 import * as log from "./logger.ts";
-import { readCostFileTotal, withCostReporting } from "./cost-line.ts";
+import { readCostFileTotal } from "./cost-line.ts";
 
 /**
  * `ccqa hub` — the client side of the ccqa hub (a results/secret control
@@ -375,7 +377,6 @@ interface DeployRecordOptions extends HubConnOptions {
   ref?: string;
   /** Commander sets this from `--no-select-specs`: true unless the flag is passed. */
   selectSpecs?: boolean;
-  model?: string;
 }
 
 const deployRecord = new Command("record")
@@ -403,19 +404,15 @@ const deployRecord = new Command("record")
     "--no-select-specs",
     "Record the deploy without deciding which specs it reaches. The entry then becomes a hole in the " +
       "range — every spec behind it is assumed reached rather than being cleared, and nothing can " +
-      "fill it in later, since the hub has no checkout to diff. Only pass this when no Claude " +
-      "credential is available; it costs one model call to leave the range clearable.",
-  )
-  .option(
-    "-m, --model <name>",
-    "Model for the spec selection. Claude alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
+      "fill it in later, since the hub has no checkout to diff. The decision intersects the diff " +
+      "with measured coverage from the hub and calls no model, so there is rarely a reason to skip it.",
   )
   .option(...hubUrlOption)
   .option(...hubTokenOption)
   .option("--project <name>", "Project whose deploy log this entry joins. Defaults to the current directory's name.")
   .option("--cwd <path>", "Directory the git diff and the default --project name are resolved against.")
   .action(withHubErrors(async (opts: DeployRecordOptions) => {
-    await withCostReporting("hub deploy record", () => runDeployRecord(opts));
+    await runDeployRecord(opts);
   }));
 
 async function runDeployRecord(opts: DeployRecordOptions): Promise<void> {
@@ -435,7 +432,7 @@ async function runDeployRecord(opts: DeployRecordOptions): Promise<void> {
   const diff = previous === null ? null : await diffOrNull(previous, opts.sha, cwd);
   const changedPaths = diff ? capDeployPaths(diff.map((f) => f.path)) : null;
   const selection = opts.selectSpecs !== false && previous !== null && diff !== null
-    ? await selectionForDeploy(diff, previous, opts.sha, cwd, opts.model)
+    ? await selectionForDeploy(hub, project, diff, previous, opts.sha, cwd)
     : undefined;
 
   const entry = await hub.recordDeploy(project, opts.profile, {
@@ -479,27 +476,31 @@ async function runDeployRecord(opts: DeployRecordOptions): Promise<void> {
  * Takes the diff `deployRecord` already fetched for `changedPaths`, rather
  * than diffing again — the decision needs the diff and the spec tree, and the
  * hub has neither, but there's no reason to ask git for the same range twice.
+ * The hub does hold the coverage measurements the verdicts rest on, so those
+ * are read back through the same connection the entry is posted over.
  * `undefined` on failure rather than a half-answer: the deploy is then
  * recorded without a selection, and specs behind it read `unknown` instead of
  * being cleared by a selection that isn't there.
  */
 async function selectionForDeploy(
+  hub: HubClient,
+  project: string,
   changed: readonly ChangedFile[],
   previous: string,
   sha: string,
   cwd: string,
-  model: string | undefined,
 ): Promise<DeploySelection | undefined> {
   try {
     const specs = await loadSpecInventory(cwd);
     if (specs.length === 0) return undefined;
+    const edges = await loadCoverageEdges({ hub, project });
     const report = await selectSpecs({
       changed,
       specs,
       cwd,
       base: previous,
       head: sha,
-      ...(model ? { model } : {}),
+      edges,
     });
     return Object.fromEntries(
       report.specs.map((s) => [
@@ -507,7 +508,10 @@ async function selectionForDeploy(
         {
           verdict: s.verdict,
           reason: s.reason,
-          ...(s.touchedBy?.length ? { touchedBy: s.touchedBy } : {}),
+          // The hub's touch index keeps at most MAX_TOUCHED_BY paths per spec
+          // (`foldTouchIndex`); sending more only grows the request, and a
+          // monorepo-wide diff can push it past the hub's body limit.
+          ...(s.touchedBy?.length ? { touchedBy: s.touchedBy.slice(0, MAX_TOUCHED_BY) } : {}),
         },
       ]),
     );

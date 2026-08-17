@@ -2,9 +2,11 @@ import { getChangedFilesBetween } from "../drift/affected.ts";
 import { RunUsageError } from "../run/errors.ts";
 import { resolveAnalysisBase, type AnalysisBase } from "../run/git-context.ts";
 import { selectSpecs } from "../select/analyze.ts";
+import { loadCoverageEdges, type CoverageEdges } from "../select/coverage-edges.ts";
 import { loadSpecInventory } from "../select/inventory.ts";
 import { specsToRun } from "../select/types.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
+import type { HubContext } from "./hub-conn.ts";
 import * as log from "./logger.ts";
 
 export interface ChangedSelection {
@@ -20,7 +22,12 @@ export interface ChangedSelection {
 export interface CollectChangedOptions {
   cwd: string;
   base: string;
-  model?: string;
+  /**
+   * Where the coverage edges are read from. `null` (no hub configured) leaves
+   * every spec the mechanical pass cannot settle `unknown` — those run, so a
+   * missing hub costs runs, never a skipped regression.
+   */
+  hub: HubContext | null;
   /** Suppress progress lines. Set for machine-readable output, which shares stdout. */
   quiet?: boolean;
   /** How the calling command spells the flag, for error messages. */
@@ -31,27 +38,31 @@ export interface CollectChangedOptions {
  * Filter specs to those a range of commits reaches. Powers `ccqa run
  * --only-affected-by <ref>`; `ccqa audit` uses the same call.
  *
- * The decision is made by `ccqa select-specs`, which reads the diff against
- * what each spec actually does. That costs one model call, against saving the
- * runs it excludes — the specs it clears are the expensive part.
+ * The decision is made by `ccqa select-specs`, which intersects the diff with
+ * each spec's last measured reach from the hub (ADR-0024). Deterministic and
+ * free — no model call — and wrong in only one direction: a spec without a
+ * measurement comes back `unknown` and runs.
  *
  * Specs come back `needed`, `notNeeded` or `unknown`; everything but
- * `notNeeded` runs. `unknown` is the selector saying it could not tell, and
- * the safe reading of that is to run the spec.
+ * `notNeeded` runs. `unknown` is the selector saying it has no measurement to
+ * consult, and the safe reading of that is to run the spec.
  */
 export async function collectChangedSpecs(
   specs: readonly SpecRef[],
   opts: CollectChangedOptions,
 ): Promise<ChangedSelection> {
-  const { cwd, base, model, quiet, flagName } = opts;
-  const resolved = await resolveAnalysisBase(base, flagName ?? "--only-affected-by", cwd);
+  const { cwd, base, hub, quiet, flagName } = opts;
+  const flag = flagName ?? "--only-affected-by";
+  const resolved = await resolveAnalysisBase(base, flag, cwd);
   const meta = (key: string, value: string | number) => {
     if (!quiet) log.meta(key, value);
   };
 
   let changed;
   try {
-    changed = await getChangedFilesBetween(resolved.sha, "HEAD", cwd);
+    // Renames stay delete + add: the diff is intersected with reach measured
+    // before the rename, and only the old path can match an edge.
+    changed = await getChangedFilesBetween(resolved.sha, "HEAD", cwd, { detectRenames: false });
   } catch (e) {
     throw new RunUsageError(
       `failed to run 'git diff' against ${resolved.ref}: ${(e as Error).message}`,
@@ -71,13 +82,22 @@ export async function collectChangedSpecs(
     throw new RunUsageError((e as Error).message);
   }
 
+  let edges: CoverageEdges = new Map();
+  if (hub) {
+    edges = await loadCoverageEdges(hub);
+  } else {
+    log.warn(
+      `${flag}: no hub connection, so coverage measurements cannot be consulted — undecided specs will run`,
+    );
+  }
+
   const report = await selectSpecs({
     changed,
     specs: inventory,
     cwd,
     base: resolved.sha,
     head: "HEAD",
-    ...(model ? { model } : {}),
+    edges,
   });
 
   const toRun = new Set(specsToRun(report).map(specKey));

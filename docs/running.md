@@ -471,24 +471,34 @@ When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
    than an empty diff.
 2. `ccqa select-specs` decides which specs the diff reaches, in two passes.
    Mechanical first: a change to a spec's own `spec.yaml`/recording, or to a
-   block it includes, marks that spec `needed` — set membership, no model
-   call. Everything left undecided is judged against the remaining
-   (product-code) changes in one Claude call, which reads the diff and each
-   spec's steps and answers `needed` / `notNeeded` / `unknown` (the
-   selector's own vocabulary, not the re-run verdict's), using
-   Read/Grep/Glob to check the codebase. The model call is skipped
+   block it includes, marks that spec `needed` — set membership, no
+   measurement consulted. Everything left undecided is intersected with the
+   files its last measured run actually reached — the coverage each spec's
+   most recent `ccqa run --coverage` left on the hub (ADR-0024) — and
+   answers `needed` / `notNeeded` / `unknown` (the selector's own
+   vocabulary, not the re-run verdict's). The intersection is skipped
    entirely, and every remaining spec clears as `notNeeded`, when nothing
    outside `.ccqa/` changed.
-3. Specs the selector could not decide come back `unknown` and stay in
-   scope — for a one-shot local selection, the safe reading of "I don't
-   know" is to run it. The hub's deploy ledger reads the same answer the
-   other way (ADR-0023): an undecided deploy does not put a spec back into
-   the audit/re-run cycle, because one wide deploy answering `unknown` for
+3. A spec with no measurement to consult — never measured, measured longer
+   ago than the hub retains, or no hub connection at all — comes back
+   `unknown` and stays in scope: an unmeasured edge is not an unreached
+   one, so for a one-shot local selection the absence of evidence runs the
+   spec. The hub's deploy ledger reads the same answer the other way
+   (ADR-0023): an undecided deploy does not put a spec back into the
+   audit/re-run cycle, because one wide deploy answering `unknown` for
    everything would otherwise invalidate the whole suite at once.
 
 Changes outside the cwd hosting `.ccqa/` are reported but never attributed
 to a spec — a sibling package's own `.ccqa/` names its own specs and blocks,
-not this project's.
+not this project's. Before intersecting, diff paths are re-rooted to
+`coverage.projectRoot` (the base measured files are stored under), so a
+monorepo whose coverage root sits above the cwd still matches.
+
+The verdicts are deterministic — the same commit selects the same specs on
+every invocation — and free: no model is called. The cost of the trade is
+staleness: a spec's edge set is as fresh as its last measured run, and file
+granularity over-selects (a change to a widely-imported file selects every
+spec that reached it), which is the safe direction.
 
 ### Auditing only what the deploy reached
 
@@ -540,13 +550,13 @@ means a wrong `--cwd` or a checkout that did not include the spec tree.
 
 `ccqa select-specs` is the same decision as a standalone command, for when
 you want the verdicts without running anything — inspecting what a range
-would select, or feeding the answer to another job.
+would select, or feeding the answer to another job. It needs a hub
+connection: the measured coverage the verdicts rest on lives there.
 
 ```sh
 ccqa select-specs --base origin/main             # against HEAD
 ccqa select-specs --base <sha> --head <sha>      # an explicit range
 ccqa select-specs --base origin/main --format json
-ccqa select-specs --base origin/main -m sonnet   # cheaper model
 ccqa select-specs --base origin/main --cwd packages/web
 ```
 

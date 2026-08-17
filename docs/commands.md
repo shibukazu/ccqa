@@ -26,7 +26,7 @@ authoritative for flags.
 | `ccqa run --on-fail-explain-rerun auto` | Run a failure the classifier could not pin down a second time, and label it from whether it reproduces. Costs a full spec execution each; the spec stays failed either way. See [Rerunning a failure](./running.md#rerunning-a-failure). |
 | `ccqa audit [feature/spec]` | Audit specs against the codebase without running a browser. See [Drift detection](./running.md#drift-detection). |
 | `ccqa audit --only-hub-audit-needed` | Audit only the specs a deploy has reached since the audit last read them, plus every spec never audited and every spec whose drift entry is still open. See [Auditing only what the deploy reached](./running.md#auditing-only-what-the-deploy-reached). |
-| `ccqa select-specs --base <ref>` | Answer which specs a range reaches, and nothing else — the machinery behind `--only-affected-by`, usable on its own. See [Asking the question on its own](./running.md#asking-the-question-on-its-own). |
+| `ccqa select-specs --base <ref>` | Answer which specs a range reaches, and nothing else — the machinery behind `--only-affected-by`, usable on its own. Intersects the diff with measured coverage from the hub, so it needs a hub connection. See [Asking the question on its own](./running.md#asking-the-question-on-its-own). |
 
 Both `run` and `audit` accept `--report-format github` to annotate a pull request.
 `run` also takes `--dry-run`, which prints the selection and stops — worth a
@@ -68,9 +68,10 @@ look before letting a selection decide what a paid run covers.
 | `ANTHROPIC_CUSTOM_HEADERS` | anything that calls Claude | Extra request headers. |
 
 Which commands call Claude, and therefore need a credential: `draft`,
-`perspectives`, `record`, `generate`, `audit`, `select-specs`,
-`hub deploy record`, `run` on a `mode: live` spec, and
-`run --on-fail-explain`. A deterministic `ccqa run` calls no model at all.
+`perspectives`, `record`, `generate`, `audit`, `run` on a `mode: live`
+spec, and `run --on-fail-explain`. A deterministic `ccqa run` calls no
+model at all, and neither do `select-specs` and `hub deploy record` — their
+spec selection reads measured coverage from the hub instead (ADR-0024).
 
 `serve` belongs on that list too, but for a different reason: the hub does no
 model work of its own except the prompt-learning job a human starts from the
@@ -102,7 +103,7 @@ way — and treat a `$0.0000` total as "no price available" rather than "free".
 
 Every command in the first list ends by writing what it spent to **stderr** —
 stdout is left to the machine-readable output that `--report-format json`
-and `select-specs` put there:
+puts there:
 
 ```
 [cost] $1.8342 / 46 turns / 42+6511 tokens / 2004992 cache-read / model=claude-sonnet-4-6
@@ -118,7 +119,6 @@ file:
 
 ```bash
 export CCQA_COST_FILE=$RUNNER_TEMP/ccqa-cost.jsonl
-ccqa select-specs --base "$GITHUB_BASE_REF"
 ccqa audit --only-affected-by "$GITHUB_BASE_REF"
 ccqa run --only-affected-by "$GITHUB_BASE_REF"
 jq -s 'map(.totalCostUsd // 0) | add' "$CCQA_COST_FILE"

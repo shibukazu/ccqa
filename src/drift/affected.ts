@@ -52,10 +52,11 @@ export function normalizeGithubBaseRef(ref: string): string {
  * `.ccqa/`. Changes outside `cwd` are kept under their repo-root path and
  * flagged `outsideCwd` (see `ChangedFile`) rather than dropped.
  *
- * `detectRenames` defaults on. `ccqa hub deploy record` turns it off (via
- * `changedPathsBetween`): with rename detection, a rename is one entry naming
- * only the destination, so a file's old path would silently drop out of the
- * report — off, it appears as a delete plus an add and both paths are kept.
+ * `detectRenames` defaults on. Callers whose diff is held against past facts
+ * — `ccqa hub deploy record` and spec selection — turn it off: with rename
+ * detection, a rename is one entry naming only the destination, so a file's
+ * old path would silently drop out — off, it appears as a delete plus an add
+ * and both paths are kept.
  */
 export async function getChangedFilesBetween(
   base: string,

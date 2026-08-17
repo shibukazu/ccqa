@@ -441,9 +441,11 @@ export async function closeMeasurement(
  * Every failure here is otherwise silent and identical to success: a root that
  * does not exist, or does not contain the project, sends every relative source
  * outside it, and the run reports a smaller file set with no error at all —
- * the answer this measurement exists to prevent.
+ * the answer this measurement exists to prevent. Spec selection
+ * (src/select/analyze.ts) resolves the same key through this function too, so
+ * both sides of an intersection agree on what the root means.
  */
-async function resolveRoot(cwd: string, declared: string | undefined): Promise<string | undefined> {
+export async function resolveRoot(cwd: string, declared: string | undefined): Promise<string | undefined> {
   if (declared === undefined) return undefined;
   // A `${VAR}` nobody set substitutes to "", and `resolve(cwd, "")` is `cwd` —
   // indistinguishable from never having configured a root.

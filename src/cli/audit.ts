@@ -79,7 +79,7 @@ export const auditCommand = addProfileOption(addLanguageOption(
     .optionsGroup("Which specs to audit:")
     .option(
       "--only-affected-by <ref>",
-      "Only specs `ccqa select-specs` judges reached by the diff against <ref> (e.g. origin/main). In pull_request CI, pass $GITHUB_BASE_REF. Costs one model call; specs it cannot decide are audited rather than skipped.",
+      "Only specs `ccqa select-specs` decides the diff against <ref> reaches (e.g. origin/main), by intersecting it with each spec's measured coverage from the hub. In pull_request CI, pass $GITHUB_BASE_REF. Specs without a measurement are audited rather than skipped.",
     )
     .option(
       "--only-hub-audit-needed",
@@ -145,9 +145,8 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     process.exit(2);
   }
 
-  // Resolved before the sweep so a usage error costs nothing: --only-affected-by
-  // below spends a model call, and finding out after it that --hub-profile is
-  // missing would bill for the mistake.
+  // Resolved before the sweep so a usage error costs nothing — finding out
+  // after the selection work that --hub-profile is missing would waste it.
   let hub: HubClient | null = null;
   let hubProject: string | null = null;
   // Set only on the --only-hub-audit-needed path, which is also the only one
@@ -176,8 +175,8 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   }
 
   // Ahead of --only-affected-by: the two compose with AND, and this side is
-  // one HTTP round trip where that one is a model call. Narrowing here shrinks
-  // the prompt, and skips it entirely when nothing is left to audit.
+  // one HTTP round trip where that one adds a git diff and a hub coverage
+  // read. Narrowing here skips that entirely when nothing is left to audit.
   if (opts.onlyHubAuditNeeded) {
     const total = targets.length;
     const ctx = { hub: hub!, project: hubProject! };
@@ -216,7 +215,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
       cwd,
       base: opts.onlyAffectedBy,
       quiet: format !== "text",
-      ...(opts.model ? { model: opts.model } : {}),
+      hub: resolveAuditHubContext(opts, cwd),
     });
     // The base reported to the hub is the one selection actually diffed
     // against — resolving it a second time here could name another commit.

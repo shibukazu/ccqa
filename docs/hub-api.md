@@ -305,10 +305,10 @@ from then on, and nothing rewrites the ones already stored.
 The hub has no checkout, never runs `git`, and never calls a git host, so it
 cannot work out what a deploy changed or which specs it reaches. The
 consuming deploy job tells it both: the changed paths, and (optionally) which
-specs `ccqa select-specs` decided the deploy reaches (ADR-0010, ADR-0011).
-The hub answers "which specs are worth running?" as set arithmetic over that
-log, the spec ledger, and the per-deploy selections submitted alongside it —
-the hub itself makes no model call.
+specs `ccqa select-specs` decided the deploy reaches (ADR-0010, ADR-0024) by
+intersecting the diff with the measured coverage stored on the hub. The hub
+answers "which specs are worth running?" as set arithmetic over that log, the
+spec ledger, and the per-deploy selections submitted alongside it.
 
 ```
 POST /api/v1/projects/:project/deploys?profile=<name>

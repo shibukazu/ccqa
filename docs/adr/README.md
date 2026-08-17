@@ -32,7 +32,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0008](0008-classification-and-action-are-orthogonal.md) | Classification and action are orthogonal: `run` classifies, `act` responds, the workflow maps label→action | accepted (label set amended by 0016) |
 | [0009](0009-incremental-run-push.md) | A run is mutable while running, immutable once terminal | accepted |
 | [0010](0010-rerun-selection-from-a-deploy-log.md) | "Needs re-run" is decided from a deploy log the hub is told about, never from a guessed ref | accepted (amended by 0011, state model superseded by 0014) |
-| [0011](0011-replace-relatedpaths-with-model-selection.md) | Replace `relatedPaths` glob matching with `ccqa select-specs` model selection | accepted |
+| [0011](0011-replace-relatedpaths-with-model-selection.md) | Replace `relatedPaths` glob matching with `ccqa select-specs` model selection | superseded by ADR-0024 |
 | [0012](0012-flag-names-carry-their-group.md) | Flag names carry their group, and one flag means one thing | accepted |
 | [0013](0013-one-verification-environment.md) | One verification environment; a profile is a value set, not an environment | accepted |
 | [0014](0014-two-axes-one-verdict.md) | Two axes, one verdict; work in flight is a claim, not a state | accepted (execution axis amended by 0020) |
@@ -45,6 +45,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0021](0021-what-a-spec-actually-reached.md) | Measure what a spec reached, per spec, in a shared environment | accepted (transport amended by 0022) |
 | [0022](0022-coverage-flows-through-an-inbox.md) | Coverage flows through an inbox; interpretation is one resolver | accepted |
 | [0023](0023-an-undecided-selection-is-not-a-reach.md) | An undecided selection is not a reach | accepted |
+| [0024](0024-selection-from-measured-reach.md) | Spec selection reads measured reach, not a model's guess | accepted |
 
 ## Template
 
