@@ -1,14 +1,16 @@
 import { appendFileSync } from "node:fs";
+import { RawWebSocket } from "./ws.ts";
 
 /**
  * Minimal Chrome DevTools Protocol client, dependency-free on purpose.
  *
  * Coverage acquisition speaks a handful of domains over one transport, which
  * is not enough to justify a protocol library in a published CLI. The
- * transport is the `WebSocket` global — stable since Node 22 — so availability
- * is gated with an explicit error instead of a package.json engines bump:
- * everything else in ccqa still runs on 20, and only `--coverage`'s browser
- * half needs more.
+ * transport is `./ws.ts`'s own RFC 6455 client, not the `WebSocket` global:
+ * the global (undici) unconditionally negotiates `permessage-deflate` with
+ * Chromium's DevTools server, and one hiccup in that stateful inflate stream
+ * kills the connection from the client side while the browser and the spec
+ * keep running (observed in CI as every measurement dying mid-spec).
  */
 
 export class CdpError extends Error {}
@@ -42,15 +44,6 @@ interface Pending {
   resolve(value: unknown): void;
   reject(error: Error): void;
   method: string;
-}
-
-/** Throws with the actual requirement when the runtime cannot open the socket. */
-export function requireWebSocket(): void {
-  if (typeof WebSocket === "undefined") {
-    throw new CdpError(
-      `browser coverage needs the WebSocket global (node 22+); this is node ${process.version}`,
-    );
-  }
 }
 
 /**
@@ -93,32 +86,29 @@ export interface CdpTransport {
     sessionId?: string,
   ): Promise<T>;
   on(method: string, handler: EventHandler): void;
-  onClose(handler: () => void): void;
+  /** `reason` is the most specific cause the transport knows for the drop. */
+  onClose(handler: (reason: string) => void): void;
   close(): void;
 }
 
 export class CdpClient implements CdpTransport {
-  private readonly ws: WebSocket;
+  private readonly ws: RawWebSocket;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly listeners = new Map<string, Set<EventHandler>>();
-  private readonly closeHandlers = new Set<() => void>();
+  private readonly closeHandlers = new Set<(reason: string) => void>();
 
-  private constructor(ws: WebSocket) {
+  private constructor(ws: RawWebSocket) {
     this.ws = ws;
-    ws.addEventListener("message", (event) => this.receive(String((event as MessageEvent).data)));
-    ws.addEventListener("close", () => this.drop("connection closed"));
-    ws.addEventListener("error", () => this.drop("connection error"));
+    ws.attach({
+      onMessage: (text) => this.receive(text),
+      onClose: (detail) => this.drop(detail),
+    });
   }
 
   static async connect(wsUrl: string): Promise<CdpClient> {
-    requireWebSocket();
-    const ws = new WebSocket(wsUrl);
-    await new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve(), { once: true });
-      ws.addEventListener("error", () => reject(new CdpError(`could not connect to ${wsUrl}`)), {
-        once: true,
-      });
+    const ws = await RawWebSocket.connect(wsUrl).catch((error: unknown) => {
+      throw new CdpError(`could not connect to ${wsUrl} (${message(error)})`);
     });
     return new CdpClient(ws);
   }
@@ -128,7 +118,7 @@ export class CdpClient implements CdpTransport {
     params?: Record<string, unknown>,
     sessionId?: string,
   ): Promise<T> {
-    if (this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws.open) {
       return Promise.reject(new CdpError(`${method}: connection closed`));
     }
     const id = this.nextId++;
@@ -136,7 +126,14 @@ export class CdpClient implements CdpTransport {
       this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, method });
     });
     trace("->", `#${id} ${method} sid:${shortId(sessionId)}`);
-    this.ws.send(JSON.stringify({ id, method, params: params ?? {}, sessionId }));
+    try {
+      this.ws.send(JSON.stringify({ id, method, params: params ?? {}, sessionId }));
+    } catch (error) {
+      // A synchronous send failure must reject this call, not escape into
+      // whichever caller happened to be on the stack (several are `void`ed).
+      this.pending.delete(id);
+      return Promise.reject(new CdpError(`${method}: ${message(error)}`));
+    }
     return promise;
   }
 
@@ -149,7 +146,7 @@ export class CdpClient implements CdpTransport {
     set.add(handler);
   }
 
-  onClose(handler: () => void): void {
+  onClose(handler: (reason: string) => void): void {
     this.closeHandlers.add(handler);
   }
 
@@ -204,13 +201,14 @@ export class CdpClient implements CdpTransport {
   }
 
   private drop(reason: string): void {
+    trace("!!", `dropped: ${reason}`);
     for (const waiting of this.pending.values()) {
       waiting.reject(new CdpError(`${waiting.method}: ${reason}`));
     }
     this.pending.clear();
     for (const handler of this.closeHandlers) {
       try {
-        handler();
+        handler(reason);
       } catch {
         // Same rule as event handlers.
       }

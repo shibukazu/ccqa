@@ -60,6 +60,14 @@ const TAKE_INTERVAL_MS = 400;
 const NAVIGATION_GUARD_MS = 5_000;
 /** How long `stop()` waits for the final take before declaring the tail lost. */
 const STOP_TAKE_TIMEOUT_MS = 2_000;
+/**
+ * Dropped-transport reconnects per engine (= per spec). Bounded because a
+ * deterministic failure — a proxy mangling frames, a peer that keeps
+ * violating the framing — would otherwise loop for the whole spec; four
+ * doubling delays cover a browser that was merely busy.
+ */
+const MAX_RECONNECTS = 4;
+const RECONNECT_BASE_MS = 200;
 
 interface AttachedPage {
   sessionId: string;
@@ -104,11 +112,16 @@ export async function startBrowserCoverage(
   opts: BrowserCoverageOptions,
 ): Promise<BrowserCoverageHandle> {
   const connect = opts.connect ?? ((wsUrl: string) => CdpClient.connect(wsUrl));
-  const client = await connect(await browserWebSocketUrl(opts.cdpUrl));
-  const engine = new Engine(client, opts);
+  const wsUrl = await browserWebSocketUrl(opts.cdpUrl);
+  const client = await connect(wsUrl);
+  const engine = new Engine(client, opts, connect, wsUrl);
   try {
     await engine.arm();
   } catch (error) {
+    // Abandon before closing: arm() has already registered onClose, and the
+    // close below would otherwise start a reconnect loop on an engine whose
+    // caller is about to report coverage as unavailable and walk away.
+    engine.abandon();
     client.close();
     throw error;
   }
@@ -116,7 +129,11 @@ export async function startBrowserCoverage(
 }
 
 class Engine implements BrowserCoverageHandle {
-  private readonly client: CdpTransport;
+  private client: CdpTransport;
+  private readonly connectFn: (wsUrl: string) => Promise<CdpTransport>;
+  private readonly wsUrl: string;
+  private reconnects = 0;
+  private reconnectInFlight = false;
   private readonly opts: BrowserCoverageOptions;
   private readonly resolution: FrontendResolution;
   private readonly pages = new Map<string, AttachedPage>();
@@ -129,12 +146,21 @@ class Engine implements BrowserCoverageHandle {
   private readonly armedTargets = new Set<string>();
   /** Sessions whose take failure was already said; see enqueueTake. */
   private readonly warnedTakeSessions = new Set<string>();
+  /** Same, for the cookie warning: one per session, not one per 400ms tick. */
+  private readonly warnedCookieSessions = new Set<string>();
   private readonly cookies: readonly { name: string; value: string; url: string }[];
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
 
-  constructor(client: CdpTransport, opts: BrowserCoverageOptions) {
+  constructor(
+    client: CdpTransport,
+    opts: BrowserCoverageOptions,
+    connectFn: (wsUrl: string) => Promise<CdpTransport>,
+    wsUrl: string,
+  ) {
     this.client = client;
+    this.connectFn = connectFn;
+    this.wsUrl = wsUrl;
     this.opts = opts;
     this.cookies = opts.origins.map((url) => ({
       name: COVERAGE_COOKIE,
@@ -205,12 +231,17 @@ class Engine implements BrowserCoverageHandle {
       }
       page.navigatingSince = undefined;
     });
-    this.client.onClose(() => {
-      // The browser went away with pages still open: whatever ran since the
-      // last take was never seen, and the file has to say so.
+    this.client.onClose((reason) => {
+      // The transport went away with pages still open: whatever ran since
+      // the last take was never seen, and the file has to say so — even when
+      // the reconnect below succeeds, the gap already happened.
       if (!this.stopped && this.pages.size > 0) this.resolution.markStopped();
       this.pages.clear();
-      if (this.timer !== undefined) clearInterval(this.timer);
+      this.armedTargets.clear();
+      this.warnedTakeSessions.clear();
+      this.warnedCookieSessions.clear();
+      this.clearTimer();
+      if (!this.stopped) void this.reconnect(reason);
     });
 
     // Attached through tab targets, not pages directly: a tab's auto-attach
@@ -228,12 +259,18 @@ class Engine implements BrowserCoverageHandle {
     const existing = await this.client.send<{
       targetInfos: { targetId: string; type: string }[];
     }>("Target.getTargets", { filter: [{ type: "tab" }] });
-    for (const info of existing.targetInfos) {
-      if (this.armedTargets.has(info.targetId)) continue;
-      await this.client
-        .send("Target.attachToTarget", { targetId: info.targetId, flatten: true })
-        .catch(() => undefined);
-    }
+    // Concurrent: the attaches are independent, and a reconnect replays this
+    // sweep with the dedup set freshly cleared — serial round-trips here
+    // would stack up on every retry.
+    await Promise.all(
+      existing.targetInfos
+        .filter((info) => !this.armedTargets.has(info.targetId))
+        .map((info) =>
+          this.client
+            .send("Target.attachToTarget", { targetId: info.targetId, flatten: true })
+            .catch(() => undefined),
+        ),
+    );
     this.timer = setInterval(() => {
       for (const page of this.pages.values()) {
         this.enqueueTake(page.sessionId);
@@ -243,9 +280,85 @@ class Engine implements BrowserCoverageHandle {
     this.timer.unref?.();
   }
 
+  /**
+   * A dropped transport is re-opened and re-armed, bounded by
+   * `MAX_RECONNECTS`. Sound to retry: `startPreciseCoverage` restarts the
+   * counters from zero and `absorbEntries` takes the union of covered
+   * ranges, so a re-measured page adds to the result instead of doubling it.
+   * What ran while disconnected is gone either way — `markStopped` was
+   * already recorded when the transport dropped, so the hole stays visible
+   * in the result even after a successful reconnect.
+   */
+  private clearTimer(): void {
+    if (this.timer !== undefined) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
+  /** Stops a never-armed engine: no takes ran, so there is nothing to flush. */
+  abandon(): void {
+    this.stopped = true;
+    this.clearTimer();
+  }
+
+  private async reconnect(initialReason: string): Promise<void> {
+    // Single-flight: while an attempt is arming a fresh transport, that
+    // transport's own drop fires onClose too — a second chain here would
+    // double every later connection and leave orphan timers behind.
+    if (this.reconnectInFlight) return;
+    this.reconnectInFlight = true;
+    try {
+      let reason = initialReason;
+      while (!this.stopped) {
+        if (this.reconnects >= MAX_RECONNECTS) {
+          this.opts.warn(
+            `browser coverage transport dropped (${reason}); giving up after ` +
+              `${MAX_RECONNECTS} reconnects — the rest of the spec goes unmeasured`,
+          );
+          return;
+        }
+        this.reconnects += 1;
+        const delay = RECONNECT_BASE_MS * 2 ** (this.reconnects - 1);
+        this.opts.warn(
+          `browser coverage transport dropped (${reason}); reconnecting in ${delay}ms ` +
+            `(${this.reconnects}/${MAX_RECONNECTS})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (this.stopped) return;
+        let fresh: CdpTransport;
+        try {
+          fresh = await this.connectFn(this.wsUrl);
+        } catch (error) {
+          reason = `reconnect failed: ${message(error)}`;
+          continue;
+        }
+        // stop() may have run while connecting; a client adopted now would
+        // outlive the engine, its timer taking against a finished spec.
+        if (this.stopped) {
+          fresh.close();
+          return;
+        }
+        this.client = fresh;
+        try {
+          await this.arm();
+        } catch (error) {
+          fresh.close();
+          reason = `reconnect failed: ${message(error)}`;
+          continue;
+        }
+        if (this.stopped) {
+          this.clearTimer();
+          fresh.close();
+        }
+        return;
+      }
+    } finally {
+      this.reconnectInFlight = false;
+    }
+  }
+
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.timer !== undefined) clearInterval(this.timer);
+    this.clearTimer();
     // The hold is lifted for the final take: what it protects against is a
     // wedged *navigation*, and the race below is what protects the run from a
     // wedged take. A page that never armed measured nothing at all, and a
@@ -368,6 +481,14 @@ class Engine implements BrowserCoverageHandle {
     return this.client
       .send("Network.setCookies", { cookies: this.cookies }, page.sessionId)
       .catch((error: unknown) => {
+        // Same guards as a take: when the transport dropped or the engine is
+        // closing, the drop itself is reported once with its real reason — a
+        // cookie warn per page on top of it reads as a cookie problem and
+        // misleads. And a page whose cookie keeps failing gets one warning,
+        // not one per 400ms re-assert.
+        if (this.stopped || !this.pages.has(page.sessionId)) return;
+        if (this.warnedCookieSessions.has(page.sessionId)) return;
+        this.warnedCookieSessions.add(page.sessionId);
         this.opts.warn(`could not attach the spec cookie (${message(error)})`);
       });
   }
