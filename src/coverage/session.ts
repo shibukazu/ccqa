@@ -171,6 +171,11 @@ export class CoverageSession {
     return this.sink?.url ?? "";
   }
 
+  /** The id this run's events carry in the stream — what a hub resolve is asked for. */
+  get streamRunId(): string {
+    return this.runId;
+  }
+
   /**
    * True in hub mode: the facts leave as a stream, rows carry no coverage,
    * and the run-side health read-outs below answer empty. The one mode flag

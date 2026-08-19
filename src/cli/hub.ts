@@ -780,6 +780,86 @@ const dismissCommand = new Command("dismiss")
     log.info("this finding no longer holds the spec back; a later audit can raise one of its own");
   }));
 
+// ── coverage ──────────────────────────────────────────────────────────────
+
+interface CoverageInspectOptions extends HubConnOptions {
+  project?: string;
+  runId?: string;
+  json?: boolean;
+  cwd?: string;
+}
+
+const coverageCommand = new Command("coverage")
+  .description(
+    "Print what the hub's coverage stream resolved for a run: per-spec measured file counts and " +
+      "the stream's health counters. This is the read-out measured spec selection consumes — " +
+      "use it to see why a spec's reach is empty before blaming the selection.",
+  )
+  .option("--run-id <id>", "Stream run id to resolve. Defaults to the most recently measured run.")
+  .option("--files", "List each spec's measured files, not just their count.")
+  .option("--json", "Print the raw resolved answer as JSON (everything, including file lists).")
+  .option("--project <name>", "Project whose stream is read. Defaults to the current directory's name.")
+  .option(...cwdOption)
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .action(withHubErrors(runCoverageInspect));
+
+async function runCoverageInspect(opts: CoverageInspectOptions & { files?: boolean }): Promise<void> {
+  const project = resolveProject(opts);
+  const hub = connect(opts);
+  const answer = await hub.getCoverage(project, opts.runId ? { runId: opts.runId } : {});
+  if (opts.json === true) {
+    process.stdout.write(`${JSON.stringify(answer, null, 2)}\n`);
+    return;
+  }
+  log.header("hub coverage", project);
+  if (answer.runIds.length === 0) {
+    log.warn("the stream holds no measured runs for this project");
+    return;
+  }
+  log.meta("measured runs", `${answer.runIds.length} (newest first): ${answer.runIds.join(", ")}`);
+  const resolved = answer.resolved;
+  if (resolved == null) {
+    log.warn("nothing resolved — pass --run-id with one of the runs above");
+    return;
+  }
+  log.meta("run", resolved.runId + (resolved.hubRunId ? ` (hub run ${resolved.hubRunId})` : ""));
+  log.meta("as of", new Date(resolved.asOf).toISOString());
+  if (resolved.universe) {
+    log.meta(
+      "universe",
+      `${resolved.universe.files.length} file(s) (include: ${resolved.universe.include.join(", ")})`,
+    );
+  }
+  log.meta("boot", `${resolved.boot.length} file(s) reached only at module load`);
+  const measured = resolved.specs.filter((spec) => spec.files.length > 0);
+  log.meta("specs", `${measured.length}/${resolved.specs.length} measured files`);
+  for (const spec of resolved.specs) {
+    const actors = Object.entries(spec.actorEvents)
+      .map(([key, count]) => `${key}: ${count} event(s)`)
+      .join(", ");
+    log.info(`  ${spec.specId}: ${spec.files.length} file(s)${actors ? ` (${actors})` : ""}`);
+    if (opts.files === true) for (const file of spec.files) log.info(`    ${file}`);
+  }
+  const h = resolved.health;
+  log.meta(
+    "health",
+    `heard-from-application=${h.heardFromApplication} pushes-during-run=${h.pushesDuringRun} ` +
+      `attributed-specs=${h.attributedSpecs} specs-measured=${h.specsMeasured} ` +
+      `rejected=${h.rejectedPushes} dropped=${h.droppedPushes} ` +
+      `uninstrumented-files=${h.uninstrumentedFiles} uninstrumented-processes=${h.uninstrumentedProcesses} ` +
+      `unmapped-actor-events=${h.unmappedActorEvents}`,
+  );
+  const outside = Object.entries(h.outsideWindowEvents);
+  if (outside.length > 0) {
+    log.warn(
+      `outside-window events (identity was driven while unclaimed): ${outside
+        .map(([key, count]) => `${key}: ${count}`)
+        .join(", ")}`,
+    );
+  }
+}
+
 export const hubCommand = new Command("hub")
   .description(
     "Client for a ccqa hub: push run results and manage sessions/variables/prompts used by `ccqa run`. " +
@@ -788,6 +868,7 @@ export const hubCommand = new Command("hub")
   .addCommand(pushCommand)
   .addCommand(deployCommand)
   .addCommand(costCommand)
+  .addCommand(coverageCommand)
   .addCommand(sessionCommand)
   .addCommand(varCommand)
   .addCommand(promptCommand)

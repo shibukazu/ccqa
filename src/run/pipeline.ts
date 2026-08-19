@@ -953,11 +953,14 @@ export async function executeRun(
 
   // After every phase, not after the external one: live specs are measured too,
   // and reporting between the two would call the server half missing on a run
-  // whose only measured specs had not started yet. Skipped in hub-inbox mode:
-  // nothing on this side saw the stream, so the gaps surface at the hub's
-  // resolve instead.
+  // whose only measured specs had not started yet. In hub-inbox mode nothing
+  // on this side saw the stream, so the hub's resolve is fetched and read out
+  // instead — otherwise an empty measurement is invisible until selection
+  // degrades to unknown days later.
   if (coverage && !coverage.streamsToHub) {
     reportCoverageHealth(coverage, [...externalRows, ...live.reportResults]);
+  } else if (coverage && hubCtx != null) {
+    await reportStreamedCoverageHealth(coverage, hubCtx);
   }
 
   let overallExitCode: 0 | 1 = det.exitCode !== 0 ? 1 : 0;
@@ -1160,6 +1163,83 @@ function explainMissingCoverage(row: ReportSpecResult): ReportSpecResult {
         ? "the spec did not execute"
         : "this target is not measured by --coverage yet",
   };
+}
+
+/**
+ * The hub-inbox counterpart of `reportCoverageHealth`: ask the hub to resolve
+ * this run's slice of the stream and read the answer out into the run log.
+ * Best-effort — the measurement already left as events, so a failed read-out
+ * loses visibility, never data. Application pushes may still land for
+ * `GRACE_MS` after the last window closed, so the counts here are a floor.
+ */
+async function reportStreamedCoverageHealth(
+  coverage: CoverageSession,
+  hubCtx: HubContext,
+): Promise<void> {
+  let resolved;
+  try {
+    resolved = (await hubCtx.hub.getCoverage(hubCtx.project, { runId: coverage.streamRunId }))
+      .resolved;
+  } catch (error) {
+    log.warn(`coverage: could not read this run's resolve from the hub (${errMessage(error)})`);
+    return;
+  }
+  if (resolved == null) {
+    log.warn(
+      "coverage: the hub resolved nothing for this run — its events never reached the stream, " +
+        "so every spec's measured reach is absent",
+    );
+    return;
+  }
+  const measured = resolved.specs.filter((spec) => spec.files.length > 0);
+  const empty = resolved.specs.filter((spec) => spec.files.length === 0);
+  log.meta(
+    "coverage",
+    `stream resolve: ${measured.length}/${resolved.specs.length} spec(s) measured files` +
+      (resolved.boot.length > 0 ? `; ${resolved.boot.length} file(s) reached only at boot` : ""),
+  );
+  for (const spec of measured) {
+    const actors = Object.entries(spec.actorEvents)
+      .map(([key, count]) => `${key}: ${count} event(s)`)
+      .join(", ");
+    log.meta("coverage", `  ${spec.specId}: ${spec.files.length} file(s)${actors ? ` (${actors})` : ""}`);
+  }
+  if (empty.length > 0) {
+    log.warn(
+      `coverage: ${empty.length} spec(s) measured no files — their reach stays unknown to ` +
+        `selection: ${empty.map((spec) => spec.specId).join(", ")}`,
+    );
+  }
+  const h = resolved.health;
+  if (!h.heardFromApplication) {
+    log.warn(
+      "coverage: no instrumented application process pushed to the stream — only the browser " +
+        "half was measured. The server needs ccqa-tools and CCQA_COVERAGE_ENDPOINT pointed at " +
+        "the hub's inbox",
+    );
+  } else if (h.pushesDuringRun === 0) {
+    log.warn(
+      "coverage: the stream holds application pushes, but none arrived while this run was " +
+        "measuring — check CCQA_COVERAGE_ENDPOINT on the application",
+    );
+  } else if (h.attributedSpecs === 0) {
+    log.warn(
+      `coverage: ${h.pushesDuringRun} application push(es) arrived during the run, but none was ` +
+        "attributed to a spec — the spec cookie is not reaching the application, so every " +
+        "spec's server-side reach is zero for that reason rather than because the server ran " +
+        "nothing",
+    );
+  }
+  const trouble: string[] = [];
+  if (h.rejectedPushes > 0) trouble.push(`rejected=${h.rejectedPushes}`);
+  if (h.droppedPushes > 0) trouble.push(`dropped=${h.droppedPushes}`);
+  if (h.unmappedActorEvents > 0) trouble.push(`unmapped-actor-events=${h.unmappedActorEvents}`);
+  if (h.uninstrumentedProcesses > 0) trouble.push(`uninstrumented-processes=${h.uninstrumentedProcesses}`);
+  const outside = Object.entries(h.outsideWindowEvents);
+  if (outside.length > 0) {
+    trouble.push(`outside-window=${outside.map(([key, count]) => `${key}:${count}`).join(",")}`);
+  }
+  if (trouble.length > 0) log.warn(`coverage: stream health flags — ${trouble.join(" ")}`);
 }
 
 /** Everything the measurement could not place; silence here reads as "never reached". */

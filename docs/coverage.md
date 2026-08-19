@@ -146,6 +146,22 @@ Local runs need none of this: the default (`--coverage-inbox local`) is the
 loopback sink above, no hub involved, and the report rows carry the results
 as they always did.
 
+### Reading a streamed measurement back
+
+Because the rows carry no coverage in this mode, an empty measurement is easy
+to miss: the run passes, the stream accepts every event, and only days later
+does selection degrade to `unknown`. Two read-outs close that gap:
+
+- At the end of a streamed run, `ccqa run` asks the hub to resolve the run's
+  slice of the stream and prints the answer: how many specs measured files,
+  which measured none, and the stream's health counters (application pushes
+  during the run, attributed specs, out-of-window events).
+- `ccqa hub coverage` prints the same resolve on demand — per-spec measured
+  file counts (`--files` lists the files, `--json` the raw answer) and the
+  health counters, for the most recent measured run or `--run-id <id>`. This
+  is the read-out measured spec selection consumes, so when a spec's verdict
+  is `unknown`, this command shows whether the measurement was empty and why.
+
 ## Flows a webhook drives
 
 A spec that drives the application through a chat platform reaches it by a
