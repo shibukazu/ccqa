@@ -35,8 +35,18 @@ class FakeTransport implements CdpTransport {
     this.handlers.set(method, list);
   }
 
-  onClose(): void {}
+  private readonly closeHandlers: ((reason: string) => void)[] = [];
+
+  onClose(handler: (reason: string) => void): void {
+    this.closeHandlers.push(handler);
+  }
+
   close(): void {}
+
+  /** Simulates the transport dying, as the real client's drop() does. */
+  drop(reason: string): void {
+    for (const handler of this.closeHandlers.splice(0)) handler(reason);
+  }
 
   emit(method: string, params: Record<string, unknown>, sessionId?: string): void {
     for (const handler of this.handlers.get(method) ?? []) handler(params, sessionId);
@@ -138,6 +148,70 @@ describe("engine state machine (scripted transport)", () => {
     };
     expect(written.stopped).toBe(true);
   });
+
+  it("reconnects after a drop, re-arms on the new transport, and keeps the gap marked", async () => {
+    const first = new FakeTransport();
+    const second = new FakeTransport();
+    const queue = [first, second];
+    const dir = mkdtempSync(join(tmpdir(), "ccqa-engine-"));
+    dirs.push(dir);
+    const warnings: string[] = [];
+    const engine = await startBrowserCoverage({
+      cdpUrl: "ws://127.0.0.1:1/devtools/browser/fake",
+      specId: "run1.f/s",
+      origins: ["http://127.0.0.1:1"],
+      coverageDir: dir,
+      roots: { base: dir, root: dir },
+      warn: (text) => warnings.push(text),
+      connect: async () => {
+        const next = queue.shift();
+        if (next === undefined) throw new Error("no more transports");
+        return next;
+      },
+    });
+    attachPage(first, "S1", "T1");
+    await settle();
+    first.drop("transport failed: test breakage");
+    expect(warnings.some((w) => w.includes("test breakage") && w.includes("reconnecting"))).toBe(true);
+    // Past the first backoff step (200ms) the engine must be armed anew.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(second.sentTo("Target.setAutoAttach", undefined)).toBe(1);
+    attachPage(second, "S2", "T2");
+    await settle();
+    expect(second.sentTo("Profiler.startPreciseCoverage", "S2")).toBe(1);
+    await engine.stop();
+    const written = JSON.parse(readFileSync(join(dir, "coverage-frontend.json"), "utf8")) as {
+      stopped: boolean;
+    };
+    // The reconnect succeeded, but what ran while disconnected is still gone.
+    expect(written.stopped).toBe(true);
+  });
+
+  it("gives up after the reconnect budget instead of looping on a dead endpoint", async () => {
+    const first = new FakeTransport();
+    let handed = false;
+    const dir = mkdtempSync(join(tmpdir(), "ccqa-engine-"));
+    dirs.push(dir);
+    const warnings: string[] = [];
+    await startBrowserCoverage({
+      cdpUrl: "ws://127.0.0.1:1/devtools/browser/fake",
+      specId: "run1.f/s",
+      origins: ["http://127.0.0.1:1"],
+      coverageDir: dir,
+      roots: { base: dir, root: dir },
+      warn: (text) => warnings.push(text),
+      connect: async () => {
+        if (handed) throw new Error("endpoint is gone");
+        handed = true;
+        return first;
+      },
+    });
+    first.drop("transport failed: test breakage");
+    // Budget: 200 + 400 + 800 + 1600ms of backoff, then the final refusal.
+    await new Promise((resolve) => setTimeout(resolve, 3400));
+    expect(warnings.filter((w) => w.includes("reconnecting")).length).toBe(4);
+    expect(warnings.some((w) => w.includes("giving up"))).toBe(true);
+  }, 10_000);
 
   it("writes nothing but a clean empty result when no page ever attached", async () => {
     const fake = new FakeTransport();

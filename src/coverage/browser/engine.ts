@@ -60,6 +60,14 @@ const TAKE_INTERVAL_MS = 400;
 const NAVIGATION_GUARD_MS = 5_000;
 /** How long `stop()` waits for the final take before declaring the tail lost. */
 const STOP_TAKE_TIMEOUT_MS = 2_000;
+/**
+ * Dropped-transport reconnects per engine (= per spec). Bounded because a
+ * deterministic failure — a proxy mangling frames, a peer that keeps
+ * violating the framing — would otherwise loop for the whole spec; four
+ * doubling delays cover a browser that was merely busy.
+ */
+const MAX_RECONNECTS = 4;
+const RECONNECT_BASE_MS = 200;
 
 interface AttachedPage {
   sessionId: string;
@@ -104,8 +112,9 @@ export async function startBrowserCoverage(
   opts: BrowserCoverageOptions,
 ): Promise<BrowserCoverageHandle> {
   const connect = opts.connect ?? ((wsUrl: string) => CdpClient.connect(wsUrl));
-  const client = await connect(await browserWebSocketUrl(opts.cdpUrl));
-  const engine = new Engine(client, opts);
+  const wsUrl = await browserWebSocketUrl(opts.cdpUrl);
+  const client = await connect(wsUrl);
+  const engine = new Engine(client, opts, connect, wsUrl);
   try {
     await engine.arm();
   } catch (error) {
@@ -116,7 +125,10 @@ export async function startBrowserCoverage(
 }
 
 class Engine implements BrowserCoverageHandle {
-  private readonly client: CdpTransport;
+  private client: CdpTransport;
+  private readonly connectFn: (wsUrl: string) => Promise<CdpTransport>;
+  private readonly wsUrl: string;
+  private reconnects = 0;
   private readonly opts: BrowserCoverageOptions;
   private readonly resolution: FrontendResolution;
   private readonly pages = new Map<string, AttachedPage>();
@@ -133,8 +145,15 @@ class Engine implements BrowserCoverageHandle {
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
 
-  constructor(client: CdpTransport, opts: BrowserCoverageOptions) {
+  constructor(
+    client: CdpTransport,
+    opts: BrowserCoverageOptions,
+    connectFn: (wsUrl: string) => Promise<CdpTransport>,
+    wsUrl: string,
+  ) {
     this.client = client;
+    this.connectFn = connectFn;
+    this.wsUrl = wsUrl;
     this.opts = opts;
     this.cookies = opts.origins.map((url) => ({
       name: COVERAGE_COOKIE,
@@ -205,12 +224,17 @@ class Engine implements BrowserCoverageHandle {
       }
       page.navigatingSince = undefined;
     });
-    this.client.onClose(() => {
-      // The browser went away with pages still open: whatever ran since the
-      // last take was never seen, and the file has to say so.
+    this.client.onClose((reason) => {
+      // The transport went away with pages still open: whatever ran since
+      // the last take was never seen, and the file has to say so — even when
+      // the reconnect below succeeds, the gap already happened.
       if (!this.stopped && this.pages.size > 0) this.resolution.markStopped();
       this.pages.clear();
+      this.armedTargets.clear();
+      this.warnedTakeSessions.clear();
       if (this.timer !== undefined) clearInterval(this.timer);
+      this.timer = undefined;
+      if (!this.stopped) void this.reconnect(reason);
     });
 
     // Attached through tab targets, not pages directly: a tab's auto-attach
@@ -241,6 +265,51 @@ class Engine implements BrowserCoverageHandle {
       }
     }, TAKE_INTERVAL_MS);
     this.timer.unref?.();
+  }
+
+  /**
+   * A dropped transport is re-opened and re-armed, bounded by
+   * `MAX_RECONNECTS`. Sound to retry: `startPreciseCoverage` restarts the
+   * counters from zero and `absorbEntries` takes the union of covered
+   * ranges, so a re-measured page adds to the result instead of doubling it.
+   * What ran while disconnected is gone either way — `markStopped` was
+   * already recorded when the transport dropped, so the hole stays visible
+   * in the result even after a successful reconnect.
+   */
+  private async reconnect(reason: string): Promise<void> {
+    if (this.reconnects >= MAX_RECONNECTS) {
+      this.opts.warn(
+        `browser coverage transport dropped (${reason}); giving up after ` +
+          `${MAX_RECONNECTS} reconnects — the rest of the spec goes unmeasured`,
+      );
+      return;
+    }
+    this.reconnects += 1;
+    const delay = RECONNECT_BASE_MS * 2 ** (this.reconnects - 1);
+    this.opts.warn(
+      `browser coverage transport dropped (${reason}); reconnecting in ${delay}ms ` +
+        `(${this.reconnects}/${MAX_RECONNECTS})`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (this.stopped) return;
+    try {
+      const fresh = await this.connectFn(this.wsUrl);
+      // stop() may have run while connecting; a client adopted now would
+      // outlive the engine, its timer taking against a finished spec.
+      if (this.stopped) {
+        fresh.close();
+        return;
+      }
+      this.client = fresh;
+      await this.arm();
+      if (this.stopped) {
+        if (this.timer !== undefined) clearInterval(this.timer);
+        fresh.close();
+      }
+    } catch (error) {
+      // Consumes the same budget as a drop, so a dead endpoint cannot loop.
+      void this.reconnect(`reconnect failed: ${message(error)}`);
+    }
   }
 
   async stop(): Promise<void> {
@@ -368,6 +437,10 @@ class Engine implements BrowserCoverageHandle {
     return this.client
       .send("Network.setCookies", { cookies: this.cookies }, page.sessionId)
       .catch((error: unknown) => {
+        // Same guard as a take: when the transport dropped, the drop itself
+        // is reported once with its real reason — a cookie warn per page on
+        // top of it reads as a cookie problem and misleads.
+        if (!this.pages.has(page.sessionId)) return;
         this.opts.warn(`could not attach the spec cookie (${message(error)})`);
       });
   }
