@@ -132,6 +132,21 @@ describe("RawWebSocket", () => {
     ws.close();
   });
 
+  it("delivers a frame that arrived in the same chunk as the 101", async () => {
+    // The 101 and the first frame in one write() — attach() happens after
+    // connect() resolves (as CdpClient does), so the frame must be held, not
+    // parsed into the gap where nobody is listening yet.
+    const peer = await listen();
+    const early = RawWebSocket.connect(peer.url);
+    const { socket } = await peer.connections;
+    socket.write(frame(0x1, Buffer.from("early bird")));
+    const ws = await early;
+    const { messages } = await attach(ws);
+    await settle();
+    expect(messages).toEqual(["early bird"]);
+    ws.close();
+  });
+
   it("refuses a server that negotiates an extension anyway", async () => {
     const peer = await listen("Sec-WebSocket-Extensions: permessage-deflate\r\n");
     await expect(RawWebSocket.connect(peer.url)).rejects.toThrow(/unrequested extension/);

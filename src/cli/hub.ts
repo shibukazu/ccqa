@@ -824,6 +824,12 @@ async function runCoverageInspect(opts: CoverageInspectOptions & { files?: boole
     log.warn("nothing resolved — pass --run-id with one of the runs above");
     return;
   }
+  if (resolved.asOf === 0 && resolved.specs.length === 0) {
+    // resolveStream answers a zero-filled shape for a run the stream never
+    // heard of; printed as-is it reads as "this run measured nothing".
+    log.warn(`the stream holds no events for run ${resolved.runId} — check it against the runs above`);
+    return;
+  }
   log.meta("run", resolved.runId + (resolved.hubRunId ? ` (hub run ${resolved.hubRunId})` : ""));
   log.meta("as of", new Date(resolved.asOf).toISOString());
   if (resolved.universe) {

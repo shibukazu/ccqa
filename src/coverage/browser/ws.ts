@@ -85,7 +85,10 @@ export class RawWebSocket {
   private fragmentedOpcode: number | undefined;
   private closeSent = false;
   private finished = false;
+  private finishDetail: string | undefined;
   private peerCloseDetail: string | undefined;
+  /** Bytes that arrived with the 101, held until attach() wires the handlers. */
+  private pendingLeftover: Buffer | undefined;
   private isOpen = true;
 
   private constructor(socket: Socket) {
@@ -185,12 +188,26 @@ export class RawWebSocket {
     socket.on("data", (chunk: Buffer) => ws.ingest(chunk));
     socket.on("error", (error: Error) => ws.finish(`socket error: ${error.message}`));
     socket.on("close", () => ws.finish(ws.peerCloseDetail ?? "connection closed abruptly"));
-    if (leftover.length > 0) ws.ingest(leftover);
+    // Nothing is parsed until attach(): a frame the server sent in the same
+    // chunk as the 101 — or a violation in it — must reach the handlers, not
+    // evaporate into the gap between connect and attach.
+    socket.pause();
+    if (leftover.length > 0) ws.pendingLeftover = leftover;
     return ws;
   }
 
   attach(handlers: RawSocketHandlers): void {
     this.handlers = handlers;
+    if (this.finished) {
+      // The connection died between connect and attach; the close must not
+      // be lost just because nobody was listening yet.
+      handlers.onClose(this.finishDetail ?? "connection closed");
+      return;
+    }
+    const leftover = this.pendingLeftover;
+    this.pendingLeftover = undefined;
+    if (leftover !== undefined) this.ingest(leftover);
+    if (!this.finished) this.socket.resume();
   }
 
   /** Sends one text message. Throws `WsError` when the connection is gone. */
@@ -398,6 +415,7 @@ export class RawWebSocket {
   private finish(detail: string): void {
     if (this.finished) return;
     this.finished = true;
+    this.finishDetail = detail;
     this.isOpen = false;
     this.buffer = Buffer.alloc(0);
     this.pendingChunks = [];

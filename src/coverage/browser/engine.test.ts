@@ -41,7 +41,14 @@ class FakeTransport implements CdpTransport {
     this.closeHandlers.push(handler);
   }
 
-  close(): void {}
+  closed = false;
+
+  // The real client's close() always ends in drop(); a no-op here would hide
+  // every "who closes what after a failure" bug from these tests.
+  close(): void {
+    this.closed = true;
+    this.drop("connection closed");
+  }
 
   /** Simulates the transport dying, as the real client's drop() does. */
   drop(reason: string): void {
@@ -212,6 +219,40 @@ describe("engine state machine (scripted transport)", () => {
     expect(warnings.filter((w) => w.includes("reconnecting")).length).toBe(4);
     expect(warnings.some((w) => w.includes("giving up"))).toBe(true);
   }, 10_000);
+
+  it("abandons the engine when the initial arm fails: no reconnect, one transport", async () => {
+    const fake = new FakeTransport();
+    const original = fake.send.bind(fake);
+    fake.send = <T>(method: string, params?: Record<string, unknown>, sessionId?: string) =>
+      method === "Target.setAutoAttach"
+        ? Promise.reject(new Error("filter not supported"))
+        : original<T>(method, params, sessionId);
+    const dir = mkdtempSync(join(tmpdir(), "ccqa-engine-"));
+    dirs.push(dir);
+    const warnings: string[] = [];
+    let connects = 0;
+    await expect(
+      startBrowserCoverage({
+        cdpUrl: "ws://127.0.0.1:1/devtools/browser/fake",
+        specId: "run1.f/s",
+        origins: ["http://127.0.0.1:1"],
+        coverageDir: dir,
+        roots: { base: dir, root: dir },
+        warn: (text) => warnings.push(text),
+        connect: async () => {
+          connects += 1;
+          return fake;
+        },
+      }),
+    ).rejects.toThrow(/filter not supported/);
+    // The caller reported coverage unavailable and walked away; a reconnect
+    // chain here would warn into a spec that isn't being measured and leak
+    // connections.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(connects).toBe(1);
+    expect(fake.closed).toBe(true);
+    expect(warnings.filter((w) => w.includes("reconnecting")).length).toBe(0);
+  });
 
   it("writes nothing but a clean empty result when no page ever attached", async () => {
     const fake = new FakeTransport();

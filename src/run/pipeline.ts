@@ -1177,6 +1177,11 @@ async function reportStreamedCoverageHealth(
   coverage: CoverageSession,
   hubCtx: HubContext,
 ): Promise<void> {
+  // The application's collector flushes on a one-second cadence, so the last
+  // spec's server work may not have reached the stream yet; reading
+  // immediately would call those specs empty. Three seconds covers the flush
+  // lag without holding the run for the resolver's full 30s grace.
+  await new Promise((resolve) => setTimeout(resolve, 3_000));
   let resolved;
   try {
     resolved = (await hubCtx.hub.getCoverage(hubCtx.project, { runId: coverage.streamRunId }))
@@ -1204,8 +1209,9 @@ async function reportStreamedCoverageHealth(
   }
   if (empty.length > 0) {
     log.warn(
-      `coverage: ${empty.length} spec(s) measured no files — their reach stays unknown to ` +
-        `selection: ${empty.map((spec) => spec.specId).join(", ")}`,
+      `coverage: ${empty.length} spec(s) had measured no files at read-out time — unless a late ` +
+        `push still lands (\`ccqa hub coverage\` shows the settled answer), their reach stays ` +
+        `unknown to selection: ${empty.map((spec) => spec.specId).join(", ")}`,
     );
   }
   const h = resolved.health;

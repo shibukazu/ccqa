@@ -118,6 +118,10 @@ export async function startBrowserCoverage(
   try {
     await engine.arm();
   } catch (error) {
+    // Abandon before closing: arm() has already registered onClose, and the
+    // close below would otherwise start a reconnect loop on an engine whose
+    // caller is about to report coverage as unavailable and walk away.
+    engine.abandon();
     client.close();
     throw error;
   }
@@ -129,6 +133,7 @@ class Engine implements BrowserCoverageHandle {
   private readonly connectFn: (wsUrl: string) => Promise<CdpTransport>;
   private readonly wsUrl: string;
   private reconnects = 0;
+  private reconnectInFlight = false;
   private readonly opts: BrowserCoverageOptions;
   private readonly resolution: FrontendResolution;
   private readonly pages = new Map<string, AttachedPage>();
@@ -289,39 +294,65 @@ class Engine implements BrowserCoverageHandle {
     this.timer = undefined;
   }
 
-  private async reconnect(reason: string): Promise<void> {
-    if (this.reconnects >= MAX_RECONNECTS) {
-      this.opts.warn(
-        `browser coverage transport dropped (${reason}); giving up after ` +
-          `${MAX_RECONNECTS} reconnects — the rest of the spec goes unmeasured`,
-      );
-      return;
-    }
-    this.reconnects += 1;
-    const delay = RECONNECT_BASE_MS * 2 ** (this.reconnects - 1);
-    this.opts.warn(
-      `browser coverage transport dropped (${reason}); reconnecting in ${delay}ms ` +
-        `(${this.reconnects}/${MAX_RECONNECTS})`,
-    );
-    await new Promise((resolve) => setTimeout(resolve, delay));
-    if (this.stopped) return;
+  /** Stops a never-armed engine: no takes ran, so there is nothing to flush. */
+  abandon(): void {
+    this.stopped = true;
+    this.clearTimer();
+  }
+
+  private async reconnect(initialReason: string): Promise<void> {
+    // Single-flight: while an attempt is arming a fresh transport, that
+    // transport's own drop fires onClose too — a second chain here would
+    // double every later connection and leave orphan timers behind.
+    if (this.reconnectInFlight) return;
+    this.reconnectInFlight = true;
     try {
-      const fresh = await this.connectFn(this.wsUrl);
-      // stop() may have run while connecting; a client adopted now would
-      // outlive the engine, its timer taking against a finished spec.
-      if (this.stopped) {
-        fresh.close();
+      let reason = initialReason;
+      while (!this.stopped) {
+        if (this.reconnects >= MAX_RECONNECTS) {
+          this.opts.warn(
+            `browser coverage transport dropped (${reason}); giving up after ` +
+              `${MAX_RECONNECTS} reconnects — the rest of the spec goes unmeasured`,
+          );
+          return;
+        }
+        this.reconnects += 1;
+        const delay = RECONNECT_BASE_MS * 2 ** (this.reconnects - 1);
+        this.opts.warn(
+          `browser coverage transport dropped (${reason}); reconnecting in ${delay}ms ` +
+            `(${this.reconnects}/${MAX_RECONNECTS})`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        if (this.stopped) return;
+        let fresh: CdpTransport;
+        try {
+          fresh = await this.connectFn(this.wsUrl);
+        } catch (error) {
+          reason = `reconnect failed: ${message(error)}`;
+          continue;
+        }
+        // stop() may have run while connecting; a client adopted now would
+        // outlive the engine, its timer taking against a finished spec.
+        if (this.stopped) {
+          fresh.close();
+          return;
+        }
+        this.client = fresh;
+        try {
+          await this.arm();
+        } catch (error) {
+          fresh.close();
+          reason = `reconnect failed: ${message(error)}`;
+          continue;
+        }
+        if (this.stopped) {
+          this.clearTimer();
+          fresh.close();
+        }
         return;
       }
-      this.client = fresh;
-      await this.arm();
-      if (this.stopped) {
-        this.clearTimer();
-        fresh.close();
-      }
-    } catch (error) {
-      // Consumes the same budget as a drop, so a dead endpoint cannot loop.
-      void this.reconnect(`reconnect failed: ${message(error)}`);
+    } finally {
+      this.reconnectInFlight = false;
     }
   }
 
