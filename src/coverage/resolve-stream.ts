@@ -73,6 +73,17 @@ export const ResolvedCoverageSchema = z.object({
 export type ResolvedCoverage = z.infer<typeof ResolvedCoverageSchema>;
 
 /**
+ * One read-out line for a resolved spec — shared by the run-end summary and
+ * `ccqa hub coverage`, so the two never drift on how a measurement reads.
+ */
+export function formatResolvedSpec(spec: ResolvedCoverage["specs"][number]): string {
+  const actors = Object.entries(spec.actorEvents)
+    .map(([key, count]) => `${key}: ${count} event(s)`)
+    .join(", ");
+  return `${spec.specId}: ${spec.files.length} file(s)${actors ? ` (${actors})` : ""}`;
+}
+
+/**
  * Interprets `runId`'s view of the stream.
  *
  * Two passes, because the resolver needs its context up front: the first

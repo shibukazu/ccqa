@@ -141,6 +141,8 @@ class Engine implements BrowserCoverageHandle {
   private readonly armedTargets = new Set<string>();
   /** Sessions whose take failure was already said; see enqueueTake. */
   private readonly warnedTakeSessions = new Set<string>();
+  /** Same, for the cookie warning: one per session, not one per 400ms tick. */
+  private readonly warnedCookieSessions = new Set<string>();
   private readonly cookies: readonly { name: string; value: string; url: string }[];
   private timer: ReturnType<typeof setInterval> | undefined;
   private stopped = false;
@@ -232,8 +234,8 @@ class Engine implements BrowserCoverageHandle {
       this.pages.clear();
       this.armedTargets.clear();
       this.warnedTakeSessions.clear();
-      if (this.timer !== undefined) clearInterval(this.timer);
-      this.timer = undefined;
+      this.warnedCookieSessions.clear();
+      this.clearTimer();
       if (!this.stopped) void this.reconnect(reason);
     });
 
@@ -252,12 +254,18 @@ class Engine implements BrowserCoverageHandle {
     const existing = await this.client.send<{
       targetInfos: { targetId: string; type: string }[];
     }>("Target.getTargets", { filter: [{ type: "tab" }] });
-    for (const info of existing.targetInfos) {
-      if (this.armedTargets.has(info.targetId)) continue;
-      await this.client
-        .send("Target.attachToTarget", { targetId: info.targetId, flatten: true })
-        .catch(() => undefined);
-    }
+    // Concurrent: the attaches are independent, and a reconnect replays this
+    // sweep with the dedup set freshly cleared — serial round-trips here
+    // would stack up on every retry.
+    await Promise.all(
+      existing.targetInfos
+        .filter((info) => !this.armedTargets.has(info.targetId))
+        .map((info) =>
+          this.client
+            .send("Target.attachToTarget", { targetId: info.targetId, flatten: true })
+            .catch(() => undefined),
+        ),
+    );
     this.timer = setInterval(() => {
       for (const page of this.pages.values()) {
         this.enqueueTake(page.sessionId);
@@ -276,6 +284,11 @@ class Engine implements BrowserCoverageHandle {
    * already recorded when the transport dropped, so the hole stays visible
    * in the result even after a successful reconnect.
    */
+  private clearTimer(): void {
+    if (this.timer !== undefined) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+
   private async reconnect(reason: string): Promise<void> {
     if (this.reconnects >= MAX_RECONNECTS) {
       this.opts.warn(
@@ -303,7 +316,7 @@ class Engine implements BrowserCoverageHandle {
       this.client = fresh;
       await this.arm();
       if (this.stopped) {
-        if (this.timer !== undefined) clearInterval(this.timer);
+        this.clearTimer();
         fresh.close();
       }
     } catch (error) {
@@ -314,7 +327,7 @@ class Engine implements BrowserCoverageHandle {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    if (this.timer !== undefined) clearInterval(this.timer);
+    this.clearTimer();
     // The hold is lifted for the final take: what it protects against is a
     // wedged *navigation*, and the race below is what protects the run from a
     // wedged take. A page that never armed measured nothing at all, and a
@@ -437,10 +450,14 @@ class Engine implements BrowserCoverageHandle {
     return this.client
       .send("Network.setCookies", { cookies: this.cookies }, page.sessionId)
       .catch((error: unknown) => {
-        // Same guard as a take: when the transport dropped, the drop itself
-        // is reported once with its real reason — a cookie warn per page on
-        // top of it reads as a cookie problem and misleads.
-        if (!this.pages.has(page.sessionId)) return;
+        // Same guards as a take: when the transport dropped or the engine is
+        // closing, the drop itself is reported once with its real reason — a
+        // cookie warn per page on top of it reads as a cookie problem and
+        // misleads. And a page whose cookie keeps failing gets one warning,
+        // not one per 400ms re-assert.
+        if (this.stopped || !this.pages.has(page.sessionId)) return;
+        if (this.warnedCookieSessions.has(page.sessionId)) return;
+        this.warnedCookieSessions.add(page.sessionId);
         this.opts.warn(`could not attach the spec cookie (${message(error)})`);
       });
   }

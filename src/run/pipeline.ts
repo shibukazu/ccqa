@@ -70,6 +70,7 @@ import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
 import { loadProjectConfig, type CoverageConfig } from "../config/project-config.ts";
 import { CoverageSession } from "../coverage/session.ts";
 import { CoverageInbox, type CoverageInboxMode } from "../coverage/inbox.ts";
+import { formatResolvedSpec } from "../coverage/resolve-stream.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
 import { detectBranch, getGitHead } from "../cli/git-branch.ts";
@@ -1199,10 +1200,7 @@ async function reportStreamedCoverageHealth(
       (resolved.boot.length > 0 ? `; ${resolved.boot.length} file(s) reached only at boot` : ""),
   );
   for (const spec of measured) {
-    const actors = Object.entries(spec.actorEvents)
-      .map(([key, count]) => `${key}: ${count} event(s)`)
-      .join(", ");
-    log.meta("coverage", `  ${spec.specId}: ${spec.files.length} file(s)${actors ? ` (${actors})` : ""}`);
+    log.meta("coverage", `  ${formatResolvedSpec(spec)}`);
   }
   if (empty.length > 0) {
     log.warn(

@@ -23,6 +23,7 @@ import { loadSpecInventory } from "../select/inventory.ts";
 import type { DeploySelection } from "../hub/contract/schema.ts";
 import { MAX_TOUCHED_BY } from "../hub/core/deploy-log.ts";
 import { parseSpecPath, specKey } from "../store/index.ts";
+import { formatResolvedSpec } from "../coverage/resolve-stream.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { sessionCaptureCommand } from "./session.ts";
 import { resolveProject } from "./resolve-project.ts";
@@ -835,10 +836,7 @@ async function runCoverageInspect(opts: CoverageInspectOptions & { files?: boole
   const measured = resolved.specs.filter((spec) => spec.files.length > 0);
   log.meta("specs", `${measured.length}/${resolved.specs.length} measured files`);
   for (const spec of resolved.specs) {
-    const actors = Object.entries(spec.actorEvents)
-      .map(([key, count]) => `${key}: ${count} event(s)`)
-      .join(", ");
-    log.info(`  ${spec.specId}: ${spec.files.length} file(s)${actors ? ` (${actors})` : ""}`);
+    log.info(`  ${formatResolvedSpec(spec)}`);
     if (opts.files === true) for (const file of spec.files) log.info(`    ${file}`);
   }
   const h = resolved.health;

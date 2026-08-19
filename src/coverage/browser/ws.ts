@@ -45,11 +45,43 @@ export interface RawSocketHandlers {
   onClose(detail: string): void;
 }
 
+/** Why a 101 response head is unacceptable, or `undefined` when it is fine. */
+function handshakeFailure(head: string, expectedAccept: string, host: string): string | undefined {
+  const [statusLine = "", ...headerLines] = head.split("\r\n");
+  if (!/^HTTP\/1\.1 101 /i.test(statusLine)) {
+    return `handshake with ${host} answered "${statusLine.slice(0, 80)}"`;
+  }
+  const headers = new Map<string, string>();
+  for (const line of headerLines) {
+    const colon = line.indexOf(":");
+    if (colon === -1) continue;
+    headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
+  }
+  if (headers.get("sec-websocket-accept") !== expectedAccept) {
+    return `handshake with ${host} returned a wrong Sec-WebSocket-Accept`;
+  }
+  const extensions = headers.get("sec-websocket-extensions");
+  if (extensions !== undefined && extensions !== "") {
+    return `server negotiated unrequested extension "${extensions}"`;
+  }
+  return undefined;
+}
+
 export class RawWebSocket {
   private readonly socket: Socket;
   private handlers: RawSocketHandlers | undefined;
   private buffer: Buffer = Buffer.alloc(0);
+  /**
+   * Arrived-but-unparsed chunks. Left as a list until a parse attempt can
+   * make progress: a multi-megabyte take answered in one frame would
+   * otherwise re-copy everything buffered so far on every TCP chunk.
+   */
+  private pendingChunks: Buffer[] = [];
+  private pendingBytes = 0;
+  /** Bytes `buffer` must reach before another parse attempt can complete a frame. */
+  private needed = 0;
   private fragments: Buffer[] = [];
+  private fragmentedBytes = 0;
   private fragmentedOpcode: number | undefined;
   private closeSent = false;
   private finished = false;
@@ -121,24 +153,9 @@ export class RawWebSocket {
           return;
         }
         const head = response.subarray(0, headerEnd).toString("latin1");
-        const [statusLine = "", ...headerLines] = head.split("\r\n");
-        if (!/^HTTP\/1\.1 101 /i.test(statusLine)) {
-          fail(new WsError(`handshake with ${url.host} answered "${statusLine.slice(0, 80)}"`));
-          return;
-        }
-        const headers = new Map<string, string>();
-        for (const line of headerLines) {
-          const colon = line.indexOf(":");
-          if (colon === -1) continue;
-          headers.set(line.slice(0, colon).trim().toLowerCase(), line.slice(colon + 1).trim());
-        }
-        if (headers.get("sec-websocket-accept") !== expectedAccept) {
-          fail(new WsError(`handshake with ${url.host} returned a wrong Sec-WebSocket-Accept`));
-          return;
-        }
-        const extensions = headers.get("sec-websocket-extensions");
-        if (extensions !== undefined && extensions !== "") {
-          fail(new WsError(`server negotiated unrequested extension "${extensions}"`));
+        const failure = handshakeFailure(head, expectedAccept, url.host);
+        if (failure !== undefined) {
+          fail(new WsError(failure));
           return;
         }
         cleanup();
@@ -200,7 +217,15 @@ export class RawWebSocket {
 
   private ingest(chunk: Buffer): void {
     if (this.finished) return;
-    this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
+    this.pendingChunks.push(chunk);
+    this.pendingBytes += chunk.length;
+    // O(1) while a known-length frame is still incomplete; the concat below
+    // then happens once per frame instead of once per TCP chunk.
+    if (this.buffer.length + this.pendingBytes < this.needed) return;
+    this.buffer = Buffer.concat([this.buffer, ...this.pendingChunks]);
+    this.pendingChunks = [];
+    this.pendingBytes = 0;
+    this.needed = 0;
     for (;;) {
       const frame = this.parseFrame();
       if (frame === undefined || this.finished) return;
@@ -245,7 +270,10 @@ export class RawWebSocket {
       mask = buf.subarray(offset, offset + 4);
       offset += 4;
     }
-    if (buf.length < offset + length) return undefined;
+    if (buf.length < offset + length) {
+      this.needed = offset + length;
+      return undefined;
+    }
     const payload = Buffer.from(buf.subarray(offset, offset + length));
     if (mask !== undefined) {
       for (let i = 0; i < payload.length; i++) {
@@ -270,6 +298,7 @@ export class RawWebSocket {
         }
         this.fragmentedOpcode = opcode;
         this.fragments = [payload];
+        this.fragmentedBytes = payload.length;
         return;
       case OP_CONTINUATION: {
         if (this.fragmentedOpcode === undefined) {
@@ -277,14 +306,15 @@ export class RawWebSocket {
           return;
         }
         this.fragments.push(payload);
-        const total = this.fragments.reduce((sum, part) => sum + part.length, 0);
-        if (total > MESSAGE_CAP) {
+        this.fragmentedBytes += payload.length;
+        if (this.fragmentedBytes > MESSAGE_CAP) {
           this.fail(`fragmented message exceeds the ${MESSAGE_CAP}-byte cap`);
           return;
         }
         if (fin) {
           const whole = Buffer.concat(this.fragments);
           this.fragments = [];
+          this.fragmentedBytes = 0;
           this.fragmentedOpcode = undefined;
           this.deliver(whole);
         }
@@ -370,7 +400,10 @@ export class RawWebSocket {
     this.finished = true;
     this.isOpen = false;
     this.buffer = Buffer.alloc(0);
+    this.pendingChunks = [];
+    this.pendingBytes = 0;
     this.fragments = [];
+    this.fragmentedBytes = 0;
     this.handlers?.onClose(detail);
   }
 }
