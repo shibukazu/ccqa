@@ -41,6 +41,12 @@ interface WebpackContext {
   isServer: boolean;
 }
 
+type TurbopackRules = Record<string, unknown>;
+
+interface TurbopackConfig {
+  rules?: TurbopackRules;
+}
+
 export interface CoverageNextOptions {
   /** Project root that file ids are relative to. Defaults to `process.cwd()`. */
   root?: string;
@@ -50,8 +56,16 @@ export interface CoverageNextOptions {
   enabled?: boolean;
 }
 
-/** Wraps a Next config, preserving any `webpack` hook it already has. */
-export function withCoverage<T extends { webpack?: unknown }>(
+/**
+ * Wraps a Next config, preserving any `webpack` hook and `turbopack` rules it
+ * already has. Both bundlers are wired because the config does not know which
+ * one will build it: webpack gets a post-loader over compiled JavaScript,
+ * Turbopack — which has no post phase and never calls the `webpack` hook —
+ * gets rule loaders that instrument the original TypeScript instead. Missing
+ * either half means a Turbopack (or webpack) build silently ships
+ * uninstrumented server code whose only coverage is the module-load boot set.
+ */
+export function withCoverage<T extends { webpack?: unknown; turbopack?: TurbopackConfig }>(
   config: T,
   options: CoverageNextOptions = {},
 ): T {
@@ -63,11 +77,13 @@ export function withCoverage<T extends { webpack?: unknown }>(
   // the runner would otherwise have no effect at all on a Next app and report
   // the same file under two names.
   const root = resolve(options.root ?? readConfig().root);
-  const include = (options.include ?? ["src"]).map((dir) => resolve(root, dir));
+  const relativeInclude = (options.include ?? ["src"]).map((dir) => dir.replace(/\/+$/, ""));
+  const include = relativeInclude.map((dir) => resolve(root, dir));
   const previous = config.webpack as
     | ((config: WebpackConfig, context: WebpackContext) => WebpackConfig)
     | undefined;
 
+  debugLog(readConfig(), `instrumenting server bundles under ${include.join(", ")}`);
   return {
     ...config,
     webpack(webpackConfig: WebpackConfig, context: WebpackContext): WebpackConfig {
@@ -82,8 +98,45 @@ export function withCoverage<T extends { webpack?: unknown }>(
         exclude: /[\\/]node_modules[\\/]/,
         use: [{ loader: require.resolve("./next-loader.cjs"), options: { root } }],
       });
-      debugLog(readConfig(), `instrumenting server bundles under ${include.join(", ")}`);
       return next;
     },
+    turbopack: withTurbopackRules(config.turbopack, root, relativeInclude),
   };
+}
+
+/**
+ * Turbopack rule globs match by extension, everywhere — there is no
+ * `include` matcher — so scoping to the project happens inside the loader
+ * (fast prefix checks against `include`). No `as` is set, so the
+ * instrumented output stays the same module type and flows through the
+ * framework's own TypeScript pipeline.
+ *
+ * No `condition` either, though the types offer one: as of Next 16.3 a rule
+ * carrying any `condition` is silently skipped (measured — the loader never
+ * runs), so the client graph is instrumented too. Its probes are no-ops in a
+ * browser (`globalThis.__ccqaCoverage` never exists there) and the
+ * insert-only rewrite keeps line numbers, so the V8-side front-end
+ * measurement is unaffected. Revisit once rule conditions actually work.
+ */
+function withTurbopackRules(
+  existing: TurbopackConfig | undefined,
+  root: string,
+  include: string[],
+): TurbopackConfig {
+  const rule = {
+    loaders: [
+      {
+        loader: require.resolve("./next-loader.cjs"),
+        options: { root, include, dialect: "source" },
+      },
+    ],
+  };
+  const rules: TurbopackRules = { ...existing?.rules };
+  for (const glob of ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs"]) {
+    const present = rules[glob];
+    // A rule the config already carries keeps running; ours is appended in
+    // the array form Turbopack defines for disjoint conditions.
+    rules[glob] = present === undefined ? rule : [...(Array.isArray(present) ? present : [present]), rule];
+  }
+  return { ...existing, rules };
 }
