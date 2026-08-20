@@ -13,11 +13,15 @@
  *
  * `typescript` is loaded lazily and is not a dependency of this package: this
  * path only runs at build time inside a project that compiles TypeScript,
- * where the compiler is present by definition. When it is somehow absent the
- * file is left uninstrumented and the loader warns.
+ * where the compiler is present by definition. It is resolved from the
+ * *project* first — resolving from this package's own position would lean on
+ * the package manager's hoisting, and could pick a different compiler than
+ * the one the project builds with. When it is somehow absent the file is
+ * left uninstrumented and the loader warns.
  */
 
 import { createRequire } from "node:module";
+import { join } from "node:path";
 
 import {
   DEFAULT_MAX_DEPTH,
@@ -29,16 +33,31 @@ import {
 type Ts = typeof import("typescript");
 type TsNode = import("typescript").Node;
 type TsSourceFile = import("typescript").SourceFile;
-type TsBlock = import("typescript").Block;
+type TsFunctionLike =
+  | import("typescript").FunctionDeclaration
+  | import("typescript").FunctionExpression
+  | import("typescript").ArrowFunction
+  | import("typescript").MethodDeclaration
+  | import("typescript").ConstructorDeclaration
+  | import("typescript").GetAccessorDeclaration
+  | import("typescript").SetAccessorDeclaration;
 
-const require = createRequire(import.meta.url);
+const ownRequire = createRequire(import.meta.url);
 
 let tsModule: Ts | null | undefined;
 
-function loadTypescript(): Ts | null {
+function loadTypescript(resolveFrom?: string): Ts | null {
   if (tsModule !== undefined) return tsModule;
+  if (resolveFrom !== undefined) {
+    try {
+      tsModule = createRequire(join(resolveFrom, "noop.js"))("typescript") as Ts;
+      return tsModule;
+    } catch {
+      // Fall through to this package's own resolution.
+    }
+  }
   try {
-    tsModule = require("typescript") as Ts;
+    tsModule = ownRequire("typescript") as Ts;
   } catch {
     tsModule = null;
   }
@@ -46,17 +65,19 @@ function loadTypescript(): Ts | null {
 }
 
 /** Whether the TypeScript dialect can run at all in this process. */
-export function typescriptAvailable(): boolean {
-  return loadTypescript() !== null;
+export function typescriptAvailable(resolveFrom?: string): boolean {
+  return loadTypescript(resolveFrom) !== null;
 }
 
 export interface TsTransformOptions extends TransformOptions {
   /** The file's extension, deciding JSX handling. Defaults to `.tsx`. */
   extension?: string;
+  /** Directory the `typescript` compiler is resolved from (the project root). */
+  resolveFrom?: string;
 }
 
 export function transformTs(code: string, options: TsTransformOptions): string | undefined {
-  const ts = loadTypescript();
+  const ts = loadTypescript(options.resolveFrom);
   if (ts === null || code.length === 0) return undefined;
 
   const kind = scriptKindFor(ts, options.extension ?? ".tsx");
@@ -70,7 +91,12 @@ export function transformTs(code: string, options: TsTransformOptions): string |
   const points: number[] = [];
   collect(ts, sourceFile, options.maxDepth ?? DEFAULT_MAX_DEPTH, points);
 
-  const prologueAt = afterDirectives(ts, sourceFile, sourceFile.statements, shebangEnd(code));
+  // Anchored on the first statement, not offset 0: `getStart` skips leading
+  // trivia, so a shebang, a BOM, or a `/** @jsxImportSource */` pragma
+  // comment stays ahead of the probe, where its reader expects it.
+  const first = sourceFile.statements[0];
+  const base = first === undefined ? code.length : first.getStart(sourceFile);
+  const prologueAt = afterDirectives(ts, sourceFile.statements, base);
   const edits = points
     .filter((offset) => offset > prologueAt)
     .map((offset) => ({ offset, text: enter }));
@@ -98,12 +124,6 @@ function scriptKindFor(ts: Ts, extension: string): import("typescript").ScriptKi
   }
 }
 
-function shebangEnd(code: string): number {
-  if (!code.startsWith("#!")) return 0;
-  const newline = code.indexOf("\n");
-  return newline < 0 ? code.length : newline + 1;
-}
-
 function collect(ts: Ts, sourceFile: TsSourceFile, maxDepth: number, points: number[]): void {
   walk(sourceFile, 0, false);
 
@@ -115,9 +135,9 @@ function collect(ts: Ts, sourceFile: TsSourceFile, maxDepth: number, points: num
       // A class method is always worth recording: it is the entry point
       // callers reach a file through, however deeply the class sits.
       const wanted = inClass || nextDepth <= maxDepth;
-      const body = (node as { body?: TsNode }).body;
+      const body = (node as TsFunctionLike).body;
       if (wanted && body !== undefined && ts.isBlock(body)) {
-        points.push(afterDirectives(ts, sourceFile, (body as TsBlock).statements, body.getStart(sourceFile) + 1));
+        points.push(afterDirectives(ts, body.statements, body.getStart(sourceFile) + 1));
       }
     }
 
@@ -125,7 +145,7 @@ function collect(ts: Ts, sourceFile: TsSourceFile, maxDepth: number, points: num
   }
 }
 
-function isFunctionLike(ts: Ts, node: TsNode): boolean {
+function isFunctionLike(ts: Ts, node: TsNode): node is TsFunctionLike {
   return (
     ts.isFunctionDeclaration(node) ||
     ts.isFunctionExpression(node) ||
@@ -153,7 +173,7 @@ function childInClass(ts: Ts, parent: TsNode, child: TsNode, inherited: boolean)
       ts.isPropertyDeclaration(child)
     );
   }
-  if (ts.isPropertyDeclaration(parent)) return child === (parent as { initializer?: TsNode }).initializer;
+  if (ts.isPropertyDeclaration(parent)) return child === parent.initializer;
   if (isFunctionLike(ts, parent)) return false;
   return inherited;
 }
@@ -163,17 +183,11 @@ function childInClass(ts: Ts, parent: TsNode, child: TsNode, inherited: boolean)
  * is still the first thing in its scope, and `"use client"` / `"use server"`
  * are directives to Next, so nothing may be inserted ahead of them.
  */
-function afterDirectives(
-  ts: Ts,
-  sourceFile: TsSourceFile,
-  statements: readonly TsNode[],
-  from: number,
-): number {
+function afterDirectives(ts: Ts, statements: readonly TsNode[], from: number): number {
   let offset = from;
   for (const statement of statements) {
     if (!ts.isExpressionStatement(statement)) break;
-    const expression = (statement as { expression: TsNode }).expression;
-    if (!ts.isStringLiteral(expression)) break;
+    if (!ts.isStringLiteral(statement.expression)) break;
     offset = statement.end;
   }
   return offset;

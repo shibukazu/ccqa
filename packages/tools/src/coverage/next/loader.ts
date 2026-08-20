@@ -11,12 +11,13 @@
  *
  * Scoping also differs: webpack's rule carries `include`/`exclude` matchers,
  * while Turbopack rules are extension globs, so the source dialect gets the
- * include prefixes as options and filters here.
+ * include prefixes as options and filters through `shouldInstrument` — the
+ * same decision the runtime load hooks use.
  */
 
 import { extname } from "node:path";
 
-import { fileIdFor } from "../instrument/select.ts";
+import { fileIdFor, shouldInstrument } from "../instrument/select.ts";
 import { transform } from "../instrument/transform.ts";
 import { transformTs, typescriptAvailable } from "../instrument/transform-ts.ts";
 
@@ -37,37 +38,31 @@ interface LoaderContext {
 export default function ccqaCoverageLoader(this: LoaderContext, source: string): string {
   const options = this.getOptions?.() ?? {};
   const root = options.root ?? process.cwd();
-  if (this.resourcePath.includes("node_modules")) return source;
-  const fileId = fileIdFor(this.resourcePath, root);
+  const dialect = options.dialect ?? "compiled";
+
+  const fileId =
+    dialect === "source"
+      ? shouldInstrument(this.resourcePath, { root, include: options.include ?? [] })
+      : fileIdFor(this.resourcePath, root);
   if (fileId === undefined) return source;
-  if (options.include !== undefined && !underAny(fileId, options.include)) return source;
+  if (source.trim().length === 0) return source;
 
-  if (options.dialect === "source") {
-    if (!typescriptAvailable()) {
-      this.emitWarning?.(
-        new Error(
-          "ccqa-tools needs the `typescript` package to instrument Turbopack builds; " +
-            `${fileId} left uninstrumented`,
-        ),
-      );
-      return source;
-    }
-    const instrumented = transformTs(source, { fileId, extension: extname(this.resourcePath) });
-    if (instrumented === undefined) {
-      this.emitWarning?.(new Error(`ccqa-tools could not parse ${fileId}; left uninstrumented`));
-      return source;
-    }
-    return instrumented;
+  if (dialect === "source" && !typescriptAvailable(root)) {
+    this.emitWarning?.(
+      new Error(
+        "ccqa-tools needs the `typescript` package to instrument Turbopack builds; " +
+          `${fileId} left uninstrumented`,
+      ),
+    );
+    return source;
   }
-
-  const instrumented = transform(source, { fileId });
+  const instrumented =
+    dialect === "source"
+      ? transformTs(source, { fileId, extension: extname(this.resourcePath), resolveFrom: root })
+      : transform(source, { fileId });
   if (instrumented === undefined) {
     this.emitWarning?.(new Error(`ccqa-tools could not parse ${fileId}; left uninstrumented`));
     return source;
   }
   return instrumented;
-}
-
-function underAny(fileId: string, prefixes: readonly string[]): boolean {
-  return prefixes.some((prefix) => fileId === prefix || fileId.startsWith(`${prefix}/`));
 }

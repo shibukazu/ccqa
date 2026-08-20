@@ -20,6 +20,7 @@
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
 
+import { SOURCE_EXTENSIONS } from "../instrument/select.ts";
 import { debugLog, readConfig } from "../runtime-env.ts";
 import { ENV_NAME } from "../wire.ts";
 
@@ -77,7 +78,12 @@ export function withCoverage<T extends { webpack?: unknown; turbopack?: Turbopac
   // the runner would otherwise have no effect at all on a Next app and report
   // the same file under two names.
   const root = resolve(options.root ?? readConfig().root);
-  const relativeInclude = (options.include ?? ["src"]).map((dir) => dir.replace(/\/+$/, ""));
+  // Normalised to the exact shape file ids take: "./src", "src/", and
+  // backslashes would all silently match nothing in the loader's prefix
+  // check, and a Turbopack build would instrument zero files with no error.
+  const relativeInclude = (options.include ?? readConfig().include).map((dir) =>
+    dir.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, ""),
+  );
   const include = relativeInclude.map((dir) => resolve(root, dir));
   const previous = config.webpack as
     | ((config: WebpackConfig, context: WebpackContext) => WebpackConfig)
@@ -93,7 +99,7 @@ export function withCoverage<T extends { webpack?: unknown; turbopack?: Turbopac
       next.module.rules ??= [];
       next.module.rules.push({
         enforce: "post",
-        test: /\.(?:[cm]?js|jsx|tsx?)$/,
+        test: /\.(?:[cm]?[jt]s|jsx|tsx)$/,
         include,
         exclude: /[\\/]node_modules[\\/]/,
         use: [{ loader: require.resolve("./next-loader.cjs"), options: { root } }],
@@ -106,17 +112,16 @@ export function withCoverage<T extends { webpack?: unknown; turbopack?: Turbopac
 
 /**
  * Turbopack rule globs match by extension, everywhere — there is no
- * `include` matcher — so scoping to the project happens inside the loader
- * (fast prefix checks against `include`). No `as` is set, so the
- * instrumented output stays the same module type and flows through the
- * framework's own TypeScript pipeline.
+ * `include` matcher — so project scoping happens inside the loader through
+ * `shouldInstrument`. The rule's condition does what the webpack half's
+ * `isServer` gate and `exclude` matcher do: `not browser` keeps probes out
+ * of client bundles, `not foreign` keeps dependencies out of the loader
+ * entirely. No `as` is set, so the instrumented output stays the same module
+ * type and flows through the framework's own TypeScript pipeline.
  *
- * No `condition` either, though the types offer one: as of Next 16.3 a rule
- * carrying any `condition` is silently skipped (measured — the loader never
- * runs), so the client graph is instrumented too. Its probes are no-ops in a
- * browser (`globalThis.__ccqaCoverage` never exists there) and the
- * insert-only rewrite keeps line numbers, so the V8-side front-end
- * measurement is unaffected. Revisit once rule conditions actually work.
+ * One measured trap: Turbopack serves unchanged files from its persistent
+ * cache without consulting rules again, so judging a rule change by an
+ * incremental build lies — a rule "not firing" may just be a warm cache.
  */
 function withTurbopackRules(
   existing: TurbopackConfig | undefined,
@@ -124,6 +129,7 @@ function withTurbopackRules(
   include: string[],
 ): TurbopackConfig {
   const rule = {
+    condition: { all: [{ not: "browser" }, { not: "foreign" }] },
     loaders: [
       {
         loader: require.resolve("./next-loader.cjs"),
@@ -132,11 +138,16 @@ function withTurbopackRules(
     ],
   };
   const rules: TurbopackRules = { ...existing?.rules };
-  for (const glob of ["*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs"]) {
-    const present = rules[glob];
+  for (const extension of SOURCE_EXTENSIONS) {
+    const glob = `*${extension}`;
     // A rule the config already carries keeps running; ours is appended in
     // the array form Turbopack defines for disjoint conditions.
-    rules[glob] = present === undefined ? rule : [...(Array.isArray(present) ? present : [present]), rule];
+    rules[glob] = [...toArray(rules[glob]), rule];
   }
   return { ...existing, rules };
+}
+
+function toArray(value: unknown): unknown[] {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
 }

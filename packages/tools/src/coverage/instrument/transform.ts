@@ -36,9 +36,13 @@ export const DEFAULT_MAX_DEPTH = 2;
 export function probeTexts(fileId: string): { enter: string; prologue: string } {
   const local = `__ccqa_${hash(fileId)}`;
   const literal = JSON.stringify(fileId);
+  // The leading `;` closes whatever came before: a directive prologue written
+  // without semicolons ends by ASI, and splicing `var …` straight after the
+  // string literal would otherwise glue onto it and break the parse. After a
+  // `{` or an explicit `;` it is an empty statement, which costs nothing.
   return {
-    enter: `${local}&&${local}(${literal});`,
-    prologue: `var ${local}=globalThis.__ccqaCoverage;${local}&&${local}(${literal},true);`,
+    enter: `;${local}&&${local}(${literal});`,
+    prologue: `;var ${local}=globalThis.__ccqaCoverage;${local}&&${local}(${literal},true);`,
   };
 }
 
