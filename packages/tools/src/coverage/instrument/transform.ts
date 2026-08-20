@@ -26,7 +26,37 @@ export interface TransformOptions {
   maxDepth?: number;
 }
 
-const DEFAULT_MAX_DEPTH = 2;
+export const DEFAULT_MAX_DEPTH = 2;
+
+/**
+ * The exact texts both instrumenter dialects splice in, built in one place so
+ * a file instrumented from TypeScript and one instrumented from compiled
+ * JavaScript are byte-identical where it matters.
+ */
+export function probeTexts(fileId: string): { enter: string; prologue: string } {
+  const local = `__ccqa_${hash(fileId)}`;
+  const literal = JSON.stringify(fileId);
+  // The leading `;` closes whatever came before: a directive prologue written
+  // without semicolons ends by ASI, and splicing `var …` straight after the
+  // string literal would otherwise glue onto it and break the parse. After a
+  // `{` or an explicit `;` it is an empty statement, which costs nothing.
+  return {
+    enter: `;${local}&&${local}(${literal});`,
+    prologue: `;var ${local}=globalThis.__ccqaCoverage;${local}&&${local}(${literal},true);`,
+  };
+}
+
+/** Applies insert-only edits (no newlines) so line numbers survive untouched. */
+export function splice(code: string, edits: readonly { offset: number; text: string }[]): string {
+  const parts: string[] = [];
+  let last = 0;
+  for (const edit of edits) {
+    parts.push(code.slice(last, edit.offset), edit.text);
+    last = edit.offset;
+  }
+  parts.push(code.slice(last));
+  return parts.join("");
+}
 
 interface FunctionLike extends Node {
   body?: Node | null;
@@ -36,9 +66,7 @@ export function transform(code: string, options: TransformOptions): string | und
   const program = parseProgram(code);
   if (program === undefined) return undefined;
 
-  const local = `__ccqa_${hash(options.fileId)}`;
-  const literal = JSON.stringify(options.fileId);
-  const enter = `${local}&&${local}(${literal});`;
+  const { enter, prologue } = probeTexts(options.fileId);
   const points: number[] = [];
 
   collect(program, options.maxDepth ?? DEFAULT_MAX_DEPTH, points);
@@ -48,22 +76,11 @@ export function transform(code: string, options: TransformOptions): string | und
   const edits = points
     .filter((offset) => offset > prologueAt)
     .map((offset) => ({ offset, text: enter }));
-  edits.push({
-    offset: prologueAt,
-    text: `var ${local}=globalThis.__ccqaCoverage;${local}&&${local}(${literal},true);`,
-  });
+  edits.push({ offset: prologueAt, text: prologue });
   // Every point was filtered to offset > prologueAt above, so the prologue
   // edit already holds the minimum offset and sorts first.
   edits.sort((a, b) => a.offset - b.offset);
-
-  const parts: string[] = [];
-  let last = 0;
-  for (const edit of edits) {
-    parts.push(code.slice(last, edit.offset), edit.text);
-    last = edit.offset;
-  }
-  parts.push(code.slice(last));
-  return parts.join("");
+  return splice(code, edits);
 }
 
 function parseProgram(code: string): Node | undefined {

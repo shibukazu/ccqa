@@ -59,19 +59,19 @@ export class Widget {
 }
 `;
     const out = transform(source, { fileId: "src/shapes.ts" })!;
-    expect(out).toMatch(/function greet\(\) \{__ccqa_\w+&&__ccqa_\w+\("src\/shapes\.ts"\);/);
-    expect(out).toMatch(/method\(\) \{__ccqa_\w+&&__ccqa_\w+\("src\/shapes\.ts"\);/);
-    expect(out).toMatch(/render\(\) \{__ccqa_\w+&&__ccqa_\w+\("src\/shapes\.ts"\);/);
+    expect(out).toMatch(/function greet\(\) \{;__ccqa_\w+&&__ccqa_\w+\("src\/shapes\.ts"\);/);
+    expect(out).toMatch(/method\(\) \{;__ccqa_\w+&&__ccqa_\w+\("src\/shapes\.ts"\);/);
+    expect(out).toMatch(/render\(\) \{;__ccqa_\w+&&__ccqa_\w+\("src\/shapes\.ts"\);/);
   });
 
   it("does not instrument a callback nested 3 or more functions deep", () => {
     const source =
       "export function outer() { return function level2() { return function level3() { return function level4() { return 1; }; }; }; }";
     const out = transform(source, { fileId: "src/deep.ts" })!;
-    expect(out).toMatch(/function outer\(\) \{__ccqa_\w+&&__ccqa_\w+\("src\/deep\.ts"\);/);
-    expect(out).toMatch(/function level2\(\) \{__ccqa_\w+&&__ccqa_\w+\("src\/deep\.ts"\);/);
-    expect(out).not.toMatch(/function level3\(\) \{__ccqa_/);
-    expect(out).not.toMatch(/function level4\(\) \{__ccqa_/);
+    expect(out).toMatch(/function outer\(\) \{;__ccqa_\w+&&__ccqa_\w+\("src\/deep\.ts"\);/);
+    expect(out).toMatch(/function level2\(\) \{;__ccqa_\w+&&__ccqa_\w+\("src\/deep\.ts"\);/);
+    expect(out).not.toMatch(/function level3\(\) \{;__ccqa_/);
+    expect(out).not.toMatch(/function level4\(\) \{;__ccqa_/);
   });
 
   it("keeps a hashbang as the first line of the file", () => {
