@@ -95,35 +95,35 @@ describe("emitPlaywrightDraft — actions", () => {
       `await page.goto("https://example.test/");`,
     );
     expect(line({ action: "click", locator: btn })).toBe(
-      `await page.getByRole("button", { name: "Submit" }).click();`,
+      `await page.getByRole("button", { name: "Submit" }).first().click();`,
     );
     expect(line({ action: "dblclick", locator: { by: "css", value: ".card" } })).toBe(
-      `await page.locator(".card").dblclick();`,
+      `await page.locator(".card").first().dblclick();`,
     );
     expect(line({ action: "fill", locator: { by: "label", value: "Email" }, value: "a@example.test" })).toBe(
-      `await page.getByLabel("Email").fill("a@example.test");`,
+      `await page.getByLabel("Email").first().fill("a@example.test");`,
     );
     // `type` is an alias of fill.
     expect(line({ action: "type", locator: { by: "css", value: "#name" }, value: "hello" })).toBe(
-      `await page.locator("#name").fill("hello");`,
+      `await page.locator("#name").first().fill("hello");`,
     );
     expect(line({ action: "press", value: "Enter" })).toBe(
       `await page.keyboard.press("Enter");`,
     );
     expect(line({ action: "check", locator: { by: "css", value: "[type='checkbox']" } })).toBe(
-      `await page.locator("[type='checkbox']").check();`,
+      `await page.locator("[type='checkbox']").first().check();`,
     );
     expect(line({ action: "uncheck", locator: { by: "css", value: "[type='checkbox']" } })).toBe(
-      `await page.locator("[type='checkbox']").uncheck();`,
+      `await page.locator("[type='checkbox']").first().uncheck();`,
     );
     expect(line({ action: "select", locator: { by: "css", value: "select#lang" }, value: "en" })).toBe(
-      `await page.locator("select#lang").selectOption("en");`,
+      `await page.locator("select#lang").first().selectOption("en");`,
     );
     expect(line({ action: "hover", locator: { by: "text", value: "Menu" } })).toBe(
-      `await page.getByText("Menu").hover();`,
+      `await page.getByText("Menu").first().hover();`,
     );
     expect(line({ action: "focus", locator: { by: "placeholder", value: "Search" } })).toBe(
-      `await page.getByPlaceholder("Search").focus();`,
+      `await page.getByPlaceholder("Search").first().focus();`,
     );
     expect(
       line({
@@ -131,10 +131,10 @@ describe("emitPlaywrightDraft — actions", () => {
         locator: { by: "css", value: "#src" },
         target: { by: "css", value: "#dst" },
       }),
-    ).toBe(`await page.locator("#src").dragTo(page.locator("#dst"));`);
+    ).toBe(`await page.locator("#src").first().dragTo(page.locator("#dst").first());`);
     expect(
       line({ action: "upload", locator: { by: "css", value: "input[type='file']" }, files: ["a.pdf", "b.pdf"] }),
-    ).toBe(`await page.locator("input[type='file']").setInputFiles(["a.pdf", "b.pdf"]);`);
+    ).toBe(`await page.locator("input[type='file']").first().setInputFiles(["a.pdf", "b.pdf"]);`);
     expect(line({ action: "cookies_clear" })).toBe(`await page.context().clearCookies();`);
   });
 
@@ -213,7 +213,7 @@ describe("emitPlaywrightDraft — actions", () => {
 
   it("expands env refs in values into process.env template literals", () => {
     expect(line({ action: "fill", locator: { by: "label", value: "Password" }, value: "${PASSWORD}" })).toBe(
-      'await page.getByLabel("Password").fill(`${process.env.PASSWORD ?? ""}`);',
+      'await page.getByLabel("Password").first().fill(`${process.env.PASSWORD ?? ""}`);',
     );
     expect(line({ action: "assert", assert: "url_contains", value: "/runs/${RUN_ID}" })).toBe(
       'await expect(page).toHaveURL(`**/runs/${process.env.RUN_ID ?? ""}**`);',

@@ -179,44 +179,48 @@ function actionToLine(action: RecordedAction): string | null {
   }
 
   const locator = action.locator ? locatorToPlaywright(action.locator, action.index) : null;
+  // agent-browser acts on the first element its locator matches. `.first()` keeps
+  // that semantic under Playwright's strict mode, which fails the whole step when
+  // several match (unless an explicit index pick already narrowed it).
+  const subject = locator !== null && action.index === undefined ? `${locator}.first()` : locator;
 
   switch (action.action) {
     case "navigate":
       return `await page.goto(${jExpr(action.value ?? "")});`;
     case "click":
-      return locator ? `await ${locator}.click();` : droppedActionMarker(action);
+      return subject ? `await ${subject}.click();` : droppedActionMarker(action);
     case "dblclick":
-      return locator ? `await ${locator}.dblclick();` : droppedActionMarker(action);
+      return subject ? `await ${subject}.dblclick();` : droppedActionMarker(action);
     case "fill":
     case "type":
       // `type` is ccqa's alias of `fill` (same as the agent-browser mapping).
-      return locator
-        ? `await ${locator}.fill(${jExpr(action.value ?? "")});`
+      return subject
+        ? `await ${subject}.fill(${jExpr(action.value ?? "")});`
         : droppedActionMarker(action);
     case "press":
-      return locator
-        ? `await ${locator}.press(${jExpr(action.value ?? "")});`
+      return subject
+        ? `await ${subject}.press(${jExpr(action.value ?? "")});`
         : `await page.keyboard.press(${jExpr(action.value ?? "")});`;
     case "check":
-      return locator ? `await ${locator}.check();` : droppedActionMarker(action);
+      return subject ? `await ${subject}.check();` : droppedActionMarker(action);
     case "uncheck":
-      return locator ? `await ${locator}.uncheck();` : droppedActionMarker(action);
+      return subject ? `await ${subject}.uncheck();` : droppedActionMarker(action);
     case "select":
-      return locator
-        ? `await ${locator}.selectOption(${jExpr(action.value ?? "")});`
+      return subject
+        ? `await ${subject}.selectOption(${jExpr(action.value ?? "")});`
         : droppedActionMarker(action);
     case "hover":
-      return locator ? `await ${locator}.hover();` : droppedActionMarker(action);
+      return subject ? `await ${subject}.hover();` : droppedActionMarker(action);
     case "focus":
-      return locator ? `await ${locator}.focus();` : droppedActionMarker(action);
+      return subject ? `await ${subject}.focus();` : droppedActionMarker(action);
     case "drag": {
-      if (!locator || !action.target) return droppedActionMarker(action);
-      return `await ${locator}.dragTo(${locatorToPlaywright(action.target)});`;
+      if (!subject || !action.target) return droppedActionMarker(action);
+      return `await ${subject}.dragTo(${locatorToPlaywright(action.target)}.first());`;
     }
     case "upload": {
       const files = action.files ?? [];
-      if (!locator || files.length === 0) return droppedActionMarker(action);
-      return `await ${locator}.setInputFiles([${files.map(jExpr).join(", ")}]);`;
+      if (!subject || files.length === 0) return droppedActionMarker(action);
+      return `await ${subject}.setInputFiles([${files.map(jExpr).join(", ")}]);`;
     }
     case "scroll":
       return scrollToLine(action);
