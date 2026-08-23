@@ -148,12 +148,14 @@ find nth <index> "<ALLOWED-css>" <action>
 3. \`find last\` is reliable only when the layout guarantees "the target is the bottom-most match" (e.g. the most-recently-sent chat message). Be explicit in the AB_ACTION label.
 4. Argument order is \`<value> <action> [flags]\` — flags after the action. Putting \`--name\` / \`--exact\` before the action makes agent-browser fail with "Unknown subaction".
 5. \`--name "<n>"\` is **role-only**. Never pass it to \`find text\`, \`find label\`, etc.
-6. \`find\` includes its own wait; do not chain a \`wait\` before it.
+6. \`--name\` matches by substring. Add \`--exact\` whenever the name you read from the snapshot is the element's whole accessible name — without it a short name such as "Log in" also matches "Log in with Google" and "Log in with SSO", and the recording silently pins the first of them.
+7. \`find\` includes its own wait; do not chain a \`wait\` before it.
 
 **Examples:**
 
 - ✓ \`find last "[data-testid='reply-link']" click\` — specific attribute + layout-guaranteed last match
 - ✓ \`find role button click --name "Submit"\` — role + accessible name (flags after action)
+- ✓ \`find role button click --name "Log in" --exact\` — short name needs \`--exact\`, or "Log in with SSO" matches too
 - ✗ \`find role button --name "Submit" click\` — wrong order
 - ✗ \`find last "button" click\` — bare tag
 
