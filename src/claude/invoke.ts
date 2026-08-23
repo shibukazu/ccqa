@@ -340,7 +340,7 @@ export async function invokeClaudeStreaming(
                       if (hasRefSelector(cmd)) {
                         return {
                           decision: "block",
-                          reason: "@ref selectors (like @e14) are session-specific and change every run. They cannot be used in generated tests. Use one of the allowed selector formats instead: [aria-label='...'], text=..., [placeholder='...'], or [type='password']. Take a fresh snapshot and find the element's aria-label or visible text.",
+                          reason: "@ref selectors (like @e14) are session-specific and change every run. They cannot be used in generated tests. Use one of the allowed selector formats instead: [aria-label='...'], text=..., [placeholder='...'], or [type='password']. Take a fresh snapshot and find the element's aria-label or visible text. If an allowed selector already clicks the element but nothing happens, the element is clipped by an inner scroll container: `scrollintoview` it (addressed by a CSS selector, not `text=`) and click again — a @ref would not have fixed that either.",
                         };
                       }
 

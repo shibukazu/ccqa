@@ -168,6 +168,7 @@ find nth <index> "<ALLOWED-css>" <action>
 5. For checkboxes: try \`check "text=Label"\` or \`check "[aria-label='Label']"\`.
 6. If repeated labels make every ALLOWED selector ambiguous → use the \`find\` subset above.
 7. Never guess. If a selector fails, take a fresh snapshot before retrying.
+8. **A click that reports success but changes nothing means the element sits outside the visible part of an inner scroll container** — the event dispatches, the app never reacts, and no error is printed. Run \`scrollintoview\` on the element and click again. Scroll to the element itself, addressed by a CSS selector (\`scrollintoview "button.primary-action"\`); \`scrollintoview "text=…"\` can land on a text node that leaves the control still clipped. Do not read this as a product bug or reach for a \`@ref\` — verify by checking that the DOM changed (e.g. \`get count\` on what the click should have produced).
 
 ### Special input types
 
