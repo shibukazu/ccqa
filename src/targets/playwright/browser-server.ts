@@ -49,7 +49,7 @@ interface PlaywrightChromium {
 export async function acquirePlaywrightBrowser(
   ctx: CdpEndpointContext,
 ): Promise<CdpBrowserHandle> {
-  await sweepStaleWrappers(ctx.cwd);
+  await sweepStaleWrappersOnce(ctx.cwd);
   const chromium = await resolveChromium(ctx.cwd);
   const port = await freePort();
   const server = await chromium.launchServer({ args: [`--remote-debugging-port=${port}`] });
@@ -100,9 +100,28 @@ export async function acquirePlaywrightBrowser(
 }
 
 /**
- * Wrappers a killed earlier run left behind. Deleted on the next acquire, not
- * only guarded against: a stray one is git-status dirt in somebody's repo.
+ * Wrappers a killed earlier run left behind. Deleted before this process
+ * writes its first one, not only guarded against: a stray one is git-status
+ * dirt in somebody's repo.
+ *
+ * Once per cwd per process, never per acquire: every live wrapper matches
+ * the stale pattern, so under `--concurrency` a per-acquire sweep deletes
+ * the wrapper a parallel spec just wrote and is about to hand to
+ * `playwright test`, killing that spec before it starts. The memo makes
+ * concurrent first acquires share one sweep that finished before either of
+ * them wrote anything.
  */
+const sweptCwds = new Map<string, Promise<void>>();
+
+export function sweepStaleWrappersOnce(cwd: string): Promise<void> {
+  let sweep = sweptCwds.get(cwd);
+  if (!sweep) {
+    sweep = sweepStaleWrappers(cwd);
+    sweptCwds.set(cwd, sweep);
+  }
+  return sweep;
+}
+
 async function sweepStaleWrappers(cwd: string): Promise<void> {
   const entries = await readdir(cwd).catch(() => []);
   for (const name of entries) {

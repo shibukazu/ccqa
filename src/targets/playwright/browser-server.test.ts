@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -87,5 +87,36 @@ describe("acquirePlaywrightBrowser", () => {
     dirs.push(cwd);
     writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "consumer" }));
     await expect(acquireInto(cwd)).rejects.toThrow(/could not resolve Playwright/);
+  });
+});
+
+describe("sweepStaleWrappersOnce", () => {
+  it("sweeps stale wrappers once, then never touches wrappers written after it", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ccqa-sweep-"));
+    dirs.push(cwd);
+    const { sweepStaleWrappersOnce } = await import("./browser-server.ts");
+    const stale = join(cwd, "ccqa-coverage.old--spec.playwright.config.ts");
+    writeFileSync(stale, "// stale");
+
+    await sweepStaleWrappersOnce(cwd);
+    expect(existsSync(stale)).toBe(false);
+
+    // A parallel spec's live wrapper: a later acquire in the same process
+    // must not sweep it away between its write and `playwright test` reading it.
+    const live = join(cwd, "ccqa-coverage.checkout--purchase.playwright.config.ts");
+    writeFileSync(live, "// live");
+    await sweepStaleWrappersOnce(cwd);
+    expect(existsSync(live)).toBe(true);
+  });
+
+  it("concurrent first calls share one sweep instead of racing", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "ccqa-sweep-"));
+    dirs.push(cwd);
+    const { sweepStaleWrappersOnce } = await import("./browser-server.ts");
+    const stale = join(cwd, "ccqa-coverage.old--spec.playwright.config.ts");
+    writeFileSync(stale, "// stale");
+
+    await Promise.all([sweepStaleWrappersOnce(cwd), sweepStaleWrappersOnce(cwd)]);
+    expect(existsSync(stale)).toBe(false);
   });
 });
