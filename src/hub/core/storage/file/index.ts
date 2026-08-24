@@ -4,6 +4,7 @@ import { createFileAttestationStore } from "./attestation-store.ts";
 import { createFileAuditDismissalStore } from "./audit-dismissal-store.ts";
 import { createFileArtifactStore } from "./artifact-store.ts";
 import { createFileCoverageEventStore } from "./coverage-event-store.ts";
+import { createFileSourceMapStore } from "./sourcemap-store.ts";
 import { createFileDeployStore } from "./deploy-store.ts";
 import { createFileLockStore } from "./lock-store.ts";
 import { createFileDriftLedgerStore } from "./drift-ledger-store.ts";
@@ -36,5 +37,6 @@ export function createFileHubStorage(dataDir: string): HubStorage {
     attestations: createFileAttestationStore(dataDir),
     auditDismissals: createFileAuditDismissalStore(dataDir),
     coverageEvents: createFileCoverageEventStore(dataDir),
+    sourceMaps: createFileSourceMapStore(dataDir),
   };
 }

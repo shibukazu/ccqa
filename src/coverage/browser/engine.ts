@@ -36,16 +36,27 @@ import { browserWebSocketUrl, CdpClient, type CdpTransport } from "./cdp.ts";
  * is closed.
  */
 
+/** Reads the map a deploy stored for one asset path, or undefined when none. */
+export type StoredSourceMapReader = (assetPath: string) => Promise<string | undefined>;
+
 export interface BrowserCoverageOptions {
   /** `host:port`, an `http://` endpoint, or a ws URL; see browserWebSocketUrl. */
   cdpUrl: string;
   specId: string;
   /** Absolute http(s) origins the spec cookie is attached for. */
   origins: readonly string[];
+  /**
+   * Additional origins this project's assets are served from (a CDN, say).
+   * Recognising a script as ours is a wider question than where the cookie may
+   * go, so the two lists are separate — the cookie is never attached for these.
+   */
+  assetOrigins?: readonly string[];
   /** Where `coverage-frontend.json` lands. */
   coverageDir: string;
   roots: SourceRoots;
   warn(text: string): void;
+  /** See `SourceMapStore`. Absent means the run reads maps from the page only. */
+  fetchStoredSourceMap?: StoredSourceMapReader;
   /** Test seam: how the transport is opened. Defaults to the real CDP client. */
   connect?(wsUrl: string): Promise<CdpTransport>;
 }
@@ -172,6 +183,7 @@ class Engine implements BrowserCoverageHandle {
       coverageDir: opts.coverageDir,
       roots: opts.roots,
       fetchText: (url) => this.fetchThroughBrowser(url),
+      fetchStoredMap: (scriptUrl) => this.storedMapFor(scriptUrl),
       warn: opts.warn,
     });
   }
@@ -599,6 +611,25 @@ class Engine implements BrowserCoverageHandle {
     }
   }
 
+  /**
+   * The map a deploy stored for `scriptUrl`, if this run knows where to ask.
+   * Addressed by the path under the asset origin rather than the URL, so the
+   * push and the read agree without either knowing the other's host.
+   */
+  private async storedMapFor(scriptUrl: string): Promise<string | undefined> {
+    const stored = this.opts.fetchStoredSourceMap;
+    if (stored === undefined) return undefined;
+    const assetPath = assetPathOf(scriptUrl, [...this.opts.origins, ...(this.opts.assetOrigins ?? [])]);
+    if (assetPath === undefined) return undefined;
+    try {
+      return await stored(`${assetPath}.map`);
+    } catch (err) {
+      // The hub being unreachable costs this script its file names, not the run.
+      this.opts.warn(`could not read the stored source map for ${assetPath}: ${message(err)}`);
+      return undefined;
+    }
+  }
+
   private async readStream(handle: string, sessionId: string): Promise<string> {
     const parts: string[] = [];
     for (;;) {
@@ -622,3 +653,27 @@ class Engine implements BrowserCoverageHandle {
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+/**
+ * The path a stored map is filed under: the URL with its origin removed, and
+ * with any deploy-scoped prefix (`/assets/<sha>/`) left in place — that prefix
+ * is part of what the browser asked for, so the push has to have used it too.
+ * A URL from an origin the run never declared is not ours to look up.
+ */
+export function assetPathOf(url: string, origins: readonly string[]): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  // A cache-busting or deployment query (`?dpl=`, `?v=`) is not part of what
+  // the push stored, so it is dropped rather than carried into the key.
+  const path = `${parsed.origin}${parsed.pathname}`;
+  for (const origin of origins) {
+    const base = origin.replace(/\/+$/, "");
+    if (path.startsWith(`${base}/`)) return path.slice(base.length + 1);
+  }
+  return undefined;
+}
+

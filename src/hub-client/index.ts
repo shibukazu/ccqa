@@ -154,6 +154,17 @@ export interface HubClient {
    */
   getCoverage(project: string, q?: { runId?: string }): Promise<HubCoverageAnswer>;
 
+  /**
+   * Source maps for what a commit deployed, addressed by the asset path the
+   * browser requests. Coverage falls back to these when the build keeps its
+   * maps out of the CDN, which is the usual choice — a map hands out source.
+   */
+  putSourceMap(project: string, commit: string, assetPath: string, map: Uint8Array): Promise<void>;
+  getSourceMap(project: string, commit: string, assetPath: string): Promise<string | null>;
+  listSourceMaps(project: string, commit: string): Promise<string[]>;
+  /** Ends a push, letting the hub drop the commits it no longer keeps. */
+  sweepSourceMaps(project: string): Promise<void>;
+
   getTriage(id: string): Promise<RunTriage>;
   putActualCause(
     id: string,
@@ -421,6 +432,32 @@ export function createHubClient(opts: HubClientOptions): HubClient {
       return json(`/api/v1/coverage?${queryString({ project, runId: q.runId })}`);
     },
 
+    putSourceMap(project, commit, assetPath, map) {
+      return request(`${sourceMapPath(project, commit)}/${encodeAssetPath(assetPath)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: toBodyInit(map),
+      }).then(() => undefined);
+    },
+    async getSourceMap(project, commit, assetPath) {
+      try {
+        return await text(`${sourceMapPath(project, commit)}/${encodeAssetPath(assetPath)}`);
+      } catch (err) {
+        // A commit that pushed no map for this asset answers 404. Anything
+        // else — the hub down, a bad token — is not "no map" and has to stay
+        // visible, or coverage silently reports less than it measured.
+        if (err instanceof HubApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
+    sweepSourceMaps(project) {
+      return noBody(`/api/v1/projects/${encodeURIComponent(project)}/sourcemaps/sweep`, "POST");
+    },
+    async listSourceMaps(project, commit) {
+      const { paths } = await json<{ paths: string[] }>(sourceMapPath(project, commit));
+      return paths;
+    },
+
     getTriage(id) {
       return json(`/api/v1/runs/${encodeURIComponent(id)}/triage`);
     },
@@ -653,6 +690,19 @@ function auditDismissalsPath(project: string): string {
 /** Perspectives are one document per project: `/api/v1/projects/<project>/perspectives`. */
 function perspectivesPath(project: string): string {
   return `/api/v1/projects/${encodeURIComponent(project)}/perspectives`;
+}
+
+/** `/api/v1/projects/<project>/sourcemaps/<commit>` — the scope a push and a read share. */
+function sourceMapPath(project: string, commit: string): string {
+  return `/api/v1/projects/${encodeURIComponent(project)}/sourcemaps/${encodeURIComponent(commit)}`;
+}
+
+/**
+ * Asset paths keep their separators — the route matches the rest of the URL as
+ * one wildcard segment — so only the parts between them are escaped.
+ */
+function encodeAssetPath(assetPath: string): string {
+  return assetPath.split("/").map(encodeURIComponent).join("/");
 }
 
 function queryString(params: Record<string, string | number | undefined>): URLSearchParams {

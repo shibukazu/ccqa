@@ -46,6 +46,31 @@ export interface HubStorage {
   attestations: AttestationStore;
   auditDismissals: AuditDismissalStore;
   coverageEvents: CoverageEventStore;
+  sourceMaps: SourceMapStore;
+}
+
+/**
+ * Source maps for what a commit deployed, keyed by the asset path the browser
+ * requests (`_next/static/chunks/x.js.map`). A build that keeps its maps out of
+ * the CDN — the usual choice, since a map hands out the original source — leaves
+ * coverage unable to name a file; pushing them here restores that without
+ * publishing anything.
+ *
+ * Bytes cross this boundary as they were built. They are not secrets in the
+ * sense the session/variable stores mean, but they do reveal source, so the
+ * same bearer token gates them.
+ */
+export interface SourceMapStore {
+  /** Store one map under `commit`, addressed by the asset path it belongs to. */
+  put(project: string, commit: string, assetPath: string, bytes: Uint8Array): Promise<void>;
+  /** The map for `assetPath`, or null when this commit never pushed one. */
+  read(project: string, commit: string, assetPath: string): Promise<Uint8Array | null>;
+  /** Asset paths stored for `commit`, for reporting what a push landed. */
+  list(project: string, commit: string): Promise<string[]>;
+  /** Commits this project has maps for, newest write first. */
+  listCommits(project: string): Promise<string[]>;
+  /** Drop everything stored for one commit. */
+  delete(project: string, commit: string): Promise<void>;
 }
 
 /**

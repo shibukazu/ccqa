@@ -1,3 +1,4 @@
+import type { StoredSourceMapReader } from "../coverage/browser/engine.ts";
 import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -770,7 +771,16 @@ export async function executeRun(
   // that was never going to measure anything.
   const coverage =
     opts.coverage && forExecution
-      ? await startCoverage(cwd, projectConfig.coverage, actors, dispatch, opts.teardown, coverageInbox)
+      ? await startCoverage(
+          cwd,
+          projectConfig.coverage,
+          actors,
+          dispatch,
+          opts.teardown,
+          coverageInbox,
+          storedSourceMapReader(hubCtx, deployedSha),
+          hubCtx !== null,
+        )
       : undefined;
 
   // Warn when a mode-scoped flag can't apply, rather than silently ignoring
@@ -1132,12 +1142,6 @@ export async function executeRun(
   return { exitCode: overallExitCode, report, reportDir };
 }
 
-/**
- * Starts the run's coverage measurement before any spec runs: the sink has to
- * be listening before the first request reaches the application, and the set
- * of spec ids it will accept is only known once dispatch has resolved. With
- * an `inbox`, nothing binds — the run streams its events to the hub instead.
- */
 async function startCoverage(
   cwd: string,
   config: CoverageConfig | undefined,
@@ -1145,6 +1149,8 @@ async function startCoverage(
   dispatch: TargetDispatch,
   teardown: RunTeardown | undefined,
   inbox: CoverageInbox | undefined,
+  fetchStoredSourceMap: StoredSourceMapReader | undefined,
+  hubConfigured: boolean,
 ): Promise<CoverageSession> {
   if (config === undefined) {
     throw new RunUsageError(
@@ -1161,9 +1167,19 @@ async function startCoverage(
       actors,
       specs: dispatch.external.flatMap((g) => g.specs),
       ...(inbox ? { inbox } : {}),
+      ...(fetchStoredSourceMap ? { fetchStoredSourceMap } : {}),
     });
   } catch (err) {
     throw new RunUsageError(`could not start coverage collection: ${errMessage(err)}`);
+  }
+  // A hub is configured but the deployed commit is unknown (no --hub-profile,
+  // or the deploy log could not be read), so any pushed source map is
+  // unaddressable. Said out loud: the symptom otherwise is a frontend that
+  // silently measures as unreached (ADR-0025).
+  if (fetchStoredSourceMap === undefined && hubConfigured) {
+    log.warn(
+      "coverage: source maps pushed for this deploy cannot be read — the deployed commit is unknown here. Pass --hub-profile so the deploy log can be consulted.",
+    );
   }
   if (inbox !== undefined) {
     // No sink URL to print: nothing listens on this machine (ADR-0022).
@@ -1181,6 +1197,35 @@ async function startCoverage(
   teardown?.onFinalize(() => session.close());
   return session;
 }
+
+/**
+ * Starts the run's coverage measurement before any spec runs: the sink has to
+ * be listening before the first request reaches the application, and the set
+ * of spec ids it will accept is only known once dispatch has resolved. With
+ * an `inbox`, nothing binds — the run streams its events to the hub instead.
+ */
+/**
+ * Needs both a hub and the commit under test: without either there is nothing
+ * to address a stored map by, and reading some other commit's maps would name
+ * the wrong files. See `SourceMapStore`.
+ */
+function storedSourceMapReader(
+  hubCtx: HubContext | null,
+  deployedSha: string | null,
+): StoredSourceMapReader | undefined {
+  if (hubCtx === null || deployedSha === null) return undefined;
+  // One answer per asset for the run: the commit is fixed, so a miss stays a
+  // miss, and every spec would otherwise re-ask for the same scripts.
+  const seen = new Map<string, string | undefined>();
+  return async (assetPath) => {
+    const cached = seen.get(assetPath);
+    if (cached !== undefined || seen.has(assetPath)) return cached;
+    const map = (await hubCtx.hub.getSourceMap(hubCtx.project, deployedSha, assetPath)) ?? undefined;
+    seen.set(assetPath, map);
+    return map;
+  };
+}
+
 
 /**
  * A run that measured coverage still leaves rows without any — a spec on a

@@ -43,6 +43,14 @@ export function artifactsRunDir(root: string, runId: string): string {
   return join(root, "artifacts", runId);
 }
 
+export function sourceMapProjectDir(root: string, project: string): string {
+  return join(root, "sourcemaps", project);
+}
+
+export function sourceMapCommitDir(root: string, project: string, commit: string): string {
+  return join(sourceMapProjectDir(root, project), commit);
+}
+
 export function jobsDir(root: string): string {
   return join(root, "jobs");
 }

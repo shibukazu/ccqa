@@ -46,6 +46,13 @@ export interface FrontendResolutionOptions {
    * page.
    */
   fetchText(url: string): Promise<string | undefined>;
+  /**
+   * A map for the script itself, from wherever a deploy stored it. Tried when
+   * the served copy is absent or unreadable — a build that withholds its maps
+   * answers 404 for them, and a catch-all route can turn that 404 into an HTML
+   * page, which is a body but not a map.
+   */
+  fetchStoredMap?(scriptUrl: string): Promise<string | undefined>;
   warn(text: string): void;
 }
 
@@ -61,6 +68,7 @@ export class FrontendResolution {
   private readonly coverageDir: string;
   private readonly roots: SourceRoots;
   private readonly fetchText: (url: string) => Promise<string | undefined>;
+  private readonly fetchStoredMap: ((scriptUrl: string) => Promise<string | undefined>) | undefined;
   private readonly warn: (text: string) => void;
 
   private readonly files = new Set<string>();
@@ -90,6 +98,7 @@ export class FrontendResolution {
     this.coverageDir = opts.coverageDir;
     this.roots = opts.roots;
     this.fetchText = opts.fetchText;
+    this.fetchStoredMap = opts.fetchStoredMap;
     this.warn = opts.warn;
   }
 
@@ -196,25 +205,55 @@ export class FrontendResolution {
   private async fetchSourceMap(script: AcquiredScript): Promise<PreparedSourceMap | undefined> {
     const source = await script.source();
     if (source === undefined) return undefined;
-    const reference = readSourceMappingUrl(source);
-    if (reference === undefined) return undefined;
 
-    const inline = decodeInlineSourceMap(reference);
-    let json = inline;
-    if (json === undefined) {
-      let target: string;
-      try {
-        target = new URL(reference, script.url).toString();
-      } catch {
-        return undefined;
-      }
-      json = await this.fetchText(target);
-      if (json === undefined) return undefined;
+    for (const load of this.sourceMapLoaders(script, source)) {
+      const json = await load();
+      if (json === undefined) continue;
+      const map = parseSourceMap(json);
+      if (map !== undefined) return prepareSourceMap(map, source);
     }
+    return undefined;
+  }
 
-    const map = parseSourceMap(json);
-    if (map === undefined) return undefined;
-    return prepareSourceMap(map, source);
+  /**
+   * Ways to get a map for `script`, most authoritative first and none of them
+   * taken until the one before it fails. A map the script points at describes
+   * the code that ran, so the stored copy is only asked for when that is
+   * absent or turns out not to be a map — a catch-all route answers a missing
+   * `.map` with an HTML page, which is a body but not a map. Reading it
+   * eagerly would put a request on the wire for every script of every spec,
+   * nearly all of them misses on a deployment that pushes nothing.
+   */
+  private sourceMapLoaders(
+    script: AcquiredScript,
+    source: string,
+  ): (() => Promise<string | undefined>)[] {
+    const loaders: (() => Promise<string | undefined>)[] = [];
+    const reference = readSourceMappingUrl(source);
+    if (reference !== undefined) {
+      const inline = decodeInlineSourceMap(reference);
+      if (inline !== undefined) {
+        loaders.push(() => Promise.resolve(inline));
+      } else {
+        const target = absoluteOrUndefined(reference, script.url);
+        if (target !== undefined) loaders.push(() => this.fetchText(target));
+      }
+    }
+    const stored = this.fetchStoredMap;
+    // Tried even with no reference to follow: a build that strips its maps
+    // commonly strips the comment that points at them too.
+    if (stored !== undefined) loaders.push(() => stored(script.url));
+    return loaders;
+  }
+
+}
+
+/** `reference` resolved against the script's URL, or undefined when it is not a URL. */
+function absoluteOrUndefined(reference: string, scriptUrl: string): string | undefined {
+  try {
+    return new URL(reference, scriptUrl).toString();
+  } catch {
+    return undefined;
   }
 }
 

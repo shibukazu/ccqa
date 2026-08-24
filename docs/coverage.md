@@ -245,7 +245,7 @@ or a server that is not `node:http`-based never installed the middleware.
 | Counter | What it means |
 | --- | --- |
 | `unattributed` | Server executions during this spec that ran outside its context. Work started before the spec (a scheduler, a queue consumer) lands here, and so does other traffic on a shared environment. |
-| `unmappedScripts` | Browser scripts that ran but had no usable source map — usually the framework's own chunks. |
+| `unmappedScripts` | Browser scripts that ran but had no usable source map — usually the framework's own chunks. A count in the hundreds, with `features` almost empty, means the deployment does not serve its maps at all; see "When the build does not serve its source maps" below. |
 | `unmappedRanges` | Executed code that mapped to no original source. |
 | `outsideProject` | Browser sources that resolved to a path the project does not contain. Dropped from the set rather than reported as project code nobody tests. |
 | `unresolvedSources` | Browser sources whose name could not be turned into a project path at all. In a workspace this is where a sibling package lands when the root is too narrow. |
@@ -263,6 +263,38 @@ the point.
 purpose — nobody writes a test because a library file went unreached — and
 it outnumbers the real gaps by orders of magnitude, so counted alongside
 them it would bury them.
+
+### When the build does not serve its source maps
+
+Deleting `.map` before publishing the assets is a normal choice — a map carries
+the original source. It also leaves the browser half unable to name a single
+file: every script counts under `unmappedScripts`, the row reports server files
+only, and `ccqa select-specs` then answers `notNeeded` for a spec whose subject
+is a screen.
+
+Push the maps to the hub at deploy time instead, and the run reads them from
+there (ADR-0025):
+
+```sh
+ccqa hub sourcemap push .next/static --sha "$DEPLOYED_SHA" --asset-prefix _next/static
+```
+
+Run it **before** the step that deletes the maps, in the job that built them.
+Only the fields coverage reads are sent — the original source each map carries
+is dropped rather than uploaded, so the hub holds file names and offsets, not
+source.
+
+Two things have to line up for the read side to find them:
+
+- The `--sha` must be the commit the deploy is recorded under (`ccqa hub deploy
+  record`). The run asks for the commit the deploy log says is live.
+- `--asset-prefix` plus the file's path under the directory must equal what the
+  browser requests, minus the origin. Assets served from a different host than
+  the application need that host in `coverage.assetOrigins`; the spec cookie is
+  never attached there, which is why it is a separate list from
+  `instrumentedOrigins`.
+
+`ccqa hub sourcemap ls --sha <sha>` shows what a push landed.
 
 ## What it cannot see
 

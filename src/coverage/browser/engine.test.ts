@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { CdpTransport, EventHandler } from "./cdp.ts";
-import { startBrowserCoverage, type BrowserCoverageHandle } from "./engine.ts";
+import { assetPathOf, startBrowserCoverage, type BrowserCoverageHandle } from "./engine.ts";
 
 /**
  * The engine's state machine against a scripted transport — the paths the
@@ -264,5 +264,33 @@ describe("engine state machine (scripted transport)", () => {
     };
     expect(written).toMatchObject({ files: [], stopped: false });
     expect(existsSync(join(dir, "coverage-frontend.json"))).toBe(true);
+  });
+});
+
+describe("assetPathOf", () => {
+  const origins = ["https://app.test", "https://assets.test/"];
+
+  it("files a script under the path the browser asked for, origin removed", () => {
+    expect(assetPathOf("https://app.test/_next/static/chunks/a.js.map", origins)).toBe(
+      "_next/static/chunks/a.js.map",
+    );
+  });
+
+  it("keeps a deploy-scoped prefix, since the push used it too", () => {
+    expect(assetPathOf("https://assets.test/assets/9f2c/_next/static/a.js.map", origins)).toBe(
+      "assets/9f2c/_next/static/a.js.map",
+    );
+  });
+
+  it("declines a URL from an origin this run never declared", () => {
+    expect(assetPathOf("https://cdn.other.test/_next/static/a.js.map", origins)).toBeUndefined();
+  });
+
+  it("declines an origin that only prefixes the host, rather than matching it", () => {
+    expect(assetPathOf("https://app.test.evil.test/a.js.map", origins)).toBeUndefined();
+  });
+
+  it("drops a cache-busting query, which the push never stored", () => {
+    expect(assetPathOf("https://app.test/_next/static/a.js?dpl=abc#x", origins)).toBe("_next/static/a.js");
   });
 });

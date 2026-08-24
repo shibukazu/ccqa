@@ -21,7 +21,7 @@ import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
 import { CoverageSink } from "./sink.ts";
 import type { RunEventInbox } from "./inbox.ts";
-import { startBrowserCoverage, type BrowserCoverageHandle } from "./browser/engine.ts";
+import { startBrowserCoverage, type StoredSourceMapReader, type BrowserCoverageHandle } from "./browser/engine.ts";
 import { enumerateUniverse, type CoverageUniverse } from "./universe.ts";
 import { FRONTEND_COVERAGE_FILE, type FrontendCoverage } from "./contract.ts";
 
@@ -51,10 +51,29 @@ export interface CoverageSessionOptions {
    * facts here instead, and report rows carry no coverage (ADR-0022).
    */
   inbox?: RunEventInbox;
+  /** See `SourceMapStore`. Absent leaves coverage reading maps from the page only. */
+  fetchStoredSourceMap?: StoredSourceMapReader;
+}
+
+/**
+ * Origins with their `${VAR}`s resolved, refusing anything that is not an
+ * absolute http(s) URL. An unset variable resolves to the empty string, which
+ * would otherwise match nothing and take the feature down without a word.
+ */
+function resolveAbsoluteOrigins(origins: readonly string[], label: string): string[] {
+  const resolved = origins.map((origin) => resolveEnvRefs(origin));
+  const unresolved = resolved.filter((origin) => !/^https?:\/\//i.test(origin));
+  if (unresolved.length > 0) {
+    throw new Error(
+      `${label} must be absolute http(s) URLs after variable substitution; got ${unresolved.join(", ")}`,
+    );
+  }
+  return resolved;
 }
 
 export class CoverageSession {
   private readonly existing = new Map<string, boolean>();
+  private readonly fetchStoredSourceMap: StoredSourceMapReader | undefined;
 
   /**
    * Undefined in hub mode: nothing binds on the runner, and every read-side
@@ -76,6 +95,8 @@ export class CoverageSession {
   private readonly cwd: string;
   private readonly actors: ActorPlan;
   readonly origins: readonly string[];
+  /** Where this project's assets come from — the cookie never goes here. */
+  private readonly assetOrigins: readonly string[];
   /**
    * The denominator, enumerated once at start, or undefined when
    * `coverage.include` is unset — and always in hub mode, where it travels as
@@ -93,7 +114,9 @@ export class CoverageSession {
     cwd: string,
     actors: ActorPlan,
     origins: readonly string[],
+    assetOrigins: readonly string[],
     universe: CoverageUniverse | undefined,
+    fetchStoredSourceMap: StoredSourceMapReader | undefined,
   ) {
     this.sink = sink;
     this.inbox = inbox;
@@ -102,17 +125,13 @@ export class CoverageSession {
     this.cwd = cwd;
     this.actors = actors;
     this.origins = origins;
+    this.assetOrigins = assetOrigins;
     this.universe = universe;
+    this.fetchStoredSourceMap = fetchStoredSourceMap;
   }
 
   static async start(options: CoverageSessionOptions): Promise<CoverageSession> {
-    const origins = options.config.instrumentedOrigins.map((origin) => resolveEnvRefs(origin));
-    const unresolved = origins.filter((origin) => !/^https?:\/\//i.test(origin));
-    if (unresolved.length > 0) {
-      throw new Error(
-        `coverage.instrumentedOrigins must be absolute http(s) URLs after variable substitution; got ${unresolved.join(", ")}`,
-      );
-    }
+    const origins = resolveAbsoluteOrigins(options.config.instrumentedOrigins, "coverage.instrumentedOrigins");
     const actors = options.actors ?? NO_ACTORS;
     let sink: CoverageSink | undefined;
     if (options.inbox === undefined) {
@@ -150,9 +169,11 @@ export class CoverageSession {
       options.cwd,
       actors,
       origins,
+      resolveAbsoluteOrigins(options.config.assetOrigins ?? [], "coverage.assetOrigins"),
       // Streamed above rather than exposed: in hub mode the envelope must not
       // carry it — the stream is the record.
       options.inbox === undefined ? universe : undefined,
+      options.fetchStoredSourceMap,
     );
   }
 
@@ -236,9 +257,11 @@ export class CoverageSession {
       cdpUrl,
       specId: specIdFor(this.runId, ref),
       origins: this.origins,
+      assetOrigins: this.assetOrigins,
       coverageDir,
       roots: { base: this.cwd, root: this.root },
       warn: (text) => log.warn(`coverage: ${text}`),
+      fetchStoredSourceMap: this.fetchStoredSourceMap,
     });
   }
 
