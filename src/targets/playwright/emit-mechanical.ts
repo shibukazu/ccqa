@@ -316,14 +316,19 @@ function assertToLine(action: RecordedAction, locator: string | null): string | 
 }
 
 /**
- * `url_contains` → toHaveURL. Literal values become an unanchored RegExp
- * (substring match); values carrying env refs can't live in a regex literal,
- * so they use toHaveURL's glob form with a template literal.
+ * `url_contains` → "the URL contains this".
+ *
+ * A `${VAR}` only has a value at run time, which rules out both forms that take
+ * the pattern up front: a regular expression would have to match the reference
+ * span with `.*` (so `${APP_BASE_URL}` alone would assert nothing at all), and
+ * the glob `toHaveURL` accepts is compared against the whole URL, so an
+ * absolute one never matches. Polling `page.url()` keeps the substring
+ * semantic and the resolved value.
  */
 function urlContainsAssert(value: string): string {
   const expr = jExpr(value);
   if (expr.startsWith("`")) {
-    return `await expect(page).toHaveURL(${envRefsToJsExpression(`**${value}**`)});`;
+    return `await expect.poll(() => page.url()).toContain(${expr});`;
   }
   return `await expect(page).toHaveURL(new RegExp(${j(escapeRegExp(value))}));`;
 }

@@ -90,6 +90,19 @@ describe("emitPlaywrightDraft — actions", () => {
     expect(script).not.toContain("coverage");
   });
 
+  it("keeps the resolved value when a URL assert carries a ${VAR}", () => {
+    // Neither up-front form can express this: a regex would have to match the
+    // reference span with `.*` (so a value that is only refs asserts nothing),
+    // and toHaveURL's glob is compared against the whole URL.
+    expect(line({ action: "assert", assert: "url_contains", value: "${APP_BASE_URL}/settings/new" })).toBe(
+      'await expect.poll(() => page.url()).toContain(`${process.env.APP_BASE_URL ?? ""}/settings/new`);',
+    );
+    // Ref-free values keep the regex form, metacharacters escaped.
+    expect(line({ action: "assert", assert: "url_contains", value: "/runs/a.b" })).toBe(
+      String.raw`await expect(page).toHaveURL(new RegExp("/runs/a\\.b"));`,
+    );
+  });
+
   it("maps interactions 1:1", () => {
     expect(line({ action: "navigate", value: "https://example.test/" })).toBe(
       `await page.goto("https://example.test/");`,
@@ -216,7 +229,7 @@ describe("emitPlaywrightDraft — actions", () => {
       'await page.getByLabel("Password").first().fill(`${process.env.PASSWORD ?? ""}`);',
     );
     expect(line({ action: "assert", assert: "url_contains", value: "/runs/${RUN_ID}" })).toBe(
-      'await expect(page).toHaveURL(`**/runs/${process.env.RUN_ID ?? ""}**`);',
+      'await expect.poll(() => page.url()).toContain(`/runs/${process.env.RUN_ID ?? ""}`);',
     );
   });
 
