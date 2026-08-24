@@ -1,4 +1,6 @@
 import type {
+  CoverageEdgesDoc,
+  CoverageEdgesUpsert,
   Ack,
   Attestations,
   AuditDismissals,
@@ -36,6 +38,7 @@ export interface HubStorage {
   triage: TriageStore;
   prompts: PromptStore;
   perspectives: PerspectivesStore;
+  coverageEdges: CoverageEdgeStore;
   jobs: JobStore;
   ledger: SpecLedgerStore;
   driftLedger: DriftLedgerStore;
@@ -387,4 +390,17 @@ export interface PerspectivesStore {
    */
   update(project: string, mutate: (current: unknown | null) => unknown): Promise<void>;
   delete(project: string): Promise<void>;
+}
+
+/**
+ * Coverage-edge ledger (ADR-0026): one JSON document per project holding each
+ * spec's most recent measured reach. `merge` upserts the given specs and
+ * leaves every other entry alone — a run only measured what it ran — and is
+ * serialized per project so concurrent runs cannot clobber each other. Plain
+ * UTF-8, no encryption, same reasoning as perspectives: which files a test
+ * reaches is not a secret.
+ */
+export interface CoverageEdgeStore {
+  get(project: string): Promise<CoverageEdgesDoc | null>;
+  merge(project: string, specs: CoverageEdgesUpsert["specs"], measuredAt: number): Promise<void>;
 }

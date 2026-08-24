@@ -1,6 +1,9 @@
 # 0024. Spec selection reads measured reach, not a model's guess
 
-- Status: accepted
+- Status: accepted — the staleness consequence (edge expiry, degrade to
+  `unknown`) is amended by [ADR-0026](0026-measured-edges-are-a-ledger.md):
+  edges live in a durable ledger and never age out, and a never-measured
+  spec now selects as `needed` rather than `unknown`
 - Date: 2026-08-17
 
 ## Context and problem statement

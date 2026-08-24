@@ -1,11 +1,12 @@
 import { InboxBodySchema, type StoredEvent } from "../../../coverage/events.ts";
 import { listRunIds, resolveStream, type ResolvedCoverage } from "../../../coverage/resolve-stream.ts";
 import { decodeEncryptedBlob, decrypt, encodeEncryptedBlob, encrypt } from "../../core/crypto.ts";
-import type { CoverageEventStore } from "../../core/storage/types.ts";
+import type { CoverageEdgeStore, CoverageEventStore } from "../../core/storage/types.ts";
 import { extractToken, isValidToken } from "../auth.ts";
 import type { RouteContext } from "../router.ts";
 import { HttpError, readJsonBody, sendJson } from "../respond.ts";
 import { requireSafeSegment } from "../validate.ts";
+import { CoverageEdgesUpsertSchema } from "../../contract/schema.ts";
 
 /**
  * The coverage inbox (ADR-0022): the hub stamps, stores, serves and expires
@@ -215,4 +216,41 @@ function requireSinceSeqParam(url: URL): number {
     throw new HttpError(400, "invalid_param", "invalid sinceSeq: must be a non-negative integer");
   }
   return value;
+}
+
+// ── coverage-edge ledger (ADR-0026) ──────────────────────────────────────
+
+const MAX_EDGES_BODY_BYTES = 8 * 1024 * 1024;
+
+export interface CoverageEdgeHandlerConfig {
+  store: CoverageEdgeStore;
+}
+
+/**
+ * PUT /api/v1/projects/:project/coverage-edges — the specs one run measured,
+ * merged into the ledger newest-wins. `measuredAt` is stamped here with the
+ * hub's clock, so entries written by different runners stay comparable.
+ * Bearer-authenticated like every project route; the append-only coverage
+ * token cannot write here.
+ */
+export function createPutCoverageEdgesHandler(config: CoverageEdgeHandlerConfig) {
+  return async (ctx: RouteContext): Promise<void> => {
+    const project = requireSafeSegment(ctx.params.project!, "project");
+    const body = await readJsonBody(ctx.req, MAX_EDGES_BODY_BYTES, CoverageEdgesUpsertSchema, "coverage-edges body");
+    await config.store.merge(project, body.specs, Date.now());
+    ctx.res.statusCode = 204;
+    ctx.res.end();
+  };
+}
+
+/** GET /api/v1/projects/:project/coverage-edges — the ledger, or 404. */
+export function createGetCoverageEdgesHandler(config: CoverageEdgeHandlerConfig) {
+  return async (ctx: RouteContext): Promise<void> => {
+    const project = requireSafeSegment(ctx.params.project!, "project");
+    const doc = await config.store.get(project);
+    if (doc === null) {
+      throw new HttpError(404, "not_found", `no coverage edges stored for project "${project}"`);
+    }
+    sendJson(ctx.res, 200, doc);
+  };
 }

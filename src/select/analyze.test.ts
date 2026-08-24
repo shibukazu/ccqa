@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ChangedFile } from "../drift/affected.ts";
 import { parseSpecDirPath, rerootChangesForCoverage, selectSpecs } from "./analyze.ts";
-import type { CoverageEdges } from "./coverage-edges.ts";
+import type { CoverageEdgesReadout } from "./coverage-edges.ts";
 import type { SpecDescription } from "./inventory.ts";
 
 function file(path: string, overrides: Partial<ChangedFile> = {}): ChangedFile {
@@ -18,14 +18,17 @@ function spec(featureName: string, specName: string, includedBlocks: string[] = 
   };
 }
 
-/** Edges keyed `"feature/spec"`, every measurement stamped at the same time. */
-function edgesOf(byKey: Record<string, string[]>): CoverageEdges {
-  return new Map(
-    Object.entries(byKey).map(([key, files]) => [key, { files: new Set(files), measuredAt: 1 }]),
-  );
+/** A healthy readout of edges keyed `"feature/spec"`, all stamped at the same time. */
+function edgesOf(byKey: Record<string, string[]>): CoverageEdgesReadout {
+  return {
+    edges: new Map(
+      Object.entries(byKey).map(([key, files]) => [key, { files: new Set(files), measuredAt: 1 }]),
+    ),
+    degraded: false,
+  };
 }
 
-const NO_EDGES: CoverageEdges = new Map();
+const NO_EDGES: CoverageEdgesReadout = { edges: new Map(), degraded: false };
 
 describe("parseSpecDirPath", () => {
   it("extracts <feature>/<spec> from a spec's own directory, else null", () => {
@@ -78,9 +81,11 @@ describe("selectSpecs: mechanical partitioning", () => {
     const report = await selectSpecs({ changed, specs, cwd: "/repo", base: "main", head: "HEAD", edges: NO_EDGES });
 
     // Went to the coverage pass (not mechanically needed) — proven by the
-    // missing edge landing as "unknown" rather than the mechanical "needed".
-    expect(report.specs[0]!.verdict).toBe("unknown");
+    // missing edge landing as the coverage pass's "never measured" rather
+    // than the mechanical reason.
+    expect(report.specs[0]!.verdict).toBe("needed");
     expect(report.specs[0]!.source).toBe("coverage");
+    expect(report.specs[0]!.reason).toContain("never measured");
   });
 
   it("drops a .ccqa/ path that is neither a spec nor a block from the evidence", async () => {
@@ -115,15 +120,15 @@ describe("selectSpecs: coverage judging", () => {
     expect(coupon.source).toBe("coverage");
   });
 
-  it("leaves a spec with no measurement unknown — never notNeeded", async () => {
+  it("selects a spec with no measurement — it runs until an edge lands, never notNeeded", async () => {
     const edges = edgesOf({ "checkout/apply-coupon": ["src/features/coupon/page.ts"] });
 
     const report = await selectSpecs({ changed, specs, cwd: "/repo", base: "main", head: "HEAD", edges });
 
     const purchase = report.specs.find((s) => s.specName === "purchase-with-card")!;
-    expect(purchase.verdict).toBe("unknown");
+    expect(purchase.verdict).toBe("needed");
     expect(purchase.source).toBe("coverage");
-    expect(purchase.reason).toContain("no measurement");
+    expect(purchase.reason).toContain("never measured");
   });
 
   it("clears specs quietly when every change falls outside the measured root", async () => {
@@ -159,8 +164,26 @@ describe("selectSpecs: coverage judging", () => {
     expect(purchase.touchedBy).toEqual(["src/features/checkout/old-name.ts"]);
   });
 
-  it("degrades every undecided spec to unknown when there are no edges at all", async () => {
+  it("selects every undecided spec when nothing was ever measured — the cold start seeds itself", async () => {
     const report = await selectSpecs({ changed, specs, cwd: "/repo", base: "main", head: "HEAD", edges: NO_EDGES });
+
+    for (const s of report.specs) {
+      expect(s.verdict).toBe("needed");
+      expect(s.source).toBe("coverage");
+    }
+  });
+
+  it("degrades absence to unknown when the measurements could not be read", async () => {
+    // A hub hiccup must not read as "everything is unmeasured" — that would
+    // stampede the whole suite into a run on every outage.
+    const report = await selectSpecs({
+      changed,
+      specs,
+      cwd: "/repo",
+      base: "main",
+      head: "HEAD",
+      edges: { edges: new Map(), degraded: true },
+    });
 
     for (const s of report.specs) {
       expect(s.verdict).toBe("unknown");

@@ -82,8 +82,8 @@ import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import { C } from "../cli/colors.ts";
 import * as log from "../cli/logger.ts";
 import { errMessage, RunUsageError } from "./errors.ts";
-import { chooseMeasureBackfill } from "./measure-backfill.ts";
-import { loadCoverageEdges } from "../select/coverage-edges.ts";
+import { specKeyFromSpecId } from "../coverage/spec-id.ts";
+import type { CoverageEdgesUpsert } from "../hub/contract/schema.ts";
 import type { RunTeardown } from "../cli/run-teardown.ts";
 
 export { RunUsageError } from "./errors.ts";
@@ -186,8 +186,6 @@ export interface RunOptions {
   coverage?: boolean;
   /** Where the measurement's events meet: a run-local sink (default) or the hub's inbox. See `--coverage-inbox`. */
   coverageInbox?: CoverageInboxMode;
-  /** Also run up to this many specs whose measured reach is missing or aging. See `--measure-backfill`. */
-  measureBackfill?: number;
   project?: string;
   /** Reap agent-browser sessions / flush the report on SIGINT/SIGTERM. See run-teardown.ts. */
   teardown?: RunTeardown;
@@ -471,20 +469,6 @@ export async function executeRun(
   // Same contract as --report-to-hub: the flag opted into delivering the
   // measurement to the hub, so a missing connection is a usage error checked
   // before anything is spent. The client is built here for the same reason.
-  if ((opts.measureBackfill ?? 0) > 0) {
-    if (opts.coverage !== true) {
-      throw new RunUsageError(
-        "--measure-backfill does nothing without --coverage — there is no measurement to keep fresh",
-      );
-    }
-    if (!filtering) {
-      throw new RunUsageError(
-        "--measure-backfill needs a selection flag (--only-hub-rerun-needed / --only-affected-by); " +
-          "an explicit spec list runs exactly what was asked",
-      );
-    }
-  }
-
   let coverageInbox: CoverageInbox | undefined;
   if (opts.coverageInbox === "hub") {
     if (opts.coverage !== true) {
@@ -578,8 +562,6 @@ export async function executeRun(
     (targets.length ? targets : [undefined]).map((t) => resolveSpecTargets(t, enumerateAll, cwd)),
   );
   let specs = dedupeSpecs(resolved.flat());
-  // The pre-filter catalog: what --measure-backfill below may draw from.
-  const inventory = specs;
 
   if (filtering) {
     const before = specs.length;
@@ -653,21 +635,6 @@ export async function executeRun(
       throw new RunUsageError(
         "nothing was selected and no spec was cleared to run: exiting non-zero rather than " +
           "reporting a green run that verified nothing",
-      );
-    }
-  }
-
-  // Coverage-edge upkeep, only when a selection flag narrowed the run — and
-  // after the empty-selection guard above, so an unanswerable selection still
-  // fails loudly instead of quietly running only backfill.
-  if (filtering && (opts.measureBackfill ?? 0) > 0 && hubCtx != null) {
-    const edges = await loadCoverageEdges(hubCtx);
-    const pick = chooseMeasureBackfill(inventory, specs, edges, opts.measureBackfill ?? 0, Date.now());
-    if (pick.specs.length > 0) {
-      specs = [...specs, ...pick.specs];
-      log.meta(
-        "measure-backfill",
-        `${pick.specs.length} spec(s) appended (${pick.missing} unmeasured / ${pick.aging} aging)`,
       );
     }
   }
@@ -1001,12 +968,13 @@ export async function executeRun(
   // and reporting between the two would call the server half missing on a run
   // whose only measured specs had not started yet. In hub-inbox mode nothing
   // on this side saw the stream, so the hub's resolve is fetched and read out
-  // instead — otherwise an empty measurement is invisible until selection
-  // degrades to unknown days later.
+  // instead — otherwise an empty measurement is invisible: no ledger entry
+  // lands and the spec keeps selecting as needed with nothing saying why.
+  let streamedEdges: CoverageEdgesUpsert["specs"] = {};
   if (coverage && !coverage.streamsToHub) {
     reportCoverageHealth(coverage, [...externalRows, ...live.reportResults]);
   } else if (coverage && hubCtx != null) {
-    await reportStreamedCoverageHealth(coverage, hubCtx);
+    streamedEdges = await reportStreamedCoverageHealth(coverage, hubCtx);
   }
 
   let overallExitCode: 0 | 1 = det.exitCode !== 0 ? 1 : 0;
@@ -1067,6 +1035,30 @@ export async function executeRun(
     // The authoritative report is on disk; a later teardown flush (normal exit
     // or a signal arriving now) must not overwrite it with the provisional one.
     completedNormally = true;
+
+    // The run's measured reach joins the hub's ledger (ADR-0026) in one
+    // place for both inbox modes: hub-inbox off the stream resolve read
+    // above, local off the finished rows. Two gates. Only a run that already
+    // delivers to the hub writes — `--coverage-inbox hub` opted in, local
+    // mode rides `--report-to-hub` — so ambient hub credentials alone cannot
+    // let a stray local run replace the project's measured edges. And a run
+    // whose application half never reported records nothing: its rows hold
+    // only the browser's reach, and now that entries never expire, merging
+    // them would shadow a fuller earlier measurement for good.
+    if (coverage && hubCtx != null) {
+      if (coverage.streamsToHub) {
+        await upsertMeasuredEdges(hubCtx, streamedEdges);
+      } else if (hubRunId != null && coverage.heardFromApplication()) {
+        await upsertMeasuredEdges(
+          hubCtx,
+          Object.fromEntries(
+            report.results
+              .filter((row) => (row.coverage?.files.length ?? 0) > 0)
+              .map((row) => [`${row.feature}/${row.spec}`, { files: row.coverage!.files }]),
+          ),
+        );
+      }
+    }
 
     // Reconcile the hub run: re-send every final row (upsert is idempotent, so
     // this heals any mid-run patch that failed), stamp the real git metadata
@@ -1252,11 +1244,15 @@ function explainMissingCoverage(row: ReportSpecResult): ReportSpecResult {
  * Best-effort — the measurement already left as events, so a failed read-out
  * loses visibility, never data. Application pushes may still land for
  * `GRACE_MS` after the last window closed, so the counts here are a floor.
+ *
+ * Returns the specs the resolve measured, keyed `feature/spec` — the caller
+ * merges them into the ledger alongside the local mode's rows, so the "run
+ * end records measured reach" step lives in one place for both modes.
  */
 async function reportStreamedCoverageHealth(
   coverage: CoverageSession,
   hubCtx: HubContext,
-): Promise<void> {
+): Promise<CoverageEdgesUpsert["specs"]> {
   // The application's collector flushes on a one-second cadence, so the last
   // spec's server work may not have reached the stream yet; reading
   // immediately would call those specs empty. Three seconds covers the flush
@@ -1268,14 +1264,14 @@ async function reportStreamedCoverageHealth(
       .resolved;
   } catch (error) {
     log.warn(`coverage: could not read this run's resolve from the hub (${errMessage(error)})`);
-    return;
+    return {};
   }
   if (resolved == null) {
     log.warn(
       "coverage: the hub resolved nothing for this run — its events never reached the stream, " +
         "so every spec's measured reach is absent",
     );
-    return;
+    return {};
   }
   const measured = resolved.specs.filter((spec) => spec.files.length > 0);
   const empty = resolved.specs.filter((spec) => spec.files.length === 0);
@@ -1324,6 +1320,35 @@ async function reportStreamedCoverageHealth(
     trouble.push(`outside-window=${outside.map(([key, count]) => `${key}:${count}`).join(",")}`);
   }
   if (trouble.length > 0) log.warn(`coverage: stream health flags — ${trouble.join(" ")}`);
+  // A resolve whose application half never reported holds only the browser's
+  // reach — see the merge gate at the call site.
+  if (!h.heardFromApplication) return {};
+  return Object.fromEntries(
+    measured.flatMap((spec) => {
+      const key = specKeyFromSpecId(spec.specId, resolved.runId);
+      return key === null ? [] : [[key, { files: spec.files, runId: resolved.runId }]];
+    }),
+  );
+}
+
+/**
+ * Merge what this run measured into the hub's coverage-edge ledger
+ * (ADR-0026) — the document selection reads. Best-effort: the measurement
+ * also lives in the stream or the report, so a failed merge loses freshness,
+ * not data. A hub without the endpoint (predating it) warns once and moves on.
+ */
+async function upsertMeasuredEdges(
+  hubCtx: HubContext,
+  specs: CoverageEdgesUpsert["specs"],
+): Promise<void> {
+  const count = Object.keys(specs).length;
+  if (count === 0) return;
+  try {
+    await hubCtx.hub.putCoverageEdges(hubCtx.project, { specs });
+    log.meta("coverage", `${count} spec edge(s) recorded on the hub's ledger`);
+  } catch (error) {
+    log.warn(`coverage: could not record measured edges on the hub (${errMessage(error)})`);
+  }
 }
 
 /** Everything the measurement could not place; silence here reads as "never reached". */

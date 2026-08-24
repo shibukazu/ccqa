@@ -62,7 +62,7 @@ async function runSelectSpecs(opts: SelectSpecsOptions): Promise<void> {
 
   // Independent inputs — the spec tree (fs), the diff (a git subprocess) and
   // the coverage edges (the hub) — read concurrently rather than in sequence.
-  const [specsResult, changedResult, edges] = await Promise.all([
+  const [specsResult, changedResult, edgesReadout] = await Promise.all([
     loadSpecInventory(cwd).then(
       (specs) => ({ ok: true as const, specs }),
       (e: unknown) => ({ ok: false as const, error: e as Error }),
@@ -100,10 +100,17 @@ async function runSelectSpecs(opts: SelectSpecsOptions): Promise<void> {
     log.meta("project", project);
     log.meta("changed-files", changed.length);
     log.meta("specs", specs.length);
-    log.meta("measured-specs", edges.size);
+    log.meta("measured-specs", edgesReadout.edges.size);
   }
 
-  const report = await selectSpecs({ changed, specs, cwd, base: opts.base, head, edges });
+  const report = await selectSpecs({
+    changed,
+    specs,
+    cwd,
+    base: opts.base,
+    head,
+    edges: edgesReadout,
+  });
 
   process.stdout.write(format === "json" ? `${JSON.stringify(report, null, 2)}\n` : renderText(report));
   process.exit(0);

@@ -2,7 +2,7 @@ import { getChangedFilesBetween } from "../drift/affected.ts";
 import { RunUsageError } from "../run/errors.ts";
 import { resolveAnalysisBase, type AnalysisBase } from "../run/git-context.ts";
 import { selectSpecs } from "../select/analyze.ts";
-import { loadCoverageEdges, type CoverageEdges } from "../select/coverage-edges.ts";
+import { loadCoverageEdges } from "../select/coverage-edges.ts";
 import { loadSpecInventory } from "../select/inventory.ts";
 import { specsToRun } from "../select/types.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
@@ -73,6 +73,17 @@ export async function collectChangedSpecs(
   meta("changed-files", changed.length);
   if (changed.length === 0) return { specs: [], base: resolved };
 
+  // No hub reads as degraded (undecided specs stay `unknown`, which this
+  // path runs) rather than as an unmeasured suite; the warning is this
+  // command's, the semantics are loadCoverageEdges'.
+  if (!hub) {
+    log.warn(
+      `${flag}: no hub connection, so coverage measurements cannot be consulted — undecided specs will run`,
+    );
+  }
+  // Never rejects, so it can safely overlap the inventory walk below.
+  const edgesPromise = loadCoverageEdges(hub);
+
   let inventory;
   try {
     inventory = await loadSpecInventory(cwd);
@@ -82,22 +93,13 @@ export async function collectChangedSpecs(
     throw new RunUsageError((e as Error).message);
   }
 
-  let edges: CoverageEdges = new Map();
-  if (hub) {
-    edges = await loadCoverageEdges(hub);
-  } else {
-    log.warn(
-      `${flag}: no hub connection, so coverage measurements cannot be consulted — undecided specs will run`,
-    );
-  }
-
   const report = await selectSpecs({
     changed,
     specs: inventory,
     cwd,
     base: resolved.sha,
     head: "HEAD",
-    edges,
+    edges: await edgesPromise,
   });
 
   const toRun = new Set(specsToRun(report).map(specKey));

@@ -17,6 +17,7 @@ import type { ReportCoverage } from "../report/schema.ts";
 import type { CoverageCollector } from "../targets/types.ts";
 import { resolveEnvRefs } from "../runtime/env-vars.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
+import { specIdFor } from "./spec-id.ts";
 import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
 import { CoverageSink } from "./sink.ts";
@@ -504,15 +505,6 @@ export async function resolveRoot(cwd: string, declared: string | undefined): Pr
  */
 export function specCoverageDir(reportDir: string, feature: string, spec: string): string {
   return join(reportDir, "coverage", feature, spec);
-}
-
-/**
- * `<runId>.<feature>/<spec>`. The run id keeps a stale cookie from an earlier
- * run out; the spec half is `specKey`, so an id here and a report row name the
- * same spec the same way.
- */
-function specIdFor(runId: string, ref: SpecRef): string {
-  return `${runId}.${specKey(ref)}`;
 }
 
 async function readFrontend(

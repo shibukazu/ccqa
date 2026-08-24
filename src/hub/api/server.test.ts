@@ -282,6 +282,7 @@ describe("hub API server", () => {
       storage,
       token: TOKEN,
       encryptionKey: null,
+      coverageToken: "append-only-token",
       allowedOrigins: ["https://intranet.example"],
     });
     // Bind to 127.0.0.1 explicitly (not the default IPv6 `::` wildcard). The
@@ -2118,6 +2119,36 @@ describe("hub API server", () => {
     test("without a token returns 401", async () => {
       const res = await fetch(`${baseUrl}/api/v1/projects/demo/learning-jobs`);
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe("coverage-edge ledger", () => {
+    const upsert = JSON.stringify({ specs: { "checkout/a": { files: ["src/a.ts"] } } });
+
+    test("writes need the hub bearer token — no token and the append-only coverage token are both 401", async () => {
+      const put = (init: RequestInit = {}) =>
+        fetch(`${baseUrl}/api/v1/projects/demo/coverage-edges`, { method: "PUT", body: upsert, ...init });
+      expect((await put()).status).toBe(401);
+      // The coverage inbox token can append events and nothing else (ADR-0026).
+      expect((await put({ headers: { Authorization: "Bearer append-only-token" } })).status).toBe(401);
+    });
+
+    test("PUT merges entries and GET reads the ledger back", async () => {
+      const put = await fetch(
+        `${baseUrl}/api/v1/projects/demo/coverage-edges`,
+        authed({ method: "PUT", body: upsert }),
+      );
+      expect(put.status).toBe(204);
+      const res = await fetch(`${baseUrl}/api/v1/projects/demo/coverage-edges`, authed());
+      expect(res.status).toBe(200);
+      const body = await json(res);
+      expect(body.specs["checkout/a"].files).toEqual(["src/a.ts"]);
+      expect(typeof body.specs["checkout/a"].measuredAt).toBe("number");
+    });
+
+    test("GET answers 404 for a project with no ledger", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/projects/unwritten/coverage-edges`, authed());
+      expect(res.status).toBe(404);
     });
   });
 });

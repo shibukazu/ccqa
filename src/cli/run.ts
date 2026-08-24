@@ -140,15 +140,6 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       },
       "local" as CoverageInboxMode,
     )
-    .option(
-      "--measure-backfill <n>",
-      "With --coverage and a selection flag (--only-hub-rerun-needed / --only-affected-by): also run up to <n> specs whose measured reach is missing or past half its freshness window, unmeasured-first then oldest-first. This is what keeps selection's edges alive — without it an unmeasured spec answers `unknown` forever, because `unknown` marks nothing due and nothing else re-measures.",
-      (raw): number => {
-        const n = Number(raw);
-        if (!Number.isInteger(n) || n < 0) throw new Error("--measure-backfill must be a non-negative integer");
-        return n;
-      },
-    )
     .optionsGroup("Learning:")
     .option(
       "--learn-hub-live-prompt",
