@@ -81,6 +81,8 @@ import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import { C } from "../cli/colors.ts";
 import * as log from "../cli/logger.ts";
 import { errMessage, RunUsageError } from "./errors.ts";
+import { chooseMeasureBackfill } from "./measure-backfill.ts";
+import { loadCoverageEdges } from "../select/coverage-edges.ts";
 import type { RunTeardown } from "../cli/run-teardown.ts";
 
 export { RunUsageError } from "./errors.ts";
@@ -183,6 +185,8 @@ export interface RunOptions {
   coverage?: boolean;
   /** Where the measurement's events meet: a run-local sink (default) or the hub's inbox. See `--coverage-inbox`. */
   coverageInbox?: CoverageInboxMode;
+  /** Also run up to this many specs whose measured reach is missing or aging. See `--measure-backfill`. */
+  measureBackfill?: number;
   project?: string;
   /** Reap agent-browser sessions / flush the report on SIGINT/SIGTERM. See run-teardown.ts. */
   teardown?: RunTeardown;
@@ -466,6 +470,20 @@ export async function executeRun(
   // Same contract as --report-to-hub: the flag opted into delivering the
   // measurement to the hub, so a missing connection is a usage error checked
   // before anything is spent. The client is built here for the same reason.
+  if ((opts.measureBackfill ?? 0) > 0) {
+    if (opts.coverage !== true) {
+      throw new RunUsageError(
+        "--measure-backfill does nothing without --coverage — there is no measurement to keep fresh",
+      );
+    }
+    if (!filtering) {
+      throw new RunUsageError(
+        "--measure-backfill needs a selection flag (--only-hub-rerun-needed / --only-affected-by); " +
+          "an explicit spec list runs exactly what was asked",
+      );
+    }
+  }
+
   let coverageInbox: CoverageInbox | undefined;
   if (opts.coverageInbox === "hub") {
     if (opts.coverage !== true) {
@@ -559,6 +577,8 @@ export async function executeRun(
     (targets.length ? targets : [undefined]).map((t) => resolveSpecTargets(t, enumerateAll, cwd)),
   );
   let specs = dedupeSpecs(resolved.flat());
+  // The pre-filter catalog: what --measure-backfill below may draw from.
+  const inventory = specs;
 
   if (filtering) {
     const before = specs.length;
@@ -632,6 +652,21 @@ export async function executeRun(
       throw new RunUsageError(
         "nothing was selected and no spec was cleared to run: exiting non-zero rather than " +
           "reporting a green run that verified nothing",
+      );
+    }
+  }
+
+  // Coverage-edge upkeep, only when a selection flag narrowed the run — and
+  // after the empty-selection guard above, so an unanswerable selection still
+  // fails loudly instead of quietly running only backfill.
+  if (filtering && (opts.measureBackfill ?? 0) > 0 && hubCtx != null) {
+    const edges = await loadCoverageEdges(hubCtx);
+    const pick = chooseMeasureBackfill(inventory, specs, edges, opts.measureBackfill ?? 0, Date.now());
+    if (pick.specs.length > 0) {
+      specs = [...specs, ...pick.specs];
+      log.meta(
+        "measure-backfill",
+        `${pick.specs.length} spec(s) appended (${pick.missing} unmeasured / ${pick.aging} aging)`,
       );
     }
   }

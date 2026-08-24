@@ -162,6 +162,16 @@ does selection degrade to `unknown`. Two read-outs close that gap:
   is the read-out measured spec selection consumes, so when a spec's verdict
   is `unknown`, this command shows whether the measurement was empty and why.
 
+### Keeping the edges alive
+
+A measured edge expires after fourteen days, and nothing else re-measures: an
+unmeasured spec answers `unknown`, `unknown` marks nothing due, and a suite
+can settle into a state where no run ever fires. `ccqa run --measure-backfill
+<n>` (with `--coverage` and a selection flag) breaks that loop by appending up
+to `<n>` specs per run whose reach is missing or past half its freshness
+window — unmeasured first, then oldest — so the whole suite stays inside the
+window without a scheduled full sweep.
+
 ## Flows a webhook drives
 
 A spec that drives the application through a chat platform reaches it by a
