@@ -14,6 +14,37 @@ import type { HubStorage } from "./storage/types.ts";
 export const DEFAULT_MAX_RUNS_PER_BRANCH = 200;
 
 /**
+ * How many deployed commits keep their source maps. Bounded by count, not age:
+ * a project deploys on its own rhythm, and what a run needs is the maps for
+ * what is deployed now — a handful of predecessors covers a run that starts
+ * just before a deploy lands.
+ */
+export const DEFAULT_MAX_SOURCEMAP_COMMITS = 10;
+
+/**
+ * Drop the source maps of every commit past the newest `maxCommits`.
+ *
+ * Hung off a push for the same reason run retention hangs off a terminal run:
+ * the hub whose disk grows is the one written to constantly and never
+ * restarted. Best-effort — a lost sweep costs disk, while failing the push it
+ * runs beside would cost the deploy.
+ */
+export async function sweepSourceMapRetention(
+  storage: HubStorage,
+  project: string,
+  maxCommits: number,
+): Promise<void> {
+  try {
+    const commits = await storage.sourceMaps.listCommits(project);
+    for (const commit of commits.slice(maxCommits)) {
+      await storage.sourceMaps.delete(project, commit);
+    }
+  } catch {
+    // Same contract as the run sweep: disk is the only thing at stake.
+  }
+}
+
+/**
  * Drop everything past the newest `maxRuns` of the (project, branch) that
  * `run` belongs to, taking each evicted run's artifacts and triage records
  * with it.

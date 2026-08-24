@@ -350,6 +350,20 @@ POST /api/v1/projects/:project/locks?profile=<name>
 DELETE /api/v1/projects/:project/locks?profile=<name>
   { holder: string }
   → 204
+
+PUT /api/v1/projects/:project/sourcemaps/:commit/*path
+  <the readable fields of one source map, as JSON>
+  → 204
+  # *path is the asset path the browser requests, minus the origin
+  # (`_next/static/chunks/x.js.map`). Pushed at deploy time by
+  # `ccqa hub sourcemap push`; see ADR-0025.
+
+GET /api/v1/projects/:project/sourcemaps/:commit
+  → 200 { project, commit, paths: string[] }
+
+GET /api/v1/projects/:project/sourcemaps/:commit/*path
+  → 200 <the stored map>
+  | 404 (this commit pushed no map for that asset)
 ```
 
 ```ts

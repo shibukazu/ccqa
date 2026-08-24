@@ -22,6 +22,12 @@ import {
 import { createListProfilesHandler, createListProjectsHandler } from "./handlers/projects.ts";
 import { createGetLastGreenHandler } from "./handlers/last-green.ts";
 import { createGetDriftLedgerHandler } from "./handlers/drift-ledger.ts";
+import {
+  createGetSourceMapHandler,
+  createListSourceMapsHandler,
+  createPutSourceMapHandler,
+  createSweepSourceMapsHandler,
+} from "./handlers/sourcemaps.ts";
 import { createGetDeployLogHandler, createRecordDeployHandler } from "./handlers/deploys.ts";
 import { createGetAuditNeedHandler } from "./handlers/audit-need.ts";
 import { createAcquireLocksHandler, createReleaseLocksHandler } from "./handlers/locks.ts";
@@ -240,6 +246,14 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.get("/api/v1/projects/:project/deploys", createGetDeployLogHandler(storage));
   router.get("/api/v1/projects/:project/rerun", createGetRerunHandler(storage));
   router.get("/api/v1/projects/:project/audit-needed", createGetAuditNeedHandler(storage));
+  // Source maps for a deployed commit. A build that keeps its maps out of the
+  // CDN leaves coverage unable to name a frontend file; pushing them here fills
+  // that in without publishing them.
+  router.put("/api/v1/projects/:project/sourcemaps/:commit/*path", createPutSourceMapHandler(storage));
+  router.post("/api/v1/projects/:project/sourcemaps/sweep", createSweepSourceMapsHandler(storage));
+  router.get("/api/v1/projects/:project/sourcemaps/:commit", createListSourceMapsHandler(storage));
+  router.get("/api/v1/projects/:project/sourcemaps/:commit/*path", createGetSourceMapHandler(storage));
+
   router.post("/api/v1/projects/:project/locks", createAcquireLocksHandler(storage));
   router.delete("/api/v1/projects/:project/locks", createReleaseLocksHandler(storage));
 

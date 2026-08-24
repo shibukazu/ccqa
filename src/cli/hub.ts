@@ -1,9 +1,12 @@
 import { Command } from "commander";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { HubClient } from "../hub-client/index.ts";
 import { RunReportDataSchema } from "../report/schema.ts";
 import { packDirToTarGz } from "../hub/core/tar.ts";
+import { listFilesRecursive } from "../hub/core/storage/file/fs-helpers.ts";
+import { reduceSourceMap } from "../coverage/frontend/reduce-map.ts";
 import {
   DEFAULT_SESSION_PROFILE,
   loadStorageState,
@@ -276,6 +279,95 @@ const varCommand = new Command("var")
   .addCommand(varSet)
   .addCommand(varLs)
   .addCommand(varRm);
+
+// ── source maps ─────────────────────────────────────────────────────────
+
+const sourcemapPush = new Command("push")
+  .description(
+    "Upload the source maps a build produced, so `ccqa run --coverage` can name frontend files when the build keeps its maps off the CDN. Only the fields coverage reads are sent — the original source each map carries is dropped rather than stored.",
+  )
+  .argument("<dir>", "Directory holding the build output (e.g. `.next/static`).")
+  .requiredOption("--sha <sha>", "Commit these assets were built from — the same one the deploy is recorded under.")
+  .option(
+    "--asset-prefix <path>",
+    "Path the files are served under, prepended to each stored path (e.g. `_next/static`). Match what the browser requests, minus the origin.",
+    "",
+  )
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .option(...projectOption)
+  .option(...cwdOption)
+  .action(
+    withHubErrors(async (dirArg: string, opts: ScopeOptions & { sha: string; assetPrefix: string }) => {
+      const project = resolveProject(opts);
+      const hub = connect(opts);
+      const dir = resolve(resolveCwd(opts.cwd), dirArg);
+      // Distinguished from an empty directory on purpose: in a deploy job a
+      // mistyped path would otherwise pass, the maps would be deleted with the
+      // build, and coverage would report a frontend it could not name.
+      if (!existsSync(dir)) throw new Error(`no such directory: ${dir}`);
+      const maps = (await listFilesRecursive(dir)).filter((f) => f.endsWith(".map"));
+      const prefix = opts.assetPrefix.replace(/^\/+|\/+$/g, "");
+
+      log.header("hub sourcemap push", `${project}@${opts.sha.slice(0, 12)}`);
+      log.meta("dir", dir);
+      if (maps.length === 0) {
+        log.warn(`no *.map under ${dir} — nothing to push (was the build run with source maps enabled?)`);
+        return;
+      }
+
+      let pushed = 0;
+      let bytes = 0;
+      const unusable: string[] = [];
+      for (const rel of maps) {
+        const reduced = reduceSourceMap(await readFile(join(dir, rel), "utf8"));
+        if (reduced === undefined) {
+          unusable.push(rel);
+          continue;
+        }
+        const body = new TextEncoder().encode(JSON.stringify(reduced));
+        await hub.putSourceMap(project, opts.sha, prefix ? `${prefix}/${rel}` : rel, body);
+        pushed++;
+        bytes += body.length;
+      }
+      // Said rather than silently skipped: a build whose maps this side cannot
+      // read leaves coverage exactly where it was, and the push looked fine.
+      if (unusable.length > 0) {
+        log.warn(`${unusable.length} map(s) were not source maps this side can read, e.g. ${unusable[0]}`);
+      }
+      await hub.sweepSourceMaps(project);
+      log.info(`pushed ${pushed} source map(s), ${Math.round(bytes / 1024)} KiB`);
+    }),
+  );
+
+const sourcemapLs = new Command("ls")
+  .description("List the source maps stored for a commit.")
+  .requiredOption("--sha <sha>", "The commit to list.")
+  .option(...hubUrlOption)
+  .option(...hubTokenOption)
+  .option(...projectOption)
+  .option(...cwdOption)
+  .action(
+    withHubErrors(async (opts: ScopeOptions & { sha: string }) => {
+      const project = resolveProject(opts);
+      const hub = connect(opts);
+      const paths = await hub.listSourceMaps(project, opts.sha);
+      log.header("hub sourcemap ls", `${project}@${opts.sha.slice(0, 12)}`);
+      if (paths.length === 0) {
+        log.info("no source maps stored for this commit");
+        return;
+      }
+      for (const path of paths) log.meta("", path);
+      log.info(`${paths.length} source map(s)`);
+    }),
+  );
+
+const sourcemapCommand = new Command("sourcemap")
+  .description(
+    "Manage the source maps coverage reads when a build keeps its maps off the CDN (pushed at deploy time, fetched during `ccqa run --coverage`).",
+  )
+  .addCommand(sourcemapPush)
+  .addCommand(sourcemapLs);
 
 // ── prompts ─────────────────────────────────────────────────────────────
 
@@ -875,6 +967,7 @@ export const hubCommand = new Command("hub")
   .addCommand(coverageCommand)
   .addCommand(sessionCommand)
   .addCommand(varCommand)
+  .addCommand(sourcemapCommand)
   .addCommand(promptCommand)
   .addCommand(attestCommand)
   .addCommand(dismissCommand);

@@ -134,6 +134,14 @@ export const CoverageConfigSchema = z
      */
     instrumentedOrigins: z.array(z.string().min(1)).min(1),
     /**
+     * Origins the application's static assets are served from, when they are
+     * not the application's own. Only used to recognise a script as this
+     * project's when reading a pushed source map; the spec cookie never goes
+     * here, which is why it is a separate list from `instrumentedOrigins` —
+     * widening that one to cover a CDN would hand a test marker to it.
+     */
+    assetOrigins: z.array(z.string().min(1)).optional(),
+    /**
      * The address `ccqa run --coverage` binds a listener on for the run's
      * duration, and therefore where instrumented application processes push.
      * The application is pointed at the same address through its own
