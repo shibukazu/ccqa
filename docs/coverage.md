@@ -149,8 +149,9 @@ as they always did.
 ### Reading a streamed measurement back
 
 Because the rows carry no coverage in this mode, an empty measurement is easy
-to miss: the run passes, the stream accepts every event, and only days later
-does selection degrade to `unknown`. Two read-outs close that gap:
+to miss: the run passes, the stream accepts every event, no ledger entry
+lands, and the spec simply keeps selecting as `needed` — never settling into
+the cheap `notNeeded` skips a measurement buys. Two read-outs close that gap:
 
 - At the end of a streamed run, `ccqa run` asks the hub to resolve the run's
   slice of the stream and prints the answer: how many specs measured files,
@@ -158,19 +159,27 @@ does selection degrade to `unknown`. Two read-outs close that gap:
   during the run, attributed specs, out-of-window events).
 - `ccqa hub coverage` prints the same resolve on demand — per-spec measured
   file counts (`--files` lists the files, `--json` the raw answer) and the
-  health counters, for the most recent measured run or `--run-id <id>`. This
-  is the read-out measured spec selection consumes, so when a spec's verdict
-  is `unknown`, this command shows whether the measurement was empty and why.
+  health counters, for the most recent measured run or `--run-id <id>`. When
+  a spec keeps selecting as `needed` despite measured runs, this command
+  shows whether its measurements came back empty and why.
 
-### Keeping the edges alive
+### The edge ledger
 
-A measured edge expires after fourteen days, and nothing else re-measures: an
-unmeasured spec answers `unknown`, `unknown` marks nothing due, and a suite
-can settle into a state where no run ever fires. `ccqa run --measure-backfill
-<n>` (with `--coverage` and a selection flag) breaks that loop by appending up
-to `<n>` specs per run whose reach is missing or past half its freshness
-window — unmeasured first, then oldest — so the whole suite stays inside the
-window without a scheduled full sweep.
+Every measured run that delivers to the hub — `--coverage-inbox hub`, or
+local mode under `--report-to-hub` — ends by merging what it measured into
+the hub's coverage-edge ledger: one document per project, one entry per
+spec, replaced whenever that spec runs measured and never expiring
+(ADR-0026). A run whose application half never reported merges nothing:
+recording only the browser's reach would shadow a fuller earlier
+measurement for good. Selection reads the ledger in one request; the stream
+and pushed report rows still answer for hubs or data that predate it,
+newest measurement winning.
+
+There is no re-measurement schedule because none is needed. A spec with no
+entry selects as `needed` — it runs until a measurement records its reach,
+and running measured is what creates the entry — so the ledger seeds and
+maintains itself. Only a failed *read* of the hub degrades to `unknown`:
+"never measured" runs the spec, "could not check" refuses to guess.
 
 ## Flows a webhook drives
 

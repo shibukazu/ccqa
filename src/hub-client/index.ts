@@ -1,4 +1,6 @@
 import type {
+  CoverageEdgesDoc,
+  CoverageEdgesUpsert,
   AcquireLocksRequest,
   AcquireLocksResponse,
   AttestationResponse,
@@ -153,6 +155,13 @@ export interface HubClient {
    * reach edges through this (ADR-0024).
    */
   getCoverage(project: string, q?: { runId?: string }): Promise<HubCoverageAnswer>;
+  /**
+   * Merge one run's measured reach into the project's coverage-edge ledger
+   * (ADR-0026). The hub stamps `measuredAt` with its own clock.
+   */
+  putCoverageEdges(project: string, upsert: CoverageEdgesUpsert): Promise<void>;
+  /** The coverage-edge ledger, or `null` when nothing is stored (or the hub predates it). */
+  getCoverageEdges(project: string): Promise<CoverageEdgesDoc | null>;
 
   /**
    * Source maps for what a commit deployed, addressed by the asset path the
@@ -430,6 +439,22 @@ export function createHubClient(opts: HubClientOptions): HubClient {
     },
     getCoverage(project, q = {}) {
       return json(`/api/v1/coverage?${queryString({ project, runId: q.runId })}`);
+    },
+
+    putCoverageEdges(project, upsert) {
+      return request(`/api/v1/projects/${encodeURIComponent(project)}/coverage-edges`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(upsert),
+      }).then(() => undefined);
+    },
+    async getCoverageEdges(project) {
+      try {
+        return await json<CoverageEdgesDoc>(`/api/v1/projects/${encodeURIComponent(project)}/coverage-edges`);
+      } catch (err) {
+        if (err instanceof HubApiError && err.status === 404) return null;
+        throw err;
+      }
     },
 
     putSourceMap(project, commit, assetPath, map) {

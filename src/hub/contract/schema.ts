@@ -1130,3 +1130,39 @@ export const SpendLogResponseSchema = z.object({
   entries: z.array(SpendEntrySchema),
 });
 export type SpendLogResponse = z.infer<typeof SpendLogResponseSchema>;
+
+/**
+ * The coverage-edge ledger: per spec, the most recent measured reach — the
+ * input measured spec selection intersects a diff with (ADR-0026). One
+ * document per project; entries never expire, they are only replaced by a
+ * newer measurement. `measuredAt` is stamped by the hub on merge, so entries
+ * written by different runs stay comparable on one clock.
+ */
+export const CoverageEdgeEntrySchema = z.object({
+  /** Files the spec reached, relative to `coverage.projectRoot`, sorted. */
+  files: z.array(z.string()),
+  /** When the hub accepted this measurement (epoch ms, hub clock). */
+  measuredAt: z.number(),
+  /** The stream run id the measurement came from, when known. */
+  runId: z.string().optional(),
+});
+export type CoverageEdgeEntry = z.infer<typeof CoverageEdgeEntrySchema>;
+
+export const CoverageEdgesDocSchema = z.object({
+  /** Keyed `"feature/spec"`. */
+  specs: z.record(z.string(), CoverageEdgeEntrySchema),
+});
+export type CoverageEdgesDoc = z.infer<typeof CoverageEdgesDocSchema>;
+
+/**
+ * Body of `PUT /projects/:project/coverage-edges` — the specs one run
+ * measured. Merged into the stored document, never replacing other specs'
+ * entries; an empty file set is not a measurement and is rejected per entry.
+ */
+export const CoverageEdgesUpsertSchema = z.object({
+  specs: z.record(z.string(), z.object({
+    files: z.array(z.string()).min(1),
+    runId: z.string().optional(),
+  })).refine((specs) => Object.keys(specs).length > 0, "at least one spec entry is required"),
+});
+export type CoverageEdgesUpsert = z.infer<typeof CoverageEdgesUpsertSchema>;

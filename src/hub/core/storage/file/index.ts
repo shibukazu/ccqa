@@ -10,6 +10,7 @@ import { createFileLockStore } from "./lock-store.ts";
 import { createFileDriftLedgerStore } from "./drift-ledger-store.ts";
 import { createFileJobStore } from "./job-store.ts";
 import { createFileSpecLedgerStore } from "./ledger-store.ts";
+import { createFileCoverageEdgeStore } from "./coverage-edge-store.ts";
 import { createFilePerspectivesStore } from "./perspectives-store.ts";
 import { createFilePromptStore } from "./prompt-store.ts";
 import { createFileRunStore } from "./run-store.ts";
@@ -27,6 +28,7 @@ export function createFileHubStorage(dataDir: string): HubStorage {
     triage: createFileTriageStore(dataDir),
     prompts: createFilePromptStore(dataDir),
     perspectives: createFilePerspectivesStore(dataDir),
+    coverageEdges: createFileCoverageEdgeStore(dataDir),
     jobs: createFileJobStore(dataDir),
     ledger: createFileSpecLedgerStore(dataDir),
     driftLedger: createFileDriftLedgerStore(dataDir),

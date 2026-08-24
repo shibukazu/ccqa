@@ -45,7 +45,9 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0021](0021-what-a-spec-actually-reached.md) | Measure what a spec reached, per spec, in a shared environment | accepted (transport amended by 0022) |
 | [0022](0022-coverage-flows-through-an-inbox.md) | Coverage flows through an inbox; interpretation is one resolver | accepted |
 | [0023](0023-an-undecided-selection-is-not-a-reach.md) | An undecided selection is not a reach | accepted |
-| [0024](0024-selection-from-measured-reach.md) | Spec selection reads measured reach, not a model's guess | accepted |
+| [0024](0024-selection-from-measured-reach.md) | Spec selection reads measured reach, not a model's guess | accepted (staleness amended by 0026) |
+| [0025](0025-source-maps-for-a-deployed-commit.md) | Source maps for a deployed commit live on the hub | accepted |
+| [0026](0026-measured-edges-are-a-ledger.md) | Measured edges are a ledger, and an unmeasured spec runs | accepted |
 
 ## Template
 

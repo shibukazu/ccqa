@@ -587,14 +587,7 @@ async function selectionForDeploy(
     const specs = await loadSpecInventory(cwd);
     if (specs.length === 0) return undefined;
     const edges = await loadCoverageEdges({ hub, project });
-    const report = await selectSpecs({
-      changed,
-      specs,
-      cwd,
-      base: previous,
-      head: sha,
-      edges,
-    });
+    const report = await selectSpecs({ changed, specs, cwd, base: previous, head: sha, edges });
     return Object.fromEntries(
       report.specs.map((s) => [
         specKey(s),

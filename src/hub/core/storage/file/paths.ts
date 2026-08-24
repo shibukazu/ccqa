@@ -115,6 +115,12 @@ export function perspectivesPath(root: string, project: string): string {
   return join(perspectivesKindDir(root), `${project}.json`);
 }
 
+// Coverage-edge ledger: one JSON document per project, entries merged
+// newest-wins by the store: coverage-edges/<project>.json.
+export function coverageEdgesPath(root: string, project: string): string {
+  return join(root, "coverage-edges", `${project}.json`);
+}
+
 // Spec ledger: last-green/<project>/<profile>/<branch>.json. The directory
 // keeps its original name so existing hub data stays readable now that the
 // document carries three buckets rather than only the green one.

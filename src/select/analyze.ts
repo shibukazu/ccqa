@@ -4,7 +4,7 @@ import { loadProjectConfig } from "../config/project-config.ts";
 import { resolveRoot } from "../coverage/session.ts";
 import { execFileP, type ChangedFile } from "../drift/affected.ts";
 import { parseBlockPath, specKey } from "../store/index.ts";
-import type { CoverageEdges } from "./coverage-edges.ts";
+import type { CoverageEdgesReadout } from "./coverage-edges.ts";
 import type { SpecDescription } from "./inventory.ts";
 import type { SelectReport, SpecSelection } from "./types.ts";
 
@@ -15,11 +15,14 @@ export interface SelectSpecsInput {
   base: string;
   head: string;
   /**
-   * Measured reach per spec, from the hub (`loadCoverageEdges`). An empty
-   * map — nothing measured yet, or the hub unreadable — leaves every
-   * undecided spec `unknown`, which the caller runs.
+   * What reading the hub's measurements yielded (`loadCoverageEdges`). The
+   * readout is taken whole because its halves must never travel separately:
+   * an absent edge selects a spec (it runs until a measurement lands,
+   * ADR-0026) only when the read actually answered — a degraded read leaves
+   * undecided specs `unknown`, so a hub hiccup cannot stampede the whole
+   * suite into a run.
    */
-  edges: CoverageEdges;
+  edges: CoverageEdgesReadout;
 }
 
 /**
@@ -31,8 +34,9 @@ export interface SelectSpecsInput {
  * means that spec must re-run — reach cannot see the test's own definition,
  * so no measurement is consulted for it. Everything else intersects the diff
  * with the files the spec's last measured run actually reached (ADR-0024);
- * a spec with no measurement stays `unknown`, because an unmeasured edge is
- * not an unreached one.
+ * a spec with no measurement is `needed` — it runs until a measurement
+ * lands, which is also what records its first edge (ADR-0026). Only when
+ * the measurements could not be read does absence degrade to `unknown`.
  */
 export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport> {
   const { changed, specs, cwd, base, head, edges } = input;
@@ -160,31 +164,29 @@ interface JudgeInput {
   pending: SpecDescription[];
   productChanges: ChangedFile[];
   cwd: string;
-  edges: CoverageEdges;
+  edges: CoverageEdgesReadout;
 }
 
 /**
  * Hold each undecided spec's last measured reach against the diff.
  *
- * Three outcomes, and only the middle one is a positive claim: no
- * measurement means `unknown` (an unmeasured edge is not an unreached one —
- * the absence of evidence runs the spec); a non-empty intersection means
- * `needed`, with the intersecting paths as the reason; an empty one means
- * `notNeeded` — the measurement accounts for everything the spec reached,
- * and the diff missed all of it. Changes outside the measured root fall out
+ * Three outcomes, and only one is a positive claim: a non-empty intersection
+ * means `needed`, with the intersecting paths as the reason; an empty one
+ * means `notNeeded` — the measurement accounts for everything the spec
+ * reached, and the diff missed all of it; no measurement at all is also
+ * `needed` — the spec runs until a measurement records its reach (ADR-0026)
+ * — unless the read was degraded, in which case absence proves nothing and
+ * the spec is left `unknown`. Changes outside the measured root fall out
  * of the comparison entirely: the root is the declared boundary of what
  * measurement governs, so what lies beyond it clears specs quietly — one
  * warning names the dropped paths, because a root configured too narrow
  * looks exactly like this and hides real reach (see docs/coverage.md).
  */
 async function judgeWithCoverage(input: JudgeInput): Promise<SpecSelection[]> {
-  const { pending, productChanges, cwd, edges } = input;
+  const { pending, productChanges, cwd } = input;
+  const { edges, degraded } = input.edges;
 
-  const noMeasurement = "no measurement to consult: the hub holds no measured reach for this spec";
-  if (edges.size === 0) {
-    return pending.map((s) => unknownSelection(s, noMeasurement));
-  }
-
+  const unreadable = "the hub's measured reach could not be read; not guessing";
   const roots = await resolveCoverageRoots(productChanges, cwd);
   const measuredChanges = rerootChangesForCoverage(productChanges, roots);
 
@@ -202,7 +204,19 @@ async function judgeWithCoverage(input: JudgeInput): Promise<SpecSelection[]> {
 
   return pending.map((spec) => {
     const edge = edges.get(specKey(spec));
-    if (!edge) return unknownSelection(spec, noMeasurement);
+    // No measurement is not "unreached": the spec is selected, and running it
+    // is exactly what records its first edge (ADR-0026). Only a degraded
+    // read turns absence into `unknown` — the measurements may exist.
+    if (!edge) {
+      if (degraded) return unknownSelection(spec, unreadable);
+      return {
+        featureName: spec.featureName,
+        specName: spec.specName,
+        verdict: "needed" as const,
+        source: "coverage" as const,
+        reason: "never measured: the spec runs until a measurement records its reach",
+      };
+    }
     const touchedBy = measuredChanges.filter((c) => edge.files.has(c.measured)).map((c) => c.original);
     if (touchedBy.length > 0) {
       return {

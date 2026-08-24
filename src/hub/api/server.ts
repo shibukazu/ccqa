@@ -44,6 +44,8 @@ import {
 } from "./handlers/audit-dismissals.ts";
 import { createGetSpendHandler, createRecordSpendHandler } from "./handlers/spend.ts";
 import {
+  createPutCoverageEdgesHandler,
+  createGetCoverageEdgesHandler,
   createAppendCoverageEventHandler,
   createGetCoverageEventsHandler,
   createResolveCoverageHandler,
@@ -304,6 +306,12 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.get("/api/v1/projects/:project/perspectives", createGetPerspectivesHandler(perspectivesConfig));
   router.patch("/api/v1/projects/:project/perspectives", createPatchPerspectivesNoteHandler(perspectivesConfig));
   router.delete("/api/v1/projects/:project/perspectives", createDeletePerspectivesHandler(perspectivesConfig));
+
+  // Coverage-edge ledger (ADR-0026): each spec's most recent measured reach,
+  // merged by runs at run end and read whole by spec selection.
+  const coverageEdgesConfig = { store: storage.coverageEdges };
+  router.put("/api/v1/projects/:project/coverage-edges", createPutCoverageEdgesHandler(coverageEdgesConfig));
+  router.get("/api/v1/projects/:project/coverage-edges", createGetCoverageEdgesHandler(coverageEdgesConfig));
 
   // The coverage inbox (ADR-0022): stamp, store, serve — never interpret.
   // The append's auth lives in its handler (see SELF_AUTHENTICATED_ROUTES);

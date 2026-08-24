@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { HubClient, HubCoverageAnswer } from "../hub-client/index.ts";
 import type { Run } from "../hub/contract/schema.ts";
-import { EDGE_MAX_AGE_MS, loadCoverageEdges } from "./coverage-edges.ts";
+import { loadCoverageEdges } from "./coverage-edges.ts";
 
-// Timestamps are anchored to now because edges past `EDGE_MAX_AGE_MS` are not
-// adopted — a fixed date would silently expire under every test at once.
 const NOW = Date.now();
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 
@@ -39,11 +37,17 @@ interface FakeHub {
   coverage?: Record<string, HubCoverageAnswer>;
   runs?: Run[];
   reports?: Record<string, unknown>;
+  /** The ledger document; undefined plays an older hub (404 → null), "broken" a failing read. */
+  ledger?: { specs: Record<string, { files: string[]; measuredAt: number }> } | "broken";
 }
 
 /** Only the three methods `loadCoverageEdges` touches; anything else throws. */
 function fakeHub(data: FakeHub): HubClient {
   return {
+    async getCoverageEdges() {
+      if (data.ledger === "broken") throw new Error("ledger unreadable");
+      return data.ledger ?? null;
+    },
     async getCoverage(_project: string, q: { runId?: string } = {}) {
       const key = q.runId ?? "";
       const answer = data.coverage?.[key];
@@ -84,7 +88,7 @@ describe("loadCoverageEdges: stream source", () => {
       },
     });
 
-    const edges = await loadCoverageEdges({ hub, project: "demo" });
+    const { edges } = await loadCoverageEdges({ hub, project: "demo" });
 
     expect([...edges.keys()]).toEqual(["checkout/purchase-with-card"]);
     expect(edges.get("checkout/purchase-with-card")!.files.has("src/a.ts")).toBe(true);
@@ -108,7 +112,7 @@ describe("loadCoverageEdges: stream source", () => {
       },
     });
 
-    const edges = await loadCoverageEdges({ hub, project: "demo" });
+    const { edges } = await loadCoverageEdges({ hub, project: "demo" });
 
     // checkout/a keeps the newer run's reach; checkout/b only the old run measured.
     expect(edges.get("checkout/a")!.files.has("src/new.ts")).toBe(true);
@@ -127,7 +131,7 @@ describe("loadCoverageEdges: stream source", () => {
       },
     });
 
-    expect((await loadCoverageEdges({ hub, project: "demo" })).size).toBe(0);
+    expect((await loadCoverageEdges({ hub, project: "demo" })).edges.size).toBe(0);
   });
 });
 
@@ -159,7 +163,7 @@ describe("loadCoverageEdges: report source", () => {
       },
     });
 
-    const edges = await loadCoverageEdges({ hub, project: "demo" });
+    const { edges } = await loadCoverageEdges({ hub, project: "demo" });
 
     expect(edges.get("checkout/a")!.files.has("src/new.ts")).toBe(true);
     expect(edges.get("checkout/a")!.files.has("src/never.ts")).toBe(false);
@@ -185,34 +189,59 @@ describe("loadCoverageEdges: merging and degradation", () => {
       },
     });
 
-    const edges = await loadCoverageEdges({ hub, project: "demo" });
+    const { edges } = await loadCoverageEdges({ hub, project: "demo" });
 
     expect(edges.get("checkout/a")!.files.has("src/stream.ts")).toBe(true);
     expect(edges.get("checkout/a")!.files.has("src/report.ts")).toBe(false);
   });
 
-  it("adopts no edge older than EDGE_MAX_AGE_MS, from either source", async () => {
-    const stale = NOW - EDGE_MAX_AGE_MS - 60_000;
+  it("prefers the ledger when it is newer, and an old edge never expires", async () => {
     const hub = fakeHub({
-      coverage: {
-        "": {
-          resolved: resolved("r1", stale, [{ specId: "r1.checkout/a", files: ["src/a.ts"] }]),
-          runIds: ["r1"],
+      ...NO_RUNS,
+      ...NO_STREAM,
+      ledger: {
+        specs: {
+          "checkout/a": { files: ["src/ledger.ts"], measuredAt: NOW - 400 * 24 * 3600 * 1000 },
         },
-      },
-      runs: [run("hub-run", new Date(stale).toISOString())],
-      reports: {
-        "hub-run": { results: [{ feature: "checkout", spec: "b", coverage: { files: ["src/b.ts"] } }] },
       },
     });
 
-    expect((await loadCoverageEdges({ hub, project: "demo" })).size).toBe(0);
+    const { edges, degraded } = await loadCoverageEdges({ hub, project: "demo" });
+
+    // Over a year old and still an edge: entries are replaced, never rotted.
+    expect(edges.get("checkout/a")!.files.has("src/ledger.ts")).toBe(true);
+    expect(degraded).toBe(false);
+  });
+
+  it("flips degraded when the legacy sources break and no ledger answers", async () => {
+    const hub = fakeHub({ ...NO_STREAM }); // no ledger (404); runs throw
+
+    const { edges, degraded } = await loadCoverageEdges({ hub, project: "demo" });
+
+    expect(edges.size).toBe(0);
+    expect(degraded).toBe(true);
+  });
+
+  it("flips degraded when the ledger itself cannot be read", async () => {
+    const hub = fakeHub({ ...NO_STREAM, ...NO_RUNS, ledger: "broken" });
+
+    expect((await loadCoverageEdges({ hub, project: "demo" })).degraded).toBe(true);
+  });
+
+  it("a broken legacy source does not degrade a read the ledger answered", async () => {
+    const hub = fakeHub({ ...NO_STREAM, ledger: { specs: {} } }); // runs throw
+
+    const { degraded } = await loadCoverageEdges({ hub, project: "demo" });
+
+    // The ledger is the record once it answers: a spec only the broken legacy
+    // sources knew reads as unmeasured, which runs it — the safe direction.
+    expect(degraded).toBe(false);
   });
 
   it("returns an empty map, never throws, when the hub cannot be read at all", async () => {
     const hub = fakeHub({});
 
-    expect((await loadCoverageEdges({ hub, project: "demo" })).size).toBe(0);
+    expect((await loadCoverageEdges({ hub, project: "demo" })).edges.size).toBe(0);
   });
 
   it("still uses the readable source when the other fails", async () => {
@@ -224,7 +253,7 @@ describe("loadCoverageEdges: merging and degradation", () => {
       },
     });
 
-    const edges = await loadCoverageEdges({ hub, project: "demo" });
+    const { edges } = await loadCoverageEdges({ hub, project: "demo" });
 
     expect(edges.get("checkout/a")!.files.has("src/a.ts")).toBe(true);
   });
