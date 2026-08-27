@@ -28,6 +28,16 @@ const VENDOR = /(^|\/)node_modules\//;
 const LAYER = /^\([^)]*\)\//;
 
 /**
+ * What follows `[project]/` is relative to the build's project root, not to
+ * where the build ran. Only this one root is stripped: Turbopack's others
+ * (`[output]`, `[externals]`) name generated code, not files on disk.
+ */
+const TURBOPACK_PROJECT = /^\[project\]\//;
+
+/** The ` [layer] (ecmascript)` suffix Turbopack appends when it names a module. */
+const MODULE_IDENTIFIER = / \[[^\]]*\]/;
+
+/**
  * The two directories a source name is read against.
  *
  * They differ when the project under test is one package of a workspace: the
@@ -74,14 +84,20 @@ export function normalizeSourcePath(raw: string, roots: SourceRoots): SourcePath
     path = slash < 0 ? afterScheme : afterScheme.slice(from);
   }
   path = posix.normalize(path.replace(LAYER, ""));
+  const rooted = TURBOPACK_PROJECT.test(path);
+  if (rooted) path = path.replace(TURBOPACK_PROJECT, "");
   if (path === "" || path === ".") return UNRESOLVED;
   // Anonymous and generated entries carry no file to point a reader at.
   if (path.startsWith("<") || path.startsWith("[")) return UNRESOLVED;
+  // `src/a.tsx [app-client] (ecmascript)` — a module identifier, not a path.
+  // Stripping `[project]/` moves the brackets off the front, where the guard
+  // above would have caught them; a name nobody can open stays a hole.
+  if (rooted && MODULE_IDENTIFIER.test(path)) return UNRESOLVED;
 
   // An absolute entry is the build machine's own path — common from bundlers
   // that do not rewrite `sources`. A relative one is relative to where the
-  // build ran, which is why it is resolved against `base` and not `root`.
-  const absolute = path.startsWith("/") ? path : resolve(roots.base, path);
+  // build ran, hence `base`; a `[project]`-anchored one to `root`.
+  const absolute = path.startsWith("/") ? path : resolve(rooted ? roots.root : roots.base, path);
   const rel = toProjectRelative(roots.root, absolute);
   if (rel === undefined) return UNRESOLVED;
   return VENDOR.test(rel) ? DEPENDENCY : { kind: "project", path: rel };

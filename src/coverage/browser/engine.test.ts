@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { CdpTransport, EventHandler } from "./cdp.ts";
-import { assetPathOf, startBrowserCoverage, type BrowserCoverageHandle } from "./engine.ts";
+import { assetPathOf, storeKeyOf, startBrowserCoverage, type BrowserCoverageHandle } from "./engine.ts";
 
 /**
  * The engine's state machine against a scripted transport — the paths the
@@ -264,6 +264,18 @@ describe("engine state machine (scripted transport)", () => {
     };
     expect(written).toMatchObject({ files: [], stopped: false });
     expect(existsSync(join(dir, "coverage-frontend.json"))).toBe(true);
+  });
+});
+
+describe("storeKeyOf", () => {
+  const origins = ["https://app.test"];
+
+  it("leaves a URL that already names a map as the key", () => {
+    expect(storeKeyOf("https://app.test/chunks/b.js.map?v=2", origins)).toBe("chunks/b.js.map");
+  });
+
+  it("appends the suffix for a script URL, which names no map", () => {
+    expect(storeKeyOf("https://app.test/chunks/b.js", origins)).toBe("chunks/b.js.map");
   });
 });
 

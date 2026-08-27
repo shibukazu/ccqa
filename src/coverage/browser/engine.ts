@@ -183,7 +183,7 @@ class Engine implements BrowserCoverageHandle {
       coverageDir: opts.coverageDir,
       roots: opts.roots,
       fetchText: (url) => this.fetchThroughBrowser(url),
-      fetchStoredMap: (scriptUrl) => this.storedMapFor(scriptUrl),
+      fetchStoredMap: (mapUrl, scriptUrl) => this.storedMapFor(mapUrl, scriptUrl),
       warn: opts.warn,
     });
   }
@@ -612,20 +612,25 @@ class Engine implements BrowserCoverageHandle {
   }
 
   /**
-   * The map a deploy stored for `scriptUrl`, if this run knows where to ask.
+   * The map a deploy stored for a script, if this run knows where to ask.
    * Addressed by the path under the asset origin rather than the URL, so the
    * push and the read agree without either knowing the other's host.
+   *
+   * The script's pointer names the map, but it may name it somewhere this run
+   * never declared — a map-only host. Guessing from the script is worse than
+   * the pointer and better than not asking, so it stays as the fallback.
    */
-  private async storedMapFor(scriptUrl: string): Promise<string | undefined> {
+  private async storedMapFor(mapUrl: string, scriptUrl: string): Promise<string | undefined> {
     const stored = this.opts.fetchStoredSourceMap;
     if (stored === undefined) return undefined;
-    const assetPath = assetPathOf(scriptUrl, [...this.opts.origins, ...(this.opts.assetOrigins ?? [])]);
-    if (assetPath === undefined) return undefined;
+    const origins = [...this.opts.origins, ...(this.opts.assetOrigins ?? [])];
+    const key = storeKeyOf(mapUrl, origins) ?? storeKeyOf(scriptUrl, origins);
+    if (key === undefined) return undefined;
     try {
-      return await stored(`${assetPath}.map`);
+      return await stored(key);
     } catch (err) {
       // The hub being unreachable costs this script its file names, not the run.
-      this.opts.warn(`could not read the stored source map for ${assetPath}: ${message(err)}`);
+      this.opts.warn(`could not read the stored source map for ${key}: ${message(err)}`);
       return undefined;
     }
   }
@@ -660,6 +665,17 @@ function message(error: unknown): string {
  * is part of what the browser asked for, so the push has to have used it too.
  * A URL from an origin the run never declared is not ours to look up.
  */
+/**
+ * The key a stored map is read by: the asset path, with `.map` appended only
+ * when it is missing. A push files each map under its own path, so a URL that
+ * already names a map needs no suffix; only a script URL has to guess one.
+ */
+export function storeKeyOf(url: string, origins: readonly string[]): string | undefined {
+  const assetPath = assetPathOf(url, origins);
+  if (assetPath === undefined) return undefined;
+  return assetPath.endsWith(".map") ? assetPath : `${assetPath}.map`;
+}
+
 export function assetPathOf(url: string, origins: readonly string[]): string | undefined {
   let parsed: URL;
   try {

@@ -47,12 +47,14 @@ export interface FrontendResolutionOptions {
    */
   fetchText(url: string): Promise<string | undefined>;
   /**
-   * A map for the script itself, from wherever a deploy stored it. Tried when
-   * the served copy is absent or unreadable — a build that withholds its maps
-   * answers 404 for them, and a catch-all route can turn that 404 into an HTML
-   * page, which is a body but not a map.
+   * A map from wherever a deploy stored it, addressed by the URL the script
+   * points its map at — `scriptUrl` when it points at none, and the callee's
+   * fallback when the pointer names somewhere it cannot look. Tried when the
+   * served copy is absent or unreadable: a build that withholds its maps
+   * answers 404 for them, and a catch-all route can turn that 404 into an
+   * HTML page, which is a body but not a map.
    */
-  fetchStoredMap?(scriptUrl: string): Promise<string | undefined>;
+  fetchStoredMap?(mapUrl: string, scriptUrl: string): Promise<string | undefined>;
   warn(text: string): void;
 }
 
@@ -68,7 +70,9 @@ export class FrontendResolution {
   private readonly coverageDir: string;
   private readonly roots: SourceRoots;
   private readonly fetchText: (url: string) => Promise<string | undefined>;
-  private readonly fetchStoredMap: ((scriptUrl: string) => Promise<string | undefined>) | undefined;
+  private readonly fetchStoredMap:
+    | ((mapUrl: string, scriptUrl: string) => Promise<string | undefined>)
+    | undefined;
   private readonly warn: (text: string) => void;
 
   private readonly files = new Set<string>();
@@ -228,21 +232,23 @@ export class FrontendResolution {
     script: AcquiredScript,
     source: string,
   ): (() => Promise<string | undefined>)[] {
-    const loaders: (() => Promise<string | undefined>)[] = [];
     const reference = readSourceMappingUrl(source);
-    if (reference !== undefined) {
-      const inline = decodeInlineSourceMap(reference);
-      if (inline !== undefined) {
-        loaders.push(() => Promise.resolve(inline));
-      } else {
-        const target = absoluteOrUndefined(reference, script.url);
-        if (target !== undefined) loaders.push(() => this.fetchText(target));
-      }
-    }
+    const inline = reference === undefined ? undefined : decodeInlineSourceMap(reference);
+    // Where the map lives, and also the name the stored copy is filed under: a
+    // bundler is free to call a map something other than `<chunk>.js.map`
+    // (Turbopack does), so the script's own pointer is the only reliable name.
+    const mapUrl =
+      reference !== undefined && inline === undefined
+        ? absoluteOrUndefined(reference, script.url)
+        : undefined;
+
+    const loaders: (() => Promise<string | undefined>)[] = [];
+    if (inline !== undefined) loaders.push(() => Promise.resolve(inline));
+    if (mapUrl !== undefined) loaders.push(() => this.fetchText(mapUrl));
     const stored = this.fetchStoredMap;
     // Tried even with no reference to follow: a build that strips its maps
     // commonly strips the comment that points at them too.
-    if (stored !== undefined) loaders.push(() => stored(script.url));
+    if (stored !== undefined) loaders.push(() => stored(mapUrl ?? script.url, script.url));
     return loaders;
   }
 
