@@ -9,6 +9,7 @@ const dirs: string[] = [];
 
 function makeResolution(opts?: {
   fetchText?: (url: string) => Promise<string | undefined>;
+  fetchStoredMap?: (mapUrl: string, scriptUrl: string) => Promise<string | undefined>;
 }): { resolution: FrontendResolution; dir: string; warnings: string[] } {
   const dir = mkdtempSync(join(tmpdir(), "ccqa-resolve-"));
   dirs.push(dir);
@@ -18,6 +19,7 @@ function makeResolution(opts?: {
     coverageDir: dir,
     roots: { base: dir, root: dir },
     fetchText: opts?.fetchText ?? (async () => undefined),
+    fetchStoredMap: opts?.fetchStoredMap,
     warn: (text) => warnings.push(text),
   });
   return { resolution, dir, warnings };
@@ -84,6 +86,43 @@ describe("FrontendResolution", () => {
     await resolution.absorb(covered("http://127.0.0.1:1/app.js", source));
     resolution.flush();
     expect(written(dir).files).toEqual(["src/mapped.ts"]);
+  });
+
+  it("asks the store for the map the script points at, not for <chunk>.js.map", async () => {
+    const map = JSON.stringify({
+      version: 3,
+      sources: ["webpack://app/./src/stored.ts"],
+      names: [],
+      mappings: "AAAA",
+    });
+    const asked: [string, string][] = [];
+    const { resolution, dir } = makeResolution({
+      fetchStoredMap: async (mapUrl, scriptUrl) => {
+        asked.push([mapUrl, scriptUrl]);
+        return map;
+      },
+    });
+    await resolution.absorb(
+      covered("http://127.0.0.1:1/chunk.js", "covered();\n//# sourceMappingURL=other-name.js.map"),
+    );
+    resolution.flush();
+    // The script URL rides along so the store can still be asked when the
+    // pointer names an origin this run never declared.
+    expect(asked).toEqual([["http://127.0.0.1:1/other-name.js.map", "http://127.0.0.1:1/chunk.js"]]);
+    expect(written(dir).files).toEqual(["src/stored.ts"]);
+  });
+
+  it("falls back to the script's own URL when it points at no map", async () => {
+    const asked: string[] = [];
+    const { resolution } = makeResolution({
+      fetchStoredMap: async (mapUrl) => {
+        asked.push(mapUrl);
+        return undefined;
+      },
+    });
+    await resolution.absorb(covered("http://127.0.0.1:1/chunk.js", "covered();"));
+    resolution.flush();
+    expect(asked).toEqual(["http://127.0.0.1:1/chunk.js"]);
   });
 
   it("counts an http script with no map as unmapped, not as reached nothing", async () => {

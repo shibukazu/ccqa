@@ -48,6 +48,22 @@ describe("normalizeSourcePath", () => {
     expect(normalizeSourcePath("<anonymous>", ROOTS).kind).toBe("unresolved");
   });
 
+  test("anchors a Turbopack `[project]` name at the root, not the build directory", () => {
+    expect(normalizeSourcePath("turbopack:///[project]/apps/web/src/a.ts", WORKSPACE)).toEqual({
+      kind: "project",
+      path: "apps/web/src/a.ts",
+    });
+  });
+
+  test("leaves a Turbopack module identifier unresolved, not a file nobody can open", () => {
+    const raw = "turbopack:///[project]/apps/web/src/a.tsx [app-client] (ecmascript)";
+    expect(normalizeSourcePath(raw, WORKSPACE).kind).toBe("unresolved");
+  });
+
+  test("leaves Turbopack's other roots unresolved", () => {
+    expect(normalizeSourcePath("turbopack:///[output]/chunk.js", ROOTS).kind).toBe("unresolved");
+  });
+
   // The bundler names a sibling package relative to where it ran, so the two
   // roots have to be read apart: against the build directory it resolves, and
   // against the root it becomes a path a reader can open.
