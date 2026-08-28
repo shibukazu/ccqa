@@ -122,7 +122,7 @@ export class StreamResolution {
   private lastSeq = 0;
   private pushesDuringRun = 0;
 
-  /** `markers` needs to hold every marker event of the stream; pushes are ignored here. */
+  /** `markers` needs to hold every marker `runId` issued; other runs' markers and pushes are ignored. */
   // `runId` is assigned in the body, not declared as a parameter: node's type
   // stripping runs this file as-is and rejects a parameter property outright.
   constructor(markers: Iterable<StoredEvent>, runId: string) {
@@ -242,13 +242,22 @@ export function resolveStream(events: StoredEvent[], runId: string): ResolvedCov
 /**
  * Every run that opened a spec in this stream, most recently heard-from
  * first — recency by the arrival position of each run's latest spec-open,
- * the one order the hub's stamps establish.
+ * the one order the hub's stamps establish. Fed one event at a time, so the
+ * question can be asked of a stream too large to hold.
  */
-export function listRunIds(events: StoredEvent[]): string[] {
-  const lastOpenIndex = new Map<string, number>();
-  events.forEach((event, index) => {
+export class RunIdIndex {
+  /** Re-inserted on every `spec-open`, so insertion order is order of latest open. */
+  private readonly opened = new Set<string>();
+
+  accept(event: StoredEvent): void {
     const body = event.body;
-    if ("kind" in body && body.kind === "spec-open") lastOpenIndex.set(body.runId, index);
-  });
-  return [...lastOpenIndex.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+    if (!("kind" in body) || body.kind !== "spec-open") return;
+    this.opened.delete(body.runId);
+    this.opened.add(body.runId);
+  }
+
+  newestFirst(): string[] {
+    return [...this.opened].reverse();
+  }
 }
+

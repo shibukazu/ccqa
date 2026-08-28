@@ -1,5 +1,5 @@
 import { InboxBodySchema, type StoredEvent } from "../../../coverage/events.ts";
-import { listRunIds, StreamResolution, type ResolvedCoverage } from "../../../coverage/resolve-stream.ts";
+import { RunIdIndex, StreamResolution, type ResolvedCoverage } from "../../../coverage/resolve-stream.ts";
 import { decodeEncryptedBlob, decrypt, encodeEncryptedBlob, encrypt } from "../../core/crypto.ts";
 import type { CoverageEdgeStore, CoverageEventStore } from "../../core/storage/types.ts";
 import { extractToken, isValidToken } from "../auth.ts";
@@ -194,6 +194,46 @@ export function createResolveMemo(limit: number): {
 }
 
 /**
+ * `runId`'s answer, in two more scans: one keeping its markers, one replaying
+ * the stream through the resolver they seed. Both stop at `head`, where the
+ * scan that chose the run stopped — the resolver's markers are frozen there,
+ * so a later push would credit a spec it was never told had opened and count
+ * as rejected: a fault in the read, reading as a fault in the run.
+ */
+/** A marker `runId` issued — what `StreamResolution` needs before it is fed the stream. */
+function isMarkerOf(event: StoredEvent, runId: string): boolean {
+  const body = event.body;
+  return "kind" in body && body.runId === runId;
+}
+
+async function resolveRun(
+  config: CoverageHandlerConfig,
+  key: Buffer,
+  project: string,
+  runId: string,
+  head: number,
+  collected: StoredEvent[] | null,
+): Promise<ResolvedCoverage> {
+  async function scanToHead(visit: (event: StoredEvent) => void): Promise<void> {
+    await scanStream(config, key, project, 0, (event) => {
+      if (event.seq <= head) visit(event);
+    });
+  }
+
+  let markers = collected;
+  if (markers === null) {
+    const found: StoredEvent[] = [];
+    await scanToHead((event) => {
+      if (isMarkerOf(event, runId)) found.push(event);
+    });
+    markers = found;
+  }
+  const resolution = new StreamResolution(markers, runId);
+  await scanToHead((event) => resolution.accept(event));
+  return resolution.finish();
+}
+
+/**
  * GET /api/v1/coverage?project=[&runId=] — the stream, interpreted for one
  * run by the shared resolver (resolve-stream.ts); this handler only reads,
  * memoizes and serves. `runId` omitted means the run the stream most
@@ -219,33 +259,29 @@ export function createResolveCoverageHandler(config: CoverageHandlerConfig) {
       return;
     }
 
-    // Two scans, keeping only the markers between them. Every push the stream
-    // holds still reaches the resolver, but none of them is held: the stream
-    // outgrows this process long before it outgrows its own retention.
-    const markers: StoredEvent[] = [];
+    // Scanned rather than held: this endpoint serves concurrent readers, and
+    // each pays for what it keeps, not for what it reads. What survives a scan
+    // is which runs exist, and one run's markers.
+    const runIndex = new RunIdIndex();
+    // A caller that named its run — which the spec-selection fan-out always
+    // does — lets this pass collect the markers too, sparing the run that
+    // matters most a second read of the stream.
+    const named: StoredEvent[] | null = runKey !== "" ? [] : null;
     let seen = 0;
     const first = await scanStream(config, key, project, 0, (event) => {
       seen += 1;
-      if ("kind" in event.body) markers.push(event);
+      runIndex.accept(event);
+      if (named !== null && isMarkerOf(event, runKey)) named.push(event);
     });
-    const runIds = listRunIds(markers).slice(0, RUN_IDS_LIMIT);
+    const runIds = runIndex.newestFirst().slice(0, RUN_IDS_LIMIT);
     const runId = runKey !== "" ? runKey : runIds[0];
-    let resolved: ResolvedCoverage | null = null;
-    if (runId !== undefined && seen > 0) {
-      const resolution = new StreamResolution(markers, runId);
-      // Stops where the first scan stopped. The markers behind the resolver
-      // were frozen there, so a later event would be read against a context
-      // that never saw its own marker: a push crediting a spec the resolver
-      // was not told had opened counts as rejected, which reads as a fault in
-      // the run rather than in the read.
-      await scanStream(config, key, project, 0, (event) => {
-        if (event.seq <= first.lastSeq) resolution.accept(event);
-      });
-      resolved = resolution.finish();
-    }
+    const resolved =
+      runId !== undefined && seen > 0
+        ? await resolveRun(config, key, project, runId, first.lastSeq, named)
+        : null;
     const answer: CoverageAnswer = { resolved, runIds };
-    // Both scans stop at this position, so it is exactly what the answer
-    // covers — an event landing between them changes neither.
+    // Every scan stops at this position, so it is exactly what the answer
+    // covers — an event landing mid-read changes none of them.
     memo.put(project, runKey, first.lastSeq, answer);
     sendJson(ctx.res, 200, answer);
   };
