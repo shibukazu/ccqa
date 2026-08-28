@@ -197,6 +197,16 @@ describe("coverage inbox API", () => {
     expect((await getResolved(baseUrl, APP_TOKEN)).status).toBe(401);
   });
 
+  test("naming the run spares the read a pass, because the markers come with it", async () => {
+    const storage = createFileHubStorage(dataDir);
+    const read = vi.spyOn(storage.coverageEvents, "scan");
+    const baseUrl = await startHub({ storage });
+    await post(baseUrl, TOKEN, RUN_EVENT);
+
+    await getResolved(baseUrl, TOKEN, "&runId=run-1");
+    expect(read.mock.calls.length).toBe(2);
+  });
+
   test("a poll at an unmoved stream position answers from the memo without reading the store", async () => {
     const storage = createFileHubStorage(dataDir);
     const read = vi.spyOn(storage.coverageEvents, "scan");
@@ -205,7 +215,10 @@ describe("coverage inbox API", () => {
 
     const first = (await (await getResolved(baseUrl, TOKEN)).json()) as { resolved: ResolvedCoverage | null };
     const readsAfterFirst = read.mock.calls.length;
-    expect(readsAfterFirst).toBeGreaterThan(0);
+    // Exact, not "more than none": what the read costs is a scan per pass, and
+    // the passes exist so no pass has to hold the stream. A change that buys
+    // its answer back by buffering would show up here first.
+    expect(readsAfterFirst).toBe(3);
 
     const second = (await (await getResolved(baseUrl, TOKEN)).json()) as { resolved: ResolvedCoverage | null };
     expect(read.mock.calls.length).toBe(readsAfterFirst);

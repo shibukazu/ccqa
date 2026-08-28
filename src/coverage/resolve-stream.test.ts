@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { StoredEvent } from "./events.ts";
 import type { CoveragePush } from "./resolver.ts";
-import { GRACE_MS, listRunIds, resolveStream, StreamResolution } from "./resolve-stream.ts";
+import { GRACE_MS, resolveStream, RunIdIndex, StreamResolution } from "./resolve-stream.ts";
 
 /**
  * The stream interpretation alone, on synthetic stored events with hand-picked
@@ -64,7 +64,7 @@ describe("resolveStream", () => {
     expect(b.lastSeq).toBe(6);
   });
 
-  test("fed the markers up front, a streamed pass answers what the whole stream does", () => {
+  test("fed one run's markers up front, a streamed pass answers what the whole stream does", () => {
     const events = stream(
       [1_000, { kind: "spec-open", runId: RUN_A, specId: SPEC_A }],
       push(3_000, { specs: { [SPEC_A]: ["src/a.ts"] } }),
@@ -73,9 +73,9 @@ describe("resolveStream", () => {
       push(101_000, { specs: { [SPEC_B]: ["src/b.ts"] } }),
     );
 
-    // What the hub does: keep only the markers from the first pass, then feed
-    // every event through the second.
-    const markers = events.filter((event) => "kind" in event.body);
+    // What the hub does: keep this run's markers in an earlier pass, then feed
+    // every event through this one.
+    const markers = events.filter((event) => "kind" in event.body && event.body.runId === RUN_A);
     const resolution = new StreamResolution(markers, RUN_A);
     for (const event of events) resolution.accept(event);
 
@@ -204,7 +204,13 @@ describe("resolveStream", () => {
   });
 });
 
-describe("listRunIds", () => {
+describe("RunIdIndex", () => {
+  const idsOf = (events: StoredEvent[]): string[] => {
+    const index = new RunIdIndex();
+    for (const event of events) index.accept(event);
+    return index.newestFirst();
+  };
+
   test("most recently heard-from first, one entry per run", () => {
     const events = stream(
       [1, { kind: "spec-open", runId: RUN_A, specId: SPEC_A }],
@@ -213,7 +219,7 @@ describe("listRunIds", () => {
       // Non-open markers do not move a run up: opening is what "measuring" means.
       [4, { kind: "spec-close", runId: RUN_B, specId: SPEC_B }],
     );
-    expect(listRunIds(events)).toEqual([RUN_A, RUN_B]);
-    expect(listRunIds([])).toEqual([]);
+    expect(idsOf(events)).toEqual([RUN_A, RUN_B]);
+    expect(idsOf([])).toEqual([]);
   });
 });
