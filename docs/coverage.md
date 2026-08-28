@@ -305,6 +305,16 @@ Two things have to line up for the read side to find them:
 
 `ccqa hub sourcemap ls --sha <sha>` shows what a push landed.
 
+When neither lines up, a run that resolved no frontend files at all says so
+and names the commit it asked under:
+
+```
+[warn] coverage: no stored source map answered for any of the 412 script(s)
+this run asked about, under commit 3b08b3c374ff. Either that deploy pushed
+none, or the hub's deploy log names a commit the environment is no longer
+serving
+```
+
 ## What it cannot see
 
 - Code outside any request: schedulers, queue consumers, timers that were
