@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, expect } from "vitest";
-import { extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, resolveEndpointEnv, withoutEmptyEndpointVars, buildInvocationEnv } from "./invoke.ts";
+import { builtinToolNames, extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, withoutEmptyEndpointVars, buildInvocationEnv } from "./invoke.ts";
 import * as log from "../cli/logger.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -570,6 +570,21 @@ describe("isBashToolResponseError", () => {
   });
 });
 
+describe("builtinToolNames", () => {
+  test("maps allow-list entries to declared built-in tools, dropping patterns and MCP tools", () => {
+    expect(builtinToolNames(["Bash(*)", "Read", "Grep", "Glob", "mcp__diff__changed_file_diff"])).toEqual([
+      "Bash",
+      "Read",
+      "Grep",
+      "Glob",
+    ]);
+  });
+
+  test("an empty allow-list declares no built-in tools", () => {
+    expect(builtinToolNames([])).toEqual([]);
+  });
+});
+
 describe("extractInvocationCost", () => {
   test("reads cost / duration / turns / usage off a success result message", () => {
     const msg = {
@@ -603,6 +618,25 @@ describe("extractInvocationCost", () => {
       outputTokens: 800,
       models: ["claude-opus-4-7"],
     });
+  });
+
+  test("drops the price when the answering model is not a Claude model", () => {
+    const msg = {
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      num_turns: 3,
+      total_cost_usd: 0.92,
+      usage: { input_tokens: 178444, output_tokens: 1232 },
+      // Keyed by the id that answered, not the alias that was asked for: a
+      // live run with `-m sonnet` mapped to a self-hosted model reported the
+      // self-hosted id here.
+      modelUsage: { "self-hosted-35b": { inputTokens: 178444, outputTokens: 1232, costUSD: 0.92 } },
+    } as unknown as SDKMessage;
+    const cost = extractInvocationCost(msg);
+    expect(cost.totalCostUsd).toBeNull();
+    expect(cost.inputTokens).toBe(178444);
+    expect(cost.models).toEqual(["self-hosted-35b"]);
   });
 
   test("returns all nulls when the SDK omits cost fields (e.g. mock replay)", () => {
@@ -643,7 +677,7 @@ async function logOfOneBashCall(envScrubMap: Array<[string, string]>): Promise<s
   const written: string[] = [];
   try {
     await log.withSink({ write: (text) => written.push(text) }, async () => {
-      await invokeClaudeStreaming({ prompt: "x", envScrubMap }, () => {});
+      await invokeClaudeStreaming({ prompt: "x", allowedTools: ["Bash(*)"], envScrubMap }, () => {});
     });
   } finally {
     delete process.env["CCQA_CLAUDE_MOCK_FILE"];
@@ -656,35 +690,6 @@ describe("invokeClaudeStreaming Bash logging", () => {
   test("masks a resolved env value the model inlined into the command", async () => {
     const out = await logOfOneBashCall([["https://app.example.com", "${APP_URL}"]]);
     expect(out).toContain("agent-browser --session s1 open ${APP_URL}/orders");
-  });
-});
-
-describe("resolveEndpointEnv", () => {
-  const saved = {
-    ANTHROPIC_API_KEY: process.env["ANTHROPIC_API_KEY"],
-    CLAUDE_CODE_OAUTH_TOKEN: process.env["CLAUDE_CODE_OAUTH_TOKEN"],
-  };
-  afterEach(() => {
-    for (const [key, value] of Object.entries(saved)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-
-  test("forwards the OAuth token", () => {
-    delete process.env["ANTHROPIC_API_KEY"];
-    process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-test";
-    expect(resolveEndpointEnv()["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("sk-ant-oat-test");
-  });
-
-  // The CLI would prefer the API key; forwarding both would make adding the
-  // token a no-op. The switch must be "add one variable", so the token wins.
-  test("the OAuth token wins over the API key", () => {
-    process.env["ANTHROPIC_API_KEY"] = "sk-real";
-    process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-test";
-    const env = resolveEndpointEnv();
-    expect(env["CLAUDE_CODE_OAUTH_TOKEN"]).toBe("sk-ant-oat-test");
-    expect("ANTHROPIC_API_KEY" in env).toBe(false);
   });
 });
 
@@ -710,7 +715,7 @@ describe("buildInvocationEnv", () => {
     }
   });
 
-  // resolveEndpointEnv's precedence is only real if it reaches the env the
+  // preferOauthToken's precedence is only real if it reaches the env the
   // SDK receives. Before this function, the merged env kept both credentials
   // and the CLI preferred the key — every CI call billed the metered key
   // while the subscription token sat unused.
@@ -739,10 +744,12 @@ describe("buildInvocationEnv", () => {
     expect("CLAUDE_CODE_OAUTH_TOKEN" in env!).toBe(false);
   });
 
-  test("returns undefined with no endpoint variables and no caller env", () => {
+  test("always hands the SDK an env with auto memory off, even with nothing else set", () => {
     delete process.env["ANTHROPIC_API_KEY"];
     delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-    expect(buildInvocationEnv()).toBeUndefined();
+    const env = buildInvocationEnv();
+    expect(env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"]).toBe("1");
+    expect(env["PATH"]).toBe(process.env["PATH"]);
   });
 });
 

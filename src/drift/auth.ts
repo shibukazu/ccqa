@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { CREDENTIAL_ENV_KEYS } from "../claude/env-keys.ts";
 
 /**
  * Claude Code can also run against AWS Bedrock / Google Vertex AI, selected by
@@ -21,21 +22,20 @@ function cloudProviderEnabled(): boolean {
 
 /**
  * Probe whether the host has any credential the Anthropic SDK can pick up:
- *   1. ANTHROPIC_API_KEY env var (CI / scripted use)
- *   2. CLAUDE_CODE_OAUTH_TOKEN env var (a long-lived subscription token from
- *      `claude setup-token`, the headless-CI counterpart of a login)
- *   3. CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX (cloud-provider
- *      endpoints authenticated by the cloud SDK's credential chain)
- *   4. ~/.claude/.credentials.json (Claude Code login, file-based platforms)
- *   5. macOS Keychain item "Claude Code-credentials" (Claude Code login on
- *      darwin stores the OAuth credentials in the Keychain, not on disk)
+ *   - one of CREDENTIAL_ENV_KEYS (API key, gateway bearer token, or the
+ *     subscription token from `claude setup-token`)
+ *   - CLAUDE_CODE_USE_BEDROCK / CLAUDE_CODE_USE_VERTEX (cloud-provider
+ *     endpoints authenticated by the cloud SDK's credential chain)
+ *   - ~/.claude/.credentials.json (Claude Code login, file-based platforms)
+ *   - macOS Keychain item "Claude Code-credentials" (Claude Code login on
+ *     darwin stores the OAuth credentials in the Keychain, not on disk)
  *
  * Claude-driven hooks are opt-in, so the caller only consults this after the
  * user has asked for analysis. We never throw — auth absence is a normal flow
  * that surfaces as "analysis skipped".
  */
 export function driftAuthAvailable(): { ok: true } | { ok: false; reason: string } {
-  for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
+  for (const key of CREDENTIAL_ENV_KEYS) {
     const value = process.env[key];
     if (typeof value === "string" && value.length > 0) return { ok: true };
   }
@@ -43,7 +43,7 @@ export function driftAuthAvailable(): { ok: true } | { ok: false; reason: string
   const credPath = join(homedir(), ".claude", ".credentials.json");
   if (existsSync(credPath)) return { ok: true };
   if (process.platform === "darwin" && keychainHasClaudeCredentials()) return { ok: true };
-  return { ok: false, reason: "no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN / Bedrock or Vertex env / claude login" };
+  return { ok: false, reason: `no ${CREDENTIAL_ENV_KEYS.join(" / ")} / Bedrock or Vertex env / claude login` };
 }
 
 /**

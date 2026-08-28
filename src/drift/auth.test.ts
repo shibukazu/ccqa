@@ -3,10 +3,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { CREDENTIAL_ENV_KEYS } from "../claude/env-keys.ts";
 import { driftAuthAvailable } from "./auth.ts";
 
 const ORIGINAL_KEY = process.env["ANTHROPIC_API_KEY"];
 const ORIGINAL_OAUTH = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+const ORIGINAL_AUTH_TOKEN = process.env["ANTHROPIC_AUTH_TOKEN"];
 const ORIGINAL_HOME = process.env["HOME"];
 const ORIGINAL_PATH = process.env["PATH"];
 const ORIGINAL_BEDROCK = process.env["CLAUDE_CODE_USE_BEDROCK"];
@@ -27,7 +29,7 @@ beforeEach(() => {
   stubSecurityBinary(1);
   delete process.env["CLAUDE_CODE_USE_BEDROCK"];
   delete process.env["CLAUDE_CODE_USE_VERTEX"];
-  delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+  for (const key of CREDENTIAL_ENV_KEYS) delete process.env[key];
 });
 
 afterEach(() => {
@@ -35,6 +37,8 @@ afterEach(() => {
   else process.env["ANTHROPIC_API_KEY"] = ORIGINAL_KEY;
   if (ORIGINAL_OAUTH === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
   else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = ORIGINAL_OAUTH;
+  if (ORIGINAL_AUTH_TOKEN === undefined) delete process.env["ANTHROPIC_AUTH_TOKEN"];
+  else process.env["ANTHROPIC_AUTH_TOKEN"] = ORIGINAL_AUTH_TOKEN;
   if (ORIGINAL_HOME === undefined) delete process.env["HOME"];
   else process.env["HOME"] = ORIGINAL_HOME;
   if (ORIGINAL_PATH === undefined) delete process.env["PATH"];
@@ -56,6 +60,20 @@ describe("driftAuthAvailable", () => {
     process.env["HOME"] = mkdtempSync(join(tmpdir(), "ccqa-auth-"));
     process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-test";
     expect(driftAuthAvailable()).toEqual({ ok: true });
+  });
+
+  test("returns ok when ANTHROPIC_AUTH_TOKEN is set (gateway bearer token)", () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    process.env["HOME"] = mkdtempSync(join(tmpdir(), "ccqa-auth-"));
+    process.env["ANTHROPIC_AUTH_TOKEN"] = "gateway-token";
+    expect(driftAuthAvailable()).toEqual({ ok: true });
+  });
+
+  test("empty ANTHROPIC_AUTH_TOKEN does not count as set", () => {
+    delete process.env["ANTHROPIC_API_KEY"];
+    process.env["HOME"] = mkdtempSync(join(tmpdir(), "ccqa-auth-"));
+    process.env["ANTHROPIC_AUTH_TOKEN"] = "";
+    expect(driftAuthAvailable().ok).toBe(false);
   });
 
   test("returns ok when ~/.claude/.credentials.json exists", async () => {

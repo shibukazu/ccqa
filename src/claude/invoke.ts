@@ -6,6 +6,7 @@ import { FIND_ACTIONS, FIND_LOCATORS } from "../ir/from-agent-browser.ts";
 import { scrubEnvValues } from "../runtime/env-scrub.ts";
 import { missingNativeBinaryMessage, missingNativeBinaryPackage } from "./native-binary.ts";
 import { tallyInvocation } from "./cost-tally.ts";
+import { ENDPOINT_ENV_KEYS } from "./env-keys.ts";
 
 /**
  * One intercepted agent-browser command, as reported to `onAbAction`.
@@ -36,8 +37,8 @@ export interface AbActionEvent {
 export interface ClaudeInvokeOptions {
   prompt: string;
   systemPrompt?: string;
-  allowedTools?: string[];
-  disableBuiltinTools?: boolean;
+  /** What the call may use — and, since the declared tool set is derived from it, all the model sees. */
+  allowedTools: string[];
   /**
    * Turn off extended thinking for this invocation. Thinking-first models can
    * spend the whole response inside a `thinking` block and end the turn with
@@ -46,7 +47,6 @@ export interface ClaudeInvokeOptions {
    * tasks should set this; tool-driven flows keep thinking on.
    */
   disableThinking?: boolean;
-  mcpConfigPath?: string;
   /**
    * In-process MCP servers (`createSdkMcpServer`) exposing caller-defined
    * tools to this invocation. Tool names surface as
@@ -105,31 +105,17 @@ export interface ClaudeInvokeOptions {
   relaxAbConstraints?: boolean;
 }
 
+/** The built-in tools an allow-list names: `Bash(*)` is `Bash`; `mcp__*` are not built-ins. */
+export function builtinToolNames(allowedTools: readonly string[]): string[] {
+  const names = allowedTools.map((entry) => entry.replace(/\(.*\)$/, "")).filter((name) => !name.startsWith("mcp__"));
+  return [...new Set(names)];
+}
+
 export function resolveModel(explicit?: string): string | undefined {
   if (explicit) return explicit;
   const envModel = process.env["CCQA_MODEL"];
   return envModel && envModel.length > 0 ? envModel : undefined;
 }
-
-/**
- * Standard Claude Code environment variables that select the API endpoint and
- * credentials. ccqa forwards whichever of these are set to the underlying
- * Claude Code process; it does not read or interpret their values.
- *
- * - `ANTHROPIC_BASE_URL`      — the API endpoint to send requests to.
- * - `ANTHROPIC_AUTH_TOKEN`    — sent as `Authorization: Bearer <token>`.
- * - `ANTHROPIC_API_KEY`       — API key, when used instead of a token.
- * - `ANTHROPIC_CUSTOM_HEADERS` — extra request headers.
- * - `CLAUDE_CODE_OAUTH_TOKEN` — long-lived subscription token from
- *   `claude setup-token`, the headless-CI counterpart of a login.
- */
-const ENDPOINT_ENV_KEYS = [
-  "ANTHROPIC_BASE_URL",
-  "ANTHROPIC_AUTH_TOKEN",
-  "ANTHROPIC_API_KEY",
-  "ANTHROPIC_CUSTOM_HEADERS",
-  "CLAUDE_CODE_OAUTH_TOKEN",
-] as const;
 
 /**
  * When both credentials are present the OAuth token wins and the API key is
@@ -141,22 +127,6 @@ const ENDPOINT_ENV_KEYS = [
  */
 function preferOauthToken(env: Record<string, string | undefined>): void {
   if (env["CLAUDE_CODE_OAUTH_TOKEN"]) delete env["ANTHROPIC_API_KEY"];
-}
-
-/**
- * Collects the endpoint/auth variables set in the current process environment
- * so they can be forwarded, verbatim, to every Claude Code invocation. Returns
- * only the keys that are actually set (non-empty), so unset variables never
- * override the SDK's own defaults. Credential precedence per preferOauthToken.
- */
-export function resolveEndpointEnv(): Record<string, string> {
-  const endpointEnv: Record<string, string> = {};
-  for (const key of ENDPOINT_ENV_KEYS) {
-    const value = process.env[key];
-    if (value && value.length > 0) endpointEnv[key] = value;
-  }
-  preferOauthToken(endpointEnv);
-  return endpointEnv;
 }
 
 /**
@@ -185,17 +155,15 @@ export function withoutEmptyEndpointVars(
  * resolved view: left to the CLI the API key would win, silently moving every
  * call from the subscription to metered billing when a CI job wires both
  * (which is exactly what happened before this function existed).
- *
- * Returns undefined when no endpoint variable is set and the caller passes no
- * env, so the SDK keeps its own default environment.
  */
 export function buildInvocationEnv(
   env?: Record<string, string | undefined>,
-): Record<string, string | undefined> | undefined {
-  const hasEndpointEnv = Object.keys(resolveEndpointEnv()).length > 0;
-  if (!env && !hasEndpointEnv) return undefined;
+): Record<string, string | undefined> {
   const merged = withoutEmptyEndpointVars({ ...process.env, ...env });
   preferOauthToken(merged);
+  // Auto memory is the operator's private notebook for their own sessions;
+  // `settingSources: []` does not keep Claude Code from loading its index.
+  merged["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1";
   return merged;
 }
 
@@ -270,7 +238,6 @@ export async function invokeClaudeStreaming(
     prompt,
     systemPrompt,
     allowedTools,
-    disableBuiltinTools = false,
     disableThinking = false,
     mcpServers,
     maxTurns,
@@ -305,15 +272,21 @@ export async function invokeClaudeStreaming(
   const sdkOptions: Options = {
     systemPrompt,
     maxTurns,
-    allowedTools: allowedTools ?? ["Bash(*)"],
+    allowedTools,
+    // The declared tool set is exactly the allow-list: `allowedTools` alone
+    // still sends every built-in tool's schema (and the skill listing).
+    tools: builtinToolNames(allowedTools),
+    // The host's MCP servers and settings files are the operator's, not the
+    // run's; their tools and hooks would reach the model otherwise.
+    strictMcpConfig: true,
+    settingSources: [],
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     abortController,
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(cwd ? { cwd } : {}),
-    ...(mergedEnv ? { env: mergedEnv } : {}),
+    env: mergedEnv,
     ...(mcpServers ? { mcpServers } : {}),
-    ...(disableBuiltinTools ? { tools: [] } : {}),
     ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
     hooks:
       onAbAction || onAbActionFailed
@@ -536,8 +509,9 @@ export function extractInvocationCost(msg: SDKMessage): ClaudeInvocationCost {
   const modelUsage = m["modelUsage"] as Record<string, unknown> | undefined;
   const num = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v) ? v : null;
+  const models = modelUsage && typeof modelUsage === "object" ? Object.keys(modelUsage) : [];
   return {
-    totalCostUsd: num(m["total_cost_usd"]),
+    totalCostUsd: pricedForClaude(models) ? num(m["total_cost_usd"]) : null,
     durationMs: num(m["duration_ms"]),
     durationApiMs: num(m["duration_api_ms"]),
     numTurns: num(m["num_turns"]),
@@ -545,8 +519,16 @@ export function extractInvocationCost(msg: SDKMessage): ClaudeInvocationCost {
     cacheCreationInputTokens: num(usage?.["cache_creation_input_tokens"]),
     cacheReadInputTokens: num(usage?.["cache_read_input_tokens"]),
     outputTokens: num(usage?.["output_tokens"]),
-    models: modelUsage && typeof modelUsage === "object" ? Object.keys(modelUsage) : [],
+    models,
   };
+}
+
+/**
+ * The SDK prices an unknown model id at a default Claude rate rather than
+ * returning null, so a self-hosted model would report dollars nobody is billed.
+ */
+function pricedForClaude(models: string[]): boolean {
+  return models.every((id) => /claude/i.test(id));
 }
 
 const BLOCKED_AB_SUBCOMMANDS = new Set(["eval", "js", "label", "textbox"]);
