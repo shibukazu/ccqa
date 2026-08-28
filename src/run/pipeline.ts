@@ -733,6 +733,12 @@ export async function executeRun(
     );
   }
 
+  // Needs both a hub and the commit under test: without either there is
+  // nothing to address a stored map by, and reading some other commit's maps
+  // would name the wrong files. See `SourceMapStore`.
+  const storedMaps =
+    hubCtx !== null && deployedSha !== null ? createStoredSourceMaps(hubCtx, deployedSha) : undefined;
+
   // Not on a dry run: it resolves no `${VAR}`, so every value coverage reads —
   // the origins, the identities — would be empty and fail validation on a run
   // that was never going to measure anything.
@@ -745,7 +751,7 @@ export async function executeRun(
           dispatch,
           opts.teardown,
           coverageInbox,
-          storedSourceMapReader(hubCtx, deployedSha),
+          storedMaps?.read,
           hubCtx !== null,
         )
       : undefined;
@@ -972,9 +978,14 @@ export async function executeRun(
   // lands and the spec keeps selecting as needed with nothing saying why.
   let streamedEdges: CoverageEdgesUpsert["specs"] = {};
   if (coverage && !coverage.streamsToHub) {
-    reportCoverageHealth(coverage, [...externalRows, ...live.reportResults]);
+    reportCoverageHealth(coverage, [...externalRows, ...live.reportResults], storedMaps);
   } else if (coverage && hubCtx != null) {
     streamedEdges = await reportStreamedCoverageHealth(coverage, hubCtx);
+    // Ungated here: the streamed resolve reports one file set per spec with
+    // both halves already merged, so there is no frontend-only count to ask
+    // whether the browser resolved anything. The warning gates itself on
+    // having asked and been answered for nothing, which is the same question.
+    storedMaps?.warnIfNothingAnswered();
   }
 
   let overallExitCode: 0 | 1 = det.exitCode !== 0 ? 1 : 0;
@@ -1134,6 +1145,12 @@ export async function executeRun(
   return { exitCode: overallExitCode, report, reportDir };
 }
 
+/**
+ * Starts the run's coverage measurement before any spec runs: the sink has to
+ * be listening before the first request reaches the application, and the set
+ * of spec ids it will accept is only known once dispatch has resolved. With
+ * an `inbox`, nothing binds — the run streams its events to the hub instead.
+ */
 async function startCoverage(
   cwd: string,
   config: CoverageConfig | undefined,
@@ -1190,31 +1207,40 @@ async function startCoverage(
   return session;
 }
 
+export interface StoredSourceMaps {
+  read: StoredSourceMapReader;
+  /**
+   * A store that answered for nothing reads as a build that pushed no maps —
+   * but the commit came from the hub's deploy log, so it is equally what a log
+   * lagging behind the environment looks like. Naming the commit tells them apart.
+   */
+  warnIfNothingAnswered(): void;
+}
+
 /**
- * Starts the run's coverage measurement before any spec runs: the sink has to
- * be listening before the first request reaches the application, and the set
- * of spec ids it will accept is only known once dispatch has resolved. With
- * an `inbox`, nothing binds — the run streams its events to the hub instead.
+ * The maps a deploy pushed for one commit. One answer per asset for the run:
+ * the commit is fixed, so a miss stays a miss, and every spec would otherwise
+ * re-ask for the same scripts.
  */
-/**
- * Needs both a hub and the commit under test: without either there is nothing
- * to address a stored map by, and reading some other commit's maps would name
- * the wrong files. See `SourceMapStore`.
- */
-function storedSourceMapReader(
-  hubCtx: HubContext | null,
-  deployedSha: string | null,
-): StoredSourceMapReader | undefined {
-  if (hubCtx === null || deployedSha === null) return undefined;
-  // One answer per asset for the run: the commit is fixed, so a miss stays a
-  // miss, and every spec would otherwise re-ask for the same scripts.
+export function createStoredSourceMaps(hubCtx: HubContext, deployedSha: string): StoredSourceMaps {
   const seen = new Map<string, string | undefined>();
-  return async (assetPath) => {
-    const cached = seen.get(assetPath);
-    if (cached !== undefined || seen.has(assetPath)) return cached;
-    const map = (await hubCtx.hub.getSourceMap(hubCtx.project, deployedSha, assetPath)) ?? undefined;
-    seen.set(assetPath, map);
-    return map;
+  return {
+    read: async (assetPath) => {
+      const cached = seen.get(assetPath);
+      if (cached !== undefined || seen.has(assetPath)) return cached;
+      const map = (await hubCtx.hub.getSourceMap(hubCtx.project, deployedSha, assetPath)) ?? undefined;
+      seen.set(assetPath, map);
+      return map;
+    },
+    warnIfNothingAnswered() {
+      const answered = [...seen.values()].some((map) => map !== undefined);
+      if (seen.size === 0 || answered) return;
+      log.warn(
+        `coverage: no stored source map answered for any of the ${seen.size} script(s) this run ` +
+          `asked about, under commit ${deployedSha.slice(0, 12)}. Either that deploy pushed ` +
+          "none, or the hub's deploy log names a commit the environment is no longer serving",
+      );
+    },
   };
 }
 
@@ -1351,8 +1377,22 @@ async function upsertMeasuredEdges(
   }
 }
 
+/**
+ * Whether the browser half came back with nothing anywhere. `every` rather
+ * than `some`: a run that resolved some chunks from the copies the server
+ * served has no gap the stored maps were needed for, and warning there would
+ * fire on every build that strips maps from a few chunks and not the rest.
+ */
+export function noFrontendResolved(rows: readonly ReportSpecResult[]): boolean {
+  return rows.every((row) => (row.coverage?.frontendFiles ?? 0) === 0);
+}
+
 /** Everything the measurement could not place; silence here reads as "never reached". */
-function reportCoverageHealth(coverage: CoverageSession, rows: readonly ReportSpecResult[]): void {
+function reportCoverageHealth(
+  coverage: CoverageSession,
+  rows: readonly ReportSpecResult[],
+  storedMaps: StoredSourceMaps | undefined,
+): void {
   if (!coverage.heardFromApplication()) {
     log.warn(
       "no instrumented application process reported — only the browser half was measured. The " +
@@ -1413,6 +1453,9 @@ function reportCoverageHealth(coverage: CoverageSession, rows: readonly ReportSp
         `this CLI disagree on the wire format`,
     );
   }
+  // Only when the browser resolved nothing at all: a run that read its maps
+  // from the served copies has no gap for the stored ones to fill.
+  if (noFrontendResolved(rows)) storedMaps?.warnIfNothingAnswered();
 }
 
 export function buildLiveRunSummary(results: readonly ReportSpecResult[]): string {

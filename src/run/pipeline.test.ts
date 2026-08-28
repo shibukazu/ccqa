@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { executeRun, holdSpecs } from "./pipeline.ts";
+import { createStoredSourceMaps, executeRun, holdSpecs, noFrontendResolved } from "./pipeline.ts";
 import { RunUsageError } from "./errors.ts";
 import type { GroupLookup } from "./serial-groups.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
@@ -186,5 +186,68 @@ describe("the ADR-0014 invariant: an empty selection with `inProgress` outstandi
     // reproduces the same hole rather than closing it — it must not appear
     // once the real cause is known.
     expect(output).not.toMatch(/--only-hub-audit-needed --report-to-hub/);
+  });
+});
+
+describe("noFrontendResolved", () => {
+  const row = (frontendFiles?: number) =>
+    (frontendFiles === undefined ? {} : { coverage: { frontendFiles } }) as never;
+
+  test("one row that resolved something is enough to say the browser half worked", () => {
+    expect(noFrontendResolved([row(3), row(0)])).toBe(false);
+  });
+
+  test("a row carrying no coverage counts as nothing resolved, not as unknown", () => {
+    expect(noFrontendResolved([row(), row(0)])).toBe(true);
+    expect(noFrontendResolved([])).toBe(true);
+  });
+});
+
+describe("stored source maps", () => {
+  function hubCtx(
+    getSourceMap: (project: string, commit: string, asset: string) => Promise<string | null>,
+  ): HubContext {
+    return { project: "demo", hub: { getSourceMap } } as unknown as HubContext;
+  }
+
+  async function capture(fn: () => Promise<void>): Promise<string> {
+    const lines: string[] = [];
+    await withSink({ write: (t) => lines.push(t) }, fn);
+    return lines.join("");
+  }
+
+  test("names the commit when the store answered for nothing it was asked", async () => {
+    const asked: string[] = [];
+    const maps = createStoredSourceMaps(
+      hubCtx(async (_p, _c, asset) => {
+        asked.push(asset);
+        return null;
+      }),
+      "0123456789abcdef0123",
+    );
+    const output = await capture(async () => {
+      expect(await maps.read("a.js.map")).toBeUndefined();
+      // The same asset twice is one question — a miss is cached, so the run
+      // asks the hub once per asset however many specs walk the same script.
+      expect(await maps.read("a.js.map")).toBeUndefined();
+      expect(await maps.read("b.js.map")).toBeUndefined();
+      maps.warnIfNothingAnswered();
+    });
+    expect(asked).toEqual(["a.js.map", "b.js.map"]);
+    expect(output).toContain("2 script(s)");
+    expect(output).toContain("0123456789ab");
+  });
+
+  test("stays quiet once anything answered", async () => {
+    const maps = createStoredSourceMaps(
+      hubCtx(async (_p, _c, asset) => (asset === "a.js.map" ? "{}" : null)),
+      "abc",
+    );
+    const output = await capture(async () => {
+      await maps.read("a.js.map");
+      await maps.read("b.js.map");
+      maps.warnIfNothingAnswered();
+    });
+    expect(output).toBe("");
   });
 });
