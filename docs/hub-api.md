@@ -876,8 +876,11 @@ POST /api/v1/coverage/events?project=<name>
       | 503 (no coverage token / no encryption key configured)
 
 GET /api/v1/coverage/events?project=<name>&sinceSeq=<n>
-  bearer token only
-  → 200 { events, lastSeq, skipped }
+  bearer token only; at most 5000 events per body
+  → 200 { events, lastSeq, skipped, truncated }
+      lastSeq is the stream's head, not the resume cursor: when truncated is
+      true the body stopped short of it, and the next request passes the seq
+      of the last event received
 
 GET /api/v1/coverage?project=<name>[&runId=<id>]
   bearer token only; runId defaults to the stream's most recent run

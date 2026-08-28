@@ -86,19 +86,21 @@ export interface CoverageEventStore {
   /** Stamp the next `{seq, at}` onto `payload` and append it to the project's stream. */
   append(project: string, payload: Uint8Array): Promise<{ seq: number; at: number }>;
   /**
-   * Stamped payloads with `seq > sinceSeq`, oldest first, plus the highest seq
-   * the stream holds (0 when empty). A line that cannot be read — a partial
-   * line from an append in flight, corruption — is counted in `skipped`, never
-   * returned: the count tells the consumer the stream has holes.
+   * Hand each stamped payload with `seq > sinceSeq` to `visit`, oldest first,
+   * and answer the highest seq the stream holds (0 when empty). A line that
+   * cannot be read — a partial line from an append in flight, corruption — is
+   * counted in `skipped` and never visited: the count tells the consumer the
+   * stream has holes.
+   *
+   * A visitor rather than an array because the stream outgrows what a reader
+   * can hold: a consumer that needs only part of it must be able to keep only
+   * that part.
    */
-  read(
+  scan(
     project: string,
     sinceSeq: number,
-  ): Promise<{
-    entries: { seq: number; at: number; payload: Uint8Array }[];
-    lastSeq: number;
-    skipped: number;
-  }>;
+    visit: (entry: { seq: number; at: number; payload: Uint8Array }) => void,
+  ): Promise<{ lastSeq: number; skipped: number }>;
   /**
    * The highest seq the stream has stamped (0 when empty), without reading
    * the stream — the cheap "did anything move?" probe a cached resolve
