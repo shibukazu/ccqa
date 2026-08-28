@@ -8,12 +8,11 @@ type Cost = LiveRunResult["cost"];
  * Returns null only when the invocation reported nothing at all (a mock run,
  * an SDK error, or a command that never called a model).
  *
- * The price is one segment among several, not a precondition. An endpoint the
- * SDK has no pricing table for — any Anthropic-compatible gateway in front of
- * a third-party model — reports usage but no `total_cost_usd`, and dropping
- * the whole line there would hide real consumption behind silence. Tokens come
- * from the API response rather than a price list, so they survive that case
- * and become the signal to read.
+ * The price is one segment among several, not a precondition. A model that is
+ * not a Claude model has no price (`extractInvocationCost` drops the SDK's
+ * estimate), and dropping the whole line there would hide real consumption
+ * behind silence. Tokens come from the API response rather than a price list,
+ * so they survive that case and become the signal to read.
  *
  * `compact: false` (default for CLI logs) keeps raw numbers and adds a
  * `model=...` segment. `compact: true` (HTML chip) thousand-separates fresh

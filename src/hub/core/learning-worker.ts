@@ -73,7 +73,6 @@ export function createLearningWorker(deps: LearningWorkerDeps): (job: LearningJo
         prompt: buildLearningUserPrompt(cases.slice(0, LEARNING_MAX_CASES)),
         systemPrompt: LEARNING_SYSTEM_PROMPT,
         allowedTools: [],
-        disableBuiltinTools: true,
         // The note is written in a single model turn (no tools); capping turns
         // bounds a runaway call so it can't wedge the single-worker queue.
         maxTurns: 1,

@@ -296,9 +296,11 @@ checkout, has its classification skipped with the reason in its report row;
 the rest of the run proceeds. Each analyzed row records its own baseline in
 `analysisBase`.
 
-**Authentication.** The analysis needs `ANTHROPIC_API_KEY` (CI) or a local
-Claude Code login. With neither, the report is still written — only the
-analysis is skipped, with the reason recorded per spec.
+**Authentication.** The analysis needs a Claude credential — in CI one of
+`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN` or a gateway's
+`ANTHROPIC_AUTH_TOKEN`; locally a Claude Code login also counts. With none,
+the report is still written — only the analysis is skipped, with the reason
+recorded per spec.
 
 ### Rerunning a failure
 
@@ -694,8 +696,8 @@ there is nothing to clean up by hand.
 
 The recommended shape: run with `--report-to-hub` so results stream to the
 hub as the run executes, keep the local report directory as a backup
-artifact, and hold exactly one secret (`CCQA_HUB_TOKEN`) plus
-`ANTHROPIC_API_KEY` for the failure analysis. Profile variables come from
+artifact, and hold exactly one secret (`CCQA_HUB_TOKEN`) plus a Claude
+credential for the failure analysis. Profile variables come from
 the hub (`ccqa hub var set`), not from files in the repo.
 
 ```yaml

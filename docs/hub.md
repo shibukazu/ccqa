@@ -295,12 +295,14 @@ different job/step or don't need incremental visibility.
 
 `if: always()` on a separate push step matters: a failing run is exactly the
 kind of result a team wants recorded on the hub, not just a passing one.
-`ccqa run`'s own failure analysis still needs `ANTHROPIC_API_KEY` /
-a logged-in Claude Code session, independent of the hub — see
+`ccqa run`'s own failure analysis still needs a Claude credential
+(`ANTHROPIC_API_KEY`, a gateway's `ANTHROPIC_AUTH_TOKEN`, or a logged-in
+Claude Code session), independent of the hub — see
 [Failure triage](./running.md#failure-triage). The hub does no
 Claude-driven analysis of pushed reports (that already happened locally or in
 CI). The one exception is a [triage-learning](#triage-learning) job: if you
-want the hub to run those, give the hub process its own `ANTHROPIC_API_KEY` /
+want the hub to run those, give the hub process its own Claude credential
+(`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN`) or
 Claude login. The hub starts fine without any credentials — only learning
 jobs fail (with a clear error) until you add one.
 
@@ -436,7 +438,7 @@ the same vocabulary and don't feed this job. Learning runs on the hub as an
 asynchronous job, triggered from the UI (or `POST /learning-jobs`, see [the
 API](./hub-api.md#learning-jobs)) — it is not a CLI command.
 
-Learning always needs `ANTHROPIC_API_KEY` / a Claude login **on the hub
+Learning always needs a Claude credential / a Claude login **on the hub
 process**; the job fails with a clear error if it's missing (the hub itself
 stays up).
 
@@ -509,8 +511,8 @@ export CCQA_HUB_TOKEN=<the token from .env>   # then `ccqa hub var set ...`,
                                               # `ccqa run --report-to-hub`, ...
 ```
 
-`ANTHROPIC_API_KEY` in `.env` is optional — only hub-side triage-learning
-jobs need it.
+A Claude credential (`ANTHROPIC_API_KEY` or one of the others) in `.env` is
+optional — only hub-side triage-learning jobs need it.
 
 ## When a release means you must redeploy
 

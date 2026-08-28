@@ -16,7 +16,7 @@ export async function cleanupActions(actions: RecordedAction[], model?: string):
   try {
     const prompt = buildCleanupPrompt(actions);
     const { result, isError } = await invokeClaudeStreaming(
-      { prompt, disableBuiltinTools: true, maxTurns: 1, model },
+      { prompt, allowedTools: [], maxTurns: 1, model },
       () => {},
     );
     if (isError || !result) return actions;

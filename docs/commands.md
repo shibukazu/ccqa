@@ -64,9 +64,9 @@ look before letting a selection decide what a paid run covers.
 | `CCQA_MODEL` | anything that calls Claude | Default model. Same as `-m/--model`. |
 | `CCQA_COST_FILE` | anything that calls Claude | Path to append one JSON line per invocation to. See [What a command cost](#what-a-command-cost). |
 | `CCQA_LIVE_STEP_TIMEOUT_MS` | `ccqa run` on a live spec | Wall-clock ceiling on one step attempt, in milliseconds. Defaults to 8 minutes. A step that hits it is recorded as failed with the limit named as the reason. |
-| `ANTHROPIC_API_KEY` | anything that calls Claude | One of the accepted credentials, alongside `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` and a local `claude` login. In CI there is nothing to log into, so one of these must be set. |
+| `ANTHROPIC_API_KEY` | anything that calls Claude | One of the accepted credentials, alongside `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_USE_BEDROCK` / `CLAUDE_CODE_USE_VERTEX` and a local `claude` login. In CI there is nothing to log into, so one of these must be set. |
 | `ANTHROPIC_BASE_URL` | anything that calls Claude | Endpoint to send requests to. Forwarded verbatim; see [Pointing at another endpoint](#pointing-at-another-endpoint). |
-| `ANTHROPIC_AUTH_TOKEN` | anything that calls Claude | Sent as `Authorization: Bearer <token>`, when a bearer token is used instead of an API key. |
+| `ANTHROPIC_AUTH_TOKEN` | anything that calls Claude | Sent as `Authorization: Bearer <token>`, when a bearer token is used instead of an API key. Counts as a credential on its own — a gateway that ignores it still needs something in it. |
 | `ANTHROPIC_CUSTOM_HEADERS` | anything that calls Claude | Extra request headers. |
 
 Which commands call Claude, and therefore need a credential: `draft`,
@@ -82,9 +82,11 @@ to learn needs no credential; one that will, does.
 
 ## Pointing at another endpoint
 
-ccqa never reads or interprets `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
-`ANTHROPIC_API_KEY` or `ANTHROPIC_CUSTOM_HEADERS` — it forwards whichever are
-set to the Claude Code process underneath. Anything that speaks the Anthropic
+ccqa never interprets the values of `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY` or `ANTHROPIC_CUSTOM_HEADERS` — it
+forwards whichever are set to the Claude Code process underneath (checking
+only that a credential is present, and preferring the subscription token when
+both it and a key are set). Anything that speaks the Anthropic
 API works without a ccqa change: set the endpoint and the credential, and name
 the model with `-m/--model` or `CCQA_MODEL`.
 
@@ -93,13 +95,40 @@ forwarded, so a CI job can wire the key unconditionally — an unset repository
 variable renders as `""`, and passing that through would override the default
 endpoint with nothing.
 
+The rest of the Claude Code environment reaches the process too (without the
+empty-value rule above — only the endpoint variables get that), which is how a
+model that is not a Claude model is named without touching every command
+line: `ANTHROPIC_DEFAULT_SONNET_MODEL` (and `_OPUS_` / `_HAIKU_`)
+decide what the `sonnet` / `opus` / `haiku` aliases resolve to, so a job that
+already says `-m sonnet` keeps saying it. Two more usually matter for a
+self-hosted model with a small window: `CLAUDE_CODE_MAX_OUTPUT_TOKENS` (the
+Claude Code process asks for 32k output tokens by default, which a 64k window
+rejects once the prompt is in) and `CLAUDE_CODE_MAX_CONTEXT_TOKENS` (what it
+should assume the window is).
+
 One thing degrades. `total_cost_usd` is the SDK's own estimate, computed from
-a pricing table it only has for models it knows, so a third-party model
-reports usage but no price. Token counts come from the API response and
-survive, which is why the `[cost]` line drops the price segment rather than
-the whole line, and why the JSONL still records the invocation with
-`"totalCostUsd": null`. Read tokens, not dollars, when comparing models this
-way — and treat a `$0.0000` total as "no price available" rather than "free".
+a pricing table it only has for Claude models; for any other model it would
+price the tokens at a default Claude rate, so ccqa keeps the price only when
+the model id that answered names a Claude model, and keeps the tokens either
+way. Token counts come from the API response and survive, which is why
+the `[cost]` line drops the price segment rather than the whole line, and why
+the JSONL still records the invocation with `"totalCostUsd": null`. Read
+tokens, not dollars, when comparing models this way — and treat a `$0.0000`
+total as "no price available" rather than "free".
+
+## What a call carries
+
+Every model call declares only the tools that call may use — the `Bash` /
+`Read` / `Grep` / `Glob` set of the command plus ccqa's own MCP tools — and
+nothing from the host: no MCP servers from the developer's Claude Code
+configuration or plugins, no settings files (so no permission rules from
+them either — ccqa's own tool guards are the boundary), no `CLAUDE.md`, no
+auto memory.
+The prompt is what ccqa builds from the spec and the codebase, so a run reads
+the same on a developer laptop and in CI, and a model with a small window is
+not paying for tool schemas it is not allowed to use. The one thing to know:
+an endpoint or credential kept in a Claude Code settings file (`env`,
+`apiKeyHelper`) is not read either — set it in the environment.
 
 ## What a command cost
 

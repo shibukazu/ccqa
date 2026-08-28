@@ -402,7 +402,6 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
           prompt: buildStepVerdictPrompt(step, transcript),
           model: input.model,
           allowedTools: [],
-          disableBuiltinTools: true,
           disableThinking: true,
           maxTurns: 1,
           timeoutMs: VERDICT_TIMEOUT_MS,
