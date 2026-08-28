@@ -1,5 +1,5 @@
 import { InboxBodySchema, type StoredEvent } from "../../../coverage/events.ts";
-import { listRunIds, resolveStream, type ResolvedCoverage } from "../../../coverage/resolve-stream.ts";
+import { listRunIds, StreamResolution, type ResolvedCoverage } from "../../../coverage/resolve-stream.ts";
 import { decodeEncryptedBlob, decrypt, encodeEncryptedBlob, encrypt } from "../../core/crypto.ts";
 import type { CoverageEdgeStore, CoverageEventStore } from "../../core/storage/types.ts";
 import { extractToken, isValidToken } from "../auth.ts";
@@ -82,7 +82,9 @@ export function createAppendCoverageEventHandler(config: CoverageHandlerConfig) 
 
 /**
  * GET /api/v1/coverage/events?project=&sinceSeq= — the stream after `sinceSeq`
- * (exclusive, so a consumer passes back the `lastSeq` it saw), decrypted.
+ * (exclusive), decrypted, at most `MAX_EVENTS_PER_READ` of them. A consumer
+ * passes back the `seq` of the last event it received; `lastSeq` is the
+ * stream's head, which `truncated` says the body stopped short of.
  * Hub bearer token only (the server's central check): what the append-only
  * credential wrote, it must not be able to read back.
  */
@@ -91,36 +93,58 @@ export function createGetCoverageEventsHandler(config: CoverageHandlerConfig) {
     const key = requireKey(config);
     const project = requireProjectParam(ctx);
     const sinceSeq = requireSinceSeqParam(ctx.url);
-    sendJson(ctx.res, 200, await readStream(config, key, project, sinceSeq));
+    // Capped rather than unbounded: this endpoint answers with one body, so a
+    // caller that asks from 0 would otherwise ask the hub to hold the whole
+    // stream at once.
+    const events: StoredEvent[] = [];
+    let truncated = false;
+    const { lastSeq, skipped } = await scanStream(config, key, project, sinceSeq, (event) => {
+      if (events.length < MAX_EVENTS_PER_READ) events.push(event);
+      else truncated = true;
+    });
+    // `lastSeq` stays the stream's head, so a caller can see how far behind it
+    // is. It is not the resume cursor once the body was cut — that is the last
+    // event actually sent, and `truncated` is what says the two differ.
+    sendJson(ctx.res, 200, { events, lastSeq, skipped, truncated });
   };
 }
 
-/** The stored stream after `sinceSeq` (exclusive), decrypted and parsed. */
-async function readStream(
+/**
+ * Hand each event after `sinceSeq` (exclusive) to `visit`, decrypted and
+ * parsed. Nothing is retained here: what a caller keeps is its own choice,
+ * which is what lets a whole-stream read stay bounded.
+ */
+async function scanStream(
   config: CoverageHandlerConfig,
   key: Buffer,
   project: string,
   sinceSeq: number,
-): Promise<{ events: StoredEvent[]; lastSeq: number; skipped: number }> {
-  const { entries, lastSeq, skipped } = await config.store.read(project, sinceSeq);
-  const events: StoredEvent[] = [];
+  visit: (event: StoredEvent) => void,
+): Promise<{ lastSeq: number; skipped: number }> {
   let unreadable = 0;
-  for (const entry of entries) {
-    // A rotated key or a corrupt payload loses that event, not the read;
-    // it joins the store-level skips in the count the consumer sees.
+  const { lastSeq, skipped } = await config.store.scan(project, sinceSeq, (entry) => {
+    let event: StoredEvent;
+    // A rotated key or a corrupt payload loses that event, not the read; it
+    // joins the store-level skips in the count the consumer sees. The visit
+    // stays outside: a consumer that throws has not found a hole in the
+    // stream, and reporting one would hide its own fault.
     try {
       const plain = decrypt(decodeEncryptedBlob(entry.payload), key);
-      const body = InboxBodySchema.parse(JSON.parse(new TextDecoder().decode(plain)));
-      events.push({ seq: entry.seq, at: entry.at, body });
+      event = { seq: entry.seq, at: entry.at, body: InboxBodySchema.parse(JSON.parse(new TextDecoder().decode(plain))) };
     } catch {
       unreadable += 1;
+      return;
     }
-  }
-  return { events, lastSeq, skipped: skipped + unreadable };
+    visit(event);
+  });
+  return { lastSeq, skipped: skipped + unreadable };
 }
 
 /** Newest runs the resolve read offers; past twenty the answer is history nobody pages through. */
 const RUN_IDS_LIMIT = 20;
+
+/** How many events one `GET /events` body carries; past it the answer is `truncated`. */
+const MAX_EVENTS_PER_READ = 5_000;
 
 /** Resolved answers kept per handler; one page polls one key, so a handful covers the readers. */
 const RESOLVE_CACHE_LIMIT = 8;
@@ -195,14 +219,34 @@ export function createResolveCoverageHandler(config: CoverageHandlerConfig) {
       return;
     }
 
-    const { events, lastSeq } = await readStream(config, key, project, 0);
-    const runIds = listRunIds(events).slice(0, RUN_IDS_LIMIT);
+    // Two scans, keeping only the markers between them. Every push the stream
+    // holds still reaches the resolver, but none of them is held: the stream
+    // outgrows this process long before it outgrows its own retention.
+    const markers: StoredEvent[] = [];
+    let seen = 0;
+    const first = await scanStream(config, key, project, 0, (event) => {
+      seen += 1;
+      if ("kind" in event.body) markers.push(event);
+    });
+    const runIds = listRunIds(markers).slice(0, RUN_IDS_LIMIT);
     const runId = runKey !== "" ? runKey : runIds[0];
-    const resolved = runId === undefined || events.length === 0 ? null : resolveStream(events, runId);
+    let resolved: ResolvedCoverage | null = null;
+    if (runId !== undefined && seen > 0) {
+      const resolution = new StreamResolution(markers, runId);
+      // Stops where the first scan stopped. The markers behind the resolver
+      // were frozen there, so a later event would be read against a context
+      // that never saw its own marker: a push crediting a spec the resolver
+      // was not told had opened counts as rejected, which reads as a fault in
+      // the run rather than in the read.
+      await scanStream(config, key, project, 0, (event) => {
+        if (event.seq <= first.lastSeq) resolution.accept(event);
+      });
+      resolved = resolution.finish();
+    }
     const answer: CoverageAnswer = { resolved, runIds };
-    // Keyed at the seq the read actually saw — an event landing between the
-    // probe and the read must not pin this answer to the older position.
-    memo.put(project, runKey, lastSeq, answer);
+    // Both scans stop at this position, so it is exactly what the answer
+    // covers — an event landing between them changes neither.
+    memo.put(project, runKey, first.lastSeq, answer);
     sendJson(ctx.res, 200, answer);
   };
 }

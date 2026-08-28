@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { StoredEvent } from "./events.ts";
 import type { CoveragePush } from "./resolver.ts";
-import { GRACE_MS, listRunIds, resolveStream } from "./resolve-stream.ts";
+import { GRACE_MS, listRunIds, resolveStream, StreamResolution } from "./resolve-stream.ts";
 
 /**
  * The stream interpretation alone, on synthetic stored events with hand-picked
@@ -62,6 +62,46 @@ describe("resolveStream", () => {
     expect(b.health.rejectedPushes).toBe(1);
     expect(b.health.pushesDuringRun).toBe(1);
     expect(b.lastSeq).toBe(6);
+  });
+
+  test("fed the markers up front, a streamed pass answers what the whole stream does", () => {
+    const events = stream(
+      [1_000, { kind: "spec-open", runId: RUN_A, specId: SPEC_A }],
+      push(3_000, { specs: { [SPEC_A]: ["src/a.ts"] } }),
+      [5_000, { kind: "spec-close", runId: RUN_A, specId: SPEC_A }],
+      [100_000, { kind: "spec-open", runId: RUN_B, specId: SPEC_B }],
+      push(101_000, { specs: { [SPEC_B]: ["src/b.ts"] } }),
+    );
+
+    // What the hub does: keep only the markers from the first pass, then feed
+    // every event through the second.
+    const markers = events.filter((event) => "kind" in event.body);
+    const resolution = new StreamResolution(markers, RUN_A);
+    for (const event of events) resolution.accept(event);
+
+    expect(resolution.finish()).toEqual(resolveStream(events, RUN_A));
+  });
+
+  test("stopping where the markers stopped keeps a later event from reading as a fault", () => {
+    const snapshot = stream(
+      [1_000, { kind: "spec-open", runId: RUN_A, specId: SPEC_A }],
+      [1_100, { kind: "window-open", runId: RUN_A, tag: "T", key: "alice", specId: SPEC_A }],
+    );
+    // Landed after the markers were collected. Read against a resolver that
+    // was never told SPEC_B opened, its push counts as rejected and its tag as
+    // an identity the project never declared — both untrue.
+    const later = stream(
+      [1_200, { kind: "spec-open", runId: RUN_A, specId: SPEC_B }],
+      [1_250, { kind: "window-open", runId: RUN_A, tag: "U", key: "bob", specId: SPEC_B }],
+      push(1_300, { specs: { [SPEC_B]: ["src/b.ts"] }, actors: [{ tag: "U", at: 1_260, files: ["src/b.ts"] }] }),
+    ).slice(2);
+
+    const resolution = new StreamResolution(snapshot, RUN_A);
+    for (const event of [...snapshot, ...later]) {
+      if (event.seq <= 2) resolution.accept(event);
+    }
+
+    expect(resolution.finish()).toEqual(resolveStream(snapshot, RUN_A));
   });
 
   test("a push acked before the run began still supplies boot and process health", () => {

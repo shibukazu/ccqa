@@ -199,7 +199,7 @@ describe("coverage inbox API", () => {
 
   test("a poll at an unmoved stream position answers from the memo without reading the store", async () => {
     const storage = createFileHubStorage(dataDir);
-    const read = vi.spyOn(storage.coverageEvents, "read");
+    const read = vi.spyOn(storage.coverageEvents, "scan");
     const baseUrl = await startHub({ storage });
     await post(baseUrl, TOKEN, RUN_EVENT);
 

@@ -2,10 +2,13 @@ import { appendFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import type { CoverageEventStore } from "../types.ts";
 import { createFileCoverageEventStore, COVERAGE_RETENTION_DAYS } from "./coverage-event-store.ts";
 import { coverageEventsPath } from "./paths.ts";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+type Entry = { seq: number; at: number; payload: Uint8Array };
 
 function payload(text: string): Uint8Array {
   return new TextEncoder().encode(text);
@@ -13,6 +16,19 @@ function payload(text: string): Uint8Array {
 
 function texts(entries: { payload: Uint8Array }[]): string[] {
   return entries.map((e) => new TextDecoder().decode(e.payload));
+}
+
+/** `scan` collected, so a test can assert on the whole stream at once. */
+async function readAll(
+  store: CoverageEventStore,
+  project: string,
+  sinceSeq: number,
+): Promise<{ entries: Entry[]; lastSeq: number; skipped: number }> {
+  const entries: Entry[] = [];
+  const { lastSeq, skipped } = await store.scan(project, sinceSeq, (entry) => {
+    entries.push(entry);
+  });
+  return { entries, lastSeq, skipped };
 }
 
 describe("coverage event store", () => {
@@ -31,14 +47,14 @@ describe("coverage event store", () => {
     const store = createFileCoverageEventStore(dataDir);
     for (const p of ["one", "two", "three"]) await store.append("demo", payload(p));
 
-    const all = await store.read("demo", 0);
+    const all = await readAll(store, "demo", 0);
     expect(all.entries.map((e) => e.seq)).toEqual([1, 2, 3]);
     expect(all.lastSeq).toBe(3);
     expect(all.skipped).toBe(0);
     expect(texts(all.entries)).toEqual(["one", "two", "three"]);
     expect(all.entries.every((e) => typeof e.at === "number")).toBe(true);
 
-    const tail = await store.read("demo", 2);
+    const tail = await readAll(store, "demo", 2);
     expect(tail.entries.map((e) => e.seq)).toEqual([3]);
     expect(tail.lastSeq).toBe(3);
   });
@@ -59,7 +75,7 @@ describe("coverage event store", () => {
     await store.append("demo", payload("two"));
     await appendFile(coverageEventsPath(dataDir, "demo"), '{"seq":3,"at":123,"pay');
 
-    const result = await store.read("demo", 0);
+    const result = await readAll(store, "demo", 0);
     expect(result.entries.map((e) => e.seq)).toEqual([1, 2]);
     expect(result.lastSeq).toBe(2);
     expect(result.skipped).toBe(1);
@@ -72,7 +88,7 @@ describe("coverage event store", () => {
 
     // The 5th append breaches the cap and prunes one batch below it (batch=1
     // at this cap), so seqs 1-2 are gone; the 6th lands back under the cap.
-    const result = await store.read("demo", 0);
+    const result = await readAll(store, "demo", 0);
     expect(result.entries.map((e) => e.seq)).toEqual([3, 4, 5, 6]);
     expect(result.lastSeq).toBe(6);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('coverage inbox for "demo"'));
@@ -86,7 +102,7 @@ describe("coverage event store", () => {
     const store = createFileCoverageEventStore(dataDir, { maxBytes: 200 });
     for (let i = 1; i <= 5; i++) await store.append("demo", payload(`event-${i}`));
 
-    const result = await store.read("demo", 0);
+    const result = await readAll(store, "demo", 0);
     expect(result.entries.map((e) => e.seq)).toEqual([3, 4, 5]);
     expect(result.lastSeq).toBe(5);
     const raw = await readFile(coverageEventsPath(dataDir, "demo"), "utf8");
@@ -105,7 +121,7 @@ describe("coverage event store", () => {
     const stamp = await second.append("demo", payload("two"));
     expect(stamp.seq).toBe(2);
 
-    const result = await second.read("demo", 0);
+    const result = await readAll(second, "demo", 0);
     expect(texts(result.entries)).toEqual(["one", "two"]);
     expect(result.skipped).toBe(1);
   });
@@ -121,13 +137,13 @@ describe("coverage event store", () => {
     // Inside the prune's hour of slack: the file still holds the events,
     // but the read already withholds them.
     now.mockReturnValue(base + COVERAGE_RETENTION_DAYS * DAY_MS + 30 * 60 * 1000);
-    const withheld = await store.read("demo", 0);
+    const withheld = await readAll(store, "demo", 0);
     expect(withheld.entries).toEqual([]);
     expect(withheld.lastSeq).toBe(2);
 
     // Past the slack, the read itself rewrites the file — no append needed.
     now.mockReturnValue(base + (COVERAGE_RETENTION_DAYS + 1) * DAY_MS);
-    const pruned = await store.read("demo", 0);
+    const pruned = await readAll(store, "demo", 0);
     expect(pruned.entries).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("dropped 2 events"));
     expect(await readFile(coverageEventsPath(dataDir, "demo"), "utf8")).toBe("");
@@ -144,7 +160,7 @@ describe("coverage event store", () => {
     now.mockReturnValue(base + (COVERAGE_RETENTION_DAYS + 1) * DAY_MS);
     await store.append("demo", payload("fresh"));
 
-    const result = await store.read("demo", 0);
+    const result = await readAll(store, "demo", 0);
     expect(texts(result.entries)).toEqual(["fresh"]);
     expect(result.entries.map((e) => e.seq)).toEqual([3]);
     expect(result.lastSeq).toBe(3);

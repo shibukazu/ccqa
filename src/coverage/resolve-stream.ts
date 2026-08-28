@@ -84,125 +84,159 @@ export function formatResolvedSpec(spec: ResolvedCoverage["specs"][number]): str
 }
 
 /**
- * Interprets `runId`'s view of the stream.
+ * `runId`'s view of the stream, built one event at a time.
  *
- * Two passes, because the resolver needs its context up front: the first
+ * Two passes, because the resolver needs its context up front. The first
  * collects what the run's own markers establish — which ids it issued, which
  * identity tags were its to hand out, its universe, and when its first and
- * last marker arrived. The second replays the stream through the shared
- * resolver: this run's window markers as they came, and every application
- * push — as-is when its stamp falls inside the span the run's sink would
- * have been listening (first marker to last marker plus `GRACE_MS`),
- * stripped of its spec and actor attribution when it does not. A push
- * outside the span was another run's audience, so its attribution is not
- * this run's to claim — but the collector never re-sends what an earlier
- * run acked, so on an always-on hub the boot set and each process's health
- * figures arrived long before this run began, and only survive here.
+ * last marker arrived; markers are a small part of a stream, so a caller can
+ * hold them. The second replays the stream through the shared resolver: this
+ * run's window markers as they came, and every application push — as-is when
+ * its stamp falls inside the span the run's sink would have been listening
+ * (first marker to last marker plus `GRACE_MS`), stripped of its spec and
+ * actor attribution when it does not. A push outside the span was another
+ * run's audience, so its attribution is not this run's to claim — but the
+ * collector never re-sends what an earlier run acked, so on an always-on hub
+ * the boot set and each process's health figures arrived long before this run
+ * began, and only survive here.
+ *
+ * The constructor takes the markers and `accept` takes one event at a time, so
+ * the second pass can be fed from a stream: it keeps nothing per push, which
+ * is what lets a resolve outlive the point where the stream stops fitting in
+ * memory.
  */
-export function resolveStream(events: StoredEvent[], runId: string): ResolvedCoverage {
-  const issued = new Set<string>();
-  const specOrder: string[] = [];
-  const tagToKey = new Map<string, string>();
-  const browserFiles = new Map<string, Set<string>>();
-  let universe: { include: string[]; files: string[] } | undefined;
-  let hubRunId: string | undefined;
-  let firstMarkerAt: number | undefined;
-  let lastMarkerAt = 0;
+export class StreamResolution {
+  private readonly runId: string;
+  private readonly resolver: CoverageResolver;
+  /** The ids this run opened, in that order — a `Set` iterates by insertion. */
+  private readonly specIds: ReadonlySet<string>;
+  private readonly browserFiles = new Map<string, Set<string>>();
+  /**
+   * The stamps in which the run's sink would have been listening. Undefined
+   * when the markers held no event of this run — then no push is ever inside.
+   */
+  private readonly span: { from: number; until: number } | undefined;
+  private universe: { include: string[]; files: string[] } | undefined;
+  private hubRunId: string | undefined;
+  private asOf = 0;
+  private lastSeq = 0;
+  private pushesDuringRun = 0;
 
-  for (const event of events) {
-    const body = event.body;
-    if (!("kind" in body) || body.runId !== runId) continue;
-    if (firstMarkerAt === undefined) firstMarkerAt = event.at;
-    lastMarkerAt = event.at;
-    switch (body.kind) {
-      case "spec-open":
-        if (!issued.has(body.specId)) {
-          issued.add(body.specId);
-          specOrder.push(body.specId);
+  /** `markers` needs to hold every marker event of the stream; pushes are ignored here. */
+  // `runId` is assigned in the body, not declared as a parameter: node's type
+  // stripping runs this file as-is and rejects a parameter property outright.
+  constructor(markers: Iterable<StoredEvent>, runId: string) {
+    this.runId = runId;
+    const specIds = new Set<string>();
+    const tagToKey = new Map<string, string>();
+    let firstAt: number | undefined;
+    let lastAt = 0;
+
+    for (const event of markers) {
+      const body = event.body;
+      if (!("kind" in body) || body.runId !== runId) continue;
+      if (firstAt === undefined) firstAt = event.at;
+      lastAt = event.at;
+      switch (body.kind) {
+        case "spec-open":
+          specIds.add(body.specId);
+          break;
+        case "window-open":
+          tagToKey.set(body.tag, body.key);
+          break;
+        case "universe":
+          this.universe = { include: body.include, files: body.files };
+          break;
+        case "run-link":
+          this.hubRunId = body.hubRunId;
+          break;
+        case "browser": {
+          const files = this.browserFiles.get(body.specId) ?? new Set<string>();
+          for (const file of body.files) files.add(file);
+          this.browserFiles.set(body.specId, files);
+          break;
         }
-        break;
-      case "window-open":
-        tagToKey.set(body.tag, body.key);
-        break;
-      case "universe":
-        universe = { include: body.include, files: body.files };
-        break;
-      case "run-link":
-        hubRunId = body.hubRunId;
-        break;
-      case "browser": {
-        const files = browserFiles.get(body.specId) ?? new Set<string>();
-        for (const file of body.files) files.add(file);
-        browserFiles.set(body.specId, files);
-        break;
       }
     }
+
+    this.specIds = specIds;
+    this.span = firstAt === undefined ? undefined : { from: firstAt, until: lastAt + GRACE_MS };
+    this.resolver = new CoverageResolver(specIds, tagToKey);
   }
 
-  const resolver = new CoverageResolver(issued, tagToKey);
-  let asOf = 0;
-  let lastSeq = 0;
-  let pushesDuringRun = 0;
-  for (const event of events) {
-    if (event.seq > lastSeq) lastSeq = event.seq;
+  /** One event of the second pass. Every event of the stream, in stamp order. */
+  accept(event: StoredEvent): void {
+    if (event.seq > this.lastSeq) this.lastSeq = event.seq;
     const body = event.body;
     if ("kind" in body) {
-      if (body.runId !== runId) continue;
-      asOf = event.at;
+      if (body.runId !== this.runId) return;
+      this.asOf = event.at;
       if (body.kind === "window-open") {
-        resolver.apply({ kind: "window-open", at: event.at, tag: body.tag, key: body.key, specId: body.specId });
+        this.resolver.apply({ kind: "window-open", at: event.at, tag: body.tag, key: body.key, specId: body.specId });
       } else if (body.kind === "window-close") {
-        resolver.apply({ kind: "window-close", at: event.at, tag: body.tag });
+        this.resolver.apply({ kind: "window-close", at: event.at, tag: body.tag });
       }
-      continue;
+      return;
     }
-    if (firstMarkerAt === undefined || event.at < firstMarkerAt || event.at > lastMarkerAt + GRACE_MS) {
+    if (this.span === undefined || event.at < this.span.from || event.at > this.span.until) {
       // Outside the span, but not discarded: stripped of the attribution that
       // belongs to whichever run was listening, the push still testifies to
       // the boot set and the process's health — which, on an always-on hub,
       // were acked before this run began and never re-sent. `asOf` stays
       // put: these are not this run's measurement moving forward.
-      resolver.apply({ kind: "push", at: event.at, push: { ...body, specs: {}, actors: [] } });
-      continue;
+      this.resolver.apply({ kind: "push", at: event.at, push: { ...body, specs: {}, actors: [] } });
+      return;
     }
-    asOf = event.at;
-    pushesDuringRun++;
-    resolver.apply({ kind: "push", at: event.at, push: body });
+    this.asOf = event.at;
+    this.pushesDuringRun++;
+    this.resolver.apply({ kind: "push", at: event.at, push: body });
   }
 
-  const specs = specOrder.map((specId) => {
-    const actorEvents: Record<string, number> = {};
-    for (const [key, count] of resolver.actorEventsFor(specId)) actorEvents[key] = count;
-    return {
-      specId,
-      files: [...new Set([...(resolver.filesFor(specId) ?? []), ...(browserFiles.get(specId) ?? [])])].sort(),
-      actorEvents,
-    };
-  });
-  const outsideWindowEvents: Record<string, number> = {};
-  for (const [key, count] of resolver.outsideWindowEvents()) outsideWindowEvents[key] = count;
+  /** The answer as of every event accepted so far. */
+  finish(): ResolvedCoverage {
+    const specs = [...this.specIds].map((specId) => {
+      const actorEvents: Record<string, number> = {};
+      for (const [key, count] of this.resolver.actorEventsFor(specId)) actorEvents[key] = count;
+      return {
+        specId,
+        files: [
+          ...new Set([...(this.resolver.filesFor(specId) ?? []), ...(this.browserFiles.get(specId) ?? [])]),
+        ].sort(),
+        actorEvents,
+      };
+    });
+    const outsideWindowEvents: Record<string, number> = {};
+    for (const [key, count] of this.resolver.outsideWindowEvents()) outsideWindowEvents[key] = count;
 
-  return {
-    runId,
-    ...(hubRunId !== undefined ? { hubRunId } : {}),
-    asOf,
-    lastSeq,
-    ...(universe !== undefined ? { universe } : {}),
-    specs,
-    boot: [...resolver.boot()].sort(),
-    health: {
-      heardFromApplication: resolver.heardFromApplication(),
-      pushesDuringRun,
-      attributedSpecs: resolver.attributedSpecs(),
-      rejectedPushes: resolver.rejectedPushes(),
-      uninstrumentedFiles: resolver.uninstrumentedFiles(),
-      uninstrumentedProcesses: resolver.uninstrumentedProcesses(),
-      droppedPushes: resolver.droppedPushes(),
-      unmappedActorEvents: resolver.unmappedActorEvents(),
-      outsideWindowEvents,
-      specsMeasured: specs.length,
-    },
-  };
+    return {
+      runId: this.runId,
+      ...(this.hubRunId !== undefined ? { hubRunId: this.hubRunId } : {}),
+      asOf: this.asOf,
+      lastSeq: this.lastSeq,
+      ...(this.universe !== undefined ? { universe: this.universe } : {}),
+      specs,
+      boot: [...this.resolver.boot()].sort(),
+      health: {
+        heardFromApplication: this.resolver.heardFromApplication(),
+        pushesDuringRun: this.pushesDuringRun,
+        attributedSpecs: this.resolver.attributedSpecs(),
+        rejectedPushes: this.resolver.rejectedPushes(),
+        uninstrumentedFiles: this.resolver.uninstrumentedFiles(),
+        uninstrumentedProcesses: this.resolver.uninstrumentedProcesses(),
+        droppedPushes: this.resolver.droppedPushes(),
+        unmappedActorEvents: this.resolver.unmappedActorEvents(),
+        outsideWindowEvents,
+        specsMeasured: specs.length,
+      },
+    };
+  }
+}
+
+/** `StreamResolution` over a stream already in hand. */
+export function resolveStream(events: StoredEvent[], runId: string): ResolvedCoverage {
+  const resolution = new StreamResolution(events, runId);
+  for (const event of events) resolution.accept(event);
+  return resolution.finish();
 }
 
 /**

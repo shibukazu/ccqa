@@ -1,4 +1,6 @@
+import { createReadStream } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { createInterface } from "node:readline";
 import { dirname } from "node:path";
 import type { CoverageEventStore } from "../types.ts";
 import { assertSafeName, serialize, writeBytes } from "./fs-helpers.ts";
@@ -100,7 +102,7 @@ export function createFileCoverageEventStore(
       oldestAt: null,
       endsWithNewline: raw === "" || raw.endsWith("\n"),
     };
-    for (const rawLine of nonEmptyLines(raw)) {
+    for (const rawLine of raw.split("\n")) {
       const line = parseLine(rawLine);
       if (line === null) continue;
       if (line.seq >= state.nextSeq) state.nextSeq = line.seq + 1;
@@ -169,24 +171,22 @@ export function createFileCoverageEventStore(
       });
     },
 
-    async read(project, sinceSeq) {
+    async scan(project, sinceSeq, visit) {
       assertSafeName(project, "project");
       const path = coverageEventsPath(root, project);
       const now = Date.now();
       // Retention must not depend on appends still happening — a stream
       // nothing writes to anymore would otherwise keep its events forever.
-      // The prune joins the append chain; the raw read below stays outside
-      // it, racing only against an append-in-flight partial line, which
-      // parseLine already treats as skipped.
+      // The prune joins the append chain; the read below stays outside it,
+      // racing only against an append-in-flight partial line, which parseLine
+      // already treats as skipped.
       await serialize(path, async () => {
         await pruneIfDue(project, path, await loadState(project, path), now);
       });
-      const raw = await readRaw(path);
       const cutoff = now - retentionMs;
-      const entries: { seq: number; at: number; payload: Uint8Array }[] = [];
       let lastSeq = 0;
       let skipped = 0;
-      for (const rawLine of nonEmptyLines(raw)) {
+      for await (const rawLine of streamLines(path)) {
         const line = parseLine(rawLine);
         if (line === null) {
           skipped += 1;
@@ -197,10 +197,9 @@ export function createFileCoverageEventStore(
         // The prune amortizes with slack; the retention promise doesn't — an
         // event past the window is never served, rewritten away or not.
         if (line.at < cutoff) continue;
-        entries.push({ seq: line.seq, at: line.at, payload: new Uint8Array(Buffer.from(line.payload, "base64")) });
+        visit({ seq: line.seq, at: line.at, payload: new Uint8Array(Buffer.from(line.payload, "base64")) });
       }
-      entries.sort((a, b) => a.seq - b.seq);
-      return { entries, lastSeq, skipped };
+      return { lastSeq, skipped };
     },
 
     async currentSeq(project) {
@@ -235,14 +234,32 @@ async function readRaw(path: string): Promise<string> {
   }
 }
 
-function nonEmptyLines(raw: string): string[] {
-  return raw.split("\n").filter((l) => l !== "");
+/**
+ * The stream's non-empty lines, one at a time. Streamed rather than read as one
+ * string because a project's stream is capped in the hundreds of megabytes, far
+ * past what a reader can hold. Order is the file's, which is append order,
+ * which is seq order — the prune rewrites a suffix and never reorders.
+ */
+async function* streamLines(path: string): AsyncGenerator<string> {
+  const input = createReadStream(path, { encoding: "utf8" });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) {
+      if (line !== "") yield line;
+    }
+  } catch (err) {
+    // A stream nothing has written to yet is empty, not an error.
+    if (!(err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT")) throw err;
+  } finally {
+    lines.close();
+    input.destroy();
+  }
 }
 
 /** Every parseable line of the log; partial or corrupt lines are silently omitted (the read side counts them). */
 async function readLines(path: string): Promise<StoredLine[]> {
   const lines: StoredLine[] = [];
-  for (const rawLine of nonEmptyLines(await readRaw(path))) {
+  for await (const rawLine of streamLines(path)) {
     const line = parseLine(rawLine);
     if (line !== null) lines.push(line);
   }

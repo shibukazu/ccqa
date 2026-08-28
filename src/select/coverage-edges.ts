@@ -4,6 +4,7 @@ import type { HubContext } from "../cli/hub-conn.ts";
 import * as log from "../cli/logger.ts";
 import type { HubCoverageAnswer } from "../hub-client/index.ts";
 import { errMessage } from "../run/errors.ts";
+import { runPool } from "../runtime/pool.ts";
 import { specKeyFromSpecId } from "../coverage/spec-id.ts";
 
 /**
@@ -50,6 +51,15 @@ export interface CoverageEdgesReadout {
  * far back has usually been superseded by the ledger anyway.
  */
 const MAX_REPORT_RUNS = 20;
+
+/**
+ * How many reads one source keeps in flight. The two sources run together, so
+ * the hub sees twice this. All at once is what it cannot take: it serves one
+ * process, a resolve walks the whole event stream, and a report carries its
+ * screenshots inline — forty of those together is what took it down, rather
+ * than any single one of them.
+ */
+const HUB_READ_CONCURRENCY = 4;
 
 /**
  * Read every spec's most recent measured reach from the hub. Never throws: a
@@ -148,10 +158,15 @@ async function collectStreamEdges(input: HubContext, merge: Merge): Promise<numb
   const latest = await hub.getCoverage(project);
   ingestResolved(latest.resolved, merge);
   const older = latest.runIds.filter((runId) => runId !== latest.resolved?.runId);
-  const results = await Promise.allSettled(
-    older.map(async (runId) => ingestResolved((await hub.getCoverage(project, { runId })).resolved, merge)),
-  );
-  return results.filter((r) => r.status === "rejected").length;
+  const read = await runPool(older, HUB_READ_CONCURRENCY, async (runId) => {
+    try {
+      ingestResolved((await hub.getCoverage(project, { runId })).resolved, merge);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  return read.filter((ok) => !ok).length;
 }
 
 function ingestResolved(resolved: HubCoverageAnswer["resolved"], merge: Merge): void {
@@ -197,15 +212,21 @@ async function collectReportEdges(input: HubContext, merge: Merge): Promise<numb
     if (Number.isNaN(measuredAt)) return [];
     return [{ id: run.id, measuredAt }];
   });
-  const results = await Promise.allSettled(
-    eligible.map(async ({ id, measuredAt }) => {
+  // The whole body is guarded: `runPool` rejects the pool when its callback
+  // throws, and one unreadable report has to stay one unreadable report.
+  // A report whose shape does not match is read but has nothing to give.
+  const read = await runPool(eligible, HUB_READ_CONCURRENCY, async ({ id, measuredAt }) => {
+    try {
       const parsed = ReportCoverageRowsSchema.safeParse(await hub.getReport(id));
-      if (!parsed.success) return;
+      if (!parsed.success) return true;
       for (const row of parsed.data.results) {
         if (!row.coverage || row.coverage.files.length === 0) continue;
         merge(`${row.feature}/${row.spec}`, { files: row.coverage.files, measuredAt });
       }
-    }),
-  );
-  return results.filter((r) => r.status === "rejected").length;
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  return read.filter((ok) => !ok).length;
 }
