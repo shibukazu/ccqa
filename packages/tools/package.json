@@ -1,6 +1,6 @@
 {
   "name": "ccqa-tools",
-  "version": "1.43.0",
+  "version": "1.44.0",
   "type": "module",
   "description": "Instrumentation the application under test installs, for ccqa. Currently: per-spec reach coverage.",
   "repository": {
