@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
+import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
+import { AGENT_BROWSER_JUDGE_STEPS } from "./judge-steps.ts";
 import { loadAllBlocks, saveTestScript } from "../../store/index.ts";
 import { actionsToScript, type EmptyStepNotice } from "../../codegen/actions-to-script.ts";
 import { cleanupActions as runActionCleanup } from "../../codegen/cleanup.ts";
-import { expandSpec, type ExpandedActionStep } from "../../spec/expand.ts";
+import { expandActionSteps, type ExpandedActionStep } from "../../spec/expand.ts";
 import { bundledVitestConfigPath } from "../../runtime/bundled-config.ts";
 import { spawnVitestTeed } from "../../runtime/spawn-vitest.ts";
 import { runAutoFixLoop, type RunVitestResult } from "../../diagnose/loop.ts";
@@ -28,9 +30,12 @@ export async function generateAgentBrowserTest(ctx: GenerateContext): Promise<Ge
   }
 
   const blocks = await loadAllBlocks(cwd);
-  const expanded = expandSpec(spec, { blocks });
+  const steps = expandActionSteps(spec, { blocks }, `${featureName}/${specName}`, {
+    id: AGENT_BROWSER_TARGET,
+    reason: AGENT_BROWSER_JUDGE_STEPS.reason,
+  });
 
-  log.meta("steps", expanded.length);
+  log.meta("steps", steps.length);
   log.meta("fix-mode", fix.mode);
   log.meta("language", ctx.language);
   log.blank();
@@ -40,8 +45,8 @@ export async function generateAgentBrowserTest(ctx: GenerateContext): Promise<Ge
     log.meta("cleaned", cleanedActions.length);
   }
 
-  const markers = buildStepMarkers(expanded, cleanedActions);
-  const emptySteps = findEmptySteps(expanded, cleanedActions);
+  const markers = buildStepMarkers(steps, cleanedActions);
+  const emptySteps = findEmptySteps(steps, cleanedActions);
   const warnings = emptySteps.map(
     (e) => `step ${e.stepId} has no kept actions — generated test will skip it (notice comment inserted).`,
   );
@@ -133,6 +138,16 @@ export function buildStepMarkers(
   return markers;
 }
 
+/** The last action index each step owns — where anything that follows it belongs. */
+export function lastActionIndexPerStep(actions: RecordedAction[]): Map<string, number> {
+  const last = new Map<string, number>();
+  for (let i = 0; i < actions.length; i++) {
+    const id = actions[i]!.stepId;
+    if (id) last.set(id, i);
+  }
+  return last;
+}
+
 /**
  * Spec steps that lost every action by the time the trace finished its
  * cleanup + validation passes. `actionsToScript` uses these to splice a
@@ -152,13 +167,9 @@ export function findEmptySteps(
   const presentStepIds = new Set<string>();
   for (const a of cleanedActions) if (a.stepId) presentStepIds.add(a.stepId);
 
-  // Map every cleanedActions index back to its stepId so we know which
-  // surviving step a "lost" step should appear after in spec order.
-  const lastActionIndexByStep = new Map<string, number>();
-  for (let i = 0; i < cleanedActions.length; i++) {
-    const id = cleanedActions[i]!.stepId;
-    if (id) lastActionIndexByStep.set(id, i);
-  }
+  // Maps every action index back to its stepId so we know which surviving
+  // step a "lost" step should appear after in spec order.
+  const lastActionIndexByStep = lastActionIndexPerStep(cleanedActions);
 
   const notices: EmptyStepNotice[] = [];
   let lastSeenSurvivorIndex = -1;

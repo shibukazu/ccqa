@@ -72,7 +72,7 @@ export type PerspectiveStatus = z.infer<typeof PerspectiveStatusSchema>;
  * One step of a spec, transcribed verbatim for display. Exactly one shape per
  * step: an include step carries the block name it invokes (its params stay in
  * the spec — they are wiring, not procedure), an action step carries the
- * instruction and what it expects. Never authored or reworded here: like
+ * instruction and what it expects, a judge step carries the claim it asserts. Never authored or reworded here: like
  * `title`, this is a mechanical copy the next `ccqa perspectives` rewrites.
  */
 export const PerspectiveStepSchema = z
@@ -81,6 +81,8 @@ export const PerspectiveStepSchema = z
     include: z.string().min(1).optional(),
     instruction: z.string().optional(),
     expected: z.string().optional(),
+    /** Present on a judge step: the claim a model decides. This is its assertion. */
+    judgeByLlm: z.string().optional(),
   })
   .strip();
 export type PerspectiveStep = z.infer<typeof PerspectiveStepSchema>;

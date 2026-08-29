@@ -180,6 +180,7 @@ describe("generateWithLlmEngine", () => {
     const result = await generateWithLlmEngine({
       ctx: makeContext(),
       target: "playwright",
+      steps: [],
       taskInstructions: "Generate the test.",
       draft: { path: "e2e/todos/add-item.spec.ts", contents: "// draft" },
       invoke,
@@ -221,6 +222,7 @@ describe("generateWithLlmEngine", () => {
     const result = await generateWithLlmEngine({
       ctx: makeContext(),
       target: "playwright",
+      steps: [],
       taskInstructions: "Generate the test.",
       invoke,
     });
@@ -237,6 +239,7 @@ describe("generateWithLlmEngine", () => {
       generateWithLlmEngine({
         ctx: makeContext(),
         target: "playwright",
+        steps: [],
         taskInstructions: "Generate the test.",
         invoke,
       }),
@@ -255,6 +258,7 @@ describe("generateWithLlmEngine", () => {
       generateWithLlmEngine({
         ctx: makeContext(),
         target: "playwright",
+        steps: [],
         taskInstructions: "Generate the test.",
         invoke,
       }),
@@ -273,6 +277,7 @@ describe("generateWithLlmEngine", () => {
       generateWithLlmEngine({
         ctx: makeContext(),
         target: "playwright",
+        steps: [],
         taskInstructions: "Generate the test.",
         invoke,
       }),
@@ -286,6 +291,7 @@ describe("generateWithLlmEngine", () => {
     const res = await generateWithLlmEngine({
       ctx: makeContext({ targetConfig: TargetConfigSchema.parse({}) }),
       target: "playwright",
+      steps: [],
       taskInstructions: "x",
       invoke,
     });
@@ -297,6 +303,7 @@ describe("generateWithLlmEngine", () => {
       generateWithLlmEngine({
         ctx: makeContext({ targetConfig: TargetConfigSchema.parse({}) }),
         target: "playwright",
+        steps: [],
         taskInstructions: "x",
         invoke: badInvoke,
       }),
@@ -319,6 +326,7 @@ describe("generateWithLlmEngine", () => {
         }),
       }),
       target: "playwright",
+      steps: [],
       taskInstructions: "Generate the test.",
       invoke,
     });
@@ -341,6 +349,7 @@ describe("generateWithLlmEngine", () => {
         targetConfig: TargetConfigSchema.parse({ outDir: "e2e", runCommand: "false" }),
       }),
       target: "playwright",
+      steps: [],
       taskInstructions: "Generate the test.",
       invoke,
     });
@@ -361,6 +370,7 @@ describe("generateWithLlmEngine", () => {
         targetConfig: TargetConfigSchema.parse({ outDir: "e2e", runCommand: "false" }),
       }),
       target: "playwright",
+      steps: [],
       taskInstructions: "Generate the test.",
       invoke,
     });
@@ -390,6 +400,7 @@ describe("generateWithLlmEngine", () => {
           }),
         }),
         target: "playwright",
+        steps: [],
         taskInstructions: "Generate the test.",
         invoke,
       });
@@ -426,6 +437,7 @@ describe("generateWithLlmEngine", () => {
           }),
         }),
         target: "playwright",
+        steps: [],
         taskInstructions: "Generate the test.",
         invoke,
       });
@@ -447,6 +459,7 @@ describe("generateWithLlmEngine", () => {
         targetConfig: TargetConfigSchema.parse({ outDir: "e2e", runCommand: "false" }),
       }),
       target: "playwright",
+      steps: [],
       taskInstructions: "Generate the test.",
       invoke,
     });
@@ -482,6 +495,7 @@ describe("generateWithLlmEngine", () => {
         targetConfig: TargetConfigSchema.parse({ outDir: "e2e/specs" }),
       }),
       target: "playwright",
+      steps: [],
       taskInstructions: "Generate the test.",
       invoke,
     });
@@ -505,6 +519,7 @@ describe("existingOutputFromManifest", () => {
     await generateWithLlmEngine({
       ctx: makeContext(),
       target: "playwright",
+      steps: [],
       taskInstructions: "x",
       invoke,
     });

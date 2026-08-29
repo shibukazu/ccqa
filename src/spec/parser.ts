@@ -1,11 +1,6 @@
 import { parse as parseYaml } from "yaml";
 import { ZodError } from "zod";
-import {
-  BlockSpecSchema,
-  TestSpecSchema,
-  type BlockSpec,
-  type TestSpec,
-} from "./yaml-schema.ts";
+import { BlockSpecSchema, TestSpecSchema, type BlockSpec, type TestSpec } from "./yaml-schema.ts";
 
 /**
  * Fields the schema used to accept, and what to do now. The schema is
@@ -36,7 +31,8 @@ const UNREAD_PARAM_FIELD =
 const REMOVED_FIELDS: Record<string, RemovedField> = {
   relatedPaths: {
     at: atRoot,
-    message: "which specs a change affects is now decided by `ccqa select-specs`, which reads the diff instead of a declared path list. Delete the field.",
+    message:
+      "which specs a change affects is now decided by `ccqa select-specs`, which reads the diff instead of a declared path list. Delete the field.",
   },
   dummy: { at: atBlockParam, message: UNREAD_PARAM_FIELD },
   description: { at: atBlockParam, message: UNREAD_PARAM_FIELD },
@@ -48,7 +44,7 @@ export function parseTestSpec(content: string, source = "spec.yaml"): TestSpec {
   try {
     return TestSpecSchema.parse(raw);
   } catch (e) {
-    throw enrichZodError(e, source, /* isBlock */ false);
+    throw enrichZodError(e, source, /* isBlock */ false, raw);
   }
 }
 
@@ -77,7 +73,7 @@ export function parseBlockSpec(content: string, source = "block spec.yaml"): Blo
   try {
     return BlockSpecSchema.parse(raw);
   } catch (e) {
-    throw enrichZodError(e, source, /* isBlock */ true);
+    throw enrichZodError(e, source, /* isBlock */ true, raw);
   }
 }
 
@@ -92,33 +88,107 @@ function parseYamlOrThrow(content: string, source: string): unknown {
 interface ZodLikeIssue {
   code?: string;
   keys?: unknown;
+  errors?: ZodLikeIssue[][];
   path: (string | number)[];
   message: string;
 }
 
-function enrichZodError(error: unknown, source: string, isBlock: boolean): Error {
+function enrichZodError(error: unknown, source: string, isBlock: boolean, raw: unknown): Error {
   if (!(error instanceof ZodError)) return error as Error;
 
   const lines: string[] = [`Invalid ${source}:`];
   for (const issue of error.issues as unknown as ZodLikeIssue[]) {
-    const path = issue.path.join(".") || "(root)";
-    const message = humanizeIssue(issue, isBlock);
-    lines.push(`  - ${path}: ${message}`);
+    for (const [path, message] of explain(issue, isBlock, raw)) {
+      lines.push(`  - ${path.join(".") || "(root)"}: ${message}`);
+    }
   }
   return new Error(lines.join("\n"));
 }
 
-function humanizeIssue(issue: ZodLikeIssue, isBlock: boolean): string {
+const NESTED_BLOCK_MESSAGE =
+  "Nested blocks are not supported — flatten by inlining the included block's steps into this block.";
+
+/**
+ * The issues actually worth showing for one failure. A step is a union, so
+ * anything wrong with it fails as a whole and says only "Invalid input" —
+ * useless. The branch the author meant is the one that recognized the most of
+ * what they wrote, so its own issues are reported instead.
+ */
+type Reported = [path: (string | number)[], message: string];
+
+function explain(issue: ZodLikeIssue, isBlock: boolean, raw: unknown): Reported[] {
+  const asIs: Reported[] = [[issue.path, humanizeIssue(issue, isBlock, raw)]];
+  if (issue.code !== "invalid_union" || !issue.errors?.length) return asIs;
+  // A nested block fails every branch equally, so the advice cannot be
+  // recovered from any of them — it comes from the value.
+  if (isBlock && stepKind(raw, issue.path) === "include") return asIs;
+  const best = pickBranch(issue.errors, stepKind(raw, issue.path));
+  if (!best?.length) return asIs;
+  // Paths are relative to the union node, so the caller's scoping (which
+  // removed field belongs to the root) needs them made absolute first.
+  return best.map((b) => {
+    const path = [...issue.path, ...b.path];
+    return [path, humanizeIssue({ ...b, path }, isBlock, raw)];
+  });
+}
+
+/** Which kind of step the author was writing, read from the key they used. */
+function stepKind(raw: unknown, path: (string | number)[]): string | null {
+  const node = nodeAt(raw, path);
+  if (!isRecord(node)) return null;
+  for (const key of ["include", "judgeByLlm"]) if (key in node) return key;
+  return "instruction";
+}
+
+/**
+ * The branch the author meant: the one that accepts the key they wrote. Any
+ * other branch reports that key as unrecognized, which would tell them the
+ * key they just used does not exist. Ties among the rest go to the branch
+ * that recognized the most of what they wrote.
+ */
+function pickBranch(branches: ZodLikeIssue[][], kind: string | null): ZodLikeIssue[] | undefined {
+  const accepts = kind === null ? branches : branches.filter((b) => !rejectsKey(b, kind));
+  const candidates = accepts.length > 0 ? accepts : branches;
+  return candidates.reduce((a, b) => (unknownKeyCount(a) <= unknownKeyCount(b) ? a : b));
+}
+
+function rejectsKey(issues: ZodLikeIssue[], key: string): boolean {
+  return issues.some((i) => Array.isArray(i.keys) && (i.keys as string[]).includes(key));
+}
+
+function unknownKeyCount(issues: ZodLikeIssue[]): number {
+  return issues.reduce((n, i) => n + (Array.isArray(i.keys) ? i.keys.length : 0), 0);
+}
+
+function humanizeIssue(issue: ZodLikeIssue, isBlock: boolean, raw: unknown): string {
+  if (isBlock && issue.code === "invalid_union" && stepKind(raw, issue.path) === "include") {
+    return NESTED_BLOCK_MESSAGE;
+  }
   if (issue.code === "unrecognized_keys") {
     const keys = Array.isArray(issue.keys) ? (issue.keys as string[]) : [];
     if (isBlock && keys.includes("include")) {
-      return `Nested blocks are not supported — flatten by inlining the included block's steps into this block.`;
+      return NESTED_BLOCK_MESSAGE;
     }
     const removed = keys.filter((k) => REMOVED_FIELDS[k]?.at(issue.path));
     const stillUnknown = keys.filter((k) => !REMOVED_FIELDS[k]?.at(issue.path));
-    const parts = removed.map((k) => `\`${k}\` is no longer part of the spec schema — ${REMOVED_FIELDS[k]!.message}`);
+    const parts = removed.map(
+      (k) => `\`${k}\` is no longer part of the spec schema — ${REMOVED_FIELDS[k]!.message}`,
+    );
     if (stillUnknown.length > 0) parts.push(`Unknown keys: ${stillUnknown.join(", ")}`);
     return parts.join(" ");
   }
   return issue.message;
+}
+
+function nodeAt(raw: unknown, path: (string | number)[]): unknown {
+  let node: unknown = raw;
+  for (const segment of path) {
+    if (!isRecord(node)) return undefined;
+    node = node[segment];
+  }
+  return node;
+}
+
+function isRecord(value: unknown): value is Record<string | number, unknown> {
+  return typeof value === "object" && value !== null;
 }

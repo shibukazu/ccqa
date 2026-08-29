@@ -1,3 +1,4 @@
+import { isExpandedActionStep, type ExpandedStep } from "../spec/expand.ts";
 import { languageDirective } from "./language.ts";
 
 /**
@@ -30,7 +31,7 @@ export interface LlmGenPromptInput {
   /** Target-specific instructions: what to generate and in which format. */
   taskInstructions: string;
   specTitle: string;
-  steps: Array<{ id: string; instruction: string; expected: string }>;
+  steps: ExpandedStep[];
   /** Mechanical-emit draft (playwright): the recorded ground truth. */
   draft?: { path: string; contents: string };
   /**
@@ -109,20 +110,36 @@ export function retryNote(error: string): string {
   return `\n\n## Previous attempt rejected\n\nYour previous reply violated the output contract: ${error}\nReply again with ONLY the JSON object described in "Output format".`;
 }
 
+function formatStep(step: ExpandedStep): string {
+  if (isExpandedActionStep(step)) {
+    return `- ${step.id}: ${body(step.instruction)}\n  expected: ${body(step.expected)}`;
+  }
+  const source = step.from ? ` (read from \`${step.from}\`)` : "";
+  return `- ${step.id}: judge by LLM${source}\n  claim: ${body(step.judgeByLlm)}`;
+}
+
+/**
+ * Step text is usually a block scalar, so it arrives with newlines. Left as-is
+ * its later lines sit flush against the list and read as further steps.
+ */
+function body(text: string): string {
+  return text.trim().split("\n").join("\n    ");
+}
+
 export function buildLlmGenPrompt(input: LlmGenPromptInput): string {
   const sections: string[] = [];
 
   sections.push(input.taskInstructions);
 
-  const steps = input.steps
-    .map((s) => `- ${s.id}: ${s.instruction}\n  expected: ${s.expected}`)
-    .join("\n");
+  const steps = input.steps.map(formatStep).join("\n");
   sections.push(`## Test spec\n\nTitle: ${input.specTitle}\n\nSteps:\n${steps}`);
 
   if (input.draft) {
     sections.push(
       `## Mechanical draft (recorded ground truth)\n\nPath: ${input.draft.path}\n\n` +
-        "```\n" + input.draft.contents + "\n```",
+        "```\n" +
+        input.draft.contents +
+        "\n```",
     );
   }
 

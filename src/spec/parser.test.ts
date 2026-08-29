@@ -103,6 +103,19 @@ steps:
     ).toThrow(/Nested blocks/);
   });
 
+  // The advice is only right for an `include`. A block step is a union, so a
+  // typo fails the same way — telling its author to flatten a block would
+  // send them looking for one that is not there.
+  it("does not blame nesting for a step that is merely misspelt", () => {
+    expect(() =>
+      parseBlockSpec(`title: B
+steps:
+  - instructon: go
+    expected: there
+`),
+    ).toThrow(/Invalid input/);
+  });
+
   it("tells a param carrying `dummy` or `description` that nothing reads it", () => {
     for (const field of ["dummy", "description"]) {
       expect(() =>
@@ -128,5 +141,27 @@ steps:
     expected: e
 `),
     ).toThrow(/relatedPaths.*no longer part of the spec schema.*ccqa select-specs/s);
+  });
+});
+
+describe("union step errors", () => {
+  it("reports the branch whose key the author used, not the one that rejects it", () => {
+    // Told "Unknown keys: judgeByLlm" instead, an author converting a step is
+    // told the key they just wrote does not exist.
+    expect(() => parseTestSpec("title: s\nsteps:\n  - judgeByLlm: c\n    instruction: go\n")).toThrow(
+      /Unknown keys: instruction/,
+    );
+    expect(() => parseTestSpec("title: s\nsteps:\n  - instruction: i\n    expcted: e\n")).toThrow(
+      /Unknown keys: expcted/,
+    );
+  });
+
+  it("scopes a removed-field message to the root it was removed from", () => {
+    expect(() =>
+      parseTestSpec("title: s\nsteps:\n  - instruction: i\n    expected: e\n    relatedPaths: [a]\n"),
+    ).toThrow(/Unknown keys: relatedPaths/);
+    expect(() =>
+      parseTestSpec("title: s\nrelatedPaths: [a]\nsteps:\n  - instruction: i\n    expected: e\n"),
+    ).toThrow(/no longer part of the spec schema/);
   });
 });

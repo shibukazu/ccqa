@@ -147,9 +147,9 @@ steps:
 
 Rules:
 
-- A block's `steps` must be action steps only. Nested blocks (`include`
-  inside a block) are rejected: flatten by inlining the included block's
-  steps.
+- A block's `steps` are action or `judgeByLlm` steps. Nested blocks
+  (`include` inside a block) are rejected: flatten by inlining the included
+  block's steps.
 - `params` are string-typed; reference them in step strings with `${name}`.
   Each param takes `name` (required), `required` (defaults to `true`) and
   `secret` (defaults to `false`).
@@ -195,6 +195,35 @@ immediately, not at that spec's run time.
 `ccqa record` warns when it finds stale artifacts from older versions
 (`test.spec.ts` / `actions.json` under a block directory) — delete them
 manually; blocks no longer carry recordings.
+
+## Judging what a run cannot predict
+
+Some output has no fixed wording: a generated answer, a summary. A recorded
+assertion can only pin the phrasing of one run, which the next run changes.
+A `judgeByLlm` step states the claim instead and has a model decide it:
+
+```yaml
+- judgeByLlm: |
+    the reply names at least one concrete step to take,
+    and is not a refusal like "I don't know"
+  from: ".reply"     # a selector; omitted, the page's body
+```
+
+A selector matching several elements judges the first, so narrow it when the
+page repeats the shape.
+
+The claim is the assertion — one that does not hold fails the spec. So is a
+verdict that cannot be read: a model that answers something unusable leaves
+the claim undecided, and an undecided claim is not a passing one.
+
+A claim is judged where it sits in the spec, so a later step is free to
+navigate away from the text it read. Blocks may carry judge steps, which is
+where a shared flow that ends in a generated answer puts its claim.
+
+Only targets that emit the call can carry one — `playwright` today. The
+agent-browser target decides each step through its own `expected`, and runn
+has no page to read; a claim reaching either is refused by name rather than
+dropped.
 
 ## File uploads
 

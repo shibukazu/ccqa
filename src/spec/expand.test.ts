@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { collectIncludedBlockNames, expandSpec } from "./expand.ts";
+import { collectIncludedBlockNames, expandActionSteps, expandSpec } from "./expand.ts";
 import { BlockSpecSchema, TestSpecSchema } from "./yaml-schema.ts";
 
 const loginBlock = BlockSpecSchema.parse({
@@ -102,5 +102,50 @@ describe("collectIncludedBlockNames", () => {
       ],
     });
     expect(collectIncludedBlockNames(spec).sort()).toEqual(["login", "logout"]);
+  });
+});
+
+describe("expandSpec — judgeByLlm", () => {
+  const judgeBlock = BlockSpecSchema.parse({
+    title: "ask",
+    params: [{ name: "topic" }],
+    steps: [{ judgeByLlm: "the answer covers ${topic}", from: ".answer" }],
+  });
+
+  it("substitutes block params into a claim", () => {
+    const spec = TestSpecSchema.parse({
+      title: "demo",
+      target: "playwright",
+      steps: [{ include: "ask", params: { topic: "refunds" } }],
+    });
+    const expanded = expandSpec(spec, { blocks: new Map([["ask", judgeBlock]]) });
+    expect(expanded[0]).toMatchObject({
+      id: "step-01",
+      source: "ask",
+      judgeByLlm: "the answer covers refunds",
+      from: ".answer",
+    });
+  });
+
+  it("refuses a claim on a target that cannot judge it, naming the block it came from", () => {
+    const spec = TestSpecSchema.parse({
+      title: "demo",
+      steps: [{ include: "ask", params: { topic: "refunds" } }],
+    });
+    expect(() =>
+      expandActionSteps(spec, { blocks: new Map([["ask", judgeBlock]]) }, "f/s", {
+        id: "agent-browser",
+        reason: "it decides each step itself",
+      }),
+    ).toThrow(/step step-01 \(from block `ask`\).*"agent-browser" target cannot honour it/);
+  });
+
+  it("passes a spec without claims through unchanged", () => {
+    const spec = TestSpecSchema.parse({
+      title: "demo",
+      steps: [{ instruction: "i", expected: "e" }],
+    });
+    const target = { id: "runn", reason: "there is no page to read a claim off" };
+    expect(expandActionSteps(spec, { blocks: new Map() }, "f/s", target)).toHaveLength(1);
   });
 });

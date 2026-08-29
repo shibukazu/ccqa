@@ -1,6 +1,15 @@
 import { substituteVars } from "../runtime/env-vars.ts";
 import { parseTestSpec } from "./parser.ts";
-import { isIncludeStep, isParamRequired, type BlockSpec, type Step, type TestSpec } from "./yaml-schema.ts";
+import {
+  isIncludeStep,
+  isJudgeByLlmStep,
+  isParamRequired,
+  type ActionStep,
+  type BlockSpec,
+  type JudgeByLlmStep,
+  type Step,
+  type TestSpec,
+} from "./yaml-schema.ts";
 
 /**
  * Flattened step from a spec, ready to feed into `ccqa trace`. Block includes
@@ -18,6 +27,32 @@ export interface ExpandedActionStep {
   expected: string;
 }
 
+/** A judge-by-LLM step, expanded. `from` narrows what the model reads; absent means the page. */
+export interface ExpandedJudgeByLlmStep {
+  id: string;
+  source: string;
+  judgeByLlm: string;
+  from?: string;
+}
+
+export type ExpandedStep = ExpandedActionStep | ExpandedJudgeByLlmStep;
+
+/** Runtime predicates for the ExpandedStep union. */
+export function isExpandedJudgeByLlmStep(step: ExpandedStep): step is ExpandedJudgeByLlmStep {
+  return "judgeByLlm" in step;
+}
+
+export function isExpandedActionStep(step: ExpandedStep): step is ExpandedActionStep {
+  return !("judgeByLlm" in step);
+}
+
+/** Raw and expanded steps carry the same text fields, so one walker serves both. */
+export type AnyStepBody = ActionStep | JudgeByLlmStep | ExpandedStep;
+
+export function isJudgeBody(step: AnyStepBody): step is JudgeByLlmStep | ExpandedJudgeByLlmStep {
+  return "judgeByLlm" in step;
+}
+
 export interface ExpandOptions {
   /** Map of block name → parsed block. Missing blocks throw. */
   blocks: Map<string, BlockSpec>;
@@ -29,8 +64,8 @@ export interface ExpandOptions {
  * sequence — block boundaries survive only as the `source` tag, so trace and
  * codegen never need a separate block code path.
  */
-export function expandSpec(spec: TestSpec, options: ExpandOptions): ExpandedActionStep[] {
-  const out: ExpandedActionStep[] = [];
+export function expandSpec(spec: TestSpec, options: ExpandOptions): ExpandedStep[] {
+  const out: ExpandedStep[] = [];
   let counter = 0;
   const allocId = (): string => {
     counter += 1;
@@ -40,19 +75,61 @@ export function expandSpec(spec: TestSpec, options: ExpandOptions): ExpandedActi
   for (const step of spec.steps) {
     if (isIncludeStep(step)) {
       const block = resolveBlock(step.include, step.params ?? {}, options.blocks);
+      const substitute = (text: string): string => substituteVars(text, block.lookup);
       for (const blockStep of block.steps) {
-        out.push({
-          id: allocId(),
-          source: step.include,
-          instruction: substituteVars(blockStep.instruction, block.lookup),
-          expected: substituteVars(blockStep.expected, block.lookup),
-        });
+        out.push(expandStep(blockStep, allocId(), step.include, substitute));
       }
     } else {
-      out.push({ id: allocId(), source: "spec", instruction: step.instruction, expected: step.expected });
+      out.push(expandStep(step, allocId(), "spec", (text) => text));
     }
   }
   return out;
+}
+
+/**
+ * `expandSpec` for a target that emits no judge call. A claim is refused by
+ * name rather than dropped: one that goes unjudged is a test that passes
+ * without testing. Blocks carry steps the spec does not name, which is why
+ * this runs after expansion rather than in the schema.
+ */
+export function expandActionSteps(
+  spec: TestSpec,
+  options: ExpandOptions,
+  specKey: string,
+  target: { id: string; reason: string },
+): ExpandedActionStep[] {
+  return expandSpec(spec, options).map((step) => {
+    if (isExpandedJudgeByLlmStep(step)) {
+      const from = step.source === "spec" ? "" : ` (from block \`${step.source}\`)`;
+      throw new Error(
+        `${specKey}: step ${step.id}${from} uses \`judgeByLlm\`, but the "${target.id}" target cannot honour it — ${target.reason}`,
+      );
+    }
+    return step;
+  });
+}
+
+/** `substitute` resolves a block's `$param` refs; a spec's own steps have none, so it passes text through. */
+function expandStep(
+  step: ActionStep | JudgeByLlmStep,
+  id: string,
+  source: string,
+  substitute: (text: string) => string,
+): ExpandedStep {
+  if (isJudgeByLlmStep(step)) {
+    return {
+      id,
+      source,
+      judgeByLlm: substitute(step.judgeByLlm),
+      ...(step.from !== undefined ? { from: substitute(step.from) } : {}),
+    };
+  }
+  return {
+    id,
+    source,
+    instruction: substitute(step.instruction),
+    expected: substitute(step.expected),
+  };
 }
 
 interface ResolvedBlock {
@@ -67,7 +144,9 @@ function resolveBlock(
 ): ResolvedBlock {
   const block = blocks.get(blockName);
   if (!block) {
-    throw new Error(`Unknown block: "${blockName}". Define it under .ccqa/blocks/${blockName}/spec.yaml.`);
+    throw new Error(
+      `Unknown block: "${blockName}". Define it under .ccqa/blocks/${blockName}/spec.yaml.`,
+    );
   }
 
   const declaredParams = new Map((block.params ?? []).map((p) => [p.name, p]));

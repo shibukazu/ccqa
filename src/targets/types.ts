@@ -73,6 +73,14 @@ export interface TargetPlugin {
    */
   browserCoverage: BrowserCoverageDecl;
   /**
+   * Whether this target emits a call that decides a `judgeByLlm` step.
+   * Required, never optional, for the same reason as `browserCoverage`: an
+   * omitted answer would read as "yes" and let a claim through unjudged, and
+   * a claim nobody decides is a test that passes without testing. `reason` is
+   * what the spec's author is told when one is refused.
+   */
+  judgeSteps: CapabilitySupport;
+  /**
    * The guidance-prompt kind this target learns under (`<kind>.user` /
    * `<kind>.agent`). Set only by LLM-generating targets (playwright, runn):
    * `ccqa generate --learn-hub-codegen-prompt` refreshes `<guidanceKind>.agent`
@@ -82,7 +90,10 @@ export interface TargetPlugin {
   guidanceKind?: GuidanceKind;
 }
 
-export type StepEvidenceSupport = { supported: true } | { supported: false; reason: string };
+/** A yes/no capability whose "no" has to explain itself, on the row or in the refusal. */
+export type CapabilitySupport = { supported: true } | { supported: false; reason: string };
+
+export type StepEvidenceSupport = CapabilitySupport;
 
 /**
  * A target's answer to "where is your browser?".

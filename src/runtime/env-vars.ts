@@ -5,6 +5,7 @@
 // (lowerCamelCase) can also appear.
 const ENV_VAR_RE = /\$\{([A-Z_][A-Z0-9_]*)\}|\$([A-Z_][A-Z0-9_]*)/g;
 const ANY_VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
+const BRACED_VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 /**
  * Replace every `$NAME` / `${NAME}` reference in `value` using `lookup`. When
@@ -92,9 +93,10 @@ export function envRefsToJsExpression(value: string): string {
 export function refsToJsExpression(
   value: string,
   nameToExpr: (name: string) => string | null,
+  refRe: RegExp = ANY_VAR_RE,
 ): string {
-  ANY_VAR_RE.lastIndex = 0;
-  if (!ANY_VAR_RE.test(value)) {
+  refRe.lastIndex = 0;
+  if (!refRe.test(value)) {
     return JSON.stringify(value);
   }
 
@@ -104,7 +106,7 @@ export function refsToJsExpression(
     .replace(/\$\{/g, (_match, offset: number, source: string) => {
       // Preserve `${` only when it opens a well-formed env / param ref —
       // otherwise escape it so the resulting template literal stays valid.
-      const probe = new RegExp(ANY_VAR_RE.source, "g");
+      const probe = new RegExp(refRe.source, "g");
       let m: RegExpExecArray | null;
       while ((m = probe.exec(source)) !== null) {
         if (m.index === offset) return "${";
@@ -112,12 +114,17 @@ export function refsToJsExpression(
       return "\\${";
     });
 
-  ANY_VAR_RE.lastIndex = 0;
-  const replaced = escaped.replace(ANY_VAR_RE, (_match, braced: string | undefined, plain: string | undefined) => {
+  refRe.lastIndex = 0;
+  const replaced = escaped.replace(refRe, (_match, braced: string | undefined, plain: string | undefined) => {
     const name = braced ?? plain ?? "";
     const expr = nameToExpr(name);
     return expr !== null ? `\${${expr}}` : `\${process.env.${name} ?? ""}`;
   });
 
   return `\`${replaced}\``;
+}
+
+/** `${VAR}` only. For prose, where a bare `$WORD` is a word and not a reference. */
+export function bracedRefsToJsExpression(value: string): string {
+  return refsToJsExpression(value, () => null, BRACED_VAR_RE);
 }

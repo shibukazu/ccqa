@@ -12,7 +12,11 @@ import { closeSession } from "../diagnose/snapshot.ts";
 import type { RunTeardown } from "./run-teardown.ts";
 import type { HubContext } from "./hub-conn.ts";
 import { parseTestSpec } from "../spec/parser.ts";
-import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
+import {
+  collectIncludedBlockNames,
+  expandSpec,
+  isExpandedActionStep,
+} from "../spec/expand.ts";
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
 import { validateActions, type ValidationMode } from "../runtime/replay-validate.ts";
@@ -119,7 +123,11 @@ export async function runTrace(
   const specContent = await readSpecFile(featureName, specName, opts.cwd);
   const spec = parseTestSpec(specContent);
   const blocks = await loadAllBlocks(opts.cwd);
+  // A judge step records nothing: it states a claim about the page rather than
+  // an action to replay, and the generator places the call from the step list.
+  // Refusing one here would make a spec that carries a claim unrecordable.
   const expanded = expandSpec(spec, { blocks });
+  const steps = expanded.filter(isExpandedActionStep);
 
   // Build the env-value → `${VAR}` scrub map BEFORE the trace starts so
   // every recorded action (whether routed through the PreToolUse Bash hook
@@ -151,7 +159,7 @@ export async function runTrace(
   }
 
   log.meta("spec", spec.title);
-  log.meta("steps", expanded.length);
+  log.meta("steps", steps.length);
   const includes = collectIncludedBlockNames(spec);
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
   log.blank();
@@ -160,7 +168,7 @@ export async function runTrace(
 
   const baseSystemPrompt = buildTraceSystemPrompt({
     title: spec.title,
-    steps: expanded,
+    steps,
     sessionName,
     ...(opts.instruction ? { instruction: opts.instruction } : {}),
   });
@@ -305,7 +313,7 @@ export async function runTrace(
     // A step whose actions carry no assertion produced a test that performs
     // the step but verifies nothing about its `expected` — the kind of green
     // that reads as coverage. Loud, per step, before codegen runs.
-    for (const stepId of stepsWithoutAsserts(expanded.map((s) => s.id), validatedActions)) {
+    for (const stepId of stepsWithoutAsserts(steps.map((s) => s.id), validatedActions)) {
       log.warn(`${stepId} recorded no assertion — nothing in the generated test verifies its 'expected'`);
     }
     log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);

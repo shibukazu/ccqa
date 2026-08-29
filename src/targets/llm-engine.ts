@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
-import { expandSpec } from "../spec/expand.ts";
-import { getSpecDir, loadAllBlocks, loadPromptBundleFromHub } from "../store/index.ts";
+import type { ExpandedStep } from "../spec/expand.ts";
+import { getSpecDir, loadPromptBundleFromHub } from "../store/index.ts";
 import {
   buildLlmFixPrompt,
   buildLlmGenPrompt,
@@ -292,6 +292,13 @@ export interface LlmEngineRequest {
   ctx: GenerateContext;
   /** Target id — also the hub guidance kind (`<target>.user` / `<target>.agent`). */
   target: GuidanceKind;
+  /**
+   * The spec's steps, already expanded by the caller. Passed in rather than
+   * expanded here so the target that emits a step decides which kinds it
+   * accepts — a claim reaching a target that emits no judge call would
+   * otherwise reach the prompt as prose and be answered with nothing.
+   */
+  steps: ExpandedStep[];
   /** Target-specific instruction block (what to generate, in which format). */
   taskInstructions: string;
   /** Mechanical draft treated as recorded ground truth (playwright). */
@@ -333,9 +340,6 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
   const bundle = await loadPromptBundleFromHub(ctx.hub, req.target);
   if (bundle) log.meta("prompt-bundle", bundle.loaded.join(", "));
 
-  const blocks = await loadAllBlocks(ctx.cwd);
-  const steps = expandSpec(ctx.spec, { blocks });
-
   const policy: OutputPathPolicy = {
     cwd: ctx.cwd,
     outDirAbs: resolve(ctx.cwd, outDir),
@@ -346,7 +350,7 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
   const prompt = buildLlmGenPrompt({
     taskInstructions: req.taskInstructions,
     specTitle: ctx.spec.title,
-    steps,
+    steps: req.steps,
     draft: req.draft,
     ...(req.draftInvariant ? { draftInvariant: req.draftInvariant } : {}),
     resources: resources.map(toPromptResource),

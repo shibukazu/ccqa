@@ -1,3 +1,4 @@
+import { AGENT_BROWSER_JUDGE_STEPS } from "./judge-steps.ts";
 import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
 import { getTestScript } from "../../store/index.ts";
 import type { TargetPlugin } from "../types.ts";
@@ -27,4 +28,5 @@ export const agentBrowserTarget: TargetPlugin = {
   // not attach the engine yet — its replay creates the session inside the
   // child process, out of the parent's sight.
   browserCoverage: { browser: "cdp", cdpEndpoint: acquireAgentBrowserEndpoint },
+  judgeSteps: AGENT_BROWSER_JUDGE_STEPS,
 };

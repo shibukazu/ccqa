@@ -108,6 +108,12 @@ describe("buildSpecEnvScrub", () => {
     expect(out.map[0]).toEqual(["abcdef", "${LONG}"]);
     expect(out.map[1]).toEqual(["abc", "${SHORT}"]);
   });
+  test("captures refs from a claim and its selector", () => {
+    process.env["TENANT"] = "acme-corp";
+    const spec = specOf([{ judgeByLlm: "the answer names ${TENANT}", from: "[data-for='${TENANT}']" }]);
+    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }));
+    expect(out.map).toEqual([["acme-corp", "${TENANT}"]]);
+  });
 });
 
 describe("buildProseEnvScrubMap", () => {
