@@ -349,6 +349,22 @@ describe("comparePerspectivesSkeleton (--check)", () => {
     expect(comparePerspectivesSkeleton(skeleton, hubDoc())).toEqual([]);
   });
 
+  // The hub reads this field to decide which specs an audit owes an answer
+  // for, so a document that disagrees is exactly the stale case --verify is
+  // for — and the only one no other field would surface.
+  test("flags a spec turned off locally that the hub still lists as enabled", () => {
+    const local: PerspectiveFeature[] = [
+      { ...skeleton[0]!, specs: [{ ...skeleton[0]!.specs[0]!, disabled: true }] },
+    ];
+    expect(comparePerspectivesSkeleton(local, hubDoc())).toEqual([
+      "tasks/search-tasks: out of date — disabled",
+    ]);
+  });
+
+  test("treats absent and false as the same answer, so an older document is not stale", () => {
+    expect(comparePerspectivesSkeleton(skeleton, hubDoc({ disabled: false }))).toEqual([]);
+  });
+
   test("flags a local spec missing from the hub and a hub entry with no local spec", () => {
     const localOnly: PerspectiveFeature[] = [
       ...skeleton,
