@@ -52,8 +52,36 @@ export const STEP_EVIDENCE_AFTER = "ccqaStepAfter";
 export function stepEvidenceCall(
   fn: typeof STEP_EVIDENCE_BEFORE | typeof STEP_EVIDENCE_AFTER,
   marker: Pick<StepMarker, "stepId" | "source">,
-): string {
-  return `await ${fn}(page, ${j(marker.stepId)}, ${j(marker.source)});`;
+): InjectedCall {
+  return injectedCall(fn, [j(marker.stepId), j(marker.source)]);
+}
+
+/** An emitted call, and how the generation gate recognises it in the written test. */
+export interface InjectedCall {
+  code: string;
+  pattern: RegExp;
+}
+
+/**
+ * A receiver expression: anything up to the argument's comma, allowing one
+ * level of parentheses so `await ctx.newPage()` and `page.context().pages()[1]`
+ * — how a rewrite names a tab a click opened — count as receivers.
+ */
+const RECEIVER = String.raw`(?:[^,()]|\([^()]*\))+`;
+
+/**
+ * The call as emitted, plus the pattern that accepts it back on any page. The
+ * receiver is the one part a rewrite is right to change: a click that opens a
+ * new tab has to act on that tab. Everything else is required verbatim, the
+ * `await` and `;` included — an unawaited capture races the end of the test,
+ * and a mention in a comment is not a call.
+ */
+function injectedCall(name: string, args: string[]): InjectedCall {
+  const tail = args.map(escapeRegExp).join(String.raw`\s*,\s*`);
+  return {
+    code: `await ${name}(page, ${args.join(", ")});`,
+    pattern: new RegExp(String.raw`await\s+${name}\s*\(\s*${RECEIVER}\s*,\s*${tail}\s*,?\s*\)\s*;`),
+  };
 }
 
 /**
@@ -68,8 +96,9 @@ export function stepEvidencePreserveRule(): string {
     `**Keep the \`${STEP_EVIDENCE_MODULE}\` calls.** The draft's ` +
     `\`await ${STEP_EVIDENCE_BEFORE}(page, ...)\` / \`await ${STEP_EVIDENCE_AFTER}(page, ...)\` lines are ` +
     `load-bearing: ccqa run reads the per-step screenshots they capture. Keep both calls for every ` +
-    `step, in place around that step's actions, with their exact \`(page, "<stepId>", "<source>")\` ` +
-    `arguments — and keep the import. If you move a step's actions into a page-object method, leave ` +
+    `step, in place around that step's actions, with their exact \`"<stepId>", "<source>"\` arguments ` +
+    `— and keep the import. Pass a different page only when the step genuinely acts on one (a click ` +
+    `that opens a new tab). If you move a step's actions into a page-object method, leave ` +
     `these two calls in the test body around the call to that method; do NOT move them inside the ` +
     `page object. Never wrap a step in a closure to hold them.`
   );
@@ -106,12 +135,12 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   const flushJudgements = (afterActionIndex: number): void => {
     for (const { step } of judgements.filter((j) => j.afterActionIndex === afterActionIndex)) {
       if (openMarker) {
-        lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
+        lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
         openMarker = null;
       }
       if (lines.length > 0) lines.push("");
       lines.push(`// step: ${step.id} [${step.source}]`);
-      lines.push(judgeCall(step));
+      lines.push(judgeCall(step).code);
     }
   };
 
@@ -119,10 +148,10 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   for (let i = 0; i < actions.length; i++) {
     const marker = markerByIndex.get(i);
     if (marker) {
-      if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
+      if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
       if (lines.length > 0) lines.push("");
       lines.push(`// step: ${marker.stepId} [${marker.source}]`);
-      lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker));
+      lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker).code);
       openMarker = marker;
     }
     const action = actions[i]!;
@@ -136,7 +165,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     }
     flushJudgements(i);
   }
-  if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
+  if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
 
   // Nothing coverage-related is emitted: under `--coverage` the run attaches
   // to the browser from outside (see the target's `browserCoverage`), so the
@@ -414,9 +443,10 @@ const j = (s: string): string => JSON.stringify(s);
 const jExpr = (s: string): string => envRefsToJsExpression(s);
 
 /** One claim, asserted through the judge. Exported so the generation gate can require it back. */
-export function judgeCall(step: ExpandedJudgeByLlmStep): string {
-  const from = step.from === undefined ? "" : `, ${jExpr(step.from)}`;
+export function judgeCall(step: ExpandedJudgeByLlmStep): InjectedCall {
   // A claim is prose, so only the braced form is a reference here — a bare
   // `$WORD` is a word, and expanding it would quietly rewrite the claim.
-  return `await ${JUDGE_CALL}(page, ${bracedRefsToJsExpression(step.judgeByLlm.trim())}${from});`;
+  const args = [bracedRefsToJsExpression(step.judgeByLlm.trim())];
+  if (step.from !== undefined) args.push(jExpr(step.from));
+  return injectedCall(JUDGE_CALL, args);
 }

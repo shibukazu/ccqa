@@ -164,8 +164,8 @@ async function missingInjectedCalls(
   const corpus = sources.join("\n");
   const warnings: string[] = [];
   for (const m of markers) {
-    const hasBefore = corpus.includes(stepEvidenceCall(STEP_EVIDENCE_BEFORE, m));
-    const hasAfter = corpus.includes(stepEvidenceCall(STEP_EVIDENCE_AFTER, m));
+    const hasBefore = stepEvidenceCall(STEP_EVIDENCE_BEFORE, m).pattern.test(corpus);
+    const hasAfter = stepEvidenceCall(STEP_EVIDENCE_AFTER, m).pattern.test(corpus);
     if (!hasBefore || !hasAfter) {
       warnings.push(
         `step ${m.stepId}: generated test is missing its ${STEP_EVIDENCE_BEFORE}/${STEP_EVIDENCE_AFTER} ` +
@@ -176,7 +176,7 @@ async function missingInjectedCalls(
   // A dropped claim is worse than a dropped screenshot: the spec keeps
   // running and stays green while asserting nothing.
   for (const { step } of judgements) {
-    if (corpus.includes(judgeCall(step))) continue;
+    if (judgeCall(step).pattern.test(corpus)) continue;
     warnings.push(
       `step ${step.id}: generated test is missing its ${JUDGE_CALL} call — that claim is never ` +
         `decided and the spec passes without testing it. A rewrite pass must not drop or reword it.`,

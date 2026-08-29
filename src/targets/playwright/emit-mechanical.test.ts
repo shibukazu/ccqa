@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { emitPlaywrightDraft, locatorToPlaywright } from "./emit-mechanical.ts";
+import {
+  emitPlaywrightDraft,
+  judgeCall,
+  locatorToPlaywright,
+  stepEvidenceCall,
+} from "./emit-mechanical.ts";
 import type { RecordedAction } from "../../ir/types.ts";
 
 function emit(actions: RecordedAction[]): string {
@@ -429,5 +434,31 @@ describe("emitPlaywrightDraft — judgements", () => {
 
   it("leaves the import out when there is nothing to judge", () => {
     expect(emit([{ action: "navigate", value: "/" }])).not.toContain("ccqa/judge");
+  });
+});
+
+describe("an injected call's pattern", () => {
+  const evidence = stepEvidenceCall("ccqaStepAfter", { stepId: "step-05", source: "spec" }).pattern;
+
+  // A click that opens a new tab has to capture evidence on that tab.
+  it.each([
+    [`await ccqaStepAfter(page, "step-05", "spec");`, true],
+    [`await ccqaStepAfter(contentPage, "step-05", "spec");`, true],
+    [`await ccqaStepAfter(await ctx.newPage(), "step-05", "spec");`, true],
+    [`await ccqaStepAfter(page.context().pages()[1], "step-05", "spec");`, true],
+    [`await ccqaStepAfter(\n  contentPage,\n  "step-05",\n  "spec",\n);`, true],
+    // Unawaited, the closing capture races the end of the test and the step
+    // reports as unfinished; a mention in a comment is not a call at all.
+    [`ccqaStepAfter(page, "step-05", "spec");`, false],
+    [`// ccqaStepAfter(page, "step-05", "spec")`, false],
+    [`await ccqaStepAfter(page, "step-04", "spec");`, false],
+  ])("%s → %s", (source, expected) => {
+    expect(evidence.test(source)).toBe(expected);
+  });
+
+  it("holds the claim text but not the page it is judged on", () => {
+    const claim = judgeCall({ id: "s", source: "spec", judgeByLlm: "the reply is concrete (enough)" }).pattern;
+    expect(claim.test(`await judgeByLlm(tab, "the reply is concrete (enough)");`)).toBe(true);
+    expect(claim.test(`await judgeByLlm(page, "the reply is vague");`)).toBe(false);
   });
 });
