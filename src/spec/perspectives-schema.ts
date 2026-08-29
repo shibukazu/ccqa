@@ -122,6 +122,14 @@ export const PerspectiveSpecSchema = z
      * deploy-only comparison it used before.
      */
     changedAt: z.string().optional(),
+    /**
+     * The spec is in the tree but opted out of runs and audits (`disabled:`
+     * in its spec.yaml). It stays listed so the inventory keeps showing it and
+     * its `note` survives — dropping it would take the one piece of history
+     * that lives only here. Absent means enabled, so a document written by an
+     * older CLI reads the way it always did.
+     */
+    disabled: z.boolean().optional(),
     note: z.string().optional(),
   })
   .strip();

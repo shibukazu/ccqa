@@ -51,6 +51,11 @@ export async function loadSpecInventory(cwd: string): Promise<SpecDescription[]>
       // is the one outcome this command must never produce.
       const spec = parseTestSpec(content, `${featureName}/${specName}/spec.yaml`);
 
+      // Dropped here rather than by enumerating through `listActiveSpecs`,
+      // which would read and parse the whole tree a second time to learn a
+      // flag this parse already has.
+      if (spec.disabled) return null;
+
       return {
         featureName,
         specName,

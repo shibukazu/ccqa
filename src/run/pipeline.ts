@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import {
   getTestScript,
-  listAllSpecsWithSpecFile,
+  listActiveSpecs,
   loadAllBlocks,
   projectAvailableBlocks,
   resolveSpecTargets,
@@ -557,7 +557,9 @@ export async function executeRun(
 
   // No targets means "all specs"; resolveSpecTargets(undefined) enumerates them.
   // Multiple targets may overlap (e.g. a feature plus one of its specs), so dedupe.
-  const enumerateAll = () => listAllSpecsWithSpecFile(cwd);
+  // Only the "all specs" expansion is filtered: a named target never reaches
+  // this enumerator, so `disabled` opts a spec out rather than locking it.
+  const enumerateAll = () => listActiveSpecs(cwd);
   const resolved = await Promise.all(
     (targets.length ? targets : [undefined]).map((t) => resolveSpecTargets(t, enumerateAll, cwd)),
   );

@@ -97,6 +97,13 @@ export const TestSpecSchema = z
   .object({
     title: z.string().min(1),
     /**
+     * Keeps the spec in the tree but out of every run and every audit — a
+     * suite being narrowed, a case waiting on a fix. Deleting it would lose
+     * the recording and the history; leaving it enabled would keep failing a
+     * gate nobody is acting on.
+     */
+    disabled: z.boolean().optional(),
+    /**
      * Generation target for this spec. Omitted means "use the project
      * config's `defaultTarget`" (agent-browser when that is absent too).
      */

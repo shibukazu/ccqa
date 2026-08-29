@@ -401,6 +401,23 @@ describe("comparePerspectivesSkeleton (--check)", () => {
   });
 });
 
+describe("readSpecMeta: disabled", () => {
+  const spec = (extra: string) => `title: A case\n${extra}steps:\n  - instruction: go\n    expected: there\n`;
+
+  test("reads the flag that keeps a spec out of runs and audits", () => {
+    expect(readSpecMeta("a-case", spec("disabled: true\n")).disabled).toBe(true);
+  });
+
+  // Absent, `false`, and a file that never parsed all mean the same thing:
+  // a spec is skipped only when it says so.
+  test("treats anything but true as enabled", () => {
+    expect(readSpecMeta("a-case", spec("")).disabled).toBe(false);
+    expect(readSpecMeta("a-case", spec("disabled: false\n")).disabled).toBe(false);
+    expect(readSpecMeta("a-case", null).disabled).toBe(false);
+    expect(readSpecMeta("a-case", "not: [valid").disabled).toBe(false);
+  });
+});
+
 describe("readSpecMeta (verbatim step transcription)", () => {
   test("action steps keep instruction/expected, include steps keep only the block name", () => {
     const yaml = stringifyYaml({
