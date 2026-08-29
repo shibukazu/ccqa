@@ -2,7 +2,7 @@ import { RunUsageError } from "../run/errors.ts";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { collectIncludedBlockNames } from "../spec/expand.ts";
-import { parseBlockSpec, parseTestSpec } from "../spec/parser.ts";
+import { parseBlockSpec, parseTestSpec, tryParseTestSpec } from "../spec/parser.ts";
 import { isParamRequired } from "../spec/yaml-schema.ts";
 import type { BlockSpec, RecordedAction } from "../types.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
@@ -396,6 +396,26 @@ export async function listAllSpecsWithSpecFile(cwd?: string): Promise<Array<{ fe
   return listAllSpecsFilteredBy(SPEC_FILE, cwd);
 }
 
+/**
+ * The active suite — the tree minus the specs marked `disabled` — which is
+ * what `ccqa run` expands "all specs" to. Kept separate from the enumeration
+ * above because `serialGroups` and `actors` validate that a spec *name*
+ * exists, and a disabled spec is still a name.
+ *
+ * A spec that will not read or parse stays in: unreadable is not the same as
+ * asking to be skipped.
+ */
+export async function listActiveSpecs(cwd?: string): Promise<SpecRef[]> {
+  const all = await listAllSpecsWithSpecFile(cwd);
+  const kept = await Promise.all(
+    all.map(async (ref) => {
+      const spec = tryParseTestSpec(await tryReadSpecFile(ref.featureName, ref.specName, cwd));
+      return spec?.disabled === true ? null : ref;
+    }),
+  );
+  return kept.filter((ref) => ref !== null);
+}
+
 async function listAllSpecsFilteredBy(
   requiredFilename: string,
   cwd: string | undefined,
@@ -437,8 +457,11 @@ export async function resolveSpecTargets(
     const { featureName, specName } = parseSpecPath(target);
     return [{ featureName, specName }];
   }
-  const names = await listSpecsForFeature(target, cwd);
-  return names.map((specName) => ({ featureName: target, specName }));
+  // A feature name is a group, so it expands the same way "all specs" does —
+  // and a suite narrowed to a few specs would come undone the moment someone
+  // ran the feature they live in. Only a spec id names one spec.
+  const active = await listActiveSpecs(cwd);
+  return active.filter((ref) => ref.featureName === target);
 }
 
 export async function listSpecsForFeature(featureName: string, cwd?: string): Promise<string[]> {

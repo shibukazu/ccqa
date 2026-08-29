@@ -39,6 +39,10 @@ export function readSpecTargets(doc: unknown): SpecTarget[] {
     for (const spec of specs) {
       const specName = prop(spec, "specName");
       if (typeof specName !== "string") continue;
+      // Listed but opted out of runs and audits. It stays in the document so
+      // the inventory keeps it and its note survives; this is the one place
+      // that has to skip it, since everything asking "which specs" starts here.
+      if (prop(spec, "disabled") === true) continue;
       const changedAt = prop(spec, "changedAt");
       out.push({
         key: `${featureName}/${specName}`,

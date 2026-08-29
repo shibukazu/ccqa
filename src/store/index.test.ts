@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundleFromHub } from "./index.ts";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundleFromHub, listActiveSpecs, resolveSpecTargets } from "./index.ts";
 import type { HubClient } from "../hub-client/index.ts";
 
 /** Minimal fake — only `getPrompt` is exercised by these tests. */
@@ -133,6 +133,53 @@ describe("loadPromptBundleFromHub", () => {
       throw new Error("network error");
     });
     await expect(loadPromptBundleFromHub({ hub, project: "demo" }, "record")).rejects.toThrow("network error");
+  });
+});
+
+describe("listActiveSpecs", () => {
+  async function tree(specs: Array<[string, string]>): Promise<string> {
+    const { mkdtemp, mkdir, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-active-specs-"));
+    for (const [name, body] of specs) {
+      const dir = join(cwd, ".ccqa", "features", "f", "test-cases", name);
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, "spec.yaml"), body);
+    }
+    return cwd;
+  }
+  const spec = (extra = "") => `title: T\n${extra}steps:\n  - instruction: go\n    expected: there\n`;
+
+  test("leaves out the specs marked disabled", async () => {
+    const cwd = await tree([
+      ["on", spec()],
+      ["off", spec("disabled: true\n")],
+      ["explicitly-on", spec("disabled: false\n")],
+    ]);
+    const names = (await listActiveSpecs(cwd)).map((r) => r.specName).sort();
+    expect(names).toEqual(["explicitly-on", "on"]);
+  });
+
+  test("expands a feature to its active specs, since a feature name is a group", async () => {
+    const cwd = await tree([
+      ["on", spec()],
+      ["off", spec("disabled: true\n")],
+    ]);
+    const names = (await resolveSpecTargets("f", () => listActiveSpecs(cwd), cwd)).map((r) => r.specName);
+    expect(names).toEqual(["on"]);
+  });
+
+  // The escape hatch: a spec id names one spec, so the flag does not lock it.
+  test("runs a disabled spec when it is named", async () => {
+    const cwd = await tree([["off", spec("disabled: true\n")]]);
+    const refs = await resolveSpecTargets("f/off", () => listActiveSpecs(cwd), cwd);
+    expect(refs).toEqual([{ featureName: "f", specName: "off" }]);
+  });
+
+  test("keeps a spec it cannot parse", async () => {
+    const cwd = await tree([["broken", "not: [valid yaml"]]);
+    expect((await listActiveSpecs(cwd)).map((r) => r.specName)).toEqual(["broken"]);
   });
 });
 

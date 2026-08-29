@@ -5,6 +5,8 @@ import {
   listFeatureTree,
   loadAvailableBlocks,
   parseSpecPath,
+  listActiveSpecs,
+  specKey,
 } from "../store/index.ts";
 import { errMessage, RunUsageError } from "../run/errors.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
@@ -497,11 +499,16 @@ async function collectTargets(specPath: string | undefined, cwd: string): Promis
     return [{ featureName, specName }];
   }
 
+  // Only the sweep is filtered. Naming a spec above still audits it, the same
+  // escape hatch the run has — and a sweep that kept them would both spend a
+  // model call each and fail the gate on findings nobody is acting on.
+  const active = new Set((await listActiveSpecs(cwd)).map(specKey));
   const out: SpecTarget[] = [];
   for (const feature of tree) {
     for (const spec of feature.specs) {
       if (!spec.hasSpecFile) continue;
-      out.push({ featureName: feature.featureName, specName: spec.specName });
+      const target = { featureName: feature.featureName, specName: spec.specName };
+      if (active.has(specKey(target))) out.push(target);
     }
   }
   return out;

@@ -290,11 +290,11 @@ export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<Perspecti
   const changedAt = await readSpecChangedAt(process.cwd());
   const features = await Promise.all(
     tree.map(async (feature): Promise<PerspectiveFeature> => {
-      const specs = await Promise.all(
+      const built = await Promise.all(
         feature.specs
           .filter((s) => s.hasSpecFile)
           .map(async (s): Promise<PerspectiveSpec> => {
-            // One read of spec.yaml feeds both the title/mode and the target.
+            // One read of spec.yaml feeds both the meta and the target.
             const specYaml = await tryReadSpecFile(feature.featureName, s.specName);
             const meta = readSpecMeta(s.specName, specYaml);
             const plugin = resolveSpecTarget(specYaml, config);
@@ -307,10 +307,14 @@ export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<Perspecti
               ...(meta.steps.length > 0 ? { steps: meta.steps } : {}),
               status,
               ...(lastEdit ? { changedAt: lastEdit } : {}),
+              // Listed but flagged: the hub skips it when deciding what an
+              // audit owes an answer for, and the `note` a person wrote on it
+              // survives being turned off.
+              ...(meta.disabled ? { disabled: true } : {}),
             };
           }),
       );
-      return { featureName: feature.featureName, specs };
+      return { featureName: feature.featureName, specs: built };
     }),
   );
   // Drop features that ended up with no usable specs; sort for stable output.
@@ -411,22 +415,40 @@ export function noteKey(featureName: string, specName: string): string {
 
 // --- I/O helpers (kept thin so the pure functions above stay testable) ---
 
-/** Lenient title/mode read from an already-loaded spec.yaml (null → defaults). */
+/**
+ * Lenient read of an already-loaded spec.yaml. A file that is missing or will
+ * not parse falls back to `defaults`, which reports the spec as enabled: a
+ * spec nobody could read has not asked to be skipped.
+ */
 export function readSpecMeta(
   specName: string,
   specYaml: string | null,
-): { title: string; mode: SpecMode; steps: PerspectiveStep[] } {
-  if (specYaml === null) return { title: specName, mode: DEFAULT_SPEC_MODE, steps: [] };
+): { title: string; mode: SpecMode; steps: PerspectiveStep[]; disabled: boolean } {
+  const defaults = { title: specName, mode: DEFAULT_SPEC_MODE, steps: [], disabled: false };
+  if (specYaml === null) return defaults;
   try {
-    const parsed = parseYaml(specYaml) as { title?: unknown; mode?: unknown; steps?: unknown };
+    const parsed = parseYaml(specYaml) as {
+      title?: unknown;
+      mode?: unknown;
+      steps?: unknown;
+      disabled?: unknown;
+    };
     const title = typeof parsed.title === "string" && parsed.title.length > 0
       ? parsed.title
       : specName;
     const modeResult = SpecModeSchema.safeParse(parsed.mode);
     const mode = modeResult.success ? modeResult.data : DEFAULT_SPEC_MODE;
-    return { title, mode, steps: transcribeSteps(parsed.steps) };
+    return {
+      title,
+      mode,
+      steps: transcribeSteps(parsed.steps),
+      // Read through the schema, so this agrees with the run and the audit.
+      // The rest stays lenient on purpose: a spec too broken to validate
+      // should still show its title in the inventory.
+      disabled: tryParseTestSpec(specYaml)?.disabled === true,
+    };
   } catch {
-    return { title: specName, mode: DEFAULT_SPEC_MODE, steps: [] };
+    return defaults;
   }
 }
 

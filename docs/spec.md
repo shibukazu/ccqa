@@ -44,6 +44,7 @@ Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/` and
 | `target` | no | Generation-target plugin. Defaults to `defaultTarget` in `.ccqa/config.yaml`, then `agent-browser`. See [Generation targets](./targets.md). |
 | `mode` | no | `deterministic` (default) or `live`. agent-browser only. |
 | `session` | no | Saved session name(s) to restore before step 1. agent-browser `mode: live` only. See [Saved sessions](./sessions.md). |
+| `disabled` | no | Keeps the spec in the tree but out of every expansion — runs and audits alike. See [Turning a spec off](#turning-a-spec-off). |
 
 `mode:` and `session:` only apply to the `agent-browser` target. Setting
 either on a spec whose `target:` resolves to anything else is a validation
@@ -54,6 +55,28 @@ Specs that write to the same place outside your app — a chat channel, a
 shared inbox, a single seeded account — are not declared here. That
 constraint is a project-wide list in `.ccqa/config.yaml`; see
 [`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time).
+
+## Turning a spec off
+
+`disabled: true` keeps a spec in the tree but out of every run and every
+audit — a suite being narrowed, a case waiting on a fix.
+
+```yaml
+title: Create a task and mark it complete
+disabled: true
+```
+
+Naming the spec runs it anyway (`ccqa run tasks/create-and-complete`, and the
+same for `ccqa audit`): the flag opts the spec out of expansions, not out of
+existence. A feature name is an expansion — `ccqa run tasks` skips the
+disabled specs under it.
+
+The spec stays listed in the perspectives document, flagged. That keeps the
+inventory complete and preserves any `note` written on it, while the hub
+skips it when deciding which specs an audit owes an answer for.
+
+`serialGroups` and `actors` may still name a disabled spec: they say what
+would happen if it ran, and turning a spec off is not the same as removing it.
 
 ## Steps
 

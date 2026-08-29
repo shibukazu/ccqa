@@ -21,6 +21,17 @@ async function makeProject(files: Record<string, string>): Promise<string> {
 }
 
 describe("loadSpecInventory", () => {
+  it("leaves out the specs marked disabled, so selection never proposes one", async () => {
+    const spec = (extra = "") =>
+      `title: T\n${extra}steps:\n  - instruction: go\n    expected: there\n`;
+    const cwd = await makeProject({
+      ".ccqa/features/shop/test-cases/on/spec.yaml": spec(),
+      ".ccqa/features/shop/test-cases/off/spec.yaml": spec("disabled: true\n"),
+    });
+    const names = (await loadSpecInventory(cwd)).map((s) => s.specName);
+    expect(names).toEqual(["on"]);
+  });
+
   it("inlines an include step's block steps instead of naming the block", async () => {
     await makeProject({
       ".ccqa/blocks/login/spec.yaml": `title: Login
