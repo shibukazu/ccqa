@@ -334,3 +334,100 @@ describe("replay-unstable over-assertions", () => {
     expect(body).toContain("toBeVisible");
   });
 });
+
+describe("emitPlaywrightDraft — judgements", () => {
+  it("emits the judge call and its import, so no LLM pass is needed to keep the claim", () => {
+    const script = emitPlaywrightDraft({
+      actions: [],
+      testName: "sample",
+      judgements: [
+        {
+          step: { id: "step-02", source: "spec", judgeByLlm: "the answer lists steps", from: ".out" },
+          afterActionIndex: -1,
+        },
+      ],
+    });
+    expect(script).toContain(`import { judgeByLlm } from "ccqa/judge";`);
+    expect(script).toContain(`// step: step-02 [spec]`);
+    expect(script).toContain(`await judgeByLlm(page, "the answer lists steps", ".out");`);
+  });
+
+  it("omits the selector when the claim reads the whole page", () => {
+    const script = emitPlaywrightDraft({
+      actions: [],
+      testName: "sample",
+      judgements: [
+        {
+          step: { id: "step-01", source: "spec", judgeByLlm: "the page apologises" },
+          afterActionIndex: -1,
+        },
+      ],
+    });
+    expect(script).toContain(`await judgeByLlm(page, "the page apologises");`);
+  });
+
+  it("emits a claim before the actions of the step that follows it", () => {
+    const script = emitPlaywrightDraft({
+      actions: [
+        { action: "navigate", value: "/" },
+        { action: "click", locator: { by: "text", value: "Open" } },
+      ],
+      testName: "sample",
+      judgements: [
+        {
+          step: { id: "step-02", source: "spec", judgeByLlm: "the reply answers" },
+          afterActionIndex: 0,
+        },
+      ],
+    });
+    const judgeAt = script.indexOf("judgeByLlm(page");
+    expect(judgeAt).toBeGreaterThan(script.indexOf("page.goto"));
+    expect(judgeAt).toBeLessThan(script.indexOf(".click()"));
+  });
+
+  it("expands env refs in a claim and its selector", () => {
+    const script = emitPlaywrightDraft({
+      actions: [],
+      testName: "sample",
+      judgements: [
+        {
+          step: { id: "step-01", source: "spec", judgeByLlm: "the reply names ${TENANT}", from: "#${SLOT}" },
+          afterActionIndex: -1,
+        },
+      ],
+    });
+    expect(script).toContain(
+      'await judgeByLlm(page, `the reply names ${process.env.TENANT ?? ""}`, `#${process.env.SLOT ?? ""}`);',
+    );
+  });
+
+  it("leaves a bare $WORD in a claim alone — prose, not a reference", () => {
+    const script = emitPlaywrightDraft({
+      actions: [],
+      testName: "sample",
+      judgements: [
+        {
+          step: { id: "step-01", source: "spec", judgeByLlm: "the answer mentions $USD" },
+          afterActionIndex: -1,
+        },
+      ],
+    });
+    expect(script).toContain('await judgeByLlm(page, "the answer mentions $USD");');
+  });
+
+  it("raises the test's own timeout, which a model round trip was not sized for", () => {
+    const script = emitPlaywrightDraft({
+      actions: [],
+      testName: "sample",
+      judgements: [
+        { step: { id: "step-01", source: "spec", judgeByLlm: "c" }, afterActionIndex: -1 },
+      ],
+    });
+    expect(script).toContain("test.slow();");
+    expect(emit([{ action: "navigate", value: "/" }])).not.toContain("test.slow()");
+  });
+
+  it("leaves the import out when there is nothing to judge", () => {
+    expect(emit([{ action: "navigate", value: "/" }])).not.toContain("ccqa/judge");
+  });
+});

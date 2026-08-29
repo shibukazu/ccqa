@@ -26,6 +26,10 @@
     "./hub-client": {
       "types": "./dist/hub-client/index.d.mts",
       "import": "./dist/hub-client/index.mjs"
+    },
+    "./judge": {
+      "types": "./dist/runtime/judge.d.mts",
+      "import": "./dist/runtime/judge.mjs"
     }
   },
   "files": [

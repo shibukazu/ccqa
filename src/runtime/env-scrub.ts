@@ -1,4 +1,4 @@
-import type { ExpandedActionStep } from "../spec/expand.ts";
+import { isJudgeBody, type AnyStepBody, type ExpandedStep } from "../spec/expand.ts";
 import type { TestSpec } from "../spec/yaml-schema.ts";
 import { isIncludeStep } from "../spec/yaml-schema.ts";
 import { iterEnvRefNames } from "./env-vars.ts";
@@ -40,7 +40,7 @@ export interface SpecEnvScrub {
  */
 export function buildSpecEnvScrub(
   spec: TestSpec,
-  expanded: ExpandedActionStep[],
+  expanded: readonly ExpandedStep[],
   overrides: Record<string, string> = {},
 ): SpecEnvScrub {
   const refNames = new Set<string>();
@@ -48,14 +48,10 @@ export function buildSpecEnvScrub(
     if (isIncludeStep(step)) {
       for (const v of Object.values(step.params ?? {})) collect(v, refNames);
     } else {
-      collect(step.instruction, refNames);
-      collect(step.expected, refNames);
+      collectStepRefs(step, refNames);
     }
   }
-  for (const step of expanded) {
-    collect(step.instruction, refNames);
-    collect(step.expected, refNames);
-  }
+  for (const step of expanded) collectStepRefs(step, refNames);
 
   const map: Array<[string, string]> = [];
   const unresolved: string[] = [];
@@ -78,6 +74,16 @@ function collect(value: string, into: Set<string>): void {
   for (const name of iterEnvRefNames(value)) into.add(name);
 }
 
+function collectStepRefs(step: AnyStepBody, into: Set<string>): void {
+  if (isJudgeBody(step)) {
+    collect(step.judgeByLlm, into);
+    if (step.from !== undefined) collect(step.from, into);
+    return;
+  }
+  collect(step.instruction, into);
+  collect(step.expected, into);
+}
+
 /** Shorter than this, a value is no secret and matches inside ordinary words. */
 const MIN_PROSE_SCRUB_LENGTH = 4;
 
@@ -95,7 +101,7 @@ const COMMON_PROSE_VALUES = new Set(["true", "false", "null", "none", "undefined
  */
 export function buildProseEnvScrubMap(
   spec: TestSpec,
-  expanded: ExpandedActionStep[],
+  expanded: readonly ExpandedStep[],
   overrides: Record<string, string> = {},
 ): Array<[string, string]> {
   return buildSpecEnvScrub(spec, expanded, overrides).map.filter(

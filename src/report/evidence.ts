@@ -2,7 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, posix as posixPath, resolve } from "node:path";
 
 import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
-import { expandSpec } from "../spec/expand.ts";
+import { expandSpec, isExpandedJudgeByLlmStep } from "../spec/expand.ts";
 import type { TestSpec } from "../spec/yaml-schema.ts";
 import { EVIDENCE_SUBDIR } from "../run/report-constants.ts";
 import type { BlockSpec } from "../types.ts";
@@ -125,7 +125,10 @@ export function buildStepDescriptions(
   if (!spec) return new Map();
   try {
     const expanded = expandSpec(spec, { blocks });
-    return new Map(expanded.map((s) => [s.id, s.expected.trim()]));
+    // A judge step's claim is what it asserts, so it is the evidence line too.
+    return new Map(
+      expanded.map((s) => [s.id, (isExpandedJudgeByLlmStep(s) ? s.judgeByLlm : s.expected).trim()]),
+    );
   } catch {
     return new Map();
   }

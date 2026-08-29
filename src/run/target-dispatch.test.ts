@@ -65,6 +65,7 @@ function fakePlugin(id: string, runner?: TestRunner): TargetPlugin {
     generate: (): Promise<GenerateResult> => {
       throw new Error("not under test");
     },
+    judgeSteps: { supported: true },
     browserCoverage: { browser: "none", reason: "test target" },
     ...(runner ? { runner } : {}),
   };

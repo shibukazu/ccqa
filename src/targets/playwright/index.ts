@@ -1,10 +1,16 @@
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { loadAllBlocks } from "../../store/index.ts";
-import { expandSpec } from "../../spec/expand.ts";
+import {
+  expandSpec,
+  isExpandedActionStep,
+  isExpandedJudgeByLlmStep,
+  type ExpandedStep,
+} from "../../spec/expand.ts";
 import type { StepMarker } from "../../codegen/actions-to-script.ts";
+import type { RecordedAction } from "../../types.ts";
 import { playwrightTaskInstructions } from "../../prompts/llm-gen.ts";
-import { buildStepMarkers } from "../agent-browser/generate.ts";
+import { buildStepMarkers, lastActionIndexPerStep } from "../agent-browser/generate.ts";
 import {
   existingOutputFromManifest,
   finalizePreparedFiles,
@@ -13,9 +19,13 @@ import {
 } from "../llm-engine.ts";
 import {
   emitPlaywrightDraft,
+  judgeCall,
+  JUDGE_CALL,
+  type Judgement,
   STEP_EVIDENCE_AFTER,
   STEP_EVIDENCE_BEFORE,
   stepEvidenceCall,
+  judgePreserveRule,
   stepEvidencePreserveRule,
 } from "./emit-mechanical.ts";
 import { acquirePlaywrightBrowser } from "./browser-server.ts";
@@ -47,6 +57,7 @@ export const playwrightTarget: TargetPlugin = {
   // a run produces the same per-step before/after screenshots agent-browser
   // does — `ccqa run` sets CCQA_EVIDENCE_DIR for these specs.
   stepEvidence: { supported: true },
+  judgeSteps: { supported: true },
   // `playwright test` launches its browser inside a process ccqa does not own,
   // so ccqa launches the browser instead and a generated config wrapper makes
   // the tests connect to it. Nothing is emitted into the tests themselves.
@@ -63,12 +74,17 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
   }
   const blocks = await loadAllBlocks(ctx.cwd);
   const expanded = expandSpec(ctx.spec, { blocks });
-  const stepMarkers = buildStepMarkers(expanded, actions);
-  const draft = emitPlaywrightDraft({
+  // A judge step records no actions, so it has no marker to place. Its call is
+  // emitted into the draft instead, which is what keeps a claim from depending
+  // on a rewrite choosing to keep it.
+  const stepMarkers = buildStepMarkers(expanded.filter(isExpandedActionStep), actions);
+  const { judgements, warnings: judgeWarnings } = placeJudgements(
+    expanded,
     actions,
-    testName: ctx.spec.title,
-    stepMarkers,
-  });
+    `${ctx.featureName}/${ctx.specName}`,
+  );
+  for (const w of judgeWarnings) log.warn(w);
+  const draft = emitPlaywrightDraft({ actions, testName: ctx.spec.title, stepMarkers, judgements });
   // Suggested location; the LLM pass may relocate within the write roots
   // when the repo's conventions clearly use another layout. Without a
   // configured outDir the spec directory itself is the output — the same
@@ -92,7 +108,10 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
   }
 
   log.meta("actions", actions.length);
-  log.meta("mode", ctx.resources.length > 0 ? "mechanical emit + library rewrite" : "mechanical emit");
+  log.meta(
+    "mode",
+    ctx.resources.length > 0 ? "mechanical emit + library rewrite" : "mechanical emit",
+  );
   log.blank();
 
   const result =
@@ -100,10 +119,16 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
       ? await generateWithLlmEngine({
           ctx,
           target: PLAYWRIGHT_TARGET,
+          steps: expanded,
           taskInstructions: playwrightTaskInstructions(draftPath),
           draft: { path: draftPath, contents: draft },
           // Only injected when the draft actually has markers to preserve.
-          draftInvariant: stepMarkers.length > 0 ? stepEvidencePreserveRule() : "",
+          draftInvariant: [
+            stepMarkers.length > 0 ? stepEvidencePreserveRule() : "",
+            judgements.length > 0 ? judgePreserveRule() : "",
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
         })
       : await finalizePreparedFiles({
           ctx,
@@ -113,9 +138,9 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
           warnings: [],
         });
 
-  const missing = await missingInjectedCalls(result, stepMarkers);
+  const missing = await missingInjectedCalls(result, stepMarkers, judgements);
   for (const w of missing) log.warn(w);
-  return { ...result, warnings: [...result.warnings, ...missing] };
+  return { ...result, warnings: [...result.warnings, ...judgeWarnings, ...missing] };
 }
 
 /**
@@ -129,6 +154,7 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
 async function missingInjectedCalls(
   result: GenerateResult,
   markers: StepMarker[],
+  judgements: Judgement[],
 ): Promise<string[]> {
   const sources = await Promise.all(
     result.files
@@ -146,6 +172,15 @@ async function missingInjectedCalls(
           `call(s) — that step will have no report screenshots. A rewrite pass must not drop them.`,
       );
     }
+  }
+  // A dropped claim is worse than a dropped screenshot: the spec keeps
+  // running and stays green while asserting nothing.
+  for (const { step } of judgements) {
+    if (corpus.includes(judgeCall(step))) continue;
+    warnings.push(
+      `step ${step.id}: generated test is missing its ${JUDGE_CALL} call — that claim is never ` +
+        `decided and the spec passes without testing it. A rewrite pass must not drop or reword it.`,
+    );
   }
   return warnings;
 }
@@ -166,4 +201,48 @@ async function existingPlaywrightOutput(ref: SpecRef, cwd: string): Promise<stri
     () => specTest,
     () => null,
   );
+}
+
+/**
+ * Each claim paired with the action index it is asserted after: the last
+ * action of the nearest preceding step. A claim reads what the run has
+ * produced so far, so emitting it at the end of the test would judge a page
+ * later steps have already navigated away from.
+ *
+ * A claim whose preceding steps recorded nothing has no position the
+ * recording can justify. It goes last and says so, because the alternative —
+ * the previous claim's index, or the start — judges a page the spec never
+ * meant, and a negative claim would pass there without being tested.
+ */
+export function placeJudgements(
+  expanded: ExpandedStep[],
+  actions: RecordedAction[],
+  specKey: string,
+): { judgements: Judgement[]; warnings: string[] } {
+  const lastIndex = lastActionIndexPerStep(actions);
+  const judgements: Judgement[] = [];
+  const warnings: string[] = [];
+  let afterActionIndex: number | null = null;
+  for (const step of expanded) {
+    if (!isExpandedJudgeByLlmStep(step)) {
+      afterActionIndex = lastIndex.get(step.id) ?? afterActionIndex;
+      continue;
+    }
+    if (afterActionIndex === null) {
+      if (expanded.indexOf(step) === 0) {
+        throw new Error(
+          `${specKey}: step ${step.id} uses \`judgeByLlm\` as the first step — there is nothing on the page to judge yet.`,
+        );
+      }
+      warnings.push(
+        `step ${step.id}: no recorded action belongs to the steps before this claim, so it is asserted ` +
+          `at the end of the test instead of where the spec puts it. Re-record if the claim reads ` +
+          `something a later step navigates away from.`,
+      );
+      judgements.push({ step, afterActionIndex: actions.length - 1 });
+      continue;
+    }
+    judgements.push({ step, afterActionIndex });
+  }
+  return { judgements, warnings };
 }

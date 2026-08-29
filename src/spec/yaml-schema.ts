@@ -28,10 +28,23 @@ export const IncludeStepSchema = z
 export type IncludeStep = z.infer<typeof IncludeStepSchema>;
 
 /**
- * A spec step is either an action step or an include step. The two are
- * discriminated by the presence of the `include` key — see `isIncludeStep`.
+ * A claim about the page decided by a model rather than by a selector match,
+ * for output a run cannot predict. `from` narrows what it reads to one
+ * element; omitted, the page's visible text. See docs/spec.md.
  */
-export const StepSchema = z.union([ActionStepSchema, IncludeStepSchema]);
+export const JudgeByLlmStepSchema = z
+  .object({
+    judgeByLlm: z.string().min(1),
+    from: z.string().min(1).optional(),
+  })
+  .strict();
+export type JudgeByLlmStep = z.infer<typeof JudgeByLlmStepSchema>;
+
+/**
+ * A spec step is an action, an include, or a judge-by-LLM — discriminated by the
+ * presence of the `include` / `judgeByLlm` key (see the predicates below).
+ */
+export const StepSchema = z.union([ActionStepSchema, IncludeStepSchema, JudgeByLlmStepSchema]);
 export type Step = z.infer<typeof StepSchema>;
 
 /**
@@ -155,23 +168,26 @@ export const BlockParamSchema = z
 export type BlockParam = z.infer<typeof BlockParamSchema>;
 
 /**
- * Block schema. Block steps are restricted to ActionStep — nested blocks are
- * forbidden. Including a block from inside another block fails parsing here
- * (the store layer maps the cryptic "Unrecognized key: 'include'" error into
- * a targeted nested-block message).
+ * Block schema. A block step is an action or a judge-by-LLM — nested blocks are
+ * forbidden, so including a block from inside another block fails parsing here
+ * (the parser maps the union's cryptic failure into a nested-block message).
  */
 export const BlockSpecSchema = z
   .object({
     title: z.string().min(1),
     params: z.array(BlockParamSchema).optional(),
-    steps: z.array(ActionStepSchema).min(1),
+    steps: z.array(z.union([ActionStepSchema, JudgeByLlmStepSchema])).min(1),
   })
   .strict();
 export type BlockSpec = z.infer<typeof BlockSpecSchema>;
 
-/** Runtime predicate for the StepSchema union. */
+/** Runtime predicates for the StepSchema union. */
 export function isIncludeStep(step: Step): step is IncludeStep {
   return "include" in step;
+}
+
+export function isJudgeByLlmStep(step: Step): step is JudgeByLlmStep {
+  return "judgeByLlm" in step;
 }
 
 /** Returns true if a block param is required (default: true). */

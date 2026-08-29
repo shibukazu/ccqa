@@ -459,7 +459,8 @@ export function readSpecMeta(
 /**
  * The spec's procedure, copied verbatim for the inventory: an include step
  * keeps only the block name (its params are wiring, not procedure), an
- * action step keeps its instruction/expected text. Anything malformed is
+ * action step keeps its instruction/expected text, a judge step its claim.
+ * Anything malformed is
  * skipped — the inventory never fails over one bad step, matching how the
  * rest of this sweep treats a broken spec.
  */
@@ -468,9 +469,16 @@ function transcribeSteps(raw: unknown): PerspectiveStep[] {
   const steps: PerspectiveStep[] = [];
   for (const step of raw) {
     if (typeof step !== "object" || step === null) continue;
-    const s = step as { include?: unknown; instruction?: unknown; expected?: unknown };
+    const s = step as {
+      include?: unknown;
+      instruction?: unknown;
+      expected?: unknown;
+      judgeByLlm?: unknown;
+    };
     if (typeof s.include === "string" && s.include.length > 0) {
       steps.push({ include: s.include });
+    } else if (typeof s.judgeByLlm === "string" && s.judgeByLlm.length > 0) {
+      steps.push({ judgeByLlm: s.judgeByLlm });
     } else if (typeof s.instruction === "string" && s.instruction.length > 0) {
       steps.push({
         instruction: s.instruction,

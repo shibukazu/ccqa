@@ -1,4 +1,5 @@
-import { envRefsToJsExpression } from "../../runtime/env-vars.ts";
+import type { ExpandedJudgeByLlmStep } from "../../spec/expand.ts";
+import { bracedRefsToJsExpression, envRefsToJsExpression } from "../../runtime/env-vars.ts";
 import type { Locator, LocatorIndex, RecordedAction } from "../../ir/types.ts";
 import type { StepMarker } from "../../codegen/actions-to-script.ts";
 
@@ -22,10 +23,26 @@ export interface PlaywrightEmitInput {
   /** Test name — typically the spec.yaml title. */
   testName: string;
   stepMarkers?: StepMarker[];
+  /**
+   * Claims to assert, each after the actions of the step it follows in the
+   * spec. Emitted here rather than left to the rewrite: a claim the generator
+   * dropped would leave a spec asserting nothing and still green.
+   */
+  judgements?: Judgement[];
+}
+
+/** A claim and the action index it is asserted after (-1: before any action). */
+export interface Judgement {
+  step: ExpandedJudgeByLlmStep;
+  afterActionIndex: number;
 }
 
 /** Module the emitted step-boundary capture calls import from. */
 export const STEP_EVIDENCE_MODULE = "ccqa/step-evidence";
+
+/** Module the emitted judge calls import from, and the call they make. */
+export const JUDGE_MODULE = "ccqa/judge";
+export const JUDGE_CALL = "judgeByLlm";
 
 /** Capture call emitted when a step is entered / closed. Exported for the generation gate. */
 export const STEP_EVIDENCE_BEFORE = "ccqaStepBefore";
@@ -58,8 +75,23 @@ export function stepEvidencePreserveRule(): string {
   );
 }
 
+/**
+ * Told to the rewrite, because the alternative failure is silent: a claim
+ * turned into a text match passes on the wording of one run, which is the
+ * assertion the judge exists to replace.
+ */
+export function judgePreserveRule(): string {
+  return (
+    `**Keep the \`${JUDGE_MODULE}\` calls.** The draft's \`await ${JUDGE_CALL}(page, "<claim>")\` lines ` +
+    `assert a claim a model decides at run time, for output whose wording changes every run. Keep each ` +
+    `call where it is, with its claim text unchanged, and keep the import. Do NOT replace one with ` +
+    `\`toContainText\`, \`toHaveText\` or any other match on the answer's wording, and do not move it ` +
+    `into a page object.`
+  );
+}
+
 export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
-  const { actions, testName, stepMarkers = [] } = input;
+  const { actions, testName, stepMarkers = [], judgements = [] } = input;
   const markerByIndex = new Map(stepMarkers.map((m) => [m.actionIndex, m]));
 
   const lines: string[] = [];
@@ -67,6 +99,23 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   // Mirrors the agent-browser emitter: the open step's closing capture is
   // flushed just before the next step's comment, and once more after the loop.
   let openMarker: StepMarker | null = null;
+
+  // A claim asserts what the steps before it produced, so it is emitted where
+  // it sits in the spec: after them, and before whatever the next step does to
+  // the page it reads.
+  const flushJudgements = (afterActionIndex: number): void => {
+    for (const { step } of judgements.filter((j) => j.afterActionIndex === afterActionIndex)) {
+      if (openMarker) {
+        lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
+        openMarker = null;
+      }
+      if (lines.length > 0) lines.push("");
+      lines.push(`// step: ${step.id} [${step.source}]`);
+      lines.push(judgeCall(step));
+    }
+  };
+
+  flushJudgements(-1);
   for (let i = 0; i < actions.length; i++) {
     const marker = markerByIndex.get(i);
     if (marker) {
@@ -78,22 +127,30 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     }
     const action = actions[i]!;
     const line = actionToLine(action);
-    if (line === null) continue;
-    if (line === prevLine) continue;
-    if (action.replayUnstable) {
-      lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
+    if (line !== null && line !== prevLine) {
+      if (action.replayUnstable) {
+        lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
+      }
+      lines.push(line);
+      prevLine = line;
     }
-    lines.push(line);
-    prevLine = line;
+    flushJudgements(i);
   }
   if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker));
 
   // Nothing coverage-related is emitted: under `--coverage` the run attaches
   // to the browser from outside (see the target's `browserCoverage`), so the
   // generated test carries no measurement code an LLM rewrite could drop.
+
+  // A claim costs a model round trip, which the default per-test budget was
+  // not sized for. Relative to the project's own timeout rather than absolute,
+  // so a consumer that already raised it keeps the raise.
+  if (judgements.length > 0) lines.unshift("test.slow();", "");
+
   const body = lines.map((l) => (l === "" ? "" : `  ${l}`)).join("\n");
   return [
     `import { test, expect } from "@playwright/test";`,
+    ...(judgements.length > 0 ? [`import { ${JUDGE_CALL} } from ${j(JUDGE_MODULE)};`] : []),
     // Only imported when there are boundaries to capture, so a marker-less
     // draft doesn't ship an unused import into the consumer's lint run.
     ...(stepMarkers.length > 0
@@ -236,7 +293,9 @@ function actionToLine(action: RecordedAction): string | null {
 }
 
 function scrollToLine(action: RecordedAction): string {
-  const px = action.pixels ? parseInt(action.pixels, 10) || DEFAULT_SCROLL_PIXELS : DEFAULT_SCROLL_PIXELS;
+  const px = action.pixels
+    ? parseInt(action.pixels, 10) || DEFAULT_SCROLL_PIXELS
+    : DEFAULT_SCROLL_PIXELS;
   switch (action.direction ?? "down") {
     case "up":
       return `await page.mouse.wheel(0, ${-px});`;
@@ -281,7 +340,8 @@ function assertToLine(action: RecordedAction, locator: string | null): string | 
   switch (action.assert) {
     case "text_visible":
       // `.first()`: the recorded semantic is "the text is visible somewhere".
-      if (value) assertLine = `await expect(page.getByText(${jExpr(value)}).first()).toBeVisible();`;
+      if (value)
+        assertLine = `await expect(page.getByText(${jExpr(value)}).first()).toBeVisible();`;
       break;
     case "text_not_visible":
       if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toHaveCount(0);`;
@@ -352,3 +412,11 @@ const j = (s: string): string => JSON.stringify(s);
  * applies to user-supplied values).
  */
 const jExpr = (s: string): string => envRefsToJsExpression(s);
+
+/** One claim, asserted through the judge. Exported so the generation gate can require it back. */
+export function judgeCall(step: ExpandedJudgeByLlmStep): string {
+  const from = step.from === undefined ? "" : `, ${jExpr(step.from)}`;
+  // A claim is prose, so only the braced form is a reference here — a bare
+  // `$WORD` is a word, and expanding it would quietly rewrite the claim.
+  return `await ${JUDGE_CALL}(page, ${bracedRefsToJsExpression(step.judgeByLlm.trim())}${from});`;
+}

@@ -37,6 +37,9 @@ export interface TraceSystemPromptInput {
  */
 export function buildTraceSystemPrompt(input: TraceSystemPromptInput): string {
   const sessionName = input.sessionName ?? generateSessionName();
+  // Not "step-01": a judge step is numbered but records nothing, so it is
+  // filtered out before this and the ids the recorder sees start with a hole.
+  const firstStepId = input.steps[0]?.id ?? "step-01";
   const callerGuidance = input.instruction
     ? `## Caller Guidance
 
@@ -461,8 +464,8 @@ Emit:
 AB_ACTION|cookies_clear
 \`\`\`
 
-Then emit \`STEP_START|step-01|...\` and execute the first step, prefixing
-every one of its agent-browser commands with \`CCQA_STEP=step-01\`. The first
+Then emit \`STEP_START|${firstStepId}|...\` and execute the first step, prefixing
+every one of its agent-browser commands with \`CCQA_STEP=${firstStepId}\`. The first
 step is responsible for opening the initial URL.
 `;
 }

@@ -1,7 +1,17 @@
 import * as log from "../cli/logger.ts";
-import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
+import {
+  collectIncludedBlockNames,
+  expandSpec,
+  isJudgeBody,
+  type AnyStepBody,
+} from "../spec/expand.ts";
 import { parseTestSpec } from "../spec/parser.ts";
-import { isIncludeStep, type BlockSpec, type Step, type TestSpec } from "../spec/yaml-schema.ts";
+import {
+  isIncludeStep,
+  type BlockSpec,
+  type Step,
+  type TestSpec,
+} from "../spec/yaml-schema.ts";
 import { listAllSpecsWithSpecFile, loadAllBlocks, tryReadSpecFile } from "../store/index.ts";
 
 /**
@@ -80,7 +90,7 @@ export async function loadSpecInventory(cwd: string): Promise<SpecDescription[]>
  */
 function describeSteps(spec: TestSpec, blocks: Map<string, BlockSpec>, specKey: string): string[] {
   try {
-    return expandSpec(spec, { blocks }).map((s) => `${oneLine(s.instruction)} → ${oneLine(s.expected)}`);
+    return expandSpec(spec, { blocks }).map(describeStepBody);
   } catch (e) {
     log.warn(`${specKey}: could not expand include steps (${(e as Error).message}) — showing block names instead`);
     return spec.steps.map(describeStep);
@@ -89,6 +99,11 @@ function describeSteps(spec: TestSpec, blocks: Map<string, BlockSpec>, specKey: 
 
 function describeStep(step: Step): string {
   if (isIncludeStep(step)) return `include block: ${step.include}`;
+  return describeStepBody(step);
+}
+
+function describeStepBody(step: AnyStepBody): string {
+  if (isJudgeBody(step)) return `judge: ${oneLine(step.judgeByLlm)}`;
   return `${oneLine(step.instruction)} → ${oneLine(step.expected)}`;
 }
 

@@ -1,3 +1,5 @@
+import { expandActionSteps } from "../spec/expand.ts";
+import { loadAllBlocks } from "../store/index.ts";
 import { withUsageErrors } from "./usage-errors.ts";
 import { Command } from "commander";
 import { parseSpecPath, readSpecFile } from "../store/index.ts";
@@ -143,6 +145,20 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       `target "${target.id}" does not use a browser recording — run 'ccqa generate ${featureName}/${specName}' instead`,
     );
     process.exit(2);
+  }
+  // Refused here rather than at generate: recording drives a browser through a
+  // model, so a spec that cannot be generated should not pay for that first.
+  if (!target.judgeSteps.supported) {
+    const blocks = await loadAllBlocks(cwdForProfile);
+    try {
+      expandActionSteps(spec, { blocks }, `${featureName}/${specName}`, {
+        id: target.id,
+        reason: target.judgeSteps.reason,
+      });
+    } catch (e) {
+      log.error(e instanceof Error ? e.message : String(e));
+      process.exit(2);
+    }
   }
   // A live spec has no recording: `ccqa run` executes the spec itself, and
   // ignores any generated file — so a recording of it could only mislead.

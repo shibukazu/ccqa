@@ -21,6 +21,7 @@ export default defineConfig({
     "runtime/step-evidence": "./src/runtime/step-evidence.ts",
     "runtime/vitest.config": "./src/runtime/vitest.config.ts",
     "hub-client/index": "./src/hub-client/index.ts",
+    "runtime/judge": "./src/runtime/judge.ts",
   },
   format: "esm",
   platform: "node",

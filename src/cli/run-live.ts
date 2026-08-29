@@ -1,3 +1,4 @@
+import { AGENT_BROWSER_JUDGE_STEPS } from "../targets/agent-browser/judge-steps.ts";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -9,7 +10,7 @@ import type { DiffProvider } from "../run/diff-provider.ts";
 import { ANALYSIS_DISABLED } from "../run/failure-analysis.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import { buildLiveTranscriptExcerpt } from "../report/live-transcript-excerpt.ts";
-import { collectIncludedBlockNames, expandSpec } from "../spec/expand.ts";
+import { collectIncludedBlockNames, expandActionSteps } from "../spec/expand.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import {
   getSpecDir,
@@ -455,10 +456,13 @@ async function runOneSpec(args: {
 
   const spec = parseTestSpec(specContent);
   const blocks = await loadAllBlocks(cwd);
-  const expanded = expandSpec(spec, { blocks });
+  const steps = expandActionSteps(spec, { blocks }, `${featureName}/${specName}`, {
+    id: AGENT_BROWSER_TARGET,
+    reason: AGENT_BROWSER_JUDGE_STEPS.reason,
+  });
 
   log.meta("spec", spec.title);
-  log.meta("steps", expanded.length);
+  log.meta("steps", steps.length);
   const includes = collectIncludedBlockNames(spec);
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
 
@@ -520,14 +524,14 @@ async function runOneSpec(args: {
     // the child, so the map must scrub against that value, not whatever the
     // parent env holds. (The environment itself is stable: a profile is
     // applied once per invocation, before any spec runs.)
-    const envScrubMap = buildProseEnvScrubMap(spec, expanded, { CCQA_RUN_ID: runId });
+    const envScrubMap = buildProseEnvScrubMap(spec, steps, { CCQA_RUN_ID: runId });
     const runDir = opts.out ?? join(specDir, "runs", runId);
     await mkdir(runDir, { recursive: true });
     log.meta("runDir", runDir);
 
     const result = await runLiveExecutor({
       spec: { title: spec.title },
-      steps: expanded,
+      steps,
       runId,
       runDir,
       sessionName,
