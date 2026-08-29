@@ -107,10 +107,22 @@ export interface CdpEndpointContext {
   driverSession?: string;
 }
 
-/** A reachable browser, plus whatever the target's own tooling needs to use it. */
-export interface CdpBrowserHandle {
+/** Where a target's browser answers CDP, at acquisition and later. */
+export interface CdpAddress {
   /** `host:port`, an `http://` endpoint, or a ws URL of the DevTools socket. */
   cdpUrl: string;
+  /**
+   * Where the browser is *now*. A target whose browser can be replaced under
+   * the run — agent-browser relaunches a session's on a port the OS picks —
+   * answers with the current socket, which is what lets a dropped measurement
+   * reattach instead of retrying an address nothing listens on. Absent when
+   * the address the target handed out is the address for good.
+   */
+  currentCdpUrl?(): Promise<string>;
+}
+
+/** A reachable browser, plus whatever the target's own tooling needs to use it. */
+export interface CdpBrowserHandle extends CdpAddress {
   /** Extra environment for the spec's process (e.g. where to connect). */
   env?: Record<string, string>;
   /** Amends the spec's run command so its tooling uses this browser. */
@@ -273,6 +285,6 @@ export interface TestRunner {
  */
 export interface CoverageCollector {
   beginSpec(ref: SpecRef): Promise<void>;
-  armBrowser(ref: SpecRef, cdpUrl: string, artifactsDir: string): Promise<{ stop(): Promise<void> }>;
+  armBrowser(ref: SpecRef, browser: CdpAddress, artifactsDir: string): Promise<{ stop(): Promise<void> }>;
   collect(ref: SpecRef, artifactsDir: string): Promise<ReportCoverage | undefined>;
 }

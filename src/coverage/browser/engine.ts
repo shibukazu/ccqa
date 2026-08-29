@@ -57,6 +57,12 @@ export interface BrowserCoverageOptions {
   warn(text: string): void;
   /** See `SourceMapStore`. Absent means the run reads maps from the page only. */
   fetchStoredSourceMap?: StoredSourceMapReader;
+  /**
+   * Where the browser is *now*, asked before every reconnect. Absent means the
+   * address never moves; supplied, it is what keeps a reconnect from dialling
+   * the socket a replaced browser left behind.
+   */
+  currentCdpUrl?(): Promise<string>;
   /** Test seam: how the transport is opened. Defaults to the real CDP client. */
   connect?(wsUrl: string): Promise<CdpTransport>;
 }
@@ -142,7 +148,8 @@ export async function startBrowserCoverage(
 class Engine implements BrowserCoverageHandle {
   private client: CdpTransport;
   private readonly connectFn: (wsUrl: string) => Promise<CdpTransport>;
-  private readonly wsUrl: string;
+  /** Last known address of the browser; see `refreshWsUrl`. */
+  private wsUrl: string;
   private reconnects = 0;
   private reconnectInFlight = false;
   private readonly opts: BrowserCoverageOptions;
@@ -312,6 +319,25 @@ class Engine implements BrowserCoverageHandle {
     this.clearTimer();
   }
 
+  /**
+   * Answers why the address could not be refreshed, so the retry that follows
+   * says whether it is dialling a stale address or a dead browser. Told apart
+   * because one is a driver to fix and the other is a browser to wait for, and
+   * a silent stale address is the shape of the bug this exists to prevent.
+   */
+  private async refreshWsUrl(): Promise<string | undefined> {
+    const ask = this.opts.currentCdpUrl;
+    if (ask === undefined) return undefined;
+    try {
+      this.wsUrl = await browserWebSocketUrl(await ask());
+      return undefined;
+    } catch (error) {
+      // Kept as it was: a driver that cannot answer is not evidence the
+      // browser moved, and the last known address still holds if it did not.
+      return message(error);
+    }
+  }
+
   private async reconnect(initialReason: string): Promise<void> {
     // Single-flight: while an attempt is arming a fresh transport, that
     // transport's own drop fires onClose too — a second chain here would
@@ -336,11 +362,14 @@ class Engine implements BrowserCoverageHandle {
         );
         await new Promise((resolve) => setTimeout(resolve, delay));
         if (this.stopped) return;
+        const stale = await this.refreshWsUrl();
         let fresh: CdpTransport;
         try {
           fresh = await this.connectFn(this.wsUrl);
         } catch (error) {
-          reason = `reconnect failed: ${message(error)}`;
+          reason = stale
+            ? `reconnect failed: ${message(error)} (address may be stale: ${stale})`
+            : `reconnect failed: ${message(error)}`;
           continue;
         }
         // stop() may have run while connecting; a client adopted now would
@@ -357,6 +386,10 @@ class Engine implements BrowserCoverageHandle {
           reason = `reconnect failed: ${message(error)}`;
           continue;
         }
+        // Bounds consecutive failures, not the spec's lifetime: a browser
+        // replaced twice deserves the same budget the second time, and a
+        // spec that recovered has spent nothing it needs to carry forward.
+        this.reconnects = 0;
         if (this.stopped) {
           this.clearTimer();
           fresh.close();

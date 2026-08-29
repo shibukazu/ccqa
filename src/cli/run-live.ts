@@ -507,11 +507,7 @@ async function runOneSpec(args: {
         specName,
         driverSession: sessionName,
       });
-      browserEngine = await opts.coverage.armBrowser(
-        { featureName, specName },
-        handle.cdpUrl,
-        coverageDir,
-      );
+      browserEngine = await opts.coverage.armBrowser({ featureName, specName }, handle, coverageDir);
     } catch (err) {
       coverageBroken = errMessage(err);
       log.warn(`coverage: could not attach to the live browser (${coverageBroken})`);
