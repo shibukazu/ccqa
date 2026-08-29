@@ -265,11 +265,7 @@ async function runOneSpec(
       // into the consumer's repo. `dispose` is idempotent for this reason.
       const acquired = browserHandle;
       opts.teardown?.onFinalize(() => acquired.dispose());
-      browserEngine = await measurement.collector.armBrowser(
-        ref,
-        browserHandle.cdpUrl,
-        coverageDir,
-      );
+      browserEngine = await measurement.collector.armBrowser(ref, browserHandle, coverageDir);
       if (browserHandle.amendCommand) command = browserHandle.amendCommand(command);
       Object.assign(childEnv, browserHandle.env);
     } catch (err) {

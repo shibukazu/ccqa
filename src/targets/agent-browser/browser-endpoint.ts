@@ -1,3 +1,4 @@
+import { resolveAgentBrowserBin } from "../../runtime/agent-browser-bin.ts";
 import { spawnAB } from "../../runtime/spawn-ab.ts";
 import type { CdpBrowserHandle, CdpEndpointContext } from "../types.ts";
 
@@ -29,6 +30,40 @@ export async function acquireAgentBrowserEndpoint(
   if (warm.status !== 0) {
     throw new Error(`could not start the session's browser: ${warm.stderr || warm.stdout}`);
   }
+  // Re-asked rather than remembered: the daemon relaunches a session's browser
+  // on a port the OS picks, and the address handed out here dies with the old one.
+  return {
+    cdpUrl: askCdpUrl(session),
+    currentCdpUrl: () => askCdpUrlSoon(session),
+    dispose: async () => {},
+  };
+}
+
+/**
+ * The same question on a short leash. Its caller is racing its own backoff
+ * between reconnect attempts, so an answer that arrives after the budget is
+ * spent is worth less than no answer: `spawnAB` would sit through a 30s EAGAIN
+ * retry and a 35s hard timeout, which is the whole reconnect window several
+ * times over.
+ */
+const CDP_URL_TIMEOUT_MS = 2_000;
+
+async function askCdpUrlSoon(session: string): Promise<string> {
+  const { promisify } = await import("node:util");
+  const { execFile } = await import("node:child_process");
+  const { stdout } = await promisify(execFile)(
+    resolveAgentBrowserBin(),
+    ["--session", session, "get", "cdp-url"],
+    { timeout: CDP_URL_TIMEOUT_MS, encoding: "utf8" },
+  );
+  const cdpUrl = stdout.trim().split("\n").pop()?.trim() ?? "";
+  if (!/^wss?:\/\//.test(cdpUrl)) {
+    throw new Error(`agent-browser answered no cdp-url for session ${session}`);
+  }
+  return cdpUrl;
+}
+
+function askCdpUrl(session: string): string {
   const answer = spawnAB(["--session", session, "get", "cdp-url"]);
   const cdpUrl = answer.stdout.trim().split("\n").pop()?.trim() ?? "";
   if (answer.status !== 0 || !/^wss?:\/\//.test(cdpUrl)) {
@@ -36,5 +71,5 @@ export async function acquireAgentBrowserEndpoint(
       `agent-browser did not answer \`get cdp-url\` for session ${session}: ${answer.stderr || answer.stdout}`,
     );
   }
-  return { cdpUrl, dispose: async () => {} };
+  return cdpUrl;
 }

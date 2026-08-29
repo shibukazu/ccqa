@@ -90,6 +90,36 @@ async function armedEngine(fake: FakeTransport): Promise<{
   return { engine, dir, warnings };
 }
 
+const ARMED_CDP_URL = "ws://127.0.0.1:1/devtools/browser/fake";
+const MOVED_CDP_URL = "ws://127.0.0.1:2/devtools/browser/moved";
+
+/** An engine that hands out `transports` in order, recording every address dialled. */
+async function reconnectingEngine(
+  transports: FakeTransport[],
+  currentCdpUrl: () => Promise<string>,
+): Promise<{ engine: BrowserCoverageHandle; dialled: string[] }> {
+  const dir = mkdtempSync(join(tmpdir(), "ccqa-engine-"));
+  dirs.push(dir);
+  const queue = [...transports];
+  const dialled: string[] = [];
+  const engine = await startBrowserCoverage({
+    cdpUrl: ARMED_CDP_URL,
+    currentCdpUrl,
+    specId: "run1.f/s",
+    origins: ["http://127.0.0.1:1"],
+    coverageDir: dir,
+    roots: { base: dir, root: dir },
+    warn: () => {},
+    connect: async (wsUrl) => {
+      dialled.push(wsUrl);
+      const next = queue.shift();
+      if (next === undefined) throw new Error("no more transports");
+      return next;
+    },
+  });
+  return { engine, dialled };
+}
+
 function attachPage(fake: FakeTransport, sessionId: string, targetId: string): void {
   fake.emit("Target.attachedToTarget", {
     sessionId,
@@ -154,6 +184,72 @@ describe("engine state machine (scripted transport)", () => {
       stopped: boolean;
     };
     expect(written.stopped).toBe(true);
+  });
+
+  it("dials where the driver says the browser is now, not where it was armed", async () => {
+    const first = new FakeTransport();
+    const { engine, dialled } = await reconnectingEngine([first, new FakeTransport()], async () => MOVED_CDP_URL);
+    first.drop("connection closed abruptly");
+    // Past the first backoff step (200ms) the reconnect has dialled.
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(dialled).toEqual([ARMED_CDP_URL, MOVED_CDP_URL]);
+    await engine.stop();
+  });
+
+  it("asks again on every attempt, since a browser can take more than one backoff to come back", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ccqa-engine-"));
+    dirs.push(dir);
+    const first = new FakeTransport();
+    const dialled: string[] = [];
+    const answers = ["ws://127.0.0.1:2/devtools/browser/booting", "ws://127.0.0.1:3/devtools/browser/up"];
+    const engine = await startBrowserCoverage({
+      cdpUrl: ARMED_CDP_URL,
+      currentCdpUrl: async () => answers.shift() ?? "ws://127.0.0.1:3/devtools/browser/up",
+      specId: "run1.f/s",
+      origins: ["http://127.0.0.1:1"],
+      coverageDir: dir,
+      roots: { base: dir, root: dir },
+      warn: () => {},
+      connect: async (wsUrl) => {
+        dialled.push(wsUrl);
+        if (dialled.length === 1) return first;
+        // The browser is still coming up, so the first retry cannot connect —
+        // the attempt after it has to ask where it landed rather than reuse.
+        if (dialled.length === 2) throw new Error("connection refused");
+        return new FakeTransport();
+      },
+    });
+    first.drop("connection closed abruptly");
+    await new Promise((resolve) => setTimeout(resolve, 900));
+    expect(dialled.slice(1)).toEqual([
+      "ws://127.0.0.1:2/devtools/browser/booting",
+      "ws://127.0.0.1:3/devtools/browser/up",
+    ]);
+    await engine.stop();
+  });
+
+  it("normalises an http endpoint the driver answers with", async () => {
+    const first = new FakeTransport();
+    const { engine, dialled } = await reconnectingEngine(
+      [first, new FakeTransport()],
+      async () => "http://127.0.0.1:2",
+    );
+    first.drop("connection closed abruptly");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    // Not the raw answer: what gets dialled is a ws URL.
+    expect(dialled[1]?.startsWith("ws://")).toBe(true);
+    await engine.stop();
+  });
+
+  it("keeps the last address when the driver cannot say where the browser is", async () => {
+    const first = new FakeTransport();
+    const { engine, dialled } = await reconnectingEngine([first, new FakeTransport()], async () => {
+      throw new Error("daemon not answering");
+    });
+    first.drop("connection closed abruptly");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    expect(dialled).toEqual([ARMED_CDP_URL, ARMED_CDP_URL]);
+    await engine.stop();
   });
 
   it("reconnects after a drop, re-arms on the new transport, and keeps the gap marked", async () => {

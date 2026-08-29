@@ -14,7 +14,7 @@ import { join, relative, resolve } from "node:path";
 import { ACTOR_DRAIN_MS, NO_ACTORS, type ActorPlan } from "./actors.ts";
 import type { CoverageConfig } from "../config/project-config.ts";
 import type { ReportCoverage } from "../report/schema.ts";
-import type { CoverageCollector } from "../targets/types.ts";
+import type { CdpAddress, CoverageCollector } from "../targets/types.ts";
 import { resolveEnvRefs } from "../runtime/env-vars.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
 import { specIdFor } from "./spec-id.ts";
@@ -253,9 +253,10 @@ export class CoverageSession {
    * destinations, the roots — lives here, so the caller only supplies where
    * the browser is.
    */
-  armBrowser(ref: SpecRef, cdpUrl: string, coverageDir: string): Promise<BrowserCoverageHandle> {
+  armBrowser(ref: SpecRef, browser: CdpAddress, coverageDir: string): Promise<BrowserCoverageHandle> {
     return startBrowserCoverage({
-      cdpUrl,
+      cdpUrl: browser.cdpUrl,
+      currentCdpUrl: browser.currentCdpUrl?.bind(browser),
       specId: specIdFor(this.runId, ref),
       origins: this.origins,
       assetOrigins: this.assetOrigins,
