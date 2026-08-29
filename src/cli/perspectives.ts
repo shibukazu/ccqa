@@ -145,6 +145,10 @@ export function comparePerspectivesSkeleton(
       }
       const fields: string[] = [];
       if (remoteSpec.title !== spec.title) fields.push("title");
+      // The hub decides which specs an audit owes an answer for by reading
+      // this field here, so a document that disagrees keeps asking about a
+      // spec that was turned off — the one staleness nothing else surfaces.
+      if ((remoteSpec.disabled ?? false) !== (spec.disabled ?? false)) fields.push("disabled");
       if (
         remoteSpec.status.mode !== spec.status.mode ||
         remoteSpec.status.traced !== spec.status.traced ||
