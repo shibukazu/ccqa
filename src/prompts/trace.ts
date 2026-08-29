@@ -153,6 +153,7 @@ find nth <index> "<ALLOWED-css>" <action>
 5. \`--name "<n>"\` is **role-only**. Never pass it to \`find text\`, \`find label\`, etc.
 6. \`--name\` matches by substring. Add \`--exact\` whenever the name you read from the snapshot is the element's whole accessible name — without it a short name such as "Log in" also matches "Log in with Google" and "Log in with SSO", and the recording silently pins the first of them.
 7. \`find\` includes its own wait; do not chain a \`wait\` before it.
+8. **A step that names an element by position gets a positional locator.** "the first row", "the topmost item", "the latest message" identify by \`first\`/\`last\`/\`nth\` on a stable inner selector — never by the title, subject, or body text that record happened to carry. That text is data the environment supplies: pinning it makes the test pass only while that same record stays in that position, and the next run opens a different one.
 
 **Examples:**
 
@@ -333,6 +334,8 @@ CCQA_STEP=<step-id> CCQA_ASSERT=url_contains:/dashboard agent-browser --session 
 - A marked command that exits non-zero records nothing — fix the check and re-run it.
 - A marker that doesn't match its command (e.g. \`CCQA_ASSERT=1\` on a \`click\`) is ignored with a warning — never do that.
 - \`get count\` and \`get url\` exit 0 regardless of what they print. **Read the output**: if the printed count / URL contradicts the marker, the signal did NOT verify — treat it as a failed verification (emit \`ASSERTION_FAILED\` if the step cannot be confirmed another way).
+- **Assert the thing, not how much of it there is.** A step that says a list, a table or a section is shown is satisfied by the list being there. Do not assert the count it happened to have, and never assert an empty-state message ("no items yet") unless the step's own \`expected\` asks for emptiness — the next run has one more record than this one and the test breaks for a reason nobody chose.
+
 - **Assert what the step asks about, nothing else.** The \`expected\` is the contract; anything else you happened to see on the way is not. A nav item, a heading or a greeting that the step never mentions adds no coverage, differs between recordings of the same spec, and is the first thing to break on replay — so the next recording quietly drops it and the test gets weaker without anyone deciding that.
 
 - **\`url_contains\` is opt-in, not a habit.** The same rule, in the form that gets broken most. Emit it ONLY when a step's own \`expected\` explicitly asks about the URL or path. Do NOT add a \`url_contains\` to "prove" a login succeeded, a page loaded, or a navigation happened — confirm those with \`text_visible\` / \`element_visible\` on something the destination page renders. An unrequested URL assertion adds no coverage the visible-content assert doesn't already give, and is the single most common way an environment gets baked into a test.
