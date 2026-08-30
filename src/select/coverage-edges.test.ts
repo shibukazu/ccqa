@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { HubClient, HubCoverageAnswer } from "../hub-client/index.ts";
 import type { Run } from "../hub/contract/schema.ts";
 import { loadCoverageEdges } from "./coverage-edges.ts";
@@ -226,6 +226,27 @@ describe("loadCoverageEdges: merging and degradation", () => {
     const hub = fakeHub({ ...NO_STREAM, ...NO_RUNS, ledger: "broken" });
 
     expect((await loadCoverageEdges({ hub, project: "demo" })).degraded).toBe(true);
+  });
+
+  it("does not consult the legacy sources once the ledger has answered", async () => {
+    const hub = fakeHub({
+      ledger: { specs: { "checkout/a": { files: ["src/ledger.ts"], measuredAt: NOW } } },
+      coverage: {
+        "": { resolved: resolved("r1", NOW + 1, [{ specId: "r1.checkout/a", files: ["src/stream.ts"] }]), runIds: ["r1"] },
+      },
+      runs: [run("hub-run", iso(1000))],
+    });
+    const stream = vi.spyOn(hub, "getCoverage");
+    const reports = vi.spyOn(hub, "listRuns");
+
+    const { edges, degraded } = await loadCoverageEdges({ hub, project: "demo" });
+
+    // Resolving a run walks the whole event stream; with a ledger in hand
+    // that is minutes spent confirming an answer the ledger already gave.
+    expect(stream).not.toHaveBeenCalled();
+    expect(reports).not.toHaveBeenCalled();
+    expect(edges.get("checkout/a")!.files.has("src/ledger.ts")).toBe(true);
+    expect(degraded).toBe(false);
   });
 
   it("a broken legacy source does not degrade a read the ledger answered", async () => {

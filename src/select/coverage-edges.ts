@@ -66,6 +66,12 @@ const HUB_READ_CONCURRENCY = 4;
  * source that cannot be read warns, and `degraded` flips when the failure
  * leaves absence ambiguous (the ledger itself, or the legacy sources while
  * no ledger answers).
+ *
+ * The ledger is read first and, once it answers, alone. The legacy sources
+ * resolve every retained run against the whole event stream — minutes each on
+ * a hub of any age — and reading them alongside a ledger that answers in one
+ * request meant waiting for the slow source to confirm what the fast one had
+ * already said (and then discarding it, since the ledger wins).
  */
 export async function loadCoverageEdges(
   input: HubContext | null | undefined,
@@ -82,11 +88,11 @@ export async function loadCoverageEdges(
     if (!existing || candidate.measuredAt > existing.measuredAt) candidates.set(key, candidate);
   };
 
-  const [ledger, ...legacy] = await Promise.allSettled([
-    collectLedgerEdges(input, merge),
-    collectStreamEdges(input, merge),
-    collectReportEdges(input, merge),
-  ]);
+  const [ledger] = await Promise.allSettled([collectLedgerEdges(input, merge)]);
+  const ledgerAnswered = ledger.status === "fulfilled" && ledger.value;
+  const legacy = ledgerAnswered
+    ? []
+    : await Promise.allSettled([collectStreamEdges(input, merge), collectReportEdges(input, merge)]);
   let skipped = 0;
   let legacyBroken = false;
   for (const result of legacy) {
@@ -111,12 +117,11 @@ export async function loadCoverageEdges(
       `select-specs: could not read the hub's coverage-edge ledger (${errMessage(ledger.reason)})`,
     );
   }
-  // The legacy sources veto only until the ledger answers: once it does, a
-  // spec they alone knew reads as unmeasured, which runs it — the safe
+  // The legacy sources are consulted only until the ledger answers: once it
+  // does, a spec they alone knew reads as unmeasured, which runs it — the safe
   // direction, and a measured run moves the spec into the ledger. Without a
   // ledger (older hub, none written yet) they are the record, so their
   // failure must not masquerade as absence.
-  const ledgerAnswered = ledger.status === "fulfilled" && ledger.value;
   const degraded = ledger.status === "rejected" || (!ledgerAnswered && legacyBroken);
   const edges: CoverageEdges = new Map(
     [...candidates].map(([key, c]) => [key, { files: new Set(c.files), measuredAt: c.measuredAt }]),
