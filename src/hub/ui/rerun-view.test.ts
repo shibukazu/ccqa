@@ -197,7 +197,7 @@ describe("hub UI: needs re-run", () => {
 
     const declared = new Set([
       // Browser and language globals the script legitimately reaches for.
-      "encodeURIComponent", "String", "Number", "Boolean", "Error", "Date",
+      "encodeURIComponent", "decodeURIComponent", "String", "Number", "Boolean", "Error", "Date",
       "Promise", "JSON", "Math", "Object", "Array", "fetch", "setTimeout",
       "clearTimeout", "FileReader", "parseInt", "parseFloat", "isNaN",
       // Keywords that take a parenthesised head.
@@ -381,7 +381,7 @@ describe("hub UI: needs re-run", () => {
     // drifted apart before this fix.
     const src = clientScript();
     const start = src.indexOf("function perspMatches");
-    const end = src.indexOf("function perspFilterCount");
+    const end = src.indexOf("function perspCount");
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     expect(src.slice(start, end)).toContain("rerunVerdictOf(");
@@ -410,7 +410,9 @@ describe("hub UI: needs re-run", () => {
     // Three mode chips (all/deterministic/live) plus five verdict chips —
     // one per SpecVerdictSchema option, same words as the 判定 column — plus
     // the coverage page's single "uncovered only" chip.
-    expect(HTML.match(/class="fcount"/g)).toHaveLength(9);
+    // Counted on the chips themselves: the toolbar's disabled toggle wears the
+    // same count class (it is the same readout) and is not a chip.
+    expect(HTML.match(/class="fcount"[^>]*><\/span><\/button>/g)).toHaveLength(9);
     expect(HTML).not.toMatch(/<button class="fchip"[^>]*data-i18n=/);
   });
 

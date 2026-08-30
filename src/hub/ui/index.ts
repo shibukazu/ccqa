@@ -210,6 +210,9 @@ const HTML_BODY = `
               <button class="fchip" id="persp-chip-manuallyverified" data-f="manuallyVerified" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.manuallyVerified">Manually verified</span><span class="fcount"></span></button>
               <button class="fchip" id="persp-chip-verified" data-f="verified" aria-pressed="false" type="button"><span data-i18n="perspectives.rerun.state.verified">Verified</span><span class="fcount"></span></button>
             </div>
+            <!-- Not a chip: the chips pick which cases to show out of what the
+                 project verifies, and this changes what that set is. -->
+            <label class="ftoggle"><input type="checkbox" id="persp-show-disabled"><span data-i18n="perspectives.filter.showDisabled">Show disabled</span><span class="fcount" id="persp-disabled-count"></span></label>
             <div class="spacer"></div>
             <span class="muted persp-head" id="persp-deploy-head" hidden></span>
             <div class="sw-wrap" id="persp-profile-wrap">
@@ -683,6 +686,8 @@ const CSS = `
      amber as the drift badges (dr-found), not fail-red. */
   .spec-card.drift-found { border-left: 3px solid var(--amber); }
   .spec-card.passed { border-left: 3px solid var(--pass); }
+  /* Says which card the link landed on; the left rail still carries the verdict. */
+  .spec-card.linked { box-shadow: 0 0 0 2px var(--accent); }
   .spec-card-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px; }
   .spec-card-head .name { font-weight: 600; font-size: 15px; }
   .spec-card-head .slug { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-top: 2px; }
@@ -1026,6 +1031,10 @@ const CSS = `
   /* The Perspectives toolbar carries search + two filter-chip groups + the
      profile selector, so it wraps instead of overflowing on a narrow window. */
   #view-perspectives .toolbar { flex-wrap: wrap; }
+  .ftoggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); cursor: pointer; }
+  .ftoggle input { margin: 0; cursor: pointer; }
+  .chip.off { background: var(--surface-2); color: var(--muted-2); border-color: var(--border); }
+  .ftoggle .fcount { margin-left: 2px; font-variant-numeric: tabular-nums; color: var(--muted-2); }
   .proj-menu.right { left: auto; right: 0; }
   .d-note { margin-top: 12px; max-width: 900px; }
 
@@ -1166,7 +1175,7 @@ const CLIENT_JS = `
   // Every status a run can be in, from the contract that defines them, so the
   // runs filter offers exactly what a row's badge can say.
   var RUN_STATUSES = ${JSON.stringify(RunStatusSchema.options)};
-  var state = { token: "", project: "", profile: "default", detailRunId: "", jobPollToken: 0, runsLoadToken: 0, spendLoadToken: 0 };
+  var state = { token: "", project: "", profile: "default", detailRunId: "", detailCaseKey: null, detailScrolled: false, jobPollToken: 0, runsLoadToken: 0, spendLoadToken: 0 };
   var knownProfiles = [];
   var TOKEN_KEY = "ccqa-hub-token";
   var LANG_KEY = "ccqa-hub-lang";
@@ -1279,6 +1288,9 @@ const CLIENT_JS = `
       "perspectives.filter.all": "All", "perspectives.filter.deterministic": "Deterministic",
       "perspectives.filter.live": "Live",
       "perspectives.filter.group.mode": "Mode",
+      "perspectives.filter.showDisabled": "Show disabled",
+      "detail.caseNotInRun": "{case} is not in this run.",
+      "perspectives.filter.disabled": "disabled",
       "perspectives.col.verdict": "Verdict", "perspectives.col.audit": "Audit",
       "perspectives.col.run": "Execution",
       "perspectives.audit.state.due": "Audit due",
@@ -1503,6 +1515,9 @@ const CLIENT_JS = `
       "perspectives.filter.all": "すべて", "perspectives.filter.deterministic": "決定的",
       "perspectives.filter.live": "ライブ",
       "perspectives.filter.group.mode": "モード",
+      "perspectives.filter.showDisabled": "無効も表示",
+      "detail.caseNotInRun": "{case} はこの実行に含まれていません。",
+      "perspectives.filter.disabled": "無効",
       "perspectives.col.verdict": "判定", "perspectives.col.audit": "監査",
       "perspectives.col.run": "実行",
       "perspectives.audit.state.due": "監査待ち",
@@ -2111,6 +2126,32 @@ const CLIENT_JS = `
     document.querySelector(".nav-jobs").classList.toggle("disabled", gated);
   }
 
+  // --- pure: run hash ------------------------------------------------------
+  // Lifted out and run by perspectives-visibility.test.ts: the pattern lives
+  // inside a template literal, where a lost backslash fails silently.
+
+  /** A run, optionally opened on one case. */
+  function runCaseHref(runId, caseKey) {
+    var base = "#/runs/" + encodeURIComponent(runId);
+    return caseKey ? base + "?case=" + encodeURIComponent(caseKey) : base;
+  }
+
+  /** The run id and case a #/runs/... hash names, or null when it names no run. */
+  function parseRunHash(hash) {
+    var m = String(hash).match(/^#\\/runs\\/([^?]+)(?:\\?case=(.*))?$/);
+    if (!m) return null;
+    // A truncated paste leaves a half-written %XX, which decodeURIComponent
+    // throws on. Thrown out of route() that reads as "you are disconnected"
+    // and shows the login gate, for a link the reader can see is a run.
+    try {
+      return { runId: decodeURIComponent(m[1]), caseKey: m[2] ? decodeURIComponent(m[2]) : null };
+    } catch (e) {
+      return { runId: m[1], caseKey: m[2] || null };
+    }
+  }
+
+  // --- end pure: run hash --------------------------------------------------
+
   function route() {
     // Disconnected: the full-screen login gate is the only thing to show.
     if (!state.token) { showAuthGate(false); return; }
@@ -2119,8 +2160,8 @@ const CLIENT_JS = `
     // land there (e.g. right after login) instead of an empty Runs list, and
     // gate any deep-linked #/runs or #/secrets to it too.
     if (location.hash === "#/projects" || !state.project) { openProjects(); return; }
-    var m = location.hash.match(/^#\\/runs\\/(.+)$/);
-    if (m) { openRunDetail(decodeURIComponent(m[1])); return; }
+    var m = parseRunHash(location.hash);
+    if (m) { openRunDetail(m.runId, m.caseKey); return; }
     if (location.hash === "#/perspectives") { openPerspectives(); return; }
     if (location.hash === "#/coverage") { openCoverage(); return; }
     if (location.hash === "#/secrets") { openSecrets(); return; }
@@ -3458,8 +3499,34 @@ const CLIENT_JS = `
   function renderSpecCards(runId, results, triageState, isDrift) {
     var container = document.getElementById("spec-cards");
     clear(container);
-    results.forEach(function (r) { container.appendChild(renderSpecCard(runId, r, triageState, isDrift)); });
+    // A slower earlier fetch can land after the reader has moved to another
+    // run. Its cards were always wrong; what is new is that it would also
+    // claim their case is missing from a run that has it.
+    var caseKey = runId === state.detailRunId ? state.detailCaseKey : null;
+    var wanted = null;
+    results.forEach(function (r) {
+      var card = renderSpecCard(runId, r, triageState, isDrift);
+      if (caseKey && r.feature + "/" + r.spec === caseKey) wanted = card;
+      container.appendChild(card);
+    });
     document.getElementById("detail-spec-count").textContent = "· " + results.length;
+    if (!caseKey) return;
+    // Marked as well as scrolled: a page that jumped has to say where it
+    // jumped to, or the reader re-finds the row by hand. Cards are rebuilt
+    // again when triage lands, so the mark is reapplied but the scroll is
+    // not — the reader has been reading since the first one.
+    if (wanted) {
+      wanted.classList.add("linked");
+      if (!state.detailScrolled) {
+        state.detailScrolled = true;
+        wanted.scrollIntoView({ block: "center" });
+      }
+    } else if (!state.detailScrolled) {
+      // The case is not in this run (renamed, or the run predates it). Silent
+      // would read as "it is here somewhere".
+      state.detailScrolled = true;
+      detailError(t("detail.caseNotInRun").replace("{case}", caseKey));
+    }
   }
 
   // ── run detail: triage (confusion matrix) ───────────────────────────
@@ -3657,9 +3724,11 @@ const CLIENT_JS = `
     e.textContent = msg;
   }
 
-  function openRunDetail(runId) {
+  function openRunDetail(runId, caseKey) {
     showView("detail");
     state.detailRunId = runId;
+    state.detailCaseKey = caseKey || null;
+    state.detailScrolled = false;
     document.getElementById("detail-title").textContent = runId.slice(0, 8);
     document.getElementById("detail-error").hidden = true;
     document.getElementById("learn-cta").hidden = true;
@@ -4117,7 +4186,8 @@ const CLIENT_JS = `
   var perspState = {
     doc: null, q: "", f: "all",
     rerun: null, rerunSupported: null, runUrls: {}, rerunProfiles: [],
-    drift: null
+    drift: null,
+    showDisabled: false
   };
 
   function perspectivesPath() {
@@ -4226,6 +4296,20 @@ const CLIENT_JS = `
   function perspSpecKey(feature, spec) {
     return feature.featureName + "/" + spec.specName;
   }
+
+  // --- pure: perspectives visibility ---------------------------------------
+  // Lifted out and run by perspectives-visibility.test.ts.
+
+  /**
+   * A disabled case is not part of what this project verifies, so it is not in
+   * the answer the page opens on. What the summary counts and what the table
+   * lists both ask here, or the two disagree on how many cases exist.
+   */
+  function perspHidden(spec, showDisabled) {
+    return spec.disabled === true && !showDisabled;
+  }
+
+  // --- end pure: perspectives visibility -----------------------------------
 
   // Shared by rerun and drift, which differ only in which report they read.
   function ledgerEntryFor(report, feature, spec) {
@@ -4442,10 +4526,10 @@ const CLIENT_JS = `
   // One ledger entry as "<short sha> · <when>", linking to the hub's run detail
   // and, when that run recorded one, to the CI run. Clicks must not bubble: the
   // table row itself toggles the detail panel.
-  function ledgerLine(entry) {
+  function ledgerLine(entry, caseKey) {
     var wrap = el("span");
     var link = el("a", null, shortSha(entry.gitHead) || String(entry.runId).slice(0, 8));
-    link.href = "#/runs/" + encodeURIComponent(entry.runId);
+    link.href = runCaseHref(entry.runId, caseKey);
     link.title = t("perspectives.result.openRun");
     link.addEventListener("click", function (e) { e.stopPropagation(); });
     wrap.appendChild(link);
@@ -4573,7 +4657,7 @@ const CLIENT_JS = `
     due: "rr-none", clean: "passed", drifted: "failed", undecided: "rr-unknown"
   };
 
-  function perspAuditCell(rr, driftEntry) {
+  function perspAuditCell(rr, driftEntry, caseKey) {
     var td = el("td");
     if (!rr || !rr.audit) {
       td.appendChild(el("span", "muted", "\u2014"));
@@ -4596,7 +4680,7 @@ const CLIENT_JS = `
     // audit's own coordinate, so it comes from the drift ledger.
     if (driftEntry) {
       var sub = el("span", "cellsub");
-      sub.appendChild(ledgerLine(driftEntry));
+      sub.appendChild(ledgerLine(driftEntry, caseKey));
       if (driftEntry.graded) {
         sub.appendChild(document.createTextNode(" · "));
         sub.appendChild(el("span", "graded-mark", t("perspectives.drift.graded")));
@@ -4606,7 +4690,7 @@ const CLIENT_JS = `
     return td;
   }
 
-  function perspRunCell(rr) {
+  function perspRunCell(rr, caseKey) {
     var td = el("td");
     var runState = perspRunState(rr);
     // No verdict at all: this case is in the document but not in the report
@@ -4640,7 +4724,7 @@ const CLIENT_JS = `
       var last = lastResult(rr);
       if (last) {
         var sub = el("span", "cellsub");
-        sub.appendChild(ledgerLine(last.entry));
+        sub.appendChild(ledgerLine(last.entry, caseKey));
         td.appendChild(sub);
       }
     }
@@ -4712,16 +4796,29 @@ const CLIENT_JS = `
     var host = document.getElementById("persp-ov");
     clear(host);
     var records = [];
+    var features = 0;
+    var listed = 0;
     doc.features.forEach(function (feature) {
+      var before = listed;
       feature.specs.forEach(function (spec) {
-        records.push(ledgerEntryFor(perspState.rerun, feature, spec));
+        if (perspHidden(spec, perspState.showDisabled)) return;
+        listed += 1;
+        // A disabled case has no ledger entry — the hub does not ask for one
+        // — and an absent entry reads as "needs re-run". Counting it would
+        // put work in the bar that nobody intends to do.
+        if (spec.disabled !== true) records.push(ledgerEntryFor(perspState.rerun, feature, spec));
       });
+      // A feature whose cases are all hidden renders no group below, so
+      // counting it here would put the summary above a table that disagrees.
+      if (listed > before) features += 1;
     });
 
     var inv = el("div", "ov-inv");
-    inv.appendChild(el("b", null, String(records.length)));
+    // The inventory counts what the table lists; the bars below judge only the
+    // cases the hub keeps a ledger for, so the two numbers can differ.
+    inv.appendChild(el("b", null, String(listed)));
     inv.appendChild(document.createTextNode(" " + t("perspectives.ov.cases") + " / "));
-    inv.appendChild(el("b", null, String(doc.features.length)));
+    inv.appendChild(el("b", null, String(features)));
     inv.appendChild(document.createTextNode(" " + t("perspectives.ov.features")));
     host.appendChild(inv);
     if (!records.length) return;
@@ -4748,6 +4845,12 @@ const CLIENT_JS = `
   // search text always applies: a chip's count has to be the number of rows
   // clicking it actually leaves.
   function perspMatches(feature, spec, f) {
+    if (perspHidden(spec, perspState.showDisabled)) return false;
+    return perspMatchesFilters(feature, spec, f);
+  }
+
+  /** Everything the toolbar filters on except whether the case is disabled. */
+  function perspMatchesFilters(feature, spec, f) {
     if (f === "deterministic" && perspMode(spec) !== "deterministic") return false;
     if (f === "live" && perspMode(spec) !== "live") return false;
     // The verdict chips (same words as RERUN_ORDER/the 判定 column) share
@@ -4767,12 +4870,12 @@ const CLIENT_JS = `
     return true;
   }
 
-  function perspFilterCount(f) {
+  function perspCount(pred) {
     var doc = perspState.doc;
     if (!doc) return 0;
     var n = 0;
     doc.features.forEach(function (feature) {
-      feature.specs.forEach(function (spec) { if (perspMatches(feature, spec, f)) n += 1; });
+      feature.specs.forEach(function (spec) { if (pred(feature, spec)) n += 1; });
     });
     return n;
   }
@@ -5264,9 +5367,13 @@ const CLIENT_JS = `
         row.tabIndex = 0;
         row.setAttribute("aria-expanded", "false");
 
+        var caseKey = perspSpecKey(feature, spec);
         var titleTd = el("td", "c-title");
         titleTd.appendChild(document.createTextNode(spec.title));
-        titleTd.appendChild(el("span", "c-id", perspSpecKey(feature, spec)));
+        // Only reachable with the toggle on, where saying which rows are the
+        // disabled ones is the whole point of having turned it on.
+        if (spec.disabled === true) titleTd.appendChild(el("span", "chip off", t("perspectives.filter.disabled")));
+        titleTd.appendChild(el("span", "c-id", caseKey));
         if (spec.summary) titleTd.appendChild(el("span", "csum", spec.summary));
         row.appendChild(titleTd);
 
@@ -5277,8 +5384,8 @@ const CLIENT_JS = `
         if (showRerun) {
           var rr = ledgerEntryFor(perspState.rerun, feature, spec);
           row.appendChild(perspVerdictCell(rr));
-          row.appendChild(perspRunCell(rr));
-          row.appendChild(perspAuditCell(rr, ledgerEntryFor(perspState.drift, feature, spec)));
+          row.appendChild(perspRunCell(rr, caseKey));
+          row.appendChild(perspAuditCell(rr, ledgerEntryFor(perspState.drift, feature, spec), caseKey));
         }
 
         var chevTd = el("td", "c-chev");
@@ -5330,13 +5437,23 @@ const CLIENT_JS = `
   // Each chip also carries what it would yield — the mode breakdown the
   // summary row used to spend four tiles on.
   function syncPerspChips() {
+    // What ticking the box would actually add: disabled cases that the filters
+    // in effect would then let through. A flat count of every disabled case
+    // promises rows the active chip or search would drop.
+    var off = perspState.showDisabled ? 0 : perspCount(function (feature, spec) {
+      return spec.disabled === true && perspMatchesFilters(feature, spec, perspState.f);
+    });
+    document.getElementById("persp-disabled-count").textContent = off ? "+" + off : "";
+    document.getElementById("persp-show-disabled").checked = perspState.showDisabled;
     var group = document.getElementById("persp-verdict-chips");
     group.hidden = perspState.rerunSupported !== true;
     if (perspState.rerunSupported !== true && RERUN_ORDER.indexOf(perspState.f) !== -1) perspState.f = "all";
     document.querySelectorAll("#view-perspectives .fchip").forEach(function (b) {
       var f = b.getAttribute("data-f");
       b.setAttribute("aria-pressed", String(f === perspState.f));
-      b.querySelector(".fcount").textContent = perspState.doc ? String(perspFilterCount(f)) : "";
+      b.querySelector(".fcount").textContent = perspState.doc
+        ? String(perspCount(function (feature, spec) { return perspMatches(feature, spec, f); }))
+        : "";
     });
   }
 
@@ -6040,6 +6157,10 @@ const CLIENT_JS = `
   document.getElementById("persp-refresh").addEventListener("click", function () { loadPerspectives(); });
   document.getElementById("persp-q").addEventListener("input", function (e) {
     perspState.q = e.target.value.trim().toLowerCase();
+    renderPerspectives();
+  });
+  document.getElementById("persp-show-disabled").addEventListener("change", function (e) {
+    perspState.showDisabled = e.target.checked;
     renderPerspectives();
   });
 
