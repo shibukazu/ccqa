@@ -301,6 +301,8 @@ Selectors in AB_ACTION must follow Selector Rules. \`find_*\` lines use the loca
 - A non-zero exit from agent-browser (selector not found, element not interactable, timeout) → **do NOT emit AB_ACTION** for that attempt. Switch selector and only emit the AB_ACTION for the call that finally succeeded.
 - If you tried several selectors / \`find_*\` locators for the same logical action, emit AB_ACTION for the **last working one only**. Multiple failed attempts in a row will all fail at replay validation and silently delete the step from the generated test.
 - \`AB_ACTION|assert|...\` follows the same rule: only emit assertions you actually verified on the current page in the current snapshot.
+- **Open only a URL the step names.** A step's \`open\` takes the address its own instruction gives — a \`\${VAR}\` plus the literal tail after it. Never open an address the run produced: the id in \`/items/01H8XZ...\` belongs to the record this run created, and opening it next time visits a record that run does not have (or worse, one it does, silently testing the wrong thing). Reach such a page the way a person does — click through from where the run already is.
+
 - **Environment-failure recovery is not part of the test.** If a session times out, a network blip drops you to login, or the app crashes and you re-login / re-navigate / re-fill to recover, do NOT emit AB_ACTION for the recovery operations.
 - If a step ultimately fails after retries: emit \`ASSERTION_FAILED\` and STOP. Do not leave half-recorded actions in the stream.
 
