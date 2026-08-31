@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, expect } from "vitest";
-import { builtinToolNames, extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, withoutEmptyEndpointVars, buildInvocationEnv } from "./invoke.ts";
+import { builtinToolNames, extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, findRunProducedOpenUrl, withoutEmptyEndpointVars, buildInvocationEnv } from "./invoke.ts";
 import * as log from "../cli/logger.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -767,5 +767,33 @@ describe("withoutEmptyEndpointVars", () => {
     expect(out["ANTHROPIC_API_KEY"]).toBe("sk-real");
     // Only endpoint keys are filtered; an unrelated empty var is not ours to judge.
     expect(out["PATH"]).toBe("");
+  });
+});
+
+describe("findRunProducedOpenUrl", () => {
+  const scrubMap: Array<[string, string]> = [["https://app.example.com", "${APP_BASE_URL}"]];
+
+  test("blocks open to an address carrying a run-produced id", () => {
+    const cmd = "agent-browser --session s open https://app.example.com/items/01H8XZK9WQRSTV3M5N7P2B4C6D/submit";
+    expect(findRunProducedOpenUrl(cmd, scrubMap)).toBe("${APP_BASE_URL}/items/01H8XZK9WQRSTV3M5N7P2B4C6D/submit");
+  });
+
+  test("allows open to a plain step-named address", () => {
+    expect(findRunProducedOpenUrl("agent-browser --session s open https://app.example.com/chat", scrubMap)).toBeNull();
+  });
+
+  test("allows an id that an env value accounts for", () => {
+    // buildSpecEnvScrub sorts longer values first; hand-built maps must too.
+    const map: Array<[string, string]> = [
+      ["https://app.example.com/items/01H8XZK9WQRSTV3M5N7P2B4C6D", "${ITEM_URL}"],
+      ...scrubMap,
+    ];
+    const cmd = "agent-browser --session s open https://app.example.com/items/01H8XZK9WQRSTV3M5N7P2B4C6D";
+    expect(findRunProducedOpenUrl(cmd, map)).toBeNull();
+  });
+
+  test("ignores other subcommands and bare open", () => {
+    expect(findRunProducedOpenUrl("agent-browser --session s click \"[aria-label='x']\"", scrubMap)).toBeNull();
+    expect(findRunProducedOpenUrl("agent-browser --session s open", scrubMap)).toBeNull();
   });
 });

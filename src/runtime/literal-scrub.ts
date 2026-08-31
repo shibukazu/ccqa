@@ -100,6 +100,41 @@ const UNSTABLE_PATTERNS: ReadonlyArray<UnstablePattern> = [
 ];
 
 /**
+ * Opaque machine-generated id shapes. Only the unambiguous forms are listed:
+ * long digit or hex runs also appear in addresses a step legitimately names
+ * (a date path, a numeric tenant id, a content hash), and a false hit here
+ * dead-ends that step — the guard in `claude/invoke.ts` blocks the `open`
+ * and the navigate check below drops the action. A missed id still fails
+ * verification at record time, so the trade is deliberate.
+ *
+ * Boundaries are alphanumeric lookarounds, not `\b`, so `item_01H8…`
+ * (word-char `_`) is still caught; `i` accepts lowercase ULIDs (a 26-letter
+ * lowercase run inside a URL is rare enough to risk). Ids that come from
+ * `${ENV_VAR}` values are symbolised before either check runs, never match.
+ */
+const OPAQUE_ID_PATTERNS: ReadonlyArray<UnstablePattern> = [
+  {
+    id: "ulid",
+    pattern: /(?<![0-9A-Za-z])[0-9A-HJKMNP-TV-Z]{26}(?![0-9A-Za-z])/i,
+    label: "ULID",
+  },
+  {
+    id: "uuid",
+    pattern: /(?<![0-9A-Za-z])[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?![0-9A-Za-z])/i,
+    label: "UUID",
+  },
+];
+
+/** First opaque-id hit in `text`, or null. Also used by the `open` guard in `claude/invoke.ts`. */
+export function findOpaqueIdSegment(text: string): { patternId: string; match: string } | null {
+  for (const p of OPAQUE_ID_PATTERNS) {
+    const m = text.match(p.pattern);
+    if (m) return { patternId: p.id, match: m[0] };
+  }
+  return null;
+}
+
+/**
  * Inspect a single action and return every (field, pattern) pair that
  * fired. An empty array means the action is safe to keep.
  */
@@ -113,6 +148,14 @@ export function detectUnstableLiterals(action: RecordedAction): UnstableLiteralH
     ["observation", action.observation],
   ];
   const hits: UnstableLiteralHit[] = [];
+  // A navigate to an address carrying an opaque machine-generated id was
+  // produced by the run itself; replaying it opens a record later runs do
+  // not have. Scoped to navigate: the same id inside a fill or assert may
+  // be text the spec legitimately works with.
+  if (action.action === "navigate" && typeof action.value === "string") {
+    const opaque = findOpaqueIdSegment(action.value);
+    if (opaque) hits.push({ field: "value", ...opaque });
+  }
   for (const [field, raw] of fields) {
     if (typeof raw !== "string" || raw.length === 0) continue;
     for (const p of UNSTABLE_PATTERNS) {
