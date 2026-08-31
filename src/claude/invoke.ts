@@ -4,6 +4,7 @@ import type { SDKMessage, Options, HookInput } from "@anthropic-ai/claude-agent-
 import * as log from "../cli/logger.ts";
 import { FIND_ACTIONS, FIND_LOCATORS } from "../ir/from-agent-browser.ts";
 import { scrubEnvValues } from "../runtime/env-scrub.ts";
+import { findOpaqueIdSegment } from "../runtime/literal-scrub.ts";
 import { missingNativeBinaryMessage, missingNativeBinaryPackage } from "./native-binary.ts";
 import { tallyInvocation } from "./cost-tally.ts";
 import { ENDPOINT_ENV_KEYS } from "./env-keys.ts";
@@ -346,6 +347,14 @@ export async function invokeClaudeStreaming(
                           reason: "Do not suppress errors on `agent-browser` commands. Remove `|| true`, `|| :`, `2>/dev/null`, `; true`, and similar redirects so ccqa can detect failures and roll back unsuccessful attempts. Run the command standalone and let it surface its exit code.",
                         };
                       }
+
+                      const runProducedUrl = findRunProducedOpenUrl(cmd, envScrubMap);
+                      if (runProducedUrl !== null) {
+                        return {
+                          decision: "block",
+                          reason: `Do not open ${runProducedUrl} — that address was produced by this run (the id in it belongs to a record this run created), so the generated test would open a record later runs do not have. Reach the page the way a person does: click through from where the run already is. If the spec's instruction really names this exact address, put the id in a profile variable so it survives replay.`,
+                        };
+                      }
                     }
 
                     const assertMarker = relaxAbConstraints ? null : extractCcqaAssertFromBashCommand(cmd);
@@ -558,15 +567,23 @@ export function shellTokenize(s: string): string[] {
   return tokens;
 }
 
-/** Extracts the subcommand from an `agent-browser [flags] <subcommand> [args...]` command string. */
-export function extractAbSubcommand(cmd: string): string | null {
+/**
+ * Positional tokens of an `agent-browser [flags] <subcommand> [args...]`
+ * command string, value-taking flags dropped. Empty when `cmd` is not an
+ * agent-browser call.
+ */
+function abPositionalTokens(cmd: string): string[] {
   const abIdx = cmd.indexOf("agent-browser");
-  if (abIdx === -1) return null;
-  const rest = cmd.slice(abIdx + "agent-browser".length).trim();
-  const parts = shellTokenize(rest);
+  if (abIdx === -1) return [];
+  const parts = shellTokenize(cmd.slice(abIdx + "agent-browser".length).trim());
   let i = 0;
   while (i < parts.length && parts[i]!.startsWith("-")) { i += 2; }
-  return parts[i] ?? null;
+  return parts.slice(i);
+}
+
+/** Extracts the subcommand from an `agent-browser [flags] <subcommand> [args...]` command string. */
+export function extractAbSubcommand(cmd: string): string | null {
+  return abPositionalTokens(cmd)[0] ?? null;
 }
 
 /** Returns true if the agent-browser subcommand is blocked (eval/js/find/etc). */
@@ -640,6 +657,24 @@ export function hasRefSelector(cmd: string): boolean {
     if (/^@/.test(parts[i]!)) return true;
   }
   return false;
+}
+
+/**
+ * Detect `agent-browser open <url>` whose address carries an opaque
+ * machine-generated id (ULID / UUID) that no `${ENV_VAR}` value accounts
+ * for. Such an address was produced by the run itself — this is the
+ * mechanical form of the trace prompt's "Open only a URL the step names"
+ * rule, which alone does not stop every model. Returns the env-scrubbed URL
+ * for the block message, or null when the command is fine.
+ */
+export function findRunProducedOpenUrl(
+  cmd: string,
+  envScrubMap: Array<[string, string]>,
+): string | null {
+  const [sub, url] = abPositionalTokens(cmd);
+  if (sub !== "open" || !url) return null;
+  const scrubbed = scrubEnvValues(url, envScrubMap);
+  return findOpaqueIdSegment(scrubbed) !== null ? scrubbed : null;
 }
 
 /**

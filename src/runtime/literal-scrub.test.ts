@@ -4,6 +4,7 @@ import {
   detectUnstableLiterals,
   formatUnstableDrop,
   scrubUnstableActions,
+  findOpaqueIdSegment,
 } from "./literal-scrub.ts";
 
 function action(partial: Partial<RecordedAction> & { action: RecordedAction["action"] }): RecordedAction {
@@ -266,5 +267,60 @@ describe("formatUnstableDrop", () => {
       ],
     });
     expect(msg.match(/clock-hms/g)).toHaveLength(1);
+  });
+});
+
+describe("findOpaqueIdSegment", () => {
+  test("matches a ULID inside a path", () => {
+    const hit = findOpaqueIdSegment("${APP_BASE_URL}/items/01H8XZK9WQRSTV3M5N7P2B4C6D/submit");
+    expect(hit).toMatchObject({ patternId: "ulid" });
+  });
+
+  test("matches a UUID", () => {
+    expect(findOpaqueIdSegment("/r/123e4567-e89b-12d3-a456-426614174000")?.patternId).toBe("uuid");
+  });
+
+  test("matches ids behind word-char separators and lowercase ULIDs", () => {
+    expect(findOpaqueIdSegment("${APP_BASE_URL}/items/item_01H8XZK9WQRSTV3M5N7P2B4C6D")?.patternId).toBe("ulid");
+    expect(findOpaqueIdSegment("${APP_BASE_URL}/items/01h8xzk9wqrstv3m5n7p2b4c6d")?.patternId).toBe("ulid");
+  });
+
+  test("leaves ambiguous digit and hex runs alone (a step may name them)", () => {
+    expect(findOpaqueIdSegment("${APP_BASE_URL}/calendar/20260901")).toBeNull();
+    expect(findOpaqueIdSegment("${APP_BASE_URL}/r/9f86d081884c7d65")).toBeNull();
+  });
+
+  test("ignores plain paths and symbolised refs", () => {
+    expect(findOpaqueIdSegment("${APP_BASE_URL}/chat")).toBeNull();
+    expect(findOpaqueIdSegment("${APP_BASE_URL}/settings/forms")).toBeNull();
+    expect(findOpaqueIdSegment("${ITEM_URL}")).toBeNull();
+  });
+});
+
+describe("scrubUnstableActions — run-produced navigations", () => {
+  test("drops a navigate whose address carries an opaque id", () => {
+    const nav: RecordedAction = {
+      action: "navigate",
+      value: "${APP_BASE_URL}/items/01H8XZK9WQRSTV3M5N7P2B4C6D/submit",
+      stepId: "step-06",
+    };
+    const { kept, dropped } = scrubUnstableActions([nav]);
+    expect(kept).toHaveLength(0);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]!.hits[0]).toMatchObject({ patternId: "ulid" });
+  });
+
+  test("keeps a navigate to a step-named address", () => {
+    const nav: RecordedAction = { action: "navigate", value: "${APP_BASE_URL}/chat", stepId: "step-01" };
+    expect(scrubUnstableActions([nav]).kept).toHaveLength(1);
+  });
+
+  test("keeps the same id outside a navigate", () => {
+    const fill: RecordedAction = {
+      action: "fill",
+      locator: { by: "css", value: "[aria-label='code']" },
+      value: "01H8XZK9WQRSTV3M5N7P2B4C6D",
+    };
+    expect(scrubUnstableActions([fill]).kept).toHaveLength(1);
   });
 });
