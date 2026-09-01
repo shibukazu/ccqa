@@ -1,9 +1,11 @@
-import { createReadStream } from "node:fs";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { appendFile, mkdir, open, rename, rm } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
 import { createInterface } from "node:readline";
 import { dirname } from "node:path";
 import type { CoverageEventStore } from "../types.ts";
-import { assertSafeName, serialize, writeBytes } from "./fs-helpers.ts";
+import { assertSafeName, isNotFound, serialize } from "./fs-helpers.ts";
 import { coverageEventsPath } from "./paths.ts";
 
 /**
@@ -73,7 +75,7 @@ interface StreamState {
  * event per line, appended in place (not atomic-rewritten — an append must
  * not cost the whole stream). A reader can therefore observe a partial final
  * line mid-append; the read side counts such lines as skipped rather than
- * failing, and the prune's full rewrite goes through the atomic path.
+ * failing, and the prune's full rewrite goes through a temp file + rename.
  */
 export function createFileCoverageEventStore(
   root: string,
@@ -94,15 +96,18 @@ export function createFileCoverageEventStore(
     // Seq resumes from the highest stored one, not the line count: retention
     // drops lines from the head, and a seq must never be reissued — the
     // resolve cache keys off it (events.ts).
-    const raw = await readRaw(path);
+    //
+    // Never hold the whole stream in memory: grown to its caps it no longer
+    // fits the hub's heap.
+    const tail = await statTail(path);
     const state: StreamState = {
       nextSeq: 1,
       count: 0,
-      bytes: Buffer.byteLength(raw),
+      bytes: tail?.size ?? 0,
       oldestAt: null,
-      endsWithNewline: raw === "" || raw.endsWith("\n"),
+      endsWithNewline: tail?.endsWithNewline ?? true,
     };
-    for (const rawLine of raw.split("\n")) {
+    for await (const rawLine of streamLines(path)) {
       const line = parseLine(rawLine);
       if (line === null) continue;
       if (line.seq >= state.nextSeq) state.nextSeq = line.seq + 1;
@@ -119,21 +124,50 @@ export function createFileCoverageEventStore(
     const overAge = state.oldestAt !== null && state.oldestAt < now - retentionMs - PRUNE_AGE_SLACK_MS;
     if (!overCount && !overBytes && !overAge) return;
 
-    const lines = await readLines(path);
+    // Two streamed passes, so the stream's payloads never sit in memory at
+    // once. Pass 1 collects only each fresh line's serialized size — the
+    // keep/drop decision needs ages and sizes, never the payloads.
     const cutoff = now - retentionMs;
-    const fresh = lines.filter((l) => l.at >= cutoff);
+    const freshSizes: number[] = [];
+    for await (const line of streamFreshLines(path, cutoff)) {
+      freshSizes.push(Buffer.byteLength(JSON.stringify(line)) + 1);
+    }
     const keep = overCount ? Math.max(0, maxEvents - pruneBatch) : maxEvents;
-    let kept = fresh.length > keep ? fresh.slice(fresh.length - keep) : fresh;
-    if (overBytes) kept = newestWithinBytes(kept, pruneBytesTarget);
+    let firstKept = freshSizes.length > keep ? freshSizes.length - keep : 0;
+    if (overBytes) firstKept = firstWithinBytes(freshSizes, firstKept, pruneBytesTarget);
 
-    const encoded = new TextEncoder().encode(
-      kept.map((l) => JSON.stringify(l)).join("\n") + (kept.length > 0 ? "\n" : ""),
-    );
-    await writeBytes(path, encoded);
-    const dropped = state.count - kept.length;
-    state.count = kept.length;
-    state.bytes = encoded.byteLength;
-    state.oldestAt = kept[0]?.at ?? null;
+    // Pass 2 rewrites the survivors through a temp file (the temp+rename
+    // shape of fs-helpers' atomicWrite, streamed instead of buffered).
+    // `pipeline` owns backpressure and error propagation: a failed write
+    // rejects here and never lets a truncated file reach the rename.
+    await mkdir(dirname(path), { recursive: true });
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    let keptCount = 0;
+    let keptBytes = 0;
+    let oldestKeptAt: number | null = null;
+    try {
+      await pipeline(async function* () {
+        let freshIdx = 0;
+        for await (const line of streamFreshLines(path, cutoff)) {
+          freshIdx += 1;
+          if (freshIdx <= firstKept) continue;
+          const text = JSON.stringify(line) + "\n";
+          keptCount += 1;
+          keptBytes += Buffer.byteLength(text);
+          if (oldestKeptAt === null) oldestKeptAt = line.at;
+          yield text;
+        }
+      }, createWriteStream(tmp, { encoding: "utf8" }));
+    } catch (err) {
+      await rm(tmp, { force: true });
+      throw err;
+    }
+    await rename(tmp, path);
+
+    const dropped = state.count - keptCount;
+    state.count = keptCount;
+    state.bytes = keptBytes;
+    state.oldestAt = oldestKeptAt;
     state.endsWithNewline = true;
     if (dropped > 0) {
       console.warn(
@@ -215,23 +249,42 @@ export function createFileCoverageEventStore(
   };
 }
 
-/** The longest tail of `lines` whose serialized size (newlines included) fits in `budget`. */
-function newestWithinBytes(lines: StoredLine[], budget: number): StoredLine[] {
-  let total = 0;
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    total += Buffer.byteLength(JSON.stringify(lines[i])) + 1;
-    if (total > budget) return lines.slice(i + 1);
-  }
-  return lines;
-}
-
-async function readRaw(path: string): Promise<string> {
+/** Size and trailing-newline state of the stream file, or null when it doesn't exist. */
+async function statTail(path: string): Promise<{ size: number; endsWithNewline: boolean } | null> {
+  let fh;
   try {
-    return await readFile(path, "utf8");
+    fh = await open(path, "r");
   } catch (err) {
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") return "";
+    if (isNotFound(err)) return null;
     throw err;
   }
+  try {
+    const { size } = await fh.stat();
+    if (size === 0) return { size, endsWithNewline: true };
+    const tail = Buffer.alloc(1);
+    await fh.read(tail, 0, 1, size - 1);
+    return { size, endsWithNewline: tail[0] === 0x0a };
+  } finally {
+    await fh.close();
+  }
+}
+
+/** Retention-window lines only, in file order (= append order = seq order). */
+async function* streamFreshLines(path: string, cutoff: number): AsyncGenerator<StoredLine> {
+  for await (const rawLine of streamLines(path)) {
+    const line = parseLine(rawLine);
+    if (line !== null && line.at >= cutoff) yield line;
+  }
+}
+
+/** Start of the longest suffix of `sizes` that fits `budget` (never below `lower`). */
+function firstWithinBytes(sizes: number[], lower: number, budget: number): number {
+  let total = 0;
+  for (let i = sizes.length - 1; i >= lower; i -= 1) {
+    total += sizes[i]!;
+    if (total > budget) return i + 1;
+  }
+  return lower;
 }
 
 /**
@@ -249,21 +302,11 @@ async function* streamLines(path: string): AsyncGenerator<string> {
     }
   } catch (err) {
     // A stream nothing has written to yet is empty, not an error.
-    if (!(err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT")) throw err;
+    if (!isNotFound(err)) throw err;
   } finally {
     lines.close();
     input.destroy();
   }
-}
-
-/** Every parseable line of the log; partial or corrupt lines are silently omitted (the read side counts them). */
-async function readLines(path: string): Promise<StoredLine[]> {
-  const lines: StoredLine[] = [];
-  for await (const rawLine of streamLines(path)) {
-    const line = parseLine(rawLine);
-    if (line !== null) lines.push(line);
-  }
-  return lines;
 }
 
 function parseLine(rawLine: string): StoredLine | null {
