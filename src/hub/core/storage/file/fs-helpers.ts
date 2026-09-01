@@ -159,6 +159,6 @@ export async function removePath(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true });
 }
 
-function isNotFound(err: unknown): boolean {
+export function isNotFound(err: unknown): boolean {
   return err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
 }
