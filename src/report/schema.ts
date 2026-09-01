@@ -512,6 +512,17 @@ export const ReportSpecResultSchema = z.object({
    * Null when no timing was available.
    */
   durationMs: z.number().nullable(),
+  /**
+   * Wall-clock bounds of this spec's execution. They are what lets the hub
+   * decide per row — rather than per run — whether a deploy landed underneath
+   * it (ADR-0027), so both must bracket the real work: a late start or an
+   * early finish slides the window past a deploy the spec did straddle.
+   * `durationMs` is not that bound — its clock differs by execution path.
+   * Optional (not nullable) so report.json written before these fields
+   * existed stays valid byte-for-byte.
+   */
+  startedAt: z.string().optional(),
+  finishedAt: z.string().optional(),
   /** Per-test rows from the vitest JSON report (Playwright-style step list). */
   assertions: z.array(ReportAssertionSchema).nullable(),
   /** Present only for failed specs that were analyzed. */

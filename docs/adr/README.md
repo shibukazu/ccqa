@@ -48,6 +48,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0024](0024-selection-from-measured-reach.md) | Spec selection reads measured reach, not a model's guess | accepted (staleness amended by 0026) |
 | [0025](0025-source-maps-for-a-deployed-commit.md) | Source maps for a deployed commit live on the hub | accepted |
 | [0026](0026-measured-edges-are-a-ledger.md) | Measured edges are a ledger, and an unmeasured spec runs | accepted |
+| [0027](0027-a-row-is-placed-by-its-own-window.md) | A row is placed against the deploy log by its own window | accepted |
 
 ## Template
 

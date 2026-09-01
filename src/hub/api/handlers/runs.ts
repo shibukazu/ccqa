@@ -7,6 +7,7 @@ import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecL
 import { CoverageUniverseSchema, DriftSubDiagnosisSchema, GitEnvelopeSchema, normalizeDiagnosis, ReportCostSchema, ReportKindSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportKind, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
 import type { DriftLabel } from "../../../drift/types.ts";
 import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
+import { placeRowInDeployLog, type RowPlacement } from "../../core/deploy-log.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
 import { unpackTarGz } from "../../core/tar.ts";
 import { emptyDriftLedger } from "../../core/drift-ledger.ts";
@@ -242,19 +243,15 @@ async function updateSpecLedger(
   // Only an execution may move a baseline. A recording is not a verification:
   // it produced a test, it did not check the product.
   if (run.kind !== "run" || !gitHead || !branch) return;
-  const entry: SpecLedgerEntry = {
-    gitHead,
-    runId: run.id,
-    at: run.reportCreatedAt,
-    // Denormalized from the Run so a re-run verdict is pure ledger + deploy
-    // log, with no per-spec run lookup.
-    deployedSha: run.deployedSha ?? null,
-    deployedShaAmbiguous: run.deployedShaAmbiguous ?? false,
-  };
+  const placeRow = await rowDeployPlacer(storage, run);
+  const base = { gitHead, runId: run.id, at: run.reportCreatedAt };
   const ledger: SpecLedger = emptyLedger();
   for (const row of results) {
     if (row.status === "skipped") continue;
     const key = `${row.feature}/${row.spec}`;
+    // The placement is denormalized so a re-run verdict is pure ledger +
+    // deploy log, with no per-spec run lookup.
+    const entry: SpecLedgerEntry = { ...base, ...placeRow(row) };
     ledger.run[key] = entry;
     if (row.status === "passed") ledger.green[key] = entry;
     else ledger.red[key] = redEntry(entry, row);
@@ -367,6 +364,41 @@ async function resolveDeployedSha(
     console.error(`hub: could not read the deploy log for "${project}/${profile ?? "default"}": ${errMsg(err)}`);
   }
   return { deployedSha: null, deployedShaSource: null };
+}
+
+/**
+ * Place each row against the deploy log by its own execution window rather
+ * than the run's (ADR-0027), so a run that outlives a deploy loses only the
+ * specs that straddled it.
+ *
+ * Falls back to the run's placement where a finer answer isn't available: a
+ * client-asserted sha is the caller's claim about its whole run, and a row
+ * with no `startedAt` (an older client) has nothing finer to say. A row with
+ * no end is measured to now, which only widens its window.
+ */
+async function rowDeployPlacer(
+  storage: HubStorage,
+  run: Run,
+): Promise<(row: ReportSpecResult) => RowPlacement> {
+  const runPlacement: RowPlacement = {
+    deployedSha: run.deployedSha ?? null,
+    deployedShaAmbiguous: run.deployedShaAmbiguous ?? false,
+  };
+  if (run.deployedShaSource !== "hub-deploy-log") return () => runPlacement;
+  const log = await storage.deploys
+    .getLog(run.project, run.profile ?? "default")
+    .catch((err) => {
+      console.error(`hub: could not read the deploy log to place rows of run "${run.id}": ${errMsg(err)}`);
+      return null;
+    });
+  if (!log) return () => runPlacement;
+  const sealedAt = Date.now();
+  return (row) => {
+    const startMs = row.startedAt ? Date.parse(row.startedAt) : Number.NaN;
+    if (Number.isNaN(startMs)) return runPlacement;
+    const endMs = row.finishedAt ? Date.parse(row.finishedAt) : sealedAt;
+    return placeRowInDeployLog(log.entries, { startMs, endMs: Number.isNaN(endMs) ? sealedAt : endMs });
+  };
 }
 
 /**
