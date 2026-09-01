@@ -8,6 +8,8 @@ function summary(name: string, opts: { passed: boolean }): SpecRunSummary {
     featureName: "feat",
     specName: name,
     scriptFile: `/tmp/${name}/test.spec.ts`,
+    startedAt: "2024-01-01T00:00:00.000Z",
+    finishedAt: new Date().toISOString(),
     report: {
       numFailedTests: opts.passed ? 0 : 1,
       numPassedTests: opts.passed ? 1 : 0,

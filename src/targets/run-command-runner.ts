@@ -280,6 +280,7 @@ async function runOneSpec(
   log.blank();
 
   const started = Date.now();
+  const startedAt = new Date(started).toISOString();
   let outcome: ShellOutcome | undefined;
   let spawnFailure: string | undefined;
   let measured: ReportCoverage | undefined;
@@ -310,6 +311,7 @@ async function runOneSpec(
         `could not spawn runCommand: ${spawnFailure ?? "unknown error"}`,
         "the runCommand could not be spawned",
       ),
+      startedAt,
       ...coverageFields,
     };
   }
@@ -341,6 +343,8 @@ async function runOneSpec(
     return {
       ...emptySpecRow({ feature: featureName, spec: specName, title, status: "passed" }),
       target: opts.targetId,
+      startedAt,
+      finishedAt: new Date().toISOString(),
       durationMs,
       ...artifactFields,
       ...evidenceFields,
@@ -355,6 +359,8 @@ async function runOneSpec(
     .join("\n");
   return {
     ...failedRow(detail),
+    startedAt,
+    finishedAt: new Date().toISOString(),
     durationMs,
     ...artifactFields,
     ...evidenceFields,

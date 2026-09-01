@@ -143,6 +143,9 @@ export type SpecRunSummary = {
   featureName: string;
   specName: string;
   scriptFile: string;
+  /** Wall-clock bounds of the spec's vitest process (ISO 8601). See `ReportSpecResultSchema.startedAt`. */
+  startedAt: string;
+  finishedAt: string;
   report: VitestJsonReport | null;
   exitCode: number;
   /** Tail of the spec's combined vitest output; feeds the drift-report failure analysis. */
@@ -1629,6 +1632,7 @@ async function runOneDeterministicSpec(
   }
   const specEnv: NodeJS.ProcessEnv = { ...process.env, CCQA_RUN_ID: runId };
   if (evidenceDir) specEnv[EVIDENCE_DIR_ENV] = evidenceDir;
+  const startedAt = new Date().toISOString();
   const proc = spawnVitestStreaming(
     [
       "run",
@@ -1660,6 +1664,8 @@ async function runOneDeterministicSpec(
     featureName,
     specName,
     scriptFile,
+    startedAt,
+    finishedAt: new Date().toISOString(),
     report,
     exitCode: specExitCode,
     outputTail: tail ? tail.toString() : null,
@@ -1698,6 +1704,8 @@ async function analyzeDeterministicSummaries(
       spec: s.specName,
       title: parsedSpec?.title ?? null,
       target: AGENT_BROWSER_TARGET,
+      startedAt: s.startedAt,
+      finishedAt: s.finishedAt,
       testCounts: s.report
         ? {
             total: s.report.numTotalTests,

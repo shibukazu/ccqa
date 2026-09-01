@@ -73,6 +73,8 @@ export async function liveRunToReportResult(args: {
     target: AGENT_BROWSER_TARGET,
     status: result.status,
     testCounts: null,
+    startedAt: result.startedAt,
+    finishedAt: new Date(Date.parse(result.startedAt) + result.durationMs).toISOString(),
     durationMs: result.durationMs,
     assertions: null,
     analysis: null,

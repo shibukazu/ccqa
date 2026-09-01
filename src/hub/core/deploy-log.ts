@@ -99,3 +99,45 @@ export function foldTouchIndex(
   }
   return out;
 }
+
+/**
+ * How much clock skew between the runner (which stamps a row's window) and
+ * the hub (which stamps a deploy) the placement tolerates. The window is
+ * widened by this on both ends, so a skewed clock costs a row its credit
+ * rather than crediting a row that straddled.
+ */
+export const PLACEMENT_SKEW_MS = 10_000;
+
+/** Where one row sits against the deploy log: the commit it ran on, or nothing knowable. */
+export interface RowPlacement {
+  deployedSha: string | null;
+  deployedShaAmbiguous: boolean;
+}
+
+/**
+ * Place one row's execution window against the deploy log (ADR-0027).
+ *
+ * The window is widened by {@link PLACEMENT_SKEW_MS} and its start is
+ * exclusive, so a deploy landing exactly as the spec began reads as a
+ * straddle. Both choices err the same way: toward `ambiguous`, never toward
+ * crediting a spec with a commit it may not have exercised.
+ *
+ * `entries` must be in append order, which the log guarantees and which is
+ * time order.
+ */
+export function placeRowInDeployLog(
+  entries: readonly DeployEntry[],
+  window: { startMs: number; endMs: number },
+): RowPlacement {
+  const before = (ms: number, inclusive: boolean): DeployEntry | undefined =>
+    entries.findLast((e) => {
+      const at = Date.parse(e.at);
+      return inclusive ? at <= ms : at < ms;
+    });
+  const opened = before(window.startMs - PLACEMENT_SKEW_MS, false);
+  const closed = before(Math.max(window.startMs, window.endMs) + PLACEMENT_SKEW_MS, true);
+  return {
+    deployedSha: opened?.sha ?? null,
+    deployedShaAmbiguous: opened?.sha !== closed?.sha,
+  };
+}

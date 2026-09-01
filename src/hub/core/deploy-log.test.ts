@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import type { DeployEntry, DeployInput, DeployLog, SpecTouchIndex } from "../contract/schema.ts";
 import {
+  placeRowInDeployLog,
   appendDeploy,
   foldTouchIndex,
   MAX_RETAINED_CHANGED_PATHS,
@@ -129,5 +130,60 @@ describe("foldTouchIndex", () => {
     const afterNeeded = foldTouchIndex({}, e7, { "f/s": { verdict: "needed", reason: "x", touchedBy: ["src/a.ts"] } });
     const afterNotNeeded = foldTouchIndex(afterNeeded, e9, { "f/s": { verdict: "notNeeded", reason: "y" } });
     expect(afterNotNeeded["f/s"]?.needed?.index).toBe(7);
+  });
+});
+
+describe("placeRowInDeployLog", () => {
+  const at = (ms: number): string => new Date(ms).toISOString();
+  const entry = (sha: string, ms: number): DeployEntry => ({
+    index: 0,
+    sha,
+    previousSha: null,
+    at: at(ms),
+    changedPaths: null,
+    hasSelection: true,
+    gapBefore: false,
+  });
+  // Well clear of PLACEMENT_SKEW_MS, so these cases test the rule and not the margin.
+  const MINUTE = 60_000;
+  const log = [entry("d1", 10 * MINUTE), entry("d2", 20 * MINUTE)];
+
+  test("a window that sits inside one deploy's era is credited with it", () => {
+    expect(placeRowInDeployLog(log, { startMs: 22 * MINUTE, endMs: 23 * MINUTE })).toEqual({
+      deployedSha: "d2",
+      deployedShaAmbiguous: false,
+    });
+  });
+
+  test("a window that spans a deploy is ambiguous", () => {
+    expect(placeRowInDeployLog(log, { startMs: 15 * MINUTE, endMs: 25 * MINUTE })).toEqual({
+      deployedSha: "d1",
+      deployedShaAmbiguous: true,
+    });
+  });
+
+  test("a deploy landing as the row began reads as a straddle", () => {
+    expect(placeRowInDeployLog(log, { startMs: 20 * MINUTE, endMs: 25 * MINUTE }).deployedShaAmbiguous).toBe(true);
+  });
+
+  test("skew widens the window on both ends", () => {
+    // Ends a moment before d2 by the runner's clock; the margin still catches it.
+    expect(placeRowInDeployLog(log, { startMs: 15 * MINUTE, endMs: 20 * MINUTE - 1_000 }).deployedShaAmbiguous).toBe(true);
+    // Starts a moment after d1 by the runner's clock; the margin still catches it.
+    expect(placeRowInDeployLog(log, { startMs: 10 * MINUTE + 1_000, endMs: 15 * MINUTE }).deployedShaAmbiguous).toBe(true);
+  });
+
+  test("a window before any deploy carries no sha", () => {
+    expect(placeRowInDeployLog(log, { startMs: MINUTE, endMs: 2 * MINUTE })).toEqual({
+      deployedSha: null,
+      deployedShaAmbiguous: false,
+    });
+  });
+
+  test("an end before the start cannot narrow the window", () => {
+    expect(placeRowInDeployLog(log, { startMs: 25 * MINUTE, endMs: 5 * MINUTE })).toEqual({
+      deployedSha: "d2",
+      deployedShaAmbiguous: false,
+    });
   });
 });

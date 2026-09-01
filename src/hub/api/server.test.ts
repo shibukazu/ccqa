@@ -1533,6 +1533,68 @@ describe("hub API server", () => {
       });
     });
 
+    // Both deploys below land within a millisecond of each other, so these
+    // windows sit a minute clear of them; the boundary rules themselves are
+    // covered in deploy-log.test.ts.
+    const notNeeded = { verdict: "notNeeded", reason: "no match" };
+    async function runStraddlingD2(rows: ReportSpecResult[]): Promise<void> {
+      await putPerspectives();
+      await recordDeploy({ sha: "d1", previousSha: null, changedPaths: [] });
+      // Opens on d1, so the run-wide stamp goes ambiguous when d2 lands below.
+      const opened = await openRun();
+      await recordDeploy({
+        sha: "d2",
+        previousSha: "d1",
+        changedPaths: ["docs/z.md"],
+        // d2 reaches nothing, so only a straddle can make a row stale.
+        selection: { "f/a": notNeeded, "f/b": notNeeded, "f/unscoped": notNeeded },
+      });
+      await finishRun(opened.id, rows);
+      await auditClean("d2");
+    }
+
+    test("a row is placed by its own window, not by the run's", async () => {
+      const minuteBefore = new Date(Date.now() - 60_000).toISOString();
+      const minuteAfter = new Date(Date.now() + 60_000).toISOString();
+      await runStraddlingD2([
+        // Ran clear of d2 — it knows which commit it exercised.
+        makeRow({
+          feature: "f",
+          spec: "a",
+          status: "passed",
+          startedAt: minuteAfter,
+          finishedAt: new Date(Date.now() + 70_000).toISOString(),
+        }),
+        // Was still running when d2 landed.
+        makeRow({ feature: "f", spec: "b", status: "passed", startedAt: minuteBefore, finishedAt: minuteAfter }),
+      ]);
+
+      const after = await getRerun();
+      expect(after.specs["f/a"]).toMatchObject({ execution: "passed" });
+      expect(after.specs["f/a"].executionAssumedReached).toBeUndefined();
+      expect(after.specs["f/b"]).toMatchObject({
+        execution: "stale",
+        executionAssumedReached: "ambiguousDeployedSha",
+      });
+    });
+
+    test("a row with no finish is measured to the seal, so a deploy under it still shows", async () => {
+      await runStraddlingD2([
+        makeRow({
+          feature: "f",
+          spec: "b",
+          status: "passed",
+          startedAt: new Date(Date.now() - 60_000).toISOString(),
+        }),
+      ]);
+
+      expect((await getRerun()).specs["f/b"]).toMatchObject({
+        execution: "stale",
+        executionAssumedReached: "ambiguousDeployedSha",
+      });
+    });
+
+
     test("a spec that has never run is rerunNeeded; a profile with no data at all waits for its audit", async () => {
       await putPerspectives();
       const untouched = await getRerun();
