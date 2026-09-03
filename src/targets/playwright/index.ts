@@ -32,6 +32,7 @@ import { acquirePlaywrightBrowser } from "./browser-server.ts";
 import { runCommandRunner } from "../run-command-runner.ts";
 import type { GenerateContext, GenerateResult, SpecRef, TargetPlugin } from "../types.ts";
 import * as log from "../../cli/logger.ts";
+import { reviewGeneratedTest } from "../verifies-spec.ts";
 
 const PLAYWRIGHT_TARGET = "playwright";
 
@@ -140,7 +141,21 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
 
   const missing = await missingInjectedCalls(result, stepMarkers, judgements);
   for (const w of missing) log.warn(w);
-  return { ...result, warnings: [...result.warnings, ...judgeWarnings, ...missing] };
+  // The loop above only ever asked "does it go green". A rewrite that weakens
+  // an assertion clears that bar too, so green is not evidence that the spec
+  // was checked. This is the only pass that looks.
+  const unchecked = await reviewGeneratedTest({
+    result,
+    steps: expanded,
+    language: ctx.language,
+    ...(ctx.model ? { model: ctx.model } : {}),
+    cwd: ctx.cwd,
+  });
+  for (const w of unchecked) log.warn(w);
+  return {
+    ...result,
+    warnings: [...result.warnings, ...judgeWarnings, ...missing, ...unchecked],
+  };
 }
 
 /**
