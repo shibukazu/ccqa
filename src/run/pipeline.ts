@@ -649,10 +649,6 @@ export async function executeRun(
     return { exitCode: 0, report: null, reportDir: null };
   }
 
-  // Take the specs before executing them, so a second cycle starting while
-  // this one is still going skips what is already being run rather than
-  // driving the same browser flow twice. Released on the way out, including on
-  // SIGINT/SIGTERM; a hard kill is covered by the hold's own expiry.
   const catalog = await readSpecs(specs, cwd);
   const projectConfig = await loadProjectConfig(cwd);
   // Only under --coverage: an identity's turn has to be exclusive for the
@@ -675,7 +671,13 @@ export async function executeRun(
   // drop reports a green run that verified less than it selected.
   let waitingOnGroup: Array<{ spec: SpecRef; groups: string[] }> = [];
 
-  if (hubCtx && rerunProfile !== null) {
+  // Take the specs before executing them, so a second cycle starting while this
+  // one is still going skips what is already being run rather than driving the
+  // same browser flow twice. Released on the way out, including on
+  // SIGINT/SIGTERM; a hard kill is covered by the hold's own expiry. Not on a
+  // dry run: it executes nothing, so its claims would only make a concurrent
+  // job skip specs neither of them is running.
+  if (hubCtx && rerunProfile !== null && forExecution) {
     const held = await holdSpecs(hubCtx, rerunProfile, specs, resources, opts.teardown);
     // Two different facts, and holdSpecs already named the resources — so
     // count only the specs another job is actually running.

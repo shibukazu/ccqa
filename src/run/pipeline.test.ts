@@ -14,10 +14,17 @@ import { withSink } from "../cli/logger.ts";
  * avoid is an unanswerable question quietly selecting nothing.
  */
 
+/** A project holding one spec, `f/s` — what the hub-driven tests below select. */
 let cwd: string;
 
 beforeAll(async () => {
   cwd = await mkdtemp(join(tmpdir(), "ccqa-pipeline-"));
+  const specDir = join(cwd, ".ccqa", "features", "f", "test-cases", "s");
+  await mkdir(specDir, { recursive: true });
+  await writeFile(
+    join(specDir, "spec.yaml"),
+    "title: f/s\nsteps:\n  - instruction: noop\n    expected: noop\n",
+  );
 });
 
 afterAll(async () => {
@@ -26,7 +33,34 @@ afterAll(async () => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
+
+/**
+ * Stubs the hub connection and answers `getRerun` with `f/s`'s one entry.
+ * Returns the stub, so a test can also assert on what else the run asked the
+ * hub for.
+ */
+function stubRerunReport(specEntry: Record<string, unknown>) {
+  vi.stubEnv("CCQA_HUB_URL", "https://hub.invalid");
+  vi.stubEnv("CCQA_HUB_TOKEN", "tok");
+  const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+    if (!String(url).includes("/rerun")) {
+      throw new Error(`unexpected fetch in this test: ${init?.method ?? "GET"} ${String(url)}`);
+    }
+    return new Response(
+      JSON.stringify({
+        project: "demo",
+        profile: "stg",
+        deployHead: { index: 0, sha: "a".repeat(40), at: "2026-01-01T00:00:00.000Z" },
+        specs: { "f/s": specEntry },
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
 
 describe("executeRun selection guards", () => {
   test("a selection filter cannot be combined with an explicit spec target", async () => {
@@ -114,56 +148,13 @@ describe("claiming specs and the resources they share", () => {
 });
 
 describe("the ADR-0014 invariant: an empty selection with `inProgress` outstanding exits non-zero", () => {
-  let adrCwd: string;
-
-  beforeAll(async () => {
-    adrCwd = await mkdtemp(join(tmpdir(), "ccqa-pipeline-adr014-"));
-    const specDir = join(adrCwd, ".ccqa", "features", "f", "test-cases", "s");
-    await mkdir(specDir, { recursive: true });
-    await writeFile(
-      join(specDir, "spec.yaml"),
-      "title: f/s\nsteps:\n  - instruction: noop\n    expected: noop\n",
-    );
-  });
-
-  afterAll(async () => {
-    await rm(adrCwd, { recursive: true, force: true });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
-
-  /** Stubs the hub connection and answers `getRerun` with `f/s`'s one entry. */
-  function stubRerunReport(specEntry: Record<string, unknown>) {
-    vi.stubEnv("CCQA_HUB_URL", "https://hub.invalid");
-    vi.stubEnv("CCQA_HUB_TOKEN", "tok");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string | URL) => {
-        if (!String(url).includes("/rerun")) {
-          throw new Error(`unexpected fetch in this test: ${String(url)}`);
-        }
-        return new Response(
-          JSON.stringify({
-            project: "demo",
-            profile: "stg",
-            deployHead: { index: 0, sha: "a".repeat(40), at: "2026-01-01T00:00:00.000Z" },
-            specs: { "f/s": specEntry },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }),
-    );
-  }
-
   test("a lone `inProgress` spec selects nothing, and the run fails rather than reporting green", async () => {
     stubRerunReport({
       verdict: "inProgress", audit: "due", execution: "neverRun",
       heldBy: null, lastRun: null, lastGreen: null, lastRed: null,
     });
     await expect(
-      executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd: adrCwd }),
+      executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd }),
     ).rejects.toThrow(/nothing was selected and no spec was cleared to run/);
   });
 
@@ -175,7 +166,7 @@ describe("the ADR-0014 invariant: an empty selection with `inProgress` outstandi
     });
     const lines: string[] = [];
     const err = await withSink({ write: (t) => lines.push(t) }, () =>
-      executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd: adrCwd }),
+      executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd }),
     ).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(RunUsageError);
     const output = lines.join("");
@@ -249,5 +240,29 @@ describe("stored source maps", () => {
       maps.warnIfNothingAnswered();
     });
     expect(output).toBe("");
+  });
+});
+
+describe("a dry run plans without claiming", () => {
+  test("--only-hub-rerun-needed --dry-run lists the spec without holding it", async () => {
+    const fetchMock = stubRerunReport({
+      verdict: "rerunNeeded", audit: "clean", execution: "neverRun",
+      heldBy: null, lastRun: null, lastGreen: null, lastRed: null,
+    });
+    const lines: string[] = [];
+    const result = await withSink({ write: (t) => lines.push(t) }, () =>
+      executeRun([], { onlyHubRerunNeeded: true, hubProfile: "stg", dryRun: true, cwd }),
+    );
+    expect(result.exitCode).toBe(0);
+    // With the phase that would run it: "listed" has to mean listed as
+    // runnable, not listed as skipped for a hold this run could not take.
+    expect(lines.join("")).toMatch(/f\/s\s+deterministic/);
+    // Every request a plan makes has to be a read: a hold this run takes is
+    // released by nothing it does, so it would keep the job that does run the
+    // spec off it until the hold expires.
+    const writes = fetchMock.mock.calls.filter(
+      ([, init]) => (init?.method ?? "GET").toUpperCase() !== "GET",
+    );
+    expect(writes).toEqual([]);
   });
 });
