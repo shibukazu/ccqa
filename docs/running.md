@@ -46,7 +46,9 @@ Key flags (see `ccqa run --help` for the rest):
   selection flag. Each line names the phase that would run the spec, and any
   [`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time)
   it belongs to — which is how you confirm a group was read rather than
-  mistyped into silence.
+  mistyped into silence. It claims nothing on the hub, so the list is the
+  selection: a spec another job holds a group for is printed as runnable, and
+  dropped by the run that goes on to execute.
 - `--concurrency <n>` — run up to N specs in parallel **within each phase**
   (never across phases). Default 1. Specs in the same
   [`serialGroups`](./targets.md#serialgroups--specs-that-must-not-run-at-the-same-time)
