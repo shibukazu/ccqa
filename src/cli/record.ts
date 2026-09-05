@@ -222,8 +222,11 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
 
   // Opened after the lock, so a spec another job holds costs no orphan run,
   // and before the trace, so a recording that dies still leaves its spend.
-  const push = pushConn ? await openHubRun("record", pushConn, cwdForProfile, opts.hubProfile) : null;
-  if (push) log.info(`hub: record run opened (${push.runId})`);
+  const push = pushConn
+    ? await openHubRun("record", pushConn, cwdForProfile, {
+        ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
+      })
+    : null;
 
   // Node skips `finally` on a signal, and a CI `timeout` sends SIGTERM — so a
   // hung recording would otherwise leave its run `running` with no spend, the

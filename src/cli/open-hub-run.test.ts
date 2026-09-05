@@ -14,6 +14,16 @@ describe("openHubRun", () => {
     const openRun = vi.fn().mockRejectedValue(new HubApiError(503, "unavailable", "hub down"));
     await expect(openHubRun("drift", fakeConn(openRun), process.cwd())).rejects.toThrow(RunUsageError);
   });
+
+  test("names the opened run on stderr, so a caller can link to it mid-command", async () => {
+    const write = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    try {
+      await openHubRun("drift", fakeConn(vi.fn().mockResolvedValue({ id: "run-7" })), process.cwd());
+      expect(write).toHaveBeenCalledWith('[hub-run] {"id":"run-7","kind":"drift"}\n');
+    } finally {
+      write.mockRestore();
+    }
+  });
 });
 
 describe("requireReportToHubConnection", () => {

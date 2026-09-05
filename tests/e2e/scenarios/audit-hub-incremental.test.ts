@@ -89,6 +89,10 @@ describe("ccqa audit --report-to-hub — incremental push", () => {
     );
     expect(res.exitCode, stripAnsi(res.stdout + res.stderr)).toBe(0);
 
+    // stdout stays the report alone, which is what --report-format json promises.
+    expect(res.stderr).toMatch(/^\[hub-run\] \{"id":"[^"]+","kind":"drift"\}$/m);
+    expect((JSON.parse(res.stdout) as { specs: unknown[] }).specs).toHaveLength(2);
+
     // It streamed: one run opened up front, then a patch per spec plus the
     // closing one.
     expect(seen).toContain("POST /api/v1/runs/open");

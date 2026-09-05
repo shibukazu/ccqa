@@ -1353,6 +1353,25 @@ describe("hub API server", () => {
       const bad = await fetch(`${baseUrl}/api/v1/runs?project=reck&kind=audit`, authed());
       expect(bad.status).toBe(400);
     });
+
+    // A CI job cannot name the runs it created — the hub assigns their ids —
+    // so its own id has to be a filter here rather than something the job
+    // matches against a listing it hopes is wide enough.
+    test("a listing takes the runs one CI run created, past the limit", async () => {
+      const open = (ci: string) =>
+        fetch(`${baseUrl}/api/v1/runs/open?project=ci&branch=main&ciRunId=${ci}`, authed({ method: "POST" }));
+      const mine = await open("7").then(json);
+      await open("8");
+      await open("8");
+
+      const filtered = await fetch(`${baseUrl}/api/v1/runs?project=ci&ciRunId=7&limit=1`, authed()).then(json);
+      expect(filtered.runs.map((r: { id: string }) => r.id)).toEqual([mine.id]);
+
+      // A local run carries no ciRunId, so no CI id ever claims it.
+      await fetch(`${baseUrl}/api/v1/runs/open?project=ci&branch=main`, authed({ method: "POST" }));
+      const none = await fetch(`${baseUrl}/api/v1/runs?project=ci&ciRunId=9`, authed()).then(json);
+      expect(none.runs).toEqual([]);
+    });
   });
 
   describe("deploy log and re-run selection", () => {

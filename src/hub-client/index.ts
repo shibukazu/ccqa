@@ -126,9 +126,10 @@ export interface HubClient {
    * `gitHead` stamps the run's commit at open time, so even a run that dies
    * before its final reconcile patch is attributable to a commit.
    *
-   * `deployedSha` does the same for the environment's commit. The hub would
-   * otherwise read its own deploy-log head here, and the open happens after
-   * the deterministic phase, not before the first spec.
+   * `deployedSha` does the same for the environment's commit: the baseline the
+   * caller selected against, which a `--rerun` inherits from an earlier run.
+   * Left unset the hub reads its own deploy-log head, which by the time this
+   * call lands can already name a later deploy.
    */
   openRun(meta: {
     project: string;
@@ -144,7 +145,15 @@ export interface HubClient {
   }): Promise<Run>;
   /** Add finished spec rows (+ evidence) to a running run; `done` closes it. */
   patchRun(id: string, body: PatchRunRequest): Promise<Run>;
-  listRuns(q?: { project?: string; branch?: string; status?: RunStatus; kind?: Run["kind"]; limit?: number }): Promise<Run[]>;
+  /** `ciRunId` answers "which runs did this CI job create", whatever the window. */
+  listRuns(q?: {
+    project?: string;
+    branch?: string;
+    status?: RunStatus;
+    kind?: Run["kind"];
+    ciRunId?: string;
+    limit?: number;
+  }): Promise<Run[]>;
   getRun(id: string): Promise<Run>;
   getReport(id: string): Promise<unknown>;
   downloadArtifacts(id: string): Promise<Uint8Array>;

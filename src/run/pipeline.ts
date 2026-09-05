@@ -74,9 +74,9 @@ import { CoverageInbox, type CoverageInboxMode } from "../coverage/inbox.ts";
 import { formatResolvedSpec } from "../coverage/resolve-stream.ts";
 import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
-import { detectBranch, getGitHead } from "../cli/git-branch.ts";
-import { needsHubConnection, REPORT_TO_HUB_NEEDS_CONNECTION } from "../cli/open-hub-run.ts";
-import { ciProvenance, githubRunId, githubRunUrl } from "./github-run.ts";
+import { getGitHead } from "../cli/git-branch.ts";
+import { needsHubConnection, openHubRun, REPORT_TO_HUB_NEEDS_CONNECTION } from "../cli/open-hub-run.ts";
+import { githubRunId, githubRunUrl } from "./github-run.ts";
 import { updateAgentPrompt } from "../cli/update-agent-prompt.ts";
 import { collectChangedSpecs } from "../cli/changed-specs.ts";
 import { C } from "../cli/colors.ts";
@@ -799,16 +799,10 @@ export async function executeRun(
     return { exitCode: 0, report: null, reportDir: null };
   }
 
-  const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDir, resources);
-
   // Incremental hub push: when --report-to-hub is set and a hub is configured,
-  // open a "running" run up front so each finished spec can be PATCHed to the
-  // hub as it lands (real-time reflection of a long run). The report dir always
-  // exists, so the only thing that can still block the push is a missing hub
-  // connection. Best-effort throughout — a hub failure never fails the local
-  // run (test execution is the point). The open is not retried: a dropped
-  // response could leave a second orphan running run, so on failure we degrade
-  // to local-report-only.
+  // open a "running" run before the first spec, so each finished spec can be
+  // PATCHed to the hub as it lands (real-time reflection of a long run) and the
+  // run's id — and its page — exist for the whole run rather than just its tail.
   let hubRunId: string | null = null;
   let hubSink: ReportSink | undefined;
   // Flips the process exit code below (see overallExitCode) when this run's
@@ -819,65 +813,48 @@ export async function executeRun(
   // heals an earlier mid-run failure into a complete, correct, terminal run.
   let hubPublishBroken = false;
   if (hubCtx != null && opts.reportToHub) {
-    try {
-      const branch = await detectBranch(cwd);
-      const opened = await hubCtx.hub.openRun({
-        project: hubCtx.project,
-        ...(branch ? { branch } : {}),
-        ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
-        ...(git.head ? { gitHead: git.head } : {}),
-        // Captured before the first spec. Left to itself the hub stamps its
-        // deploy-log head when this call lands — after the deterministic
-        // phase — so a deploy during that phase would become the baseline.
-        ...(deployedSha ? { deployedSha } : {}),
-        ...ciProvenance(),
-        kind: "run",
-      });
-      hubRunId = opened.id;
-      log.info(`hub: incremental run opened (${opened.id})`);
-      // The coverage stream and the hub's run records are separate id spaces;
-      // the link is what lets a resolved measurement point at its run page.
-      await coverage?.linkHubRun(opened.id);
-      const runId = opened.id;
-      // `openRun` above carries no row/label data, so an old hub accepts it
-      // even when it can't accept this release's report shape — there is no
-      // hub-side release number to probe for that ahead of time (the health
-      // endpoint reports an API shape number, not a ccqa version; see hub-conn
-      // and health.ts, which this doesn't edit). The first PATCH is therefore
-      // the earliest available signal: version skew (an older hub rejecting
-      // this release's row shape) fails identically on every row, so failing
-      // loud on the first one — rather than warning it away — is what
-      // surfaces it.
-      let hubPatchEverSucceeded = false;
-      hubSink = {
-        onUpsert: async (row) => {
-          try {
-            const evidence = await readRowFilesBase64(row, reportDir);
-            // Cost rides along per row so a run still in flight shows what it
-            // has spent so far, not just what it cost once it ended.
-            await hubCtx.hub.patchRun(runId, { rows: [row], evidence, reportMeta: { cost: currentReportCost() } });
-            hubPatchEverSucceeded = true;
-          } catch (err) {
-            if (!hubPatchEverSucceeded) {
-              hubPublishBroken = true;
-              log.error(
-                `hub: incremental push failed for ${row.feature}/${row.spec}, and no patch to this run has succeeded yet ` +
-                  `(likely hub/CLI version skew — upgrade the hub): ${errMessage(err)}`,
-              );
-            } else {
-              log.warn(`hub: incremental push failed for ${row.feature}/${row.spec}: ${errMessage(err)}`);
-            }
+    // Raised, not degraded to a local-only report: a job that asked to publish
+    // and cannot reach the hub has not done what it was told. Nothing has
+    // executed yet, so nothing is wasted finding out.
+    const { runId } = await openHubRun("run", hubCtx, cwd, {
+      ...(opts.hubProfile ? { profile: opts.hubProfile } : {}),
+      gitHead: git.head,
+      deployedSha,
+    });
+    hubRunId = runId;
+    // The coverage stream and the hub's run records are separate id spaces;
+    // the link is what lets a resolved measurement point at its run page.
+    await coverage?.linkHubRun(runId);
+    // The open carries no row/label data, so an old hub accepts it even when it
+    // can't accept this release's report shape — there is no hub-side release
+    // number to probe for that ahead of time (the health endpoint reports an
+    // API shape number, not a ccqa version; see hub-conn and health.ts, which
+    // this doesn't edit). The first PATCH is therefore the earliest available
+    // signal: version skew (an older hub rejecting this release's row shape)
+    // fails identically on every row, so failing loud on the first one — rather
+    // than warning it away — is what surfaces it.
+    let hubPatchEverSucceeded = false;
+    hubSink = {
+      onUpsert: async (row) => {
+        try {
+          const evidence = await readRowFilesBase64(row, reportDir);
+          // Cost rides along per row so a run still in flight shows what it
+          // has spent so far, not just what it cost once it ended.
+          await hubCtx.hub.patchRun(runId, { rows: [row], evidence, reportMeta: { cost: currentReportCost() } });
+          hubPatchEverSucceeded = true;
+        } catch (err) {
+          if (!hubPatchEverSucceeded) {
+            hubPublishBroken = true;
+            log.error(
+              `hub: incremental push failed for ${row.feature}/${row.spec}, and no patch to this run has succeeded yet ` +
+                `(likely hub/CLI version skew — upgrade the hub): ${errMessage(err)}`,
+            );
+          } else {
+            log.warn(`hub: incremental push failed for ${row.feature}/${row.spec}: ${errMessage(err)}`);
           }
-        },
-      };
-    } catch (err) {
-      // Before any spec runs, so nothing is wasted. A job that asked to publish
-      // and cannot reach the hub has not done what it was told — going green
-      // with a local-only report is the failure this refuses to hide.
-      throw new RunUsageError(
-        `--report-to-hub: could not open a run on the hub (${errMessage(err)})`,
-      );
-    }
+        }
+      },
+    };
   }
 
   // Incremental report: external-target and live specs upsert their rows and
@@ -938,6 +915,8 @@ export async function executeRun(
       }
     }
   });
+
+  const det = await runDeterministicSpecs(detSpecs, opts, cwd, reportDir, resources);
 
   // External-target specs run between the det and live phases. Rows (including
   // the skipped / target-resolution-failure stubs) are upserted into the

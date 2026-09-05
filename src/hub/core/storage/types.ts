@@ -262,12 +262,18 @@ export interface RunStore {
    * reversed.
    */
   delete(id: string): Promise<void>;
-  /** Newest first, optionally filtered by project / branch / status / kind (any of `kinds`) / creation time. */
+  /** Newest first, optionally filtered by project / branch / status / kind (any of `kinds`) / CI run / creation time. */
   list(q: {
     project?: string;
     branch?: string;
     status?: RunStatus;
     kinds?: ReportKind[];
+    /**
+     * The CI run that produced these. Filtered here rather than by the caller
+     * because a job asking "which runs did I create" would otherwise have to
+     * guess a `limit` wide enough to still hold them.
+     */
+    ciRunId?: string;
     /** ISO-8601 instants bounding `createdAt` — `since` inclusive, `until` exclusive. */
     since?: string;
     until?: string;

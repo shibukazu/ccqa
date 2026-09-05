@@ -182,3 +182,16 @@ it writes no line. And `run --learn-hub-live-prompt` refreshes the prompt
 after the report is written and sealed, so that call reaches the `[cost]`
 line and the JSONL but not the report or the hub. Where the numbers have to
 add up, the JSONL is the one to trust.
+
+## Which hub run a command opened
+
+`--report-to-hub` prints the hub's id for the run it opened to **stderr**, on
+the same principle, and before the first spec:
+
+```
+[hub-run] {"id":"4f1c2b7a-9d3e-4a10-b8c6-5e0f7a2d1934","kind":"run"}
+```
+
+A command that selects nothing to do opens no run, and prints no line.
+
+See [linking to a run while it is still running](./hub.md#linking-to-a-run-while-it-is-still-running).

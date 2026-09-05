@@ -40,7 +40,7 @@ export function createFileRunStore(root: string): RunStore {
       await serialize(runMetaPath(root, id), () => removePath(runDir(root, id)));
     },
 
-    async list({ project, branch, status, kinds, since, until, limit }) {
+    async list({ project, branch, status, kinds, ciRunId, since, until, limit }) {
       const ids = await listSubdirsOrEmpty(runsDir(root));
       const inWindow = windowFilter({ since, until });
       const runs: Run[] = [];
@@ -51,6 +51,7 @@ export function createFileRunStore(root: string): RunStore {
         if (branch !== undefined && run.branch !== branch) continue;
         if (status !== undefined && run.status !== status) continue;
         if (kinds !== undefined && !kinds.includes(run.kind)) continue;
+        if (ciRunId !== undefined && run.ciRunId !== ciRunId) continue;
         if (!inWindow(run.createdAt)) continue;
         runs.push(run);
       }

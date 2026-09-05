@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
 import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
@@ -50,6 +50,55 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
     return res.json();
   };
 
+  /** Answer a request from the intercept itself. Returns true, so it reads as one clause. */
+  const replyJson = (res: ServerResponse, status: number, body: unknown): true => {
+    res.writeHead(status, { "content-type": "application/json" });
+    res.end(JSON.stringify(body));
+    return true;
+  };
+
+  /**
+   * Run `body` against a hub URL that forwards to the test hub, except where
+   * `intercept` answers a request itself. Three tests inject a different hub
+   * fault into an otherwise working hub; only the intercept differs.
+   */
+  const withHubProxy = async (
+    intercept: (req: IncomingMessage, res: ServerResponse) => boolean,
+    body: (hubUrl: string) => Promise<void>,
+  ): Promise<void> => {
+    const proxy = createServer((req, res) => {
+      if (intercept(req, res)) {
+        req.resume();
+        return;
+      }
+      const chunks: Buffer[] = [];
+      req.on("data", (c: Buffer) => chunks.push(c));
+      req.on("end", () => {
+        void fetch(`${baseUrl}${req.url ?? "/"}`, {
+          method: req.method,
+          headers: { ...(req.headers as Record<string, string>), host: "" },
+          ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
+        })
+          .then(async (upstream) => {
+            res.writeHead(upstream.status, { "content-type": "application/json" });
+            res.end(Buffer.from(await upstream.arrayBuffer()));
+          })
+          .catch(() => {
+            res.writeHead(502).end();
+          });
+      });
+    });
+    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
+    const address = proxy.address();
+    if (address === null || typeof address === "string") throw new Error("expected a bound port");
+    try {
+      await body(`http://127.0.0.1:${address.port}`);
+    } finally {
+      proxy.closeAllConnections();
+      await new Promise<void>((r) => proxy.close(() => r()));
+    }
+  };
+
   const listRuns = async (): Promise<Array<{ id: string; status: string; specs: { total: number } }>> => {
     const { runs } = (await hubGet("/api/v1/runs?project=demo-proj")) as {
       runs: Array<{ id: string; status: string; specs: { total: number } }>;
@@ -95,6 +144,8 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
     expect(report.results[0]!.spec).toBe("x");
     expect(report.results[0]!.liveRun).not.toBeNull();
 
+    expect(result.stderr).toContain(`[hub-run] {"id":"${run.id}","kind":"run"}`);
+
     // --push-report also writes a local copy to the default dir (ccqa-report/).
     const localReport = JSON.parse(
       await readFile(join(project.cwd, "ccqa-report", "report.json"), "utf8"),
@@ -138,55 +189,44 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
     // guard the run exits on the *test* result and CI reads green while the
     // hub holds a run stuck "running" with no rows.
     project = await makeFakeProject("passing-spec", { linkCcqa: true });
-    const proxy = createServer((req, res) => {
-      if (req.method === "PATCH") {
-        res.writeHead(400, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "invalid_request", message: "unknown label" }));
-        req.resume();
-        return;
-      }
-      const chunks: Buffer[] = [];
-      req.on("data", (c: Buffer) => chunks.push(c));
-      req.on("end", () => {
-        void fetch(`${baseUrl}${req.url ?? "/"}`, {
-          method: req.method,
-          headers: { ...(req.headers as Record<string, string>), host: "" },
-          ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
-        })
-          .then(async (upstream) => {
-            res.writeHead(upstream.status, { "content-type": "application/json" });
-            res.end(Buffer.from(await upstream.arrayBuffer()));
-          })
-          .catch(() => {
-            res.writeHead(502).end();
-          });
-      });
-    });
-    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
-    const proxyAddress = proxy.address();
-    if (proxyAddress === null || typeof proxyAddress === "string") throw new Error("expected a bound port");
-
-    try {
-      const result = await runCcqa(
-        ["run", "demo/smoke", "--project", "demo-proj", "--report-to-hub"],
-        {
-          cwd: project.cwd,
-          env: {
-            ...noColorEnv(),
-            CCQA_HUB_URL: `http://127.0.0.1:${proxyAddress.port}`,
-            CCQA_HUB_TOKEN: TOKEN,
-          },
+    await withHubProxy(
+      (req, res) =>
+        req.method === "PATCH" && replyJson(res, 400, { error: "invalid_request", message: "unknown label" }),
+      async (hubUrl) => {
+        const result = await runCcqa(["run", "demo/smoke", "--project", "demo-proj", "--report-to-hub"], {
+          cwd: project!.cwd,
+          env: { ...noColorEnv(), CCQA_HUB_URL: hubUrl, CCQA_HUB_TOKEN: TOKEN },
           timeoutMs: 90_000,
-        },
-      );
-      const combined = stripAnsi(result.stdout + result.stderr);
-      // The spec itself passes; only the publishing is broken.
-      expect(result.exitCode, combined).not.toBe(0);
-      expect(combined).toMatch(/version skew|left "running" on the hub/);
-    } finally {
-      proxy.closeAllConnections();
-      await new Promise<void>((r) => proxy.close(() => r()));
-    }
+        });
+        const combined = stripAnsi(result.stdout + result.stderr);
+        // The spec itself passes; only the publishing is broken.
+        expect(result.exitCode, combined).not.toBe(0);
+        expect(combined).toMatch(/version skew|left "running" on the hub/);
+      },
+    );
+  }, 120_000);
+
+  test("a hub that will not open a run stops before the first spec runs", async () => {
+    // The run is opened ahead of the deterministic phase so its page exists
+    // from the start of the run. A hub that refuses the open therefore costs
+    // nothing: the specs have not run yet.
+    project = await makeFakeProject("passing-spec", { linkCcqa: true });
+    await withHubProxy(
+      (req, res) =>
+        (req.url ?? "").startsWith("/api/v1/runs/open") && replyJson(res, 500, { error: "internal", message: "no" }),
+      async (hubUrl) => {
+        const result = await runCcqa(["run", "demo/smoke", "--project", "demo-proj", "--report-to-hub"], {
+          cwd: project!.cwd,
+          env: { ...noColorEnv(), CCQA_HUB_URL: hubUrl, CCQA_HUB_TOKEN: TOKEN },
+          timeoutMs: 90_000,
+        });
+        const combined = stripAnsi(result.stdout + result.stderr);
+        expect(result.exitCode, combined).toBe(2);
+        expect(combined).toContain("could not open a run on the hub");
+        // `[run] <feature>/<spec>` is the deterministic phase announcing a spec.
+        expect(combined).not.toContain("[run] demo/smoke");
+      },
+    );
   }, 120_000);
 
   test("a mid-run PATCH failure that heals by the seal PATCH exits 0, not 1", async () => {
@@ -200,63 +240,32 @@ describe("ccqa run --report-to-hub — incremental hub push", () => {
     await writeMockMessages(mockPath, [...mockStepMessages("step-01")]);
 
     let patchCount = 0;
-    const proxy = createServer((req, res) => {
-      if (req.method === "PATCH") {
-        patchCount += 1;
-        if (patchCount === 1) {
-          res.writeHead(502, { "content-type": "application/json" });
-          res.end(JSON.stringify({ error: "bad_gateway", message: "hub rolling" }));
-          req.resume();
-          return;
-        }
-      }
-      const chunks: Buffer[] = [];
-      req.on("data", (c: Buffer) => chunks.push(c));
-      req.on("end", () => {
-        void fetch(`${baseUrl}${req.url ?? "/"}`, {
-          method: req.method,
-          headers: { ...(req.headers as Record<string, string>), host: "" },
-          ...(chunks.length > 0 ? { body: Buffer.concat(chunks) } : {}),
-        })
-          .then(async (upstream) => {
-            res.writeHead(upstream.status, { "content-type": "application/json" });
-            res.end(Buffer.from(await upstream.arrayBuffer()));
-          })
-          .catch(() => {
-            res.writeHead(502).end();
-          });
-      });
-    });
-    await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
-    const proxyAddress = proxy.address();
-    if (proxyAddress === null || typeof proxyAddress === "string") throw new Error("expected a bound port");
-
-    try {
-      const result = await runCcqa(
-        ["run", "demo/x", "--project", "demo-proj", "--report-to-hub"],
-        {
-          cwd: project.cwd,
+    await withHubProxy(
+      (req, res) =>
+        req.method === "PATCH" &&
+        ++patchCount === 1 &&
+        replyJson(res, 502, { error: "bad_gateway", message: "hub rolling" }),
+      async (hubUrl) => {
+        const result = await runCcqa(["run", "demo/x", "--project", "demo-proj", "--report-to-hub"], {
+          cwd: project!.cwd,
           env: {
             ...noColorEnv(),
             CCQA_CLAUDE_MOCK_FILE: mockPath,
-            CCQA_HUB_URL: `http://127.0.0.1:${proxyAddress.port}`,
+            CCQA_HUB_URL: hubUrl,
             CCQA_HUB_TOKEN: TOKEN,
           },
           timeoutMs: 90_000,
-        },
-      );
-      const combined = stripAnsi(result.stdout + result.stderr);
-      expect(result.exitCode, combined).toBe(0);
-      expect(combined).toMatch(/incremental push failed/);
-      expect(combined).toMatch(/incremental run finalized/);
+        });
+        const combined = stripAnsi(result.stdout + result.stderr);
+        expect(result.exitCode, combined).toBe(0);
+        expect(combined).toMatch(/incremental push failed/);
+        expect(combined).toMatch(/incremental run finalized/);
 
-      const runs = await listRuns();
-      expect(runs).toHaveLength(1);
-      expect(runs[0]!.status).toBe("passed");
-    } finally {
-      proxy.closeAllConnections();
-      await new Promise<void>((r) => proxy.close(() => r()));
-    }
+        const runs = await listRuns();
+        expect(runs).toHaveLength(1);
+        expect(runs[0]!.status).toBe("passed");
+      },
+    );
   }, 120_000);
 
   // Gate on hub-run creation: a run is opened on the hub ONLY when both
