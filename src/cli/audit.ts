@@ -251,10 +251,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   let push: HubRunPush | null = null;
   try {
     promptCtx = await resolveAuditPromptContext(opts, cwd);
-    if (pushConn) {
-      push = await openHubRun("drift", pushConn, cwd, opts.hubProfile);
-      if (format === "text") log.info(`hub: incremental drift run opened (${push.runId})`);
-    }
+    if (pushConn) push = await openHubRun("drift", pushConn, cwd, { ...(opts.hubProfile ? { profile: opts.hubProfile } : {}) });
     results = await analyzeDrift({
       targets,
       cwd,

@@ -210,6 +210,44 @@ record — drop the extra push step from CI in that case. Only add a plain
 fetching sessions/variables/prompts (see the next section) — they never
 cause `ccqa run` to create or push a run to the hub on their own.
 
+### Linking to a run while it is still running
+
+`ccqa run`, `ccqa audit`, and `ccqa record` open their hub run under
+`--report-to-hub` before the first spec, and name it on **stderr** the moment
+the hub assigns the id:
+
+```
+[hub-run] {"id":"4f1c2b7a-9d3e-4a10-b8c6-5e0f7a2d1934","kind":"run"}
+```
+
+The line is written whatever `--report-format` is set to, so stdout stays the
+report alone and a job that pipes `--report-format json` into a file can still
+read the id. The prefix is stable and the rest of the line is one JSON object
+(`kind` is the hub's run kind: `run`, `drift`, or `record`):
+
+```sh
+ccqa audit --report-to-hub --report-format json >drift.json 2>audit.log
+run_id=$(sed -n 's/^\[hub-run\] //p' audit.log | tail -1 | jq -r .id)
+```
+
+The open comes after spec selection, so a command that finds nothing to do
+opens no run and prints no line — a `--dry-run`, or a sweep whose every spec
+another job already claimed. Treat an absent line as "no run was created",
+not as a parse failure.
+
+That id addresses the run's page in the [bundled UI](#the-bundled-ui):
+
+```
+https://<hub>/#/runs/<run id>
+https://<hub>/#/runs/<run id>?case=<feature>/<spec>
+```
+
+The second form opens the same page scrolled to one case and marks it, so a
+notification can point each case at the row that decided it. A case the run
+does not hold (renamed, or added after the run) says so rather than opening on
+an unrelated row. Neither form needs a project to be selected first — a link
+works in a browser that has never used this hub.
+
 ### Fetching sessions, variables, and prompts at run time
 
 There is no `pull` command — `ccqa run`, `ccqa record`, and `ccqa audit`

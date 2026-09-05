@@ -2156,12 +2156,15 @@ const CLIENT_JS = `
     // Disconnected: the full-screen login gate is the only thing to show.
     if (!state.token) { showAuthGate(false); return; }
     showAuthGate(true);
-    // With no project chosen yet, the Projects picker is the only useful view —
-    // land there (e.g. right after login) instead of an empty Runs list, and
-    // gate any deep-linked #/runs or #/secrets to it too.
-    if (location.hash === "#/projects" || !state.project) { openProjects(); return; }
+    // A run is addressed by its own id, not through a project, so a link from
+    // outside (a chat message, a CI job) opens it even in a browser that has
+    // never picked one — ahead of the gate below, which would drop the link.
     var m = parseRunHash(location.hash);
     if (m) { openRunDetail(m.runId, m.caseKey); return; }
+    // With no project chosen yet, the Projects picker is the only useful view —
+    // land there (e.g. right after login) instead of an empty Runs list, and
+    // gate any deep-linked project-scoped view to it too.
+    if (location.hash === "#/projects" || !state.project) { openProjects(); return; }
     if (location.hash === "#/perspectives") { openPerspectives(); return; }
     if (location.hash === "#/coverage") { openCoverage(); return; }
     if (location.hash === "#/secrets") { openSecrets(); return; }
@@ -3745,6 +3748,11 @@ const CLIENT_JS = `
     var runGone = false;
 
     apiFetch("/api/v1/runs/" + encodeURIComponent(runId)).then(function (run) {
+      // Arrived by an outside link: the selected project is whatever the last
+      // visit or the boot auto-select left, which need not be this run's.
+      // Follow the run, so the nav around it answers for the project the page
+      // is actually showing.
+      if (run.project && run.project !== state.project) adoptProject(run.project);
       renderRunHead(run);
     }).catch(function (err) {
       runGone = err.status === 404;
@@ -5822,14 +5830,20 @@ const CLIENT_JS = `
     updateNavGate();
   }
 
-  // Scope to a project and land on its Runs view. Shared by the top menu, the
-  // Projects grid, and the "new project" flow. Switching project restores the
-  // profile last chosen for that project (or "default" if none was saved);
-  // the Secrets tab reloads the profile list when opened.
-  function chooseProject(p) {
+  // Scope the UI to a project, restoring the profile last chosen for it (or
+  // "default" if none was saved); the Secrets tab reloads the profile list when
+  // opened. Separate from the navigation below because arriving on a run by
+  // link adopts a project without going anywhere.
+  function adoptProject(p) {
     setProject(p);
     storeProject(p);
     setProfile(storedProfileForProject(p) || "default");
+  }
+
+  // Scope to a project and land on its Runs view. Shared by the top menu, the
+  // Projects grid, and the "new project" flow.
+  function chooseProject(p) {
+    adoptProject(p);
     location.hash = "#/runs";
     route();
   }

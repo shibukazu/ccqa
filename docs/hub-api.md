@@ -51,8 +51,9 @@ POST /api/v1/runs?project=<name>&branch=<branch>&profile=<profile>&kind=<kind>&d
   ?deployedSha is optional — the commit the environment was running; overrides the deploy log's head
   → 201 Run
 
-GET /api/v1/runs?project=<name>&branch=<branch>&status=<status>&kind=<kinds>&since=<instant>&until=<instant>&limit=<n>
+GET /api/v1/runs?project=<name>&branch=<branch>&status=<status>&kind=<kinds>&ciRunId=<id>&since=<instant>&until=<instant>&limit=<n>
   ?kind is optional — a comma-separated list of kinds to keep (e.g. "run,drift")
+  ?ciRunId is optional — keep only runs stamped with that CI run id
   ?since / ?until are optional ISO-8601 instants bounding `createdAt`
   → 200 { runs: Run[] } | 400 (a `since`/`until` that is not an instant)
 
@@ -73,6 +74,12 @@ The listing's time window is compared against `createdAt` — the field the
 listing also sorts by — and is half-open, `[since, until)`: to ask for one
 day, pass that day's start as `since` and the next day's start as `until`,
 and no run is counted twice at a boundary. Either end may be given alone.
+
+`ciRunId` is how a CI job finds the runs it created: the hub assigns run ids,
+so the job's own id is the only handle it has on them. Every filter is applied
+before `limit`, so the answer is complete whatever else the hub has stored
+since — a job must not have to guess a window wide enough to still hold its
+own runs. Runs made outside CI carry no `ciRunId` and never match.
 
 As an alternative to the single-shot push above, a still-executing
 `ccqa run` can stream results into the hub incrementally, spec by spec,

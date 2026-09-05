@@ -35,33 +35,59 @@ export function requireReportToHubConnection(conn: HubContext | null): HubContex
   process.exit(2);
 }
 
+/** What a caller already knows about the run it is opening. */
+export interface OpenHubRunOptions {
+  profile?: string;
+  /** The run's own commit, when the caller resolved it already. */
+  gitHead?: string | null;
+  /**
+   * The commit the environment was running when this run was selected. Left
+   * unset the hub stamps its current deploy-log head, which can already name a
+   * later deploy.
+   */
+  deployedSha?: string | null;
+}
+
 /**
- * Open the run a `--report-to-hub` command patches into. Failure is fatal: a
- * job that asked to publish and cannot reach the hub has not done what it was
- * told. Thrown rather than exited, so a caller's `finally` still runs (the
- * audit releases its spec claims there). Not retried: a dropped response after
- * the hub committed would leave a second orphan running run.
+ * Open the run a `--report-to-hub` command patches into, and name it on stderr
+ * — stdout belongs to the report (`--report-format json`), and a caller that
+ * links to the run needs its id before the command ends (docs/hub.md).
+ *
+ * Failure is fatal: a job that asked to publish and cannot reach the hub has
+ * not done what it was told. Thrown rather than exited, so a caller's
+ * `finally` still runs (the audit releases its spec claims there). Not
+ * retried: a dropped response after the hub committed would leave a second
+ * orphan running run.
  */
 export async function openHubRun(
   kind: Run["kind"],
   conn: HubContext,
   cwd: string,
-  profile?: string,
+  opts: OpenHubRunOptions = {},
 ): Promise<HubRunPush> {
-  const [branch, gitHead] = await Promise.all([detectBranch(cwd), getGitHead(cwd)]);
+  const [branch, gitHead] = await Promise.all([
+    detectBranch(cwd),
+    opts.gitHead !== undefined ? opts.gitHead : getGitHead(cwd),
+  ]);
+  let opened: Run;
   try {
-    const run = await conn.hub.openRun({
+    opened = await conn.hub.openRun({
       project: conn.project,
       kind,
       ...(branch ? { branch } : {}),
-      ...(profile ? { profile } : {}),
+      ...(opts.profile ? { profile: opts.profile } : {}),
       ...(gitHead ? { gitHead } : {}),
+      ...(opts.deployedSha ? { deployedSha: opts.deployedSha } : {}),
       ...ciProvenance(),
     });
-    return { hub: conn.hub, kind, runId: run.id, gitHead };
   } catch (err) {
     throw new RunUsageError(`--report-to-hub: could not open a run on the hub (${errMessage(err)})`);
   }
+  // Outside the catch above: a stderr that cannot be written (EPIPE, from a
+  // closed pipe) must not be reported as an open that failed, leaving the run
+  // it did open to sit `running` with nothing to seal it.
+  process.stderr.write(`[hub-run] ${JSON.stringify({ id: opened.id, kind })}\n`);
+  return { hub: conn.hub, kind, runId: opened.id, gitHead };
 }
 
 /**

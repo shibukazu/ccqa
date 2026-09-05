@@ -547,7 +547,7 @@ export function createPatchRunHandler(config: PatchRunHandlerConfig) {
   };
 }
 
-/** GET /api/v1/runs?project&branch&status&kind&since&until&limit */
+/** GET /api/v1/runs?project&branch&status&kind&ciRunId&since&until&limit */
 export function createListRunsHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {
     const project = ctx.url.searchParams.get("project");
@@ -558,11 +558,15 @@ export function createListRunsHandler(storage: HubStorage) {
     // only reads some kinds (the UI's runId→URL map skips recordings) would
     // otherwise have to widen `limit` to keep the rest in the window.
     const kindsRaw = ctx.url.searchParams.get("kind");
+    // What a CI job asks to find the runs it created — its own id is the only
+    // handle it has on them, since the hub assigns the run ids.
+    const ciRunId = boundedParam(ctx.url.searchParams.get("ciRunId"), "ciRunId", 128);
     const runs = await storage.runs.list({
       ...(project ? { project } : {}),
       ...(branch ? { branch } : {}),
       ...(status ? { status: status as Run["status"] } : {}),
       ...(kindsRaw ? { kinds: kindsRaw.split(",").map(requireKind) } : {}),
+      ...(ciRunId ? { ciRunId } : {}),
       ...requireWindowParams(ctx.url),
       ...(limitRaw ? { limit: Number(limitRaw) } : {}),
     });
