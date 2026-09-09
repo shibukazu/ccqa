@@ -264,6 +264,20 @@ function actionToLine(action: RecordedAction): string | null {
     return `// [warn] replay-unstable: dropped over-assertion (${action.assert ?? "assert"} ${sel}) — selector not present on replay`;
   }
 
+  // Same rule again: a wait the validator watched fail is a failure condition,
+  // not a synchronisation point — the next run that legitimately lacks the text
+  // stops here, before any assert runs. Playwright's own assertions wait, so
+  // dropping it costs no settling time. A cascade-skipped wait was never
+  // attempted and keeps its line.
+  if (
+    action.action === "wait" &&
+    action.replayUnstable === true &&
+    !(action.replayReason ?? "").includes("skipped after a preceding action failed")
+  ) {
+    const sel = action.locator?.value ?? "(unknown)";
+    return `// [warn] replay-unstable: dropped wait (${sel}) — did not resolve on replay`;
+  }
+
   const locator = action.locator ? locatorToPlaywright(action.locator, action.index) : null;
   // agent-browser acts on the first element its locator matches. `.first()` keeps
   // that semantic under Playwright's strict mode, which fails the whole step when
