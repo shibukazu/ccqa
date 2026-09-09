@@ -51,6 +51,19 @@ describe("buildLiveSystemPromptPrefix", () => {
     expect(p).toMatch(/no replay contract/i);
   });
 
+  test("tells the model a labelled Expected fails only on its must: lines", () => {
+    // Without this the "partially satisfied — fail" rule above it makes an
+    // absent `when present:` outcome a failure, which is the whole point of
+    // labelling it.
+    const p = buildLiveSystemPromptPrefix({
+      title: SAMPLE_TITLE,
+      allSteps: STEPS,
+      sessionName: "s",
+    });
+    expect(p).toMatch(/`must:` line is the assertion/);
+    expect(p).toMatch(/`when present:` line is observed, not required/);
+  });
+
   test("tells the model the session is already signed in and not to touch state, only when a statePath is set", () => {
     // ccqa restores the auth-state into the session before the run, so the
     // prompt must NOT ask the model to pass --state (that only works at daemon
