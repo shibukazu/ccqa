@@ -107,6 +107,42 @@ steps:
   session-specific values — they are not stable across runs.
   [`ccqa draft`](./draft.md) reviews each step for exactly this.
 
+### When part of the outcome is optional
+
+Some of what a step observes is not there on every run: a badge only some
+records earn, a hint the product renders where it can resolve one and omits
+where it cannot. Naming it in `expected` as a failure condition makes the spec
+fail on runs where the product is correct — and those failures read as an
+environment problem, so the spec gets re-run rather than fixed.
+
+Label the two tiers, so every reader — model or human — splits them the same
+way:
+
+```yaml
+- instruction: Open the first task in the list.
+  expected: |
+    must: the task detail page opens, with the title in the heading.
+    when present: the overdue badge is shown next to the title.
+```
+
+- **`must:`** is the assertion: the end state the product reaches on every
+  run. Not reaching it fails the step.
+- **`when present:`** is observed, not required. It is checked when it is
+  there, and its absence alone never fails the step.
+
+The labels are prose inside the string, not YAML keys, so keep the `|` block.
+An `expected` carrying no labels is all `must:` — the tiers are for the steps
+that need them. Once one line is labelled, label them all: a stray unlabelled
+line reads as another `must:`, and an explanation of *why* the outcome varies
+belongs in a YAML comment rather than in the text a judge reads as its
+contract.
+
+This is not licence to relax an expectation until the step decides nothing.
+Where the varying part *is* the behaviour under test, keep failing on it and
+take the variance out of the input instead — seed the data that decides it. A
+step whose `must:` names nothing the product has to do is a worse outcome than
+the flaky step it replaced.
+
 ## Blocks — reusable step templates
 
 A **block** is a named sequence of step declarations that any spec pulls in

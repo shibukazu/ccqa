@@ -533,6 +533,33 @@ describe("actionsToScript", () => {
       expect(script).toContain("[warn] replay-unstable");
     });
 
+    it("drops a wait the validator watched fail — it would stop the run before any assert", () => {
+      const actions: RecordedAction[] = [
+        {
+          action: "wait",
+          locator: { by: "text", value: "Optional banner" },
+          replayUnstable: true,
+          replayReason: "\u2717 Wait timed out after 5000ms",
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toMatch(/abWait\(/);
+      expect(script).toContain("dropped wait");
+    });
+
+    it("KEEPS a wait that was only cascade-skipped — it was never attempted", () => {
+      const actions: RecordedAction[] = [
+        {
+          action: "wait",
+          locator: { by: "text", value: "Saved" },
+          replayUnstable: true,
+          replayReason: "skipped after a preceding action failed",
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain("dropped wait");
+    });
+
     it("KEEPS a replay-unstable assert that merely timed out (may pass in a real run)", () => {
       const actions: RecordedAction[] = [
         {

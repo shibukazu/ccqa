@@ -83,6 +83,12 @@ of `instruction` / `expected` pairs.
 - Every `expected` names something observable — a visible string, a URL
   pattern, an element state — taken from the source you just read. Avoid
   anything that differs between runs: timestamps, exact counts, ids.
+- **An outcome the product may legitimately not produce is observed, not
+  required.** Split that `expected` into a `must:` line that fails the step
+  and a `when present:` line that does not. Noting the variance in a comment
+  and then failing on it is a defect in the spec; softening `must:` until
+  nothing is decided is the other one — where the varying part is the point
+  of the test, take the variance out of the input instead.
 - If the spec creates data, its name carries `${CCQA_RUN_ID}` and a final
   step deletes it.
 - If the spec writes to a place shared outside the app — a chat channel, a

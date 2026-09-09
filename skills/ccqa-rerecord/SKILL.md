@@ -109,11 +109,17 @@ ccqa audit <feature>/<spec>
 | `UNKNOWN` | the evidence was too weak to call | re-read it yourself; if it stays undetermined, say so rather than guessing |
 | No finding at all | nothing is known to be stale | re-record, and check the result against step 5 — the regenerated test has to verify every `expected` in the spec |
 
-Two things to settle before acting on any row:
+Three things to settle before acting on any row:
 
 - **Does the product actually do what the spec says?** If the evidence and the
   source disagree, the finding is the thing that is wrong. Say so instead of
   rewriting a spec to match a mistaken reading.
+- **Does the `expected` fail on an outcome the product need not produce?**
+  Then the spec is what is wrong, whatever the row said: it fails the runs
+  where the product is correct, and those classify as `ENVIRONMENT` for as
+  long as nobody rewrites it. Split that `expected` into a `must:` line that
+  fails the step and a `when present:` line that is observed only — without
+  softening `must:` until the step decides nothing.
 - **Is the spec `mode: live`?** A live spec has no recording — the spec itself
   is what runs, and `ccqa record` refuses one. Skip steps 4 and 5: repair the
   spec, then run it.

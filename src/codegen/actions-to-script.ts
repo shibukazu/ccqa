@@ -261,6 +261,18 @@ function plainSelectorOf(action: RecordedAction): string | undefined {
     : undefined;
 }
 
+/**
+ * A `wait` the post-trace validator actually ran and saw fail. Cascade-skipped
+ * actions carry the flag without ever having been attempted, so they are not
+ * evidence of anything and stay.
+ */
+function isProvenFailedWait(action: RecordedAction): boolean {
+  return (
+    action.replayUnstable === true &&
+    !(action.replayReason ?? "").includes("skipped after a preceding action failed")
+  );
+}
+
 function actionToLine(action: RecordedAction): string | null {
   // Skip actions that use @ref selectors — they are session-specific and not replayable
   if (isRefSelector(plainSelectorOf(action))) return null;
@@ -271,7 +283,7 @@ function actionToLine(action: RecordedAction): string | null {
   // carry a `selector not present` replayReason. Leave a breadcrumb comment
   // (not a runnable line) so the dropped check is visible. We keep `Wait timed
   // out` / cascade-skipped asserts (those may pass in a real run where prior
-  // state built up correctly), and we never touch non-assert actions here.
+  // state built up correctly).
   if (
     action.action === "assert" &&
     action.replayUnstable &&
@@ -280,6 +292,16 @@ function actionToLine(action: RecordedAction): string | null {
   ) {
     const sel = plainSelectorOf(action) ?? action.observation ?? "(unknown)";
     return `// [warn] replay-unstable: dropped over-assertion (${action.assert ?? "assert"} ${sel}) — selector not present on replay`;
+  }
+
+  // A wait the validator watched fail is a failure condition, not a
+  // synchronisation point: the next run that legitimately lacks the text stops
+  // here, before any assert gets to run. Drop it — the asserts that follow do
+  // their own waiting. A cascade-skipped wait was never attempted, so it keeps
+  // its line.
+  if (action.action === "wait" && isProvenFailedWait(action)) {
+    const sel = plainSelectorOf(action) ?? "(unknown)";
+    return `// [warn] replay-unstable: dropped wait (${sel}) — did not resolve on replay`;
   }
 
   switch (action.action) {

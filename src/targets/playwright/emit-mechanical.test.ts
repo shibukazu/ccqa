@@ -326,6 +326,31 @@ describe("replay-unstable over-assertions", () => {
     expect(body).toContain("dropped over-assertion");
   });
 
+  it("drops a wait the validator watched fail to a breadcrumb comment", () => {
+    const body = emit([
+      {
+        action: "wait",
+        locator: { by: "text", value: "Optional banner" },
+        replayUnstable: true,
+        replayReason: "\u2717 Wait timed out after 5000ms",
+      },
+    ]);
+    expect(body).not.toContain("waitFor()");
+    expect(body).toContain("dropped wait");
+  });
+
+  it("keeps a cascade-skipped wait runnable — it was never attempted", () => {
+    const body = emit([
+      {
+        action: "wait",
+        locator: { by: "text", value: "Saved" },
+        replayUnstable: true,
+        replayReason: "skipped after a preceding action failed",
+      },
+    ]);
+    expect(body).not.toContain("dropped wait");
+  });
+
   it("keeps a wait-timeout unstable assert runnable (may pass in a real run)", () => {
     const body = emit([
       {

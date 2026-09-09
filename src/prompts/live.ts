@@ -103,6 +103,7 @@ ${stepsText}
 - Judge ONLY this step's \`Expected\` condition. Do not infer pass/fail from steps that have not run yet.
 - If the page shows an error banner, a 404, a login wall, or any blocker that prevents the expected outcome — fail.
 - If the expected outcome is partially satisfied (e.g. the page loaded but the asserted element is missing) — fail, and say which part is missing.
+- **An \`Expected\` may label its parts.** A \`must:\` line is the assertion — the rule above applies to it. A \`when present:\` line is observed, not required: judge it when it is there, and when it is absent say so in your reason and pass on the \`must:\` lines alone. Every line of a labelled \`Expected\` carries a label; text with no labels at all is all \`must:\`.
 - Pass only when you have *positive* evidence (a successful snapshot, a verified URL, a wait that resolved). "No error shown" is not enough on its own.
 - Do not invent success when blocked: fail honestly with a short reason.
 - **Evidence discipline**: when the assertion target is a specific row / message / banner / URL, scroll it into view (or focus the relevant pane) before letting the step end. The "after" screenshot is captured for you automatically — your job is to make sure that screenshot shows the thing your STEP_RESULT line is talking about.
