@@ -23,8 +23,22 @@ export type RouteChange =
   | { kind: "removed"; step: string; before: string }
   | { kind: "changed"; step: string; before: string; after: string };
 
+/** The same operation, recorded under a different step this time. */
+export interface RouteMove {
+  action: string;
+  from: string;
+  to: string;
+}
+
 export interface RouteDiff {
   changes: RouteChange[];
+  /**
+   * Operations that did not change — only which step they were recorded under.
+   * Apart from `changes` because a recorder that put the sign-in inside the
+   * first step this time and before it last time otherwise produces a page of
+   * removals and additions describing a flow nobody touched.
+   */
+  moved: RouteMove[];
   /** Steps whose actions are identical in both recordings, in order. */
   unchangedSteps: string[];
 }
@@ -76,19 +90,58 @@ function identity(action: RecordedAction): string {
 }
 
 export function diffRoutes(before: RecordedAction[], after: RecordedAction[]): RouteDiff {
-  const steps = orderedSteps(before, after);
+  const moved = findMoves(before, after);
+  // Taken out before the per-step diff, or each move is reported twice: once
+  // as a removal from the step it left, once as an addition to the one it
+  // joined.
+  const movedForms = new Set(moved.map((m) => m.action));
+  const stayed = (a: RecordedAction): boolean => !movedForms.has(describeAction(a));
+  const inStep = (actions: RecordedAction[], step: string): RecordedAction[] =>
+    actions.filter((a) => (a.stepId ?? NO_STEP) === step && stayed(a));
+
   const changes: RouteChange[] = [];
   const unchangedSteps: string[] = [];
-  for (const step of steps) {
-    const stepChanges = diffStep(
-      step,
-      before.filter((a) => (a.stepId ?? NO_STEP) === step),
-      after.filter((a) => (a.stepId ?? NO_STEP) === step),
-    );
+  for (const step of orderedSteps(before, after)) {
+    const wasIn = inStep(before, step);
+    const isIn = inStep(after, step);
+    // A step whose every operation moved elsewhere is neither changed nor
+    // unchanged — the moves below say where it went.
+    if (wasIn.length === 0 && isIn.length === 0) continue;
+    const stepChanges = diffStep(step, wasIn, isIn);
     if (stepChanges.length === 0) unchangedSteps.push(step);
     else changes.push(...stepChanges);
   }
-  return { changes, unchangedSteps };
+  return { changes, moved, unchangedSteps };
+}
+
+/**
+ * Operations both recordings hold under a different step id, matched on the
+ * rendered form: same operation, same locator, same value. A form appearing
+ * more than once in either recording is left to the per-step diff — which of
+ * two identical operations moved is a question the recording cannot answer.
+ */
+function findMoves(before: RecordedAction[], after: RecordedAction[]): RouteMove[] {
+  const index = (actions: RecordedAction[]): Map<string, RecordedAction> => {
+    const seen = new Map<string, RecordedAction>();
+    const repeated = new Set<string>();
+    for (const action of actions) {
+      const form = describeAction(action);
+      if (seen.has(form)) repeated.add(form);
+      seen.set(form, action);
+    }
+    for (const form of repeated) seen.delete(form);
+    return seen;
+  };
+  const b = index(before);
+  const moved: RouteMove[] = [];
+  for (const [form, action] of index(after)) {
+    const was = b.get(form);
+    if (was === undefined) continue;
+    const from = was.stepId ?? NO_STEP;
+    const to = action.stepId ?? NO_STEP;
+    if (from !== to) moved.push({ action: form, from, to });
+  }
+  return moved;
 }
 
 /** Every step id either recording mentions, in the new recording's order first. */
@@ -177,7 +230,7 @@ export interface RouteDiffReport {
 
 /** The diff as markdown — what `ccqa record` saves beside the spec. */
 export function renderRouteDiff(diff: RouteDiff, report: RouteDiffReport): string {
-  const { changes, unchangedSteps } = diff;
+  const { changes, moved, unchangedSteps } = diff;
   const lines = [`# Route diff — ${report.specKey}`, ""];
   lines.push(
     `Recorded ${report.before.recordedAt ?? "(unknown)"} → ${report.after.recordedAt ?? "(unknown)"}.`,
@@ -189,9 +242,15 @@ export function renderRouteDiff(diff: RouteDiff, report: RouteDiffReport): strin
       "",
     );
   }
-  if (changes.length === 0) {
+  if (changes.length === 0 && moved.length === 0) {
     lines.push("The route is unchanged: same operations, locators and checks.", "");
     return lines.join("\n");
+  }
+  if (changes.length === 0) {
+    lines.push(
+      "The route does the same things, in the same way. Only which step each was recorded under moved.",
+      "",
+    );
   }
 
   for (const step of groupByStep(changes)) {
@@ -205,6 +264,18 @@ export function renderRouteDiff(diff: RouteDiff, report: RouteDiffReport): strin
             ? `- added: \`${change.after}\``
             : `- removed: \`${change.before}\``,
       );
+    }
+    lines.push("");
+  }
+  if (moved.length > 0) {
+    lines.push(
+      "## Recorded under a different step",
+      "",
+      "Same operation, same locator, same value — only its step attribution moved.",
+      "",
+    );
+    for (const move of moved) {
+      lines.push(`- \`${move.action}\`: ${move.from} → ${move.to}`);
     }
     lines.push("");
   }

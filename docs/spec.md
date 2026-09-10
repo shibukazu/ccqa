@@ -34,8 +34,12 @@ spec directory accumulates these files as you work:
           runs/<timestamp>/      # (live) one run's step screenshots + summary
 ```
 
-Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/` and
-`ccqa-report*/`.
+Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/`,
+`.ccqa/cases/*/runs/` and `ccqa-report*/`. Not `evidence/` beside them: those
+are the screenshots [`ccqa evidence`](./targets.md#ccqa-evidence--the-table-a-reviewer-reads-instead-of-the-test)
+links from the review table, so ignoring them leaves a table pasted into a pull
+request pointing at nothing. Whether to commit them is your call — they are
+small, and they are the only part of the table a reader cannot reconstruct.
 
 ## Where a case comes from
 

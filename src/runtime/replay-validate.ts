@@ -119,6 +119,9 @@ export function isCascadeReason(reason: string | undefined): boolean {
 
 const SHORT_TIMEOUT_MS = 5_000;
 const ASSERT_TIMEOUT_MS = 10_000;
+const INTERACTION_POLL_INTERVAL_MS = 250;
+/** Bounds the poll when `sleepSync` is stubbed and the clock never moves. */
+const INTERACTION_ATTEMPTS = ASSERT_TIMEOUT_MS / INTERACTION_POLL_INTERVAL_MS;
 
 /**
  * Convert one recorded action into the `agent-browser` arg list that would
@@ -304,15 +307,70 @@ function labelFallback(action: RecordedAction): RecordedAction | null {
 }
 
 /**
+ * Whether waiting is still worth it, shared by every action in one pass. An
+ * interaction that waited its whole budget and still found nothing proves the
+ * replay is somewhere the recording never was — the page is wrong, not slow —
+ * so the actions after it get one attempt each instead of the same budget
+ * again.
+ */
+interface Patience {
+  spent: boolean;
+}
+
+interface InteractionOutcome {
+  result: ReturnType<typeof spawnAB>;
+  /** True when `alternate` is what succeeded. */
+  viaAlternate: boolean;
+  waitedMs: number;
+}
+
+/**
+ * Spawn one interaction, waiting for its element the way an assertion waits
+ * for its text: a recording pauses for a snapshot between opening a page and
+ * typing into it, the replay does not, so the replay reaches a field sooner
+ * than the recording ever did.
+ *
+ * Only a "no element" failure waits — anything else repeats identically. When
+ * there is an `alternate` form it is tried on every attempt rather than after
+ * the wait: a label the page never associates with its input will not start
+ * matching, so waiting first spends the budget for nothing.
+ */
+function runInteraction(
+  argv: string[],
+  alternate: string[] | null,
+  patience: Patience,
+): InteractionOutcome {
+  const started = Date.now();
+  const deadline = started + ASSERT_TIMEOUT_MS;
+  for (let attempt = 0; ; attempt++) {
+    let result = spawnAB(argv);
+    // agent-browser's daemon occasionally drops a request under load. One
+    // extra attempt is cheaper than re-tracing.
+    if (result.status !== 0 && result.wedged === true) result = spawnAB(argv);
+    const waitedMs = Date.now() - started;
+    if (result.status === 0 || !notFound(result)) return { result, viaAlternate: false, waitedMs };
+    if (alternate !== null) {
+      const alt = spawnAB(alternate);
+      if (alt.status === 0) return { result: alt, viaAlternate: true, waitedMs };
+    }
+    if (patience.spent || attempt + 1 >= INTERACTION_ATTEMPTS || Date.now() >= deadline) {
+      patience.spent = true;
+      return { result, viaAlternate: false, waitedMs: Date.now() - started };
+    }
+    sleepSync(INTERACTION_POLL_INTERVAL_MS);
+  }
+}
+
+/**
  * Replay one recorded action against the validation session. Element-presence
  * checks go through `runPollCheck` (which uses `get count`, never the blocking
- * `wait <selector>`); everything else spawns the agent-browser argv. A single
- * hard-timeout (SIGTERM) retry covers the daemon's occasional under-load drop.
+ * `wait <selector>`); everything else spawns the agent-browser argv.
  */
 function runValidationAction(
   action: RecordedAction,
   sessionName: string,
   envOverrides: Record<string, string> = {},
+  patience: Patience,
 ): ActionOutcome {
   const built = actionToAbArgs(action, sessionName, envOverrides);
   if (built === null) return { skipped: true, ok: false, reason: "" };
@@ -320,31 +378,31 @@ function runValidationAction(
     const { ok, reason } = runPollCheck(built, sessionName);
     return { skipped: false, ok, reason };
   }
-  let result = spawnAB(built);
-  if (result.status !== 0 && result.wedged === true) {
-    // Hard-timeout retry, capped at 1: agent-browser's daemon occasionally
-    // drops a request under load. One extra attempt is cheaper than re-tracing.
-    result = spawnAB(built);
+  // The accessible-name form of a `label` locator, offered to the retry: the
+  // recording keeps whichever form replayed, because a route that only holds
+  // the locator that failed sends the next `ccqa generate` back to re-record a
+  // case whose flow never changed.
+  const fallback = labelFallback(action);
+  const alternate = fallback === null ? null : actionToAbArgs(fallback, sessionName, envOverrides);
+  const { result, viaAlternate, waitedMs } = runInteraction(
+    built,
+    alternate !== null && !isPollCheck(alternate) ? alternate : null,
+    patience,
+  );
+  if (viaAlternate) {
+    const promoted = `${action.locator!.by}=${action.locator!.value} → role=${fallback!.locator!.value} name="${action.locator!.value}"`;
+    action.locator = fallback!.locator!;
+    return { skipped: false, ok: true, reason: "", promoted };
   }
   if (result.status === 0) return { skipped: false, ok: true, reason: "" };
-  // One retry by accessible name, and the recording keeps whichever form
-  // replayed: a route that only holds the locator that failed sends the next
-  // `ccqa generate` back to re-record a case whose flow never changed. Only
-  // when the element was not found — a failure with another cause repeats by
-  // role, at the price of a second timeout.
-  const fallback = notFound(result) ? labelFallback(action) : null;
-  if (fallback !== null) {
-    const retry = actionToAbArgs(fallback, sessionName, envOverrides);
-    if (retry !== null && !isPollCheck(retry) && spawnAB(retry).status === 0) {
-      const promoted = `${action.locator!.by}=${action.locator!.value} → role=${fallback.locator!.value} name="${action.locator!.value}"`;
-      action.locator = fallback.locator!;
-      return { skipped: false, ok: true, reason: "", promoted };
-    }
-  }
+  const detail =
+    result.stderr.trim() || result.stdout.trim() || `agent-browser exit ${result.status ?? "?"}`;
   return {
     skipped: false,
     ok: false,
-    reason: (result.stderr.trim() || result.stdout.trim() || `agent-browser exit ${result.status ?? "?"}`).slice(0, 200),
+    // Says how long it waited, so a reader can tell "the element is not there"
+    // from "the selector is wrong" without re-running anything.
+    reason: `${detail.slice(0, 200)}${notFound(result) ? ` (waited ${waitedMs}ms)` : ""}`,
   };
 }
 
@@ -368,6 +426,7 @@ export function validateActions(
   //     it might be observing something orthogonal.
   //   - SIGTERM from agent-browser is treated as a transient daemon
   //     hiccup: retry once before counting it as a failure.
+  const patience: Patience = { spent: false };
   let skipFromStepId: string | null = null;
   for (let i = 0; i < actions.length; i++) {
     const action = actions[i]!;
@@ -382,7 +441,7 @@ export function validateActions(
       dropped.push({ index: i, action, reason: CASCADE_REASON });
       continue;
     }
-    const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides);
+    const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides, patience);
     if (outcome.promoted) promoted.push(outcome.promoted);
     if (outcome.skipped) {
       kept.push(action);
@@ -403,7 +462,7 @@ export function validateActions(
       skipFromStepId = stepId;
     }
   }
-  const afterRescue = rescueLostSteps(actions, kept, dropped, opts);
+  const afterRescue = rescueLostSteps(actions, kept, dropped, opts, patience);
   promoted.push(...(afterRescue.promoted ?? []));
   return { ...splitByMode(actions, afterRescue, opts.mode ?? "lenient"), promoted };
 }
@@ -481,6 +540,7 @@ function rescueLostSteps(
   kept: RecordedAction[],
   dropped: ValidationDrop[],
   opts: ValidateOptions,
+  patience: Patience,
 ): RescuePassResult {
   // Build a quick "which steps kept anything" set.
   const stepsWithSurvivors = new Set<string>();
@@ -504,7 +564,7 @@ function rescueLostSteps(
   for (const [stepId, drops] of lostStepDrops.entries()) {
     let anyForThisStep = false;
     for (const d of drops) {
-      const outcome = runValidationAction(d.action, opts.sessionName, opts.envOverrides);
+      const outcome = runValidationAction(d.action, opts.sessionName, opts.envOverrides, patience);
       if (outcome.promoted) promoted.push(outcome.promoted);
       if (outcome.skipped) continue;
       if (outcome.ok) {

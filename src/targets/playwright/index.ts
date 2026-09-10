@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { relative } from "node:path";
 import { saveSpecReview, SPEC_DIR_TEMPLATE, TEST_SCRIPT_FILE } from "../../store/index.ts";
 import { renderHeader, renderTitleTag } from "../external/header.ts";
 import {
@@ -11,6 +12,7 @@ import type { StepMarker } from "../../codegen/actions-to-script.ts";
 import type { RecordedAction } from "../../types.ts";
 import { playwrightTaskInstructions } from "../../prompts/llm-gen.ts";
 import { buildStepMarkers, lastActionIndexPerStep } from "../agent-browser/generate.ts";
+import { exportedNames } from "../support-files.ts";
 import { finalizePreparedFiles, generateWithLlmEngine } from "../llm-engine.ts";
 import {
   emitPlaywrightDraft,
@@ -200,8 +202,13 @@ export async function compileRecording(
           validateFile,
         });
 
-  const missing = await missingInjectedCalls(result, injected);
+  const written = (await readCorpus(result, "test")).join("\n");
+  const missing = injectedCallGaps(written, injected);
   for (const w of missing) log.warn(w);
+  // Logged, not carried into `warnings`: this is an observation about files
+  // just written, and a page object shared with another case is not a defect
+  // the report and the hub should be told about.
+  for (const w of await unusedSupportExports(result, written, ctx.cwd)) log.warn(w);
   // The loop above only ever asked "does it go green". A rewrite that weakens
   // an assertion clears that bar too, so green is not evidence that the case
   // was checked. This is the only pass that looks.
@@ -225,23 +232,51 @@ export async function compileRecording(
 }
 
 /**
- * Warnings for calls the emitter injected that the written test no longer has.
- * The deterministic emit always has them; the library-rewrite pass can drop
- * them when it restructures into page objects, which silently costs the spec
- * its screenshots. Reads the files from disk (the LLM pass may have relocated
- * them); a file that can't be read is reported as missing everything rather
- * than passing silently.
+ * The written files of one kind. Read from disk rather than taken from the
+ * reply: the LLM pass may have relocated them, and a file that cannot be read
+ * reads as empty so a gate reports everything missing rather than passing
+ * silently.
  */
-async function missingInjectedCalls(
-  result: GenerateResult,
-  spec: InjectedCallSpec,
-): Promise<string[]> {
-  const sources = await Promise.all(
-    result.files
-      .filter((f) => f.kind === "test")
-      .map((f) => readFile(f.path, "utf8").catch(() => "")),
+async function readCorpus(result: GenerateResult, kind: "test" | "support"): Promise<string[]> {
+  return Promise.all(
+    result.files.filter((f) => f.kind === kind).map((f) => readFile(f.path, "utf8").catch(() => "")),
   );
-  return injectedCallGaps(sources.join("\n"), spec);
+}
+
+/**
+ * Exports of a support file ccqa wrote that nothing else it wrote mentions.
+ *
+ * A re-record can stop using an element a page object still defines, and the
+ * page object is not rewritten — it keeps a definition nothing here reaches.
+ * Said, not removed: a page object exists to be shared, and only the project
+ * knows whether another case still uses it.
+ */
+async function unusedSupportExports(
+  result: GenerateResult,
+  written: string,
+  cwd: string,
+): Promise<string[]> {
+  const supports = result.files.filter((f) => f.kind === "support");
+  if (supports.length === 0 || written === "") return [];
+  const supportSources = await readCorpus(result, "support");
+  const warnings: string[] = [];
+  for (const [i, support] of supports.entries()) {
+    const source = supportSources[i]!;
+    if (source === "") continue;
+    // The test plus every *other* support file: one page object importing
+    // another's export is a use, and its own source is where it is declared.
+    // Tokenised rather than a regex per name — `$`-prefixed identifiers are
+    // legal and `\b` cannot match them, which would report them all unused.
+    const others = [written, ...supportSources.filter((_, j) => j !== i)].join("\n");
+    const mentioned = new Set(others.match(/[A-Za-z_$][\w$]*/g) ?? []);
+    const unused = exportedNames(source).filter((name) => !mentioned.has(name));
+    if (unused.length === 0) continue;
+    warnings.push(
+      `${relative(cwd, support.path)}: nothing generated for this case uses ${unused.join(", ")} — ` +
+        `if no other case does either, an earlier recording left the definition behind.`,
+    );
+  }
+  return warnings;
 }
 
 /** What the emitter injected and the written test must still carry. */

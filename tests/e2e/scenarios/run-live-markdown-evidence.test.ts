@@ -84,4 +84,40 @@ describe("ccqa run (live mode, markdown-sourced case) — mocked Claude + fake a
     const paths = systemOut.split("\n").filter((line) => line.trim().length > 0);
     expect(paths.length).toBe(steps!.length * 2);
   }, 120_000);
+
+  // A heavy application cannot always be captured whole, and the step then
+  // lost the only frame showing what it produced while the lighter before-shot
+  // beside it succeeded. A capture problem must cost that step's frame at
+  // worst, never the run.
+  test("a full-page capture that fails is retried viewport-only, and never stops the run", async () => {
+    project = await makeFakeProject("markdown-live", { linkCcqa: true });
+    await installFakeAgentBrowser(project.cwd);
+
+    const mockPath = join(project.cwd, "claude-mock.jsonl");
+    await writeMockMessages(mockPath, [
+      ...mockStepMessages("step-01", "pass", "home page greeting is visible"),
+      ...mockStepMessages("step-02", "pass", "final screen is visible"),
+    ]);
+
+    const reportDir = join(project.cwd, "ccqa-report");
+    const result = await runCcqa(["run", "demo/flow", "--report-dir", reportDir], {
+      cwd: project.cwd,
+      env: {
+        ...noColorEnv(),
+        CCQA_CLAUDE_MOCK_FILE: mockPath,
+        // Only the full-page attempt carries `--full`, so this fails exactly
+        // the shot the retry exists for.
+        CCQA_FAKE_AB_FAIL_ARG: "--full",
+      },
+      timeoutMs: 90_000,
+    });
+    expect(result.exitCode, stripAnsi(result.stdout + result.stderr)).toBe(0);
+
+    const report = JSON.parse(await readFile(join(reportDir, "report.json"), "utf8")) as {
+      results: Array<{ liveRun: { steps: Array<{ afterPng: string | null }> } | null }>;
+    };
+    const steps = report.results[0]?.liveRun?.steps ?? [];
+    expect(steps.length).toBe(2);
+    for (const step of steps) expect(step.afterPng).not.toBeNull();
+  }, 120_000);
 });

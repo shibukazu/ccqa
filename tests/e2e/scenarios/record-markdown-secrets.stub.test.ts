@@ -44,6 +44,10 @@ function mockTrace(): Array<Record<string, unknown>> {
       "t10",
       `CCQA_STEP=cleanup-01 CCQA_ASSERT=element_not_visible ${s} get count "text=note \${CCQA_RUN_ID}"`,
     ),
+    {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "RUN_COMPLETED|passed|every step verified" }] },
+    },
     { type: "result", subtype: "success", result: "", is_error: false },
   ];
 }
@@ -154,7 +158,7 @@ describe("ccqa record — a markdown case whose credentials come from envFiles",
     });
     expect(evidence.exitCode, stripAnsi(evidence.stdout + evidence.stderr)).toBe(0);
     const table = await readFile(join(project.cwd, ".ccqa/cases/account/sign_in/evidence.md"), "utf8");
-    expect(table).toMatch(/!\[step-01\]\(runs\//);
+    expect(table).toMatch(/!\[step-01\]\(evidence\//);
     expect(table).not.toContain(EMAIL);
     expect(table).not.toContain(PASSWORD);
   }, 180_000);

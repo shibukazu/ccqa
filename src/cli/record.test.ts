@@ -125,6 +125,7 @@ describe("seal with a deadline note", () => {
 function traceResult(): RunTraceResult {
   return {
     status: "passed",
+    failureReason: null,
     statusLines: [],
     actionsKept: 0,
     actionsRecorded: 0,

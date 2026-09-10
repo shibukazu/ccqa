@@ -235,3 +235,35 @@ function isFile(pathAbs: string): Promise<boolean> {
     () => false,
   );
 }
+
+/** `export const NAME` / `export function NAME` / `export class NAME`, and `export { A, B }`. */
+const EXPORTED = /export\s+(?:async\s+)?(?:const|let|function|class|enum)\s+([A-Za-z_$][\w$]*)/g;
+const EXPORT_LIST = /export\s*\{([^}]*)\}/g;
+const BLOCK_COMMENT = /\/\*[\s\S]*?\*\//g;
+/** A `//` that is not the tail of a `://` — the shape a URL in a string has. */
+const LINE_COMMENT = /(^|[^:])\/\/.*$/gm;
+
+/**
+ * The value names a file exports, as a reader would list them.
+ *
+ * Text, not a parser: this answers a warning, not a refusal, and a name missed
+ * because it was written in a form this does not know costs nothing. A name
+ * invented would cost a false warning, so the patterns only match declarations
+ * that plainly are one, and comments are stripped first. Types are left out
+ * for the same reason: a page object's own row type is referenced only inside
+ * it, so listing it would report a definition that is used.
+ */
+export function exportedNames(source: string): string[] {
+  const code = source.replace(BLOCK_COMMENT, "").replace(LINE_COMMENT, "$1");
+  const names = new Set<string>();
+  for (const m of code.matchAll(EXPORTED)) names.add(m[1]!);
+  for (const m of code.matchAll(EXPORT_LIST)) {
+    for (const part of m[1]!.split(",")) {
+      // `internal as exposed` exports `exposed`; the local name is not what a
+      // consumer writes, so it is not what a test would mention.
+      const name = part.trim().split(/\s+as\s+/).pop()?.trim();
+      if (name && /^[A-Za-z_$][\w$]*$/.test(name) && name !== "default") names.add(name);
+    }
+  }
+  return [...names];
+}

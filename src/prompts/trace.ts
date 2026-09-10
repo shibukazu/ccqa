@@ -105,8 +105,14 @@ CCQA_STEP=step-03 agent-browser --session ${sessionName} click "text=Submit"
 \`\`\`
 
 This prefix is what ties each recorded action to its step in the generated
-test — a command without it loses its step attribution. Other env assignments
-may precede it (\`FOO=x CCQA_STEP=step-02 agent-browser ...\`); agent-browser
+test — a command without it loses its step attribution.
+
+**Anything you do before the first step carries no \`CCQA_STEP\`.** Signing in,
+opening the application, putting the account where the precondition says it
+starts — those are not step-01. The first \`CCQA_STEP=\` names the first step
+the case actually lists.
+
+Other env assignments may precede it (\`FOO=x CCQA_STEP=step-02 agent-browser ...\`); agent-browser
 itself ignores the variable.
 
 Verification commands additionally carry a \`CCQA_ASSERT=<marker>\` env
@@ -497,6 +503,10 @@ STEP_SKIPPED|<step-id>|<reason>
 RUN_COMPLETED|passed|<summary>
 RUN_COMPLETED|failed|<summary>
 \`\`\`
+
+**\`RUN_COMPLETED\` is what ends the run.** A session that stops without it is
+recorded as FAILED, however many steps went well: nothing else can tell a
+finished route from one you abandoned halfway.
 
 ${callerGuidance}## Start
 

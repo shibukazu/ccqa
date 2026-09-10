@@ -1,6 +1,6 @@
-import { describe, expect, test, afterEach, vi } from "vitest";
+import { describe, expect, test, afterEach, beforeEach, vi } from "vitest";
 import { actionToAbArgs, isCascadeReason, validateActions } from "./replay-validate.ts";
-import { spawnAB } from "./spawn-ab.ts";
+import { spawnAB, type Result } from "./spawn-ab.ts";
 import type { RecordedAction } from "../types.ts";
 
 vi.mock("./spawn-ab.ts", () => ({
@@ -12,6 +12,13 @@ const mockedSpawnAB = vi.mocked(spawnAB);
 
 const SESSION = "test-session";
 const ORIGINAL_ENV = { ...process.env };
+
+// An interaction now retries a "no element" failure, so a test that queues a
+// finite number of replies would run past the end of its queue. The default
+// says what every one of those tests means: it keeps failing.
+beforeEach(() => {
+  mockedSpawnAB.mockReturnValue({ status: 1, stdout: "", stderr: "selector not found" });
+});
 
 afterEach(() => {
   for (const k of Object.keys(process.env)) {
@@ -30,6 +37,12 @@ const COUNT_PRESENT = { status: 0, stdout: "1", stderr: "" };
 const COUNT_ABSENT = { status: 0, stdout: "0", stderr: "" };
 
 const css = (value: string) => ({ by: "css", value }) as const;
+
+/** Reply by what the command is, not by when it is called: an interaction that
+ *  fails is retried, so a queue in call order no longer maps onto actions. */
+function replyBy(match: (argv: string[]) => Result): void {
+  mockedSpawnAB.mockImplementation(match);
+}
 
 describe("actionToAbArgs", () => {
   test("cookies_clear → cookies clear", () => {
@@ -206,11 +219,9 @@ describe("validateActions", () => {
   });
 
   test("a failing click cascade-drops the dependent wait + assert until the next side-effecting command", () => {
-    // navigate OK, click FAIL → wait+assert dropped as collateral → next click OK → snapshot kept.
-    mockedSpawnAB
-      .mockReturnValueOnce(OK)   // navigate
-      .mockReturnValueOnce(FAIL) // click [Submit]
-      .mockReturnValueOnce(OK);  // click [Next]
+    // click [Submit] fails on every attempt (including retries) → wait+assert
+    // dropped as collateral → next click [Next] succeeds → snapshot kept.
+    replyBy((argv) => (argv.includes("[aria-label='Submit']") ? FAIL : OK));
     const { kept, dropped } = validateActions(actions, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.action)).toEqual(["navigate", "click", "snapshot"]);
     expect(kept[1]!.locator?.value).toBe("[aria-label='Next']");
@@ -229,9 +240,8 @@ describe("validateActions", () => {
       { action: "click", locator: css("[aria-label='Y']") },          // OK; resets cascade
       { action: "snapshot", observation: "after Y" },                 // kept
     ];
-    mockedSpawnAB
-      .mockReturnValueOnce(FAIL) // click X
-      .mockReturnValueOnce(OK);  // click Y
+    // click X fails on every attempt (including retries); click Y succeeds.
+    replyBy((argv) => (argv.includes("[aria-label='X']") ? FAIL : OK));
     const { kept, dropped } = validateActions(inOrder, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.action)).toEqual(["snapshot", "click", "snapshot"]);
     expect(kept[1]!.locator?.value).toBe("[aria-label='Y']");
@@ -290,12 +300,9 @@ describe("validateActions", () => {
       { action: "wait", locator: { by: "text", value: "Welcome" }, stepId: "step-02" }, // independent
       { action: "assert", assert: "text_visible", value: "Welcome", stepId: "step-02" },
     ];
-    mockedSpawnAB
-      .mockReturnValueOnce(OK)   // navigate
-      .mockReturnValueOnce(FAIL) // click (step-01) → cascade armed
-      // (step-01 wait is skipped without spawnAB call)
-      .mockReturnValueOnce(OK)   // step-02 wait
-      .mockReturnValueOnce(OK);  // step-02 assert
+    // step-01 click fails on every attempt (cascade armed); step-02's wait
+    // and assert are independent and succeed.
+    replyBy((argv) => (argv.includes("[aria-label='X']") ? FAIL : OK));
     const { kept, dropped } = validateActions(stepped, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.action)).toEqual(["navigate", "wait", "assert"]);
     expect(kept[1]!.stepId).toBe("step-02");
@@ -311,9 +318,9 @@ describe("validateActions", () => {
       { action: "assert", assert: "text_visible", value: "Bar", stepId: "step-01" },
       { action: "snapshot", observation: "after", stepId: "step-01" },
     ];
-    mockedSpawnAB
-      .mockReturnValueOnce(FAIL) // assert Foo
-      .mockReturnValueOnce(OK);  // assert Bar (snapshot has no args to spawn)
+    // assert Foo fails on every attempt; assert Bar is independent and
+    // succeeds because a passive failure doesn't arm the cascade.
+    replyBy((argv) => (argv.includes("Foo") ? FAIL : OK));
     const { kept, dropped } = validateActions(sameStep, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.action)).toEqual(["assert", "snapshot"]);
     expect(kept[0]!.value).toBe("Bar");
@@ -361,12 +368,8 @@ describe("validateActions", () => {
       { action: "click", locator: css("[aria-label='X']"), stepId: "step-08" },
       { action: "wait", locator: { by: "text", value: "Saved" }, stepId: "step-08" },
     ];
-    mockedSpawnAB
-      .mockReturnValueOnce(OK)   // navigate
-      .mockReturnValueOnce(FAIL) // click → cascade
-      // wait collateral — not spawned
-      .mockReturnValueOnce(FAIL) // rescue: click again, still fails
-      .mockReturnValueOnce(OK);  // rescue: wait passes
+    // click fails on the first pass and again on rescue; wait always passes.
+    replyBy((argv) => (argv.includes("[aria-label='X']") ? FAIL : OK));
     const { kept, dropped, rescuedSteps } = validateActions(recoverable, { sessionName: "s", mode: "strict" });
     expect(kept.map((a) => a.action)).toEqual(["navigate", "wait"]);
     expect(kept[1]!.stepId).toBe("step-08");
@@ -410,6 +413,62 @@ describe("validateActions", () => {
   });
 });
 
+describe("validateActions — an element the page has not rendered yet", () => {
+  // A recording pauses for a snapshot between opening a page and typing into
+  // it; the replay does not, so it reaches the field sooner than the recording
+  // ever did. One shot at a fill made that a dead route.
+  test("keeps trying a fill until the element appears", () => {
+    mockedSpawnAB
+      .mockReturnValueOnce(FAIL)
+      .mockReturnValueOnce(FAIL)
+      .mockReturnValueOnce(OK);
+    const actions: RecordedAction[] = [
+      { action: "fill", locator: { by: "label", value: "Email" }, value: "a@example.test" },
+    ];
+    const { kept, dropped } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(kept).toHaveLength(1);
+    expect(dropped).toEqual([]);
+    expect(mockedSpawnAB).toHaveBeenCalledTimes(3);
+  });
+
+  // Repeating a selector the daemon rejects for ten seconds turns one clear
+  // error into a slow one, so only "no element" is worth waiting on.
+  test("does not retry a failure that is not about a missing element", () => {
+    mockedSpawnAB.mockReturnValue({ status: 1, stdout: "", stderr: "unknown subaction" });
+    const actions: RecordedAction[] = [
+      { action: "click", locator: { by: "css", value: "[data-x]" } },
+    ];
+    const { dropped } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(dropped).toHaveLength(1);
+    expect(mockedSpawnAB).toHaveBeenCalledTimes(1);
+  });
+
+  // A page that never rendered the first element is wrong, not slow. Paying
+  // the same budget for every action after it turns one broken route into
+  // minutes of waiting on the record path.
+  test("once one interaction has waited its whole budget, later ones get one attempt", () => {
+    mockedSpawnAB.mockReturnValue(FAIL);
+    const actions: RecordedAction[] = [
+      { action: "click", locator: css("[data-a]"), stepId: "step-01" },
+      { action: "click", locator: css("[data-b]"), stepId: "step-02" },
+    ];
+    validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    const attempts = (sel: string) => mockedSpawnAB.mock.calls.filter((c) => c[0]!.includes(sel)).length;
+    expect(attempts("[data-a]")).toBeGreaterThan(10);
+    // One in the pass and one in the rescue replay that follows it.
+    expect(attempts("[data-b]")).toBe(2);
+  });
+
+  test("says how long it waited, so a reader can tell absent from mis-addressed", () => {
+    mockedSpawnAB.mockReturnValue(FAIL);
+    const actions: RecordedAction[] = [
+      { action: "click", locator: { by: "css", value: "[data-x]" } },
+    ];
+    const { dropped } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(dropped[0]!.reason).toMatch(/waited \d+ms/);
+  });
+});
+
 describe("validateActions (label → role fallback)", () => {
   const labelFill = (): RecordedAction => ({
     action: "fill",
@@ -418,28 +477,32 @@ describe("validateActions (label → role fallback)", () => {
   });
 
   test("a failing label fill retries by role + accessible name, and the promoted locator is kept in place", () => {
-    mockedSpawnAB
-      .mockReturnValueOnce(FAIL) // find label Email fill ...
-      .mockReturnValueOnce(OK);  // fallback: find role textbox --name "Email" --exact
+    // The label locator never resolves, even under retry; the role fallback succeeds.
+    replyBy((argv) => (argv.includes("label") ? FAIL : OK));
     const { kept, dropped, promoted } = validateActions([labelFill()], { sessionName: "s", mode: "strict" });
     expect(kept).toHaveLength(1);
     expect(dropped).toHaveLength(0);
     expect(kept[0]!.locator).toEqual({ by: "role", value: "textbox", name: "Email", exact: true });
     expect(promoted).toEqual([`label=Email → role=textbox name="Email"`]);
+    // The fallback is the last call made — everything before it is the
+    // exhausted label-locator retry loop.
     const calls = mockedSpawnAB.mock.calls.map((c) => c[0]);
-    expect(calls[1]).toEqual([
+    expect(calls.at(-1)).toEqual([
       "--session", "s", "find", "role", "textbox", "fill", "user@example.com", "--name", "Email", "--exact",
     ]);
   });
 
   test("a label click has no unambiguous role, so it gets no fallback and stays a failure", () => {
     const action: RecordedAction = { action: "click", locator: { by: "label", value: "Email" } };
-    mockedSpawnAB.mockReturnValueOnce(FAIL);
+    // The click never resolves, even under retry, and click has no listed
+    // fallback role — so every attempt is this same argv, never a role retry.
+    replyBy(() => FAIL);
     const { kept, dropped, promoted } = validateActions([action], { sessionName: "s", mode: "strict" });
     expect(kept).toHaveLength(0);
     expect(dropped).toHaveLength(1);
     expect(promoted).toEqual([]);
-    expect(mockedSpawnAB).toHaveBeenCalledTimes(1); // no fallback attempt spawned
+    const calls = mockedSpawnAB.mock.calls.map((c) => c[0]);
+    expect(calls.every((argv) => argv.includes("label"))).toBe(true); // no fallback attempt spawned
   });
 
   test("when both the original and the fallback fail, the action fails as before and `promoted` stays empty", () => {
@@ -515,10 +578,8 @@ describe("validateActions (lenient mode)", () => {
       { action: "click", locator: css("[aria-label='X']"), stepId: "step-01" },
       { action: "wait", locator: { by: "text", value: "Saved" }, stepId: "step-01" },
     ];
-    mockedSpawnAB
-      .mockReturnValueOnce(FAIL) // 1st-pass click → cascade armed
-      .mockReturnValueOnce(FAIL) // rescue: click fails again
-      .mockReturnValueOnce(OK);  // rescue: wait passes
+    // click fails on the first pass and again on rescue; wait always passes.
+    replyBy((argv) => (argv.includes("[aria-label='X']") ? FAIL : OK));
     const { kept, unstable, rescuedSteps } = validateActions(actions, { sessionName: "s", mode: "lenient" });
     expect(kept.map((a) => a.action)).toEqual(["wait"]);
     expect(unstable.map((a) => a.action)).toEqual(["click"]);

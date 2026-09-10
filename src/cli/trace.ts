@@ -57,6 +57,8 @@ export interface StepChurn {
 export interface RunTraceResult {
   /** Overall run status, derived from the status-line protocol. */
   status: "passed" | "failed";
+  /** Why the status is `failed`; null when it passed. See `traceFailureReason`. */
+  failureReason: string | null;
   /**
    * Every STEP_START / STEP_DONE / ASSERTION_FAILED / STEP_SKIPPED /
    * RUN_COMPLETED line captured from the trace, in order. The record
@@ -240,7 +242,6 @@ export async function runTrace(
   log.blank();
 
   const statusLines: ParsedStatusLine[] = [];
-  let overallStatus: "passed" | "failed" = "passed";
   const traceActions: RecordedAction[] = [];
   // Tags each recorded action with its spec step so codegen can group by
   // step even when a step opens no URL (e.g. a "fill the form" step
@@ -257,7 +258,7 @@ export async function runTrace(
   // `url_contains:` marker pushes two actions, an unparseable command none.
   let lastCommandPushCount = 0;
 
-  const { isError } = await invokeClaudeStreaming(
+  const { isError, errorDetail } = await invokeClaudeStreaming(
     {
       prompt,
       systemPrompt,
@@ -310,8 +311,6 @@ export async function runTrace(
             if (status.type === "STEP_START" && status.stepId) {
               stepTracker.fromStepStartLine(status.stepId);
             }
-            if (status.type === "ASSERTION_FAILED") overallStatus = "failed";
-            if (status.type === "RUN_COMPLETED" && status.stepId === "failed") overallStatus = "failed";
             statusLines.push(status);
             log.step(status.type, status.stepId, status.detail);
             continue;
@@ -328,7 +327,8 @@ export async function runTrace(
     },
   );
 
-  if (isError) overallStatus = "failed";
+  const failureReason = traceFailureReason(statusLines, { isError, errorDetail });
+  const overallStatus: "passed" | "failed" = failureReason === null ? "passed" : "failed";
 
   const scrubbedActions = scrubAndReport(traceActions);
   const dedupedActions = dedupAndReport(scrubbedActions);
@@ -399,18 +399,48 @@ export async function runTrace(
     log.hint(`run 'ccqa generate ${testCase.ref.id}' to generate a test script`);
   } else {
     log.warn(
-      "trace FAILED — the recorded actions were saved beside the spec for diagnosis; the previous ir.json and generated code are left untouched",
+      `trace FAILED (${failureReason}) — the recorded actions were saved beside the spec for diagnosis; ` +
+        "the previous ir.json and generated code are left untouched",
     );
   }
 
   return {
     status: overallStatus,
+    failureReason,
     statusLines,
     actionsKept: validatedActions.length,
     actionsRecorded: traceActions.length,
     actions: validatedActions,
     churnByStep: buildChurnByStep(traceActions, validatedActions),
   };
+}
+
+/**
+ * Why a trace failed, or null when it did not. A reported assertion is ranked
+ * first because it is the only answer that is about the page; the rest say the
+ * session ended before the model could give one. `RUN_COMPLETED` is required
+ * by the protocol, so its absence is a failure and not a silent pass.
+ */
+export function traceFailureReason(
+  lines: readonly ParsedStatusLine[],
+  session: { isError: boolean; errorDetail: string | null },
+): string | null {
+  const assertionFailed = lines.find((l) => l.type === "ASSERTION_FAILED");
+  if (assertionFailed) {
+    return `${assertionFailed.stepId || "(unnamed step)"} reported ASSERTION_FAILED`;
+  }
+  if (session.isError) {
+    return `the Claude session ended in an error: ${session.errorDetail ?? "no detail reported"}`;
+  }
+  const completed = lines.filter((l) => l.type === "RUN_COMPLETED").at(-1);
+  if (completed === undefined) {
+    return "the session ended without a RUN_COMPLETED line — the model stopped before it reported an outcome";
+  }
+  // The verdict's case is cosmetic; refusing `PASSED` would discard the whole
+  // recording the run just paid for.
+  return completed.stepId.trim().toLowerCase() === "passed"
+    ? null
+    : `the model reported RUN_COMPLETED|${completed.stepId}`;
 }
 
 /**
@@ -432,12 +462,10 @@ async function reportRouteDiff(
     ref,
     renderRouteDiff(diff, { specKey: ref.id, before, after, stepTitles }),
   );
-  log.meta(
-    "route diff",
-    diff.changes.length === 0
-      ? `unchanged (${path})`
-      : `${diff.changes.length} change(s) — ${path}`,
-  );
+  const parts: string[] = [];
+  if (diff.changes.length > 0) parts.push(`${diff.changes.length} change(s)`);
+  if (diff.moved.length > 0) parts.push(`${diff.moved.length} moved between steps`);
+  log.meta("route diff", `${parts.join(", ") || "unchanged"} — ${path}`);
 }
 
 /**
@@ -815,8 +843,14 @@ export function createStepTracker(onChange?: (stepId: string) => void): StepTrac
 }
 
 export function parseStatusLine(text: string): ParsedStatusLine | null {
-  for (const line of text.split("\n")) {
-    const match = line.match(/^(STEP_START|STEP_DONE|ASSERTION_FAILED|STEP_SKIPPED|RUN_COMPLETED)\|([^|]*)\|(.*)$/);
+  for (const raw of text.split("\n")) {
+    // Leading whitespace and markdown emphasis around the line, and a missing
+    // trailing summary, are cosmetic — and a `RUN_COMPLETED` this refuses to
+    // read now costs a whole recording.
+    const line = raw.trim().replace(/^[*`]+/, "").replace(/[*`]+$/, "");
+    const match = line.match(
+      /^(STEP_START|STEP_DONE|ASSERTION_FAILED|STEP_SKIPPED|RUN_COMPLETED)\|([^|]*)(?:\|(.*))?$/,
+    );
     if (match) {
       return {
         type: match[1] as ParsedStatusLine["type"],

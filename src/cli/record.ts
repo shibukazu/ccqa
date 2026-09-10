@@ -301,7 +301,7 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
       // "during step-NN" — that would name a step that completed fine.
       tracingStep = undefined;
       if (traceResult.status !== "passed") {
-        traceFailureNote = "trace finished FAILED — a step did not complete, so the recording does not demonstrate the spec";
+        traceFailureNote = `trace finished FAILED: ${traceResult.failureReason} — the recording does not demonstrate the spec`;
       }
       log.blank();
 

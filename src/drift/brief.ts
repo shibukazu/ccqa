@@ -48,13 +48,21 @@ export interface AuditBrief {
  * Where the repair belongs — the one question a fix job asks: may I regenerate
  * this test?
  *
- * `regenerate` is the narrow answer, and it takes two things. The finding has
- * to be one a regeneration could actually fix: only `TEST_DRIFT` on the
- * `generated` surface is, since that is the surface a regeneration rewrites.
- * A stale document, a changed behaviour, a suspected product bug — a
- * regeneration reproduces each of those faithfully from the same stale input.
- * And ccqa has to have written the test, with nobody having touched it since;
- * otherwise regenerating throws someone's work away.
+ * `regenerate` says the case is **eligible** for regeneration, not that
+ * regenerating repairs it: a rewrite pass reuses the support files the case
+ * imports rather than re-emitting them, so a locator that went stale inside
+ * one is still stale afterwards. What repairs that is the verification loop
+ * that runs next — which `--auto-fix skip` turns off, and which needs the
+ * target to have a `runCommand` at all. A fix job on this route regenerates
+ * *and verifies*.
+ *
+ * Eligibility takes two things. The finding has to be one a regeneration could
+ * act on: only `TEST_DRIFT` on the `generated` surface is, since that is the
+ * surface a regeneration rewrites. A stale document, a changed behaviour, a
+ * suspected product bug — a regeneration reproduces each of those faithfully
+ * from the same stale input. And ccqa has to have written the test, with
+ * nobody having touched it since; otherwise regenerating throws someone's work
+ * away.
  *
  * Everything else is `external`: hand it to whoever owns the file, with the
  * reason saying which of the two conditions failed. Only this routing reads
@@ -160,6 +168,8 @@ async function repairRoute(
   }
   return {
     route: "regenerate",
-    reason: `test drift in generated code, unchanged since ccqa generated it on ${stamp.at}`,
+    reason:
+      `test drift in generated code, unchanged since ccqa generated it on ${stamp.at} — ` +
+      `regenerate and verify: regenerating makes the case eligible for repair, not repaired`,
   };
 }

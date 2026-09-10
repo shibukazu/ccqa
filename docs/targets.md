@@ -476,9 +476,10 @@ The **Screens** column links the step screenshots the last `ccqa run` left. A
 project whose generated tests belong to its own runner never calls `ccqa run`,
 so where there is no such report the screenshots the generation's own
 verification took stand in — the same file pair, of the same test passing,
-kept under `.ccqa/cases/<id>/runs/generated/`. Only the attempt that passed is
-kept; a generation that never passed leaves none. (A live run archives itself
-beside it, under `runs/<run id>/`; the two never share a directory.)
+kept under `.ccqa/cases/<id>/evidence/`. Only the attempt that passed is kept;
+a generation that never passed leaves none. Beside `runs/`, not inside it: a
+project gitignores `runs/`, and a review table linking into it would resolve to
+nothing once pasted into a pull request.
 
 With [`sourceRoots`](./running.md#sourceroots--where-the-product-actually-lives)
 configured, a **Where the source says so** column is added: each test id,
@@ -676,6 +677,12 @@ published as both ESM and CommonJS, so a suite with no `type: "module"` — most
 Playwright suites — can `require()` it: without that the import fails at
 resolution, the run reports that it found no tests, and a fix pass removes the
 import to make the failure go away, leaving a spec with no screenshots at all.
+
+Your `tsconfig.json` has to resolve subpath exports, which means
+`"moduleResolution"` of `bundler`, `node16` or `nodenext`. The older `node`
+setting predates the `exports` field and reports `ccqa/step-evidence` as having
+no type declarations (TS2307), whichever build it would have loaded at run
+time.
 
 Capture is best-effort: a failed screenshot is logged and skipped, never a test
 failure. A rewrite pass that dropped a step's two capture calls is rejected and

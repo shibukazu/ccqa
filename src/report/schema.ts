@@ -139,6 +139,16 @@ export const SpecChangeKindSchema = z.enum(["FEATURE_REMOVED", "BEHAVIOUR_CHANGE
 export type SpecChangeKind = z.infer<typeof SpecChangeKindSchema>;
 
 /**
+ * The field as every parser reads it: a value outside the two is dropped, not
+ * rejected. Models put this field on labels the prompt scopes it away from,
+ * sometimes with a value of their own — and a whole usable verdict must not be
+ * lost over a field `normalizeDiagnosis` drops a line later. Dropped rather
+ * than coerced: guessing which of the two was meant would put ccqa's invention
+ * where its evidence should be.
+ */
+const specChangeKindField = SpecChangeKindSchema.optional().catch(undefined);
+
+/**
  * LLM output shape. Deliberately NOT .strict(): the model occasionally adds
  * keys, and rejecting the whole analysis over an extra field would collapse
  * a usable prediction into UNKNOWN. Zod's default strips unknown keys.
@@ -174,7 +184,7 @@ export const FailureAnalysisSchema = z.object({
    * travels in a report row's `analysis`, which is parsed by this schema —
    * today only the audit sets it.
    */
-  specChangeKind: SpecChangeKindSchema.optional(),
+  specChangeKind: specChangeKindField,
 });
 export type FailureAnalysis = z.infer<typeof FailureAnalysisSchema>;
 
@@ -218,7 +228,7 @@ export const DriftDiagnosisSchema = z.object({
   surface: DriftSurfaceSchema.default("spec"),
   subDiagnosis: DriftSubDiagnosisSchema.default("NONE"),
   /** See `SpecChangeKindSchema`. */
-  specChangeKind: SpecChangeKindSchema.optional(),
+  specChangeKind: specChangeKindField,
   /** One line: what is out of sync. */
   headline: z.string(),
   /** What to change to bring them back in sync. */

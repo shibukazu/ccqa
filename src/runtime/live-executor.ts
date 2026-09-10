@@ -202,6 +202,8 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     }
   }
 
+  // Said once, not per step: the degrade is a property of the page.
+  let warnedDegraded = false;
   for (let i = 0; i < input.steps.length; i++) {
     const step = input.steps[i]!;
     log.info(`step ${i + 1}/${input.steps.length} [${step.id}] ${truncateForLog(step.instruction)}`);
@@ -358,6 +360,10 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     // scroll position. Before stays viewport-only (lighter, and the before-state
     // doesn't usually need to prove "this row appeared below the fold").
     const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
+    if (after.degraded && !warnedDegraded) {
+      warnedDegraded = true;
+      log.warn("screenshots capture the viewport only: this page cannot be captured whole");
+    }
     if (!after.ok) log.warn(`screenshot (after, ${step.id}) failed: ${after.error}`);
 
     let judged = findLastStepResult(transcript);

@@ -29,6 +29,7 @@ describe("diffRoutes", () => {
           after: 'click role=button[name="Submit"]',
         },
       ],
+      moved: [],
       unchangedSteps: ["step-01"],
     });
   });
@@ -60,3 +61,44 @@ describe("diffRoutes", () => {
     expect(markdown).toContain("The route is unchanged");
   });
 });
+
+describe("diffRoutes — an operation recorded under a different step", () => {
+  // Measured on a re-record: most of a 33-entry diff was a sign-in the
+  // recorder put inside the first step this time and before it last time.
+  // Reported as removals and additions, it describes a flow nobody touched.
+  const signIn: RecordedAction = {
+    action: "fill",
+    locator: { by: "label", value: "Email" },
+    value: "${TEST_EMAIL}",
+  };
+  const open: RecordedAction = { action: "navigate", value: "https://example.test/", stepId: "step-01" };
+
+  it("folds a move into its own list instead of a removal plus an addition", () => {
+    const diff = diffRoutes([{ ...signIn }, open], [{ ...signIn, stepId: "step-01" }, open]);
+    expect(diff.changes).toEqual([]);
+    expect(diff.moved).toEqual([
+      { action: 'fill label="Email" "${TEST_EMAIL}"', from: "(no step)", to: "step-01" },
+    ]);
+  });
+
+  // Telling which of two identical operations moved is a question the
+  // recording cannot answer, so the per-step diff keeps them.
+  it("leaves a repeated operation to the per-step diff", () => {
+    const twice = [{ ...signIn }, { ...signIn }];
+    const diff = diffRoutes(twice, twice.map((a) => ({ ...a, stepId: "step-01" })));
+    expect(diff.moved).toEqual([]);
+    expect(diff.changes.length).toBeGreaterThan(0);
+  });
+
+  it("says the route is unchanged when only attribution moved", () => {
+    const diff = diffRoutes([{ ...signIn }], [{ ...signIn, stepId: "step-01" }]);
+    const markdown = renderRouteDiff(diff, {
+      specKey: "demo/x",
+      before: { actions: [] },
+      after: { actions: [] },
+    });
+    expect(markdown).toContain("Only which step each was recorded under moved");
+    expect(markdown).toContain("Recorded under a different step");
+  });
+});
+

@@ -36,6 +36,7 @@ function mockTraceMessages(): Array<Record<string, unknown>> {
     bash("tu_3", `CCQA_STEP=step-03 CCQA_ASSERT=1 agent-browser --session s1 wait --text "Ready" --timeout 3000`),
     bash("tu_4", `CCQA_STEP=step-03 CCQA_ASSERT=element_visible agent-browser --session s1 get count "[data-qa='panel']"`),
     bash("tu_5", `CCQA_STEP=step-03 CCQA_ASSERT=url_contains:about agent-browser --session s1 get url`),
+    text("RUN_COMPLETED|passed|all steps done"),
     { type: "result", subtype: "success", result: "", is_error: false },
   ];
 }

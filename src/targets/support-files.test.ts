@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { collectSupportFiles } from "./support-files.ts";
+import { collectSupportFiles, exportedNames } from "./support-files.ts";
 
 /**
  * A neutral fixture repo: a test importing a page object, which imports a
@@ -89,3 +89,41 @@ export class TodoPage {}
     ]);
   });
 });
+
+describe("exportedNames", () => {
+  it("lists what a page object declares, in the forms one is written in", () => {
+    const source = [
+      `export const HEADING = "Integrations";`,
+      `export function openTodos() {}`,
+      `export class TodoPage {}`,
+      // A page object's own row type is referenced only inside it, so listing
+      // it would report a definition that is used.
+      `export interface Row { id: string }`,
+      `const internal = 1;`,
+      `export { internal as exposed };`,
+    ].join("\n");
+    expect(exportedNames(source).sort()).toEqual(
+      ["HEADING", "TodoPage", "exposed", "openTodos"].sort(),
+    );
+  });
+
+  // This answers a warning, not a refusal: a name missed costs nothing, a name
+  // invented costs a false warning about a definition that is used.
+  it("invents nothing from prose that merely mentions export", () => {
+    expect(exportedNames("// export the page object later\nconst x = 1;")).toEqual([]);
+  });
+
+  it("does not list an export that is commented out, in either comment form", () => {
+    const source = [
+      `// export const OLD_HEADING = "Old";`,
+      `/*`,
+      `export const BLOCK_HEADING = "Older";`,
+      `*/`,
+      `const x = 1; // export const TRAILING = 2;`,
+      `export const HEADING = "New";`,
+      `export const DOCS_URL = "https://example.test/docs";`,
+    ].join("\n");
+    expect(exportedNames(source).sort()).toEqual(["DOCS_URL", "HEADING"]);
+  });
+});
+

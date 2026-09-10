@@ -35,9 +35,7 @@ export function caseIdOf(target: SpecTarget): string {
 }
 
 /** The model's reply: a diagnosis, or `null` for "the spec still matches the code". */
-export const DriftReplySchema = z.object({
-  drift: DriftDiagnosisSchema.nullable(),
-});
+export const DriftReplySchema = z.object({ drift: DriftDiagnosisSchema.nullable() });
 
 export interface SpecResult {
   target: SpecTarget;

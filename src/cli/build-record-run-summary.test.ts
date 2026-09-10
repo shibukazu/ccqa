@@ -17,6 +17,7 @@ function action(overrides: Partial<RecordedAction> = {}): RecordedAction {
 function traceResult(overrides: Partial<RunTraceResult> = {}): RunTraceResult {
   return {
     status: "passed",
+    failureReason: null,
     statusLines: statusLines(),
     actionsKept: 1,
     actionsRecorded: 1,
