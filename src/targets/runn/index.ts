@@ -1,14 +1,8 @@
 import { parse as parseYaml } from "yaml";
 import { runnTaskInstructions } from "../../prompts/llm-gen.ts";
 import { expandActionSteps } from "../../spec/expand.ts";
-import { loadAllBlocks } from "../../store/index.ts";
-import {
-  existingOutputFromManifest,
-  generateWithLlmEngine,
-  specDirRel,
-  type InvokeFn,
-  type LlmGeneratedFile,
-} from "../llm-engine.ts";
+import { loadAllBlocks, SPEC_DIR_TEMPLATE } from "../../store/index.ts";
+import { generateWithLlmEngine, type InvokeFn, type LlmGeneratedFile } from "../llm-engine.ts";
 import { runCommandRunner } from "../run-command-runner.ts";
 import type { CapabilitySupport, GenerateContext, GenerateResult, TargetPlugin } from "../types.ts";
 
@@ -29,7 +23,9 @@ export const runnTarget: TargetPlugin = {
   id: RUNN_TARGET,
   input: "spec",
   generate: (ctx) => generateRunnRunbook(ctx),
-  existingOutput: existingOutputFromManifest,
+  // Beside the spec by default; a repo with a runbook tree sets
+  // `targets.runn.testPath`.
+  defaultTestPath: `${SPEC_DIR_TEMPLATE}/runbook.yaml`,
   runner: runCommandRunner,
   // runn drives an API scenario — there is no browser to screenshot, so the
   // report records this reason instead of showing an empty evidence section.
@@ -46,9 +42,6 @@ export async function generateRunnRunbook(
   ctx: GenerateContext,
   invoke?: InvokeFn,
 ): Promise<GenerateResult> {
-  // Without a configured outDir the runbook lands in the spec directory,
-  // next to spec.yaml — the same layout as the other targets.
-  const outDir = ctx.targetConfig.outDir;
   const blocks = await loadAllBlocks(ctx.cwd);
   const steps = expandActionSteps(ctx.spec, { blocks }, `${ctx.featureName}/${ctx.specName}`, {
     id: RUNN_TARGET,
@@ -58,9 +51,7 @@ export async function generateRunnRunbook(
     ctx,
     target: RUNN_TARGET,
     steps,
-    taskInstructions: runnTaskInstructions(
-      outDir ? `${outDir}/${ctx.featureName}/${ctx.specName}.yaml` : `${specDirRel(ctx)}/runbook.yaml`,
-    ),
+    taskInstructions: runnTaskInstructions(ctx.testPath),
     validateFile: validateRunnFile,
     invoke,
   });

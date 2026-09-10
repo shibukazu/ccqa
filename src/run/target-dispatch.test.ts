@@ -12,6 +12,7 @@ import { readSpecs } from "./spec-catalog.ts";
 import { createIncrementalReport, type ReportEnvelope } from "./incremental-report.ts";
 import { resolveTargetFrom } from "../targets/registry.ts";
 import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
+import { SPEC_DIR_TEMPLATE } from "../store/index.ts";
 import type {
   BrowserCoverageDecl,
   GenerateResult,
@@ -65,6 +66,7 @@ function fakePlugin(id: string, runner?: TestRunner): TargetPlugin {
     generate: (): Promise<GenerateResult> => {
       throw new Error("not under test");
     },
+    defaultTestPath: `${SPEC_DIR_TEMPLATE}/test.spec.ts`,
     judgeSteps: { supported: true },
     browserCoverage: { browser: "none", reason: "test target" },
     ...(runner ? { runner } : {}),
@@ -191,6 +193,7 @@ function group(runner: TestRunner, specs: ExternalTargetGroup["specs"]): Externa
     targetId: "ext-run",
     runner,
     targetConfig: { runCommand: "echo {files}", resources: [], conventions: { guides: [], examples: [] } },
+    defaultTestPath: `${SPEC_DIR_TEMPLATE}/test.spec.ts`,
     stepEvidence: NO_EVIDENCE,
     browserCoverage: NO_COVERAGE,
     specs,

@@ -11,7 +11,6 @@ vi.mock("../cli/draft.ts", async (importOriginal) => {
 });
 const { prompt: mockedPrompt } = await import("../cli/draft.ts");
 import {
-  existingOutputFromManifest,
   finalizePreparedFiles,
   generateWithLlmEngine,
   parseLlmGenOutput,
@@ -19,7 +18,6 @@ import {
   validateOutputPath,
   type InvokeFn,
 } from "./llm-engine.ts";
-import { GENERATED_MANIFEST_FILE } from "./run-command-runner.ts";
 import { TargetConfigSchema } from "../config/project-config.ts";
 import { TestSpecSchema } from "../spec/yaml-schema.ts";
 import type { GenerateContext } from "./types.ts";
@@ -51,9 +49,10 @@ function makeContext(overrides: Partial<GenerateContext> = {}): GenerateContext 
     featureName: "todos",
     specName: "add-item",
     cwd,
+    testPath: "e2e/todos/add-item.spec.ts",
     resources: [],
     conventions: { guides: [], examples: [] },
-    targetConfig: TargetConfigSchema.parse({ outDir: "e2e" }),
+    targetConfig: TargetConfigSchema.parse({}),
     language: "auto",
     hub: null,
     fix: { maxRetries: 1, mode: "auto", useSnapshot: false },
@@ -139,28 +138,32 @@ describe("parseLlmGenOutput", () => {
 describe("validateOutputPath", () => {
   const policy = {
     cwd: "/repo",
-    outDirAbs: "/repo/e2e",
+    testPath: "e2e/a.spec.ts",
     writeRootsAbs: ["/repo/pages"],
   };
 
-  it("accepts paths under outDir and under a writable resource root", () => {
-    expect(validateOutputPath(policy, "e2e/a.spec.ts")).toBeNull();
-    expect(validateOutputPath(policy, "e2e/nested/b.spec.ts")).toBeNull();
-    expect(validateOutputPath(policy, "pages/new_page.ts")).toBeNull();
+  it("accepts the test file at its configured testPath, and support files under the test's directory or a writable resource root", () => {
+    expect(validateOutputPath(policy, "e2e/a.spec.ts", "test")).toBeNull();
+    expect(validateOutputPath(policy, "e2e/nested/b.spec.ts", "support")).toBeNull();
+    expect(validateOutputPath(policy, "pages/new_page.ts", "support")).toBeNull();
+  });
+
+  it("rejects a test-kind file anywhere other than the configured testPath", () => {
+    expect(validateOutputPath(policy, "e2e/other.spec.ts", "test")).toMatch(/must be written to/);
   });
 
   it("rejects absolute paths, traversal, node_modules, and escapes", () => {
-    expect(validateOutputPath(policy, "/etc/passwd")).toMatch(/absolute/);
-    expect(validateOutputPath(policy, "e2e/../../outside.ts")).toMatch(/traversal/);
-    expect(validateOutputPath(policy, "e2e/node_modules/x.ts")).toMatch(/node_modules/);
-    expect(validateOutputPath(policy, "src/app.ts")).toMatch(/escapes the allowed roots/);
+    expect(validateOutputPath(policy, "/etc/passwd", "support")).toMatch(/absolute/);
+    expect(validateOutputPath(policy, "e2e/../../outside.ts", "support")).toMatch(/traversal/);
+    expect(validateOutputPath(policy, "e2e/node_modules/x.ts", "support")).toMatch(/node_modules/);
+    expect(validateOutputPath(policy, "src/app.ts", "support")).toMatch(/escapes the allowed roots/);
   });
 
   it("rejects shell-unsafe characters (defense in depth for shell:true runCommands)", () => {
     for (const p of ["e2e/a$(rm x).ts", "e2e/a;b.ts", "e2e/a`b`.ts", "e2e/a|b.ts", "e2e/a\nb.ts"]) {
-      expect(validateOutputPath(policy, p)).toMatch(/shell-unsafe/);
+      expect(validateOutputPath(policy, p, "support")).toMatch(/shell-unsafe/);
     }
-    expect(validateOutputPath(policy, "e2e/spaced name.spec.ts")).toBeNull();
+    expect(validateOutputPath(policy, "e2e/spaced name.ts", "support")).toBeNull();
   });
 });
 
@@ -174,7 +177,7 @@ describe("substituteRunCommandFiles", () => {
 });
 
 describe("generateWithLlmEngine", () => {
-  it("writes the returned files and a sha256 manifest, and reports passed without a runCommand", async () => {
+  it("writes the returned files and reports passed without a runCommand", async () => {
     await makeProject();
     const { invoke, prompts } = fakeInvoke([okOutput()]);
     const result = await generateWithLlmEngine({
@@ -192,21 +195,6 @@ describe("generateWithLlmEngine", () => {
       { path: resolve(cwd, "e2e/todos/add-item.spec.ts"), kind: "test" },
     ]);
     expect(await readFile(result.files[0]!.path, "utf8")).toBe("// generated test\n");
-
-    const manifest = JSON.parse(
-      await readFile(
-        join(cwd, ".ccqa/features/todos/test-cases/add-item", GENERATED_MANIFEST_FILE),
-        "utf8",
-      ),
-    );
-    expect(manifest.target).toBe("playwright");
-    expect(manifest.files).toEqual([
-      {
-        path: "e2e/todos/add-item.spec.ts",
-        kind: "test",
-        sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
-      },
-    ]);
 
     // The prompt carries the spec, the draft, and the reuse/output contracts.
     expect(prompts).toHaveLength(1);
@@ -269,7 +257,7 @@ describe("generateWithLlmEngine", () => {
   it("requires at least one test-kind file", async () => {
     await makeProject();
     const supportOnly = JSON.stringify({
-      files: [{ path: "e2e/helper.ts", contents: "x", kind: "support" }],
+      files: [{ path: "e2e/todos/helper.ts", contents: "x", kind: "support" }],
       summary: "",
     });
     const { invoke } = fakeInvoke([supportOnly]);
@@ -284,45 +272,44 @@ describe("generateWithLlmEngine", () => {
     ).rejects.toThrow(/no "kind": "test" file/);
   });
 
-  it("defaults the write root to the spec directory when outDir is not configured", async () => {
+  it("rejects a test-kind file written anywhere other than the configured testPath", async () => {
     await makeProject();
+    const { invoke: badInvoke } = fakeInvoke([okOutput("e2e/somewhere-else.spec.ts")]);
+    await expect(
+      generateWithLlmEngine({
+        ctx: makeContext(),
+        target: "playwright",
+        steps: [],
+        taskInstructions: "x",
+        invoke: badInvoke,
+      }),
+    ).rejects.toThrow(/must be written to/);
+
+    // The valid path (matching ctx.testPath) still writes normally.
     const specDirTest = ".ccqa/features/todos/test-cases/add-item/test.spec.ts";
     const { invoke } = fakeInvoke([okOutput(specDirTest)]);
     const res = await generateWithLlmEngine({
-      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({}) }),
+      ctx: makeContext({ testPath: specDirTest }),
       target: "playwright",
       steps: [],
       taskInstructions: "x",
       invoke,
     });
     expect(res.files.map((f) => relative(cwd, f.path))).toEqual([specDirTest]);
-
-    // ...and a path outside the spec directory is rejected by the policy.
-    const { invoke: badInvoke } = fakeInvoke([okOutput("e2e/todos/add-item.spec.ts")]);
-    await expect(
-      generateWithLlmEngine({
-        ctx: makeContext({ targetConfig: TargetConfigSchema.parse({}) }),
-        target: "playwright",
-        steps: [],
-        taskInstructions: "x",
-        invoke: badInvoke,
-      }),
-    ).rejects.toThrow(/escapes the allowed roots/);
   });
 
   it("runs the fix loop until the runCommand passes", async () => {
     await makeProject();
     // The verification command passes only once the fix pass writes the marker file.
     const fixed = JSON.stringify({
-      files: [{ path: "e2e/fixed.marker", contents: "ok", kind: "support" }],
+      files: [{ path: "e2e/todos/fixed.marker", contents: "ok", kind: "support" }],
       summary: "fixed",
     });
     const { invoke, prompts } = fakeInvoke([okOutput(), fixed]);
     const result = await generateWithLlmEngine({
       ctx: makeContext({
         targetConfig: TargetConfigSchema.parse({
-          outDir: "e2e",
-          runCommand: "test -f e2e/fixed.marker # {files}",
+          runCommand: "test -f e2e/todos/fixed.marker # {files}",
         }),
       }),
       target: "playwright",
@@ -336,8 +323,8 @@ describe("generateWithLlmEngine", () => {
     expect(prompts[1]).toContain("Failing command");
     // The fix pass merged the new file alongside the original.
     expect(result.files.map((f) => f.path).sort()).toEqual([
-      resolve(cwd, "e2e/fixed.marker"),
       resolve(cwd, "e2e/todos/add-item.spec.ts"),
+      resolve(cwd, "e2e/todos/fixed.marker"),
     ]);
   });
 
@@ -346,7 +333,7 @@ describe("generateWithLlmEngine", () => {
     const { invoke, prompts } = fakeInvoke([okOutput()]);
     const result = await generateWithLlmEngine({
       ctx: makeContext({
-        targetConfig: TargetConfigSchema.parse({ outDir: "e2e", runCommand: "false" }),
+        targetConfig: TargetConfigSchema.parse({ runCommand: "false" }),
       }),
       target: "playwright",
       steps: [],
@@ -367,7 +354,7 @@ describe("generateWithLlmEngine", () => {
     const result = await generateWithLlmEngine({
       ctx: makeContext({
         fix: { maxRetries: 3, mode: "non-interactive", useSnapshot: false },
-        targetConfig: TargetConfigSchema.parse({ outDir: "e2e", runCommand: "false" }),
+        targetConfig: TargetConfigSchema.parse({ runCommand: "false" }),
       }),
       target: "playwright",
       steps: [],
@@ -387,7 +374,7 @@ describe("generateWithLlmEngine", () => {
     try {
       vi.mocked(mockedPrompt).mockResolvedValueOnce("n");
       const fixed = JSON.stringify({
-        files: [{ path: "e2e/fixed.marker", contents: "ok", kind: "support" }],
+        files: [{ path: "e2e/todos/fixed.marker", contents: "ok", kind: "support" }],
         summary: "fixed",
       });
       const { invoke, prompts } = fakeInvoke([okOutput(), fixed]);
@@ -395,8 +382,7 @@ describe("generateWithLlmEngine", () => {
         ctx: makeContext({
           fix: { maxRetries: 1, mode: "interactive", useSnapshot: false },
           targetConfig: TargetConfigSchema.parse({
-            outDir: "e2e",
-            runCommand: "test -f e2e/fixed.marker # {files}",
+            runCommand: "test -f e2e/todos/fixed.marker # {files}",
           }),
         }),
         target: "playwright",
@@ -409,7 +395,7 @@ describe("generateWithLlmEngine", () => {
       expect(result.passed).toBe(false);
       expect(prompts).toHaveLength(2);
       expect(vi.mocked(mockedPrompt)).toHaveBeenCalled();
-      await expect(stat(resolve(cwd, "e2e/fixed.marker"))).rejects.toThrow();
+      await expect(stat(resolve(cwd, "e2e/todos/fixed.marker"))).rejects.toThrow();
     } finally {
       Object.defineProperty(process.stdin, "isTTY", { value: prevTty, configurable: true });
     }
@@ -424,7 +410,7 @@ describe("generateWithLlmEngine", () => {
     Object.defineProperty(process.stdin, "isTTY", { value: undefined, configurable: true });
     try {
       const fixed = JSON.stringify({
-        files: [{ path: "e2e/fixed.marker", contents: "ok", kind: "support" }],
+        files: [{ path: "e2e/todos/fixed.marker", contents: "ok", kind: "support" }],
         summary: "fixed",
       });
       const { invoke } = fakeInvoke([okOutput(), fixed]);
@@ -432,8 +418,7 @@ describe("generateWithLlmEngine", () => {
         ctx: makeContext({
           fix: { maxRetries: 1, mode: "interactive", useSnapshot: false },
           targetConfig: TargetConfigSchema.parse({
-            outDir: "e2e",
-            runCommand: "test -f e2e/fixed.marker # {files}",
+            runCommand: "test -f e2e/todos/fixed.marker # {files}",
           }),
         }),
         target: "playwright",
@@ -443,7 +428,7 @@ describe("generateWithLlmEngine", () => {
       });
       expect(result.passed).toBe(false);
       expect(vi.mocked(mockedPrompt)).not.toHaveBeenCalled();
-      await expect(stat(resolve(cwd, "e2e/fixed.marker"))).rejects.toThrow();
+      await expect(stat(resolve(cwd, "e2e/todos/fixed.marker"))).rejects.toThrow();
     } finally {
       Object.defineProperty(process.stdin, "isTTY", { value: prevTty, configurable: true });
     }
@@ -456,7 +441,7 @@ describe("generateWithLlmEngine", () => {
     const { invoke, prompts } = fakeInvoke([okOutput(), "not json"]);
     const result = await generateWithLlmEngine({
       ctx: makeContext({
-        targetConfig: TargetConfigSchema.parse({ outDir: "e2e", runCommand: "false" }),
+        targetConfig: TargetConfigSchema.parse({ runCommand: "false" }),
       }),
       target: "playwright",
       steps: [],
@@ -487,12 +472,12 @@ describe("generateWithLlmEngine", () => {
     const { invoke, prompts } = fakeInvoke([output]);
     const result = await generateWithLlmEngine({
       ctx: makeContext({
+        testPath: "e2e/specs/add-item.spec.ts",
         resources: [
           { path: "e2e/pages", description: "page objects" },
           { package: "@acme/e2e-kit", description: "shared fixtures" },
         ],
         conventions: { guides: ["docs/style.md"], examples: [] },
-        targetConfig: TargetConfigSchema.parse({ outDir: "e2e/specs" }),
       }),
       target: "playwright",
       steps: [],
@@ -509,36 +494,13 @@ describe("generateWithLlmEngine", () => {
   });
 });
 
-describe("existingOutputFromManifest", () => {
-  it("returns a still-existing generated file, or null when absent", async () => {
-    await makeProject();
-    const ref = { featureName: "todos", specName: "add-item" };
-    expect(await existingOutputFromManifest(ref, cwd)).toBeNull();
-
-    const { invoke } = fakeInvoke([okOutput()]);
-    await generateWithLlmEngine({
-      ctx: makeContext(),
-      target: "playwright",
-      steps: [],
-      taskInstructions: "x",
-      invoke,
-    });
-    expect(await existingOutputFromManifest(ref, cwd)).toBe(
-      resolve(cwd, "e2e/todos/add-item.spec.ts"),
-    );
-
-    await rm(resolve(cwd, "e2e/todos/add-item.spec.ts"));
-    expect(await existingOutputFromManifest(ref, cwd)).toBeNull();
-  });
-});
-
 describe("finalizePreparedFiles", () => {
-  it("shares the write + manifest + verification half for prepared files", async () => {
+  it("shares the write + verification half for prepared files", async () => {
     await makeProject();
     const { invoke, prompts } = fakeInvoke([]);
     const result = await finalizePreparedFiles({
       ctx: makeContext({
-        targetConfig: TargetConfigSchema.parse({ outDir: "e2e", runCommand: "exit 0" }),
+        targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }),
       }),
       target: "playwright",
       files: [{ path: "e2e/draft.spec.ts", contents: "// draft", kind: "test" }],
@@ -549,11 +511,5 @@ describe("finalizePreparedFiles", () => {
     expect(result.passed).toBe(true);
     expect(prompts).toHaveLength(0); // verification passed — no LLM involved
     expect(await readFile(resolve(cwd, "e2e/draft.spec.ts"), "utf8")).toBe("// draft");
-    const manifestPath = join(
-      cwd,
-      ".ccqa/features/todos/test-cases/add-item",
-      GENERATED_MANIFEST_FILE,
-    );
-    expect(JSON.parse(await readFile(manifestPath, "utf8")).files).toHaveLength(1);
   });
 });

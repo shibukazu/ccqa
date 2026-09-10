@@ -5,12 +5,11 @@ import * as log from "../cli/logger.ts";
 
 /**
  * Per-spec advisory lock for `ccqa record` / `ccqa generate`. Two concurrent
- * generations of the same spec interleave writes to ir.json, test files, and
- * the generated.json manifest with no defined winner, so the second caller
- * must fail fast instead. The lock is a JSON file in the spec directory
- * created with O_EXCL; a lock whose PID is no longer alive (crashed or
- * SIGKILLed run) is reclaimed automatically, so abnormal exits never wedge a
- * spec. Same-machine only by design — the spec tree is a local working copy.
+ * generations of the same spec interleave writes to ir.json and the test files
+ * with no defined winner, so the second caller must fail fast instead. The lock
+ * is a JSON file in the spec directory created with O_EXCL; a lock whose PID is
+ * no longer alive (crashed or SIGKILLed run) is reclaimed automatically, so
+ * abnormal exits never wedge a spec. Same-machine only by design — the spec tree is a local working copy.
  */
 
 export const SPEC_LOCK_FILE = ".ccqa-lock.json";

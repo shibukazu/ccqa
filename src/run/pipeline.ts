@@ -1810,6 +1810,7 @@ function createRerunExecutor(ctx: {
         ...(ctx.opts.language ? { language: ctx.opts.language } : {}),
         targetId: group.targetId,
         targetConfig: group.targetConfig,
+        defaultTestPath: group.defaultTestPath,
         stepEvidence: group.stepEvidence,
         browserCoverage: group.browserCoverage,
         onSpecComplete: async () => {},

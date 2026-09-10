@@ -1,6 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
-import { resolve } from "node:path";
-import { loadAllBlocks } from "../../store/index.ts";
+import { readFile } from "node:fs/promises";
+import { loadAllBlocks, SPEC_DIR_TEMPLATE, TEST_SCRIPT_FILE } from "../../store/index.ts";
 import {
   expandSpec,
   isExpandedActionStep,
@@ -11,12 +10,7 @@ import type { StepMarker } from "../../codegen/actions-to-script.ts";
 import type { RecordedAction } from "../../types.ts";
 import { playwrightTaskInstructions } from "../../prompts/llm-gen.ts";
 import { buildStepMarkers, lastActionIndexPerStep } from "../agent-browser/generate.ts";
-import {
-  existingOutputFromManifest,
-  finalizePreparedFiles,
-  generateWithLlmEngine,
-  specDirRel,
-} from "../llm-engine.ts";
+import { finalizePreparedFiles, generateWithLlmEngine } from "../llm-engine.ts";
 import {
   emitPlaywrightDraft,
   judgeCall,
@@ -30,7 +24,7 @@ import {
 } from "./emit-mechanical.ts";
 import { acquirePlaywrightBrowser } from "./browser-server.ts";
 import { runCommandRunner } from "../run-command-runner.ts";
-import type { GenerateContext, GenerateResult, SpecRef, TargetPlugin } from "../types.ts";
+import type { GenerateContext, GenerateResult, TargetPlugin } from "../types.ts";
 import * as log from "../../cli/logger.ts";
 import { reviewGeneratedTest } from "../verifies-spec.ts";
 
@@ -46,13 +40,16 @@ const PLAYWRIGHT_TARGET = "playwright";
  *      constants), treating the draft as recorded ground truth.
  *
  * Without resources the draft ships as-is; both paths share the engine's
- * write + `generated.json` manifest + runCommand verification loop.
+ * write + runCommand verification loop.
  */
 export const playwrightTarget: TargetPlugin = {
   id: PLAYWRIGHT_TARGET,
   input: "recording",
   generate: generatePlaywrightTest,
-  existingOutput: existingPlaywrightOutput,
+  // Beside the spec by default, like the agent-browser target: a project that
+  // configures nothing still gets one runnable test per spec directory. A repo
+  // with its own layout sets `targets.playwright.testPath`.
+  defaultTestPath: `${SPEC_DIR_TEMPLATE}/${TEST_SCRIPT_FILE}`,
   runner: runCommandRunner,
   // The emitter injects `ccqa/step-evidence` calls at every step boundary, so
   // a run produces the same per-step before/after screenshots agent-browser
@@ -86,25 +83,17 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
   );
   for (const w of judgeWarnings) log.warn(w);
   const draft = emitPlaywrightDraft({ actions, testName: ctx.spec.title, stepMarkers, judgements });
-  // Suggested location; the LLM pass may relocate within the write roots
-  // when the repo's conventions clearly use another layout. Without a
-  // configured outDir the spec directory itself is the output — the same
-  // `test.spec.ts` convention as the agent-browser target, so every spec
-  // carries its own runnable test next to spec.yaml / ir.json.
-  const outDir = ctx.targetConfig.outDir;
-  const draftPath = outDir
-    ? `${outDir}/${ctx.featureName}/${ctx.specName}.spec.ts`
-    : `${specDirRel(ctx)}/test.spec.ts`;
-  if (!outDir) {
-    // Without an outDir the Playwright test lands at the spec dir's
-    // `test.spec.ts` — the exact path the agent-browser deterministic runner
-    // treats as its vitest recording. Running the spec later could then pick
-    // the wrong runner. Recommend an outDir, but don't hard-fail: existing
+  const draftPath = ctx.testPath;
+  if (ctx.targetConfig.testPath === undefined) {
+    // The default lands the Playwright test at the spec dir's `test.spec.ts` —
+    // the exact path the agent-browser deterministic runner treats as its
+    // vitest recording. Running the spec later could then pick the wrong
+    // runner. Recommend a testPath, but don't hard-fail: existing
     // single-target playwright projects rely on this default.
     log.warn(
-      `no \`outDir\` configured for the playwright target — writing ${draftPath}, the same path the ` +
-        `agent-browser target uses for its vitest test. Set \`targets.playwright.outDir\` in ` +
-        `.ccqa/config.yaml (e.g. \`e2e/specs\`) to keep them apart.`,
+      `no \`testPath\` configured for the playwright target — writing ${draftPath}, the same path the ` +
+        `agent-browser target uses for its vitest test. Set \`targets.playwright.testPath\` in ` +
+        `.ccqa/config.yaml (e.g. \`e2e/specs/{feature}/{spec}.spec.ts\`) to keep them apart.`,
     );
   }
 
@@ -198,24 +187,6 @@ async function missingInjectedCalls(
     );
   }
   return warnings;
-}
-
-/**
- * Overwrite-guard hook: the manifest's files first, then the default
- * spec-dir `test.spec.ts` — that path may be owned by another target (an
- * agent-browser recording), and regenerating through playwright without a
- * configured outDir would clobber it. With an outDir configured this can
- * flag a file the write won't touch; the guard is a y/N prompt (or
- * `--force`), so erring toward asking is the safe side.
- */
-async function existingPlaywrightOutput(ref: SpecRef, cwd: string): Promise<string | null> {
-  const fromManifest = await existingOutputFromManifest(ref, cwd);
-  if (fromManifest) return fromManifest;
-  const specTest = resolve(cwd, `${specDirRel(ref)}/test.spec.ts`);
-  return stat(specTest).then(
-    () => specTest,
-    () => null,
-  );
 }
 
 /**

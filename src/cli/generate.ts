@@ -1,11 +1,16 @@
 import { withUsageErrors } from "./usage-errors.ts";
+import { RunUsageError } from "../run/errors.ts";
 import { Command } from "commander";
 import { createInterface } from "node:readline";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { ensureCcqaDir, getRecording, parseSpecPath, readSpecFile } from "../store/index.ts";
+import { resolveTestPath } from "../targets/test-path.ts";
+import { checkRecordedRouteReplays } from "./replay-gate.ts";
 import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
 import { parseTestSpec } from "../spec/parser.ts";
-import { loadProjectConfig, TargetConfigSchema } from "../config/project-config.ts";
+import { loadProjectConfig, targetConfigFor } from "../config/project-config.ts";
 import { resolveTarget, resolveTargetOverride } from "../targets/registry.ts";
 import type { GenerateContext, GenerateResult, TargetPlugin } from "../targets/types.ts";
 import type { FixMode } from "../diagnose/loop.ts";
@@ -52,7 +57,13 @@ export function parseAutoFixFlag(raw: string): AutoFixMode {
 export interface RunGenerateOptions {
   maxRetries: number;
   fixMode: FixMode;
+  /** `--overwrite`: replace an existing generated test without the y/N prompt. */
   force: boolean;
+  /**
+   * Replay the saved route before recompiling it (`--no-replay` turns it off).
+   * False for `ccqa record`, whose trace just validated the route it wrote.
+   */
+  replayGate: boolean;
   useSnapshot: boolean;
   language: string;
   model?: string;
@@ -71,7 +82,7 @@ export interface RunGenerateOptions {
  * The `generate` flow shared by `ccqa generate` and the codegen half of
  * `ccqa record`: resolve the spec's target plugin, load its input (the
  * recording, for input:"recording" targets), and dispatch to the plugin.
- * This layer owns the CLI concerns — overwrite confirmation, logging — while
+ * This layer owns the CLI concerns — the regeneration gates, logging — while
  * the plugin owns the generation pipeline. A generation whose output still
  * fails is reported as `{ passed: false }` rather than thrown or exited: both
  * callers have work left that `process.exit` would skip — `ccqa record
@@ -87,8 +98,8 @@ export async function runGenerate(
   const cwd = opts.cwd ?? process.cwd();
   await ensureCcqaDir(cwd);
 
-  // Concurrent generations of the same spec interleave recording / output /
-  // manifest writes with no defined winner — the second caller fails fast.
+  // Concurrent generations of the same spec interleave recording and output
+  // writes with no defined winner — the second caller fails fast.
   // Re-entrant under `ccqa record`, which holds the lock across trace +
   // generate in the same process.
   const releaseLock = await acquireSpecLock(featureName, specName, "generate", cwd);
@@ -138,17 +149,21 @@ async function runGenerateLocked(
   );
   log.meta("target", target.id + (opts.targetOverride !== undefined ? " (--target override)" : ""));
 
-  // Refuse to overwrite previously generated output unless --force. The
-  // target reports what would be clobbered (for agent-browser: test.spec.ts,
-  // whose manual edits — e.g. patched selectors — would be silently lost).
-  // We always confirm interactively (regardless of --auto / --no-interactive),
-  // because overwriting a hand-edited file is a different kind of decision
-  // than auto-applying an auto-fix and warrants an explicit y/N. CI flows
-  // should pass --overwrite.
-  const existingOutput = (await target.existingOutput?.({ featureName, specName }, cwd)) ?? null;
-  if (existingOutput && !opts.force) {
-    const proceed = await confirmOverwrite(existingOutput);
-    if (!proceed) {
+  const targetConfig = targetConfigFor(config, target.id);
+  const testPath = resolveTestPath(target, targetConfig, { featureName, specName });
+  log.meta("test", testPath);
+
+  // Refuse to overwrite an existing generated test unless --force. ccqa cannot
+  // tell whose edit is in that file — nothing records what the last generation
+  // wrote (ADR-0028) — so it asks rather than guessing. Always interactive,
+  // regardless of --auto-fix: losing a hand-patched selector is a different
+  // decision from auto-applying a fix. CI flows pass --overwrite.
+  const exists = await stat(resolve(cwd, testPath)).then(
+    () => true,
+    () => false,
+  );
+  if (exists && !opts.force) {
+    if (!(await confirmOverwrite(testPath))) {
       log.info("aborted; pass --overwrite to replace it without prompting");
       // Declining is not a failed generation: nothing was generated to fail.
       return { passed: true };
@@ -157,21 +172,34 @@ async function runGenerateLocked(
 
   let recording: RecordedAction[] | undefined;
   if (target.input === "recording") {
-    const { path: recordingPath, actions } = await getRecording(featureName, specName, cwd);
-    log.meta("recording", recordingPath);
+    const { path: recordingPath, actions, recordedAt } = await getRecording(featureName, specName, cwd);
+    log.meta("recording", `${recordingPath}${recordedAt ? ` (recorded ${recordedAt})` : ""}`);
     log.meta("actions", actions.length);
     recording = actions;
+    // A route the application has outgrown can only compile into a test that
+    // cannot pass, so it is refused before any generation work is paid for.
+    // Thrown, not exited: the spec lock is held here and `process.exit` would
+    // skip its release.
+    if (opts.replayGate) {
+      const refusal = await checkRecordedRouteReplays({
+        ref: { featureName, specName },
+        cwd,
+        recording: actions,
+        ...(opts.teardown ? { teardown: opts.teardown } : {}),
+      });
+      if (refusal) throw new RunUsageError(refusal);
+    }
   }
 
   await warnStaleBlockArtifacts();
 
-  const targetConfig = config.targets[target.id] ?? TargetConfigSchema.parse({});
   const ctx: GenerateContext = {
     spec,
     specYaml,
     featureName,
     specName,
     cwd,
+    testPath,
     recording,
     resources: targetConfig.resources,
     conventions: targetConfig.conventions,
@@ -233,9 +261,9 @@ async function runGenerateAgentPromptUpdate(
 
 async function confirmOverwrite(path: string): Promise<boolean> {
   // Without a TTY (CI, piped stdin) we can't prompt. Refuse to overwrite —
-  // CI/scripted callers should pass --force explicitly to opt in.
+  // CI/scripted callers should pass --overwrite explicitly to opt in.
   if (!process.stdin.isTTY) {
-    log.warn(`${path} exists and stdin is not a TTY; refusing to overwrite. Pass --force to allow.`);
+    log.warn(`${path} exists and stdin is not a TTY; refusing to overwrite. Pass --overwrite to allow.`);
     return false;
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -259,6 +287,7 @@ interface GenerateCliOptions {
   autoFix?: AutoFixMode;
   autoFixMaxRetries?: string;
   overwrite?: boolean;
+  replay?: boolean;
   sessionPin?: boolean;
   learnHubCodegenPrompt?: boolean;
   cwd?: string;
@@ -297,11 +326,18 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .option("--auto-fix-max-retries <n>", "Maximum number of auto-fix retries", "3")
     .option(
+      "--no-replay",
+      "Skip replaying the saved recording before regenerating from it. The replay needs a browser and the spec's variables; skip it where neither is available (and accept that a route the application has outgrown regenerates into a test that cannot pass).",
+    )
+    .option(
       "--no-session-pin",
       "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
     )
     .optionsGroup("What to do with the result:")
-    .option("--overwrite", "Replace previously generated test code without warning")
+    .option(
+      "--overwrite",
+      "Replace an existing generated test without the y/N prompt (declines on a non-TTY)",
+    )
     .optionsGroup("Learning:")
     .option(
       "--learn-hub-codegen-prompt",
@@ -363,6 +399,7 @@ async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promi
       maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
       fixMode: toFixMode(opts.autoFix ?? "interactive"),
       force: opts.overwrite ?? false,
+      replayGate: opts.replay !== false,
       useSnapshot: opts.sessionPin !== false,
       language,
       model: opts.model,

@@ -49,9 +49,23 @@ describe("buildDriftUserPrompt", () => {
     const out = buildDriftUserPrompt({
       specYaml: "title: Sample\nsteps: []",
       generated: [],
+      unaudited: [],
       live: false,
       title: "Sample",
     });
     expect(out).toContain("```yaml\ntitle: Sample\nsteps: []\n```");
+  });
+
+  test("a spec whose only generated file was too large is not called ungenerated", () => {
+    const out = buildDriftUserPrompt({
+      specYaml: "title: Sample\nsteps: []",
+      generated: [],
+      unaudited: ["e2e/specs/sample.spec.ts"],
+      live: false,
+      title: "Sample",
+    });
+    expect(out).toContain("e2e/specs/sample.spec.ts");
+    expect(out).toMatch(/This spec IS generated/);
+    expect(out).not.toMatch(/has not been generated yet/);
   });
 });

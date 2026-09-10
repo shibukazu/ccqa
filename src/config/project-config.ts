@@ -3,11 +3,12 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z, ZodError } from "zod";
 import { AGENT_BROWSER_TARGET, TargetIdSchema } from "../spec/yaml-schema.ts";
+import { validateTestPathTemplate } from "../targets/test-path.ts";
 
 /**
  * Loader for the consumer project's `.ccqa/config.yaml` — per-target
- * generation settings (default target, output dirs, reusable code resources,
- * generation conventions).
+ * generation settings (default target, test path templates, reusable code
+ * resources, generation conventions).
  *
  * This module only validates and holds the config. `path` / `guides` /
  * `examples` entries may be glob patterns; they are kept verbatim here and
@@ -47,16 +48,28 @@ export const ConventionsSchema = z
 export type Conventions = z.infer<typeof ConventionsSchema>;
 
 /**
- * Per-target settings. `outDir` (where generated tests are written) and
- * `runCommand` (how to execute them; `{files}` expands to the generated
+ * Per-target settings.
+ *
+ * `testPath` is the template deciding where a spec's generated test lands
+ * (`{feature}` / `{spec}`); omitted, the target's own default applies. It is a
+ * template rather than a directory because every other command has to find
+ * that file without asking the generator — see src/targets/test-path.ts.
+ *
+ * `runCommand` is how `ccqa run` executes them (`{files}` expands to the test
  * paths, `{artifactsDir}` to the spec's report artifacts dir — see
- * src/targets/run-artifacts.ts) are optional at this layer because not every
- * target needs them — e.g. agent-browser stores its output in the spec
- * directory. A target that requires either must validate its presence itself.
+ * src/targets/run-artifacts.ts). Optional at this layer because not every
+ * target needs one; a target that requires it validates that itself.
  */
 export const TargetConfigSchema = z
   .object({
-    outDir: z.string().min(1).optional(),
+    testPath: z
+      .string()
+      .min(1)
+      .superRefine((template, ctx) => {
+        const error = validateTestPathTemplate(template);
+        if (error) ctx.addIssue({ code: "custom", message: error });
+      })
+      .optional(),
     runCommand: z.string().min(1).optional(),
     resources: z.array(ResourceRefSchema).default([]),
     conventions: ConventionsSchema.default({ guides: [], examples: [] }),
@@ -196,8 +209,32 @@ export const ProjectConfigSchema = z
     serialGroups: SerialGroupsSchema.default({}),
     coverage: CoverageConfigSchema.optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((config, ctx) => {
+    // The agent-browser target's vitest test is ccqa's own replay artifact,
+    // not a consumer asset: `ccqa run` enumerates it in the spec directory. A
+    // `testPath` there would be read by the audit and ignored by the runner.
+    // Checked here rather than declared by the plugin, because this module
+    // cannot reach the registry — the plugins import it.
+    if (config.targets[AGENT_BROWSER_TARGET]?.testPath !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["targets", AGENT_BROWSER_TARGET, "testPath"],
+        message: `testPath is not configurable for the ${AGENT_BROWSER_TARGET} target — its test always lives in the spec directory`,
+      });
+    }
+  });
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>;
+
+/**
+ * One target's settings, or the defaults when the project configured none (or
+ * has no config at all). Every caller that resolves a target needs this, and
+ * each one spelling out the fallback invites two of them to disagree about
+ * what "unconfigured" means.
+ */
+export function targetConfigFor(config: ProjectConfig | null, targetId: string): TargetConfig {
+  return config?.targets[targetId] ?? TargetConfigSchema.parse({});
+}
 
 /** Config file location, relative to the project root (`--cwd`). */
 export const PROJECT_CONFIG_PATH = ".ccqa/config.yaml";

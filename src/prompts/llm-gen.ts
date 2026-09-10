@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { isExpandedActionStep, type ExpandedStep } from "../spec/expand.ts";
 import { languageDirective } from "./language.ts";
 
@@ -45,10 +46,10 @@ export interface LlmGenPromptInput {
   conventionSections: PromptConventionSection[];
   /** Hub prompt bundle (project guidance + agent learnings), pre-concatenated. */
   promptBundle?: string;
-  /** Where generated files must be written (project-root-relative). */
-  outDir: string;
-  /** Additional write-allowed roots (path resources). */
-  extraWriteRoots: string[];
+  /** The exact path the test file must be written to (project-root-relative). */
+  testPath: string;
+  /** Roots support files may be written under (path resources). */
+  writeRoots: string[];
   language?: string;
 }
 
@@ -91,8 +92,11 @@ export function reuseFirstContract(hasDraft: boolean, draftInvariant?: string): 
  * The JSON output contract shared by every LLM generation pass. Mirrors the
  * cleanup prompt's "output ONLY JSON" style so parsing stays uniform.
  */
-export function outputContract(outDir: string, extraWriteRoots: string[]): string {
-  const roots = [outDir, ...extraWriteRoots].map((r) => `\`${r}\``).join(", ");
+export function outputContract(testPath: string, writeRoots: string[]): string {
+  // The test's own directory is a support root too — the write policy allows it
+  // (src/targets/llm-engine.ts), and a project with no path resources would
+  // otherwise be told it has nowhere to put a page object.
+  const roots = [posix.dirname(testPath), ...writeRoots].map((r) => `\`${r}\``).join(", ");
   return `## Output format
 
 When you are done exploring, reply with ONLY a JSON object (no explanation, no markdown code fences):
@@ -100,7 +104,8 @@ When you are done exploring, reply with ONLY a JSON object (no explanation, no m
 {"files": [{"path": "<project-root-relative path>", "contents": "<full file contents>", "kind": "test" | "support"}], "summary": "<one-paragraph human-readable summary>"}
 
 - \`kind\` MUST be exactly \`"test"\` or \`"support"\` (no other value): \`"test"\` marks an executable test; \`"support"\` marks a companion file (page object, helper, ...).
-- Every \`path\` must be relative to the project root and stay under one of: ${roots}.
+- The \`"kind": "test"\` file goes to exactly \`${testPath}\`. That path is the project's, not yours: never move, rename, or split the test.
+- Every \`"kind": "support"\` file must stay under one of: ${roots}.
 - Absolute paths, \`..\` segments, and anything under \`node_modules/\` are rejected.
 - Emit the complete contents of every file you output — no placeholders or elisions.`;
 }
@@ -167,7 +172,7 @@ export function buildLlmGenPrompt(input: LlmGenPromptInput): string {
   }
 
   sections.push(reuseFirstContract(input.draft !== undefined, input.draftInvariant));
-  sections.push(outputContract(input.outDir, input.extraWriteRoots));
+  sections.push(outputContract(input.testPath, input.writeRoots));
 
   return sections.join("\n\n") + languageDirective(input.language);
 }
@@ -180,8 +185,8 @@ export interface LlmFixPromptInput {
   outputTail: string;
   /** Current on-disk contents of every generated file. */
   files: Array<{ path: string; contents: string; kind: "test" | "support" }>;
-  outDir: string;
-  extraWriteRoots: string[];
+  testPath: string;
+  writeRoots: string[];
   language?: string;
 }
 
@@ -201,7 +206,7 @@ export function buildLlmFixPrompt(input: LlmFixPromptInput): string {
     `## Failing command\n\n\`${input.command}\``,
     `## Command output (tail)\n\n\`\`\`\n${input.outputTail}\n\`\`\``,
     `## Current files\n\n${files}`,
-    outputContract(input.outDir, input.extraWriteRoots) +
+    outputContract(input.testPath, input.writeRoots) +
       `\n- Output only the files that need changes; files you omit stay as they are.` +
       `\n- If the failure is NOT caused by the generated files (an environment/setup issue) or the files are already correct, reply \`{"files": [], "summary": "<why no file change is needed>"}\` — verification is then simply re-run.`,
   ];

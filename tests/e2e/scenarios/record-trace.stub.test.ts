@@ -77,13 +77,21 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     expect(result.exitCode, combined).toBe(0);
 
     const caseDir = join(project.cwd, ".ccqa/features/demo/test-cases/x");
-    const ir = JSON.parse(await readFile(join(caseDir, "ir.json"), "utf8")) as Array<{
-      action: string;
-      assert?: string;
-      value?: string;
-      locator?: { by: string; value: string };
-      stepId?: string;
-    }>;
+    const recording = JSON.parse(await readFile(join(caseDir, "ir.json"), "utf8")) as {
+      recordedAt: string;
+      origin?: string;
+      actions: Array<{
+        action: string;
+        assert?: string;
+        value?: string;
+        locator?: { by: string; value: string };
+        stepId?: string;
+      }>;
+    };
+    const ir = recording.actions;
+    // Provenance: when the route was taken, and the entry point it started from.
+    expect(Date.parse(recording.recordedAt)).not.toBeNaN();
+    expect(recording.origin).toBe(ir[0]!.value);
     expect(ir.map((a) => [a.action, a.assert, a.stepId])).toEqual([
       ["navigate", undefined, "step-01"],
       ["click", undefined, "step-02"],

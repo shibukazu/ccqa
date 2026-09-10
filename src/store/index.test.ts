@@ -184,7 +184,7 @@ describe("listActiveSpecs", () => {
 });
 
 describe("saveRecording", () => {
-  test("writes ir.json and removes legacy actions.json / route.md", async () => {
+  test("writes ir.json (with provenance) and removes legacy actions.json / route.md", async () => {
     const { mkdtemp, mkdir, writeFile, readFile, stat } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
@@ -196,9 +196,16 @@ describe("saveRecording", () => {
     await writeFile(join(specDir, "actions.json"), "[]", "utf8");
     await writeFile(join(specDir, "route.md"), "# legacy", "utf8");
 
-    const path = await saveRecording("demo", "x", [{ action: "navigate", value: "https://example.test" }], cwd);
+    const { path, recording } = await saveRecording(
+      "demo",
+      "x",
+      [{ action: "navigate", value: "https://example.test" }],
+      cwd,
+    );
 
-    expect(JSON.parse(await readFile(path, "utf8"))).toHaveLength(1);
+    expect(recording.actions).toHaveLength(1);
+    expect(recording.origin).toBe("https://example.test");
+    expect(JSON.parse(await readFile(path, "utf8")).actions).toHaveLength(1);
     await expect(stat(join(specDir, "actions.json"))).rejects.toThrow();
     await expect(stat(join(specDir, "route.md"))).rejects.toThrow();
   });
@@ -220,6 +227,22 @@ describe("saveRecording", () => {
   });
 });
 
+describe("parseRecording", () => {
+  test("reads a bare action array as a route with no provenance", async () => {
+    const { parseRecording } = await import("./index.ts");
+    const recording = parseRecording(`[{"action":"navigate","value":"https://example.test"}]`);
+    expect(recording.actions).toHaveLength(1);
+    expect(recording.recordedAt).toBeUndefined();
+  });
+
+  test("rejects a file holding no action list, naming what to do", async () => {
+    const { parseRecording } = await import("./index.ts");
+    expect(() => parseRecording(`{"recordedAt":"2026-01-01T00:00:00.000Z"}`)).toThrow(
+      /no `actions` array/,
+    );
+  });
+});
+
 describe("saveFailedRecording", () => {
   test("writes ir.failed.json and leaves ir.json untouched", async () => {
     const { mkdtemp, mkdir, writeFile, readFile } = await import("node:fs/promises");
@@ -235,7 +258,7 @@ describe("saveFailedRecording", () => {
     const path = await saveFailedRecording("demo", "x", [], cwd);
 
     expect(path).toBe(join(specDir, "ir.failed.json"));
-    expect(JSON.parse(await readFile(path, "utf8"))).toHaveLength(0);
+    expect(JSON.parse(await readFile(path, "utf8")).actions).toHaveLength(0);
     // The good recording survives the failed trace.
     expect(JSON.parse(await readFile(join(specDir, "ir.json"), "utf8"))).toHaveLength(1);
   });

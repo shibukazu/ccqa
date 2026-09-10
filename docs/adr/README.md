@@ -49,6 +49,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0025](0025-source-maps-for-a-deployed-commit.md) | Source maps for a deployed commit live on the hub | accepted |
 | [0026](0026-measured-edges-are-a-ledger.md) | Measured edges are a ledger, and an unmeasured spec runs | accepted |
 | [0027](0027-a-row-is-placed-by-its-own-window.md) | A row is placed against the deploy log by its own window | accepted |
+| [0028](0028-a-derived-test-path-and-a-recorded-route.md) | The test path is derived; the recording is the route | accepted |
 
 ## Template
 

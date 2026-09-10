@@ -1,7 +1,7 @@
 defaultTarget: playwright
 targets:
   playwright:
-    outDir: e2e/specs
+    testPath: e2e/specs/{feature}/{spec}.spec.ts
     resources:
       - path: e2e/pages
         description: page objects, one per screen

@@ -7,7 +7,11 @@ import {
   readSpecFile,
   saveFailedRecording,
   saveRecording,
+  removeRouteDiff,
+  saveRouteDiff,
+  tryGetRecording,
 } from "../store/index.ts";
+import { diffRoutes, renderRouteDiff } from "../ir/route-diff.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import type { RunTeardown } from "./run-teardown.ts";
 import type { HubContext } from "./hub-conn.ts";
@@ -16,6 +20,7 @@ import {
   collectIncludedBlockNames,
   expandSpec,
   isExpandedActionStep,
+  type ExpandedActionStep,
 } from "../spec/expand.ts";
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
@@ -26,6 +31,7 @@ import { languageDirective } from "../prompts/language.ts";
 import { parseAbActionLine, promoteMarkedAssert } from "../ir/from-agent-browser.ts";
 import { describeLocator, locatorToSelector } from "../ir/to-agent-browser.ts";
 import type { Locator, RecordedAction } from "../ir/types.ts";
+import type { Recording } from "../store/index.ts";
 import type { ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -299,10 +305,25 @@ export async function runTrace(
   // A FAILED trace did not demonstrate the spec, so its actions must never
   // replace a recording that did. They go to a side file for diagnosis;
   // ir.json (and therefore the generated test) is left untouched.
-  const recordingPath =
-    overallStatus === "passed"
-      ? await saveRecording(featureName, specName, validatedActions, opts.cwd)
-      : await saveFailedRecording(featureName, specName, validatedActions, opts.cwd);
+  //
+  // Read the recording being replaced before the write, not after: it is the
+  // only thing that can say what this re-recording changed.
+  const previous =
+    overallStatus === "passed" ? await tryGetRecording(featureName, specName, opts.cwd) : null;
+  let recordingPath: string;
+  if (overallStatus === "passed") {
+    const saved = await saveRecording(featureName, specName, validatedActions, opts.cwd);
+    recordingPath = saved.path;
+    if (previous) {
+      await reportRouteDiff(featureName, specName, previous, saved.recording, steps, opts.cwd);
+    } else {
+      // First recording of this spec: any diff beside it describes a route
+      // that no longer exists, so it must not stay there looking current.
+      await removeRouteDiff(featureName, specName, opts.cwd);
+    }
+  } else {
+    recordingPath = await saveFailedRecording(featureName, specName, validatedActions, opts.cwd);
+  }
 
   log.blank();
   log.meta("saved", recordingPath);
@@ -331,6 +352,37 @@ export async function runTrace(
     actions: validatedActions,
     churnByStep: buildChurnByStep(traceActions, validatedActions),
   };
+}
+
+/**
+ * What this re-recording changed, as markdown beside the spec and a count in
+ * the log. The route is replaced wholesale by a re-record, so without this the
+ * only way to see what moved is to diff two JSON files by eye. Written even
+ * when nothing moved: a diff left over from an earlier re-record would sit
+ * beside the new recording and read as current.
+ */
+async function reportRouteDiff(
+  featureName: string,
+  specName: string,
+  before: Recording,
+  after: Recording,
+  steps: ExpandedActionStep[],
+  cwd: string | undefined,
+): Promise<void> {
+  const stepTitles = new Map(steps.map((s) => [s.id, s.instruction.trim().split("\n")[0]!]));
+  const diff = diffRoutes(before.actions, after.actions);
+  const path = await saveRouteDiff(
+    featureName,
+    specName,
+    renderRouteDiff(diff, { specKey: `${featureName}/${specName}`, before, after, stepTitles }),
+    cwd,
+  );
+  log.meta(
+    "route diff",
+    diff.changes.length === 0
+      ? `unchanged (${path})`
+      : `${diff.changes.length} change(s) — ${path}`,
+  );
 }
 
 /**

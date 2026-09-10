@@ -185,6 +185,15 @@ None: this is a \`mode: live\` spec, so there is nothing compiled from it — th
 `;
   }
   if (artifacts.generated.length === 0) {
+    // "Nothing here" has two causes and opposite readings: never generated
+    // (not drift) versus generated but too large to show (not audited).
+    if (artifacts.unaudited.length > 0) {
+      return `## Generated test code
+
+Not shown: ${artifacts.unaudited.join(", ")} did not fit here. This spec IS generated — the code simply could not be included. It was NOT audited, so report no finding on the \`generated\` surface, and Read a file if you need it.
+
+`;
+    }
     return `## Generated test code
 
 None found. The spec is \`deterministic\` but has not been generated yet, so only the spec surface can be audited. Do not treat the absence as drift.
@@ -196,9 +205,23 @@ None found. The spec is \`deterministic\` but has not been generated yet, so onl
     .join("\n\n");
   return `## Generated test code
 
-This is what actually runs. The selectors and strings here are literal — check them against the source the same way you check the spec's \`expected\`.
+This is what actually runs: the generated test first, then the project files it imports. The selectors and strings here are literal — check them against the source the same way you check the spec's \`expected\`. An imported file may be the project's own code rather than something ccqa generated; a finding about one belongs to the \`spec\` surface, not to code a regeneration would rewrite.
 
 ${files}
+${unauditedNote(artifacts.unaudited)}
+`;
+}
 
+/**
+ * Files that belong to the test case but did not fit the budget. Named so the
+ * audit cannot report "no drift" as if it had read them; it may Read one when
+ * a finding turns on what it contains.
+ */
+function unauditedNote(unaudited: string[]): string {
+  if (unaudited.length === 0) return "";
+  return `
+### Not shown
+
+These files are part of this test case but did not fit here: ${unaudited.join(", ")}. They were NOT audited — do not count them as checked, and Read one if a finding depends on it.
 `;
 }

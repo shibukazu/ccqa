@@ -3,6 +3,7 @@ import { resolveTarget, resolveTargetFrom, resolveTargetOverride } from "./regis
 import { agentBrowserTarget } from "./agent-browser/index.ts";
 import { ProjectConfigSchema } from "../config/project-config.ts";
 import { TestSpecSchema, type TestSpec } from "../spec/yaml-schema.ts";
+import { SPEC_DIR_TEMPLATE } from "../store/index.ts";
 import type { GenerateResult, TargetPlugin } from "./types.ts";
 
 function makeSpec(extra: Record<string, unknown> = {}): TestSpec {
@@ -20,6 +21,7 @@ function fakePlugin(id: string): TargetPlugin {
     generate: (): Promise<GenerateResult> => {
       throw new Error("not under test");
     },
+    defaultTestPath: `${SPEC_DIR_TEMPLATE}/test.spec.ts`,
     judgeSteps: { supported: true },
     browserCoverage: { browser: "none", reason: "test target" },
   };

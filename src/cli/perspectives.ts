@@ -1,5 +1,4 @@
 import { stat } from "node:fs/promises";
-import { join } from "node:path";
 import { Command } from "commander";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -11,8 +10,7 @@ import {
   type PerspectiveSpecForPrompt,
 } from "../prompts/perspectives.ts";
 import {
-  getSpecDir,
-  getTestScript,
+  getRecordingPath,
   listFeatureTree,
   removeLegacyPerspectivesFiles,
   tryReadSpecFile,
@@ -21,9 +19,10 @@ import {
 import { tryParseTestSpec } from "../spec/parser.ts";
 import { readSpecChangedAt } from "../spec/spec-changed-at.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
-import { loadProjectConfig, type ProjectConfig } from "../config/project-config.ts";
+import { loadProjectConfig, targetConfigFor, type ProjectConfig } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
-import { loadGeneratedManifest } from "../targets/llm-engine.ts";
+import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
+import { resolveTestPathAbs } from "../targets/test-path.ts";
 import type { TargetPlugin } from "../targets/types.ts";
 import {
   PerspectivesSchema,
@@ -302,7 +301,7 @@ export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<Perspecti
             const specYaml = await tryReadSpecFile(feature.featureName, s.specName);
             const meta = readSpecMeta(s.specName, specYaml);
             const plugin = resolveSpecTarget(specYaml, config);
-            const status = await deriveStatus(feature.featureName, s.specName, meta.mode, plugin);
+            const status = await deriveStatus(feature.featureName, s.specName, meta.mode, plugin, config);
             const lastEdit = changedAt.get(`${feature.featureName}/${s.specName}`);
             return {
               specName: s.specName,
@@ -521,22 +520,32 @@ export async function deriveStatus(
   specName: string,
   mode: SpecMode,
   plugin: TargetPlugin | null,
+  config: ProjectConfig | null,
 ): Promise<PerspectiveStatus> {
-  const isAgentBrowser = plugin === null || plugin.id === AGENT_BROWSER_TARGET;
-  const recordingPath = join(getSpecDir(featureName, specName), "ir.json");
-  const hasRecording = await stat(recordingPath).then(() => true).catch(() => false);
-
-  if (isAgentBrowser) {
-    const generated = (await getTestScript(featureName, specName)) !== null;
-    return { mode, traced: hasRecording, generated };
-  }
-
-  // External target: "generated" is its own manifest, not test.spec.ts.
+  const cwd = process.cwd();
+  const ref = { featureName, specName };
+  const hasRecording = await exists(getRecordingPath(featureName, specName, cwd));
+  // Both halves of "generated" are the same question — is there a test file at
+  // the path this spec's target puts it? — so agent-browser and the external
+  // targets differ only in which target answers it.
+  const target = plugin ?? agentBrowserTarget;
+  const targetConfig = targetConfigFor(config, target.id);
+  const generated = await exists(resolveTestPathAbs(target, targetConfig, ref, cwd));
   // A spec-input target (runn) has no record phase, so tracing is not a gap.
-  const generated =
-    (await loadGeneratedManifest({ featureName, specName }, process.cwd())) !== null;
-  const traced = plugin.input === "recording" ? hasRecording : true;
-  return { mode, traced, generated, target: plugin.id };
+  const traced = target.input === "recording" ? hasRecording : true;
+  return {
+    mode,
+    traced,
+    generated,
+    ...(plugin && plugin.id !== AGENT_BROWSER_TARGET ? { target: plugin.id } : {}),
+  };
+}
+
+function exists(path: string): Promise<boolean> {
+  return stat(path).then(
+    () => true,
+    () => false,
+  );
 }
 
 async function loadSpecBodies(skeleton: PerspectiveFeature[]): Promise<PerspectiveSpecForPrompt[]> {

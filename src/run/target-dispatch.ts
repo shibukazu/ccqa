@@ -2,11 +2,7 @@ import { specKey, type SpecRef } from "../store/index.ts";
 import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
 import type { SpecCatalog } from "./spec-catalog.ts";
 import type { GroupLookup } from "./serial-groups.ts";
-import {
-  TargetConfigSchema,
-  type ProjectConfig,
-  type TargetConfig,
-} from "../config/project-config.ts";
+import { targetConfigFor, type ProjectConfig, type TargetConfig } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
 import type {
   BrowserCoverageDecl,
@@ -39,6 +35,8 @@ export interface ExternalTargetGroup {
   targetId: string;
   runner: TestRunner;
   targetConfig: TargetConfig;
+  /** The plugin's `defaultTestPath`; see `RunnerOptions.defaultTestPath`. */
+  defaultTestPath: string;
   /** Resolved from the plugin — absent on the plugin means "no step screenshots". */
   stepEvidence: StepEvidenceSupport;
   /** The target's required declaration, passed through verbatim. */
@@ -118,7 +116,7 @@ export function groupSpecsByTarget(
     }
 
     const entry: DispatchedSpec = { ...ref, title: spec.title ?? null };
-    const targetConfig = config.targets[plugin.id] ?? TargetConfigSchema.parse({});
+    const targetConfig = targetConfigFor(config, plugin.id);
     if (plugin.runner === undefined) {
       skipped.push({
         ...entry,
@@ -138,6 +136,7 @@ export function groupSpecsByTarget(
         targetId: plugin.id,
         runner: plugin.runner,
         targetConfig,
+        defaultTestPath: plugin.defaultTestPath,
         stepEvidence: plugin.stepEvidence ?? {
           supported: false,
           reason: `the "${plugin.id}" target does not capture step screenshots`,
@@ -231,6 +230,7 @@ export async function runExternalSpecs(
         ...(ctx.language ? { language: ctx.language } : {}),
         targetId: group.targetId,
         targetConfig: group.targetConfig,
+        defaultTestPath: group.defaultTestPath,
         stepEvidence: group.stepEvidence,
         browserCoverage: group.browserCoverage,
         ...(ctx.coverage ? { coverage: ctx.coverage } : {}),

@@ -6,8 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { playwrightTarget } from "./index.ts";
 import { loadProjectConfig, TargetConfigSchema } from "../../config/project-config.ts";
 import { parseTestSpec } from "../../spec/parser.ts";
-import { GENERATED_MANIFEST_FILE } from "../run-command-runner.ts";
-import type { RecordedAction } from "../../ir/types.ts";
+import { parseRecording } from "../../store/index.ts";
+import { resolveTestPath, resolveTestPathAbs } from "../test-path.ts";
 import type { GenerateContext } from "../types.ts";
 
 /**
@@ -77,11 +77,11 @@ describe("playwright target — reuse-first generation (mocked Claude)", () => {
 
     const specDir = join(cwd, ".ccqa/features/todos/test-cases/add-item");
     const specYaml = await readFile(join(specDir, "spec.yaml"), "utf8");
-    const recording = JSON.parse(
-      await readFile(join(specDir, "ir.json"), "utf8"),
-    ) as RecordedAction[];
+    const recording = parseRecording(await readFile(join(specDir, "ir.json"), "utf8")).actions;
     const config = await loadProjectConfig(cwd);
     const targetConfig = config.targets["playwright"] ?? TargetConfigSchema.parse({});
+    const ref = { featureName: "todos", specName: "add-item" };
+    const testPath = resolveTestPath(playwrightTarget, targetConfig, ref);
 
     const ctx: GenerateContext = {
       spec: parseTestSpec(specYaml),
@@ -89,6 +89,7 @@ describe("playwright target — reuse-first generation (mocked Claude)", () => {
       featureName: "todos",
       specName: "add-item",
       cwd,
+      testPath,
       recording,
       resources: targetConfig.resources,
       conventions: targetConfig.conventions,
@@ -112,15 +113,9 @@ describe("playwright target — reuse-first generation (mocked Claude)", () => {
       "TodoHeader",
     );
 
-    const manifest = JSON.parse(await readFile(join(specDir, GENERATED_MANIFEST_FILE), "utf8"));
-    expect(manifest.target).toBe("playwright");
-    expect(manifest.files.map((f: { path: string; kind: string }) => [f.path, f.kind])).toEqual([
-      ["e2e/specs/todos/add-item.spec.ts", "test"],
-      ["e2e/pages/todo_header.ts", "support"],
-    ]);
-
-    // existingOutput now reports the generated spec for the overwrite guard.
-    expect(await playwrightTarget.existingOutput?.({ featureName: "todos", specName: "add-item" }, cwd)).toBe(
+    // The generated spec always lands at the target's derived testPath — the
+    // deterministic replacement for the old manifest-based existingOutput lookup.
+    expect(resolveTestPathAbs(playwrightTarget, targetConfig, ref, cwd)).toBe(
       resolve(cwd, "e2e/specs/todos/add-item.spec.ts"),
     );
   });

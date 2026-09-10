@@ -1,6 +1,6 @@
 import { AGENT_BROWSER_JUDGE_STEPS } from "./judge-steps.ts";
 import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
-import { getTestScript } from "../../store/index.ts";
+import { SPEC_DIR_TEMPLATE, TEST_SCRIPT_FILE } from "../../store/index.ts";
 import type { TargetPlugin } from "../types.ts";
 import { acquireAgentBrowserEndpoint } from "./browser-endpoint.ts";
 import { generateAgentBrowserTest } from "./generate.ts";
@@ -14,9 +14,12 @@ export const agentBrowserTarget: TargetPlugin = {
   id: AGENT_BROWSER_TARGET,
   input: "recording",
   generate: generateAgentBrowserTest,
-  // generate regenerates test.spec.ts from ir.json, so a hand-edited script
-  // would be silently lost — surface it for the CLI's overwrite guard.
-  existingOutput: (ref, cwd) => getTestScript(ref.featureName, ref.specName, cwd),
+  // Spelled from the store's own layout constants, because this target's test
+  // is written and enumerated by the store (`saveTestScript`, `listAllSpecs`)
+  // rather than through `ctx.testPath`. Config may not override it — see the
+  // refusal in src/config/project-config.ts — so the two agree by sharing
+  // these constants.
+  defaultTestPath: `${SPEC_DIR_TEMPLATE}/${TEST_SCRIPT_FILE}`,
   // No `runner`: the run pipeline special-cases this target and executes its
   // specs through the dedicated det (vitest) / live paths in
   // src/run/pipeline.ts, which own evidence capture, incremental live

@@ -1,11 +1,11 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
-import { getSpecDir, loadPromptBundleFromHub } from "../store/index.ts";
+import { loadPromptBundleFromHub } from "../store/index.ts";
 import {
   buildLlmFixPrompt,
   buildLlmGenPrompt,
@@ -14,16 +14,10 @@ import {
 } from "../prompts/llm-gen.ts";
 import { isWithin, loadConventions, resolveResources, type ResolvedResource } from "./resources.ts";
 import { printUnifiedDiff, prompt } from "../cli/draft.ts";
-import {
-  GENERATED_MANIFEST_FILE,
-  GeneratedManifestSchema,
-  manifestSha256,
-  substituteRunCommandFiles,
-  type GeneratedManifest,
-} from "./run-command-runner.ts";
+import { substituteRunCommandFiles } from "./run-command-runner.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { ARTIFACTS_DIR_ENV, substituteArtifactsDir } from "./run-artifacts.ts";
-import type { GenerateContext, GenerateResult, SpecRef } from "./types.ts";
+import type { GenerateContext, GenerateResult } from "./types.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import * as log from "../cli/logger.ts";
 
@@ -34,12 +28,12 @@ import * as log from "../cli/logger.ts";
  *   resolve resources + conventions → assemble the prompt (spec, optional
  *   mechanical draft, hub prompt bundle, reuse-first contract) → invoke
  *   Claude read-only (Read/Grep/Glob — no Bash, no browser) → parse the JSON
- *   output contract → validate output paths → write files + the
- *   `generated.json` manifest → optionally verify via the target's
- *   `runCommand`, feeding failures back to Claude in a bounded fix loop.
+ *   output contract → validate output paths → write files → optionally verify
+ *   via the target's `runCommand`, feeding failures back to Claude in a
+ *   bounded fix loop.
  *
  * Targets whose first pass is deterministic (playwright without resources)
- * enter at `finalizePreparedFiles`, sharing the write/manifest/verify half.
+ * enter at `finalizePreparedFiles`, sharing the write/verify half.
  */
 
 /** Read-only exploration: generation must never mutate the repo via tools. */
@@ -123,18 +117,23 @@ export function parseLlmGenOutput(raw: string): LlmGenOutput {
 
 export interface OutputPathPolicy {
   cwd: string;
-  /** Absolute `targetConfig.outDir`. */
-  outDirAbs: string;
-  /** Absolute path-resource roots that may also receive support files. */
+  /** The one path the test file may take (project-root-relative). */
+  testPath: string;
+  /** Absolute path-resource roots that may receive support files. */
   writeRootsAbs: string[];
 }
 
 /**
- * Validate one output path against the write policy: project-root-relative,
- * no traversal, never under node_modules, and confined to outDir or a
- * writable path-resource root. Returns an error message, or null when valid.
+ * Validate one output path against the write policy: project-root-relative, no
+ * traversal, never under node_modules, and — for the test itself — exactly the
+ * configured `testPath`, so a rewrite pass cannot decide where a spec's test
+ * lives. Returns an error message, or null when valid.
  */
-export function validateOutputPath(policy: OutputPathPolicy, path: string): string | null {
+export function validateOutputPath(
+  policy: OutputPathPolicy,
+  path: string,
+  kind: "test" | "support",
+): string | null {
   if (isAbsolute(path) || /^[A-Za-z]:[\\/]/.test(path)) {
     return `absolute output path is not allowed: ${path}`;
   }
@@ -150,56 +149,18 @@ export function validateOutputPath(policy: OutputPathPolicy, path: string): stri
     return `output path contains shell-unsafe characters: ${path}`;
   }
   const abs = resolve(policy.cwd, path);
-  const roots = [policy.outDirAbs, ...policy.writeRootsAbs];
+  if (kind === "test") {
+    return abs === resolve(policy.cwd, policy.testPath)
+      ? null
+      : `the test file must be written to ${policy.testPath} (configured as this target's testPath), not ${path}`;
+  }
+  // Support files land beside the test or in a writable path resource. The
+  // test's own directory is included so a project with no path resources can
+  // still receive the page object a rewrite pass had to create.
+  const roots = [dirname(resolve(policy.cwd, policy.testPath)), ...policy.writeRootsAbs];
   if (!roots.some((root) => isWithin(root, abs))) {
     const allowed = roots.map((r) => relative(policy.cwd, r) || ".").join(", ");
-    return `output path escapes the allowed roots (${allowed}): ${path}`;
-  }
-  return null;
-}
-
-// --- generated.json manifest ---
-// The shape (`GeneratedManifestSchema`) lives in run-command-runner.ts — the
-// consumer side of the contract — and is written here:
-//   { target, generatedAt (ISO8601), files: [{ path (cwd-relative), kind, sha256 }] }
-
-function manifestPath(ref: SpecRef, cwd: string): string {
-  return join(getSpecDir(ref.featureName, ref.specName, cwd), GENERATED_MANIFEST_FILE);
-}
-
-export async function loadGeneratedManifest(
-  ref: SpecRef,
-  cwd: string,
-): Promise<GeneratedManifest | null> {
-  const content = await readFile(manifestPath(ref, cwd), "utf8").catch(() => null);
-  if (content === null) return null;
-  try {
-    return GeneratedManifestSchema.parse(JSON.parse(content));
-  } catch {
-    return null;
-  }
-}
-
-/**
- * `existingOutput` hook shared by manifest-writing targets: the first still-
- * existing generated file (tests first), i.e. what a re-generate would
- * clobber. Null when nothing was generated or every listed file is gone.
- */
-export async function existingOutputFromManifest(
-  ref: SpecRef,
-  cwd: string,
-): Promise<string | null> {
-  const manifest = await loadGeneratedManifest(ref, cwd);
-  if (!manifest) return null;
-  const files = [...manifest.files].sort((a, b) =>
-    a.kind === b.kind ? 0 : a.kind === "test" ? -1 : 1,
-  );
-  for (const f of files) {
-    const abs = resolve(cwd, f.path);
-    const exists = await stat(abs)
-      .then(() => true)
-      .catch(() => false);
-    if (exists) return abs;
+    return `support file escapes the allowed roots (${allowed}): ${path}`;
   }
   return null;
 }
@@ -221,31 +182,10 @@ async function writeGeneratedFiles(
   }
 }
 
-async function saveGeneratedManifest(
-  ref: SpecRef,
-  cwd: string,
-  target: string,
-  state: FileState,
-): Promise<void> {
-  const manifest: GeneratedManifest = {
-    target,
-    generatedAt: new Date().toISOString(),
-    files: [...state.entries()].map(([path, f]) => ({
-      path,
-      kind: f.kind,
-      sha256: manifestSha256(f.contents),
-    })),
-  };
-  // Contract with the run side (`GeneratedManifestSchema`) — see run-command-runner.ts.
-  const path = manifestPath(ref, cwd);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-}
-
 // --- runCommand execution ---
 
-// `{files}` substitution (shell-quoted) lives with the run-side consumer of
-// the manifest; re-exported here for existing importers.
+// `{files}` substitution (shell-quoted) lives with the run-side consumer;
+// re-exported here for existing importers.
 export { substituteRunCommandFiles };
 
 /**
@@ -311,25 +251,9 @@ export interface LlmEngineRequest {
   invoke?: InvokeFn;
 }
 
-/**
- * The spec's own directory, relative to the project root. This is the
- * default write root when `targets.<target>.outDir` is not configured —
- * mirroring the agent-browser target, one spec directory carries its own
- * runnable test regardless of which target generated it.
- */
-export function specDirRel(ctx: Pick<GenerateContext, "featureName" | "specName">): string {
-  return `.ccqa/features/${ctx.featureName}/test-cases/${ctx.specName}`;
-}
-
-/** `targets.<target>.outDir` when configured, else the spec's own directory. */
-export function resolveOutDir(ctx: GenerateContext): string {
-  return ctx.targetConfig.outDir ?? specDirRel(ctx);
-}
-
 /** Full LLM generation: prompt assembly → invoke → write → verify loop. */
 export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<GenerateResult> {
   const { ctx } = req;
-  const outDir = resolveOutDir(ctx);
   const resources = await resolveResources(ctx.cwd, ctx.resources);
   const conventions = await loadConventions(ctx.cwd, ctx.conventions);
   const warnings = [...conventions.warnings];
@@ -342,10 +266,10 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
 
   const policy: OutputPathPolicy = {
     cwd: ctx.cwd,
-    outDirAbs: resolve(ctx.cwd, outDir),
+    testPath: ctx.testPath,
     writeRootsAbs: resources.filter((r) => r.writable).map((r) => r.rootAbs),
   };
-  const extraWriteRoots = resources.filter((r) => r.writable).map((r) => r.rootDisplay);
+  const writeRoots = resources.filter((r) => r.writable).map((r) => r.rootDisplay);
 
   const prompt = buildLlmGenPrompt({
     taskInstructions: req.taskInstructions,
@@ -356,8 +280,8 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
     resources: resources.map(toPromptResource),
     conventionSections: conventions.sections,
     promptBundle: bundle?.text,
-    outDir,
-    extraWriteRoots,
+    testPath: ctx.testPath,
+    writeRoots,
     language: ctx.language,
   });
 
@@ -382,9 +306,8 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
   return finalizeAndVerify({
     ctx,
     target: req.target,
-    outDir,
     policy,
-    extraWriteRoots,
+    writeRoots,
     initialFiles: output.files,
     summary: output.summary,
     warnings,
@@ -406,24 +329,22 @@ export interface PreparedFilesRequest {
 
 /**
  * Entry point for targets whose files are already prepared: shares the
- * engine's write + manifest + runCommand verification half (the fix loop
- * still consults Claude on failures).
+ * engine's write + runCommand verification half (the fix loop still consults
+ * Claude on failures).
  */
 export async function finalizePreparedFiles(req: PreparedFilesRequest): Promise<GenerateResult> {
   const { ctx } = req;
-  const outDir = resolveOutDir(ctx);
   const resources = await resolveResources(ctx.cwd, ctx.resources);
   const policy: OutputPathPolicy = {
     cwd: ctx.cwd,
-    outDirAbs: resolve(ctx.cwd, outDir),
+    testPath: ctx.testPath,
     writeRootsAbs: resources.filter((r) => r.writable).map((r) => r.rootAbs),
   };
   return finalizeAndVerify({
     ctx,
     target: req.target,
-    outDir,
     policy,
-    extraWriteRoots: resources.filter((r) => r.writable).map((r) => r.rootDisplay),
+    writeRoots: resources.filter((r) => r.writable).map((r) => r.rootDisplay),
     initialFiles: req.files,
     summary: req.summary,
     warnings: req.warnings,
@@ -435,9 +356,8 @@ export async function finalizePreparedFiles(req: PreparedFilesRequest): Promise<
 interface FinalizeParams {
   ctx: GenerateContext;
   target: GuidanceKind;
-  outDir: string;
   policy: OutputPathPolicy;
-  extraWriteRoots: string[];
+  writeRoots: string[];
   initialFiles: LlmGeneratedFile[];
   summary: string;
   warnings: string[];
@@ -445,15 +365,13 @@ interface FinalizeParams {
   invoke: InvokeFn;
 }
 
-/** Write files + manifest, then run the bounded runCommand verify/fix loop. */
+/** Write the files, then run the bounded runCommand verify/fix loop. */
 async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
   const { ctx } = p;
-  const ref: SpecRef = { featureName: ctx.featureName, specName: ctx.specName };
   const state: FileState = new Map();
   await writeGeneratedFiles(ctx.cwd, p.initialFiles, state);
-  await saveGeneratedManifest(ref, ctx.cwd, p.target, state);
 
-  const passed = await runVerificationLoop(p, ref, state);
+  const passed = await runVerificationLoop(p, state);
   return {
     files: [...state.values()].map((f) => ({ path: f.abs, kind: f.kind })),
     summary: p.summary || `${state.size} file(s) generated for the ${p.target} target`,
@@ -478,11 +396,7 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
  * `passed: false`. Targets without a runCommand are generate-only here and
  * pass trivially.
  */
-async function runVerificationLoop(
-  p: FinalizeParams,
-  ref: SpecRef,
-  state: FileState,
-): Promise<boolean> {
+async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise<boolean> {
   const runCommand = p.ctx.targetConfig.runCommand;
   if (!runCommand) return true;
   // `--auto-fix skip` disables the fix pass entirely: run verification once and
@@ -549,8 +463,8 @@ async function runVerificationLoop(
         contents: f.contents,
         kind: f.kind,
       })),
-      outDir: p.outDir,
-      extraWriteRoots: p.extraWriteRoots,
+      testPath: p.ctx.testPath,
+      writeRoots: p.writeRoots,
       language: p.ctx.language,
     });
     let output: LlmGenOutput;
@@ -588,14 +502,13 @@ async function runVerificationLoop(
       continue;
     }
     // Interactive mode: the fix pass rewrites files in the consumer's tree
-    // (possibly outside `.ccqa/` when outDir is set), so show what changes and
-    // ask before writing. Declining keeps the current files and ends the loop.
+    // (wherever `testPath` puts them), so show what changes and ask before
+    // writing. Declining keeps the current files and ends the loop.
     if (p.ctx.fix.mode === "interactive" && !(await confirmFixWrite(output.files, p.ctx.cwd))) {
       log.info("fix not applied (declined) — keeping current files");
       return false;
     }
     await writeGeneratedFiles(p.ctx.cwd, output.files, state);
-    await saveGeneratedManifest(ref, p.ctx.cwd, p.target, state);
   }
 }
 
@@ -696,7 +609,7 @@ function validateOutput(output: LlmGenOutput, p: InvokeForFilesParams): string[]
       continue;
     }
     seen.add(key);
-    const pathError = validateOutputPath(p.policy, file.path);
+    const pathError = validateOutputPath(p.policy, file.path, file.kind);
     if (pathError) {
       errors.push(pathError);
       continue;
@@ -704,8 +617,15 @@ function validateOutput(output: LlmGenOutput, p: InvokeForFilesParams): string[]
     const fileError = p.validateFile?.(file) ?? null;
     if (fileError) errors.push(fileError);
   }
-  if (p.requireTestFile && !output.files.some((f) => f.kind === "test")) {
+  const tests = output.files.filter((f) => f.kind === "test");
+  if (p.requireTestFile && tests.length === 0) {
     errors.push('output contains no "kind": "test" file');
+  }
+  // Two test files would mean one of them is not the spec's test — and the
+  // path check above already fails for whichever one is not at `testPath`, so
+  // this only makes the reason legible in the retry note.
+  if (tests.length > 1) {
+    errors.push(`output contains ${tests.length} "kind": "test" files; a spec has exactly one`);
   }
   return errors;
 }

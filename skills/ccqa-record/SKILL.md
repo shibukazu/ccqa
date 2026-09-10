@@ -15,9 +15,9 @@ the product actually renders it, not whatever happened to be on screen.
 
 ## Rules that hold throughout
 
-- **Never edit a generated artefact** — `test.spec.ts`, `ir.json`,
-  `generated.json`, anything a target emits. The only file you own is
-  `spec.yaml`; everything else changes by re-recording.
+- **Never edit a generated artefact** — `test.spec.ts`, `ir.json`, anything a
+  target emits. The only file you own is `spec.yaml`; everything else changes
+  by re-recording.
 - **Follow the neighbors.** Existing specs under `.ccqa/` carry the project's
   conventions — target, login blocks, session names, naming, serial groups.
   Read two or three from the same area before writing anything.
@@ -105,7 +105,7 @@ A live spec skips this step and step 5: it has no recording, the spec itself
 is what runs, and `ccqa record` refuses one.
 
 ```sh
-ccqa record <feature>/<spec> --hub-profile <profile> --overwrite --auto-fix auto \
+ccqa record <feature>/<spec> --hub-profile <profile> --auto-fix auto \
   --instruction "<anything the recorder cannot read from the spec alone>"
 ```
 

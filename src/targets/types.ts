@@ -38,12 +38,13 @@ export interface TargetPlugin {
   /** Generate (and verify, when the target has a verification loop) test code. */
   generate(ctx: GenerateContext): Promise<GenerateResult>;
   /**
-   * Absolute path of a previously generated artifact that `generate` would
-   * overwrite, or null when there is none. The CLI uses this for its
-   * interactive overwrite guard (`--force` skips the prompt); targets with
-   * no overwrite hazard can omit the hook.
+   * Where this target's generated test lands when the project's config does
+   * not say (`targets.<id>.testPath`) — a template over `{feature}`/`{spec}`,
+   * see src/targets/test-path.ts. Required, never optional: every command that
+   * is not `generate` finds a spec's test through this path, so a target
+   * without one would generate code nothing could run, audit, or triage.
    */
-  existingOutput?(ref: SpecRef, cwd: string): Promise<string | null>;
+  defaultTestPath: string;
   /**
    * Executes previously generated tests under `ccqa run`. Absent means the
    * target is generate-only and the run pipeline records its specs as
@@ -171,13 +172,20 @@ export interface GenerateContext {
   specName: string;
   /** Project root — the directory holding `.ccqa/`. */
   cwd: string;
+  /**
+   * Where the generated test must be written, relative to `cwd`: the target's
+   * `testPath` template expanded for this spec. Resolved by the caller, from
+   * the same template `ccqa run` and the audit expand, so generation and every
+   * later reader of that file name it the same way.
+   */
+  testPath: string;
   /** Recorded IR; set iff the target's `input` is "recording". */
   recording?: RecordedAction[];
   /** Existing code assets generated tests should reuse (config `resources`). */
   resources: ResourceRef[];
   /** Style/convention guide inputs for generation (config `conventions`). */
   conventions: Conventions;
-  /** Full per-target config block — also carries `outDir` / `runCommand`. */
+  /** Full per-target config block — also carries `testPath` / `runCommand`. */
   targetConfig: TargetConfig;
   language: string;
   model?: string;
@@ -247,6 +255,8 @@ export interface RunnerOptions {
   targetId: string;
   /** The target's resolved config block — runCommand runners read `runCommand` here. */
   targetConfig: TargetConfig;
+  /** The plugin's `defaultTestPath`, so the runner can resolve each spec's test. */
+  defaultTestPath: string;
   /**
    * Resolved from the plugin's `stepEvidence` (absent ⇒ unsupported). Runners
    * point the child at a per-spec `CCQA_EVIDENCE_DIR` only when supported.

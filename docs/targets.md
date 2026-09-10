@@ -44,12 +44,13 @@ ccqa generate tasks/create-and-complete   # recording targets: re-run generate
   `ccqa generate`. Running `ccqa generate` on a recording target with no
   `ir.json` errors with "Run `ccqa record` first".
 - Both commands share the codegen flags: `--auto-fix
-  <interactive|auto|skip>` (default `interactive`), `--auto-fix-max-retries <n>`
-  (default 3), `--overwrite` (overwrite an existing generated test without the
-  y/N prompt) — see [Auto-fix](./auto-fix.md) — plus `-m/--model`,
+  <interactive|auto|skip>` (default `interactive`) and `--auto-fix-max-retries
+  <n>` (default 3) — see [Auto-fix](./auto-fix.md) — plus `-m/--model`,
   `--language`, `--cwd`, `--hub-profile`, and the hub connection flags.
 - To regenerate from an existing `ir.json` without re-recording, run `ccqa
-  generate` — `ccqa record` always traces.
+  generate` — `ccqa record` always traces. `--overwrite` replaces an existing
+  test without prompting and `--no-replay` skips the route check, see
+  [Regenerating from a saved route](#regenerating-from-a-saved-route).
 - `ccqa record` also accepts `--trace-only` (stop after the trace),
   `--trace-validation <lenient|strict>`, and `--learn-hub-trace-prompt` (refresh
   the hub-stored `record.agent` learning notes after the trace).
@@ -68,7 +69,8 @@ defaultTarget: playwright   # used when a spec has no target: (default: agent-br
 
 targets:
   playwright:
-    outDir: e2e/specs                # optional — omit to write into the spec's own directory
+    # where this target's generated test lands; omit for the spec's own directory
+    testPath: e2e/specs/{feature}/{spec}.spec.ts
     # optional; enables `ccqa run`. {artifactsDir} collects traces into the report.
     runCommand: "pnpm exec playwright test --trace retain-on-failure --output {artifactsDir} {files}"
 
@@ -87,7 +89,7 @@ targets:
       examples: [e2e/specs/sample_login.spec.ts]
 
   runn:
-    outDir: runbooks
+    testPath: runbooks/{feature}/{spec}.yaml
     runCommand: "runn run --verbose --capture {artifactsDir} {files}"
 ```
 
@@ -111,27 +113,82 @@ the draft ships as-is — no LLM involved for the playwright target.
 documents and `examples` are existing tests whose style the generated code
 should imitate. Entries may be globs.
 
-### `outDir` and `generated.json`
+### `testPath` — where the generated test lands
 
-By default a generated test lands in the spec's own directory — the same
-convention as the agent-browser target, so every spec carries its runnable
-test next to its `spec.yaml` (`test.spec.ts` for playwright, `runbook.yaml`
-for runn). Configure `outDir` to write into a separate tree instead
-(targets then suggest `<outDir>/<feature>/<spec>.spec.ts`; an LLM pass may
-relocate within `outDir` to match repo conventions, never outside it).
-Each generated spec also gets a `generated.json` manifest in its spec
-directory:
+`testPath` is a template, expanded per spec:
 
-```json
-{
-  "target": "playwright",
-  "generatedAt": "...",
-  "files": [{ "path": "e2e/specs/tasks/create.spec.ts", "kind": "test", "sha256": "..." }]
-}
+| Placeholder | Expands to |
+|---|---|
+| `{feature}` | the feature directory name |
+| `{spec}` | the test-case directory name |
+
+Omit it and the test lands in the spec's own directory
+(`.ccqa/features/<feature>/test-cases/<spec>/test.spec.ts`, or `runbook.yaml`
+for runn) — the same convention as the agent-browser target, so every spec
+carries its runnable test next to its `spec.yaml`. Set it to write into your
+repo's own test tree instead.
+
+The path is **derived, not recorded**: `ccqa run`, the drift audit, failure
+triage and `ccqa perspectives` all expand the same template rather than reading
+a manifest, so they find a spec's test whether or not it has been generated
+yet. Generation is held to it too — the LLM rewrite pass may restructure the
+test, but it cannot decide where the test lives. Support files it creates
+(page objects and the like) go under a `resources` path root or beside the
+test; those belong to your repo's layout, not to ccqa.
+
+The template must be relative to the project root, must not contain `..`, and
+must contain `{spec}` — without it every spec would generate onto one file.
+`testPath` is not configurable for the `agent-browser` target: `ccqa run`
+enumerates its vitest tests in the spec directory, so a configurable path there
+would be read by the audit and ignored by the runner.
+
+Whatever a generated test imports from inside the project — page objects, step
+helpers, shared constants — is part of the test case as far as the audit and
+failure triage are concerned. They follow the test's imports (relative
+specifiers and `tsconfig.json` `paths` aliases, including a relative `extends`
+chain, three hops deep, never into `node_modules`), so a selector living in a
+page object is audited alongside the one in the test.
+
+> **Breaking change:** `outDir` and the per-spec `generated.json` manifest are
+> gone. Set `testPath` (or accept the spec-directory default) and delete any
+> `generated.json` left in your spec directories — see
+> [ADR-0028](./adr/0028-a-derived-test-path-and-a-recorded-route.md).
+
+### Regenerating from a saved route
+
+`ccqa generate` recompiles `ir.json` without a browser or a trace, which is how
+a whole suite is re-emitted after a page object or a convention changes. One
+thing makes that pointless, and it is refused rather than warned about: **the
+recorded route no longer replays.** ccqa replays the saved actions once against
+a fresh browser session — the same post-trace validation `record` runs, no
+model involved — and refuses when the route is gone, since re-emitting a dead
+route can only produce a test that cannot pass. `--no-replay` skips the check
+for environments with no browser or no variables. It does not run under `ccqa
+record`, which has just recorded and validated the route it is compiling.
+
+An existing generated test is replaced only after a y/N prompt (`--overwrite`
+skips it; a non-TTY declines). ccqa does not claim to know whether that file
+was hand-edited: answering it needs a record of what the last generation wrote,
+and this design deliberately keeps none — see
+[ADR-0028](./adr/0028-a-derived-test-path-and-a-recorded-route.md).
+
+### The recorded route, and what a re-record changed
+
+`ir.json` is the record of the route a recording actually took — its
+operations, locators, values and checks — plus when it was recorded and which
+entry point it started from (`${VAR}` references left unexpanded). It is what
+makes browser-free regeneration possible, and it dates the test's origin.
+
+Re-recording replaces the route wholesale, so `ccqa record` writes a
+`route-diff.md` beside the spec whenever it replaced an existing recording:
+what was added, removed, or changed, grouped by spec step.
+
+```md
+## step-02 — Submit the form
+
+- changed: `click text="Submit"` → `click role=button[name="Submit"]`
+- added: `assert text_visible "Saved"`
 ```
-
-`ccqa run` executes only the `kind: "test"` files; `support` files ride
-along with hashes so drift in them is detectable.
 
 ### `serialGroups` — specs that must not run at the same time
 

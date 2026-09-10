@@ -9,9 +9,14 @@ import {
 import { languageDirective } from "../prompts/language.ts";
 import { normalizeDiagnosis } from "../report/schema.ts";
 import { tryReadSpecFile, type AvailableBlock } from "../store/index.ts";
-import { collectSpecArtifacts } from "./artifacts.ts";
+import {
+  collectSpecArtifacts,
+  loadSpecArtifactsContext,
+  type SpecArtifactsContext,
+} from "./artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
 import { DriftReplySchema, type SpecResult, type SpecTarget } from "./types.ts";
+import * as log from "../cli/logger.ts";
 
 export interface AnalyzeDriftInput {
   targets: SpecTarget[];
@@ -45,16 +50,21 @@ const DEFAULT_CONCURRENCY = 3;
 export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult[]> {
   const { targets, cwd, blocks, concurrency = DEFAULT_CONCURRENCY, model, language, guidance, onSpecStart, onSpecDone } =
     input;
+  // Read once for the sweep: every spec resolves its test through the same
+  // config and the same import aliases, and neither can change mid-sweep.
+  const context = await loadSpecArtifactsContext(cwd);
 
   return runPool(targets, concurrency, async (target) => {
     onSpecStart?.(target);
-    const result = await checkSpec(target, { cwd, blocks, model, language, guidance });
+    const result = await checkSpec(target, { cwd, context, blocks, model, language, guidance });
     await onSpecDone?.(result);
     return result;
   });
 }
 
 interface CheckSpecOptions {
+  /** Config and import aliases, read once by `analyzeDrift`. */
+  context: SpecArtifactsContext;
   cwd: string;
   blocks: AvailableBlock[];
   model?: string;
@@ -77,7 +87,21 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
 
   // Both surfaces of the test case, so the audit sees the code that actually
   // runs and not only the prose that describes it.
-  const artifacts = await collectSpecArtifacts(featureName, specName, existing, opts.cwd);
+  const artifacts = await collectSpecArtifacts(
+    featureName,
+    specName,
+    existing,
+    opts.cwd,
+    opts.context,
+  );
+  if (artifacts.unaudited.length > 0) {
+    // Said out loud, not only in the prompt: a verdict of "no drift" over a
+    // partially-read test case is worth less than it looks, and only the
+    // operator can decide to split the spec or narrow its imports.
+    log.warn(
+      `${featureName}/${specName}: over the audit's size budget — not audited: ${artifacts.unaudited.join(", ")}`,
+    );
+  }
 
   // One CI drift row shouldn't die on a single malformed reply (truncated
   // JSON, missing block) — retry the whole check once before reporting the

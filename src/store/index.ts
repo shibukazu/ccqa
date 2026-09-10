@@ -16,9 +16,19 @@ export interface AvailableBlock {
 
 const CCQA_DIR = ".ccqa";
 const SPEC_FILE = "spec.yaml";
+/**
+ * The spec directory as a path template (see src/targets/test-path.ts). Kept
+ * here beside `getSpecDir` so the `.ccqa` layout has one spelling: a target's
+ * `defaultTestPath` and the store's own paths cannot drift apart.
+ */
+export const SPEC_DIR_TEMPLATE = `${CCQA_DIR}/features/{feature}/test-cases/{spec}`;
+/** The vitest test the agent-browser target compiles a recording into. */
+export const TEST_SCRIPT_FILE = "test.spec.ts";
 const RECORDING_FILE = "ir.json";
 // Where a FAILED trace's actions land — see saveFailedRecording.
 const FAILED_RECORDING_FILE = "ir.failed.json";
+// What `ccqa record` writes when it replaced an existing recording.
+const ROUTE_DIFF_FILE = "route-diff.md";
 const PERSPECTIVES_FILE = "perspectives.yaml";
 const PERSPECTIVES_MD_FILE = "perspectives.md";
 
@@ -141,6 +151,50 @@ export async function removeLegacyPerspectivesFiles(cwd?: string): Promise<strin
   return removed;
 }
 
+/**
+ * What `ir.json` holds: the route a recording actually took, plus the minimum
+ * needed to say where it came from.
+ *
+ * The actions are the route — every operation, locator, value and check the
+ * trace performed. The provenance is what makes the route auditable a month
+ * later: `recordedAt` dates it, and `origin` says which entry point it started
+ * from, with `${VAR}` references left unexpanded so the recording still reads
+ * the same across environments.
+ */
+export interface Recording {
+  actions: RecordedAction[];
+  /** ISO8601 timestamp of the trace that produced this route. */
+  recordedAt?: string;
+  /** The route's first navigation, `${VAR}` refs intact. */
+  origin?: string;
+}
+
+function buildRecording(actions: RecordedAction[]): Recording {
+  const origin = actions.find((a) => a.action === "navigate")?.value;
+  return {
+    recordedAt: new Date().toISOString(),
+    ...(origin ? { origin } : {}),
+    actions,
+  };
+}
+
+/**
+ * Parse `ir.json`. A recording written before the file carried provenance is a
+ * bare action array; it still describes a route, so it is read as one with the
+ * provenance simply absent rather than rejected.
+ */
+export function parseRecording(content: string): Recording {
+  const parsed: unknown = JSON.parse(content);
+  if (Array.isArray(parsed)) return { actions: parsed as RecordedAction[] };
+  const recording = parsed as Partial<Recording>;
+  if (!Array.isArray(recording.actions)) {
+    // Truncated or hand-mangled: say so here, where the file is named, rather
+    // than downstream where a missing action list reads as a code bug.
+    throw new Error("ir.json holds no `actions` array — re-run `ccqa record`");
+  }
+  return recording as Recording;
+}
+
 // Per-spec artifacts written by pre-IR ccqa versions, superseded by ir.json.
 // Removed on every save so a re-record leaves no stale files behind.
 const LEGACY_RECORDING_FILES = ["actions.json", "route.md"];
@@ -150,11 +204,12 @@ export async function saveRecording(
   specName: string,
   actions: RecordedAction[],
   cwd?: string,
-): Promise<string> {
+): Promise<{ path: string; recording: Recording }> {
   const specDir = getSpecDir(featureName, specName, cwd);
   await mkdir(specDir, { recursive: true });
   const recordingPath = join(specDir, RECORDING_FILE);
-  await writeFile(recordingPath, JSON.stringify(actions, null, 2), "utf-8");
+  const recording = buildRecording(actions);
+  await writeFile(recordingPath, JSON.stringify(recording, null, 2), "utf-8");
   await Promise.all(
     // A successful save also removes a leftover failed-trace file: it
     // described an older attempt, and keeping it beside a good ir.json
@@ -163,7 +218,28 @@ export async function saveRecording(
       unlink(join(specDir, f)).catch(() => {}),
     ),
   );
-  return recordingPath;
+  return { path: recordingPath, recording };
+}
+
+/** Where `ccqa record` leaves the route diff against the previous recording. */
+export async function saveRouteDiff(
+  featureName: string,
+  specName: string,
+  markdown: string,
+  cwd?: string,
+): Promise<string> {
+  const path = join(getSpecDir(featureName, specName, cwd), ROUTE_DIFF_FILE);
+  await writeFile(path, markdown, "utf-8");
+  return path;
+}
+
+/** Drop the route diff — there is no previous recording for it to describe. */
+export async function removeRouteDiff(
+  featureName: string,
+  specName: string,
+  cwd?: string,
+): Promise<void> {
+  await unlink(join(getSpecDir(featureName, specName, cwd), ROUTE_DIFF_FILE)).catch(() => {});
 }
 
 /**
@@ -181,7 +257,7 @@ export async function saveFailedRecording(
   const specDir = getSpecDir(featureName, specName, cwd);
   await mkdir(specDir, { recursive: true });
   const path = join(specDir, FAILED_RECORDING_FILE);
-  await writeFile(path, JSON.stringify(actions, null, 2), "utf-8");
+  await writeFile(path, JSON.stringify(buildRecording(actions), null, 2), "utf-8");
   return path;
 }
 
@@ -352,16 +428,32 @@ export async function findStaleBlockArtifacts(cwd?: string): Promise<string[]> {
 
 // --- Recordings (IR) ---
 
+export function getRecordingPath(featureName: string, specName: string, cwd?: string): string {
+  return join(getSpecDir(featureName, specName, cwd), RECORDING_FILE);
+}
+
 export async function getRecording(
   featureName: string,
   specName: string,
   cwd?: string,
-): Promise<{ path: string; actions: RecordedAction[] }> {
-  const path = join(getSpecDir(featureName, specName, cwd), RECORDING_FILE);
+): Promise<Recording & { path: string }> {
+  const path = getRecordingPath(featureName, specName, cwd);
   const content = await readFile(path, "utf-8").catch(() => {
     throw new Error(`No recording found for spec: ${featureName}/${specName}. Run \`ccqa record\` first.`);
   });
-  return { path, actions: JSON.parse(content) as RecordedAction[] };
+  return { path, ...parseRecording(content) };
+}
+
+/** The saved recording, or null when the spec has none. */
+export async function tryGetRecording(
+  featureName: string,
+  specName: string,
+  cwd?: string,
+): Promise<Recording | null> {
+  const content = await readFile(getRecordingPath(featureName, specName, cwd), "utf-8").catch(
+    () => null,
+  );
+  return content === null ? null : parseRecording(content);
 }
 
 export async function saveTestScript(
@@ -372,18 +464,18 @@ export async function saveTestScript(
 ): Promise<string> {
   const specDir = getSpecDir(featureName, specName, cwd);
   await mkdir(specDir, { recursive: true });
-  const scriptPath = join(specDir, "test.spec.ts");
+  const scriptPath = join(specDir, TEST_SCRIPT_FILE);
   await writeFile(scriptPath, content, "utf-8");
   return scriptPath;
 }
 
 export async function getTestScript(featureName: string, specName: string, cwd?: string): Promise<string | null> {
-  const path = join(getSpecDir(featureName, specName, cwd), "test.spec.ts");
+  const path = join(getSpecDir(featureName, specName, cwd), TEST_SCRIPT_FILE);
   return stat(path).then(() => path).catch(() => null);
 }
 
 export async function listAllSpecs(cwd?: string): Promise<Array<{ featureName: string; specName: string }>> {
-  return listAllSpecsFilteredBy("test.spec.ts", cwd);
+  return listAllSpecsFilteredBy(TEST_SCRIPT_FILE, cwd);
 }
 
 /**

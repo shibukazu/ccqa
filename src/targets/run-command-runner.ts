@@ -1,11 +1,10 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { createWriteStream, type WriteStream } from "node:fs";
-import { mkdir, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
-import { z } from "zod";
-import { getSpecDir, loadAllBlocks, tryReadSpecFile, type SpecRef } from "../store/index.ts";
+import { loadAllBlocks, tryReadSpecFile, type SpecRef } from "../store/index.ts";
+import { resolveTestPath } from "./test-path.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
@@ -34,8 +33,8 @@ import * as log from "../cli/logger.ts";
 
 /**
  * Substitute `{files}` in a runCommand with the (shell-quoted) cwd-relative
- * test-file paths. Quoting is mandatory: the manifest paths originate from an
- * LLM reply and the command runs through `shell: true`, so an unquoted path
+ * test-file paths. Quoting is mandatory: the command runs through `shell: true`
+ * and the path comes from a user-authored template, so an unquoted path
  * containing shell metacharacters would execute as code. A command without
  * the placeholder runs verbatim (it may discover the files itself).
  */
@@ -51,11 +50,11 @@ function shellQuote(s: string): string {
 
 /**
  * Shared `TestRunner` for external (runCommand) targets: for each spec it
- * reads the `generated.json` manifest that `ccqa generate` left in the spec
- * directory and executes the target's configured `runCommand` with `{files}`
- * expanded to the generated test files. Exit 0 = passed, anything else =
- * failed with the output tail in the report row. Targets whose tests are run
- * by an external tool (Playwright, runn, ...) set this as their `runner`.
+ * derives the test's path from the target's `testPath` and executes the
+ * target's configured `runCommand` with `{files}` expanded to it. Exit 0 =
+ * passed, anything else = failed with the output tail in the report row.
+ * Targets whose tests are run by an external tool (Playwright, runn, ...) set
+ * this as their `runner`.
  */
 export const runCommandRunner: TestRunner = {
   async run(specs: readonly SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]> {
@@ -108,39 +107,6 @@ export const runCommandRunner: TestRunner = {
   },
 };
 
-/** File `ccqa generate` writes into the spec directory for external targets. */
-export const GENERATED_MANIFEST_FILE = "generated.json";
-
-/**
- * Manifest contract shared with the generation side: which files a
- * `ccqa generate` pass wrote (cwd-relative), so `ccqa run` knows what to hand
- * the target's `runCommand`. Only `kind: "test"` entries are executed;
- * "support" files (page objects etc.) ride along for regeneration/drift
- * detection via their hashes.
- */
-export const GeneratedManifestSchema = z.object({
-  target: z.string(),
-  generatedAt: z.string(),
-  files: z.array(
-    z.object({
-      path: z.string(),
-      kind: z.enum(["test", "support"]),
-      sha256: z.string(),
-    }),
-  ),
-});
-export type GeneratedManifest = z.infer<typeof GeneratedManifestSchema>;
-
-/**
- * Hex sha256 of a manifest file's content — the one hash both the generation
- * side (writes `files[].sha256`) and the run side (checks it, see
- * `warnDriftedFiles`) must compute identically. A string is hashed as UTF-8,
- * matching how the file is written to disk.
- */
-export function manifestSha256(data: string | Buffer): string {
-  return createHash("sha256").update(data).digest("hex");
-}
-
 async function runOneSpec(
   ref: SpecRef,
   opts: RunnerOptions,
@@ -180,28 +146,17 @@ async function runOneSpec(
 
   log.run(`${featureName}/${specName}`);
 
-  const manifest = await readGeneratedManifest(ref, opts.cwd);
-  if (!manifest.ok) {
-    const detail = manifest.missing
-      ? `no generated tests for this spec (${manifest.error}) — run 'ccqa generate ${featureName}/${specName}' first`
-      : `${manifest.error} — re-run 'ccqa generate ${featureName}/${specName}'`;
+  const testFile = resolveTestPath(opts, opts.targetConfig, ref);
+  const generated = await stat(resolve(opts.cwd, testFile)).then(
+    () => true,
+    () => false,
+  );
+  if (!generated) {
+    const detail = `no generated test at ${testFile} — run 'ccqa generate ${featureName}/${specName}' first`;
     log.error(detail);
     return didNotExecute(detail, "no generated tests");
   }
-
-  const testFiles = manifest.manifest.files.filter((f) => f.kind === "test").map((f) => f.path);
-  if (testFiles.length === 0) {
-    const detail = `${GENERATED_MANIFEST_FILE} lists no test files — re-run 'ccqa generate ${featureName}/${specName}'`;
-    log.error(detail);
-    return didNotExecute(detail, "no generated tests");
-  }
-
-  // Generated files aren't meant to be hand-edited; warn (never fail) when one
-  // drifts from the sha256 the manifest recorded, so a stale/edited test is
-  // visible in the log instead of silently running. Advisory and read-only, so
-  // it runs alongside the command (no data dependency) and is awaited before
-  // the row is built.
-  const driftWarn = warnDriftedFiles(ref, manifest.manifest, opts.cwd);
+  const testFiles = [testFile];
 
   // Per-spec artifacts dir, recreated per run so files from a previous run
   // can't leak into this row. `{artifactsDir}` expands to it, and the child
@@ -337,7 +292,6 @@ async function runOneSpec(
   }
   const artifactFields = artifacts && artifacts.length > 0 ? { artifacts } : {};
   const evidenceFields = await loadStepEvidence(opts, evidenceDir, parsedSpec, blocks);
-  await driftWarn; // ensure the advisory warning lands inside this spec's log block
 
   if (outcome.exitCode === 0) {
     return {
@@ -413,63 +367,6 @@ async function loadStepEvidence(
       "no step screenshots were captured — the generated test may be missing its " +
       "ccqa/step-evidence calls; re-run `ccqa generate` for this spec",
   };
-}
-
-/**
- * Warn (never fail) when a generated file's current sha256 differs from the
- * one `generated.json` recorded — the generated tree is not meant to be
- * hand-edited, so a mismatch means the running test no longer matches what
- * `ccqa generate` produced. Best-effort: an unreadable file (already handled
- * downstream as a run failure) is skipped here.
- */
-async function warnDriftedFiles(ref: SpecRef, manifest: GeneratedManifest, cwd: string): Promise<void> {
-  const drifted: string[] = [];
-  await Promise.all(
-    manifest.files.map(async (f) => {
-      const bytes = await readFile(resolve(cwd, f.path)).catch(() => null);
-      if (bytes === null) return;
-      if (manifestSha256(bytes) !== f.sha256) drifted.push(f.path);
-    }),
-  );
-  if (drifted.length > 0) {
-    log.warn(
-      `${ref.featureName}/${ref.specName}: generated file(s) changed since 'ccqa generate' ` +
-        `(${drifted.join(", ")}) — edits to generated code are overwritten on the next generate; ` +
-        `put lasting changes in the spec or the target's resources`,
-    );
-  }
-}
-
-type ManifestReadResult =
-  | { ok: true; manifest: GeneratedManifest }
-  | { ok: false; missing: boolean; error: string };
-
-/**
- * Read a spec's `generated.json` with the runner's richer error detail (used
- * for its "run `ccqa generate` first" messages). Other consumers that only
- * need the parsed manifest use `loadGeneratedManifest` (llm-engine.ts).
- */
-async function readGeneratedManifest(ref: SpecRef, cwd: string): Promise<ManifestReadResult> {
-  const path = join(getSpecDir(ref.featureName, ref.specName, cwd), GENERATED_MANIFEST_FILE);
-  let raw: string;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { ok: false, missing: true, error: `${path} not found` };
-    }
-    return { ok: false, missing: false, error: `${path}: ${(err as Error).message}` };
-  }
-  try {
-    return { ok: true, manifest: GeneratedManifestSchema.parse(JSON.parse(raw)) };
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    return {
-      ok: false,
-      missing: false,
-      error: `${path} is not a valid generated-files manifest: ${message}`,
-    };
-  }
 }
 
 type ShellOutcome = { exitCode: number; tail: string };

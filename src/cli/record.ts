@@ -40,7 +40,6 @@ interface RecordOptions {
   autoFix?: AutoFixMode;
   autoFixMaxRetries?: string;
   timeout?: number;
-  overwrite?: boolean;
   sessionPin?: boolean;
   traceOnly?: boolean;
   learnHubTracePrompt?: boolean;
@@ -100,7 +99,6 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
     )
     .optionsGroup("What to do with the result:")
-    .option("--overwrite", "Replace an existing test.spec.ts without warning")
     .option(
       "--report-to-hub",
       "Leave a run (kind: record) on the hub saying this spec was recorded and what the recording spent on Claude, so a budget summed over the hub's runs sees it. It advances no ledger: a recording verifies nothing.",
@@ -320,7 +318,10 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
         generated = (await runGenerate(featureName, specName, {
           maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
           fixMode: toFixMode(opts.autoFix ?? "interactive"),
-          force: opts.overwrite ?? false,
+          // The trace just replaced this recording and validated it by
+          // replay, so neither regeneration gate has anything left to check.
+          force: true,
+          replayGate: false,
           useSnapshot: opts.sessionPin !== false,
           language,
           model: opts.model,

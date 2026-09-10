@@ -34,7 +34,7 @@ describe("loadProjectConfig", () => {
         "defaultTarget: playwright",
         "targets:",
         "  playwright:",
-        "    outDir: e2e/specs",
+        "    testPath: e2e/specs/{feature}/{spec}.spec.ts",
         '    runCommand: "pnpm exec playwright test {files}"',
         "    resources:",
         "      - path: e2e/pages",
@@ -49,7 +49,7 @@ describe("loadProjectConfig", () => {
     const config = await loadProjectConfig(cwd);
     expect(config.defaultTarget).toBe("playwright");
     expect(config.targets["playwright"]).toEqual({
-      outDir: "e2e/specs",
+      testPath: "e2e/specs/{feature}/{spec}.spec.ts",
       runCommand: "pnpm exec playwright test {files}",
       resources: [
         { path: "e2e/pages", description: "page objects" },
@@ -70,18 +70,26 @@ describe("loadProjectConfig", () => {
 
 describe("parseProjectConfig", () => {
   it("fills target-level defaults (resources, conventions)", () => {
-    const config = parseProjectConfig("targets:\n  runn:\n    outDir: runbooks\n");
+    const config = parseProjectConfig(
+      "targets:\n  runn:\n    testPath: runbooks/{feature}/{spec}.yaml\n",
+    );
     expect(config.defaultTarget).toBe("agent-browser");
     expect(config.targets["runn"]).toEqual({
-      outDir: "runbooks",
+      testPath: "runbooks/{feature}/{spec}.yaml",
       resources: [],
       conventions: { guides: [], examples: [] },
     });
   });
 
-  it("allows a target without outDir (e.g. agent-browser needs none)", () => {
+  it("allows a target without testPath (e.g. agent-browser needs none)", () => {
     const config = parseProjectConfig("targets:\n  agent-browser: {}\n");
-    expect(config.targets["agent-browser"]?.outDir).toBeUndefined();
+    expect(config.targets["agent-browser"]?.testPath).toBeUndefined();
+  });
+
+  it("rejects testPath on the agent-browser target", () => {
+    expect(() =>
+      parseProjectConfig("targets:\n  agent-browser:\n    testPath: e2e/{feature}/{spec}.spec.ts\n"),
+    ).toThrow(/testPath is not configurable for the agent-browser target/);
   });
 
   it("rejects a resource with both path and package", () => {

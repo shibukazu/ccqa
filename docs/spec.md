@@ -25,10 +25,10 @@ spec directory accumulates these files as you work:
       test-cases/
         create-and-complete/
           spec.yaml              # this document's subject
-          ir.json                # (recording targets) recorded actions
+          ir.json                # (recording targets) the recorded route
           ir.failed.json         # last FAILED trace, kept for diagnosis only
-          test.spec.ts           # (agent-browser, deterministic) generated test
-          generated.json         # (other targets) manifest of generated files
+          route-diff.md          # what the last re-record changed, if anything
+          test.spec.ts           # generated test, when `testPath` is the default
           runs/<timestamp>/      # (live) one run's step screenshots + summary
 ```
 
