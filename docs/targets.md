@@ -288,7 +288,7 @@ is optional; an omitted one falls back to its English default:
 | `precondition` | `Precondition` | context true before the case starts; handed to the recorder as prose, never parsed |
 | `steps` | `Steps` | a numbered list of what to do (required) |
 | `expected` | `Expected` | what must hold, for the case: a bullet list, or prose |
-| `cleanup` | `Cleanup` | a numbered list run after the case, any outcome |
+| `cleanup` | `Cleanup` | a numbered list run after the case, any outcome, plus what the undo must make true |
 | `priority` | `Priority` | free text, kept as written |
 | `link` | `Link` | a bullet list, `URL: ...` / `No: ...` items |
 | `mode` | *(none)* | `live` runs the case through the browser agent; anything else records and generates |
@@ -306,6 +306,12 @@ recording, not the markdown. A section written as a paragraph instead is
 kept whole rather than dropped, so a case is never quietly weakened by its
 punctuation; `cleanup` reads the same way. A heading the map does not name is carried
 through unchanged, as context for whoever records the case.
+
+A `cleanup` section that numbers its steps **and** lists bullets is stating
+two things: the numbered items are the undo, and the bullets are what the
+undo has to make true. Those are recorded and asserted inside the generated
+`afterEach`, where they are true — asserting "the item is gone" among the
+case's own steps would check it while the item still exists.
 
 Using the field map above, a case file looks like:
 
@@ -331,6 +337,8 @@ A task named "Buy milk" already exists in the list.
 ## Teardown
 
 1. Uncheck the checkbox to restore the task.
+
+- The task's checkbox is unchecked again.
 
 ## Priority
 
@@ -364,6 +372,80 @@ test. Every other case is recorded and generated, and its test is run by your
 own test runner (see [`ccqa select-specs --format
 paths`](./running.md#asking-the-question-on-its-own)).
 
+### What the generated test looks like
+
+Two things in the emitted file are written for the reviewer rather than for
+the runner, and both are mechanical.
+
+**Each step opens with the case's own words.** A step recorded from a markdown
+case is commented `// step 3: <the step's sentence>`, and a cleanup step
+`// cleanup 1: <…>` — so a reviewer reads the code against the case without
+opening both. Under `--language ja` the same comments read `// 3. <文>` and
+`// 後処理 1. <文>`. A `spec.yaml` step keeps the identifier form
+(`// step: step-03 [spec]`) it has always had.
+
+**The `afterEach` guard is assigned where the route created something.** With
+`runId` configured, the test opens with the project's own unique value, and the
+cleanup is guarded by a second variable that is only assigned once the route
+has actually created a thing to undo:
+
+```ts
+test.describe("Add a todo item", () => {
+  let ccqaCreated: string | undefined;
+
+  test("Add a todo item @smoke", async ({ page }) => {
+    const ccqaRunId = generateRunId();
+    // step 2: Fill in the new item field with a unique title
+    await page.getByPlaceholder("What needs to be done?").fill(`buy milk ${ccqaRunId}`);
+
+    // step 3: Click the add button
+    await page.getByRole("button", { name: "Add" }).click();
+    ccqaCreated = ccqaRunId;
+  });
+
+  test.afterEach(async ({ page }) => {
+    if (ccqaCreated === undefined) return;
+    // cleanup 1: Delete the created item
+    await page.getByRole("button", { name: "Delete" }).click();
+  });
+});
+```
+
+The assignment's position is decided by a rule, not by a model: the first
+action that submits (a click, a double click, a key press) after the first one
+that typed the unique value, at the end of that action's step. A route that
+never submits the value, or never types it, assigns at the end of the test —
+later than the creation, never earlier.
+
+### Credentials
+
+A recording carries `${VAR}` references, never the values they resolved to,
+and it does so for **every variable ccqa itself loaded** — an `envFiles` entry,
+a hub profile — whether or not the case mentions it by name. A case written as
+prose ("sign in as the test account") never names those variables, which is
+exactly the case that used to bake them in. Values shorter than eight
+characters are left alone: a port or a stage name matches ordinary page text
+more often than it protects anything, and naming such a variable in the case's
+own text still gets it the exact treatment.
+
+Two things follow from that rule:
+
+- **A password typed literally is not recorded.** Where the value resolved to a
+  reference the action is kept; where it did not, the action is dropped and the
+  log says to put the value in a file named by `envFiles` and record again.
+- **A generated file holding one of those values is refused.** The rewrite pass
+  is asked again, twice, and then the generation fails. It is not rewritten
+  into a `${VAR}`: a credential a model wrote into a comment is not a reference
+  the test needs.
+
+`ccqa generate` also reads the saved route back and names any variable whose
+resolved value it still holds — a recording made before the project pointed
+ccqa at its env file keeps those literals, and nothing else would look.
+`ccqa evidence` puts its table through the same map before writing it, because
+that table exists to be pasted somewhere public.
+
+See [ADR-0031](./adr/0031-a-recording-carries-references-not-values.md).
+
 ### `ccqa evidence` — the table a reviewer reads instead of the test
 
 `ccqa evidence <case>` writes a markdown table pairing what the case says
@@ -379,7 +461,18 @@ ccqa evidence todo/mark-complete --report-dir ci-report
 
 The column that earns the table is **What the test decides**: a step that is
 performed but whose outcome nothing checks reads `**nothing**`, which is the
-thing a reviewer cannot see by skimming a spec file.
+thing a reviewer cannot see by skimming a spec file. The table's own Review
+section is derived from that column — every step reading `**nothing**` is
+listed there, so the summary can never say "every step is decided" above a
+table that shows otherwise.
+
+The **Screens** column links the step screenshots the last `ccqa run` left. A
+project whose generated tests belong to its own runner never calls `ccqa run`,
+so where there is no such report the screenshots the generation's own
+verification took stand in — the same file pair, of the same test passing,
+kept under `.ccqa/cases/<id>/runs/generated/`. Only the attempt that passed is
+kept; a generation that never passed leaves none. (A live run archives itself
+beside it, under `runs/<run id>/`; the two never share a directory.)
 
 With [`sourceRoots`](./running.md#sourceroots--where-the-product-actually-lives)
 configured, a **Where the source says so** column is added: each test id,
@@ -388,6 +481,24 @@ resolved to the `file:line` in the product's own source that renders it, or
 `not found`. It is a plain exact-match search — no model, bounded in files
 read — so it answers "is this locator addressing the thing the case means?"
 without anyone having to go and look.
+
+The first match is not the answer, because a string a screen renders also
+appears in the document that specified the screen and the script that seeded
+it. Candidates are ranked, and only the best rank is reported:
+
+1. a file that renders a screen — a component or a server-side template;
+2. a translation catalogue, under a directory named for one (`i18n`, `locales`,
+   `messages`, …);
+3. any other application code.
+
+A path under `docs/`, `scripts/`, `test/`, `fixtures/`, `examples/`, a seed or
+a migration is not the product, and neither is a comment line — hits there are
+dropped rather than ranked last, so the column answers `not found`, which is
+the true answer about what the product renders. A test id matches only where it
+is declared as an attribute (`data-testid="…"` and its usual spellings), never
+where a selector or a comment names it. When several places share the top rank
+the cell reads `ambiguous` and shows two of them rather than picking one: the
+scan stops once it has those two, so it offers no tally it did not finish.
 
 ### Regenerating from a saved route
 
@@ -400,6 +511,25 @@ model involved — and refuses when the route is gone, since re-emitting a dead
 route can only produce a test that cannot pass. `--no-replay` skips the check
 for environments with no browser or no variables. It does not run under `ccqa
 record`, which has just recorded and validated the route it is compiling.
+
+The replay starts from the project's `sessionState`, like a recording does,
+and skips the actions carrying this run's unique value — the record they made
+is not there now, so their failure says nothing about whether the route holds.
+
+One kind of failure the replay repairs instead of reporting. A field addressed
+by its label (`getByLabel("Email")`) needs the page to associate a `<label>`
+with the input; many forms show the same string as the field's accessible name
+and associate nothing, so the recorder — reading that string off a snapshot —
+records a locator that matches nothing. The replay retries such an action once
+by role and accessible name (`getByRole("textbox", { name: "Email", exact: true
+})`), and where that works the saved route keeps the form that replays, with a
+line in the log saying so. It applies only where the element's role is not in
+doubt: a `fill` or a `type` is a textbox, a `check` is a checkbox, and a
+labelled `click` could be any of several things, so it is left as a failure.
+
+When an action does fail, the report names the one that failed rather than the
+size of its wake: everything after it in the same step is not replayed at all,
+and is counted as such.
 
 **A hand-edited test is not regenerated over.** `ccqa generate` stamps
 `ir.json` with the sha256 of the test it wrote (`generated: { testSha256, at }`
@@ -525,12 +655,18 @@ that variable is unset, so running the generated test yourself writes no stray
 files.
 
 `ccqa/step-evidence` ships with ccqa — the consumer installs nothing, and ccqa
-gains no Playwright dependency (the page is typed structurally). Capture is
-best-effort: a failed screenshot is logged and skipped, never a test failure.
-After generation, ccqa checks that every step kept its two capture calls and
-warns per step if a library-rewrite pass dropped them (the report would
-otherwise miss that step's screenshots) — re-run `ccqa generate` if you see
-that warning.
+gains no Playwright dependency (the page is typed structurally). It is
+published as both ESM and CommonJS, so a suite with no `type: "module"` — most
+Playwright suites — can `require()` it: without that the import fails at
+resolution, the run reports that it found no tests, and a fix pass removes the
+import to make the failure go away, leaving a spec with no screenshots at all.
+
+Capture is best-effort: a failed screenshot is logged and skipped, never a test
+failure. A rewrite pass that dropped a step's two capture calls is rejected and
+asked again, and a second failure fails the generation — the report would
+otherwise silently miss that step's screenshots. A step no recorded action
+belongs to gets no boundary at all, and is named at generation time: re-record
+the case.
 
 This is orthogonal to `--trace`: keep `trace` in your `playwright.config.ts`
 (or the `runCommand`, e.g. `--trace retain-on-failure --output {artifactsDir}`)

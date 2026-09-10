@@ -29,6 +29,7 @@ import { runCommandRunner } from "../run-command-runner.ts";
 import type { GenerateContext, GenerateResult, TargetPlugin } from "../types.ts";
 import * as log from "../../cli/logger.ts";
 import { reviewGeneratedTest } from "../verifies-spec.ts";
+import { useJapanesePrompts } from "../../prompts/language.ts";
 
 const PLAYWRIGHT_TARGET = "playwright";
 
@@ -112,6 +113,21 @@ export async function compileRecording(
   // on a rewrite choosing to keep it.
   const stepMarkers = buildStepMarkers(expanded.filter(isExpandedActionStep), actions);
   const cleanupMarkers = buildStepMarkers(cleanup, ctx.cleanupRecording ?? []);
+  // A step with no marker recorded no action under its own id, so the emitter
+  // writes no boundary for it: no step comment, no screenshots, and nothing
+  // for the injected-call gate to check. Named here because everything
+  // downstream then looks like a case that simply had fewer steps.
+  const unattributed = expanded
+    .filter(isExpandedActionStep)
+    .map((s) => s.id)
+    .filter((id) => !stepMarkers.some((m) => m.stepId === id));
+  if (unattributed.length > 0) {
+    log.warn(
+      `no recorded action belongs to ${unattributed.join(", ")} — the generated test has no ` +
+        `boundary for ${unattributed.length > 1 ? "those steps" : "that step"}, so it captures no ` +
+        `screenshots there and the evidence table shows nothing. Re-record the case.`,
+    );
+  }
   const { judgements, warnings: judgeWarnings } = placeJudgements(expanded, actions, ctx.ref.id);
   for (const w of judgeWarnings) log.warn(w);
 
@@ -129,6 +145,7 @@ export async function compileRecording(
       : {}),
     ...(ctx.targetConfig.runId ? { runId: ctx.targetConfig.runId } : {}),
     stepEvidence: captures,
+    japanese: useJapanesePrompts(ctx.language),
   });
 
   log.meta("actions", actions.length);
@@ -148,6 +165,21 @@ export async function compileRecording(
     .filter(Boolean)
     .join("\n\n");
 
+  const injected: InjectedCallSpec = {
+    markers: captures ? stepMarkers : [],
+    judgements,
+    header,
+    titleSuffix,
+  };
+  // The same gate the written file is checked against, applied to the reply
+  // before it is written — so a rewrite that dropped a step's capture is asked
+  // again instead of shipping a spec with no screenshots for that step.
+  const validateFile = (file: { contents: string; kind: "test" | "support" }): string | null => {
+    if (file.kind !== "test") return null;
+    const gaps = injectedCallGaps(file.contents, injected);
+    return gaps.length === 0 ? null : gaps.join("; ");
+  };
+
   const result =
     ctx.resources.length > 0
       ? await generateWithLlmEngine({
@@ -157,6 +189,7 @@ export async function compileRecording(
           taskInstructions: playwrightTaskInstructions(ctx.testPath),
           draft: { path: ctx.testPath, contents: draft },
           ...(invariants ? { draftInvariant: invariants } : {}),
+          validateFile,
         })
       : await finalizePreparedFiles({
           ctx,
@@ -164,12 +197,10 @@ export async function compileRecording(
           files: [{ path: ctx.testPath, contents: draft, kind: "test" }],
           summary: `test compiled from ${actions.length} recorded action(s)`,
           warnings: [],
+          validateFile,
         });
 
-  const missing = await missingInjectedCalls(result, captures ? stepMarkers : [], judgements, {
-    header,
-    titleSuffix,
-  });
+  const missing = await missingInjectedCalls(result, injected);
   for (const w of missing) log.warn(w);
   // The loop above only ever asked "does it go green". A rewrite that weakens
   // an assertion clears that bar too, so green is not evidence that the case
@@ -177,6 +208,10 @@ export async function compileRecording(
   const review = await reviewGeneratedTest({
     result,
     steps: expanded,
+    ...(ctx.expectations.length > 0 ? { expectations: ctx.expectations } : {}),
+    // The cleanup joins the review only when the case says what its undo must
+    // make true; one that states nothing is not unchecked for saying nothing.
+    ...(ctx.cleanupExpectations.length > 0 ? { cleanup } : {}),
     language: ctx.language,
     ...(ctx.model ? { model: ctx.model } : {}),
     cwd: ctx.cwd,
@@ -199,17 +234,39 @@ export async function compileRecording(
  */
 async function missingInjectedCalls(
   result: GenerateResult,
-  markers: StepMarker[],
-  judgements: Judgement[],
-  stamped: { header: string; titleSuffix: string } = { header: "", titleSuffix: "" },
+  spec: InjectedCallSpec,
 ): Promise<string[]> {
   const sources = await Promise.all(
     result.files
       .filter((f) => f.kind === "test")
       .map((f) => readFile(f.path, "utf8").catch(() => "")),
   );
-  const corpus = sources.join("\n");
+  return injectedCallGaps(sources.join("\n"), spec);
+}
+
+/** What the emitter injected and the written test must still carry. */
+export interface InjectedCallSpec {
+  markers: StepMarker[];
+  judgements: Judgement[];
+  header: string;
+  titleSuffix: string;
+}
+
+/**
+ * The injected calls and stamped conventions `corpus` no longer has.
+ *
+ * Asked twice, of the same source: once of the reply, before it is written,
+ * so a rewrite that dropped one is rejected and asked again; once of the file
+ * on disk, so the deterministic path and a declined fix are covered too. One
+ * function, because a gate that answered differently in the two moments would
+ * be worse than either alone.
+ */
+export function injectedCallGaps(
+  corpus: string,
+  { markers, judgements, header, titleSuffix }: InjectedCallSpec,
+): string[] {
   const warnings: string[] = [];
+  const stamped = { header, titleSuffix };
   for (const m of markers) {
     const hasBefore = stepEvidenceCall(STEP_EVIDENCE_BEFORE, m).pattern.test(corpus);
     const hasAfter = stepEvidenceCall(STEP_EVIDENCE_AFTER, m).pattern.test(corpus);

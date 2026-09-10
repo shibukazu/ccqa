@@ -42,6 +42,11 @@ export interface TestCase {
   cleanup: ExpandedActionStep[];
   /** Expectations stated for the case as a whole, unattached to any step. */
   expectations: string[];
+  /**
+   * What the cleanup must make true once it has run. Decided inside the
+   * cleanup, where the undo happens — a `spec.yaml` case states none.
+   */
+  cleanupExpectations: string[];
   /** Sections ccqa does not interpret, handed to the recorder as context. */
   context: Array<{ heading: string; body: string }>;
   /** Values a header or title tag may refer to, by the config's own names. */
@@ -86,9 +91,17 @@ function resolveMode(raw: string | undefined, id: string): SpecMode {
 /** Bodies that plainly mean "not live", so they pass without a warning. */
 const DETERMINISTIC_SPELLINGS = new Set(["deterministic", "recorded", "generated", "auto", "automated"]);
 
-/** Step ids are the case's numbering, so evidence and diffs can cite them. */
-function stepId(n: number): string {
+/**
+ * Step ids are the case's numbering, so evidence and diffs can cite them. The
+ * one spelling: `step-comment.ts` rebuilds an id from a comment's number, and
+ * a padding width that disagreed would empty the evidence table's every row.
+ */
+export function stepId(n: number): string {
   return `step-${String(n).padStart(2, "0")}`;
+}
+
+export function cleanupId(n: number): string {
+  return `cleanup-${String(n).padStart(2, "0")}`;
 }
 
 /** A `TestCase` whose document is known to be markdown, so readers need no branch. */
@@ -110,6 +123,7 @@ export function caseFromSpec(
     steps: expandSpec(spec, { blocks }),
     cleanup: [],
     expectations: [],
+    cleanupExpectations: [],
     context: [],
     fields: { case: `${featureName}/${specName}`, title: spec.title },
     source: { kind: "spec", spec, yaml },
@@ -138,12 +152,13 @@ export function caseFromMarkdown(input: {
       expected: "",
     })),
     cleanup: parsed.cleanup.map((step) => ({
-      id: `cleanup-${String(step.number).padStart(2, "0")}`,
+      id: cleanupId(step.number),
       source: "cleanup",
       instruction: step.text,
       expected: "",
     })),
     expectations: parsed.expected,
+    cleanupExpectations: parsed.cleanupExpected,
     context: parsed.other,
     fields: {
       case: input.id,

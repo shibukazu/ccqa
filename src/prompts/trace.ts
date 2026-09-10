@@ -26,6 +26,12 @@ export interface TraceSystemPromptInput {
    * the list is handed over whole with the rule for placing it.
    */
   expectations?: string[];
+  /**
+   * What the cleanup must make true, stated under the case's own teardown
+   * heading. Placed like the expectations above, but only among the cleanup
+   * steps: they are true after the undo and false before it.
+   */
+  cleanupExpectations?: string[];
   /** Sections of the case ccqa does not interpret — the precondition, notes. */
   context?: Array<{ heading: string; body: string }>;
   /** The project's own guidance for recording (config `conventions.record`). */
@@ -77,7 +83,9 @@ ${input.instruction}
       ].join("\n"),
     )
     .join("\n\n");
-  const expectationsText = renderExpectations(input.expectations ?? []);
+  const expectationsText =
+    renderExpectations(input.expectations ?? []) +
+    renderCleanupExpectations(input.cleanupExpectations ?? []);
   const contextText = renderContext(input.context ?? []);
   const conventionsText = renderConventions(input.conventions ?? []);
 
@@ -104,6 +112,19 @@ itself ignores the variable.
 Verification commands additionally carry a \`CCQA_ASSERT=<marker>\` env
 assignment (alongside \`CCQA_STEP\`) that records the check as a test
 assertion — see "Assertion Protocol".
+
+**A command that types into a password field carries \`CCQA_SECRET=1\`** as
+well, e.g.
+
+\`\`\`bash
+CCQA_STEP=step-01 CCQA_SECRET=1 agent-browser --session ${sessionName} find label "Password" fill "\${LOGIN_PASSWORD}"
+\`\`\`
+
+A password field is an \`<input type="password">\` — the snapshot shows its
+value as dots, and nothing else about the page is a password. The prefix is
+what stops the typed value from being written to the recording: a value that
+came from a \`\${VAR}\` is kept as that reference, and one typed literally is
+dropped along with its command.
 
 ## Browser Commands
 
@@ -175,6 +196,7 @@ find nth <index> "<ALLOWED-css>" <action>
 6. \`--name\` matches by substring. Add \`--exact\` whenever the name you read from the snapshot is the element's whole accessible name — without it a short name such as "Log in" also matches "Log in with Google" and "Log in with SSO", and the recording silently pins the first of them.
 7. \`find\` includes its own wait; do not chain a \`wait\` before it.
 8. **A step that names an element by position gets a positional locator.** "the first row", "the topmost item", "the latest message" identify by \`first\`/\`last\`/\`nth\` on a stable inner selector — never by the title, subject, or body text that record happened to carry. That text is data the environment supplies: pinning it makes the test pass only while that same record stays in that position, and the next run opens a different one.
+9. **A string read off a snapshot row is an accessible name, not a label.** A row like \`textbox "Email"\` says the field's accessible name is "Email" — which \`find role textbox --name "Email" --exact\` matches and \`find label "Email"\` matches only when the page also associates a \`<label>\` with the input. Many forms do not. Record \`find label\` only when you confirmed the association (there is a \`<label for=...>\`, or the input sits inside the label); otherwise use the role form with \`--name\`.
 
 **Examples:**
 
@@ -520,6 +542,26 @@ The case states these without saying which step delivers them:
 ${items}
 
 **Assign each to the step it first becomes true in, and assert it there and nowhere else.** Read the flow to decide: an expectation about what a form did belongs to the step that submitted it, not to a later step that happens to still show it. Assert each one exactly once — a repeat adds no coverage and breaks first. An expectation you cannot place is one you report in \`STEP_DONE\` text as unplaced; never invent a step for it, and never assert it "just in case".
+`;
+}
+
+/**
+ * What the cleanup must make true. Separate from the case's expectations
+ * because its steps are: a deletion is confirmed by the thing being gone,
+ * which is only true after the undo has run, and asserting it among the
+ * case's own steps would check it while the thing still exists.
+ */
+function renderCleanupExpectations(expectations: string[]): string {
+  if (expectations.length === 0) return "";
+  const items = expectations.map((text) => `- ${text}`).join("\n");
+  return `
+## Expected results of the cleanup
+
+The case states these about its cleanup steps:
+
+${items}
+
+**Assert each in the cleanup step that makes it true, and nowhere else.** They describe the state after the undo, so a cleanup step is not done when the command returns — it is done when what the case says here holds. Record the check as an assertion the same way a step's own is recorded.
 `;
 }
 

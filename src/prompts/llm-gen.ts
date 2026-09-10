@@ -222,6 +222,8 @@ export function playwrightTaskInstructions(suggestedPath: string): string {
 
 The mechanical draft below was compiled 1:1 from a recorded browser session — it is plain \`@playwright/test\` code with raw locators (e.g. \`page.getByRole("button", { name: "Submit" })\`). Rewrite it into the shape this repository's test suite actually uses: import and call the declared resources (page objects, step helpers, fixtures, shared constants) instead of inlining raw interactions, and follow the conventions.
 
+Keep each step's assertions in the test body, under that step's own comment. A step's actions may move into a page object; what the step decides may not — it is the one thing a reviewer reads the file for, and an assertion inside a helper is invisible both to them and to the review that follows this pass.
+
 Write the rewritten test to \`${suggestedPath}\` unless the conventions/examples clearly place tests elsewhere under the output directory. Locator preference when you do write raw locators: test id > accessible text > role > CSS.`;
 }
 

@@ -64,6 +64,14 @@ if (screenshotIdx !== -1) {
     } catch {}
   }
 }
+// Fail only the invocations whose argv carries this token, so a test can make
+// one addressing strategy miss while another hits — which is what the replay
+// validation's locator fallback is about.
+const failArg = process.env.CCQA_FAKE_AB_FAIL_ARG;
+if (failArg && argv.includes(failArg)) {
+  process.stderr.write("No element found\\n");
+  process.exit(1);
+}
 const exitStr = process.env.CCQA_FAKE_AB_EXIT ?? "0";
 // \`get count <selector>\` must print a number (assert/wait helpers parse it);
 // CCQA_FAKE_AB_COUNT overrides the generic stdout for those invocations so a

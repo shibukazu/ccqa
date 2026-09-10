@@ -504,10 +504,15 @@ outside it — that is the case this exists for. They are resolved to real
 paths before the sweep, and an entry that is not a directory stops the
 audit: reading nothing looks exactly like finding nothing.
 
-The roots widen what the audit's `Read` and `Grep` may reach, and nothing
-else. They are not searched by any other command, they are not added to the
-import walk that collects a test's support files, and a project that sets
-none gets exactly the previous behaviour.
+The roots widen what the audit's `Read` and `Grep` may reach, and they are
+what the [`ccqa evidence`](./targets.md#ccqa-evidence--the-table-a-reviewer-reads-instead-of-the-test)
+table resolves a locator's text against. Nothing else reads them: they are
+not added to the import walk that collects a test's support files, and a
+project that sets none gets exactly the previous behaviour.
+
+Order is priority. A needle resolved under an earlier root is not replaced by
+an equally good answer under a later one, so the first root listed is the
+application you mean.
 
 ### `--brief` — findings for whatever repairs the test
 

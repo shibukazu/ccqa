@@ -33,6 +33,12 @@ export interface AbActionEvent {
   stepId?: string;
   /** Raw value of the command's `CCQA_ASSERT=<marker>` env prefix, if any. */
   assertMarker?: string;
+  /**
+   * The command's `CCQA_SECRET=1` env prefix: what it typed is a secret. The
+   * value is dropped unless it resolved to a `${VAR}` — see
+   * `detectUnstableLiterals`.
+   */
+  secret?: boolean;
 }
 
 export interface ClaudeInvokeOptions {
@@ -381,6 +387,7 @@ export async function invokeClaudeStreaming(
                         ...(ab !== null ? { abAction: ab } : {}),
                         ...(stepId ? { stepId } : {}),
                         ...(assertMarker !== null ? { assertMarker } : {}),
+                        ...(hasCcqaSecretPrefix(cmd) ? { secret: true } : {}),
                       });
                     } else {
                       lastAbToolUseId = null;
@@ -765,11 +772,23 @@ const STEP_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
  * to the STEP_START text protocol.
  */
 export function extractCcqaStepFromBashCommand(cmd: string): string | null {
+  const value = ccqaEnvPrefix(cmd, "CCQA_STEP");
+  return value !== null && STEP_SLUG_RE.test(value) ? value : null;
+}
+
+/**
+ * The value of a `CCQA_*` env prefix on the agent-browser invocation in `cmd`.
+ *
+ * The three markers the trace protocol carries this way — the step, the assert,
+ * the secret — differ only in what they do with the value, so how a prefix is
+ * found is written once: changing what counts as an invocation (a compound
+ * command, another leading assignment) must not reach two of them and miss one.
+ */
+function ccqaEnvPrefix(cmd: string, name: string): string | null {
   for (const statement of splitShellStatements(cmd)) {
     const { env, command } = splitLeadingEnvAssignments(statement);
     if (!isAgentBrowserHead(command)) continue;
-    const value = env.get("CCQA_STEP");
-    return value !== undefined && STEP_SLUG_RE.test(value) ? value : null;
+    return env.get(name) ?? null;
   }
   return null;
 }
@@ -786,13 +805,19 @@ export function extractCcqaStepFromBashCommand(cmd: string): string | null {
  * absent or empty.
  */
 export function extractCcqaAssertFromBashCommand(cmd: string): string | null {
-  for (const statement of splitShellStatements(cmd)) {
-    const { env, command } = splitLeadingEnvAssignments(statement);
-    if (!isAgentBrowserHead(command)) continue;
-    const value = env.get("CCQA_ASSERT");
-    return value !== undefined && value.length > 0 ? value : null;
-  }
-  return null;
+  const value = ccqaEnvPrefix(cmd, "CCQA_ASSERT");
+  return value !== null && value.length > 0 ? value : null;
+}
+
+/**
+ * Whether the agent-browser invocation in `cmd` carries `CCQA_SECRET=1`,
+ * which the trace prompt asks for on a command that types into a password
+ * field. The same channel as `CCQA_STEP` and `CCQA_ASSERT`, for the same
+ * reason: the command line is the one place the fact is observable.
+ */
+export function hasCcqaSecretPrefix(cmd: string): boolean {
+  const value = ccqaEnvPrefix(cmd, "CCQA_SECRET");
+  return value !== null && value !== "" && value !== "0";
 }
 
 /**

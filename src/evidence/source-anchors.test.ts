@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { findSourceAnchors } from "./source-anchors.ts";
+import { findSourceAnchors, type SourceNeedle } from "./source-anchors.ts";
 import type { SourceRoot } from "../config/source-roots.ts";
 
 let cwd: string;
@@ -18,20 +18,103 @@ async function makeRoot(files: Record<string, string>): Promise<SourceRoot> {
   return { configured: "src", abs: cwd };
 }
 
+const text = (value: string): SourceNeedle => ({ value, kind: "text" });
+const testid = (value: string): SourceNeedle => ({ value, kind: "testid" });
+
 afterEach(async () => {
   if (cwd) await rm(cwd, { recursive: true, force: true });
 });
 
 describe("findSourceAnchors", () => {
-  it("finds the first file:line containing the needle as a substring", async () => {
+  it("finds the file:line containing the needle as a substring", async () => {
     const root = await makeRoot({
-      "components/Form.tsx": 'export const Form = () => <button data-testid="submit">Go</button>;',
+      "components/Form.tsx": "export const Form = () => <button>Send</button>;",
     });
-    const { found } = await findSourceAnchors(["submit"], [root]);
-    expect(found.get("submit")).toEqual({
-      needle: "submit",
-      at: "src/components/Form.tsx:1",
+    const { found } = await findSourceAnchors([text("Send")], [root]);
+    expect(found.get("Send")).toEqual({ needle: "Send", places: ["src/components/Form.tsx:1"] });
+  });
+
+  // The failure this ranking exists for: the string was in a design document
+  // and in a seed script, and the walk reached those first.
+  it("answers with the screen that renders the string, not the documents about it", async () => {
+    const root = await makeRoot({
+      "docs/design.html": "<p>The button reads Submit request</p>",
+      "scripts/seed.ts": '// creates a "Submit request" button for the demo\nconst x = 1;',
+      "ui/RequestForm.tsx": '<button>Submit request</button>',
     });
+    const { found } = await findSourceAnchors([text("Submit request")], [root]);
+    expect(found.get("Submit request")?.places).toEqual(["src/ui/RequestForm.tsx:1"]);
+  });
+
+  // A string only a comment mentions is not something the product renders, so
+  // "not found" is the true answer rather than a line nobody will ever see.
+  it("does not answer with a comment line", async () => {
+    const root = await makeRoot({
+      "ui/Panel.tsx": '// TODO: rename Save draft\nconst x = 1;',
+      "ui/Other.tsx": '<span>{/* Save draft was here */}</span>',
+      "lib/util.py": "# Save draft\nx = 1",
+    });
+    const { found } = await findSourceAnchors([text("Save draft")], [root]);
+    expect(found.has("Save draft")).toBe(false);
+  });
+
+  it("prefers a UI file over other code, and other code over nothing", async () => {
+    const root = await makeRoot({
+      "lib/labels.ts": 'export const LABEL = "Archive";',
+      "ui/Row.tsx": "<button>Archive</button>",
+    });
+    const { found } = await findSourceAnchors([text("Archive")], [root]);
+    expect(found.get("Archive")?.places).toEqual(["src/ui/Row.tsx:1"]);
+  });
+
+  it("reads a translation catalogue, but only under a translations directory", async () => {
+    const root = await makeRoot({
+      "i18n/en.json": '{ "form.submit": "Send it" }',
+      "data/other.json": '{ "unrelated": "Send it" }',
+    });
+    const { found } = await findSourceAnchors([text("Send it")], [root]);
+    expect(found.get("Send it")?.places).toEqual(["src/i18n/en.json:1"]);
+  });
+
+  // Naming one of them would read as "this is where it comes from", which is
+  // exactly the claim the scan cannot make.
+  it("says so when several places say it equally well, and shows two", async () => {
+    const root = await makeRoot({
+      "ui/A.tsx": "<button>Retry</button>",
+      "ui/B.tsx": "<button>Retry</button>",
+      "ui/C.tsx": "<button>Retry</button>",
+    });
+    const { found } = await findSourceAnchors([text("Retry")], [root]);
+    expect(found.get("Retry")).toEqual({
+      needle: "Retry",
+      places: ["src/ui/A.tsx:1", "src/ui/B.tsx:1"],
+    });
+  });
+
+  // Ranking must not turn a lookup into a full-repo grep: once a needle has
+  // the best rank in both the places the table shows, nothing else can change
+  // its answer, so the third file is never opened.
+  it("stops reading once every needle's answer can no longer change", async () => {
+    const root = await makeRoot({
+      "ui/A.tsx": "<button>Retry</button>",
+      "ui/B.tsx": "<button>Retry</button>",
+      "ui/C.tsx": "<button>Retry</button>",
+    });
+    // maxFiles 2 would leave a needle unsearched if the scan had to keep going.
+    const { found, unsearched } = await findSourceAnchors([text("Retry")], [root], { maxFiles: 2 });
+    expect(unsearched.size).toBe(0);
+    expect(found.get("Retry")?.places).toEqual(["src/ui/A.tsx:1", "src/ui/B.tsx:1"]);
+  });
+
+  // A test id is declared once, as an attribute. Everything else naming it —
+  // a selector in the application, a comment — is a use, not the declaration.
+  it("matches a test id only where it is declared as an attribute", async () => {
+    const root = await makeRoot({
+      "ui/Uses.tsx": 'document.querySelector("[data-testid=submit-button]");',
+      "ui/Declares.tsx": '<button data-testid="submit-button">Go</button>',
+    });
+    const { found } = await findSourceAnchors([testid("submit-button")], [root]);
+    expect(found.get("submit-button")?.places).toEqual(["src/ui/Declares.tsx:1"]);
   });
 
   it("skips node_modules, .git, dist, build, coverage, .next and dotted directories", async () => {
@@ -47,27 +130,27 @@ describe("findSourceAnchors", () => {
       ".hidden/file.ts": 'const submit = "submit";',
       "real.ts": "const other = 1;",
     });
-    const { found } = await findSourceAnchors(["submit"], [root]);
+    const { found } = await findSourceAnchors([text("submit")], [root]);
     expect(found.has("submit")).toBe(false);
   });
 
   it("only reads files with an allowlisted source extension", async () => {
     const root = await makeRoot({
       "notes.txt": 'const submit = "submit";',
-      "styles.css": '.submit { color: red; }',
+      "styles.css": ".submit { color: red; }",
       "app.ts": 'const submit = "submit";',
     });
-    const { found } = await findSourceAnchors(["submit"], [root]);
-    expect(found.get("submit")?.at).toBe("src/app.ts:1");
+    const { found } = await findSourceAnchors([text("submit")], [root]);
+    expect(found.get("submit")?.places).toEqual(["src/app.ts:1"]);
   });
 
   it("skips files larger than maxFileBytes", async () => {
     const root = await makeRoot({
-      "big.ts": `const submit = "submit"; // ${"x".repeat(100)}`,
+      "big.ts": `const submit = "submit"; const pad = "${"x".repeat(100)}";`,
       "small.ts": 'const submit = "submit";',
     });
-    const { found } = await findSourceAnchors(["submit"], [root], { maxFileBytes: 50 });
-    expect(found.get("submit")?.at).toBe("src/small.ts:1");
+    const { found } = await findSourceAnchors([text("submit")], [root], { maxFileBytes: 50 });
+    expect(found.get("submit")?.places).toEqual(["src/small.ts:1"]);
   });
 
   it("stops after maxFiles files, leaving later needles unresolved", async () => {
@@ -77,26 +160,26 @@ describe("findSourceAnchors", () => {
       "c.ts": 'const submit = "submit";',
     });
     // Breadth-first, alphabetical within a level: a.ts, b.ts read; c.ts never opened.
-    const { found, unsearched } = await findSourceAnchors(["submit"], [root], { maxFiles: 2 });
+    const { found, unsearched } = await findSourceAnchors([text("submit")], [root], { maxFiles: 2 });
     expect(found.has("submit")).toBe(false);
     // Stopping early is not a result: the reviewer must not read this as
     // "the product does not contain this string".
     expect(unsearched.has("submit")).toBe(true);
   });
 
-  it("does not re-search a later root for a needle an earlier root already resolved", async () => {
+  it("keeps an earlier root's answer rather than calling a later one ambiguous", async () => {
     const rootA = await makeRoot({ "a.ts": 'const submit = "submit";' });
     const cwdA = cwd;
     const rootB = await makeRoot({ "b.ts": 'const submit = "submit";' });
     try {
       const { found } = await findSourceAnchors(
-        ["submit"],
+        [text("submit")],
         [
           { configured: "root-a", abs: cwdA },
           { configured: "root-b", abs: rootB.abs },
         ],
       );
-      expect(found.get("submit")?.at).toBe("root-a/a.ts:1");
+      expect(found.get("submit")).toEqual({ needle: "submit", places: ["root-a/a.ts:1"] });
     } finally {
       await rm(cwdA, { recursive: true, force: true });
     }
@@ -104,7 +187,7 @@ describe("findSourceAnchors", () => {
 
   it("ignores needles shorter than 3 characters and blank needles", async () => {
     const root = await makeRoot({ "app.ts": 'const ok = "ok"; const x = "  ";' });
-    const { found, unsearched } = await findSourceAnchors(["ok", "  "], [root]);
+    const { found, unsearched } = await findSourceAnchors([text("ok"), text("  ")], [root]);
     expect(found.size).toBe(0);
     expect([...unsearched].sort()).toEqual(["  ", "ok"]);
   });

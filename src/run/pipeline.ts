@@ -1,4 +1,5 @@
 import type { StoredSourceMapReader } from "../coverage/browser/engine.ts";
+import { loadEnvFiles } from "../cli/env-files.ts";
 import { randomUUID } from "node:crypto";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -596,6 +597,11 @@ export async function executeRun(
   };
 
   const projectConfig = await loadProjectConfig(cwd);
+  // The project's own variables, for the same two reasons `ccqa record` loads
+  // them: a live case's prose resolves `${VAR}` against them, and the scrub
+  // that keeps their values out of what is pushed to the hub is built from
+  // the names loaded here.
+  await loadEnvFiles(projectConfig.envFiles, cwd);
   // A project that writes its cases as its own documents keeps none of them
   // under `.ccqa/features/`, so the arguments (or the sweep) are read against
   // the intent source instead. `intentRun` non-null is that project, and it is

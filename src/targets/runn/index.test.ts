@@ -30,6 +30,8 @@ function makeContext(): GenerateContext {
     ref: specCase("tasks", "create", cwd),
     steps: [],
     cleanup: [],
+  expectations: [],
+  cleanupExpectations: [],
     fields: {},
     cwd,
     testPath: "runbooks/tasks/create.yaml",

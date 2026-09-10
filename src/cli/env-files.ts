@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parseDotenv } from "../runtime/profile-env.ts";
+import { applyProfileEnv, parseDotenv, rememberLoadedEnv } from "../runtime/profile-env.ts";
 import * as log from "./logger.ts";
 
 /**
@@ -31,9 +31,11 @@ export async function loadEnvFiles(files: readonly string[], cwd: string): Promi
     // An explicit export for this one run wins over the file, the same
     // precedence `.env` already has — someone overriding a variable on the
     // command line means it.
-    for (const [name, value] of Object.entries(values)) {
-      if (process.env[name] === undefined) process.env[name] = value;
-    }
+    applyProfileEnv(values, { override: false });
+    // Registered whether or not this file supplied the value in force: the
+    // recording must keep `${VAR}` for a variable the project routes its
+    // credentials through, and which layer won is not part of that question.
+    rememberLoadedEnv(Object.keys(values));
     log.meta("env", `${file} (${Object.keys(values).length} var(s))`);
   }
 }

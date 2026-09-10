@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach, vi } from "vitest";
-import { actionToAbArgs, validateActions } from "./replay-validate.ts";
+import { actionToAbArgs, isCascadeReason, validateActions } from "./replay-validate.ts";
 import { spawnAB } from "./spawn-ab.ts";
 import type { RecordedAction } from "../types.ts";
 
@@ -407,6 +407,72 @@ describe("validateActions", () => {
     expect(kept.map((a) => a.action)).toEqual(["navigate"]);
     expect(dropped.map((d) => d.action.action)).toEqual(["click", "wait"]);
     expect(rescuedSteps ?? []).toEqual([]);
+  });
+});
+
+describe("validateActions (label → role fallback)", () => {
+  const labelFill = (): RecordedAction => ({
+    action: "fill",
+    locator: { by: "label", value: "Email" },
+    value: "user@example.com",
+  });
+
+  test("a failing label fill retries by role + accessible name, and the promoted locator is kept in place", () => {
+    mockedSpawnAB
+      .mockReturnValueOnce(FAIL) // find label Email fill ...
+      .mockReturnValueOnce(OK);  // fallback: find role textbox --name "Email" --exact
+    const { kept, dropped, promoted } = validateActions([labelFill()], { sessionName: "s", mode: "strict" });
+    expect(kept).toHaveLength(1);
+    expect(dropped).toHaveLength(0);
+    expect(kept[0]!.locator).toEqual({ by: "role", value: "textbox", name: "Email", exact: true });
+    expect(promoted).toEqual([`label=Email → role=textbox name="Email"`]);
+    const calls = mockedSpawnAB.mock.calls.map((c) => c[0]);
+    expect(calls[1]).toEqual([
+      "--session", "s", "find", "role", "textbox", "fill", "user@example.com", "--name", "Email", "--exact",
+    ]);
+  });
+
+  test("a label click has no unambiguous role, so it gets no fallback and stays a failure", () => {
+    const action: RecordedAction = { action: "click", locator: { by: "label", value: "Email" } };
+    mockedSpawnAB.mockReturnValueOnce(FAIL);
+    const { kept, dropped, promoted } = validateActions([action], { sessionName: "s", mode: "strict" });
+    expect(kept).toHaveLength(0);
+    expect(dropped).toHaveLength(1);
+    expect(promoted).toEqual([]);
+    expect(mockedSpawnAB).toHaveBeenCalledTimes(1); // no fallback attempt spawned
+  });
+
+  test("when both the original and the fallback fail, the action fails as before and `promoted` stays empty", () => {
+    mockedSpawnAB
+      .mockReturnValueOnce(FAIL) // original
+      .mockReturnValueOnce(FAIL); // fallback also fails
+    const { kept, dropped, promoted } = validateActions([labelFill()], { sessionName: "s", mode: "strict" });
+    expect(kept).toHaveLength(0);
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]!.reason).toContain("selector not found");
+    expect(promoted).toEqual([]);
+    // Locator is left untouched when the fallback doesn't pan out.
+    expect(dropped[0]!.action.locator).toEqual({ by: "label", value: "Email" });
+  });
+
+  test("a successful first attempt never spawns the fallback", () => {
+    mockedSpawnAB.mockReturnValueOnce(OK);
+    const { kept, promoted } = validateActions([labelFill()], { sessionName: "s", mode: "strict" });
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.locator).toEqual({ by: "label", value: "Email" });
+    expect(promoted).toEqual([]);
+    expect(mockedSpawnAB).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("isCascadeReason", () => {
+  test("true for the exact cascade reason string the validator records", () => {
+    expect(isCascadeReason("skipped after a preceding action failed")).toBe(true);
+  });
+
+  test("false for an ordinary agent-browser error string, and for undefined", () => {
+    expect(isCascadeReason("selector not found")).toBe(false);
+    expect(isCascadeReason(undefined)).toBe(false);
   });
 });
 

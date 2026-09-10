@@ -34,6 +34,14 @@ export interface IntentCase {
   expected: string[];
   /** Steps to run after the case, whatever its outcome. */
   cleanup: IntentStep[];
+  /**
+   * What the cleanup itself must make true — the confirmation a case writes
+   * under its teardown ("the item is gone from the list"). Kept apart from
+   * `expected`, which is about the flow: these are decided in `afterEach`,
+   * where the undo happens, and asserting them among the case's own steps
+   * would check them before the undo ran.
+   */
+  cleanupExpected: string[];
   priority?: string;
   /** The mode section's first line, verbatim. Absent when unnamed or blank. */
   mode?: string;
@@ -124,6 +132,24 @@ function cleanupSteps(body: string): IntentStep[] {
   return prose.length > 0 ? [{ number: 1, text: prose }] : [];
 }
 
+/** `- text` at the left margin — not an indented bullet, which continues the step above it. */
+const TOP_LEVEL_BULLET = /^ {0,3}(?:[-*+]|・)\s*(.+)$/;
+
+/**
+ * What a cleanup section says besides its steps. A case that numbers its
+ * teardown and then lists what should be true afterwards is stating two
+ * different things under one heading, and only the numbered half is a step.
+ * An unnumbered section is prose the whole way down and states no separate
+ * expectation.
+ */
+function cleanupExpectations(body: string): string[] {
+  if (numberedItems(body).length === 0) return [];
+  return body
+    .split("\n")
+    .map((line) => TOP_LEVEL_BULLET.exec(line)?.[1]?.trim())
+    .filter((text): text is string => text !== undefined && text.length > 0);
+}
+
 function bulletItems(body: string): string[] {
   return body
     .split("\n")
@@ -188,6 +214,7 @@ export function parseMarkdownCase(input: ParseMarkdownCaseInput): IntentCase {
     steps,
     expected: listOrProse(body(fields.expected)),
     cleanup: cleanupSteps(body(fields.cleanup)),
+    cleanupExpected: cleanupExpectations(body(fields.cleanup)),
     ...(body(fields.priority) ? { priority: firstLine(body(fields.priority)) } : {}),
     ...(fields.mode && body(fields.mode) ? { mode: firstLine(body(fields.mode)) } : {}),
     link: {
@@ -219,10 +246,12 @@ export function replaceSectionBody(source: string, heading: string, body: string
   let end = start + 1;
   while (end < lines.length && !/^##\s+/.test(lines[end]!)) end++;
   // Keep the blank lines that separated the section from the next heading, so
-  // a write-back never reflows the document around it — and when the section
-  // is the last one, keep the file's trailing newline.
+  // a write-back never reflows the document around it. When the section runs
+  // to the end of the file, the slice below already carries the file's final
+  // empty line — appending another grows the case file by one blank line on
+  // every generate, in the one file ccqa promised to touch minimally.
   let tail = end;
-  const trailing = tail === lines.length && lines[tail - 1] === "" ? [""] : [];
   while (tail > start + 1 && lines[tail - 1]!.trim() === "") tail--;
-  return [...lines.slice(0, start + 1), "", body, ...lines.slice(tail), ...trailing].join(eol);
+  const rest = lines.slice(tail);
+  return [...lines.slice(0, start + 1), "", body, ...(rest.length > 0 ? rest : [""])].join(eol);
 }

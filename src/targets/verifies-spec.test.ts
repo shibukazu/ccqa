@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { formatFinding, parseVerifiesSpecFindings, reviewGeneratedTest } from "./verifies-spec.ts";
+import { formatFinding, NOTHING_DECIDED, parseVerifiesSpecFindings, reviewGeneratedTest } from "./verifies-spec.ts";
 import { verifiesSpecPrompt } from "../prompts/verifies-spec.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
 
@@ -57,8 +57,11 @@ describe("reviewGeneratedTest", () => {
     return path;
   }
 
+  /** A test whose step-01 plainly decides something, so only the model can object. */
+  const DECIDED = '// step: step-01 [spec]\nawait expect(page).toHaveURL("/article");';
+
   test("turns each finding into a warning naming the step", async () => {
-    const path = await testFile("await page.click();");
+    const path = await testFile(DECIDED);
     const { warnings, findings } = await reviewGeneratedTest({
       result: { files: [{ path, kind: "test" }], summary: "", warnings: [], passed: true },
       steps,
@@ -77,8 +80,8 @@ describe("reviewGeneratedTest", () => {
   });
 
   test("says nothing when every step is decided", async () => {
-    const path = await testFile("await expect(other).toBeVisible();");
-    const { warnings, findings } = await reviewGeneratedTest({
+    const path = await testFile(DECIDED);
+    const { warnings } = await reviewGeneratedTest({
       result: { files: [{ path, kind: "test" }], summary: "", warnings: [], passed: true },
       steps,
       language: "ja",
@@ -88,11 +91,44 @@ describe("reviewGeneratedTest", () => {
     expect(warnings).toEqual([]);
   });
 
+  // The case the model kept missing: its expectations are stated for the flow,
+  // every step's own `expected` is empty, and a step that decides nothing at
+  // all still came back clean. Nothing decided is a fact about the file.
+  test("reports a step nothing in the test decides, whatever the model answers", async () => {
+    const path = await testFile("// step: step-01 [spec]\nawait page.click();");
+    const { findings, warnings } = await reviewGeneratedTest({
+      result: { files: [{ path, kind: "test" }], summary: "", warnings: [], passed: true },
+      steps,
+      expectations: ["遷移先のページが開いている。"],
+      language: "ja",
+      cwd: dir,
+      invoke: async () => ({ result: '```json\n{"findings":[]}\n```', isError: false }) as never,
+    });
+    expect(findings).toEqual([{ stepId: "step-01", problem: NOTHING_DECIDED }]);
+    expect(warnings[0]).toContain("step-01");
+  });
+
+  // An empty findings list from a review whose model half never answered is
+  // not a clean review, and the evidence table reads `complete` to tell them
+  // apart before it says every step is decided.
+  test("says the review is incomplete when the model half could not be obtained", async () => {
+    const path = await testFile(DECIDED);
+    const review = await reviewGeneratedTest({
+      result: { files: [{ path, kind: "test" }], summary: "", warnings: [], passed: true },
+      steps,
+      language: "ja",
+      cwd: dir,
+      invoke: async () => ({ result: "", isError: true }) as never,
+    });
+    expect(review.findings).toEqual([]);
+    expect(review.complete).toBe(false);
+  });
+
   // The generate that produced working files must not fail because the review
   // could not run; the warning it logs is the signal.
   test("a failed review warns rather than throwing", async () => {
-    const path = await testFile("await page.click();");
-    const { warnings, findings } = await reviewGeneratedTest({
+    const path = await testFile(DECIDED);
+    const { warnings } = await reviewGeneratedTest({
       result: { files: [{ path, kind: "test" }], summary: "", warnings: [], passed: true },
       steps,
       language: "ja",

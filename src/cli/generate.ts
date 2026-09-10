@@ -37,6 +37,7 @@ import { createRunTeardown, installTeardownSignalHandlers, type RunTeardown } fr
 import { needsHubConnection } from "./open-hub-run.ts";
 import { updateAgentPrompt } from "./update-agent-prompt.ts";
 import { buildGenerateRunSummary } from "./build-generate-run-summary.ts";
+import { actionTexts, findLoadedValueLiterals } from "../runtime/env-scrub.ts";
 import * as log from "./logger.ts";
 import { withCostReporting } from "./cost-line.ts";
 
@@ -143,6 +144,9 @@ async function runGenerateLocked(
   cwd: string,
 ): Promise<{ passed: boolean }> {
   const { testCase, target, targetConfig, testPath } = resolved;
+  // The project's saved browser state, for the replay gate below: a case whose
+  // precondition is "signed in" replays against a sign-in wall without it.
+  const { sessionState } = await loadProjectConfig(cwd);
   const spec = testCase.source.kind === "spec" ? testCase.source.spec : null;
   // Same gate as `ccqa record`: a live spec has no recording to compile, and
   // `ccqa run` ignores generated code for it — a spec switched to live after
@@ -167,6 +171,20 @@ async function runGenerateLocked(
     recording = saved.actions;
     cleanupRecording = saved.cleanup;
     stamp = saved.generated;
+    // A route recorded before the project pointed ccqa at its variables kept
+    // their values as literals, and nothing since would have noticed. Refused
+    // here rather than warned about: compiling it produces a test holding the
+    // same values, which the write gate refuses anyway — a page later, and
+    // about the generated file rather than about the route that caused it.
+    const baked = findLoadedValueLiterals(
+      [...saved.actions, ...(saved.cleanup ?? [])].flatMap(actionTexts),
+    );
+    if (baked.length > 0) {
+      throw new RunUsageError(
+        `${saved.path} holds the resolved value of ${baked.join(", ")} rather than the reference. ` +
+          `Re-record this case ('ccqa record ${testCase.ref.id}') so the route carries \${VAR}.`,
+      );
+    }
   }
 
   // One guard over the file about to be replaced, with three answers: ccqa
@@ -197,6 +215,7 @@ async function runGenerateLocked(
       ref: testCase.ref,
       cwd,
       recording,
+      ...(sessionState ? { sessionState } : {}),
       ...(opts.teardown ? { teardown: opts.teardown } : {}),
     });
     if (dead) throw new RunUsageError(dead);
@@ -216,6 +235,8 @@ async function runGenerateLocked(
     ref: testCase.ref,
     steps: testCase.steps,
     cleanup: testCase.cleanup,
+    expectations: testCase.expectations,
+    cleanupExpectations: testCase.cleanupExpectations,
     fields: testCase.fields,
     cwd,
     testPath,

@@ -14,6 +14,7 @@ const { prompt: mockedPrompt } = await import("../cli/draft.ts");
 import {
   finalizePreparedFiles,
   generateWithLlmEngine,
+  leakMessage,
   parseLlmGenOutput,
   substituteRunCommandFiles,
   validateOutputPath,
@@ -21,6 +22,7 @@ import {
 } from "./llm-engine.ts";
 import { TargetConfigSchema } from "../config/project-config.ts";
 import { TestSpecSchema } from "../spec/yaml-schema.ts";
+import { forgetLoadedEnv, rememberLoadedEnv } from "../runtime/profile-env.ts";
 import type { GenerateContext } from "./types.ts";
 
 let cwd: string;
@@ -52,6 +54,8 @@ function makeContext(overrides: Partial<GenerateContext> = {}): GenerateContext 
     ref: specCase("todos", "add-item", cwd),
     steps: [],
     cleanup: [],
+    expectations: [],
+    cleanupExpectations: [],
     fields: {},
     cwd,
     testPath: "e2e/todos/add-item.spec.ts",
@@ -536,5 +540,83 @@ describe("finalizePreparedFiles", () => {
     expect(result.passed).toBe(true);
     expect(prompts).toHaveLength(0); // verification passed — no LLM involved
     expect(await readFile(resolve(cwd, "e2e/draft.spec.ts"), "utf8")).toBe("// draft");
+  });
+});
+
+describe("generated-code leak gate", () => {
+  // A variable ccqa itself loaded (e.g. from a hub profile), long enough to
+  // clear the "not just a stray short string" bar the gate applies.
+  const LEAK_VAR = "APP_API_TOKEN";
+  const LEAK_VALUE = "s3cr3t-token-99887766";
+
+  afterEach(() => {
+    delete process.env[LEAK_VAR];
+    forgetLoadedEnv();
+  });
+
+  it("rejects and retries a reply that writes a loaded credential verbatim, and the final error names the variable but never the value", async () => {
+    await makeProject();
+    process.env[LEAK_VAR] = LEAK_VALUE;
+    rememberLoadedEnv([LEAK_VAR]);
+    const leaking = JSON.stringify({
+      files: [{ path: "e2e/todos/add-item.spec.ts", contents: `// token: ${LEAK_VALUE}\n`, kind: "test" }],
+      summary: "",
+    });
+    const { invoke, prompts } = fakeInvoke([leaking]);
+    await expect(
+      generateWithLlmEngine({
+        ctx: makeContext(),
+        target: "playwright",
+        steps: [],
+        taskInstructions: "Generate the test.",
+        invoke,
+      }),
+    ).rejects.toThrow(new RegExp(LEAK_VAR));
+    // Fed back for the retry, same as any other contract violation.
+    expect(prompts).toHaveLength(3);
+    expect(prompts[1]).toContain("Previous attempt rejected");
+    expect(prompts[1]).toContain(LEAK_VAR);
+    for (const p of prompts) expect(p).not.toContain(LEAK_VALUE);
+  });
+
+  it("passes normally when the reply never repeats the loaded value", async () => {
+    await makeProject();
+    process.env[LEAK_VAR] = LEAK_VALUE;
+    rememberLoadedEnv([LEAK_VAR]);
+    const { invoke } = fakeInvoke([okOutput()]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext(),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+    });
+    expect(result.passed).toBe(true);
+  });
+
+  it("refuses to write a prepared file that leaks a loaded credential, without ever touching disk", async () => {
+    await makeProject();
+    process.env[LEAK_VAR] = LEAK_VALUE;
+    rememberLoadedEnv([LEAK_VAR]);
+    const { invoke } = fakeInvoke([]);
+    await expect(
+      finalizePreparedFiles({
+        ctx: makeContext(),
+        target: "playwright",
+        files: [{ path: "e2e/todos/add-item.spec.ts", contents: `// token: ${LEAK_VALUE}\n`, kind: "test" }],
+        summary: "mechanical draft",
+        warnings: [],
+        invoke,
+      }),
+    ).rejects.toThrow(new RegExp(LEAK_VAR));
+    await expect(stat(resolve(cwd, "e2e/todos/add-item.spec.ts"))).rejects.toThrow();
+  });
+});
+
+describe("leakMessage", () => {
+  it("names the path and the variable", () => {
+    const msg = leakMessage("e2e/todos/add-item.spec.ts", ["APP_API_TOKEN"]);
+    expect(msg).toContain("e2e/todos/add-item.spec.ts");
+    expect(msg).toContain("APP_API_TOKEN");
   });
 });

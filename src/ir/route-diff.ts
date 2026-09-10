@@ -41,6 +41,15 @@ export function describeAction(action: RecordedAction): string {
 }
 
 /**
+ * The same, prefixed by the step it belongs to. What a warning about one
+ * action says, so a reader can find it in the case rather than counting
+ * positions in a list.
+ */
+export function describeStepAction(action: RecordedAction): string {
+  return `${action.stepId ? `${action.stepId} ` : ""}${describeAction(action)}`;
+}
+
+/**
  * A locator in full, unlike `describeLocator`'s log-line summary: two locators
  * that differ must render differently, or the diff reports a re-addressed
  * element as unchanged — the very thing it exists to show.

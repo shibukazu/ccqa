@@ -1,6 +1,6 @@
 import { RunUsageError } from "../run/errors.ts";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { collectIncludedBlockNames } from "../spec/expand.ts";
 import { parseBlockSpec, parseTestSpec, tryParseTestSpec } from "../spec/parser.ts";
@@ -32,6 +32,13 @@ const RECORDING_FILE = "ir.json";
 const FAILED_RECORDING_FILE = "ir.failed.json";
 // What `ccqa record` writes when it replaced an existing recording.
 const ROUTE_DIFF_FILE = "route-diff.md";
+/**
+ * Under a case's own directory: what its last verified generation captured.
+ * A directory of its own inside `runs/`, which a live run also writes to (one
+ * per run id) — sharing the name would have a generation delete a case's
+ * archived live runs, and hand `ccqa evidence` one as if it were its own.
+ */
+const RUNS_DIR = join("runs", "generated");
 // What the last generation's review of the test found, per step.
 const REVIEW_FILE = "review.json";
 const PERSPECTIVES_FILE = "perspectives.yaml";
@@ -326,6 +333,50 @@ export async function saveRecording(
     ),
   );
   return { path: recordingPath, recording };
+}
+
+/**
+ * Where a case keeps the step screenshots its last verified generation took.
+ *
+ * One directory, not one per attempt: a project whose tests belong to its own
+ * runner never calls `ccqa run`, so this stands in for the run report the
+ * evidence table reads — and what stands in for it is the attempt that passed,
+ * which there is only ever one of. `ccqa generate` clears it before each
+ * attempt and removes it when none passed, because screenshots of a failing
+ * run are a debugging aid and this table presents them as the case working.
+ */
+export function caseRunDir(ref: CaseRef): string {
+  return join(ref.dir, RUNS_DIR);
+}
+
+/** The case's kept run directory, or null when the last generation left none. */
+export async function keptCaseRun(ref: CaseRef): Promise<string | null> {
+  const there = await stat(caseRunDir(ref)).then((s) => s.isDirectory(), () => false);
+  return there ? caseRunDir(ref) : null;
+}
+
+export async function clearCaseRun(ref: CaseRef): Promise<void> {
+  await rm(caseRunDir(ref), { recursive: true, force: true });
+}
+
+/**
+ * Replace the route's actions, leaving the rest of the recording alone.
+ *
+ * For the one thing that changes a saved route without re-recording it: the
+ * replay's label fallback, which finds the form a locator has to take to
+ * reach the same element. `recordedAt` and `origin` still describe the trace
+ * that produced the route, so they stay.
+ */
+export async function rewriteRecordingActions(
+  ref: CaseRef,
+  actions: RecordedAction[],
+): Promise<void> {
+  const path = getRecordingPath(ref);
+  const content = await readFile(path, "utf-8").catch(() => null);
+  if (content === null) return;
+  const recording = parseRecording(content);
+  recording.actions = actions;
+  await writeFile(path, JSON.stringify(recording, null, 2), "utf-8");
 }
 
 /** Where `ccqa record` leaves the route diff against the previous recording. */

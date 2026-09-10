@@ -16,20 +16,44 @@
   },
   "exports": {
     "./test-helpers": {
-      "types": "./dist/runtime/test-helpers.d.mts",
-      "import": "./dist/runtime/test-helpers.mjs"
+      "import": {
+        "types": "./dist/runtime/test-helpers.d.mts",
+        "default": "./dist/runtime/test-helpers.mjs"
+      },
+      "require": {
+        "types": "./dist/runtime/test-helpers.d.cts",
+        "default": "./dist/runtime/test-helpers.cjs"
+      }
     },
     "./step-evidence": {
-      "types": "./dist/runtime/step-evidence.d.mts",
-      "import": "./dist/runtime/step-evidence.mjs"
+      "import": {
+        "types": "./dist/runtime/step-evidence.d.mts",
+        "default": "./dist/runtime/step-evidence.mjs"
+      },
+      "require": {
+        "types": "./dist/runtime/step-evidence.d.cts",
+        "default": "./dist/runtime/step-evidence.cjs"
+      }
     },
     "./hub-client": {
-      "types": "./dist/hub-client/index.d.mts",
-      "import": "./dist/hub-client/index.mjs"
+      "import": {
+        "types": "./dist/hub-client/index.d.mts",
+        "default": "./dist/hub-client/index.mjs"
+      },
+      "require": {
+        "types": "./dist/hub-client/index.d.cts",
+        "default": "./dist/hub-client/index.cjs"
+      }
     },
     "./judge": {
-      "types": "./dist/runtime/judge.d.mts",
-      "import": "./dist/runtime/judge.mjs"
+      "import": {
+        "types": "./dist/runtime/judge.d.mts",
+        "default": "./dist/runtime/judge.mjs"
+      },
+      "require": {
+        "types": "./dist/runtime/judge.d.cts",
+        "default": "./dist/runtime/judge.cjs"
+      }
     }
   },
   "files": [

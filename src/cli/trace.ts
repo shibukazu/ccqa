@@ -9,7 +9,7 @@ import {
   saveRouteDiff,
   tryGetRecording,
 } from "../store/index.ts";
-import { diffRoutes, renderRouteDiff } from "../ir/route-diff.ts";
+import { describeStepAction, diffRoutes, renderRouteDiff } from "../ir/route-diff.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import { RunUsageError } from "../run/errors.ts";
 import { loadStateIntoSession } from "../runtime/session-state.ts";
@@ -25,7 +25,12 @@ import {
 } from "../spec/expand.ts";
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
-import { validateActions, type ValidationMode } from "../runtime/replay-validate.ts";
+import {
+  formatPromotion,
+  isCascadeReason,
+  validateActions,
+  type ValidationMode,
+} from "../runtime/replay-validate.ts";
 import { buildSpecEnvScrub, scrubEnvValues } from "../runtime/env-scrub.ts";
 import { formatUnstableDrop, scrubUnstableActions } from "../runtime/literal-scrub.ts";
 import { languageDirective } from "../prompts/language.ts";
@@ -216,6 +221,9 @@ export async function runTrace(
       ? { conventions: conventions.sections.map((s) => ({ heading: s.path, body: s.body })) }
       : {}),
     ...(testCase.expectations.length > 0 ? { expectations: testCase.expectations } : {}),
+    ...(testCase.cleanupExpectations.length > 0
+      ? { cleanupExpectations: testCase.cleanupExpectations }
+      : {}),
     ...(testCase.context.length > 0 ? { context: testCase.context } : {}),
     ...(opts.instruction ? { instruction: opts.instruction } : {}),
   });
@@ -256,7 +264,7 @@ export async function runTrace(
       ...agentBrowserInvokeBase({ sessionName, runId: sessionName }),
       model,
       envScrubMap,
-      onAbAction: ({ abAction, stepId, assertMarker }) => {
+      onAbAction: ({ abAction, stepId, assertMarker, secret }) => {
         const stepForCommand = stepTracker.fromCommand(stepId);
         const line = abAction === undefined ? null : scrubEnvValues(abAction, envScrubMap);
         let recorded: RecordedAction[] | null = null;
@@ -276,7 +284,7 @@ export async function runTrace(
         for (const action of recorded) {
           const stamped = withStepId(action, stepForCommand);
           if (stamped) {
-            traceActions.push(stamped);
+            traceActions.push(secret ? { ...stamped, secret: true } : stamped);
             pushed += 1;
           }
         }
@@ -381,7 +389,11 @@ export async function runTrace(
     // the step but verifies nothing about its `expected` — the kind of green
     // that reads as coverage. Loud, per step, before codegen runs.
     const caseStepIds = testCase.steps.filter(isExpandedActionStep).map((s) => s.id);
-    for (const stepId of stepsWithoutAsserts(caseStepIds, validatedActions)) {
+    // A cleanup step joins the check only when the case says what its undo
+    // must make true; one that states nothing is asked to verify nothing.
+    const cleanupStepIds =
+      testCase.cleanupExpectations.length > 0 ? testCase.cleanup.map((s) => s.id) : [];
+    for (const stepId of stepsWithoutAsserts([...caseStepIds, ...cleanupStepIds], validatedActions)) {
       log.warn(`${stepId} recorded no assertion — nothing in the generated test verifies its 'expected'`);
     }
     log.hint(`run 'ccqa generate ${testCase.ref.id}' to generate a test script`);
@@ -598,7 +610,7 @@ function validateAndReport(
   teardown?.trackSession(sessionName);
   log.blank();
   log.info(`post-trace validation in ${mode} mode (replaying ${actions.length} recorded action(s))...`);
-  const { kept, unstable, dropped, rescuedSteps = [] } = validateActions(actions, {
+  const { kept, unstable, dropped, rescuedSteps = [], promoted = [] } = validateActions(actions, {
     sessionName,
     mode,
     envOverrides,
@@ -615,17 +627,31 @@ function validateAndReport(
   if (rescuedSteps.length > 0) {
     log.info(`rescued ${rescuedSteps.length} step(s) that had lost every action: ${rescuedSteps.join(", ")}`);
   }
+  for (const p of promoted) log.info(formatPromotion(p));
   if (mode === "lenient") {
     if (unstable.length === 0) {
       log.meta("validated", `${kept.length}/${actions.length} kept`);
     } else {
-      for (const u of unstable) {
-        const head = `${u.action}${u.locator ? " " + describeLocator(u.locator) : ""}`;
-        log.warn(`replay-unstable: ${head} — ${u.replayReason ?? "(no reason)"} (kept in ir.json with warning)`);
+      // The cascade is reported as one line naming what actually failed. One
+      // warning per skipped action reads as a route that broke everywhere,
+      // when the whole set follows from a single locator that found nothing.
+      const failed = unstable.filter((u) => !isCascadeReason(u.replayReason));
+      const cascaded = unstable.length - failed.length;
+      for (const u of failed) {
+        log.warn(`replay-unstable: ${describeStepAction(u)} — ${u.replayReason ?? "(no reason)"} (kept in ir.json with warning)`);
+      }
+      if (cascaded > 0) {
+        const first = failed[0];
+        log.warn(
+          `${cascaded} further action(s) were not replayed at all` +
+            (first ? `: they follow ${describeStepAction(first)}, which failed` : ""),
+        );
       }
       log.meta(
         "validated",
-        `${kept.length}/${actions.length} kept, ${unstable.length} flagged replay-unstable (kept with warning)`,
+        `${kept.length}/${actions.length} kept, ${failed.length} flagged replay-unstable` +
+          (cascaded > 0 ? `, ${cascaded} not replayed` : "") +
+          " (kept with warning)",
       );
     }
     // Lenient mode: thread the kept + unstable back into the original

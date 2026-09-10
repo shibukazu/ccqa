@@ -71,6 +71,14 @@ export interface RecordedAction {
   /** Spec step this action belongs to (from the last STEP_START line). */
   stepId?: string;
   /**
+   * This action types a credential. Set from the `CCQA_SECRET=1` prefix on
+   * the recorded command, or from a locator that addresses a password input.
+   * A value that did not resolve to a `${VAR}` reference is not recorded at
+   * all — the action is dropped (`literal-scrub.ts`) rather than kept with a
+   * password in it.
+   */
+  secret?: boolean;
+  /**
    * Set by the lenient post-trace validator when this action failed to
    * replay on a fresh session but is still kept in ir.json (and therefore
    * in the generated test). Codegen emits a `// [warn] replay-unstable:

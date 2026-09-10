@@ -2,6 +2,7 @@ import type { ExpandedJudgeByLlmStep } from "../../spec/expand.ts";
 import { bracedRefsToJsExpression, envRefsToJsExpression } from "../../runtime/env-vars.ts";
 import type { Locator, LocatorIndex, RecordedAction } from "../../ir/types.ts";
 import type { StepMarker } from "../../codegen/actions-to-script.ts";
+import { renderStepComment } from "../../codegen/step-comment.ts";
 
 /**
  * Deterministic IR → plain `@playwright/test` emitter — no LLM involved.
@@ -50,14 +51,53 @@ export interface PlaywrightEmitInput {
   runId?: { import: string; expression: string };
   /** False drops the per-step capture calls (config `hooks.stepEvidence`). */
   stepEvidence?: boolean;
+  /** Write the step comments in Japanese (the CLI's `--language`). */
+  japanese?: boolean;
 }
 
 /** Variable the emitted test holds its unique value in. */
 const RUN_ID_VAR = "ccqaRunId";
+/**
+ * Flag the `afterEach` guards on. Separate from {@link RUN_ID_VAR}, which is
+ * assigned at the top of the test because the steps type it: a guard on that
+ * one would be true before anything had been created.
+ */
+const CREATED_VAR = "ccqaCreated";
 /** Environment variable the recording carries a unique value as. */
 const RUN_ID_ENV = "CCQA_RUN_ID";
+/** What the recording holds where a run's unique value went. */
+const RUN_ID_REF = `\${${RUN_ID_ENV}}`;
 /** What `envRefsToJsExpression` renders `${CCQA_RUN_ID}` as. */
 const RUN_ID_READ = `process.env.${RUN_ID_ENV} ?? ""`;
+
+/** Actions that put a value into the page, and those that submit it. */
+const TYPING_ACTIONS = new Set<RecordedAction["action"]>(["fill", "type", "select"]);
+const SUBMITTING_ACTIONS = new Set<RecordedAction["action"]>(["click", "dblclick", "press"]);
+
+/**
+ * The action after which the route has created the thing the cleanup undoes.
+ *
+ * Mechanical, so a reader can predict it: the first action that submits
+ * (a click, a double click, a key press) after the first one that typed the
+ * run's unique value — and then the end of that action's step, since what the
+ * step does is one act. A route that types the value and never submits it, or
+ * never types it at all, has no such moment, so the last action stands in:
+ * assigning at the end is still later than the creation, and never earlier.
+ */
+export function creationActionIndex(
+  actions: readonly RecordedAction[],
+  markers: readonly StepMarker[],
+): number {
+  const last = actions.length - 1;
+  const typed = actions.findIndex(
+    (a) => TYPING_ACTIONS.has(a.action) && (a.value ?? "").includes(RUN_ID_REF),
+  );
+  if (typed === -1) return last;
+  const submitted = actions.findIndex((a, i) => i > typed && SUBMITTING_ACTIONS.has(a.action));
+  if (submitted === -1) return last;
+  const next = markers.find((m) => m.actionIndex > submitted);
+  return next ? next.actionIndex - 1 : last;
+}
 
 /** A claim and the action index it is asserted after (-1: before any action). */
 export interface Judgement {
@@ -162,7 +202,7 @@ export function judgePreserveRule(): string {
 }
 
 export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
-  const { actions, testName, judgements = [] } = input;
+  const { actions, testName, judgements = [], japanese = false } = input;
   // A target that captures no evidence emits no boundary calls, but the step
   // comments stay: they are how a reviewer reads which step a line belongs to.
   const captures = input.stepEvidence !== false;
@@ -185,14 +225,17 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
         openMarker = null;
       }
       if (lines.length > 0) lines.push("");
-      lines.push(`// step: ${step.id} [${step.source}]`);
+      lines.push(renderStepComment({ stepId: step.id, source: step.source }, japanese));
       lines.push(judgeCall(step).code);
     }
   };
 
+  const createdAt = creationActionIndex(actions, stepMarkers);
+  let createdLine = lines.length;
+
   flushJudgements(-1);
   for (let i = 0; i < actions.length; i++) {
-    openMarker = openStep(lines, markerByIndex.get(i), openMarker, captures);
+    openMarker = openStep(lines, markerByIndex.get(i), openMarker, japanese, captures);
     const action = actions[i]!;
     const line = actionToLine(action);
     if (line !== null && line !== prevLine) {
@@ -202,6 +245,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
       lines.push(line);
       prevLine = line;
     }
+    if (i === createdAt) createdLine = lines.length;
     flushJudgements(i);
   }
   closeStep(lines, openMarker, captures);
@@ -210,12 +254,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   // to the browser from outside (see the target's `browserCoverage`), so the
   // generated test carries no measurement code an LLM rewrite could drop.
 
-  // A claim costs a model round trip, which the default per-test budget was
-  // not sized for. Relative to the project's own timeout rather than absolute,
-  // so a consumer that already raised it keeps the raise.
-  if (judgements.length > 0) lines.unshift("test.slow();", "");
-
-  const cleanupLines = emitCleanup(input.cleanup, captures);
+  const cleanupLines = emitCleanup(input.cleanup, captures, japanese);
   const title = `${testName}${input.titleSuffix ?? ""}`;
   // Only when the route actually created something unique: a declared value
   // nothing reads is an unused variable, and the project's own type check or
@@ -224,11 +263,20 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     input.runId !== undefined &&
     [...lines, ...cleanupLines].some((line) => line.includes(RUN_ID_READ));
   const runId = usesRunId ? input.runId : undefined;
+  const guarded = runId !== undefined && cleanupLines.length > 0;
+  // Spliced before anything is prepended: an index taken during the action
+  // loop counts from the loop's own first line, and a later `unshift` would
+  // slide the marker above the action that created the thing it marks.
+  if (guarded) lines.splice(createdLine, 0, `${CREATED_VAR} = true;`);
+  // A claim costs a model round trip, which the default per-test budget was
+  // not sized for. Relative to the project's own timeout rather than absolute,
+  // so a consumer that already raised it keeps the raise.
+  if (judgements.length > 0) lines.unshift("test.slow();", "");
   const testLines = [
-    ...(runId ? [`${RUN_ID_VAR} = ${runId.expression};`] : []),
+    ...(runId ? [`${RUN_ID_VAR} = ${runId.expression};`, ""] : []),
     ...lines,
   ];
-  const scoped = runId !== undefined || cleanupLines.length > 0;
+  const scoped = cleanupLines.length > 0 || runId !== undefined;
   // A judge call needs Playwright's `testInfo` to attach its verdict to the
   // report; a case with no judgement keeps the plain signature so no unused
   // parameter lands in the generated file.
@@ -237,10 +285,13 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   const declaration = scoped
     ? [
         `test.describe(${j(testName)}, () => {`,
-        // Declared here, assigned in the test: `afterEach` needs to see it,
-        // and a value the project regenerates per attempt must not be shared
-        // between attempts.
-        ...(runId ? [`  let ${RUN_ID_VAR}: string | undefined;`, ""] : []),
+        // Declared here so `afterEach` can read them, assigned per attempt so
+        // one attempt's value never leaks into the next. `ccqaCreated` flips
+        // where the route created something, so an attempt that failed before
+        // that point cleans nothing up.
+        ...(runId ? [`  let ${RUN_ID_VAR}: string | undefined;`] : []),
+        ...(guarded ? [`  let ${CREATED_VAR} = false;`] : []),
+        ...(runId ? [""] : []),
         `  test(${j(title)}, async (${testParams}) => {`,
         indent(testLines, 4),
         "  });",
@@ -248,13 +299,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
           ? [
               "",
               "  test.afterEach(async ({ page }) => {",
-              ...(runId
-                ? [
-                    // Nothing was created if the test never got that far, and
-                    // undoing nothing is what this must then do.
-                    `    if (${RUN_ID_VAR} === undefined) return;`,
-                  ]
-                : []),
+              ...(guarded ? [`    if (!${CREATED_VAR}) return;`] : []),
               indent(cleanupLines, 4),
               "  });",
             ]
@@ -296,13 +341,17 @@ function indent(lines: string[], by: number): string {
  * recording like everything else: what the cleanup does was demonstrated in
  * the browser, not guessed from the case's prose.
  */
-function emitCleanup(cleanup: PlaywrightEmitInput["cleanup"], captures: boolean): string[] {
+function emitCleanup(
+  cleanup: PlaywrightEmitInput["cleanup"],
+  captures: boolean,
+  japanese: boolean,
+): string[] {
   if (!cleanup || cleanup.actions.length === 0) return [];
   const lines: string[] = [];
   const markerByIndex = new Map((cleanup.stepMarkers ?? []).map((m) => [m.actionIndex, m]));
   let open: StepMarker | null = null;
   for (let i = 0; i < cleanup.actions.length; i++) {
-    open = openStep(lines, markerByIndex.get(i), open, captures);
+    open = openStep(lines, markerByIndex.get(i), open, japanese, captures);
     const action = cleanup.actions[i]!;
     if (action.replayUnstable) {
       lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
@@ -324,12 +373,13 @@ function openStep(
   lines: string[],
   marker: StepMarker | undefined,
   open: StepMarker | null,
+  japanese: boolean,
   captures: boolean,
 ): StepMarker | null {
   if (!marker) return open;
   if (open && captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, open).code);
   if (lines.length > 0) lines.push("");
-  lines.push(`// step: ${marker.stepId} [${marker.source}]`);
+  lines.push(renderStepComment(marker, japanese));
   if (captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker).code);
   return marker;
 }

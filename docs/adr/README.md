@@ -52,6 +52,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0028](0028-a-derived-test-path-and-a-recorded-route.md) | The test path is derived; the recording is the route | accepted |
 | [0029](0029-ccqa-ships-mechanism-the-project-supplies-the-facts.md) | ccqa ships mechanism; the project supplies the facts | accepted |
 | [0030](0030-the-audit-reads-the-product.md) | The audit reads the product, and may name it | accepted |
+| [0031](0031-a-recording-carries-references-not-values.md) | A recording carries references, never resolved values | accepted |
 
 ## Template
 

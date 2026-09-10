@@ -2,7 +2,14 @@ import type { RecordedAction } from "../ir/types.ts";
 import type { Recording } from "../store/index.ts";
 import type { TestCase } from "../intent/case.ts";
 import { describeAction } from "../ir/route-diff.ts";
-import type { SourceAnchors } from "./source-anchors.ts";
+import { parseStepComment } from "../codegen/step-comment.ts";
+import {
+  formatFinding,
+  mergeFindings,
+  NOTHING_DECIDED,
+  type SpecCoverageFinding,
+} from "../targets/verifies-spec.ts";
+import type { SourceAnchors, SourceNeedle } from "./source-anchors.ts";
 
 /**
  * The table a reviewer reads instead of the generated test.
@@ -31,7 +38,7 @@ export interface EvidenceStep {
   /** Screenshot paths, relative to the evidence file. */
   screenshots: string[];
   /** Locator/assertion literals worth checking against the product's own source. */
-  needles: string[];
+  needles: SourceNeedle[];
 }
 
 export interface EvidenceInput {
@@ -41,8 +48,13 @@ export interface EvidenceInput {
   test: { path: string; source: string };
   /** Screenshot files by step id, already relative to the evidence file. */
   screenshots: Map<string, string[]>;
-  /** What the verifies-spec review said, if it ran. */
-  unchecked?: string[];
+  /**
+   * What the review of the generated test found, if one was obtained. Its
+   * findings, not its rendered warnings: the table reaches the same verdict
+   * about a step that decides nothing, and pairing the two by step id is the
+   * only way to show each finding once.
+   */
+  review?: SpecCoverageFinding[];
   /**
    * What the product's own source was searched for, and where each was found.
    * Absent — not empty — is the signal that no `sourceRoots` were configured:
@@ -54,8 +66,6 @@ export interface EvidenceInput {
 
 /** Assertion lines a reviewer can check without reading the whole file. */
 const ASSERTION = /^\s*(?:await\s+)?(?:expect|judgeByLlm)\b.*$/;
-/** `// step: step-01 [case]` — the boundary the emitter writes. */
-const STEP_COMMENT = /^\s*\/\/\s*step:\s*(\S+)\s*\[/;
 
 /**
  * Assertions grouped by the step they sit under, read from the step comments
@@ -67,9 +77,9 @@ export function assertionsByStep(source: string): Map<string, string[]> {
   const byStep = new Map<string, string[]>();
   let current: string | null = null;
   for (const line of source.split("\n")) {
-    const boundary = STEP_COMMENT.exec(line);
+    const boundary = parseStepComment(line);
     if (boundary) {
-      current = boundary[1]!;
+      current = boundary;
       if (!byStep.has(current)) byStep.set(current, []);
       continue;
     }
@@ -111,22 +121,22 @@ export function actionsByStep(actions: readonly RecordedAction[]): Map<string, s
  * and has no literal counterpart in the source, so it is dropped rather than
  * searched for and reported "not found".
  */
-export function sourceNeedles(actions: readonly RecordedAction[]): string[] {
-  const needles: string[] = [];
+export function sourceNeedles(actions: readonly RecordedAction[]): SourceNeedle[] {
+  const needles: SourceNeedle[] = [];
   const seen = new Set<string>();
-  const add = (value: string | undefined): void => {
+  const add = (value: string | undefined, kind: SourceNeedle["kind"] = "text"): void => {
     if (value === undefined || value.includes("${") || seen.has(value)) return;
     seen.add(value);
-    needles.push(value);
+    needles.push({ value, kind });
   };
   for (const action of actions) {
     for (const locator of [action.locator, action.target]) {
       if (!locator) continue;
-      if (locator.by === "testid" || locator.by === "placeholder" || locator.by === "label") {
-        add(locator.value);
-      } else if (locator.by === "role") {
-        add(locator.name);
-      }
+      // A test id is looked for as an attribute and nothing else: the same
+      // string in a selector or a comment is not where it is declared.
+      if (locator.by === "testid") add(locator.value, "testid");
+      else if (locator.by === "placeholder" || locator.by === "label") add(locator.value);
+      else if (locator.by === "role") add(locator.name);
     }
     if (action.assert === "text_visible" || action.assert === "text_not_visible") add(action.value);
   }
@@ -185,14 +195,26 @@ export function renderEvidence(input: EvidenceInput): string {
     for (const expectation of input.testCase.expectations) lines.push(`- ${expectation}`);
     lines.push("");
   }
+  // The rows above are read again rather than the review file trusted: the
+  // review saw the file at generation time and this table sees it now, and a
+  // summary that could contradict its own table is worse than no summary.
+  const undecided = steps
+    .filter((step) => step.assertions.length === 0)
+    .map((step) => ({ stepId: step.id, problem: NOTHING_DECIDED }));
+  const findings = mergeFindings(undecided, input.review ?? []);
   lines.push("## Review", "");
-  lines.push(
-    input.unchecked === undefined
-      ? "The generated test was not reviewed against the case."
-      : input.unchecked.length === 0
-        ? "Every step's outcome is decided by the generated test."
-        : input.unchecked.map((finding) => `- ${finding}`).join("\n"),
-  );
+  if (findings.length === 0) {
+    lines.push(
+      input.review === undefined
+        ? "The generated test was not reviewed against the case."
+        : "Every step's outcome is decided by the generated test.",
+    );
+  } else {
+    for (const finding of findings) lines.push(`- ${formatFinding(finding)}`);
+    if (input.review === undefined) {
+      lines.push("", "The generated test was not otherwise reviewed against the case.");
+    }
+  }
   lines.push("");
   return lines.join("\n");
 }
@@ -208,13 +230,18 @@ function cell(text: string): string {
  * the scan never looked for says so instead — the reviewer's whole use of this
  * column is telling those two apart.
  */
-function sourceAnchorCells(needles: readonly string[], anchors: SourceAnchors): string {
+function sourceAnchorCells(needles: readonly SourceNeedle[], anchors: SourceAnchors): string {
   return cell(
     needles
-      .map((needle) => {
-        const at = anchors.found.get(needle)?.at;
-        if (at) return `\`${needle}\` — ${at}`;
-        return `\`${needle}\` — ${anchors.unsearched.has(needle) ? "not searched" : "not found"}`;
+      .map(({ value }) => {
+        const anchor = anchors.found.get(value);
+        if (!anchor) {
+          return `\`${value}\` — ${anchors.unsearched.has(value) ? "not searched" : "not found"}`;
+        }
+        // Several places say it equally well, so none of them is the answer.
+        // Naming one would read as "this is where it comes from".
+        const where = anchor.places.join(", ");
+        return `\`${value}\` — ${anchor.places.length > 1 ? `ambiguous: ${where}` : where}`;
       })
       .join("<br>"),
   );

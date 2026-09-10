@@ -500,8 +500,10 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
       runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
     });
     expect(script).toContain(`import { uniqueId } from "./utils";`);
-    expect(script).toContain("let ccqaRunId: string | undefined;");
+    // Nothing undoes anything here, so there is no guard to keep — only the
+    // value the steps read.
     expect(script).toContain("ccqaRunId = uniqueId();");
+    expect(script).not.toContain("ccqaCreated");
     // The recorded `${CCQA_RUN_ID}` now reads the project's value, and no
     // environment read is left in the test.
     expect(script).toContain("`item-${ccqaRunId}`");
@@ -516,8 +518,38 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
       cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
     });
     expect(script).toContain("test.afterEach(async ({ page }) => {");
-    expect(script).toContain("if (ccqaRunId === undefined) return;");
+    expect(script).toContain("if (!ccqaCreated) return;");
     expect(script).toContain(`await page.getByRole("button", { name: "Delete" }).first().click();`);
+  });
+
+  // The guard is only worth anything if it is still undefined while the route
+  // is on its way to creating something: assigning at the top of the test made
+  // every failed attempt run the cleanup.
+  it("marks the value created only once the route has submitted it", () => {
+    const script = emitPlaywrightDraft({
+      actions: [
+        ...recorded,
+        { action: "click", locator: { by: "role", value: "button", name: "Add" } },
+        { action: "assert", assert: "text_visible", value: "item-${CCQA_RUN_ID}" },
+      ],
+      testName: "Add a todo item",
+      stepMarkers: [
+        { actionIndex: 0, stepId: "step-01", source: "spec" },
+        { actionIndex: 2, stepId: "step-02", source: "spec" },
+        { actionIndex: 3, stepId: "step-03", source: "spec" },
+      ],
+      stepEvidence: false,
+      runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
+      cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
+    });
+    const body = script.split("\n").map((l) => l.trim());
+    const submit = body.findIndex((l) => l.includes(`name: "Add"`));
+    const assign = body.indexOf("ccqaCreated = true;");
+    const check = body.findIndex((l) => l.startsWith("await expect("));
+    // After the click that created it, and before the step that reads it back.
+    expect(submit).toBeGreaterThan(-1);
+    expect(assign).toBe(submit + 1);
+    expect(check).toBeGreaterThan(assign);
   });
 
   it("drops the capture calls when the target captures no step evidence", () => {

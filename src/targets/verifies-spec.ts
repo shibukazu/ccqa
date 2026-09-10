@@ -4,7 +4,8 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { extractJsonBlock } from "../claude/extract-json.ts";
 import * as log from "../cli/logger.ts";
 import { verifiesSpecPrompt } from "../prompts/verifies-spec.ts";
-import type { ExpandedStep } from "../spec/expand.ts";
+import { isExpandedActionStep, type ExpandedStep } from "../spec/expand.ts";
+import { assertionsByStep } from "../evidence/table.ts";
 import type { GenerateResult } from "./types.ts";
 import type { InvokeFn } from "./llm-engine.ts";
 
@@ -33,12 +34,26 @@ export function parseVerifiesSpecFindings(answer: string): SpecCoverageFinding[]
   }
 }
 
+/**
+ * What a step with no assertion under it is told. Shared with the evidence
+ * table, which reaches the same verdict from the same file — a reader must not
+ * meet two wordings for one fact.
+ *
+ * It reports what was seen, not what was concluded. An assertion a rewrite
+ * moved into a page object is invisible here, and calling that "decides
+ * nothing" would be ccqa claiming more than it looked at.
+ */
+export const NOTHING_DECIDED =
+  "no assertion is visible under this step in the generated test — one moved into a helper does " +
+  "not show here, and does not show to a reviewer reading the file either";
+
 /** The warning a finding becomes, phrased so the reader knows the test is green for nothing. */
 export function formatFinding(finding: SpecCoverageFinding): string {
-  return (
-    `step ${finding.stepId}: the generated test passes without deciding what this step claims — ` +
-    `${finding.problem}`
-  );
+  const claim =
+    finding.problem === NOTHING_DECIDED
+      ? "nothing in the generated test is visibly deciding this step"
+      : "the generated test passes without deciding what this step claims";
+  return `step ${finding.stepId}: ${claim} — ${finding.problem}`;
 }
 
 /**
@@ -48,6 +63,12 @@ export function formatFinding(finding: SpecCoverageFinding): string {
  */
 export interface SpecCoverageReview {
   findings: SpecCoverageFinding[] | null;
+  /**
+   * False when the model's half could not be obtained. The mechanical half
+   * still ran, so `findings` may be an empty array — which must not read as a
+   * clean review, because only part of the review happened.
+   */
+  complete: boolean;
   /** The findings as the lines the generate log shows. */
   warnings: string[];
 }
@@ -61,6 +82,15 @@ export interface SpecCoverageReview {
 export async function reviewGeneratedTest(input: {
   result: GenerateResult;
   steps: readonly ExpandedStep[];
+  /**
+   * What the case states for the flow as a whole, when its steps carry no
+   * `expected` of their own. Without it a markdown case gives the model steps
+   * that claim nothing, and the honest answer to "does the test decide this"
+   * is then always yes.
+   */
+  expectations?: readonly string[];
+  /** Cleanup steps, when the case says what its undo must make true. */
+  cleanup?: readonly ExpandedStep[];
   language: string;
   model?: string;
   cwd: string;
@@ -75,12 +105,29 @@ export async function reviewGeneratedTest(input: {
   const source = sources.filter((s) => s.length > 0).join("\n\n");
   if (source.length === 0) {
     log.warn("could not check whether the generated test decides its spec (no test file to read)");
-    return { findings: null, warnings: [] };
+    return { findings: null, complete: false, warnings: [] };
   }
+
+  // Asked of the file, not of the model: a step with no assertion under it is
+  // a fact anyone can read off the source, and the evidence table reads it the
+  // same way — so the two must not be able to disagree about it.
+  const checked = assertionsByStep(source);
+  const undecided = [...input.steps, ...(input.cleanup ?? [])]
+    .filter(isExpandedActionStep)
+    .filter((step) => (checked.get(step.id) ?? []).length === 0)
+    .map((step) => ({ stepId: step.id, problem: NOTHING_DECIDED }));
 
   const invoke = input.invoke ?? invokeClaudeStreaming;
   const { result: answer, isError } = await invoke({
-    prompt: verifiesSpecPrompt({ steps: input.steps, source, language: input.language }),
+    prompt: verifiesSpecPrompt({
+      steps: input.steps,
+      source,
+      language: input.language,
+      ...(input.expectations && input.expectations.length > 0
+        ? { expectations: [...input.expectations] }
+        : {}),
+      ...(input.cleanup && input.cleanup.length > 0 ? { cleanup: [...input.cleanup] } : {}),
+    }),
     allowedTools: [],
     disableThinking: true,
     maxTurns: 1,
@@ -88,14 +135,27 @@ export async function reviewGeneratedTest(input: {
     ...(input.model ? { model: input.model } : {}),
     cwd: input.cwd,
   }, () => {});
-  if (isError) {
-    log.warn("could not check whether the generated test decides its spec (Claude returned an error)");
-    return { findings: null, warnings: [] };
+  // A review that could not be obtained still leaves the mechanical half,
+  // which needed no model: reporting nothing here would read as a clean pass.
+  const fromModel = isError ? null : parseVerifiesSpecFindings(answer);
+  if (fromModel === null) {
+    log.warn(
+      `could not check whether the generated test decides its spec (${isError ? "Claude returned an error" : "no usable answer"})`,
+    );
   }
-  const findings = parseVerifiesSpecFindings(answer);
-  if (findings === null) {
-    log.warn("could not check whether the generated test decides its spec (no usable answer)");
-    return { findings: null, warnings: [] };
-  }
-  return { findings, warnings: findings.map(formatFinding) };
+  const findings = mergeFindings(undecided, fromModel ?? []);
+  return { findings, complete: fromModel !== null, warnings: findings.map(formatFinding) };
+}
+
+/**
+ * The mechanical finding wins its step: it is a fact, not a reading. Shared
+ * with the evidence table, which merges the same two sources — one of them
+ * recomputed from the file as it is now — and must show each step once.
+ */
+export function mergeFindings(
+  undecided: SpecCoverageFinding[],
+  fromModel: readonly SpecCoverageFinding[],
+): SpecCoverageFinding[] {
+  const claimed = new Set(undecided.map((f) => f.stepId));
+  return [...undecided, ...fromModel.filter((f) => !claimed.has(f.stepId))];
 }

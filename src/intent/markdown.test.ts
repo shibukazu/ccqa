@@ -107,6 +107,76 @@ describe("parseMarkdownCase", () => {
   });
 });
 
+describe("cleanupExpected", () => {
+  it("splits a numbered cleanup section's top-level bullets into cleanupExpected", () => {
+    const source = [
+      "## 手順",
+      "",
+      "1. Open the todo list",
+      "",
+      "## 後処理",
+      "",
+      "1. Delete the item",
+      "2. Refresh the page",
+      "",
+      "- The item no longer appears in the list",
+      "- The item count returns to zero",
+    ].join("\n");
+    const parsed = parseMarkdownCase({ id: "todo/x", source, fields: FIELDS });
+    expect(parsed.cleanup).toEqual([
+      { number: 1, text: "Delete the item" },
+      { number: 2, text: "Refresh the page" },
+    ]);
+    expect(parsed.cleanupExpected).toEqual([
+      "The item no longer appears in the list",
+      "The item count returns to zero",
+    ]);
+  });
+
+  it("treats a prose-only cleanup section as one step, with no separate expectation", () => {
+    const source = [
+      "## 手順",
+      "",
+      "1. Open the todo list",
+      "",
+      "## 後処理",
+      "",
+      "Nothing needs to be undone.",
+    ].join("\n");
+    const parsed = parseMarkdownCase({ id: "todo/x", source, fields: FIELDS });
+    expect(parsed.cleanup).toEqual([{ number: 1, text: "Nothing needs to be undone." }]);
+    expect(parsed.cleanupExpected).toEqual([]);
+  });
+
+  it("folds a bullet indented under a numbered step into that step's text, not an expectation", () => {
+    const source = [
+      "## 手順",
+      "",
+      "1. Open the todo list",
+      "",
+      "## 後処理",
+      "",
+      "1. Delete the item",
+      "    - confirm the delete dialog",
+    ].join("\n");
+    const parsed = parseMarkdownCase({ id: "todo/x", source, fields: FIELDS });
+    expect(parsed.cleanup).toEqual([{ number: 1, text: "Delete the item - confirm the delete dialog" }]);
+    expect(parsed.cleanupExpected).toEqual([]);
+  });
+});
+
+describe("replaceSectionBody — the last section", () => {
+  // The write-back runs on every successful generate, so a doubled trailing
+  // newline grows the project's own case file one blank line at a time.
+  it("rewrites in place without growing the file", () => {
+    const source = "# T\n\n## Out\n\n(none)\n";
+    const once = replaceSectionBody(source, "Out", "specs/a.spec.ts")!;
+    const twice = replaceSectionBody(once, "Out", "specs/a.spec.ts")!;
+    expect(twice).toBe(once);
+    expect(once.endsWith("specs/a.spec.ts\n")).toBe(true);
+  });
+});
+
 describe("replaceSectionBody", () => {
   it("rewrites one section and leaves every other byte alone", () => {
     const out = replaceSectionBody(CASE, "自動テストのパス", "specs/todo/add_item.spec.ts");

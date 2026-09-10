@@ -5,7 +5,8 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
-import { loadPromptBundleFromHub } from "../store/index.ts";
+import { caseRunDir, clearCaseRun, loadPromptBundleFromHub } from "../store/index.ts";
+import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import {
   buildLlmFixPrompt,
   buildLlmGenPrompt,
@@ -17,6 +18,7 @@ import { printUnifiedDiff, prompt } from "../cli/draft.ts";
 import { substituteRunCommandFiles } from "./run-command-runner.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { ARTIFACTS_DIR_ENV, substituteArtifactsDir } from "./run-artifacts.ts";
+import { buildProseEnvScrubMap, findLoadedValueLiterals, scrubEnvValues } from "../runtime/env-scrub.ts";
 import type { GenerateContext, GenerateResult } from "./types.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import * as log from "../cli/logger.ts";
@@ -165,6 +167,31 @@ export function validateOutputPath(
   return null;
 }
 
+/**
+ * The variables ccqa loaded whose values appear verbatim in `contents`, or an
+ * empty list. Values reach a generated file through the model, not through the
+ * emitter: a rewrite pass is shown the project's own conventions and page
+ * objects, and it writes what it read — in the observed case a sign-in comment
+ * naming the account the recording used.
+ *
+ * Rewriting the value into a `${VAR}` is the wrong repair. Code is not a
+ * recording: a credential a model chose to write into a comment or a fixture
+ * is not a reference the test needs, so the answer is to reject the file and
+ * ask again, not to launder it.
+ */
+export function leakedVariables(contents: string): string[] {
+  return findLoadedValueLiterals([contents]);
+}
+
+/** The rejection a leak becomes, naming the variable and never the value. */
+export function leakMessage(path: string, names: string[]): string {
+  return (
+    `${path} contains the value of ${names.join(", ")} — a credential this project keeps in a ` +
+    `variable. Never write a resolved value into generated code, in a comment or anywhere else; ` +
+    `read it from the environment, or leave it out.`
+  );
+}
+
 /** Written-files state: cwd-relative path → what's on disk. */
 type FileState = Map<string, { abs: string; kind: "test" | "support"; contents: string }>;
 
@@ -174,6 +201,11 @@ async function writeGeneratedFiles(
   state: FileState,
 ): Promise<void> {
   for (const file of files) {
+    // The last gate before a secret reaches the consumer's repository. Every
+    // path that produces files ends here, which is why the check is here as
+    // well as in the retryable one above.
+    const leaked = leakedVariables(file.contents);
+    if (leaked.length > 0) throw new Error(leakMessage(file.path, leaked));
     const abs = resolve(cwd, file.path);
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, file.contents, "utf8");
@@ -419,6 +451,11 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
   // `--auto-fix skip` disables the fix pass entirely: run verification once and
   // report the result, never rewriting the generated files.
   const maxRetries = p.ctx.fix.mode === "non-interactive" ? 0 : p.ctx.fix.maxRetries;
+  // Only a target whose generated tests call `ccqa/step-evidence` captures
+  // anything; for the rest the variable stays unset and the helper is a no-op.
+  const captures = p.ctx.targetConfig.hooks.stepEvidence;
+  // Loop-invariant: it reads the process env, which no attempt changes.
+  const outputScrub = buildProseEnvScrubMap([], []);
 
   // `useSnapshot` pins an agent-browser session so that target can re-attach
   // for a post-failure page snapshot; a runCommand target has no such session
@@ -439,6 +476,15 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
     // verification run has no report dir, so it (and CCQA_ARTIFACTS_DIR)
     // points at a throwaway temp dir instead, discarded after the attempt.
     const artifactsDir = await mkdtemp(join(tmpdir(), "ccqa-verify-artifacts-"));
+    // The step screenshots this attempt takes, kept when it passes. A project
+    // whose tests belong to its own runner never calls `ccqa run`, so this is
+    // the only time ccqa sees the case executed — and `ccqa evidence` has no
+    // pictures at all without it. Cleared first: what is here is one attempt's.
+    const evidenceDir = captures ? caseRunDir(p.ctx.ref) : null;
+    if (evidenceDir) {
+      await clearCaseRun(p.ctx.ref);
+      await mkdir(evidenceDir, { recursive: true });
+    }
     const command = substituteArtifactsDir(
       substituteRunCommandFiles(runCommand, testFiles),
       artifactsDir,
@@ -456,6 +502,7 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
             ...process.env,
             [ARTIFACTS_DIR_ENV]: artifactsDir,
             CCQA_RUN_ID: buildRunId(),
+            ...(evidenceDir ? { [EVIDENCE_DIR_ENV]: evidenceDir } : {}),
           }),
         "run",
       );
@@ -469,6 +516,7 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
       // that out in review costs another round trip. Run those here, where the
       // fix loop can still act on the output.
       const checks = await runCheckCommands(p.ctx);
+      // What is on disk is this attempt's, and this attempt passed.
       if (checks === null) return true;
       result = checks;
       // The fix pass is shown this output, so it has to be told which command
@@ -479,6 +527,7 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
       log.warn(
         `verification still failing after ${maxRetries} fix attempt(s) — generated files kept`,
       );
+      await clearCaseRun(p.ctx.ref);
       return false;
     }
 
@@ -486,7 +535,10 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
     const fixPrompt = buildLlmFixPrompt({
       targetId: p.target,
       command: failing,
-      outputTail: tail(result.output),
+      // The command's own output can echo a value the test resolved (a URL,
+      // an account). It reaches the model as prose, which is how the leak
+      // above happened, so it is symbolised before it goes.
+      outputTail: scrubEnvValues(tail(result.output), outputScrub),
       files: [...state.entries()].map(([path, f]) => ({
         path,
         contents: f.contents,
@@ -535,6 +587,7 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
     // writing. Declining keeps the current files and ends the loop.
     if (p.ctx.fix.mode === "interactive" && !(await confirmFixWrite(output.files, p.ctx.cwd))) {
       log.info("fix not applied (declined) — keeping current files");
+      await clearCaseRun(p.ctx.ref);
       return false;
     }
     await writeGeneratedFiles(p.ctx.cwd, output.files, state);
@@ -658,6 +711,11 @@ function validateOutput(output: LlmGenOutput, p: InvokeForFilesParams): string[]
     const pathError = validateOutputPath(p.policy, file.path, file.kind);
     if (pathError) {
       errors.push(pathError);
+      continue;
+    }
+    const leaked = leakedVariables(file.contents);
+    if (leaked.length > 0) {
+      errors.push(leakMessage(file.path, leaked));
       continue;
     }
     const fileError = p.validateFile?.(file) ?? null;

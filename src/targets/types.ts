@@ -196,6 +196,15 @@ export interface GenerateContext {
   /** What to undo afterwards; emitted apart from the steps. */
   cleanup: ExpandedStep[];
   /**
+   * What the case states for the flow as a whole rather than per step, and
+   * what it states about its cleanup. Both empty for a `spec.yaml` case, whose
+   * steps carry their own `expected`. The review of the generated test reads
+   * them: a step whose claim lives here would otherwise look like a step that
+   * claims nothing.
+   */
+  expectations: string[];
+  cleanupExpectations: string[];
+  /**
    * Values a header or a title tag is written from, by the names the project's
    * own config uses. Empty for a case ccqa's own `spec.yaml` states, which has
    * no such fields.

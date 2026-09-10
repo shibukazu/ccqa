@@ -79,6 +79,8 @@ function contextFor(
     ref: resolved.testCase.ref,
     steps: resolved.testCase.steps,
     cleanup: resolved.testCase.cleanup,
+    expectations: resolved.testCase.expectations,
+    cleanupExpectations: resolved.testCase.cleanupExpectations,
     fields: resolved.testCase.fields,
     resources,
     conventions: resolved.targetConfig.conventions,
@@ -133,22 +135,27 @@ describe("external target — generation from a project's own config (mocked Cla
     // instead, assigned exactly once inside the test.
     expect(generated).not.toContain("CCQA_RUN_ID");
     expect(generated).toContain('import { generateRunId } from "../utils/run-id";');
-    expect(generated).toContain("let ccqaRunId: string | undefined;");
     expect(generated.match(/ccqaRunId = generateRunId\(\);/g)).toHaveLength(1);
     expect(generated).toContain("${ccqaRunId}");
 
-    // 5. Cleanup lands in a guarded afterEach: nothing to undo if the test
-    // never got far enough to create anything.
+    // 5. Cleanup lands in an afterEach guarded by what the route created, and
+    // that is recorded after the click that submitted it — not at the top of
+    // the test, where an attempt that failed earlier would still clean up.
     expect(generated).toContain("test.afterEach(async ({ page }) => {");
-    expect(generated).toContain("if (ccqaRunId === undefined) return;");
+    expect(generated).toContain("if (!ccqaCreated) return;");
     expect(generated).toContain('name: "Delete"');
+    const body = generated.split("\n").map((l) => l.trim());
+    expect(body.indexOf("ccqaCreated = true;")).toBe(
+      body.findIndex((l) => l.includes(`name: "Add"`)) + 1,
+    );
 
-    // 6. Step comments cite the markdown's own step numbers.
-    expect(generated).toContain("// step: step-01 [case]");
-    expect(generated).toContain("// step: step-02 [case]");
-    expect(generated).toContain("// step: step-03 [case]");
-    expect(generated).toContain("// step: step-04 [case]");
-    expect(generated).toContain("// step: cleanup-01 [cleanup]");
+    // 6. Step comments cite the markdown's own numbering and its own words, so
+    // a reviewer reads the code against the case without opening both.
+    expect(generated).toContain("// step 1: Open the todo list page");
+    expect(generated).toContain("// step 2: Fill in the new item field with a unique title");
+    expect(generated).toContain("// step 3: Click the add button");
+    expect(generated).toContain("// step 4: Confirm the new item appears in the list");
+    expect(generated).toContain("// cleanup 1: Delete the created item");
   });
 
   it("routes through the reuse-first rewrite when the target's resources are configured", async () => {
@@ -160,19 +167,49 @@ describe("external target — generation from a project's own config (mocked Cla
     // What the mocked Claude "generates": the draft rewritten to reuse the
     // project's own page object, exactly as the built-in playwright target's
     // reuse-first pass does (see reuse-first.test.ts).
-    const rewritten = `import { test, expect } from "@playwright/test";
+    // The header, the title tag and every step-boundary capture survive the
+    // rewrite: dropping one is what the generation gate rejects.
+    const rewritten = `// case: todo/add_item
+// source: https://example.test/sheet
+
+import { test, expect } from "@playwright/test";
+import { ccqaStepBefore, ccqaStepAfter } from "ccqa/step-evidence";
 import { generateRunId } from "../../utils/run-id";
 import { TodoListPage } from "../../pages/todo_list";
 
 test.describe("Adding an item puts it on the list", () => {
   let ccqaRunId: string | undefined;
+  let ccqaCreated = false;
 
   test("Adding an item puts it on the list @smoke", async ({ page }) => {
     ccqaRunId = generateRunId();
     const list = new TodoListPage(page);
+
+    // step: step-01 [case]
+    await ccqaStepBefore(page, "step-01", "case");
     await list.open("https://example.test/todo");
+    await ccqaStepAfter(page, "step-01", "case");
+
+    // step: step-02 [case]
+    await ccqaStepBefore(page, "step-02", "case");
     await list.addItem(\`buy milk \${ccqaRunId}\`);
+    await ccqaStepAfter(page, "step-02", "case");
+
+    // step: step-03 [case]
+    await ccqaStepBefore(page, "step-03", "case");
+    await page.getByRole("button", { name: "Add" }).click();
+    ccqaCreated = true;
+    await ccqaStepAfter(page, "step-03", "case");
+
+    // step: step-04 [case]
+    await ccqaStepBefore(page, "step-04", "case");
     await expect(page.getByText(\`buy milk \${ccqaRunId}\`).first()).toBeVisible();
+    await ccqaStepAfter(page, "step-04", "case");
+  });
+
+  test.afterEach(async ({ page }) => {
+    if (!ccqaCreated) return;
+    await page.getByRole("button", { name: "Delete" }).click();
   });
 });
 `;

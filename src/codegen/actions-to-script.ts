@@ -1,6 +1,7 @@
 import { envRefsToJsExpression } from "../runtime/env-vars.ts";
 import { locatorToSelector, toAgentBrowserArgs, type AbToken } from "../ir/to-agent-browser.ts";
 import type { RecordedAction } from "../ir/types.ts";
+import { renderStepComment } from "./step-comment.ts";
 
 /**
  * Convert a recording (IR) into a vitest-compatible test.spec.ts.
@@ -29,6 +30,12 @@ export interface StepMarker {
   stepId: string;
   /** "spec" or block name — included in the comment for traceability. */
   source: string;
+  /**
+   * The step as its own document states it. Present for a case the project
+   * wrote; the comment then cites it, so a reviewer reads the generated code
+   * against the case without opening both.
+   */
+  text?: string;
 }
 
 export interface EmptyStepNotice {
@@ -150,7 +157,7 @@ function actionsToLines(
     if (marker) {
       if (openMarker) lines.push(`abStepEvidence(${j(openMarker.stepId)}, ${j(openMarker.source)});`);
       if (lines.length > 0) lines.push("");
-      lines.push(`// step: ${marker.stepId} [${marker.source}]`);
+      lines.push(renderStepComment(marker));
       // Tell the runtime which step we're inside so fail() can attribute
       // failures back to it. abStepEvidence at the end of the step clears it.
       lines.push(`__setCurrentStep(${j(marker.stepId)}, ${j(marker.source)});`);
@@ -213,7 +220,7 @@ function fillValueOf(action: RecordedAction): string | null {
 
 function appendEmptyStepNotice(lines: string[], notice: EmptyStepNotice): void {
   if (lines.length > 0) lines.push("");
-  lines.push(`// step: ${notice.stepId} [${notice.source}]`);
+  lines.push(renderStepComment(notice));
   lines.push(`// [warn] all actions for this step were dropped during post-trace validation.`);
   lines.push(`// [warn] the generated test does NOT exercise step ${notice.stepId}. Re-run`);
   lines.push(`// [warn] \`ccqa trace\` or add manual assertions if this step is load-bearing.`);

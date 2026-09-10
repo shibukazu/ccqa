@@ -20,6 +20,14 @@ export function verifiesSpecPrompt(input: {
   steps: readonly ExpandedStep[];
   source: string;
   language: string;
+  /**
+   * What the case states for the flow rather than per step. A markdown case
+   * writes them this way, which leaves every step's `expected` empty — so
+   * without them there is nothing here to check the test against.
+   */
+  expectations?: string[];
+  /** Cleanup steps, when the case says what its undo must make true. */
+  cleanup?: readonly ExpandedStep[];
 }): string {
   return [
     "You are reviewing whether a generated end-to-end test decides what its spec says.",
@@ -45,6 +53,21 @@ export function verifiesSpecPrompt(input: {
     "",
     ...input.steps.map(stepLine),
     "",
+    ...(input.expectations && input.expectations.length > 0
+      ? [
+          "## What the case expects",
+          "",
+          "Stated for the flow, not per step. Each belongs to the step that first",
+          "makes it true; a step is unchecked when nothing decides the one that",
+          "belongs to it.",
+          "",
+          ...input.expectations.map((e) => `- ${e}`),
+          "",
+        ]
+      : []),
+    ...(input.cleanup && input.cleanup.length > 0
+      ? ["## Cleanup steps", "", ...input.cleanup.map(stepLine), ""]
+      : []),
     "## Generated test",
     "",
     "```",

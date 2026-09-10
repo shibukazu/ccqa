@@ -101,6 +101,20 @@ export interface ValidationResult {
    * action count "magically" grew on a second look.
    */
   rescuedSteps?: string[];
+  /**
+   * Locators the label fallback rewrote, as `before → after`. Reported rather
+   * than applied silently: the recording now says the route was driven a way
+   * the trace did not describe, and a reader must be able to see that.
+   */
+  promoted?: string[];
+}
+
+/** What the validator records against an action it never replayed. */
+const CASCADE_REASON = "skipped after a preceding action failed";
+
+/** Whether a drop reason means "not replayed", rather than "replayed and failed". */
+export function isCascadeReason(reason: string | undefined): boolean {
+  return reason === CASCADE_REASON;
 }
 
 const SHORT_TIMEOUT_MS = 5_000;
@@ -247,6 +261,46 @@ interface ActionOutcome {
   ok: boolean;
   /** Failure reason (only meaningful when ok === false && skipped === false). */
   reason: string;
+  /** Set when the label fallback rewrote this action's locator (see below). */
+  promoted?: string;
+}
+
+/**
+ * The role a labelled element has when addressing it by label finds nothing.
+ *
+ * `getByLabel` needs a real association — a `<label for>`, a wrapping label,
+ * an `aria-labelledby`. A form that has none still shows the same string as
+ * the field's accessible name, which is what the recorder read off the
+ * snapshot, so the label it recorded matches nothing while the same text as a
+ * role's name matches exactly. Only the actions whose element has one
+ * unambiguous role are listed: a labelled `click` may be a button, a link or
+ * a checkbox, and guessing there would replace a locator that failed with one
+ * that finds the wrong element.
+ */
+const LABEL_FALLBACK_ROLE: Partial<Record<RecordedAction["action"], string>> = {
+  fill: "textbox",
+  type: "textbox",
+  check: "checkbox",
+  uncheck: "checkbox",
+};
+
+/** Whether agent-browser's failure was "no element", the one the fallback answers. */
+function notFound(result: { stderr: string; stdout: string }): boolean {
+  return /not\s+found|no\s+element|no\s+such\s+element/i.test(`${result.stderr} ${result.stdout}`);
+}
+
+/** The one line both callers log when the fallback rewrote a locator. */
+export function formatPromotion(promotion: string): string {
+  return `locator rewritten to the form that replays: ${promotion}`;
+}
+
+/** The same action addressed by role + accessible name, or null when there is no such form. */
+function labelFallback(action: RecordedAction): RecordedAction | null {
+  const loc = action.locator;
+  if (!loc || loc.by !== "label") return null;
+  const role = LABEL_FALLBACK_ROLE[action.action];
+  if (role === undefined) return null;
+  return { ...action, locator: { by: "role", value: role, name: loc.value, exact: true } };
 }
 
 /**
@@ -273,6 +327,20 @@ function runValidationAction(
     result = spawnAB(built);
   }
   if (result.status === 0) return { skipped: false, ok: true, reason: "" };
+  // One retry by accessible name, and the recording keeps whichever form
+  // replayed: a route that only holds the locator that failed sends the next
+  // `ccqa generate` back to re-record a case whose flow never changed. Only
+  // when the element was not found — a failure with another cause repeats by
+  // role, at the price of a second timeout.
+  const fallback = notFound(result) ? labelFallback(action) : null;
+  if (fallback !== null) {
+    const retry = actionToAbArgs(fallback, sessionName, envOverrides);
+    if (retry !== null && !isPollCheck(retry) && spawnAB(retry).status === 0) {
+      const promoted = `${action.locator!.by}=${action.locator!.value} → role=${fallback.locator!.value} name="${action.locator!.value}"`;
+      action.locator = fallback.locator!;
+      return { skipped: false, ok: true, reason: "", promoted };
+    }
+  }
   return {
     skipped: false,
     ok: false,
@@ -286,6 +354,7 @@ export function validateActions(
 ): ValidationResult {
   const kept: RecordedAction[] = [];
   const dropped: ValidationDrop[] = [];
+  const promoted: string[] = [];
 
   // Cascade design:
   //   - A failed *state-mutating* action (click/fill/navigate/…) poisons
@@ -310,10 +379,11 @@ export function validateActions(
       skipFromStepId = null;
     }
     if (skipFromStepId !== null && isPassiveAction(action.action)) {
-      dropped.push({ index: i, action, reason: "skipped after a preceding action failed" });
+      dropped.push({ index: i, action, reason: CASCADE_REASON });
       continue;
     }
     const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides);
+    if (outcome.promoted) promoted.push(outcome.promoted);
     if (outcome.skipped) {
       kept.push(action);
       continue;
@@ -334,7 +404,8 @@ export function validateActions(
     }
   }
   const afterRescue = rescueLostSteps(actions, kept, dropped, opts);
-  return splitByMode(actions, afterRescue, opts.mode ?? "lenient");
+  promoted.push(...(afterRescue.promoted ?? []));
+  return { ...splitByMode(actions, afterRescue, opts.mode ?? "lenient"), promoted };
 }
 
 /**
@@ -402,6 +473,7 @@ interface RescuePassResult {
   kept: RecordedAction[];
   dropped: ValidationDrop[];
   rescuedSteps?: string[];
+  promoted?: string[];
 }
 
 function rescueLostSteps(
@@ -426,12 +498,14 @@ function rescueLostSteps(
   }
   if (lostStepDrops.size === 0) return { kept, dropped };
 
+  const promoted: string[] = [];
   const rescuedIndices = new Set<number>();
   const rescuedSteps: string[] = [];
   for (const [stepId, drops] of lostStepDrops.entries()) {
     let anyForThisStep = false;
     for (const d of drops) {
       const outcome = runValidationAction(d.action, opts.sessionName, opts.envOverrides);
+      if (outcome.promoted) promoted.push(outcome.promoted);
       if (outcome.skipped) continue;
       if (outcome.ok) {
         rescuedIndices.add(d.index);
@@ -440,7 +514,7 @@ function rescueLostSteps(
     }
     if (anyForThisStep) rescuedSteps.push(stepId);
   }
-  if (rescuedIndices.size === 0) return { kept, dropped };
+  if (rescuedIndices.size === 0) return { kept, dropped, promoted };
 
   // Re-thread kept in original action order so rescued actions land at
   // their correct index and downstream consumers see a stable sequence.
@@ -453,7 +527,7 @@ function rescueLostSteps(
     if (rescuedIndices.has(i) || keptSet.has(action)) newKept.push(action);
   }
   const newDropped = dropped.filter((d) => !rescuedIndices.has(d.index));
-  return { kept: newKept, dropped: newDropped, rescuedSteps };
+  return { kept: newKept, dropped: newDropped, rescuedSteps, promoted };
 }
 
 

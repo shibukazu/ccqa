@@ -217,7 +217,7 @@ function specEnvScrubMap(
   spec: TestSpec | null,
   blocks: Map<string, BlockSpec>,
 ): Array<[string, string]> {
-  if (spec === null) return [];
+  if (spec === null) return buildProseEnvScrubMap([], []);
   try {
     return buildProseEnvScrubMap(spec.steps, expandSpec(spec, { blocks }));
   } catch {

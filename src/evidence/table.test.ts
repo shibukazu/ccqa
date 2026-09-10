@@ -14,6 +14,7 @@ const TEST_CASE: TestCase = {
   ],
   cleanup: [],
   expectations: ["The item appears on the list"],
+  cleanupExpectations: [],
   context: [],
   fields: {},
   source: {
@@ -49,7 +50,7 @@ describe("renderEvidence", () => {
     },
     test: { path: "specs/todo/add_item.spec.ts", source: GENERATED },
     screenshots: new Map([["step-02", ["runs/1/step-02.png"]]]),
-    unchecked: [],
+    review: [],
   });
 
   it("puts one row per step of the case, in the case's own words", () => {
@@ -75,7 +76,25 @@ describe("renderEvidence", () => {
 
   it("lists what the case expects, so a missing check is visible against it", () => {
     expect(markdown).toContain("The item appears on the list");
-    expect(markdown).toContain("Every step's outcome is decided by the generated test.");
+  });
+
+  // The summary read "every step is decided" while the table above it showed
+  // **nothing** for step-01. It is derived from the same rows now, so the two
+  // cannot disagree.
+  it("summarises the table it just wrote, not a review that saw another file", () => {
+    expect(markdown).toContain("step step-01: nothing in the generated test is visibly deciding");
+    expect(markdown).not.toContain("Every step's outcome is decided");
+  });
+
+  it("says every step is decided only when the table shows one for each", () => {
+    const decided = renderEvidence({
+      testCase: { ...TEST_CASE, steps: [TEST_CASE.steps[1]!] },
+      recording: { actions: [] },
+      test: { path: "specs/todo/add_item.spec.ts", source: GENERATED },
+      screenshots: new Map(),
+      review: [],
+    });
+    expect(decided).toContain("Every step's outcome is decided by the generated test.");
   });
 });
 
@@ -89,7 +108,13 @@ describe("sourceNeedles", () => {
         { action: "fill", locator: { by: "label", value: "Title" }, value: "Buy milk" },
         { action: "assert", assert: "text_visible", value: "Buy milk" },
       ]),
-    ).toEqual(["submit-button", "Save", "Search…", "Title", "Buy milk"]);
+    ).toEqual([
+      { value: "submit-button", kind: "testid" },
+      { value: "Save", kind: "text" },
+      { value: "Search…", kind: "text" },
+      { value: "Title", kind: "text" },
+      { value: "Buy milk", kind: "text" },
+    ]);
   });
 
   it("skips a value with a ${...} interpolation — it has no literal counterpart in the source", () => {
@@ -106,13 +131,13 @@ describe("sourceNeedles", () => {
         { action: "click", locator: { by: "testid", value: "submit-button" } },
         { action: "click", locator: { by: "testid", value: "submit-button" } },
       ]),
-    ).toEqual(["submit-button"]);
+    ).toEqual([{ value: "submit-button", kind: "testid" }]);
   });
 });
 
 describe("renderEvidence's source-anchor column", () => {
   const anchors: SourceAnchors = {
-    found: new Map([["Title", { needle: "Title", at: "src/components/Form.tsx:12" }]]),
+    found: new Map([["Title", { needle: "Title", places: ["src/components/Form.tsx:12"] }]]),
     unsearched: new Set<string>(),
   };
   const base: EvidenceInput = {
@@ -173,5 +198,30 @@ describe("renderEvidence's source-anchor column", () => {
     const row2 = markdown.split("\n").find((l) => l.startsWith("| step-02 |"))!;
     expect(row2).toContain("`Title` — not searched");
     expect(row2).not.toContain("not found");
+  });
+});
+
+describe("renderEvidence's source-anchor column, when a needle has more than one home", () => {
+  // Naming one of several equal candidates reads as "this is where it comes
+  // from" — a claim the scan cannot make, and the reason the column exists.
+  it("says the answer is ambiguous and shows two of them", () => {
+    const markdown = renderEvidence({
+      testCase: TEST_CASE,
+      recording: {
+        actions: [
+          { action: "fill", locator: { by: "label", value: "Title" }, value: "x", stepId: "step-02" },
+        ],
+      },
+      test: { path: "specs/todo/add_item.spec.ts", source: GENERATED },
+      screenshots: new Map<string, string[]>(),
+      anchors: {
+        found: new Map([
+          ["Title", { needle: "Title", places: ["src/A.tsx:1", "src/B.tsx:4"] }],
+        ]),
+        unsearched: new Set<string>(),
+      },
+    });
+    const row = markdown.split("\n").find((l) => l.startsWith("| step-02 |"))!;
+    expect(row).toContain("`Title` — ambiguous: src/A.tsx:1, src/B.tsx:4");
   });
 });
