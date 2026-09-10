@@ -24,7 +24,7 @@ describe("loadProjectConfig", () => {
       targets: {},
       serialGroups: {},
       envFiles: [],
-      record: {},
+      sourceRoots: [],
     });
   });
 
@@ -36,7 +36,7 @@ describe("loadProjectConfig", () => {
       targets: {},
       serialGroups: {},
       envFiles: [],
-      record: {},
+      sourceRoots: [],
     });
   });
 

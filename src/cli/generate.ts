@@ -7,6 +7,7 @@ import { relative, resolve } from "node:path";
 import {
   ensureCcqaDir,
   fileSha256,
+  matchesGenerationStamp,
   getRecording,
   splitCaseId,
   stampGeneratedTest,
@@ -331,9 +332,7 @@ async function handEditRefusal(input: {
   force: boolean;
 }): Promise<string | null> {
   if (input.stamp === null || input.force) return null;
-  const current = await fileSha256(input.testPathAbs);
-  // Nothing on disk: the generation has nothing to overwrite.
-  if (current === null || current === input.stamp.testSha256) return null;
+  if (await matchesGenerationStamp(input.stamp, input.testPathAbs)) return null;
   return (
     `${input.testPath} is not the file ccqa generated on ${input.stamp.at} — it was edited by hand. ` +
     `Regenerating would discard that edit, so fix it where it came from: re-record with ` +

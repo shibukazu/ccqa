@@ -35,6 +35,12 @@ export const SpecSelectionSchema = z.object({
   reason: z.string(),
   /** Changed paths tied to this spec. Set only for `needed`. */
   touchedBy: z.array(z.string()).optional(),
+  /**
+   * Project-root-relative generated test path (see `SpecDescription.testPath`).
+   * `.default("")` both covers a target that couldn't be resolved and keeps
+   * report.json written before this field existed valid.
+   */
+  testPath: z.string().default(""),
 });
 export type SpecSelection = z.infer<typeof SpecSelectionSchema>;
 
@@ -45,6 +51,13 @@ export const SelectReportSchema = z.object({
   changedFiles: z.number().int().nonnegative(),
   /** Every spec in the tree, always — a spec absent from the diff is `notNeeded`, not omitted. */
   specs: z.array(SpecSelectionSchema),
+  /**
+   * Product-changed files (original repo-relative path) no measured coverage
+   * edge reached. Empty whenever "uncovered" can't be told apart from "not
+   * comparable" — a degraded read, or the file re-rooted out of the coverage
+   * root — so this never reports a false positive.
+   */
+  uncoveredFiles: z.array(z.string()).default([]),
 });
 export type SelectReport = z.infer<typeof SelectReportSchema>;
 

@@ -15,6 +15,8 @@ function spec(featureName: string, specName: string, includedBlocks: string[] = 
     title: "Sample flow",
     steps: ["open the page", "do a thing"],
     includedBlocks,
+    testPath: `${featureName}/${specName}/test.spec.ts`,
+    sourcePath: `.ccqa/features/${featureName}/test-cases/${specName}/spec.yaml`,
   };
 }
 
@@ -70,6 +72,21 @@ describe("selectSpecs: mechanical partitioning", () => {
     expect(purchase.touchedBy).toEqual([".ccqa/blocks/login/spec.yaml"]);
     const coupon = report.specs.find((s) => s.specName === "apply-coupon")!;
     expect(coupon.verdict).toBe("notNeeded");
+  });
+
+  it("marks a markdown case needed when its own document changed, keeping the document out of uncoveredFiles", async () => {
+    const specs = [{ ...spec("todo", "add-item"), sourcePath: "docs/testcase/todo/add-item.md" }];
+    const changed = [file("docs/testcase/todo/add-item.md"), file("src/unrelated.ts")];
+
+    const report = await selectSpecs({ changed, specs, cwd: "/repo", base: "main", head: "HEAD", edges: NO_EDGES });
+
+    const item = report.specs[0]!;
+    expect(item.verdict).toBe("needed");
+    expect(item.source).toBe("mechanical");
+    expect(item.touchedBy).toEqual(["docs/testcase/todo/add-item.md"]);
+    // The document isn't product code — reporting it as "uncovered" would say
+    // a test case's own definition is a file nothing tests.
+    expect(report.uncoveredFiles).toEqual(["src/unrelated.ts"]);
   });
 
   it("treats an outsideCwd change as a product change even if it looks like a spec path", async () => {
@@ -131,20 +148,62 @@ describe("selectSpecs: coverage judging", () => {
     expect(purchase.reason).toContain("never measured");
   });
 
-  it("clears specs quietly when every change falls outside the measured root", async () => {
-    // The measured root is the declared boundary of what measurement governs:
-    // a diff living entirely beyond it clears measured specs like any other
-    // unreached change, and the drop is a log line, not a verdict. A root
-    // configured too narrow produces this same shape — which is why the log
-    // line exists.
+  it("degrades a measured spec to unknown, not notNeeded, when every change falls outside the measured root — nothing was actually compared", async () => {
+    // A total drop means the intersection ran against an empty set, so a
+    // measured spec would otherwise clear vacuously. That is not the same
+    // claim as "measured and unreached" — it is "never compared" — so it
+    // degrades the same way a degraded hub read does. (A spec with no
+    // measurement at all is unaffected: see the next test.)
     const outsideOnly = [file("packages/lib/src/b.ts", { outsideCwd: true })];
-    const edges = edgesOf({ "checkout/purchase-with-card": ["src/features/checkout/page.ts"] });
+    const edges = edgesOf({
+      "checkout/purchase-with-card": ["src/features/checkout/page.ts"],
+      "checkout/apply-coupon": ["src/features/coupon/page.ts"],
+    });
 
     const report = await selectSpecs({ changed: outsideOnly, specs, cwd: "/repo", base: "main", head: "HEAD", edges });
 
-    const purchase = report.specs.find((s) => s.specName === "purchase-with-card")!;
-    expect(purchase.verdict).toBe("notNeeded");
-    expect(purchase.source).toBe("coverage");
+    for (const s of report.specs) {
+      expect(s.verdict).toBe("unknown");
+      expect(s.source).toBe("coverage");
+    }
+    expect(report.uncoveredFiles).toEqual([]);
+  });
+
+  it("leaves a spec with no measurement at all as needed, even under a total drop", async () => {
+    const outsideOnly = [file("packages/lib/src/b.ts", { outsideCwd: true })];
+
+    const report = await selectSpecs({ changed: outsideOnly, specs, cwd: "/repo", base: "main", head: "HEAD", edges: NO_EDGES });
+
+    for (const s of report.specs) {
+      expect(s.verdict).toBe("needed");
+      expect(s.reason).toContain("never measured");
+    }
+  });
+
+  it("degrades to unknown when --repo re-roots every change outside coverage.projectRoot (a sibling checkout)", async () => {
+    // `roots.cwd` comes from `--repo`, `coverageRoot` from the .ccqa cwd — a
+    // `--repo` naming a disjoint checkout re-roots every path outside the
+    // coverage root, which must read as "could not compare", not "clean".
+    const disjointChanged = [file("src/a.ts")];
+    const edges = edgesOf({
+      "checkout/purchase-with-card": ["src/features/checkout/page.ts"],
+      "checkout/apply-coupon": ["src/features/coupon/page.ts"],
+    });
+
+    const report = await selectSpecs({
+      changed: disjointChanged,
+      specs,
+      cwd: "/repo/apps/web",
+      repo: "/other/checkout",
+      base: "main",
+      head: "HEAD",
+      edges,
+    });
+
+    for (const s of report.specs) {
+      expect(s.verdict).toBe("unknown");
+    }
+    expect(report.uncoveredFiles).toEqual([]);
   });
 
   it("marks a spec needed off a renamed file's old path, which selection keeps as delete + add", async () => {
@@ -231,6 +290,49 @@ describe("selectSpecs: coverage judging", () => {
 
     expect(report.specs.map((s) => s.specName)).toEqual(["refund", "purchase-with-card", "apply-coupon"]);
     expect(report.specs.map((s) => s.verdict)).toEqual(["needed", "notNeeded", "needed"]);
+  });
+});
+
+describe("selectSpecs: uncoveredFiles", () => {
+  const specs = [spec("checkout", "purchase-with-card")];
+
+  it("names a product change no spec's measured reach touched, by its original path", async () => {
+    const changed = [file("src/features/checkout/page.ts"), file("src/features/orphan.ts")];
+    const edges = edgesOf({ "checkout/purchase-with-card": ["src/features/checkout/page.ts"] });
+
+    const report = await selectSpecs({ changed, specs, cwd: "/repo", base: "main", head: "HEAD", edges });
+
+    expect(report.uncoveredFiles).toEqual(["src/features/orphan.ts"]);
+  });
+
+  it("is empty when the readout is degraded — absence proves nothing there", async () => {
+    const changed = [file("src/features/orphan.ts")];
+
+    const report = await selectSpecs({
+      changed,
+      specs,
+      cwd: "/repo",
+      base: "main",
+      head: "HEAD",
+      edges: { edges: new Map(), degraded: true },
+    });
+
+    expect(report.uncoveredFiles).toEqual([]);
+  });
+
+  it("excludes a change re-rooted out of the coverage root — not comparable, not uncovered", async () => {
+    const outside = file("packages/lib/src/b.ts", { outsideCwd: true });
+
+    const report = await selectSpecs({
+      changed: [outside],
+      specs,
+      cwd: "/repo",
+      base: "main",
+      head: "HEAD",
+      edges: NO_EDGES,
+    });
+
+    expect(report.uncoveredFiles).toEqual([]);
   });
 });
 

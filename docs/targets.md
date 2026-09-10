@@ -93,6 +93,15 @@ targets:
     runCommand: "runn run --verbose --capture {artifactsDir} {files}"
 ```
 
+Three keys sit at the root rather than under a target, because each is a fact
+about the project rather than about how one target compiles a test:
+
+| Key | What it is |
+|---|---|
+| `envFiles` | dotenv files the project already keeps its test variables in, loaded before a recording resolves `${VAR}` — so those values are not duplicated into a ccqa profile. A named file that is not there is an error. |
+| `sessionState` | a saved Playwright `storageState` JSON, restored before the browser is driven, so a case whose precondition is "signed in" records and replays no sign-in. Both `ccqa record` and a live run start from it. |
+| `sourceRoots` | where the product's own source lives, for `ccqa audit` and the `ccqa evidence` table. See [Drift detection](./running.md#sourceroots--where-the-product-actually-lives). |
+
 ### `kind: external` — a target with no code of its own
 
 The targets above ship with ccqa. A project may also define a target
@@ -282,6 +291,7 @@ is optional; an omitted one falls back to its English default:
 | `cleanup` | `Cleanup` | a numbered list run after the case, any outcome |
 | `priority` | `Priority` | free text, kept as written |
 | `link` | `Link` | a bullet list, `URL: ...` / `No: ...` items |
+| `mode` | *(none)* | `live` runs the case through the browser agent; anything else records and generates |
 | `outputPath` | *(none)* | heading ccqa writes the generated test's path into |
 
 A case is one file. Level-2 (`##`) headings divide it into sections; a
@@ -345,6 +355,40 @@ has id `todo/mark-complete`. That id is what `{case}` expands to in
 `testPath` (above), and the case's working files live under
 `.ccqa/cases/<id>/`.
 
+`mode` has no default either, and for the same reason: without a heading
+named, no case in the project is claiming to declare one. Where it is set and
+a case's section reads `live`, `ccqa run` executes that case through the
+browser agent — the case's steps and its expectations, judged as it goes,
+with its `cleanup` steps run afterwards — instead of expecting a compiled
+test. Every other case is recorded and generated, and its test is run by your
+own test runner (see [`ccqa select-specs --format
+paths`](./running.md#asking-the-question-on-its-own)).
+
+### `ccqa evidence` — the table a reviewer reads instead of the test
+
+`ccqa evidence <case>` writes a markdown table pairing what the case says
+with what was recorded, what the generated test actually decides, and the
+screenshots from the last run — so the case's author and its reviewer can
+check the two against each other without reading the test file.
+
+```sh
+ccqa evidence todo/mark-complete                  # writes .ccqa/cases/todo/mark-complete/evidence.md
+ccqa evidence todo/mark-complete -o review.md     # somewhere else
+ccqa evidence todo/mark-complete --report-dir ci-report
+```
+
+The column that earns the table is **What the test decides**: a step that is
+performed but whose outcome nothing checks reads `**nothing**`, which is the
+thing a reviewer cannot see by skimming a spec file.
+
+With [`sourceRoots`](./running.md#sourceroots--where-the-product-actually-lives)
+configured, a **Where the source says so** column is added: each test id,
+accessible name, placeholder, label and asserted text the recording used,
+resolved to the `file:line` in the product's own source that renders it, or
+`not found`. It is a plain exact-match search — no model, bounded in files
+read — so it answers "is this locator addressing the thing the case means?"
+without anyone having to go and look.
+
 ### Regenerating from a saved route
 
 `ccqa generate` recompiles `ir.json` without a browser or a trace, which is how
@@ -368,9 +412,12 @@ compares the test on disk against that stamp:
 | different from it | refuses — the edit is work; re-record, or repair it in your repo (`--overwrite` regenerates anyway) |
 | unstamped (never generated, or recorded by an older ccqa) | asks y/N; a non-TTY declines |
 
-Only `ccqa generate` reads that stamp. `ccqa run` and the audit never do — the
-generated test is yours, and neither of them should answer differently because
-of who last wrote it.
+Only `ccqa generate` reads that stamp to decide anything. `ccqa run` and the
+audit's verdict never do — the generated test is yours, and neither should
+answer differently because of who last wrote it. The one other reader is
+[`ccqa audit --brief`](./running.md#--brief--findings-for-whatever-repairs-the-test),
+which needs it to tell a fix job whether regenerating would discard someone's
+work; that is routing, beside the verdict, not part of it.
 
 ### The recorded route, and what a re-record changed
 
@@ -490,6 +537,10 @@ This is orthogonal to `--trace`: keep `trace` in your `playwright.config.ts`
 for the full time-travel trace, which rides along as a run **artifact**. ccqa
 handles the step screenshots; Playwright still owns the trace. Targets with no
 browser (`runn`) capture no screenshots and say so in the report.
+
+A spec with a `judgeByLlm` claim also runs standalone under your own
+`runCommand` (plain `playwright test`) — see its runtime contract in
+[spec.md](./spec.md#running-a-judged-test-outside-ccqa-run).
 
 ## Per-target guidance prompts
 

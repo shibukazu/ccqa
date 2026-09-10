@@ -63,6 +63,14 @@ export const RunSchema = z.object({
       specs: z.number(),
       testDrift: z.number(),
       specChange: z.number(),
+      /**
+       * ADR-0030: the audit may now name the product or the environment
+       * instead of the test case. Defaulted to 0, not required, so a run
+       * document stored before that widening — which never wrote these two
+       * keys — still parses.
+       */
+      productBug: z.number().default(0),
+      environment: z.number().default(0),
       unknown: z.number(),
     })
     .nullable()
@@ -81,6 +89,9 @@ export const RunSchema = z.object({
       specs: z.number(),
       testDrift: z.number(),
       specChange: z.number(),
+      /** Same as `drift.productBug`/`.environment` above, defaulted for the same reason. */
+      productBug: z.number().default(0),
+      environment: z.number().default(0),
       unknown: z.number(),
       /** Rows a human cleared: the audit reported drift, there was none. */
       noDrift: z.number(),
@@ -780,8 +791,13 @@ export const SpecRerunSchema = z.object({
   verdict: SpecVerdictSchema,
   audit: AuditStateSchema,
   execution: ExecutionStateSchema,
-  /** Set only when `audit === "drifted"`. `UNKNOWN` belongs to `undecided`, so it cannot appear here. */
-  driftLabel: DriftLabelSchema.exclude(["UNKNOWN"]).optional(),
+  /**
+   * Set only when `audit === "drifted"`, which is the two labels that say the
+   * test case itself is stale. `UNKNOWN` belongs to `undecided`, and a finding
+   * about the product or the environment clears the case (see `auditState`),
+   * so neither can appear here.
+   */
+  driftLabel: DriftLabelSchema.extract(["TEST_DRIFT", "SPEC_CHANGE"]).optional(),
   /**
    * Set when `audit === "due"` only because the log could not place the audit.
    * Absent when it is due for the ordinary reasons — never audited, or a

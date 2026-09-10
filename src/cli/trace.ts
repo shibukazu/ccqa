@@ -102,7 +102,7 @@ export interface RunTraceOptions {
    * when learning is enabled.
    */
   validateFailedTrace?: boolean;
-  /** Saved browser session to restore first (config `record.sessionState`). */
+  /** Saved browser session to restore first (config `sessionState`). */
   sessionState?: string;
   /** Documents telling the recorder how this project is driven. */
   conventions?: string[];

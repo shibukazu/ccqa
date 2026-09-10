@@ -2,7 +2,6 @@ import { cp, mkdir } from "node:fs/promises";
 import { basename, join, posix as posixPath, resolve } from "node:path";
 import * as log from "../cli/logger.ts";
 import { specEvidenceDir, toPosix } from "./evidence.ts";
-import { tryParseTestSpec } from "../spec/parser.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import type { LiveRunResult } from "../runtime/live-executor.ts";
 import type { LiveReportRun, LiveReportStep, ReportSpecResult } from "./schema.ts";
@@ -28,11 +27,13 @@ import type { LiveReportRun, LiveReportStep, ReportSpecResult } from "./schema.t
 export async function liveRunToReportResult(args: {
   featureName: string;
   specName: string;
-  specYaml: string;
+  title: string;
+  /** The case's document verbatim; the row carries it under `specYaml`. */
+  document: string;
   result: LiveRunResult;
   reportDir: string;
 }): Promise<ReportSpecResult> {
-  const { featureName, specName, specYaml, result, reportDir } = args;
+  const { featureName, specName, title, document, result, reportDir } = args;
   // One evidence dir per spec: create it once up front rather than letting
   // every step's copy call `mkdir(..., { recursive: true })` redundantly.
   const evidenceDir = specEvidenceDir(reportDir, featureName, specName);
@@ -69,7 +70,7 @@ export async function liveRunToReportResult(args: {
   return {
     feature: featureName,
     spec: specName,
-    title: tryParseTestSpec(specYaml)?.title ?? null,
+    title,
     target: AGENT_BROWSER_TARGET,
     status: result.status,
     testCounts: null,
@@ -81,7 +82,7 @@ export async function liveRunToReportResult(args: {
     analysisSkipped: null,
     failureLogExcerpt: null,
     diffExcerpt: null,
-    specYaml,
+    specYaml: document,
     evidence: null,
     liveRun,
   };

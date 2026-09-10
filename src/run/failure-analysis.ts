@@ -9,7 +9,7 @@ import { AGENT_BROWSER_TARGET, type BlockSpec, type TestSpec } from "../spec/yam
 import type { AvailableBlock, SpecRef } from "../store/index.ts";
 import { specArtifactsDir } from "../targets/run-artifacts.ts";
 import {
-  collectSpecArtifacts,
+  collectSpecGenerated,
   loadSpecArtifactsContext,
   type SpecArtifactsContext,
 } from "../drift/artifacts.ts";
@@ -338,14 +338,14 @@ async function readGeneratedTestSources(
   context: SpecArtifactsContext,
 ): Promise<string> {
   if (specYaml === null) return "";
-  const { generated, unaudited } = await collectSpecArtifacts(
+  const { generated, unaudited } = await collectSpecGenerated(
     ref.featureName,
     ref.specName,
     specYaml,
     cwd,
     context,
   );
-  const parts = generated.map((f) => `// ${f.path}\n${f.content}`);
+  const parts = generated.map((f: { path: string; content: string }) => `// ${f.path}\n${f.content}`);
   if (unaudited.length > 0) {
     parts.push(`// [not shown: ${unaudited.join(", ")} — Read them for their full state]`);
   }

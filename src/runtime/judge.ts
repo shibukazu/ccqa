@@ -1,4 +1,5 @@
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
+import { driftAuthAvailable } from "../drift/auth.ts";
 import { extractJsonCandidates, truncate } from "../diagnose/diagnose.ts";
 
 /** One decided claim. */
@@ -34,16 +35,64 @@ export interface TextSource {
 }
 
 /**
+ * The one method this needs from Playwright's `TestInfo` — structural, so
+ * ccqa keeps no Playwright dependency.
+ */
+export interface TestInfoLike {
+  attach(name: string, options: { body: string; contentType: string }): Promise<void>;
+}
+
+export interface JudgeOptions {
+  /** CSS selector whose text is read as the evidence. Default "body". */
+  from?: string;
+  /** Playwright's per-test handle; when given, the verdict is attached to the test's report. */
+  testInfo?: TestInfoLike;
+  /** Model for this judgement. Falls back to CCQA_JUDGE_MODEL, then CCQA_MODEL. */
+  model?: string;
+}
+
+/** Name the verdict is attached under, so a report can find it by name. */
+const ATTACHMENT_NAME = "ccqa-judge";
+
+/**
  * Fails the test unless a model agrees the claim holds for the text read from
  * `from` (a selector; omitted, the page's body). The reason the model gave
  * rides in the failure, so a red test says what was wrong.
  *
  * A selector matching several elements judges the first, as Playwright's
  * page-level `innerText` does — narrow it if that is not what you mean.
+ *
+ * A string third argument is shorthand for `{ from: <string> }` — the form
+ * generated tests already carry. Pass `testInfo` (Playwright's per-test
+ * handle) to attach the verdict to the test's report, pass or fail.
  */
-export async function judgeByLlm(page: TextSource, claim: string, from = "body"): Promise<void> {
+export async function judgeByLlm(
+  page: TextSource,
+  claim: string,
+  options?: string | JudgeOptions,
+): Promise<void> {
+  const opts: JudgeOptions = typeof options === "string" ? { from: options } : (options ?? {});
+  const from = opts.from ?? "body";
+  const model = opts.model ?? process.env["CCQA_JUDGE_MODEL"];
+
   const text = await page.innerText(from);
-  const verdict = await decideClaim({ claim, text });
+  const verdict = await decideClaim({ claim, text, ...(model ? { model } : {}) });
+
+  if (opts.testInfo) {
+    const body = JSON.stringify({ claim, from, ok: verdict.ok, reason: verdict.reason }, null, 2);
+    const attachment = { body, contentType: "application/json" };
+    // attach() can throw after the test has already finished (a timeout, a fixture
+    // teardown) — that bookkeeping failure must never flip a passing claim to a
+    // failing test, so it's reported to stderr rather than left to propagate. A
+    // failing claim still throws its own error below regardless.
+    try {
+      await opts.testInfo.attach(ATTACHMENT_NAME, attachment);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      process.stderr.write(`judgeByLlm: could not attach "${ATTACHMENT_NAME}" (${reason})\n`);
+    }
+  }
+
   if (!verdict.ok) {
     throw new Error(
       `judgeByLlm: the claim did not hold (${verdict.reason || "no reason given"})\n  claim: ${claim}\n  read from: ${from}`,
@@ -67,6 +116,22 @@ export interface ClaimInput {
  * claim never goes silently unjudged.
  */
 export async function decideClaim(input: ClaimInput): Promise<Verdict> {
+  // Checked up front because the SDK's own failure here is opaque: a
+  // generated test run via plain `playwright test` (no ccqa around it) most
+  // often fails a judgement for want of credentials, not a real model error.
+  const auth = driftAuthAvailable();
+  if (!auth.ok) {
+    // Leads with the two an external CI is most likely to set; Bedrock/Vertex and a
+    // local login also satisfy driftAuthAvailable() but would make a leading list of
+    // six unreadable, so they're named collectively instead.
+    throw new Error(
+      "judgeByLlm needs Claude credentials: set ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN (a " +
+        "Claude subscription token) in the environment that runs the test — a Bedrock or Vertex " +
+        "environment, or a local `claude login`, also count. Optionally set CCQA_JUDGE_MODEL to " +
+        "pick the model for judgements (otherwise CCQA_MODEL, then the Claude Code default).",
+    );
+  }
+
   // Marked rather than silently cut: a claim about how the text ends is
   // undecidable once the end is gone, and the model can only say so if it
   // knows something was dropped.

@@ -6,7 +6,9 @@ import { RunUsageError } from "../run/errors.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import { getRecording, readSpecReview } from "../store/index.ts";
 import { resolveCase } from "./resolve-case.ts";
-import { renderEvidence } from "../evidence/table.ts";
+import { renderEvidence, sourceNeedles } from "../evidence/table.ts";
+import { findSourceAnchors, type SourceAnchors } from "../evidence/source-anchors.ts";
+import { resolveSourceRoots } from "../config/source-roots.ts";
 import { loadEvidenceForSpec, specEvidenceDir } from "../report/evidence.ts";
 import { DEFAULT_REPORT_DIR } from "../run/report-constants.ts";
 import { addLanguageOption } from "./options.ts";
@@ -107,6 +109,17 @@ export const evidenceCommand = addLanguageOption(
           ? (review.warnings as string[])
           : undefined;
 
+      // Absent (not empty) `anchors` is what keeps the table's shape for a
+      // project with no `sourceRoots` unchanged — see EvidenceInput.
+      let anchors: SourceAnchors | undefined;
+      if (config.sourceRoots.length > 0) {
+        const roots = await resolveSourceRoots(cwd, config.sourceRoots).catch((e: unknown) => {
+          throw new RunUsageError(e instanceof Error ? e.message : String(e));
+        });
+        const needles = sourceNeedles([...recording.actions, ...(recording.cleanup ?? [])]);
+        anchors = await findSourceAnchors(needles, roots);
+      }
+
       const out = resolve(cwd, opts.out ?? join(testCase.ref.dir, "evidence.md"));
       const markdown = renderEvidence({
         testCase,
@@ -114,6 +127,7 @@ export const evidenceCommand = addLanguageOption(
         test: { path: testPath, source },
         screenshots: await stepScreenshots(cwd, opts.reportDir, testCase.ref.id, dirname(out)),
         ...(unchecked ? { unchecked } : {}),
+        ...(anchors ? { anchors } : {}),
       });
       await writeFile(out, markdown, "utf8");
       // Only the path on stdout: this is a file another tool picks up.

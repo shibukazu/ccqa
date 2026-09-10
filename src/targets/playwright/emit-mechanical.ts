@@ -229,6 +229,10 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     ...lines,
   ];
   const scoped = runId !== undefined || cleanupLines.length > 0;
+  // A judge call needs Playwright's `testInfo` to attach its verdict to the
+  // report; a case with no judgement keeps the plain signature so no unused
+  // parameter lands in the generated file.
+  const testParams = judgements.length > 0 ? "{ page }, testInfo" : "{ page }";
 
   const declaration = scoped
     ? [
@@ -237,7 +241,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
         // and a value the project regenerates per attempt must not be shared
         // between attempts.
         ...(runId ? [`  let ${RUN_ID_VAR}: string | undefined;`, ""] : []),
-        `  test(${j(title)}, async ({ page }) => {`,
+        `  test(${j(title)}, async (${testParams}) => {`,
         indent(testLines, 4),
         "  });",
         ...(cleanupLines.length > 0
@@ -257,7 +261,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
           : []),
         "});",
       ]
-    : [`test(${j(title)}, async ({ page }) => {`, indent(testLines, 2), "});"];
+    : [`test(${j(title)}, async (${testParams}) => {`, indent(testLines, 2), "});"];
 
   const source = [
     ...(input.header ? [input.header.trimEnd(), ""] : []),
@@ -596,11 +600,17 @@ const j = (s: string): string => JSON.stringify(s);
  */
 const jExpr = (s: string): string => envRefsToJsExpression(s);
 
-/** One claim, asserted through the judge. Exported so the generation gate can require it back. */
+/**
+ * One claim, asserted through the judge. Exported so the generation gate can
+ * require it back. `testInfo` is always passed — the case's `test(...)`
+ * callback is emitted with that second parameter whenever it has a judgement
+ * — so the verdict lands on the report whether the claim held or not.
+ */
 export function judgeCall(step: ExpandedJudgeByLlmStep): InjectedCall {
   // A claim is prose, so only the braced form is a reference here — a bare
   // `$WORD` is a word, and expanding it would quietly rewrite the claim.
   const args = [bracedRefsToJsExpression(step.judgeByLlm.trim())];
-  if (step.from !== undefined) args.push(jExpr(step.from));
+  const optionsFields = step.from !== undefined ? [`from: ${jExpr(step.from)}`, "testInfo"] : ["testInfo"];
+  args.push(`{ ${optionsFields.join(", ")} }`);
   return injectedCall(JUDGE_CALL, args);
 }

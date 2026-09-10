@@ -290,6 +290,21 @@ agent-browser target decides each step through its own `expected`, and runn
 has no page to read; a claim reaching either is refused by name rather than
 dropped.
 
+### Running a judged test outside `ccqa run`
+
+The generated `judgeByLlm` call reads its own Claude credentials, so the
+test also runs under a plain `playwright test` — no ccqa process around it.
+Set `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription
+token) in the environment that runs the test — a Bedrock or Vertex
+environment, or a local `claude login`, also count. Missing credentials
+fail with an error naming these instead of an opaque SDK error.
+`CCQA_JUDGE_MODEL` picks the model for judgements, falling back to
+`CCQA_MODEL`, then the Claude Code default.
+
+The generator passes Playwright's `testInfo` to every `judgeByLlm` call, so
+the verdict — the claim, what it read, and whether it held — is attached to
+the test's report as `ccqa-judge`, whether the claim passed or failed.
+
 ## File uploads
 
 `<input type="file">` opens the OS file picker when clicked, and no

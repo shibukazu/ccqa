@@ -128,6 +128,14 @@ export interface RunLiveExecutorInput {
    * attempts so the recorded result reflects the final state. Default 0.
    */
   retries?: number;
+  /**
+   * Index in `steps` where the case's cleanup begins. Those steps run even
+   * after a failure — undoing what the case did is exactly what a run that
+   * broke part-way needs, and it is what `afterEach` gives the compiled path.
+   * An index (not a tag on the step) so a block that happens to be named
+   * "cleanup" cannot claim the rule. Absent: the case has no cleanup.
+   */
+  cleanupFrom?: number;
 }
 
 /**
@@ -198,7 +206,7 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     const step = input.steps[i]!;
     log.info(`step ${i + 1}/${input.steps.length} [${step.id}] ${truncateForLog(step.instruction)}`);
 
-    if (overallFailed) {
+    if (overallFailed && i < (input.cleanupFrom ?? input.steps.length)) {
       stepResults.push(buildSkippedStep(step, "earlier step failed"));
       log.step("STEP_SKIPPED", step.id, "earlier step failed");
       continue;

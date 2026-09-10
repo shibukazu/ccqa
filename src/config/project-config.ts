@@ -76,6 +76,13 @@ export const IntentFieldsSchema = z
     priority: z.string().min(1).default("Priority"),
     link: z.string().min(1).default("Link"),
     /**
+     * The heading that says how a case is executed: a body of `live` runs it
+     * through the browser agent, anything else records and generates a test.
+     * No default, for the same reason `outputPath` has none — a project that
+     * did not name this heading has no cases that mean to declare a mode.
+     */
+    mode: z.string().min(1).optional(),
+    /**
      * The heading ccqa writes the generated test's path into. No default on
      * purpose: this is the one section of the project's own file ccqa edits,
      * and it does that only where the project pointed at a heading and said
@@ -337,18 +344,22 @@ export const ProjectConfigSchema = z
      * whatever the browser happened to show into the route.
      */
     envFiles: z.array(z.string().min(1)).default([]),
-    /** Settings for `ccqa record` that are not a target's business. */
-    record: z
-      .object({
-        /**
-         * A saved browser session (Playwright `storageState` JSON) restored
-         * before a recording starts, so a case whose precondition is "signed
-         * in" does not have to record the sign-in.
-         */
-        sessionState: z.string().min(1).optional(),
-      })
-      .strict()
-      .prefault({}),
+    /**
+     * Where the product's own source lives, as `ccqa audit` reads it: the
+     * "right answer" a test case is checked against. Paths may be absolute or
+     * relative to the project root, and may point outside it — the application
+     * a test drives is often a sibling checkout, not the repository the tests
+     * live in. A named root that is not there is an error: auditing against a
+     * directory that silently is not read clears cases nothing looked at.
+     */
+    sourceRoots: z.array(z.string().min(1)).default([]),
+    /**
+     * A saved browser session (Playwright `storageState` JSON) restored before
+     * the browser is driven, so a case whose precondition is "signed in" does
+     * not have to record or replay the sign-in. A fact about the project, not
+     * about one command: both a recording and a live run start from it.
+     */
+    sessionState: z.string().min(1).optional(),
   })
   .strict()
   .superRefine((config, ctx) => {

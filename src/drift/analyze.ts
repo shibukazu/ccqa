@@ -8,14 +8,15 @@ import {
 } from "../prompts/drift.ts";
 import { languageDirective } from "../prompts/language.ts";
 import { normalizeDiagnosis } from "../report/schema.ts";
-import { tryReadSpecFile, type AvailableBlock } from "../store/index.ts";
+import type { AvailableBlock } from "../store/index.ts";
+import type { SourceRoot } from "../config/source-roots.ts";
 import {
-  collectSpecArtifacts,
+  collectCaseArtifacts,
   loadSpecArtifactsContext,
   type SpecArtifactsContext,
 } from "./artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
-import { DriftReplySchema, type SpecResult, type SpecTarget } from "./types.ts";
+import { caseIdOf, DriftReplySchema, type SpecResult, type SpecTarget } from "./types.ts";
 import * as log from "../cli/logger.ts";
 
 export interface AnalyzeDriftInput {
@@ -28,6 +29,14 @@ export interface AnalyzeDriftInput {
   language?: string;
   /** Project guidance from the hub (`audit.user` + `audit.agent`), resolved once. */
   guidance?: DriftGuidance;
+  /**
+   * Where the product's own source lives (`sourceRoots`), already resolved.
+   * These widen what the model's Read/Grep may reach, which is what lets an
+   * audit check a test against an application that lives outside this project.
+   */
+  sourceRoots?: readonly SourceRoot[];
+  /** The sweep's config and import aliases, when the caller already read them. */
+  context?: SpecArtifactsContext;
   /** Called once per spec when its check starts. Used by `cli/audit` for progress logging. */
   onSpecStart?: (target: SpecTarget) => void;
   /**
@@ -48,15 +57,34 @@ const DEFAULT_CONCURRENCY = 3;
  * `cli/run` calls this with just the failing specs after vitest.
  */
 export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult[]> {
-  const { targets, cwd, blocks, concurrency = DEFAULT_CONCURRENCY, model, language, guidance, onSpecStart, onSpecDone } =
-    input;
+  const {
+    targets,
+    cwd,
+    blocks,
+    concurrency = DEFAULT_CONCURRENCY,
+    model,
+    language,
+    guidance,
+    sourceRoots = [],
+    onSpecStart,
+    onSpecDone,
+  } = input;
   // Read once for the sweep: every spec resolves its test through the same
-  // config and the same import aliases, and neither can change mid-sweep.
-  const context = await loadSpecArtifactsContext(cwd);
+  // config and the same import aliases, and neither can change mid-sweep. The
+  // caller may pass its own when it has already built one.
+  const context = input.context ?? (await loadSpecArtifactsContext(cwd));
 
   return runPool(targets, concurrency, async (target) => {
     onSpecStart?.(target);
-    const result = await checkSpec(target, { cwd, context, blocks, model, language, guidance });
+    const result = await checkSpec(target, {
+      cwd,
+      context,
+      blocks,
+      model,
+      language,
+      guidance,
+      sourceRoots,
+    });
     await onSpecDone?.(result);
     return result;
   });
@@ -66,6 +94,8 @@ interface CheckSpecOptions {
   /** Config and import aliases, read once by `analyzeDrift`. */
   context: SpecArtifactsContext;
   cwd: string;
+  /** Where the product's source lives, resolved once by the caller. */
+  sourceRoots: readonly SourceRoot[];
   blocks: AvailableBlock[];
   model?: string;
   language?: string;
@@ -74,32 +104,22 @@ interface CheckSpecOptions {
 }
 
 async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<SpecResult> {
-  const { featureName, specName } = target;
-  const existing = await tryReadSpecFile(featureName, specName, opts.cwd);
-  if (existing === null) {
-    return {
-      target,
-      ok: false,
-      drift: null,
-      error: `spec file disappeared after enumeration: ${featureName}/${specName}`,
-    };
-  }
+  const name = caseIdOf(target);
 
   // Both surfaces of the test case, so the audit sees the code that actually
   // runs and not only the prose that describes it.
-  const artifacts = await collectSpecArtifacts(
-    featureName,
-    specName,
-    existing,
-    opts.cwd,
-    opts.context,
+  const artifacts = await collectCaseArtifacts(target, opts.cwd, opts.context).catch(
+    (e: Error) => e,
   );
+  if (artifacts instanceof Error) {
+    return { target, ok: false, drift: null, error: `${name}: ${artifacts.message}` };
+  }
   if (artifacts.unaudited.length > 0) {
     // Said out loud, not only in the prompt: a verdict of "no drift" over a
     // partially-read test case is worth less than it looks, and only the
     // operator can decide to split the spec or narrow its imports.
     log.warn(
-      `${featureName}/${specName}: over the audit's size budget — not audited: ${artifacts.unaudited.join(", ")}`,
+      `${name}: over the audit's size budget — not audited: ${artifacts.unaudited.join(", ")}`,
     );
   }
 
@@ -111,12 +131,14 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const { result, isError } = await invokeClaudeStreaming(
       {
-        prompt: buildDriftUserPrompt(artifacts),
+        prompt: buildDriftUserPrompt(artifacts, opts.sourceRoots),
         systemPrompt:
-          buildDriftSystemPrompt(opts.blocks, opts.guidance ?? {}) + languageDirective(opts.language),
+          buildDriftSystemPrompt(opts.blocks, opts.guidance ?? {}, artifacts.intent.kind) +
+          languageDirective(opts.language),
         allowedTools: ["Read", "Grep", "Glob"],
         silenceBashLog: true,
         cwd: opts.cwd,
+        additionalDirectories: opts.sourceRoots.map((root) => root.abs),
         ...(opts.model ? { model: opts.model } : {}),
       },
       (_msg: SDKMessage) => {},

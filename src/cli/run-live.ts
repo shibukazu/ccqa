@@ -1,4 +1,3 @@
-import { AGENT_BROWSER_JUDGE_STEPS } from "../targets/agent-browser/judge-steps.ts";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -10,25 +9,16 @@ import type { DiffProvider } from "../run/diff-provider.ts";
 import { ANALYSIS_DISABLED } from "../run/failure-analysis.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import { buildLiveTranscriptExcerpt } from "../report/live-transcript-excerpt.ts";
-import { collectIncludedBlockNames, expandActionSteps } from "../spec/expand.ts";
-import { parseTestSpec } from "../spec/parser.ts";
-import {
-  getSpecDir,
-  loadAllBlocks,
-  loadAvailableBlocks,
-  loadPromptBundleFromHub,
-  readSpecFile,
-  specKey,
-  type AvailableBlock,
-} from "../store/index.ts";
+import { loadAvailableBlocks, loadPromptBundleFromHub, type AvailableBlock } from "../store/index.ts";
+import type { LiveCase, LiveSession } from "./live-case.ts";
 import type { HubContext } from "./hub-conn.ts";
 import { isStorageStateShape } from "./hub.ts";
 import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
-import { buildProseEnvScrubMap } from "../runtime/env-scrub.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import {
   DEFAULT_SESSION_PROFILE,
+  loadStorageState,
   mergeStorageStates,
   removeTempStateDir,
   SESSION_VERIFY_URL_KEY,
@@ -89,7 +79,7 @@ export interface RunLiveOptions {
   report?: IncrementalReport;
   /**
    * Coverage for live specs, both halves: the browser through the engine
-   * attached to agent-browser's own browser (see runOneSpec), the server
+   * attached to agent-browser's own browser (see runOneCase), the server
    * through the cookie that attachment plants. Present only under
    * `--coverage`.
    */
@@ -104,12 +94,12 @@ export type LiveSpecRun = {
 };
 
 /**
- * Run pre-filtered `mode: live` specs through `runLiveExecutor` (Claude +
+ * Run pre-filtered `mode: live` cases through `runLiveExecutor` (Claude +
  * agent-browser) and, when `reportDir` is set, run drift audit + failure
  * analysis to produce report rows. Sibling of `runDeterministicSpecs`.
  */
 /**
- * Brackets one live spec's execution with the measurement.
+ * Brackets one live case's execution with the measurement.
  *
  * The bracket has to hold even when the spec does not run: opening a turn on an
  * identity and never closing it would leave the next spec waiting on a window
@@ -139,15 +129,15 @@ async function measureLive<T>(
 }
 
 export async function runLiveSpecs(
-  specs: readonly SpecRef[],
+  cases: readonly LiveCase[],
   opts: RunLiveOptions,
 ): Promise<LiveSpecRun> {
-  if (specs.length === 0) return { reportResults: [], failedCount: 0 };
+  if (cases.length === 0) return { reportResults: [], failedCount: 0 };
 
   const cwd = opts.cwd ?? process.cwd();
   await preflightAgentBrowserCommand();
 
-  log.meta("live-specs", specs.length);
+  log.meta("live-specs", cases.length);
 
   const userPromptBundle = await loadPromptBundleFromHub(opts.hubContext ?? null, "live");
   if (userPromptBundle !== null) {
@@ -183,20 +173,21 @@ export async function runLiveSpecs(
   // when an incremental writer is present — upserts+flushes report.json so an
   // interrupt keeps the specs that already finished.
   const concurrency = Math.max(1, opts.concurrency ?? 1);
-  const built = await runPool(specs, concurrency, (spec, i) => {
-    const label = `${spec.featureName}/${spec.specName}`;
+  const built = await runPool(cases, concurrency, (liveCase, i) => {
+    const spec = { featureName: liveCase.featureName, specName: liveCase.specName };
+    const label = liveCase.ref.id;
     return log.withBuffer(label, concurrency > 1, async () => {
       // Sequential runs print a live [i/n] header; parallel runs get the
       // labelled block from withBuffer instead, so skip the header there.
-      if (concurrency === 1 && specs.length > 1) {
+      if (concurrency === 1 && cases.length > 1) {
         log.blank();
-        log.info(`[${i + 1}/${specs.length}] ${label}`);
+        log.info(`[${i + 1}/${cases.length}] ${label}`);
       }
       // Derived once and handed to both halves: the engine writes into the
       // directory `measureLive` recreates and then reads back.
       const coverageDir = specCoverageDir(reportDir, spec.featureName, spec.specName);
       const measured = await measureLive(spec, opts, coverageDir, () =>
-        runOneSpec({ ...spec, opts, userPromptSuffix, cwd, coverageDir }),
+        runOneCase({ liveCase, opts, userPromptSuffix, cwd, coverageDir }),
       );
       const { outcome } = measured;
       if (outcome.kind !== "run") return { outcome, row: null };
@@ -238,7 +229,7 @@ export async function runLiveSpecs(
  * upserted incrementally the moment the spec finishes.
  */
 async function buildLiveReportRow(
-  r: Extract<SpecRunOutcome, { kind: "run" }>,
+  r: Extract<CaseRunOutcome, { kind: "run" }>,
   ctx: {
     auth: DriftAuth;
     diffProvider: DiffProvider | null;
@@ -249,9 +240,10 @@ async function buildLiveReportRow(
   cwd: string,
 ): Promise<ReportSpecResult> {
   const base = await liveRunToReportResult({
-    featureName: r.featureName,
-    specName: r.specName,
-    specYaml: r.specYaml,
+    featureName: r.liveCase.featureName,
+    specName: r.liveCase.specName,
+    title: r.liveCase.title,
+    document: r.liveCase.document,
     result: r.result,
     reportDir: ctx.reportDir,
   });
@@ -289,13 +281,11 @@ function analysisFieldsFor(
   return {};
 }
 
-type SpecRunOutcome =
+type CaseRunOutcome =
   | {
       kind: "run";
-      featureName: string;
-      specName: string;
+      liveCase: LiveCase;
       runDir: string;
-      specYaml: string;
       /** Carried to the analysis rather than rebuilt there: rebuilding would
        * re-read blocks from disk, which a mid-run edit could have changed. */
       envScrubMap: Array<[string, string]>;
@@ -310,8 +300,7 @@ type SpecRunOutcome =
     }
   | {
       kind: "error";
-      featureName: string;
-      specName: string;
+      liveCase: LiveCase;
       error: string;
     };
 
@@ -337,11 +326,12 @@ type SessionResolution =
 const verifiedSessions = new Set<string>();
 
 /**
- * Resolve `spec.session` names to a single state file to restore, fetching
- * each named session from the hub (`.ccqa/sessions/*.json` is no longer
- * read here). Every name must load as a valid agent-browser state (the spec
- * assumes it starts signed-in); a missing/malformed session fails with a
- * `ccqa hub session capture` hint instead of running unauthenticated.
+ * Resolve what a case starts signed in as into a single state file to restore:
+ * the hub sessions it names (`.ccqa/sessions/*.json` is no longer read here)
+ * and the project's own saved state, if it has one. Every one must load as a
+ * valid agent-browser state (the case assumes it starts signed-in); a
+ * missing/malformed one fails with a hint instead of running unauthenticated —
+ * a live run that silently starts signed out answers confidently and wrongly.
  *
  * If a session carries an embedded verify URL (bootstrap saved it), the
  * restore is health-checked before the run starts, so an expired/unusable
@@ -351,12 +341,32 @@ const verifiedSessions = new Set<string>();
  * run is done. `verify` is injectable for tests.
  */
 export async function resolveSessionState(
-  names: readonly string[],
+  session: LiveSession,
   hubCtx: HubContext | null,
   profile: string | undefined,
   verify: (statePath: string, url: string) => SessionRestoreCheck = verifySessionRestores,
 ): Promise<SessionResolution> {
-  if (names.length === 0 || hubCtx === null) {
+  const { names, savedStatePath } = session;
+  // The project's own state file needs no hub, so it is read first and the
+  // connection is only required for what the case names. It is merged first
+  // too: a case that named a session meant that one, so it wins on collision.
+  let saved: StorageState | null = null;
+  if (savedStatePath !== undefined) {
+    try {
+      saved = await loadStorageState(savedStatePath);
+    } catch (err) {
+      return {
+        ok: false,
+        error: `could not read the saved browser state at ${savedStatePath}: ${errMessage(err)}`,
+        hint: "`sessionState` in .ccqa/config.yaml names a saved browser state (a storageState JSON); fix the path or capture it again",
+      };
+    }
+  }
+  if (names.length === 0) {
+    const onlySaved = await writeMergedTempState(mergeStorageStates(saved ? [saved] : []));
+    return { ok: true, statePath: onlySaved, cleanup: () => removeTempStateDir(onlySaved) };
+  }
+  if (hubCtx === null) {
     const list = names.join(", ");
     return {
       ok: false,
@@ -425,7 +435,9 @@ export async function resolveSessionState(
     };
   }
 
-  const statePath = await writeMergedTempState(mergeStorageStates(loaded));
+  const statePath = await writeMergedTempState(
+    mergeStorageStates(saved ? [saved, ...loaded] : loaded),
+  );
   return {
     ok: true,
     statePath,
@@ -434,65 +446,53 @@ export async function resolveSessionState(
   };
 }
 
-async function runOneSpec(args: {
-  featureName: string;
-  specName: string;
+async function runOneCase(args: {
+  liveCase: LiveCase;
   opts: RunLiveOptions;
   userPromptSuffix: string | null;
   cwd: string;
   /** Where the acquisition engine writes; the caller reads it back after. */
   coverageDir: string;
-}): Promise<SpecRunOutcome> {
-  const { featureName, specName, opts, userPromptSuffix, cwd, coverageDir } = args;
-  const specDir = getSpecDir(featureName, specName, cwd);
+}): Promise<CaseRunOutcome> {
+  const { liveCase, opts, userPromptSuffix, cwd, coverageDir } = args;
+  const { featureName, specName, steps } = liveCase;
 
-  let specContent: string;
-  try {
-    specContent = await readSpecFile(featureName, specName, cwd);
-  } catch (err) {
-    log.error(`failed to read spec: ${err instanceof Error ? err.message : String(err)}`);
-    return { kind: "error", featureName, specName, error: String(err) };
-  }
-
-  const spec = parseTestSpec(specContent);
-  const blocks = await loadAllBlocks(cwd);
-  const steps = expandActionSteps(spec, { blocks }, `${featureName}/${specName}`, {
-    id: AGENT_BROWSER_TARGET,
-    reason: AGENT_BROWSER_JUDGE_STEPS.reason,
-  });
-
-  log.meta("spec", spec.title);
+  log.meta("spec", liveCase.title);
   log.meta("steps", steps.length);
-  const includes = collectIncludedBlockNames(spec);
-  if (includes.length > 0) log.meta("blocks", includes.join(", "));
+  if (liveCase.blocks.length > 0) log.meta("blocks", liveCase.blocks.join(", "));
 
   // Every run uses a fresh ephemeral session name. Pre-authenticated state
-  // (cookies + localStorage) is brought in separately via `spec.session` and
-  // restored into the session read-only before the run starts (see the live
-  // executor), so re-running the spec — locally or in CI — never mutates the
-  // source-of-truth state files.
+  // (cookies + localStorage) is brought in separately via the case's session
+  // and restored into the session read-only before the run starts (see the
+  // live executor), so re-running the case — locally or in CI — never mutates
+  // the source-of-truth state files.
   const sessionName = generateLiveSessionName();
   log.meta("session", sessionName);
   opts.teardown?.trackSession(sessionName);
 
-  // Restore any sessions named by `spec.session` from the hub (see
-  // resolveSessionState); a missing one stops the run rather than starting
-  // unauthenticated. The resolved state always lives in a temp file, cleaned
-  // up in the `finally` below once the run (pass, fail, or throw) is done.
+  // Restore what the case starts signed in as (see resolveSessionState); a
+  // missing one stops the run rather than starting unauthenticated. The
+  // resolved state always lives in a temp file, cleaned up in the `finally`
+  // below once the run (pass, fail, or throw) is done.
+  const { names, savedStatePath } = liveCase.session;
   let statePath: string | null = null;
   let verifyUrl: string | null = null;
   let cleanupSession: (() => Promise<void>) | null = null;
-  if (spec.session && spec.session.length > 0) {
-    const resolution = await resolveSessionState(spec.session, opts.hubContext ?? null, opts.profile);
+  if (names.length > 0 || savedStatePath !== undefined) {
+    const resolution = await resolveSessionState(
+      liveCase.session,
+      opts.hubContext ?? null,
+      opts.profile,
+    );
     if (!resolution.ok) {
       log.error(resolution.error);
       log.hint(resolution.hint);
-      return { kind: "error", featureName, specName, error: resolution.error };
+      return { kind: "error", liveCase, error: resolution.error };
     }
     statePath = resolution.statePath;
     verifyUrl = resolution.verifyUrl ?? null;
     cleanupSession = resolution.cleanup;
-    log.meta("state", spec.session.join(", "));
+    log.meta("state", [...names, ...(savedStatePath ? [savedStatePath] : [])].join(", "));
   }
 
   // Under --coverage, the shared acquisition engine attaches to this spec's
@@ -524,13 +524,13 @@ async function runOneSpec(args: {
     // the child, so the map must scrub against that value, not whatever the
     // parent env holds. (The environment itself is stable: a profile is
     // applied once per invocation, before any spec runs.)
-    const envScrubMap = buildProseEnvScrubMap(spec.steps, steps, { CCQA_RUN_ID: runId });
-    const runDir = opts.out ?? join(specDir, "runs", runId);
+    const envScrubMap = liveCase.envScrubMap({ CCQA_RUN_ID: runId });
+    const runDir = opts.out ?? join(liveCase.ref.dir, "runs", runId);
     await mkdir(runDir, { recursive: true });
     log.meta("runDir", runDir);
 
     const result = await runLiveExecutor({
-      spec: { title: spec.title },
+      spec: { title: liveCase.title },
       steps,
       runId,
       runDir,
@@ -542,6 +542,7 @@ async function runOneSpec(args: {
       model: opts.model,
       language: opts.language,
       retries: opts.retry,
+      cleanupFrom: liveCase.cleanupFrom,
     });
 
     const runJsonPath = join(runDir, "run.json");
@@ -560,10 +561,8 @@ async function runOneSpec(args: {
 
     return {
       kind: "run",
-      featureName,
-      specName,
+      liveCase,
       runDir,
-      specYaml: specContent,
       envScrubMap,
       result,
       ...(coverageBroken === undefined ? {} : { coverageBroken }),
@@ -601,14 +600,14 @@ type LiveFailureAnalysis = {
  * / no-failed-step degrade to `analysisSkipped` rather than throwing.
  */
 async function analyzeOneLiveFailure(
-  r: Extract<SpecRunOutcome, { kind: "run" }>,
+  r: Extract<CaseRunOutcome, { kind: "run" }>,
   diffProvider: DiffProvider,
   auth: DriftAuth,
   blocks: AvailableBlock[],
   opts: RunLiveOptions,
   cwd: string,
 ): Promise<LiveFailureAnalysis> {
-  const key = `${r.featureName}/${r.specName}`;
+  const key = r.liveCase.ref.id;
   if (!auth.ok) {
     return { analysis: null, analysisSkipped: auth.reason, failureLogExcerpt: null, diffExcerpt: null };
   }
@@ -622,7 +621,10 @@ async function analyzeOneLiveFailure(
       diffExcerpt: null,
     };
   }
-  const specDiffResult = await diffProvider.forSpec({ featureName: r.featureName, specName: r.specName });
+  const specDiffResult = await diffProvider.forSpec({
+    featureName: r.liveCase.featureName,
+    specName: r.liveCase.specName,
+  });
   // No usable baseline for THIS spec (last-green: never green yet, or its
   // commit isn't fetched) — still classify, from the transcript plus
   // current-repository inspection (the prompt's no-baseline mode).
@@ -638,10 +640,10 @@ async function analyzeOneLiveFailure(
   const outcome = await analyzeFailure(
     {
       liveTranscriptExcerpt: excerpt,
-      // A `mode: live` spec has no compiled surface — it IS the test that ran.
+      // A `mode: live` case has no compiled surface — it IS the test that ran.
       hasGeneratedSurface: false,
       blocks,
-      specYaml: r.specYaml,
+      specYaml: r.liveCase.document,
       diffPatch: specDiff?.patch ?? null,
       changedFiles: specDiff?.nameStatus ?? null,
       baseRef: specDiff?.base.ref ?? null,

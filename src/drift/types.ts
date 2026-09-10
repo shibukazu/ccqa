@@ -8,9 +8,10 @@ import {
 } from "../report/schema.ts";
 
 // DriftLabelSchema / DriftSubDiagnosisSchema / DriftDiagnosisSchema live in
-// report/schema.ts (not here): they are narrowings of the failure-cause
-// vocabulary this module already imports from there. Re-exported so existing
-// callers of this module are unaffected.
+// report/schema.ts (not here): they belong to the failure-cause vocabulary
+// this module already imports from there. `DriftLabelSchema` is that whole
+// vocabulary today — what separates an audit's answer from a run's is
+// `driftSeverity` below, not a narrower set of labels.
 export { DriftDiagnosisSchema, DriftLabelSchema, DriftSubDiagnosisSchema };
 export type { DriftDiagnosis, DriftLabel };
 
@@ -20,6 +21,17 @@ export type Threshold = "warn" | "error";
 export interface SpecTarget {
   featureName: string;
   specName: string;
+  /**
+   * Set when the case is stated in the project's own document rather than in
+   * ccqa's `spec.yaml`. `featureName`/`specName` are that id split, so a report
+   * row addresses a markdown case exactly the way it addresses any other.
+   */
+  caseId?: string;
+}
+
+/** How everything downstream spells this case: its intent-source id, or `feature/spec`. */
+export function caseIdOf(target: SpecTarget): string {
+  return target.caseId ?? `${target.featureName}/${target.specName}`;
 }
 
 /** The model's reply: a diagnosis, or `null` for "the spec still matches the code". */
@@ -46,10 +58,12 @@ export interface SpecResult {
 
 /**
  * How a label reads against `--exit-on`. The threshold asks "would a
- * deterministic replay fail today", which is what the label already answers:
- * both findings mean the spec no longer describes the code, while `UNKNOWN`
- * means the audit could not tell and should not fail a build on its own.
+ * deterministic replay fail today". `TEST_DRIFT` and `SPEC_CHANGE` answer yes
+ * and name the repair, so they hold the gate shut. The other three do not: a
+ * suspected product bug or a dependency on data the source does not decide is
+ * settled by running the case, not by refusing to run it, and `UNKNOWN` says
+ * the audit could not tell.
  */
 export function driftSeverity(label: DriftLabel): "error" | "warn" {
-  return label === "UNKNOWN" ? "warn" : "error";
+  return label === "TEST_DRIFT" || label === "SPEC_CHANGE" ? "error" : "warn";
 }

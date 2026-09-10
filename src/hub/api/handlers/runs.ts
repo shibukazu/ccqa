@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { type DriftLedger, type Run, type RunStatus, type SpecLedger, type SpecLedgerEntry, type SpecRedLedgerEntry } from "../../contract/schema.ts";
 import { CoverageUniverseSchema, DriftSubDiagnosisSchema, GitEnvelopeSchema, normalizeDiagnosis, ReportCostSchema, ReportKindSchema, RunReportDataSchema, ReportSpecResultSchema, type ReportKind, type ReportSpecResult, type RunReportData } from "../../../report/schema.ts";
-import type { DriftLabel } from "../../../drift/types.ts";
+import { DriftLabelSchema, type DriftLabel } from "../../../drift/types.ts";
 import { NO_DRIFT_CAUSE } from "../../../report/schema.ts";
 import { placeRowInDeployLog, type RowPlacement } from "../../core/deploy-log.ts";
 import type { ReportEnvelope } from "../../../run/incremental-report.ts";
@@ -315,11 +315,13 @@ async function updateDriftLedger(
     // rather than cast so a foreign client's row cannot store a value the
     // ledger's own schema rejects.
     const subDiagnosis = DriftSubDiagnosisSchema.safeParse(diagnosis?.subDiagnosis);
+    // Same treatment, same reason: narrowed rather than cast, so a foreign
+    // client's row cannot store a label the ledger's own schema would reject.
+    // Falls back to null (a completed, clean audit) rather than dropping the
+    // whole row over one bad field.
+    const label = DriftLabelSchema.safeParse(diagnosis?.label);
     ledger.specs[key] = {
-      // A kind:"drift" row's `analysis` always originates from analyzeDrift
-      // (see summarizeDrift above), so its label is one of
-      // TEST_DRIFT/SPEC_CHANGE/UNKNOWN, never PRODUCT_BUG.
-      label: diagnosis ? (diagnosis.label as DriftLabel) : null,
+      label: label.success ? label.data : null,
       surface: diagnosis?.surface,
       subDiagnosis: subDiagnosis.success ? subDiagnosis.data : undefined,
       specChangeKind: diagnosis?.specChangeKind,
@@ -599,9 +601,13 @@ async function withGradedDrift(storage: HubStorage, run: Run): Promise<Run> {
     const predicted = record.predicted.label as DriftLabel;
     if (predicted === "TEST_DRIFT") gradedDrift.testDrift--;
     else if (predicted === "SPEC_CHANGE") gradedDrift.specChange--;
+    else if (predicted === "PRODUCT_BUG") gradedDrift.productBug--;
+    else if (predicted === "ENVIRONMENT") gradedDrift.environment--;
     else gradedDrift.unknown--;
     if (record.actualCause === "TEST_DRIFT") gradedDrift.testDrift++;
     else if (record.actualCause === "SPEC_CHANGE") gradedDrift.specChange++;
+    else if (record.actualCause === "PRODUCT_BUG") gradedDrift.productBug++;
+    else if (record.actualCause === "ENVIRONMENT") gradedDrift.environment++;
     else if (record.actualCause === NO_DRIFT_CAUSE) gradedDrift.noDrift++;
     else gradedDrift.unknown++;
     gradedDrift.graded++;
@@ -665,14 +671,19 @@ async function getRunOr404(storage: HubStorage, id: string): Promise<Run> {
 /**
  * Tally a `kind: "drift"` report's per-spec diagnoses (carried in `analysis`)
  * into the `Run.drift` summary counters, by label rather than by derived
- * severity. A row with no `analysis` was audited and found clean (see
- * `driftResultsToReport`), so it counts toward `specs` but none of the three
- * labels.
+ * severity — the audit may answer any of the five `PredictedLabel` values
+ * since ADR-0030, each with its own counter. A row with no `analysis` was
+ * audited and found clean (see `driftResultsToReport`), so it counts toward
+ * `specs` but none of the labels.
  */
-function summarizeDrift(results: ReportSpecResult[]): { specs: number; testDrift: number; specChange: number; unknown: number } {
+function summarizeDrift(
+  results: ReportSpecResult[],
+): { specs: number; testDrift: number; specChange: number; productBug: number; environment: number; unknown: number } {
   let specs = 0;
   let testDrift = 0;
   let specChange = 0;
+  let productBug = 0;
+  let environment = 0;
   let unknown = 0;
   for (const r of results) {
     // A drift row's status is always "passed"/"failed" (driftResultsToReport),
@@ -680,14 +691,14 @@ function summarizeDrift(results: ReportSpecResult[]): { specs: number; testDrift
     if (r.status === "skipped") continue;
     specs++;
     if (!r.analysis) continue;
-    // A kind:"drift" row's `analysis` always originates from analyzeDrift, so
-    // its label is one of TEST_DRIFT/SPEC_CHANGE/UNKNOWN, never PRODUCT_BUG.
     const label = r.analysis.label as DriftLabel;
     if (label === "TEST_DRIFT") testDrift++;
     else if (label === "SPEC_CHANGE") specChange++;
+    else if (label === "PRODUCT_BUG") productBug++;
+    else if (label === "ENVIRONMENT") environment++;
     else unknown++;
   }
-  return { specs, testDrift, specChange, unknown };
+  return { specs, testDrift, specChange, productBug, environment, unknown };
 }
 
 /**

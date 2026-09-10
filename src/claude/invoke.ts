@@ -76,6 +76,12 @@ export interface ClaudeInvokeOptions {
    * point Claude at a specific package inside a monorepo.
    */
   cwd?: string;
+  /**
+   * Directories the SDK's tools may read besides `cwd`, as absolute paths.
+   * The product an audit checks a test against is often a sibling checkout,
+   * and a read outside the working directory is refused without this.
+   */
+  additionalDirectories?: string[];
   /** Called when an agent-browser command is intercepted. */
   onAbAction?: (event: AbActionEvent) => void;
   /** Called when an agent-browser command fails (exit non-zero); allows rolling back the last AB_ACTION. */
@@ -251,6 +257,7 @@ export async function invokeClaudeStreaming(
     silenceBashLog = false,
     envScrubMap = [],
     relaxAbConstraints = false,
+    additionalDirectories,
   } = options;
 
   const resolvedModel = resolveModel(model);
@@ -286,6 +293,7 @@ export async function invokeClaudeStreaming(
     abortController,
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(cwd ? { cwd } : {}),
+    ...(additionalDirectories?.length ? { additionalDirectories } : {}),
     env: mergedEnv,
     ...(mcpServers ? { mcpServers } : {}),
     ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),

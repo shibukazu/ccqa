@@ -17,10 +17,14 @@ import { FIXABLE_DIAGNOSIS_TYPES } from "../diagnose/types.ts";
  *  - ENVIRONMENT: nothing in the repository. A service that is down, a
  *                 missing or expired credential, absent seeded data, timing.
  *
- * The audit answers the first two and no more: it never opens a browser, so
- * it has no standing to say the product is broken or the environment failed.
- * A run answers all four in one call — it holds the execution evidence and
- * reads the source itself, so the question is never split across stages.
+ * The audit may name any of the four (ADR-0030: `sourceRoots` gives it the
+ * product's own source to read), but it never opens a browser, so only two of
+ * its answers are backed by execution evidence. `driftSeverity` is where that
+ * shows: `TEST_DRIFT`/`SPEC_CHANGE` name a repair and hold the gate shut,
+ * while `PRODUCT_BUG`/`ENVIRONMENT` are reported and the case still runs,
+ * since running it is what actually settles them. A run answers all four in
+ * one call with equal footing — it holds the execution evidence itself, so
+ * none of its four is a mere suspicion.
  *
  * The stakeholder ask behind this module is measurement-first: the call is
  * known to be hard, so every prediction is carried in report.json where the
@@ -47,7 +51,6 @@ export type PredictedLabel = z.infer<typeof PredictedLabelSchema>;
  * "I don't know" is a reason not to grade rather than a grade.
  */
 export const NO_DRIFT_CAUSE = "NO_DRIFT";
-export const DRIFT_ACTUAL_CAUSES = [...DRIFT_FAILURE_CAUSES, NO_DRIFT_CAUSE] as const;
 export const ACTUAL_CAUSES = [...FAILURE_CAUSES, NO_DRIFT_CAUSE] as const;
 export const ActualCauseSchema = z.enum(ACTUAL_CAUSES);
 export type ActualCause = z.infer<typeof ActualCauseSchema>;
@@ -65,18 +68,21 @@ export type ActualCause = z.infer<typeof ActualCauseSchema>;
 export const ReportKindSchema = z.enum(["run", "drift", "record"]);
 export type ReportKind = z.infer<typeof ReportKindSchema>;
 
-/** What a person may record on a row of this kind. */
+/**
+ * What a person may record on a row of this kind.
+ *
+ * An audit row offers one answer a run row cannot: `NO_DRIFT`, for a finding
+ * against a case that still describes the product. Everything else is the same
+ * vocabulary, so a grade means the same thing on either kind of row.
+ */
 export function causesForKind(kind: ReportKind): readonly ActualCause[] {
   if (kind === "record") return [];
-  return kind === "drift" ? DRIFT_ACTUAL_CAUSES : FAILURE_CAUSES;
+  return kind === "drift" ? ACTUAL_CAUSES : FAILURE_CAUSES;
 }
 
 /** What the model may answer on a row of this kind. */
 export function predictedForKind(kind: ReportKind): readonly PredictedLabel[] {
-  if (kind === "record") return [];
-  return kind === "drift"
-    ? ([...DRIFT_FAILURE_CAUSES, "UNKNOWN"] as const)
-    : PREDICTED_LABELS;
+  return kind === "record" ? [] : PREDICTED_LABELS;
 }
 
 export const SUB_DIAGNOSES = [...FIXABLE_DIAGNOSIS_TYPES, "NONE"] as const;
@@ -170,16 +176,13 @@ export type FailureAnalysis = z.infer<typeof FailureAnalysisSchema>;
  * a reader never translates between two taxonomies, and the hub renders,
  * grades and learns from both through one path.
  *
- * `PRODUCT_BUG` is deliberately absent. Drift never opens a browser, so "the
- * product regressed" is not something it can observe: a static read cannot
- * tell a dropped side effect from a working one. Claiming it would be guessing
- * in the one direction that wastes a developer's time. Unifying the vocabulary
- * means sharing the definitions, not emitting every label.
+ * All four causes are answerable, but only two of them are answerable *well*
+ * from a static read, and `driftSeverity` is where that shows: `TEST_DRIFT`
+ * and `SPEC_CHANGE` name a repair the reader can make and hold the gate shut,
+ * while `PRODUCT_BUG` and `ENVIRONMENT` are suspicions a browser has to
+ * settle and are reported without blocking.
  */
-export const DriftLabelSchema = PredictedLabelSchema.extract([
-  ...DRIFT_FAILURE_CAUSES,
-  "UNKNOWN",
-]);
+export const DriftLabelSchema = PredictedLabelSchema;
 export type DriftLabel = z.infer<typeof DriftLabelSchema>;
 
 /**

@@ -2,7 +2,12 @@ import { loadAllBlocks, parseSpecPath, readSpecFile } from "../store/index.ts";
 import { caseFromSpec, loadMarkdownCase, type TestCase } from "../intent/case.ts";
 import { registryFor, resolveTarget, resolveTargetOverride } from "../targets/registry.ts";
 import { resolveCaseTestPath, resolveTestPath } from "../targets/test-path.ts";
-import { targetConfigFor, type ProjectConfig, type TargetConfig } from "../config/project-config.ts";
+import {
+  targetConfigFor,
+  type IntentSource,
+  type ProjectConfig,
+  type TargetConfig,
+} from "../config/project-config.ts";
 import type { TargetPlugin } from "../targets/types.ts";
 
 /**
@@ -41,9 +46,9 @@ export async function resolveCase(
 ): Promise<ResolvedCase> {
   const intentTarget = intentTargetFor(config, opts.targetOverride);
   if (intentTarget) {
-    const { id, targetConfig } = intentTarget;
+    const { id, targetConfig, intent } = intentTarget;
     const target = registryFor(config).get(id)!;
-    const testCase = await loadMarkdownCase(argument, targetConfig.intent!, cwd);
+    const testCase = await loadMarkdownCase(argument, intent, cwd);
     return {
       testCase,
       target,
@@ -70,12 +75,19 @@ export async function resolveCase(
   };
 }
 
+/** A target that reads its cases from the project's own documents. */
+export interface IntentTarget {
+  id: string;
+  targetConfig: TargetConfig;
+  intent: IntentSource;
+}
+
 /** The target whose cases live in the project, when that is what we resolve to. */
-function intentTargetFor(
+export function intentTargetFor(
   config: ProjectConfig,
-  targetOverride: string | undefined,
-): { id: string; targetConfig: TargetConfig } | null {
+  targetOverride?: string,
+): IntentTarget | null {
   const id = targetOverride ?? config.defaultTarget;
   const targetConfig = config.targets[id];
-  return targetConfig?.intent ? { id, targetConfig } : null;
+  return targetConfig?.intent ? { id, targetConfig, intent: targetConfig.intent } : null;
 }

@@ -35,6 +35,8 @@ export interface IntentCase {
   /** Steps to run after the case, whatever its outcome. */
   cleanup: IntentStep[];
   priority?: string;
+  /** The mode section's first line, verbatim. Absent when unnamed or blank. */
+  mode?: string;
   /** Where the case came from, for the generated test's header. */
   link: { url?: string; ref?: string };
   /**
@@ -187,6 +189,7 @@ export function parseMarkdownCase(input: ParseMarkdownCaseInput): IntentCase {
     expected: listOrProse(body(fields.expected)),
     cleanup: cleanupSteps(body(fields.cleanup)),
     ...(body(fields.priority) ? { priority: firstLine(body(fields.priority)) } : {}),
+    ...(fields.mode && body(fields.mode) ? { mode: firstLine(body(fields.mode)) } : {}),
     link: {
       ...(labelled(linkItems, "url") ? { url: labelled(linkItems, "url") } : {}),
       ...(labelled(linkItems, "no") ? { ref: labelled(linkItems, "no") } : {}),

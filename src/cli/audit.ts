@@ -7,6 +7,7 @@ import {
   parseSpecPath,
   listActiveSpecs,
   specKey,
+  splitCaseId,
 } from "../store/index.ts";
 import { errMessage, RunUsageError } from "../run/errors.ts";
 import { analyzeDrift } from "../drift/analyze.ts";
@@ -14,6 +15,7 @@ import { renderDrift } from "../drift/format.ts";
 import { determineExitCode } from "../drift/exit-code.ts";
 import { driftResultsToReport, driftResultToRow } from "../drift/to-report.ts";
 import { currentReportCost } from "../report/run-cost.ts";
+import { caseIdOf } from "../drift/types.ts";
 import type { Format, SpecResult, SpecTarget, Threshold } from "../drift/types.ts";
 import type { DriftGuidance } from "../prompts/drift.ts";
 import {
@@ -24,6 +26,11 @@ import {
   hashTriageUserPrompt,
 } from "../prompts/custom-prompt.ts";
 import { collectChangedSpecs } from "./changed-specs.ts";
+import { resolveSourceRoots } from "../config/source-roots.ts";
+import type { IntentTarget } from "./resolve-case.ts";
+import { loadSpecArtifactsContext } from "../drift/artifacts.ts";
+import { intentCaseIds } from "../intent/case.ts";
+import { writeAuditBriefs } from "../drift/brief.ts";
 import type { HubClient } from "../hub-client/index.ts";
 import { addLanguageOption, addProfileOption } from "./options.ts";
 import { fetchAuditNeed, fetchStillDrifted, selectSpecsNeedingAudit } from "../drift/audit-selection.ts";
@@ -60,6 +67,7 @@ interface AuditOptions {
   hubProfile?: string;
   language?: string;
   reportToHub?: boolean;
+  brief?: string;
   project?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -103,6 +111,10 @@ export const auditCommand = addProfileOption(addLanguageOption(
       "--exit-on <level>",
       "Exit non-zero on this severity or higher: warn | error",
       "error",
+    )
+    .option(
+      "--brief <dir>",
+      "Also write one JSON file per finding under <dir>, named by case id: the verdict, its citations, and whether the test can be regenerated or has to be repaired by hand. What reads them is outside ccqa.",
     )
     .optionsGroup("Environment and connection:")
     .option(
@@ -166,14 +178,26 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     hubProject = resolveProject({ project: opts.project, cwd });
   }
 
-  let targets = await collectTargets(specPath, cwd);
+  // Read once for the whole invocation: the sweep, the briefs and the case
+  // enumeration all ask the same two questions of the same files.
+  const artifactsContext = await loadSpecArtifactsContext(cwd);
+  const config = artifactsContext.config;
+  const intent = artifactsContext.intentTarget;
+  const sourceRoots = await resolveSourceRoots(cwd, config.sourceRoots).catch((e: Error) => {
+    log.error(e.message);
+    process.exit(2);
+  });
+
+  let targets = await collectTargets(specPath, cwd, intent);
   if (targets.length === 0) {
-    exitWithNoSpecs(format, "noSpecsFound", "no test specs found under .ccqa/features/");
+    const where = intent ? intent.intent.root : ".ccqa/features/";
+    exitWithNoSpecs(format, "noSpecsFound", `no test cases found under ${where}`);
   }
 
   if (format === "text") {
-    log.header("audit", specPath ?? `${targets.length} spec${targets.length > 1 ? "s" : ""}`);
+    log.header("audit", specPath ?? `${targets.length} case${targets.length > 1 ? "s" : ""}`);
     if (opts.cwd) log.meta("cwd", cwd);
+    for (const root of sourceRoots) log.meta("source", root.abs);
   }
 
   // Ahead of --only-affected-by: the two compose with AND, and this side is
@@ -260,8 +284,10 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
       ...(opts.model ? { model: opts.model } : {}),
       ...(opts.language ? { language: opts.language } : {}),
       guidance: promptCtx.guidance,
+      sourceRoots,
+      context: artifactsContext,
       onSpecStart: (t) => {
-        if (format === "text") log.info(`checking ${t.featureName}/${t.specName}`);
+        if (format === "text") log.info(`checking ${caseIdOf(t)}`);
       },
       onSpecDone: async (r) => {
         if (push) await sendDriftRow(push, r, threshold);
@@ -279,6 +305,23 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   process.stdout.write(renderDrift(results, format, cwd));
 
   if (push) await sealDriftPush(push, { results, threshold, opts, format, baseRef, promptCtx });
+
+  // After the seal, and survivable: the briefs are a side output, and a sweep
+  // that cannot write them must still close the hub run it opened and report
+  // what it found.
+  if (opts.brief) {
+    try {
+      const written = await writeAuditBriefs({
+        results,
+        cwd,
+        dir: opts.brief,
+        context: artifactsContext,
+      });
+      if (format === "text") log.meta("briefs", `${written.length} written to ${opts.brief}`);
+    } catch (e) {
+      log.error(`could not write briefs to ${opts.brief}: ${errMessage(e)}`);
+    }
+  }
 
   process.exit(determineExitCode(results, threshold));
 }
@@ -484,7 +527,25 @@ function exitWithNoSpecs(format: Format, reason: NoSpecsReason, message: string)
   process.exit(0);
 }
 
-async function collectTargets(specPath: string | undefined, cwd: string): Promise<SpecTarget[]> {
+/**
+ * The cases this sweep audits.
+ *
+ * Which of the two places a project keeps them in is settled by its target,
+ * not guessed at: one that declares an `intent` source has its cases read from
+ * the project's own directory, one that does not from `.ccqa/features/`. A
+ * case named on the command line is resolved the same way, which is exactly
+ * how `ccqa generate` reads the same argument.
+ */
+async function collectTargets(
+  specPath: string | undefined,
+  cwd: string,
+  intent: IntentTarget | null,
+): Promise<SpecTarget[]> {
+  if (intent) {
+    const ids = await intentCaseIds(specPath ? [specPath] : [], intent.intent, cwd);
+    return ids.map((id) => ({ ...splitCaseId(id), caseId: id }));
+  }
+
   const tree = await listFeatureTree(cwd);
   if (specPath) {
     const { featureName, specName } = parseSpecPath(specPath);

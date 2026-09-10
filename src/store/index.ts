@@ -222,11 +222,35 @@ export interface Recording {
    * a test it produced still matches, and only someone else's edit does not.
    *
    * It lives here, on a file the consumer already commits, rather than in a
-   * ledger of its own — and only `ccqa generate` reads it. The audit and the
-   * run never do: the generated test belongs to the consumer, and neither
-   * command's answer may depend on who last wrote it.
+   * ledger of its own. Two callers read it and both are asking the same
+   * question — `ccqa generate`, to decide whether regenerating would discard
+   * someone's edit, and `ccqa audit --brief`, to say which repair path a
+   * finding belongs on. No verdict reads it: the generated test belongs to the
+   * consumer, and no command's answer may depend on who last wrote it.
    */
-  generated?: { testSha256: string; at: string };
+  generated?: GenerationStamp;
+}
+
+/** What the last `ccqa generate` wrote, and when. */
+export interface GenerationStamp {
+  testSha256: string;
+  at: string;
+}
+
+/**
+ * Whether the test on disk is still the one that stamp was taken of.
+ *
+ * The one place this question is answered, because the two callers must not
+ * drift apart: what "hand-edited" means decides both a refusal and a repair
+ * route. A file that is not there counts as unchanged — there is nothing to
+ * discard, and nothing to route elsewhere.
+ */
+export async function matchesGenerationStamp(
+  stamp: GenerationStamp,
+  testPathAbs: string,
+): Promise<boolean> {
+  const current = await fileSha256(testPathAbs);
+  return current === null || current === stamp.testSha256;
 }
 
 /** Hex sha256 of a file's bytes, or null when it is not there to read. */

@@ -24,12 +24,20 @@ One run mixes every kind of spec; each group is dispatched by the spec's
 3. **Live** agent-browser specs — Claude drives the browser per step and
    judges each step's `expected`. See [Live specs](./live.md).
 
+A project whose cases are its own markdown is dispatched by `mode` alone:
+`ccqa run` executes the cases that say `live` and reports the rest as the
+project's own test command's to run — that command is what
+[`select-specs --format paths`](#asking-the-question-on-its-own) feeds. See
+[`intent`](./targets.md#intent--reading-test-cases-from-markdown).
+
 Key flags (see `ccqa run --help` for the rest):
 
 - `--report-dir <dir>` — where the report (always written) is saved. Default
   `ccqa-report/`.
 - `--report-to-hub` — stream results to a [hub](./hub.md) incrementally as
   the run executes (opt-in; needs hub credentials).
+- `--report-junit <file>` — also write the results as JUnit XML, for a tool
+  that reads that and nothing else ([below](#junit-xml)).
 - `--hub-profile <name>` — apply the hub-stored variables for this profile
   before resolving `${VAR}` references (below).
 - `--only-affected-by <ref>` — restrict execution to the specs `ccqa
@@ -181,6 +189,22 @@ It is rewritten on every incremental flush rather than stamped once at the
 end, so a run killed by a CI timeout still says what it burned. The one
 thing outside it is `--learn-hub-live-prompt`, which runs after the report is
 written; the `[cost]` line on stderr is the true total for the invocation.
+
+### JUnit XML
+
+`--report-junit <file>` writes the same results as JUnit XML beside
+`report.json`, for a CI or test-management tool that reads that format and
+nothing else. One `<testcase>` per case, named by the case's own title and
+classed by its id; a failure carries the reason the case was judged to fail,
+and `<system-out>` lists the step screenshots so a reader can find them.
+
+It is written whether the run passed or failed — a CI that only receives the
+file on success cannot report failures, which is the whole point of having
+it.
+
+```bash
+ccqa run --report-junit ci/junit.xml
+```
 
 ## What leaves a run on the hub
 
@@ -391,24 +415,46 @@ four causes `ccqa run --on-fail-explain`'s root-cause call can reach for
 (see [Failure triage](#failure-triage)) — not a separate pass, the same
 question asked with more evidence available.
 
-A `deterministic` spec is two artifacts, and the audit reads both: the
-`spec.yaml` a human wrote, and the test code `ccqa generate` compiled from
-it. Either can drift from the source independently, so the audit checks the
-concrete selectors and strings the generated code holds, not only the prose
-in `spec.yaml`. A `mode: live` spec has no generated code — the spec itself
-is what runs — so only `spec.yaml` is audited there.
+A recorded case is two artifacts, and the audit reads both: the document
+its author wrote, and the test code `ccqa generate` compiled from it. Either
+can drift from the source independently, so the audit checks the concrete
+selectors and strings the generated code holds, not only the prose that
+describes them. A case that runs live has no generated code — the document
+itself is what runs — so only the document is audited there.
 
-Each audited spec gets **at most one diagnosis**: `TEST_DRIFT` (the test
-drifted from the source), `SPEC_CHANGE` (the thing being verified changed),
-or `UNKNOWN` when the evidence is too weak to call. Never `PRODUCT_BUG` — a
-static read can't tell a dropped side effect from a working one, so the
-audit can't reach that far even though a run can (see [Failure
-triage](#failure-triage)). The diagnosis carries a confidence, a headline,
-a recommendation, cited evidence, and a `surface` that decides how to fix
-it: `spec` means `spec.yaml` itself has to be rewritten (and the code
-regenerated after); `generated` means only the generated code drifted, so
-a regeneration alone is enough. No finding at all means the spec still
-matches the code (`drift: null`), not a passing "check" to enumerate.
+The document is whichever kind the project writes. A target that declares an
+[`intent` source](./targets.md#intent--reading-test-cases-from-markdown) has
+its cases read from the project's own markdown, headings and all; one that
+does not has them read from `.ccqa/features/**/spec.yaml`. The audit
+enumerates whichever of the two the project uses, by the same rule `ccqa
+generate` resolves a `<case>` argument with.
+
+Each audited case gets **at most one diagnosis**, in the same vocabulary a
+failed run is triaged with (see [Failure triage](#failure-triage)):
+
+| Label | What it says | Fails `--exit-on error` |
+|---|---|---|
+| `TEST_DRIFT` | the test drifted from the source | yes |
+| `SPEC_CHANGE` | the thing being verified changed | yes |
+| `PRODUCT_BUG` | the source shows the product no longer does what the case describes | no |
+| `ENVIRONMENT` | the outcome depends on data, permissions or a tenant the source does not decide | no |
+| `UNKNOWN` | the evidence is too weak to call | no |
+
+The first two name a repair someone can make from what the audit read, so
+they hold the gate shut. The other two are reported and the case still runs
+— running it is what settles them, and the run's own classifier decides with
+the execution evidence in hand. The hub's own gate,
+[`--only-hub-rerun-needed`](#running-only-what-needs-a-re-run), answers the
+same way: a `PRODUCT_BUG` or `ENVIRONMENT` finding leaves the spec's audit
+axis clean, because each of them read the test case and found it faithful
+before naming something else.
+
+The diagnosis carries a confidence, a headline, a recommendation, cited
+evidence, and a `surface` that decides how to fix it: `spec` means the case's
+document has to be rewritten (and the code regenerated after); `generated`
+means only the generated code drifted, so a regeneration alone is enough. No
+finding at all means the case still matches the code (`drift: null`), not a
+passing "check" to enumerate.
 
 Standing guidance for the audit lives in the `audit.user` / `audit.agent`
 prompts, the audit's counterpart to `triage.user` / `triage.agent` above
@@ -423,6 +469,7 @@ ccqa audit --exit-on warn                 # exit non-zero on WARN or higher (def
 ccqa audit --concurrency 5                # parallel spec checks (default: 3)
 ccqa audit --only-affected-by origin/dev  # only specs the PR diff reaches
 ccqa audit --cwd packages/web             # monorepo: pin .ccqa root and codebase scope
+ccqa audit --brief briefs/                # also write one JSON file per finding
 ccqa audit --report-to-hub                # also push the result to a ccqa hub
 ```
 
@@ -437,6 +484,64 @@ Pushing also advances the hub's per-project **drift ledger**: each spec's
 newest audit (or "no drift found") lands there, so the Perspectives tab shows
 every spec's last-known drift status without opening each run individually —
 see [the hub guide](./hub.md#drift-ledger).
+
+### `sourceRoots` — where the product actually lives
+
+The audit reads the application a case describes. By default that means the
+working directory, which is right only while the tests and the application
+are the same checkout. When they are not — tests in one repository, the
+application in another — name the application's source in
+`.ccqa/config.yaml`:
+
+```yaml
+sourceRoots:
+  - ../product/src
+  - /srv/checkouts/product/packages/web/src
+```
+
+Entries may be relative to the project root or absolute, and may point
+outside it — that is the case this exists for. They are resolved to real
+paths before the sweep, and an entry that is not a directory stops the
+audit: reading nothing looks exactly like finding nothing.
+
+The roots widen what the audit's `Read` and `Grep` may reach, and nothing
+else. They are not searched by any other command, they are not added to the
+import walk that collects a test's support files, and a project that sets
+none gets exactly the previous behaviour.
+
+### `--brief` — findings for whatever repairs the test
+
+`ccqa audit --brief <dir>` writes one JSON file per finding, named by case
+id below `<dir>`, alongside the normal output. What reads them is outside
+ccqa — a fix job, a skill, a script.
+
+```json
+{
+  "case": "todo/add_item",
+  "kind": "TEST_DRIFT",
+  "surface": "generated",
+  "confidence": 0.9,
+  "headline": "the add button is addressed by a label the source no longer renders",
+  "recommendation": "re-record the case",
+  "reasoning": "...",
+  "evidence": [{ "file": "src/todo-list.ts:22", "detail": "the button's text is Add" }],
+  "test": "specs/todo/add_item.spec.ts",
+  "repair": {
+    "route": "external",
+    "reason": "the test has been edited since it was generated"
+  }
+}
+```
+
+`repair.route` is the field a caller acts on, and it answers one question:
+may I regenerate this test? `regenerate` takes both a finding a regeneration
+could fix — `TEST_DRIFT` on the `generated` surface, the surface a
+regeneration rewrites — and a test ccqa wrote that nobody has touched since
+(see [Regenerating from a saved
+route](./targets.md#regenerating-from-a-saved-route)). Everything else is
+`external`, with `reason` saying which half failed: a stale document
+recompiles to the same stale test, and someone's edits must not be discarded.
+Only the route reads the generation stamp; the verdict above it never does.
 
 ### Choosing a model for the audit
 
@@ -554,20 +659,65 @@ means a wrong `--cwd` or a checkout that did not include the spec tree.
 
 `ccqa select-specs` is the same decision as a standalone command, for when
 you want the verdicts without running anything — inspecting what a range
-would select, or feeding the answer to another job. It needs a hub
-connection: the measured coverage the verdicts rest on lives there.
+would select, or feeding the answer to another job.
 
 ```sh
 ccqa select-specs --base origin/main             # against HEAD
 ccqa select-specs --base <sha> --head <sha>      # an explicit range
+ccqa select-specs --against origin/main..HEAD    # the same range, one flag
+ccqa select-specs --against main..HEAD --repo ../product   # diff another checkout
 ccqa select-specs --base origin/main --format json
+ccqa select-specs --base origin/main --format paths
 ccqa select-specs --base origin/main --cwd packages/web
 ```
 
-Every spec in the tree appears in the output, each with its verdict, a
-one-sentence reason, and — for `needed` — the changed paths the decision
-rests on. A spec whose `spec.yaml` cannot be parsed is a hard error rather
+Every case appears in the output, each with its verdict, a one-sentence
+reason, and — for `needed` — the changed paths the decision rests on. Which
+cases those are follows the same rule the rest of ccqa uses: a target with an
+[`intent` source](./targets.md#intent--reading-test-cases-from-markdown) has
+them read from the project's own markdown, one without from
+`.ccqa/features/`. A `spec.yaml` that cannot be parsed is a hard error rather
 than a spec judged without reading it.
+
+A case is also selected when its **own document** changed — editing what a
+case says must re-run it, and no measurement would ever say so.
+
+**`--against <base>..<head>`** is the `--base`/`--head` pair written as one
+git range, for a caller that already has one in that form. Pass one or the
+other, not both.
+
+**`--repo <path>`** reads the range from a different checkout than the one
+holding `.ccqa/`. This is what a project whose tests and application are
+separate repositories needs: the diff comes from the application, the specs
+and their measured reach come from here.
+
+The two still have to meet somewhere. `coverage.projectRoot` is what measured
+file paths are stored relative to, and it must contain both checkouts for the
+diff to be comparable against them — a common ancestor directory. When it does
+not, every changed file falls outside it and no comparison is possible; every
+measured case then comes back `unknown` and runs, rather than `notNeeded`,
+because a comparison that could not be made is not a clearance.
+
+**`--format paths`** prints one test file path per line and nothing else —
+the selected cases' tests, ready to hand to a test runner as arguments:
+
+```sh
+ccqa select-specs --against origin/main..HEAD --format paths | xargs pnpm exec playwright test
+```
+
+**Changed files nothing reaches** are listed separately, as `uncovered` in
+the text output and `uncoveredFiles` in JSON: product files in the range that
+no spec's measured run has ever touched. They are not a verdict — nothing was
+selected or dropped because of them — they are the part of the change the
+suite has nothing to say about. The list is empty when the measurement could
+not be read at all, because "we could not tell" must never be reported as
+"nothing covers this".
+
+**Without a hub**, the measured reach is read from the last local run report
+(`--report-dir`, default `ccqa-report/`) instead. That is the same data a
+`--coverage` run wrote before pushing it, so a project that has not set up a
+hub can still select. With a hub connection configured, the hub wins — it
+holds every run's measurements, not only this machine's last one.
 
 The deploy job runs the same decision as part of
 [`ccqa hub deploy record`](./hub.md#ccqa-hub-deploy-record), which submits the

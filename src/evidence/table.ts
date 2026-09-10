@@ -2,6 +2,7 @@ import type { RecordedAction } from "../ir/types.ts";
 import type { Recording } from "../store/index.ts";
 import type { TestCase } from "../intent/case.ts";
 import { describeAction } from "../ir/route-diff.ts";
+import type { SourceAnchors } from "./source-anchors.ts";
 
 /**
  * The table a reviewer reads instead of the generated test.
@@ -29,6 +30,8 @@ export interface EvidenceStep {
   assertions: string[];
   /** Screenshot paths, relative to the evidence file. */
   screenshots: string[];
+  /** Locator/assertion literals worth checking against the product's own source. */
+  needles: string[];
 }
 
 export interface EvidenceInput {
@@ -40,6 +43,13 @@ export interface EvidenceInput {
   screenshots: Map<string, string[]>;
   /** What the verifies-spec review said, if it ran. */
   unchecked?: string[];
+  /**
+   * What the product's own source was searched for, and where each was found.
+   * Absent — not empty — is the signal that no `sourceRoots` were configured:
+   * the column is omitted rather than shown full of "not found", which would
+   * misreport an unsearched project as a searched-and-empty one.
+   */
+  anchors?: SourceAnchors;
 }
 
 /** Assertion lines a reviewer can check without reading the whole file. */
@@ -68,34 +78,81 @@ export function assertionsByStep(source: string): Map<string, string[]> {
   return byStep;
 }
 
-/** Recorded actions grouped by the step that produced them. */
-export function actionsByStep(actions: readonly RecordedAction[]): Map<string, string[]> {
-  const byStep = new Map<string, string[]>();
+/**
+ * Recorded actions grouped by the step that produced them. `"(no step)"` is
+ * the bucket for an action the recorder could not attribute — kept rather than
+ * dropped, since it still happened.
+ */
+function groupByStep(actions: readonly RecordedAction[]): Map<string, RecordedAction[]> {
+  const byStep = new Map<string, RecordedAction[]>();
   for (const action of actions) {
     const id = action.stepId ?? "(no step)";
-    const described = describeAction(action);
     const list = byStep.get(id);
-    if (list) list.push(described);
-    else byStep.set(id, [described]);
+    if (list) list.push(action);
+    else byStep.set(id, [action]);
   }
   return byStep;
 }
 
+/** The same grouping, each action rendered for a reader. */
+export function actionsByStep(actions: readonly RecordedAction[]): Map<string, string[]> {
+  return new Map(
+    [...groupByStep(actions)].map(([id, grouped]) => [id, grouped.map(describeAction)]),
+  );
+}
+
+/**
+ * The locator/assertion literals worth anchoring to the product's own source:
+ * a testid, an accessible name, a placeholder, a label, an asserted text. Not
+ * every locator strategy — `css`, `text` and `alt`/`title` locators are as
+ * often a CSS/testing artifact as product copy, and would anchor to noise.
+ *
+ * A value containing `${...}` is a run-id-substituted value at replay time
+ * and has no literal counterpart in the source, so it is dropped rather than
+ * searched for and reported "not found".
+ */
+export function sourceNeedles(actions: readonly RecordedAction[]): string[] {
+  const needles: string[] = [];
+  const seen = new Set<string>();
+  const add = (value: string | undefined): void => {
+    if (value === undefined || value.includes("${") || seen.has(value)) return;
+    seen.add(value);
+    needles.push(value);
+  };
+  for (const action of actions) {
+    for (const locator of [action.locator, action.target]) {
+      if (!locator) continue;
+      if (locator.by === "testid" || locator.by === "placeholder" || locator.by === "label") {
+        add(locator.value);
+      } else if (locator.by === "role") {
+        add(locator.name);
+      }
+    }
+    if (action.assert === "text_visible" || action.assert === "text_not_visible") add(action.value);
+  }
+  return needles;
+}
+
 export function buildEvidenceSteps(input: EvidenceInput): EvidenceStep[] {
-  const actions = actionsByStep([...input.recording.actions, ...(input.recording.cleanup ?? [])]);
+  const byStep = groupByStep([...input.recording.actions, ...(input.recording.cleanup ?? [])]);
   const assertions = assertionsByStep(input.test.source);
-  return [...input.testCase.steps, ...input.testCase.cleanup].map((step) => ({
-    id: step.id,
-    instruction: "instruction" in step ? step.instruction : step.judgeByLlm,
-    actions: actions.get(step.id) ?? [],
-    assertions: assertions.get(step.id) ?? [],
-    screenshots: input.screenshots.get(step.id) ?? [],
-  }));
+  return [...input.testCase.steps, ...input.testCase.cleanup].map((step) => {
+    const actions = byStep.get(step.id) ?? [];
+    return {
+      id: step.id,
+      instruction: "instruction" in step ? step.instruction : step.judgeByLlm,
+      actions: actions.map(describeAction),
+      assertions: assertions.get(step.id) ?? [],
+      screenshots: input.screenshots.get(step.id) ?? [],
+      needles: sourceNeedles(actions),
+    };
+  });
 }
 
 /** The evidence as markdown — a fragment, for whoever assembles the PR body. */
 export function renderEvidence(input: EvidenceInput): string {
   const steps = buildEvidenceSteps(input);
+  const anchors = input.anchors;
   const lines = [
     `# ${input.testCase.title}`,
     "",
@@ -104,8 +161,10 @@ export function renderEvidence(input: EvidenceInput): string {
     `Recorded: ${input.recording.recordedAt ?? "(unknown)"}`,
     ...(input.recording.origin ? [`From: \`${input.recording.origin}\``] : []),
     "",
-    "| Step | What the case says | What was recorded | What the test decides | Screens |",
-    "|---|---|---|---|---|",
+    "| Step | What the case says | What was recorded | What the test decides" +
+      (anchors ? " | Where the source says so" : "") +
+      " | Screens |",
+    "|---|---|---|---|" + (anchors ? "---|" : "") + "---|",
   ];
   for (const step of steps) {
     const cells = [
@@ -115,6 +174,7 @@ export function renderEvidence(input: EvidenceInput): string {
       // The column that matters: empty means this step is performed and
       // nothing about its outcome is checked.
       step.assertions.length > 0 ? cell(step.assertions.join("<br>")) : "**nothing**",
+      ...(anchors ? [sourceAnchorCells(step.needles, anchors)] : []),
       step.screenshots.map((path) => `![${step.id}](${path})`).join(" ") || "—",
     ];
     lines.push(`| ${cells.join(" | ")} |`);
@@ -141,4 +201,21 @@ export function renderEvidence(input: EvidenceInput): string {
 function cell(text: string): string {
   const clean = text.replaceAll("|", "\\|").replaceAll("\n", "<br>");
   return clean.length === 0 ? "—" : clean;
+}
+
+/**
+ * One line per needle. "not found" is a claim about the product, so a needle
+ * the scan never looked for says so instead — the reviewer's whole use of this
+ * column is telling those two apart.
+ */
+function sourceAnchorCells(needles: readonly string[], anchors: SourceAnchors): string {
+  return cell(
+    needles
+      .map((needle) => {
+        const at = anchors.found.get(needle)?.at;
+        if (at) return `\`${needle}\` — ${at}`;
+        return `\`${needle}\` — ${anchors.unsearched.has(needle) ? "not searched" : "not found"}`;
+      })
+      .join("<br>"),
+  );
 }

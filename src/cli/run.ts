@@ -31,12 +31,14 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
   new Command("run")
     .argument(
       "[targets...]",
-      "Specs to run, space-separated: each '<feature>/<spec>', '<feature>', or omit for all. Duplicates are de-duped.",
+      "Specs to run, space-separated: each '<feature>/<spec>', '<feature>', or omit for all. For a target that reads an intent source, each is a case id or the path of its source file. Duplicates are de-duped.",
     )
     .description(
       "Run specs, on any target. Agent-browser specs replay the recorded test.spec.ts under vitest " +
         "(default), or, with spec.yaml `mode: live`, have Claude drive agent-browser live per step. " +
         "External-target specs (playwright, runn) run through the target's configured `runCommand`. " +
+        "Where the project writes its cases as markdown, ccqa runs the ones whose mode says `live`; " +
+        "the rest are executed by the project's own test command (see `ccqa select-specs --format paths`). " +
         "A structured report (report.json + evidence) is always written; use --report-to-hub to also stream it to a hub.",
     )
     // Every `--only-*` narrows the set independently, so passing several ANDs
@@ -126,6 +128,10 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
     .option(
       "--report-to-hub",
       "Incrementally push the run report to the hub as the run progresses (open → patch per spec → finalize). Requires --hub-url/--hub-token (or CCQA_HUB_URL/CCQA_HUB_TOKEN). Without it, hub credentials are used only to fetch variables/sessions/prompts, not to push.",
+    )
+    .option(
+      "--report-junit <file>",
+      "Also write the run's results as JUnit XML to <file>, for a CI or test-management tool that reads that format.",
     )
     .option(
       "--coverage",

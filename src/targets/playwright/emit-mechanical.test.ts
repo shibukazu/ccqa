@@ -379,7 +379,20 @@ describe("emitPlaywrightDraft — judgements", () => {
     });
     expect(script).toContain(`import { judgeByLlm } from "ccqa/judge";`);
     expect(script).toContain(`// step: step-02 [spec]`);
-    expect(script).toContain(`await judgeByLlm(page, "the answer lists steps", ".out");`);
+    expect(script).toContain(
+      `await judgeByLlm(page, "the answer lists steps", { from: ".out", testInfo });`,
+    );
+  });
+
+  it("adds a testInfo parameter to the test callback so a judge call can attach its verdict", () => {
+    const script = emitPlaywrightDraft({
+      actions: [],
+      testName: "sample",
+      judgements: [
+        { step: { id: "step-01", source: "spec", judgeByLlm: "c" }, afterActionIndex: -1 },
+      ],
+    });
+    expect(script).toContain(`test("sample", async ({ page }, testInfo) => {`);
   });
 
   it("omits the selector when the claim reads the whole page", () => {
@@ -393,7 +406,7 @@ describe("emitPlaywrightDraft — judgements", () => {
         },
       ],
     });
-    expect(script).toContain(`await judgeByLlm(page, "the page apologises");`);
+    expect(script).toContain(`await judgeByLlm(page, "the page apologises", { testInfo });`);
   });
 
   it("emits a claim before the actions of the step that follows it", () => {
@@ -427,7 +440,8 @@ describe("emitPlaywrightDraft — judgements", () => {
       ],
     });
     expect(script).toContain(
-      'await judgeByLlm(page, `the reply names ${process.env.TENANT ?? ""}`, `#${process.env.SLOT ?? ""}`);',
+      'await judgeByLlm(page, `the reply names ${process.env.TENANT ?? ""}`, ' +
+        '{ from: `#${process.env.SLOT ?? ""}`, testInfo });',
     );
   });
 
@@ -442,7 +456,7 @@ describe("emitPlaywrightDraft — judgements", () => {
         },
       ],
     });
-    expect(script).toContain('await judgeByLlm(page, "the answer mentions $USD");');
+    expect(script).toContain('await judgeByLlm(page, "the answer mentions $USD", { testInfo });');
   });
 
   it("raises the test's own timeout, which a model round trip was not sized for", () => {
@@ -540,7 +554,9 @@ describe("an injected call's pattern", () => {
 
   it("holds the claim text but not the page it is judged on", () => {
     const claim = judgeCall({ id: "s", source: "spec", judgeByLlm: "the reply is concrete (enough)" }).pattern;
-    expect(claim.test(`await judgeByLlm(tab, "the reply is concrete (enough)");`)).toBe(true);
-    expect(claim.test(`await judgeByLlm(page, "the reply is vague");`)).toBe(false);
+    expect(claim.test(`await judgeByLlm(tab, "the reply is concrete (enough)", { testInfo });`)).toBe(
+      true,
+    );
+    expect(claim.test(`await judgeByLlm(page, "the reply is vague", { testInfo });`)).toBe(false);
   });
 });

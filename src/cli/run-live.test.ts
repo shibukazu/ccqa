@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -20,9 +20,7 @@ vi.mock("../store/index.ts", async (importOriginal) => {
   return {
     ...actual,
     loadPromptBundleFromHub: vi.fn(async () => null),
-    loadAllBlocks: vi.fn(async () => new Map()),
     loadAvailableBlocks: vi.fn(async () => []),
-    readSpecFile: vi.fn(async () => SAMPLE_SPEC_YAML),
   };
 });
 vi.mock("../runtime/live-executor.ts", async (importOriginal) => {
@@ -44,8 +42,14 @@ const { analyzeDrift } = await import("../drift/analyze.ts");
 const { analyzeFailure } = await import("../report/analyze.ts");
 const { buildLiveTranscriptExcerpt } = await import("../report/live-transcript-excerpt.ts");
 const { runLiveExecutor } = await import("../runtime/live-executor.ts");
-const { readSpecFile } = await import("../store/index.ts");
+const { caseFromSpec } = await import("../intent/case.ts");
+const { liveCaseFrom } = await import("./live-case.ts");
 const { resolveSessionState, runLiveSpecs } = await import("./run-live.ts");
+
+/** The runner takes cases now, so a test spec is read into one the same way a run does. */
+function liveCase(ref: { featureName: string; specName: string }, yaml = SAMPLE_SPEC_YAML) {
+  return liveCaseFrom(caseFromSpec(ref.featureName, ref.specName, yaml, new Map()));
+}
 
 const VALID_STATE = { cookies: [], origins: [] };
 
@@ -62,7 +66,7 @@ function hubCtx(handler: (project: string, profile: string, name: string) => Pro
 
 describe("resolveSessionState", () => {
   test("fails without a hub connection when sessions are requested", async () => {
-    const r = await resolveSessionState(["admin"], null, undefined);
+    const r = await resolveSessionState({ names: ["admin"] }, null, undefined);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toContain("admin");
@@ -72,7 +76,7 @@ describe("resolveSessionState", () => {
 
   test("restores a single session from the hub into a temp file, removed by cleanup", async () => {
     const ctx = hubCtx(async () => VALID_STATE);
-    const r = await resolveSessionState(["admin"], ctx, undefined);
+    const r = await resolveSessionState({ names: ["admin"] }, ctx, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.statePath.startsWith(tmpdir())).toBe(true);
@@ -87,7 +91,7 @@ describe("resolveSessionState", () => {
         ? { cookies: [{ name: "a", domain: "x.example", path: "/" }], origins: [] }
         : { cookies: [{ name: "b", domain: "y.example", path: "/" }], origins: [] },
     );
-    const r = await resolveSessionState(["admin", "viewer"], ctx, undefined);
+    const r = await resolveSessionState({ names: ["admin", "viewer"] }, ctx, undefined);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.statePath.startsWith(tmpdir())).toBe(true);
@@ -98,14 +102,14 @@ describe("resolveSessionState", () => {
     const ctx = hubCtx(async () => {
       throw new Error("not found");
     });
-    const r = await resolveSessionState(["admin"], ctx, undefined);
+    const r = await resolveSessionState({ names: ["admin"] }, ctx, undefined);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.hint).toContain("ccqa hub session capture admin");
   });
 
   test("fails when the hub returns a value that isn't storage-state shaped", async () => {
     const ctx = hubCtx(async () => ({ nope: true }));
-    const r = await resolveSessionState(["admin"], ctx, undefined);
+    const r = await resolveSessionState({ names: ["admin"] }, ctx, undefined);
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.hint).toContain("ccqa hub session capture admin");
   });
@@ -114,7 +118,7 @@ describe("resolveSessionState", () => {
     const ctx = hubCtx(async () => {
       throw new Error("not found");
     });
-    const r = await resolveSessionState(["admin"], ctx, "stg");
+    const r = await resolveSessionState({ names: ["admin"] }, ctx, "stg");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.hint).toContain("ccqa hub session capture admin --profile stg");
   });
@@ -123,7 +127,7 @@ describe("resolveSessionState", () => {
     const url = "https://app.example.com/home";
     const ctx = hubCtx(async () => ({ ...VALID_STATE, [SESSION_VERIFY_URL_KEY]: url }));
     const verify = vi.fn((_statePath: string, _url: string): SessionRestoreCheck => ({ restored: true }));
-    const r = await resolveSessionState(["hc-ok"], ctx, undefined, verify);
+    const r = await resolveSessionState({ names: ["hc-ok"] }, ctx, undefined, verify);
     expect(r.ok).toBe(true);
     expect(verify).toHaveBeenCalledTimes(1);
     // Called with the temp state path and the embedded URL.
@@ -139,7 +143,7 @@ describe("resolveSessionState", () => {
   test("fails with a re-bootstrap hint when the health check reports not-restored", async () => {
     const ctx = hubCtx(async () => ({ ...VALID_STATE, [SESSION_VERIFY_URL_KEY]: "https://app.example.com/home" }));
     const verify = vi.fn((): SessionRestoreCheck => ({ restored: false, reason: "landed on /signin" }));
-    const r = await resolveSessionState(["hc-bad"], ctx, "dev", verify);
+    const r = await resolveSessionState({ names: ["hc-bad"] }, ctx, "dev", verify);
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error).toContain("hc-bad");
@@ -148,10 +152,32 @@ describe("resolveSessionState", () => {
     }
   });
 
+  test("restores the project's saved state without a hub, and says so when it is not there", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "ccqa-saved-state-"));
+    const savedStatePath = join(dir, "state.json");
+    await writeFile(savedStatePath, JSON.stringify(VALID_STATE), "utf8");
+    const ok = await resolveSessionState({ names: [], savedStatePath }, null, undefined);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) await ok.cleanup();
+
+    // Loud: a live run that silently starts signed out answers confidently and wrongly.
+    const missing = await resolveSessionState(
+      { names: [], savedStatePath: join(dir, "gone.json") },
+      null,
+      undefined,
+    );
+    expect(missing.ok).toBe(false);
+    if (!missing.ok) {
+      expect(missing.error).toContain("gone.json");
+      expect(missing.hint).toContain("sessionState");
+    }
+    await rm(dir, { recursive: true, force: true });
+  });
+
   test("skips the health check for an old session with no embedded verify URL", async () => {
     const ctx = hubCtx(async () => VALID_STATE);
     const verify = vi.fn((): SessionRestoreCheck => ({ restored: true }));
-    const r = await resolveSessionState(["hc-legacy"], ctx, undefined, verify);
+    const r = await resolveSessionState({ names: ["hc-legacy"] }, ctx, undefined, verify);
     expect(r.ok).toBe(true);
     expect(verify).not.toHaveBeenCalled();
     if (r.ok) await r.cleanup();
@@ -211,7 +237,6 @@ describe("runLiveSpecs failure-analysis gating", () => {
 
   afterEach(async () => {
     vi.mocked(buildLiveTranscriptExcerpt).mockResolvedValue(null);
-    vi.mocked(readSpecFile).mockResolvedValue(SAMPLE_SPEC_YAML);
     delete process.env["CCQA_TEST_APP_URL"];
     await rm(outDir, { recursive: true, force: true });
   });
@@ -233,7 +258,11 @@ describe("runLiveSpecs failure-analysis gating", () => {
         fileDiff: () => null,
       })),
     };
-    await runLiveSpecs([specA, specB], { out: outDir, diffProvider, resources: () => [] });
+    await runLiveSpecs([liveCase(specA), liveCase(specB)], {
+      out: outDir,
+      diffProvider,
+      resources: () => [],
+    });
 
     expect(analyzeFailure).toHaveBeenCalledTimes(1);
     expect(diffProvider.forSpec).toHaveBeenCalledExactlyOnceWith(specB);
@@ -245,12 +274,13 @@ describe("runLiveSpecs failure-analysis gating", () => {
 
   test("the map built at run start reaches the classifier, so its prose can be scrubbed", async () => {
     process.env["CCQA_TEST_APP_URL"] = "https://app.example.com";
-    vi.mocked(readSpecFile).mockResolvedValue(
-      "title: sample spec\nsteps:\n  - instruction: open ${CCQA_TEST_APP_URL}\n    expected: loaded\n",
-    );
     vi.mocked(runLiveExecutor).mockReset().mockResolvedValue(fakeLiveRunResult("failed"));
 
-    await runLiveSpecs([{ featureName: "feature-a", specName: "spec-fail" }], {
+    const withEnvRef = liveCase(
+      { featureName: "feature-a", specName: "spec-fail" },
+      "title: sample spec\nsteps:\n  - instruction: open ${CCQA_TEST_APP_URL}\n    expected: loaded\n",
+    );
+    await runLiveSpecs([withEnvRef], {
       out: outDir,
       diffProvider: { forSpec: async () => ({ ok: false as const, skip: "no recorded green yet" }) },
       resources: () => [],
@@ -265,7 +295,7 @@ describe("runLiveSpecs failure-analysis gating", () => {
     const specA = { featureName: "feature-a", specName: "spec-pass" };
     const specB = { featureName: "feature-b", specName: "spec-fail" };
 
-    await runLiveSpecs([specA, specB], { out: outDir, resources: () => [] });
+    await runLiveSpecs([liveCase(specA), liveCase(specB)], { out: outDir, resources: () => [] });
 
     expect(analyzeFailure).not.toHaveBeenCalled();
     expect(analyzeDrift).not.toHaveBeenCalled();

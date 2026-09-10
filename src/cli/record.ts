@@ -288,7 +288,7 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
         // The learner reads validation's stability tags even from a failed
         // trace, so keep the replay when learning is on (see RunTraceOptions).
         validateFailedTrace: opts.learnHubTracePrompt === true,
-        ...(config.record.sessionState ? { sessionState: config.record.sessionState } : {}),
+        ...(config.sessionState ? { sessionState: config.sessionState } : {}),
         ...(resolved.targetConfig.conventions.record.length > 0
           ? { conventions: resolved.targetConfig.conventions.record }
           : {}),
