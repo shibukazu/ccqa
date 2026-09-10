@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { Command } from "commander";
 import { randomUUID } from "node:crypto";
 import {
@@ -68,6 +69,7 @@ interface AuditOptions {
   language?: string;
   reportToHub?: boolean;
   brief?: string;
+  dumpInputs?: string;
   project?: string;
   hubUrl?: string;
   hubToken?: string;
@@ -115,6 +117,10 @@ export const auditCommand = addProfileOption(addLanguageOption(
     .option(
       "--brief <dir>",
       "Also write one JSON file per finding under <dir>, named by case id: the verdict, its citations, and whether the test can be regenerated or has to be repaired by hand. What reads them is outside ccqa.",
+    )
+    .option(
+      "--dump-inputs <dir>",
+      "Also write what each case's audit was given — its document, every file it was handed and the import that reached it, the source roots, and the prompt — as one markdown file per case under <dir>. For telling 'this never reached the audit' apart from 'it did, and nothing was reported'.",
     )
     .optionsGroup("Environment and connection:")
     .option(
@@ -183,10 +189,8 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   const artifactsContext = await loadSpecArtifactsContext(cwd);
   const config = artifactsContext.config;
   const intent = artifactsContext.intentTarget;
-  const sourceRoots = await resolveSourceRoots(cwd, config.sourceRoots).catch((e: Error) => {
-    log.error(e.message);
-    process.exit(2);
-  });
+  // Throws a RunUsageError, which the command wrapper turns into exit 2.
+  const sourceRoots = await resolveSourceRoots(cwd, config.sourceRoots);
 
   let targets = await collectTargets(specPath, cwd, intent);
   if (targets.length === 0) {
@@ -286,6 +290,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
       guidance: promptCtx.guidance,
       sourceRoots,
       context: artifactsContext,
+      ...(opts.dumpInputs ? { dumpInputs: resolve(cwd, opts.dumpInputs) } : {}),
       onSpecStart: (t) => {
         if (format === "text") log.info(`checking ${caseIdOf(t)}`);
       },

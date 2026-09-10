@@ -8,13 +8,14 @@
  * they reached here. They meet on the spec id the cookie carried between them.
  */
 
-import { access, readFile, stat } from "node:fs/promises";
+import { access, readFile, realpath, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 import { ACTOR_DRAIN_MS, NO_ACTORS, type ActorPlan } from "./actors.ts";
 import type { CoverageConfig } from "../config/project-config.ts";
 import type { ReportCoverage } from "../report/schema.ts";
 import type { CdpAddress, CoverageCollector } from "../targets/types.ts";
+import { resolveConfiguredDir } from "../config/source-roots.ts";
 import { resolveEnvRefs } from "../runtime/env-vars.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
 import { specIdFor } from "./spec-id.ts";
@@ -92,8 +93,13 @@ export class CoverageSession {
   private readonly runId: string;
   /** What reported paths are relative to, and what they are checked against. */
   private readonly root: string;
-  /** Where ccqa runs — the engine's base for resolving bundler-relative paths. */
-  private readonly cwd: string;
+  /**
+   * What a source map's relative `sources` are resolved against:
+   * `coverage.sourceBase` when the project set one, and where ccqa runs
+   * otherwise. A bundler writes those paths relative to wherever the build
+   * ran, which is not always here.
+   */
+  private readonly sourceBase: string;
   private readonly actors: ActorPlan;
   readonly origins: readonly string[];
   /** Where this project's assets come from — the cookie never goes here. */
@@ -112,7 +118,7 @@ export class CoverageSession {
     inbox: RunEventInbox | undefined,
     runId: string,
     root: string,
-    cwd: string,
+    sourceBase: string,
     actors: ActorPlan,
     origins: readonly string[],
     assetOrigins: readonly string[],
@@ -123,7 +129,7 @@ export class CoverageSession {
     this.inbox = inbox;
     this.runId = runId;
     this.root = root;
-    this.cwd = cwd;
+    this.sourceBase = sourceBase;
     this.actors = actors;
     this.origins = origins;
     this.assetOrigins = assetOrigins;
@@ -147,6 +153,8 @@ export class CoverageSession {
     }
     const declaredRoot = await resolveRoot(options.cwd, options.config.projectRoot);
     const root = declaredRoot ?? options.cwd;
+    const sourceBase =
+      (await resolveSourceBase(options.cwd, options.config.sourceBase)) ?? options.cwd;
     // Enumerated at start, not at close: the envelope that carries it is built
     // before the first spec runs (the incremental report), and the tree cannot
     // change mid-run — the run owns this checkout for its duration.
@@ -167,7 +175,7 @@ export class CoverageSession {
       options.inbox,
       options.runId,
       root,
-      options.cwd,
+      sourceBase,
       actors,
       origins,
       resolveAbsoluteOrigins(options.config.assetOrigins ?? [], "coverage.assetOrigins"),
@@ -261,7 +269,7 @@ export class CoverageSession {
       origins: this.origins,
       assetOrigins: this.assetOrigins,
       coverageDir,
-      roots: { base: this.cwd, root: this.root },
+      roots: { base: this.sourceBase, root: this.root },
       warn: (text) => log.warn(`coverage: ${text}`),
       fetchStoredSourceMap: this.fetchStoredSourceMap,
     });
@@ -476,24 +484,28 @@ export async function closeMeasurement(
  * both sides of an intersection agree on what the root means.
  */
 export async function resolveRoot(cwd: string, declared: string | undefined): Promise<string | undefined> {
-  if (declared === undefined) return undefined;
-  // A `${VAR}` nobody set substitutes to "", and `resolve(cwd, "")` is `cwd` —
-  // indistinguishable from never having configured a root.
-  const substituted = resolveEnvRefs(declared).trim();
-  if (substituted === "") {
-    throw new Error(`coverage.projectRoot "${declared}" resolved to nothing — is the variable set?`);
-  }
-  const root = resolve(cwd, substituted);
-  const stats = await stat(root).catch(() => undefined);
-  if (stats?.isDirectory() !== true) {
-    throw new Error(`coverage.projectRoot must name an existing directory; "${declared}" resolved to ${root}`);
-  }
-  if (relative(root, cwd).startsWith("..")) {
-    throw new Error(
-      `coverage.projectRoot must contain the directory ccqa runs in; ${root} does not contain ${cwd}`,
-    );
-  }
-  return root;
+  return declared === undefined
+    ? undefined
+    : resolveConfiguredDir(cwd, declared, `coverage.projectRoot "${declared}"`);
+}
+
+/**
+ * Where a source map's relative `sources` are resolved from
+ * (`coverage.sourceBase`), or undefined when the project configured none.
+ *
+ * A bundler writes those paths relative to wherever it ran, which is the
+ * build's own directory and not always ccqa's. Resolving them against the
+ * working directory then lands every one of them outside the project and the
+ * run reports nothing reached — with no error, because a path that resolves
+ * above the root is dropped by design.
+ */
+export async function resolveSourceBase(
+  cwd: string,
+  declared: string | undefined,
+): Promise<string | undefined> {
+  return declared === undefined
+    ? undefined
+    : resolveConfiguredDir(cwd, declared, `coverage.sourceBase "${declared}"`);
 }
 
 /**

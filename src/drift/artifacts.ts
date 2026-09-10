@@ -36,6 +36,14 @@ export interface SpecArtifacts {
   /** Empty for a live case, and for a recorded case that has not been generated yet. */
   generated: Array<{ path: string; content: string }>;
   /**
+   * The import each file was reached through — the entry's `from` is itself.
+   * Provenance only: whether a file was read is `generated` versus
+   * `unaudited`, and saying it a third time here is a third thing to keep
+   * true. Kept so `--dump-inputs` can answer "why is this file here", which
+   * is the question behind "did it even reach the audit".
+   */
+  reached: Array<{ path: string; from: string }>;
+  /**
    * Files that belong to this test case but did not fit the byte budget. The
    * audit is told their names: a file it never saw must not read as one it
    * cleared.
@@ -107,7 +115,7 @@ async function collectSpecCase(
     body: specYaml,
   };
   const { live, title } = describe(specYaml);
-  if (live) return { intent, generated: [], unaudited: [], live, title };
+  if (live) return { intent, generated: [], unaudited: [], reached: [], live, title };
   return { intent, ...(await collectSpecGenerated(featureName, specName, specYaml, cwd, ctx)), live, title };
 }
 
@@ -122,7 +130,7 @@ export async function collectSpecGenerated(
   specYaml: string,
   cwd: string,
   ctx: SpecArtifactsContext,
-): Promise<{ generated: Array<{ path: string; content: string }>; unaudited: string[] }> {
+): Promise<Pick<SpecArtifacts, "generated" | "unaudited" | "reached">> {
   return readGenerated(specTestFile(featureName, specName, specYaml, cwd, ctx.config), cwd, ctx);
 }
 
@@ -142,7 +150,7 @@ async function collectIntentCase(
     body: testCase.source.text,
   };
   const live = testCase.mode === "live";
-  if (live) return { intent, generated: [], unaudited: [], live, title: testCase.title };
+  if (live) return { intent, generated: [], unaudited: [], reached: [], live, title: testCase.title };
   const plugin = registryFor(ctx.config).get(ctx.intentTarget.id)!;
   const testAbs = resolve(cwd, resolveCaseTestPath(plugin, targetConfig, caseId));
   return { intent, ...(await readGenerated(testAbs, cwd, ctx)), live, title: testCase.title };
@@ -188,19 +196,31 @@ async function readGenerated(
   testAbs: string | null,
   cwd: string,
   ctx: SpecArtifactsContext,
-): Promise<{ generated: Array<{ path: string; content: string }>; unaudited: string[] }> {
-  if (testAbs === null) return { generated: [], unaudited: [] };
-  const paths = [testAbs, ...(await collectSupportFiles(testAbs, cwd, { tsconfig: ctx.tsconfig }))];
+): Promise<Pick<SpecArtifacts, "generated" | "unaudited" | "reached">> {
+  if (testAbs === null) return { generated: [], unaudited: [], reached: [] };
+  const files = [
+    { abs: testAbs, from: testAbs },
+    ...(await collectSupportFiles(testAbs, cwd, { tsconfig: ctx.tsconfig })),
+  ];
   // Read together, spend the budget in order: the reads are independent, but
   // which file falls outside the budget must not depend on who finished first.
-  const contents = await Promise.all(paths.map((p) => readFile(p, "utf8").catch(() => null)));
+  const contents = await Promise.all(
+    files.map((f) => readFile(f.abs, "utf8").catch(() => null)),
+  );
 
   const generated: Array<{ path: string; content: string }> = [];
   const unaudited: string[] = [];
+  const reached: SpecArtifacts["reached"] = [];
   let used = 0;
   for (const [i, content] of contents.entries()) {
+    // A path that cannot be read is not part of the case: the walker resolves
+    // an import before listing it, so in practice this is the entry of a spec
+    // that was never generated — which `unaudited` must not claim exists.
     if (content === null) continue;
-    const display = relative(cwd, paths[i]!);
+    const file = files[i]!;
+    const display = relative(cwd, file.abs);
+    const from = file.abs === file.from ? "(entry)" : relative(cwd, file.from);
+    reached.push({ path: display, from });
     if (used + content.length > MAX_GENERATED_BYTES) {
       unaudited.push(display);
       continue;
@@ -208,7 +228,7 @@ async function readGenerated(
     generated.push({ path: display, content });
     used += content.length;
   }
-  return { generated, unaudited };
+  return { generated, unaudited, reached };
 }
 
 /**

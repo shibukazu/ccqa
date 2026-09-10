@@ -32,6 +32,12 @@ export interface SourceAnchor {
    * and would otherwise be reporting a tally it did not finish.
    */
   places: string[];
+  /**
+   * The string was only ever found glued inside a longer one. Still reported,
+   * because a locator that matches by substring is a locator that works — but
+   * said out loud, because "the product renders this" is not what was found.
+   */
+  partial?: boolean;
 }
 
 export interface SourceAnchors {
@@ -121,24 +127,115 @@ function isSearchable(relPath: string): boolean {
     segments(relPath).slice(0, -1).some((part) => MESSAGE_DIRS.has(part.toLowerCase()));
 }
 
-/** Test-id attributes, and the quoted value each carries. */
-const TESTID_ATTR = /(?:data-test-?id|data-test|data-qa|data-cy|test-?id)\s*[:=]\s*\{?\s*["'`]([^"'`]*)["'`]/gi;
+/**
+ * Test-id attributes, and the quoted value each carries. `=` and not `:`,
+ * because `testId: "submit"` is an entry in a table of names, not an id
+ * declared on an element — and the whole point of matching a test id as an
+ * attribute is to find where the element is.
+ */
+const TESTID_ATTR = /(?:data-test-?id|data-test|data-qa|data-cy|test-?id)\s*=\s*\{?\s*["'`]([^"'`]*)["'`]/gi;
 
 /**
- * Whether the needle is on this line in a form that counts.
+ * Attributes that name an element to a person or a screen reader. A string
+ * that is the whole value of one of these is being *rendered*, which is the
+ * question the column asks — anywhere else in the file it may equally be a
+ * constant, a log line or an analytics event.
  *
- * A test id is an attribute, so it only counts as one: the same string in a
- * selector inside the application, or in a comment naming it, is not the
- * element being declared. Everything else counts wherever it appears.
+ * `=` and not `:`. `name`, `title` and `label` are the commonest keys in a
+ * table of navigation entries, and reading `{ name: "Settings" }` as the
+ * strongest evidence sends the citation to the constant that defines a label
+ * instead of the markup that renders it — which is the failure this ranking
+ * exists to fix. A framework that binds an attribute (`:title="…"`) still
+ * matches, because the `=` is there.
  */
-function lineMatches(line: string, needle: SourceNeedle): boolean {
-  if (needle.kind !== "testid") return line.includes(needle.value);
-  TESTID_ATTR.lastIndex = 0;
+const LABELLING_ATTR = /(?:aria-label|label|placeholder|name|title|alt)\s*=\s*\{?\s*["'`]([^"'`]*)["'`]/gi;
+
+/** Characters a match may not be glued to, or it is part of a longer word. */
+const WORDISH = /[\p{L}\p{N}_]/u;
+
+/**
+ * How well one line answers "is this string rendered here". Higher is better;
+ * a line scores the best of its occurrences.
+ *
+ * The first occurrence in a file is the wrong answer often enough to matter: a
+ * label's text also appears in the constant that defines it and in the
+ * analytics event that fires with it, and those usually come first. So the
+ * line is chosen, not taken.
+ */
+function rankLine(line: string, needle: SourceNeedle): number {
+  if (needle.kind === "testid") {
+    return attributeValue(TESTID_ATTR, line, needle.value) ? RANK_ATTRIBUTE_ONLY : 0;
+  }
+  let best = 0;
+  for (let at = line.indexOf(needle.value); at !== -1; at = line.indexOf(needle.value, at + 1)) {
+    if (isComment(line, at)) continue;
+    const before = line[at - 1];
+    const after = line[at + needle.value.length];
+    // Glued to a letter on either side, this is a longer word that happens to
+    // start or end with the string — reported only when nothing else matched.
+    if ((before && WORDISH.test(before)) || (after && WORDISH.test(after))) {
+      best = Math.max(best, RANK_PARTIAL);
+      continue;
+    }
+    if (attributeValue(LABELLING_ATTR, line, needle.value)) return RANK_LABELLED;
+    // Between a `>` and a `<` is element text: what a screen actually shows.
+    best = Math.max(best, before === ">" || after === "<" ? RANK_ELEMENT_TEXT : RANK_PLAIN);
+  }
+  return best;
+}
+
+/** Whether the needle is the whole value of one of `attr`'s matches on this line. */
+function attributeValue(attr: RegExp, line: string, needle: string): boolean {
+  attr.lastIndex = 0;
   let m: RegExpExecArray | null;
-  while ((m = TESTID_ATTR.exec(line)) !== null) {
-    if (m[1] === needle.value) return true;
+  while ((m = attr.exec(line)) !== null) {
+    if (m[1] === needle) return true;
   }
   return false;
+}
+
+/**
+ * How well one line answers "is this string rendered here", best first: the
+ * whole value of a labelling attribute, element text between `>` and `<`, any
+ * other delimited occurrence, and the string glued inside a longer word.
+ */
+const RANK_LABELLED = 4;
+const RANK_ELEMENT_TEXT = 3;
+const RANK_PLAIN = 2;
+const RANK_PARTIAL = 1;
+/** A test id counts only as an attribute's value, so it has one rank. */
+const RANK_ATTRIBUTE_ONLY = 3;
+
+/**
+ * The best line of `lines` for this needle, and how good it is — `line: -1`
+ * when none of them holds it in a form that counts.
+ *
+ * The one place a string is located in a file. The audit's citation check asks
+ * the same question about the same product source, and answering it twice is
+ * how one ccqa output ends up citing a comment while another reports the same
+ * string as not found.
+ */
+export function bestLineFor(
+  lines: readonly string[],
+  needle: SourceNeedle,
+): { line: number; rank: number } {
+  const top = needle.kind === "testid" ? RANK_ATTRIBUTE_ONLY : RANK_LABELLED;
+  let line = -1;
+  let rank = 0;
+  for (let i = 0; i < lines.length; i++) {
+    // A substring test is a necessary condition for both kinds and far
+    // cheaper than the regexes `rankLine` runs, so most lines end here.
+    if (!lines[i]!.includes(needle.value)) continue;
+    const score = rankLine(lines[i]!, needle);
+    if (score > rank) {
+      rank = score;
+      line = i;
+      // Nothing later can beat the best there is, and a needle in a long
+      // translation catalogue would otherwise scan the file to its end.
+      if (rank === top) break;
+    }
+  }
+  return { line, rank };
 }
 
 /**
@@ -206,6 +303,8 @@ interface Candidates {
   rootIndex: number;
   /** The first two at that rank, in walk order — what the table shows. */
   best: string[];
+  /** Every place found is the string glued inside a longer one. */
+  partial: boolean;
 }
 
 /**
@@ -289,7 +388,11 @@ export async function findSourceAnchors(
       if (budgetSpent) unsearched.add(needle.value);
       continue;
     }
-    found.set(needle.value, { needle: needle.value, places: c.best });
+    found.set(needle.value, {
+      needle: needle.value,
+      places: c.best,
+      ...(c.partial ? { partial: true } : {}),
+    });
   }
   return { found, unsearched };
 }
@@ -311,17 +414,17 @@ function collect(
     // An earlier root already answered this as well as this file can. Root
     // order is priority, so the later one adds nothing — not even doubt.
     if (current && current.rootIndex < rootIndex && current.rank === rank) continue;
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]!;
-      if (!lineMatches(line, needle)) continue;
-      if (isComment(line, line.indexOf(needle.value))) continue;
-      const at = anchorAt(configured, relPath, i + 1);
-      if (!current || current.rank < rank) {
-        candidates.set(needle.value, { rank, rootIndex, best: [at] });
-      } else if (current.best.length < SHOWN) {
-        current.best.push(at);
-      }
-      break; // one entry per file: the same string twice in one file is one place
+    // The best line in this file, not the first: one entry per file either
+    // way, but which line it names is what a reviewer opens.
+    const { line: bestLine, rank: bestScore } = bestLineFor(lines, needle);
+    if (bestLine === -1) continue;
+    const at = anchorAt(configured, relPath, bestLine + 1);
+    const partial = bestScore <= RANK_PARTIAL;
+    if (!current || current.rank < rank) {
+      candidates.set(needle.value, { rank, rootIndex, best: [at], partial });
+    } else if (current.best.length < SHOWN) {
+      current.best.push(at);
+      current.partial = current.partial && partial;
     }
   }
 }

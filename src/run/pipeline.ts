@@ -87,7 +87,12 @@ import {
 import { CoverageSession } from "../coverage/session.ts";
 import { CoverageInbox, type CoverageInboxMode } from "../coverage/inbox.ts";
 import { formatResolvedSpec } from "../coverage/resolve-stream.ts";
-import { groupSpecsByTarget, runExternalSpecs, type TargetDispatch } from "./target-dispatch.ts";
+import {
+  groupIntentCases,
+  groupSpecsByTarget,
+  runExternalSpecs,
+  type TargetDispatch,
+} from "./target-dispatch.ts";
 import { createIncrementalReport, type ReportEnvelope, type ReportSink } from "./incremental-report.ts";
 import { getGitHead } from "../cli/git-branch.ts";
 import { needsHubConnection, openHubRun, REPORT_TO_HUB_NEEDS_CONNECTION } from "../cli/open-hub-run.ts";
@@ -636,7 +641,6 @@ export async function executeRun(
   let specs = intentRun
     ? intentRun.cases.map((c) => splitCaseId(c.ref.id))
     : dedupeSpecs(resolved.flat());
-  const liveCaseCount = intentRun?.cases.filter(runsLive).length ?? 0;
 
   if (filtering) {
     const before = specs.length;
@@ -714,11 +718,25 @@ export async function executeRun(
     }
   }
 
+  // Everything a phase runs comes from here, not from the full catalogue: the
+  // filters above narrowed `specs`, and a run that reports "selected 1 of 12"
+  // and then executes twelve is worse than one that never filtered.
+  const selectedKeys = new Set(specs.map(specKey));
+  const selectedCases =
+    intentRun?.cases.filter((c) => selectedKeys.has(specKey(splitCaseId(c.ref.id)))) ?? [];
+  const liveCaseCount = selectedCases.filter(runsLive).length;
+  // A generated case's test belongs to the project's own runner, so an ordinary
+  // `ccqa run` leaves it alone. Two things ask ccqa to run it anyway: a
+  // measurement, which has to observe the test executing to record what it
+  // reached, and naming the case, which is someone asking for this one.
+  const runGenerated = opts.coverage === true || targets.length > 0;
+  const generatedCases = runGenerated ? selectedCases.filter((c) => !runsLive(c)) : [];
+
   // Nothing for this run to execute. For a project whose cases are its own
   // documents that is not the same fact as "no cases": a case ccqa does not
   // run is one the project's own test command runs, and calling that "nothing
   // found" sends the reader looking for a file that is exactly where it should be.
-  if (specs.length === 0 || (intentRun !== null && liveCaseCount === 0)) {
+  if (specs.length === 0 || (intentRun !== null && liveCaseCount + generatedCases.length === 0)) {
     if (intentRun === null) {
       log.warn("no specs to run");
       // A target whose cases come from the project's own files is reached
@@ -740,6 +758,10 @@ export async function executeRun(
       log.hint(
         "ccqa runs a case itself only when its mode says `live`; every other case's test is " +
           "executed by the project's own test command, which `ccqa select-specs --format paths` feeds",
+      );
+      log.hint(
+        "pass --coverage, or name the cases, to have ccqa run their generated tests through the " +
+          "target's runCommand — which is how a measurement observes what they reach",
       );
     }
     return { exitCode: 0, report: null, reportDir: null };
@@ -807,10 +829,19 @@ export async function executeRun(
   // silently dropping out of the run.
   let dispatch: TargetDispatch;
   try {
-    // A markdown case is not dispatched by target — the target that declares
-    // the intent source already owns it, and the mode split below is what
-    // decides whether ccqa or the project's own command executes it.
+    // A markdown case is not dispatched by reading a `target:` — the target
+    // that declares the intent source already owns every case under it — so
+    // the two routes are built apart and merged.
     dispatch = groupSpecsByTarget(intentRun ? [] : specs, catalog, projectConfig);
+    if (intentRun !== null && generatedCases.length > 0) {
+      const routed = groupIntentCases(
+        generatedCases.map((c) => ({ ...splitCaseId(c.ref.id), title: c.title })),
+        intentRun.id,
+        projectConfig,
+      );
+      dispatch.external.push(...routed.external);
+      dispatch.skipped.push(...routed.skipped);
+    }
     for (const { spec, groups } of waitingOnGroup) {
       dispatch.skipped.push({
         ...spec,
@@ -827,7 +858,7 @@ export async function executeRun(
   // Agent-browser det specs run first under vitest, then external targets,
   // then live ones via Claude; results merge into a single report.json.
   const withMode = intentRun
-    ? intentRun.cases.map((c) => ({ ...splitCaseId(c.ref.id), mode: c.mode }))
+    ? selectedCases.map((c) => ({ ...splitCaseId(c.ref.id), mode: c.mode }))
     : resolveSpecsModes(dispatch.agentBrowser, catalog);
   // `mode:` decides who executes a case, and the two document kinds answer
   // differently: ccqa's own deterministic spec is a recording ccqa replays
@@ -839,8 +870,9 @@ export async function executeRun(
   log.meta(
     "modes",
     intentRun
-      ? `${intentRun.cases.length} case(s) / ${liveSpecs.length} live / ` +
-        `${intentRun.cases.length - liveSpecs.length} for the project's own test command`
+      ? `${selectedCases.length} case(s) / ${liveSpecs.length} live / ` +
+        `${generatedCases.length} generated, run here / ` +
+        `${selectedCases.length - liveSpecs.length - generatedCases.length} for the project's own test command`
       : `${detSpecs.length} deterministic / ${liveSpecs.length} live`,
   );
   if (dispatch.external.length > 0) {
@@ -905,8 +937,14 @@ export async function executeRun(
   if (opts.dryRun) {
     // A markdown case ccqa does not run would otherwise be tagged
     // "deterministic", which here names a recording ccqa replays. What these
-    // are is the project's own runner's work, so the listing says that.
-    const notOurs = (intentRun ? withMode.filter((s) => s.mode !== "live") : []).map((s) => ({
+    // are is the project's own runner's work, so the listing says that — and
+    // the ones this run *is* about to execute are already routed, so listing
+    // them here too would give one case two rows saying opposite things.
+    const runningHere = new Set(generatedCases.map((c) => specKey(splitCaseId(c.ref.id))));
+    const theirs = intentRun
+      ? withMode.filter((s) => s.mode !== "live" && !runningHere.has(specKey(s)))
+      : [];
+    const notOurs = theirs.map((s) => ({
       ...s,
       title: null,
       reason: "run by the project's own test command",
@@ -1087,7 +1125,7 @@ export async function executeRun(
   // target cannot honour (a `judgeByLlm` step) throws while being read, and
   // doing that up front would cost this run the phases it could have finished.
   const liveCases = intentRun
-    ? intentRun.cases.filter(runsLive).map((c) => liveCaseFrom(c, liveCaseOpts))
+    ? selectedCases.filter(runsLive).map((c) => liveCaseFrom(c, liveCaseOpts))
     : liveSpecs.map((ref) => {
         const yaml = catalog.get(specKey(ref))?.yaml;
         // Unreachable: `mode: live` was read off this very file a moment ago.

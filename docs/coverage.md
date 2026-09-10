@@ -60,6 +60,35 @@ coverage:
 The application's own `CCQA_COVERAGE_ROOT` has to name the same directory. Root
 the two halves differently and one file arrives under two names.
 
+**It may sit outside the directory ccqa runs in.** A project whose tests are
+one checkout and whose application is another names the application here,
+absolute or relative, and the path is resolved through any symlinks before it
+is compared against anything — a checkout reached one way and the same
+checkout reached another otherwise agree about nothing:
+
+```yaml
+coverage:
+  projectRoot: ../product-app    # or an absolute path
+```
+
+A directory that is not there is a config error, said once, rather than a run
+that measures nothing and reports it as a clean sweep.
+
+**Say where the build ran, when it was not here.** A bundler writes a source
+map's `sources` relative to its own output directory. Resolving them against
+the directory ccqa runs in then lands every one of them outside the project,
+and the run reports nothing reached — with no error, because a path above the
+root is dropped by design. `sourceBase` is that directory:
+
+```yaml
+coverage:
+  sourceBase: ../product-app/.output/client
+```
+
+It need not sit inside `projectRoot`, and it defaults to the directory ccqa
+runs in, which is the case where the two are the same. `include` stays
+relative to `projectRoot` either way.
+
 A package is imported through its build output, so that is what the bundler
 names. Where the output has a map beside it naming a single source — what an
 unbundled compile produces — the source is reported instead; a bundle's map

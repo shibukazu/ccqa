@@ -53,6 +53,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0029](0029-ccqa-ships-mechanism-the-project-supplies-the-facts.md) | ccqa ships mechanism; the project supplies the facts | accepted |
 | [0030](0030-the-audit-reads-the-product.md) | The audit reads the product, and may name it | accepted |
 | [0031](0031-a-recording-carries-references-not-values.md) | A recording carries references, never resolved values | accepted |
+| [0032](0032-ccqa-runs-a-generated-case-only-to-measure-it.md) | ccqa runs a generated case only to measure it | accepted |
 
 ## Template
 

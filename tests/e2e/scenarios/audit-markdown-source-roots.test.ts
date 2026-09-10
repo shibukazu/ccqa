@@ -106,6 +106,50 @@ describe("ccqa audit — markdown cases against a product outside the project", 
     expect(brief.repair.route).toBe("external");
   });
 
+  // The dispute this answers: a class name a support file addresses produced no
+  // finding, and from the outside "it never reached the audit" and "it did, and
+  // nothing was said about it" look the same. The dump makes them different.
+  //
+  // What the mocked verdict cannot show is whether a real model would report
+  // it; that is the prompt's contract, asserted in src/prompts/drift.test.ts.
+  test("--dump-inputs shows the support file a class name lives in, and how it was reached", async () => {
+    project = await setUp((product) => [product]);
+
+    // A generated test that reaches the class only through a page object, the
+    // shape that hid it: nothing in the test file itself names `.nav-bar`.
+    await mkdir(join(project.cwd, "specs", "todo"), { recursive: true });
+    await writeFile(
+      join(project.cwd, "specs", "todo", "add_item.spec.ts"),
+      [
+        `import { NavigationBar } from "../../pages/navigation_bar";`,
+        `test("Adding an item puts it on the list", async ({ page }) => {`,
+        `  await new NavigationBar(page).openTodos();`,
+        `});`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const mockPath = await mockClaude(project.cwd, NO_DRIFT);
+    const result = await runCcqa(["audit", "--dump-inputs", "audit-inputs"], {
+      cwd: project.cwd,
+      env: { ...noColorEnv, CCQA_CLAUDE_MOCK_FILE: mockPath },
+    });
+    expect(result.exitCode).toBe(0);
+
+    const dump = await readFile(
+      resolve(project.cwd, "audit-inputs", "todo", "add_item.md"),
+      "utf8",
+    );
+    // The page object was handed over, and the dump says which import reached it.
+    expect(dump).toContain("pages/navigation_bar.ts");
+    expect(dump).toContain("specs/todo/add_item.spec.ts");
+    // ...and its content is there, class name and all.
+    expect(dump).toContain('.locator(".nav-bar")');
+    // The product that renders the class is named as a root the audit may read.
+    expect(dump).toContain(productDir!);
+  });
+
   test("a sourceRoots entry that is not there stops the sweep", async () => {
     project = await setUp(() => ["../nowhere-at-all"]);
     const mockPath = await mockClaude(project.cwd, NO_DRIFT);

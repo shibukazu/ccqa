@@ -430,6 +430,21 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     }
   }
 
+  // A screenshot that could not be taken warns as it happens and the step
+  // carries on, which is right — but the warning scrolls away and what is
+  // left is a passing run whose evidence is missing, with nothing saying so
+  // where the evidence is read. Counted once, at the end, so it is on screen.
+  const withoutShots = stepResults.filter(
+    (step) => step.status !== "skipped" && (step.beforePng === null || step.afterPng === null),
+  );
+  if (withoutShots.length > 0) {
+    log.warn(
+      `${withoutShots.length} step(s) finished without a full pair of screenshots ` +
+        `(${withoutShots.map((step) => step.stepId).join(", ")}) — the report and the JUnit ` +
+        `output carry only what was captured`,
+    );
+  }
+
   const durationMs = Date.now() - startedAt.getTime();
   return {
     runId: input.runId,

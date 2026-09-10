@@ -16,6 +16,8 @@ import {
   type SpecArtifactsContext,
 } from "./artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
+import { writeAuditInputs } from "./dump-inputs.ts";
+import { verifyCitations } from "./verify-citations.ts";
 import { caseIdOf, DriftReplySchema, type SpecResult, type SpecTarget } from "./types.ts";
 import * as log from "../cli/logger.ts";
 
@@ -37,6 +39,11 @@ export interface AnalyzeDriftInput {
   sourceRoots?: readonly SourceRoot[];
   /** The sweep's config and import aliases, when the caller already read them. */
   context?: SpecArtifactsContext;
+  /**
+   * Directory to write each case's audit inputs into (`--dump-inputs`). Absent
+   * writes nothing, which is the default.
+   */
+  dumpInputs?: string;
   /** Called once per spec when its check starts. Used by `cli/audit` for progress logging. */
   onSpecStart?: (target: SpecTarget) => void;
   /**
@@ -49,6 +56,16 @@ export interface AnalyzeDriftInput {
 }
 
 const DEFAULT_CONCURRENCY = 3;
+
+/**
+ * How many turns one case's audit may take.
+ *
+ * A runaway guard, not a working limit: reaching it costs the case a retry and
+ * then an errored row rather than a partial answer, so it is set well above
+ * what a large case needs — a locator list, the searches that check it, and
+ * the reads that place them in context.
+ */
+const MAX_AUDIT_TURNS = 80;
 
 /**
  * Run drift checks against a list of pre-collected targets. Pure library
@@ -66,6 +83,7 @@ export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult
     language,
     guidance,
     sourceRoots = [],
+    dumpInputs,
     onSpecStart,
     onSpecDone,
   } = input;
@@ -84,6 +102,7 @@ export async function analyzeDrift(input: AnalyzeDriftInput): Promise<SpecResult
       language,
       guidance,
       sourceRoots,
+      ...(dumpInputs !== undefined ? { dumpInputs } : {}),
     });
     await onSpecDone?.(result);
     return result;
@@ -101,6 +120,8 @@ interface CheckSpecOptions {
   language?: string;
   /** Project guidance from the hub, resolved once by the caller. */
   guidance?: DriftGuidance;
+  /** Where to write what this audit was given, when the caller asked for it. */
+  dumpInputs?: string;
 }
 
 async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<SpecResult> {
@@ -126,16 +147,40 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
   // One CI drift row shouldn't die on a single malformed reply (truncated
   // JSON, missing block) — retry the whole check once before reporting the
   // spec as errored.
+  const userPrompt = buildDriftUserPrompt(artifacts, opts.sourceRoots);
+  const systemPrompt =
+    buildDriftSystemPrompt(opts.blocks, opts.guidance ?? {}, artifacts.intent.kind) +
+    languageDirective(opts.language);
+  if (opts.dumpInputs !== undefined) {
+    // Written before the call, not after it: the reason to reach for this is
+    // usually a sweep that answered nothing, and one that dies mid-way is
+    // exactly when the inputs are worth having.
+    await writeAuditInputs(opts.dumpInputs, {
+      caseId: name,
+      artifacts,
+      sourceRoots: opts.sourceRoots,
+      systemPrompt,
+      userPrompt,
+    }).then(
+      (path) => log.meta("inputs", path),
+      // A side output that cannot be written must not discard a sweep that
+      // has already paid for the answers it has.
+      (err: Error) => log.warn(`${name}: could not write the audit inputs (${err.message})`),
+    );
+  }
+
   const MAX_ATTEMPTS = 2;
   let lastError = "";
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const { result, isError } = await invokeClaudeStreaming(
       {
-        prompt: buildDriftUserPrompt(artifacts, opts.sourceRoots),
-        systemPrompt:
-          buildDriftSystemPrompt(opts.blocks, opts.guidance ?? {}, artifacts.intent.kind) +
-          languageDirective(opts.language),
+        prompt: userPrompt,
+        systemPrompt,
         allowedTools: ["Read", "Grep", "Glob"],
+        // A ceiling, not a budget: the audit is asked to check a list of
+        // locators, and a case with thirty of them must not be able to turn
+        // that into thirty searches with nothing bounding the bill.
+        maxTurns: MAX_AUDIT_TURNS,
         silenceBashLog: true,
         cwd: opts.cwd,
         additionalDirectories: opts.sourceRoots.map((root) => root.abs),
@@ -159,6 +204,14 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
       // so every consumer downstream — `--report-format json`, the report rows,
       // the hub push — sees a diagnosis that already obeys the label's rules.
       const drift = reply.drift ? normalizeDiagnosis(reply.drift) : null;
+      // Checked before the finding is kept, so nothing downstream — the report,
+      // the hub row, `--brief` — ever carries a line number nobody looked at.
+      if (drift !== null && drift.evidence.length > 0) {
+        drift.evidence = await verifyCitations(drift.evidence, {
+          headline: drift.headline,
+          roots: [...opts.sourceRoots.map((r) => r.abs), opts.cwd],
+        });
+      }
       return { target, ok: true, drift, live: artifacts.live, title: artifacts.title };
     } catch (e) {
       lastError = `failed to parse drift reply: ${(e as Error).message}`;

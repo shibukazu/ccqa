@@ -136,9 +136,7 @@ export const evidenceCommand = addLanguageOption(
       // project with no `sourceRoots` unchanged — see EvidenceInput.
       let anchors: SourceAnchors | undefined;
       if (config.sourceRoots.length > 0) {
-        const roots = await resolveSourceRoots(cwd, config.sourceRoots).catch((e: unknown) => {
-          throw new RunUsageError(e instanceof Error ? e.message : String(e));
-        });
+        const roots = await resolveSourceRoots(cwd, config.sourceRoots);
         const needles = sourceNeedles([...recording.actions, ...(recording.cleanup ?? [])]);
         anchors = await findSourceAnchors(needles, roots);
       }

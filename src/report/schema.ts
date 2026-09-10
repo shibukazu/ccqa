@@ -91,6 +91,15 @@ export const FailureEvidenceSchema = z.object({
   /** file:line or diff-hunk reference backing the claim. Optional for log-only evidence. */
   file: z.string().optional(),
   detail: z.string(),
+  /**
+   * Set only when opening the cited line found something worth saying
+   * (`src/drift/verify-citations.ts`): `corrected` means the line number here
+   * is ccqa's rather than the model's, `unverified` that the file holds the
+   * quoted string nowhere. Absent covers both "checked and right" and
+   * "nothing to check" — a reader acts on neither, and a published field with
+   * four states two of which mean the same thing is surface nobody needs.
+   */
+  citation: z.enum(["corrected", "unverified"]).optional(),
 });
 export type FailureEvidence = z.infer<typeof FailureEvidenceSchema>;
 

@@ -1,8 +1,9 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import { runCcqa } from "../_helpers/cli.ts";
-import { makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
+import { fixturePath, makeFakeProject, type FakeProject } from "../_helpers/fake-project.ts";
 import { noAuthEnv, noColorEnv, stripAnsi, stubSecurityBinary } from "../_helpers/env.ts";
 import { execFileP } from "../../../src/drift/affected.ts";
 import { DEFAULT_REPORT_DIR } from "../../../src/run/report-constants.ts";
@@ -85,11 +86,16 @@ async function writeLocalReport(cwd: string, results: RunReportData["results"]):
 
 describe("ccqa select-specs --format paths (no hub)", () => {
   let project: FakeProject | null = null;
+  let productDir: string | null = null;
 
   afterEach(async () => {
     if (project) {
       await project.cleanup();
       project = null;
+    }
+    if (productDir) {
+      await rm(productDir, { recursive: true, force: true });
+      productDir = null;
     }
   });
 
@@ -120,6 +126,53 @@ describe("ccqa select-specs --format paths (no hub)", () => {
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(0);
     expect(stripAnsi(result.stdout)).toBe(".ccqa/features/alpha/test-cases/one/test.spec.ts\n");
+  });
+
+  // The shape a project whose tests and application are separate checkouts has:
+  // the measured reach is a markdown case's, the diff is taken in the
+  // application's repository, and `coverage.projectRoot` points outside cwd —
+  // which used to be refused outright.
+  test("selects a markdown case from a change in the application's own checkout", async () => {
+    project = await makeFakeProject("external-target");
+    productDir = await mkdtemp(join(tmpdir(), "ccqa-e2e-product-"));
+    await cp(fixturePath("todo-product"), productDir, { recursive: true });
+    await initGitRepo(productDir);
+    const { stdout: baseSha } = await git(productDir, "rev-parse", "HEAD");
+    const base = baseSha.trim();
+
+    await writeFile(
+      join(project.cwd, ".ccqa", "config.yaml"),
+      [
+        await readFile(join(project.cwd, ".ccqa", "config.yaml"), "utf8"),
+        "coverage:",
+        "  instrumentedOrigins: [https://example.test]",
+        `  projectRoot: ${productDir}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    await initGitRepo(project.cwd);
+
+    await writeFile(
+      join(productDir, "src", "todo-list.ts"),
+      `${await readFile(join(productDir, "src", "todo-list.ts"), "utf8")}\n// changed\n`,
+      "utf8",
+    );
+    await git(productDir, "add", "-A");
+    await git(productDir, "commit", "-m", "change the list", "--no-gpg-sign");
+
+    // The case id is the row's feature/spec pair, the way a markdown case is
+    // addressed everywhere else.
+    await writeLocalReport(project.cwd, [coverageRow("todo", "add_item", ["src/todo-list.ts"])]);
+
+    const result = await runCcqa(
+      ["select-specs", "--against", `${base}..HEAD`, "--repo", productDir, "--format", "paths"],
+      { cwd: project.cwd, env: noColorEnv() },
+    );
+    const combined = stripAnsi(result.stdout + result.stderr);
+    expect(result.exitCode, combined).toBe(0);
+    // The path the project's own runner is handed, from its `testPath` template.
+    expect(stripAnsi(result.stdout)).toBe("specs/todo/add_item.spec.ts\n");
   });
 
   test("--against without a `..` is a usage error, not a git failure", async () => {

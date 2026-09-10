@@ -1,0 +1,14 @@
+defaultTarget: app-e2e
+
+targets:
+  app-e2e:
+    kind: external
+    framework: playwright
+    testPath: specs/{case}.spec.ts
+    intent:
+      kind: markdown
+      root: docs/testcase
+      fields:
+        steps: Steps
+        expected: Expected
+        mode: Mode

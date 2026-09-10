@@ -44,6 +44,23 @@ describe("buildDriftSystemPrompt", () => {
     expect(out).toMatch(/When the evidence does not support "gone", answer `BEHAVIOUR_CHANGED`/);
     expect(out).toMatch(/When neither reading is supported, omit the field/);
   });
+
+  test("tells the model to inventory every locator before checking any of them", () => {
+    const out = buildDriftSystemPrompt(NO_BLOCKS);
+    expect(out).toMatch(/before checking any of them/);
+    expect(out).toMatch(/List every locator the test and its support files use, before checking/);
+  });
+
+  test("names CSS class/id and XPath among the locator kinds to list", () => {
+    const out = buildDriftSystemPrompt(NO_BLOCKS);
+    expect(out).toMatch(/CSS class or id/);
+    expect(out).toMatch(/XPath or structural path/);
+  });
+
+  test("a locator whose string the product renders nowhere is a TEST_DRIFT candidate", () => {
+    const out = buildDriftSystemPrompt(NO_BLOCKS);
+    expect(out).toMatch(/A locator whose string the product renders nowhere is a TEST_DRIFT candidate/);
+  });
 });
 
 describe("buildDriftUserPrompt", () => {
@@ -52,6 +69,7 @@ describe("buildDriftUserPrompt", () => {
       intent: { kind: "spec", path: ".ccqa/features/demo/test-cases/sample/spec.yaml", body: "title: Sample\nsteps: []" },
       generated: [],
       unaudited: [],
+      reached: [],
       live: false,
       title: "Sample",
     });
@@ -63,11 +81,28 @@ describe("buildDriftUserPrompt", () => {
       intent: { kind: "spec", path: ".ccqa/features/demo/test-cases/sample/spec.yaml", body: "title: Sample\nsteps: []" },
       generated: [],
       unaudited: ["e2e/specs/sample.spec.ts"],
+      reached: [],
       live: false,
       title: "Sample",
     });
     expect(out).toContain("e2e/specs/sample.spec.ts");
     expect(out).toMatch(/This case IS generated/);
     expect(out).not.toMatch(/has not been generated yet/);
+  });
+
+  test("the source-roots section tells the audit to grep template files too", () => {
+    const out = buildDriftUserPrompt(
+      {
+        intent: { kind: "spec", path: ".ccqa/features/demo/test-cases/sample/spec.yaml", body: "title: Sample\nsteps: []" },
+        generated: [],
+        unaudited: [],
+        reached: [],
+        live: false,
+        title: "Sample",
+      },
+      [{ configured: "../product/src", abs: "/abs/product/src" }],
+    );
+    expect(out).toContain("What renders a screen is often a template rather than a script");
+    expect(out).toContain("Grep those files too");
   });
 });

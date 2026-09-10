@@ -372,6 +372,12 @@ test. Every other case is recorded and generated, and its test is run by your
 own test runner (see [`ccqa select-specs --format
 paths`](./running.md#asking-the-question-on-its-own)).
 
+Two things ask ccqa to run a generated case anyway, through the target's own
+`runCommand`: `--coverage`, because a measurement has to watch the test
+execute to record what it reached, and naming the case, because that is
+someone asking for this one. A plain `ccqa run` still leaves them alone — the
+line is "who owns running this suite", and by default that is your runner.
+
 ### What the generated test looks like
 
 Two things in the emitted file are written for the reviewer rather than for
@@ -499,6 +505,16 @@ is declared as an attribute (`data-testid="…"` and its usual spellings), never
 where a selector or a comment names it. When several places share the top rank
 the cell reads `ambiguous` and shows two of them rather than picking one: the
 scan stops once it has those two, so it offers no tally it did not finish.
+
+Within a file the line is chosen, not taken. The first occurrence is the wrong
+answer often enough to matter — a label's text also appears in the constant
+that defines it and in the analytics event that fires with it, and those
+usually come first — so a line where the string is the whole value of an
+`aria-label`, `label`, `placeholder`, `name`, `title` or `alt`, or sits
+between a `>` and a `<` as element text, beats one where it merely appears. A
+hit found only glued inside a longer word is reported as a `(partial match)`:
+a locator that matches by substring does work, but "the product renders this
+string" is not what was found.
 
 ### Regenerating from a saved route
 

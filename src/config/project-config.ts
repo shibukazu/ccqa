@@ -304,11 +304,26 @@ export const CoverageConfigSchema = z
      * against `--cwd`, and defaults to it.
      *
      * Widen it when the application is one package of a workspace and imports
-     * its siblings, whose code runs but lives above `--cwd`. The application's
-     * own `CCQA_COVERAGE_ROOT` has to name the same directory — root the two
-     * halves differently and one file arrives under two names.
+     * its siblings, whose code runs but lives above `--cwd`. It may also sit
+     * entirely outside `--cwd`: a project whose tests are one checkout and
+     * whose application is another names the application here. The
+     * application's own `CCQA_COVERAGE_ROOT` has to name the same directory —
+     * root the two halves differently and one file arrives under two names.
      */
     projectRoot: z.string().min(1).optional(),
+    /**
+     * The directory a source map's relative `sources` are resolved against —
+     * where the build ran. Relative to `--cwd`, or absolute, and it need not
+     * sit inside `projectRoot`.
+     *
+     * A bundler writes those paths relative to its own output directory, which
+     * is only the working directory when ccqa and the build share one. When it
+     * does not, every browser-side path resolves outside the project and the
+     * run reports nothing reached — no error, because a path above the root is
+     * dropped by design. Defaults to `--cwd`, which is the case where the two
+     * are the same.
+     */
+    sourceBase: z.string().min(1).optional(),
     /**
      * Directories (relative to `projectRoot`) whose source files form the
      * denominator — the universe "uncovered" is judged against. Name the same

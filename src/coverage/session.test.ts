@@ -1,13 +1,14 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
-import { CoverageSession } from "./session.ts";
+import { CoverageSession, resolveRoot, resolveSourceBase } from "./session.ts";
 import { RunEventSchema, type RunEvent } from "./events.ts";
 import { FRONTEND_COVERAGE_FILE, type FrontendCoverage } from "./contract.ts";
 import type { ActorPlan, ActorWindow } from "./actors.ts";
 import type { CoverageConfig } from "../config/project-config.ts";
+import { RunUsageError } from "../run/errors.ts";
 
 /**
  * Hub-inbox mode (ADR-0022): no sink is bound, and everything the run alone
@@ -110,5 +111,68 @@ describe("CoverageSession in hub-inbox mode", () => {
       { kind: "spec-open", runId: "run-1", specId: SPEC_ID },
       { kind: "spec-close", runId: "run-1", specId: SPEC_ID },
     ]);
+  });
+});
+
+describe("resolveRoot and resolveSourceBase", () => {
+  let cwd: string;
+  let outside: string;
+
+  // realpath: on macOS the tmpdir lives behind a /var → /private/var symlink,
+  // and resolveConfiguredDir returns real paths — keep both sides comparable.
+  async function makeDir(prefix: string): Promise<string> {
+    return realpath(await mkdtemp(join(tmpdir(), prefix)));
+  }
+
+  afterEach(async () => {
+    if (cwd) await rm(cwd, { recursive: true, force: true });
+    if (outside) await rm(outside, { recursive: true, force: true });
+  });
+
+  test("a sibling of cwd resolves instead of being rejected (tests and the application are often separate checkouts)", async () => {
+    cwd = await makeDir("ccqa-session-root-");
+    outside = await makeDir("ccqa-session-root-outside-");
+    expect(await resolveRoot(cwd, outside)).toBe(outside);
+    expect(await resolveSourceBase(cwd, outside)).toBe(outside);
+  });
+
+  test("a relative root resolves against cwd", async () => {
+    cwd = await makeDir("ccqa-session-root-");
+    await mkdir(join(cwd, "app"), { recursive: true });
+    expect(await resolveRoot(cwd, "app")).toBe(join(cwd, "app"));
+    expect(await resolveSourceBase(cwd, "app")).toBe(join(cwd, "app"));
+  });
+
+  test("a directory reached through a symlink resolves to its real path", async () => {
+    cwd = await makeDir("ccqa-session-root-");
+    outside = await makeDir("ccqa-session-root-outside-");
+    await symlink(outside, join(cwd, "app-link"));
+    expect(await resolveRoot(cwd, "app-link")).toBe(outside);
+  });
+
+  test("a missing directory throws RunUsageError naming the config key", async () => {
+    cwd = await makeDir("ccqa-session-root-");
+    const rootErr = await resolveRoot(cwd, "nope").catch((e: unknown) => e);
+    expect(rootErr).toBeInstanceOf(RunUsageError);
+    expect((rootErr as Error).message).toMatch(/coverage\.projectRoot/);
+    const baseErr = await resolveSourceBase(cwd, "nope").catch((e: unknown) => e);
+    expect(baseErr).toBeInstanceOf(RunUsageError);
+    expect((baseErr as Error).message).toMatch(/coverage\.sourceBase/);
+  });
+
+  test("a ${VAR} that resolves to empty throws RunUsageError naming the config key", async () => {
+    cwd = await makeDir("ccqa-session-root-");
+    const rootErr = await resolveRoot(cwd, "${CCQA_TEST_UNSET_ROOT_VAR}").catch((e: unknown) => e);
+    expect(rootErr).toBeInstanceOf(RunUsageError);
+    expect((rootErr as Error).message).toMatch(/coverage\.projectRoot/);
+    const baseErr = await resolveSourceBase(cwd, "${CCQA_TEST_UNSET_ROOT_VAR}").catch((e: unknown) => e);
+    expect(baseErr).toBeInstanceOf(RunUsageError);
+    expect((baseErr as Error).message).toMatch(/coverage\.sourceBase/);
+  });
+
+  test("undefined returns undefined for both", async () => {
+    cwd = await makeDir("ccqa-session-root-");
+    expect(await resolveRoot(cwd, undefined)).toBeUndefined();
+    expect(await resolveSourceBase(cwd, undefined)).toBeUndefined();
   });
 });

@@ -101,6 +101,13 @@ function stripJsonComments(text: string): string {
   return uncommented.replace(/,(\s*[}\]])/g, "$1");
 }
 
+/** One file the walk reached, and the file whose import led to it. */
+export interface SupportFile {
+  abs: string;
+  /** Absolute path of the importer — how this file came to be part of the case. */
+  from: string;
+}
+
 /**
  * Files reachable from `entryAbs` by following project-internal imports, in
  * breadth-first order and excluding the entry itself. Reading a file that
@@ -111,11 +118,11 @@ export async function collectSupportFiles(
   entryAbs: string,
   cwd: string,
   opts: { maxDepth?: number; tsconfig?: TsconfigPaths | null } = {},
-): Promise<string[]> {
+): Promise<SupportFile[]> {
   const maxDepth = opts.maxDepth ?? DEFAULT_IMPORT_DEPTH;
   const tsconfig = opts.tsconfig !== undefined ? opts.tsconfig : await loadTsconfigPaths(cwd);
   const seen = new Set([entryAbs]);
-  const found: string[] = [];
+  const found: SupportFile[] = [];
   let frontier = [entryAbs];
 
   for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
@@ -123,14 +130,16 @@ export async function collectSupportFiles(
     // independent, but the order they are recorded in must stay the walk's,
     // not whichever `stat` answered first.
     const levels = await Promise.all(
-      frontier.map((fileAbs) => resolveImportsOf(fileAbs, cwd, tsconfig)),
+      frontier.map(async (fileAbs) =>
+        (await resolveImportsOf(fileAbs, cwd, tsconfig)).map((abs) => ({ abs, from: fileAbs })),
+      ),
     );
     const next: string[] = [];
-    for (const targetAbs of levels.flat()) {
-      if (seen.has(targetAbs)) continue;
-      seen.add(targetAbs);
-      found.push(targetAbs);
-      next.push(targetAbs);
+    for (const entry of levels.flat()) {
+      if (seen.has(entry.abs)) continue;
+      seen.add(entry.abs);
+      found.push(entry);
+      next.push(entry.abs);
       if (found.length >= MAX_SUPPORT_FILES) return found;
     }
     frontier = next;

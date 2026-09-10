@@ -1,5 +1,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
+import { resolveEnvRefs } from "../runtime/env-vars.ts";
+import { RunUsageError } from "../run/errors.ts";
 
 /**
  * A directory holding the product's own source, resolved.
@@ -28,15 +30,44 @@ export async function resolveSourceRoots(
 ): Promise<SourceRoot[]> {
   const resolved: SourceRoot[] = [];
   for (const configured of roots) {
-    const abs = resolve(cwd, configured);
-    const info = await stat(abs).catch(() => null);
-    if (!info?.isDirectory()) {
-      const where = isAbsolute(configured) ? "" : ` (resolved from ${cwd})`;
-      throw new Error(
-        `sourceRoots entry "${configured}" is not a directory${where}: the audit reads the product's source from there`,
-      );
-    }
-    resolved.push({ configured, abs: await realpath(abs) });
+    resolved.push({
+      configured,
+      abs: await resolveConfiguredDir(cwd, configured, `sourceRoots entry "${configured}"`),
+    });
   }
   return resolved;
+}
+
+/**
+ * A directory a project configured, resolved the way every one of them must
+ * be: `${VAR}` refs expanded, relative to the working directory, and through
+ * to a real path — a checkout reached by a symlink otherwise compares unequal
+ * to the same checkout reached directly, and everything under it is dropped.
+ *
+ * It may sit outside the working directory. For a project whose tests are one
+ * checkout and whose application is another, that is the ordinary case.
+ *
+ * Every failure here is otherwise silent and looks exactly like success: a
+ * directory that is not there sends every path outside it, and the command
+ * reports a smaller set with no error at all. So each one throws, and throws
+ * the type the CLI already turns into an exit code.
+ */
+export async function resolveConfiguredDir(
+  cwd: string,
+  declared: string,
+  what: string,
+): Promise<string> {
+  // A `${VAR}` nobody set substitutes to "", and `resolve(cwd, "")` is `cwd` —
+  // indistinguishable from never having configured one.
+  const substituted = resolveEnvRefs(declared).trim();
+  if (substituted === "") {
+    throw new RunUsageError(`${what} resolved to nothing — is the variable set?`);
+  }
+  const abs = resolve(cwd, substituted);
+  const info = await stat(abs).catch(() => null);
+  if (!info?.isDirectory()) {
+    const where = isAbsolute(substituted) ? "" : ` (resolved from ${cwd})`;
+    throw new RunUsageError(`${what} is not a directory${where}: ${abs}`);
+  }
+  return realpath(abs).catch(() => abs);
 }

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -183,6 +183,64 @@ describe("findSourceAnchors", () => {
     } finally {
       await rm(cwdA, { recursive: true, force: true });
     }
+  });
+
+  // The observed failure: a label's text also appears in the constant that
+  // defines it and in the analytics event that fires with it, and those come
+  // first in the file — so the citation pointed at a line nobody renders.
+  it("cites where the string is rendered, not the first line that contains it", async () => {
+    const root = await makeRoot({
+      "ui/Page.tsx": [
+        `const analyticsEvent = "Send it clicked";`,
+        `export function Page() {`,
+        `  return <button aria-label="Send it">Send it</button>;`,
+        `}`,
+      ].join("\n"),
+    });
+    const { found } = await findSourceAnchors([text("Send it")], [root]);
+    expect(found.get("Send it")?.places).toEqual(["src/ui/Page.tsx:3"]);
+    expect(found.get("Send it")?.partial).toBeUndefined();
+  });
+
+  // `name` and `title` are the commonest keys in a table of navigation
+  // entries, and reading one as the strongest evidence sends the citation to
+  // the constant that defines a label instead of the markup that renders it.
+  it("does not read an object key as a rendered attribute", async () => {
+    const root = await makeRoot({
+      "ui/Nav.tsx": [
+        `const NAV = [{ name: "Settings", path: "/settings" }];`,
+        `export const Nav = () => <a aria-label="Settings">Settings</a>;`,
+      ].join("\n"),
+    });
+    const { found } = await findSourceAnchors([text("Settings")], [root]);
+    expect(found.get("Settings")?.places).toEqual(["src/ui/Nav.tsx:2"]);
+  });
+
+  // Whatever a citation names, that line has to hold the string it cites.
+  it("cites a line that contains the string, through CRLF and multi-byte text", async () => {
+    const root = await makeRoot({
+      "ui/Crlf.tsx": "a\r\nb\r\nc\r\n<button>Send it</button>\r\n",
+      "ui/Wide.tsx": "// コメント\n// もう一行\n<span>Send it</span>\n",
+    });
+    const { found } = await findSourceAnchors([text("Send it")], [root]);
+    for (const place of found.get("Send it")?.places ?? []) {
+      const [file, line] = [place.slice("src/".length, place.lastIndexOf(":")), place.slice(place.lastIndexOf(":") + 1)];
+      const contents = await readFile(join(cwd, file), "utf8");
+      expect(contents.split(/\r?\n/)[Number(line) - 1]).toContain("Send it");
+    }
+  });
+
+  // A locator that matches by substring does work, so the hit is reported —
+  // but "the product renders this string" is not what was found.
+  it.each([
+    ["<span>Archived</span>", "Archive"],
+    // No word boundary to lean on in CJK, so the rule is the same one: the
+    // character after the match is a letter, so this is a longer word.
+    ["<span>連携すると完了する</span>", "連携する"],
+  ])("says so when %s only holds %s inside a longer word", async (markup, needle) => {
+    const root = await makeRoot({ "ui/Row.tsx": markup });
+    const { found } = await findSourceAnchors([text(needle)], [root]);
+    expect(found.get(needle)?.partial).toBe(true);
   });
 
   it("ignores needles shorter than 3 characters and blank needles", async () => {

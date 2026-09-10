@@ -49,7 +49,10 @@ export class TodoPage {}
     );
     const labels = await write("e2e/shared/labels.ts", `export const LABELS = { submit: "Submit" };`);
 
-    expect(await collectSupportFiles(test, cwd)).toEqual([page, labels]);
+    expect(await collectSupportFiles(test, cwd)).toEqual([
+      { abs: page, from: test },
+      { abs: labels, from: page },
+    ]);
   });
 
   it("finds aliases declared in a config the project extends", async () => {
@@ -64,7 +67,7 @@ export class TodoPage {}
     const test = await write("e2e/specs/todo.spec.ts", `import { LABELS } from "@shared/labels";`);
     const labels = await write("e2e/shared/labels.ts", `export const LABELS = {};`);
 
-    expect(await collectSupportFiles(test, cwd)).toEqual([labels]);
+    expect(await collectSupportFiles(test, cwd)).toEqual([{ abs: labels, from: test }]);
   });
 
   it("stops at the depth limit", async () => {
@@ -72,6 +75,17 @@ export class TodoPage {}
     const page = await write("e2e/pages/todo.ts", `import "./deep.ts";`);
     await write("e2e/pages/deep.ts", `export const x = 1;`);
 
-    expect(await collectSupportFiles(test, cwd, { maxDepth: 1 })).toEqual([page]);
+    expect(await collectSupportFiles(test, cwd, { maxDepth: 1 })).toEqual([{ abs: page, from: test }]);
+  });
+
+  it("names `from` as the importer that reached each file, not the entry", async () => {
+    const entry = await write("e2e/specs/entry.spec.ts", `import "../a.ts";\n`);
+    const a = await write("e2e/a.ts", `import "./b.ts";\n`);
+    const b = await write("e2e/b.ts", `export const b = 1;\n`);
+
+    expect(await collectSupportFiles(entry, cwd)).toEqual([
+      { abs: a, from: entry },
+      { abs: b, from: a },
+    ]);
   });
 });

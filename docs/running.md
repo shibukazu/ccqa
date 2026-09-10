@@ -504,6 +504,14 @@ outside it — that is the case this exists for. They are resolved to real
 paths before the sweep, and an entry that is not a directory stops the
 audit: reading nothing looks exactly like finding nothing.
 
+A finding's citations are checked before it is kept: ccqa opens the cited
+`file:line` and looks for the string the finding quotes. A citation that holds
+it is left as it is. One whose file holds the string on another line is
+`corrected` to that line, so the line number is ccqa's rather than the model's,
+and one whose file holds it nowhere is marked `unverified`. Only those two
+exceptions are recorded, and they ride along in `--brief`, because a fix job
+reading a line number should know when it is not the model's.
+
 The roots widen what the audit's `Read` and `Grep` may reach, and they are
 what the [`ccqa evidence`](./targets.md#ccqa-evidence--the-table-a-reviewer-reads-instead-of-the-test)
 table resolves a locator's text against. Nothing else reads them: they are
@@ -513,6 +521,23 @@ project that sets none gets exactly the previous behaviour.
 Order is priority. A needle resolved under an earlier root is not replaced by
 an equally good answer under a later one, so the first root listed is the
 application you mean.
+
+### `--dump-inputs` — what the audit was actually given
+
+`ccqa audit --dump-inputs <dir>` writes one markdown file per case holding
+everything that audit received: the document stating the case, every file it
+was handed with the import that reached it, the source roots it could read,
+and the prompt itself.
+
+```sh
+ccqa audit --dump-inputs audit-inputs
+```
+
+It exists for one question. When a finding you expected never appears, there
+are two very different causes — the file never reached the audit, or it did
+and nothing was said about it — and from the outside they look identical.
+Nothing else ccqa writes tells them apart. The dump is written before the
+model is called, so a sweep that dies mid-way still leaves it.
 
 ### `--brief` — findings for whatever repairs the test
 

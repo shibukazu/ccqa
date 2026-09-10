@@ -20,7 +20,7 @@ import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "8";
+export const DRIFT_PROMPT_VERSION = "9";
 
 /**
  * Project guidance injected into the audit, in the same order the run's
@@ -120,11 +120,12 @@ sit nearby.
 
 ## How to look
 
-1. Pick the concrete strings each step asserts: visible text, aria-labels, placeholders, button labels, route paths. Do the same for the generated code, which names them literally — selectors, roles, texts, URLs.
-2. \`Grep\` the source for them, at the page, component or handler the step is about.
-3. For \`include\` steps, if the case has any, confirm the block exists under \`.ccqa/blocks/<name>/spec.yaml\` and that every \`params\` key is declared on it.
-4. When a string is missing, look for what replaced it before concluding. Where it went is what decides the label.
-5. Before citing any line, read the block that encloses it. Which conditions must hold for it to run, and does the case put the product in those conditions? A line that only runs in a branch the case never enters proves nothing about the case.
+1. **List every locator the test and its support files use, before checking any of them** — by role + accessible name, visible text, label, placeholder, test id, and, the two an audit skips, **CSS class or id** (\`.some-class\`, \`#some-id\`, any attribute selector) and **XPath or structural path**. A class name is not prose, so nothing about reading the file draws attention to it, and it is exactly what a refactor renames.
+2. Add the concrete strings each step of the document asserts: visible text, labels, route paths.
+3. **Check the whole list against the source**, one \`Grep\` per page/component/handler with the strings alternated into a single pattern rather than one search per string. A locator whose string the product renders nowhere is a TEST_DRIFT candidate whatever kind it is, and fails the same replay as a renamed button.
+4. For \`include\` steps, if the case has any, confirm the block exists under \`.ccqa/blocks/<name>/spec.yaml\` and that every \`params\` key is declared on it.
+5. When a string is missing, look for what replaced it before concluding. Where it went is what decides the label.
+6. Before citing any line, read the block that encloses it. Which conditions must hold for it to run, and does the case put the product in those conditions? A line that only runs in a branch the case never enters proves nothing about the case.
 
 ${guidance.userPromptBlock ?? ""}${guidance.customPromptBlock ?? ""}## Output (STRICT)
 
@@ -198,6 +199,8 @@ function sourceRootsSection(roots: readonly SourceRoot[]): string {
   return `## Where the product's source is
 
 The application this test case describes lives under ${list}. Read and Grep reach there as well as into the working directory, and that is where the answer to "does the product still do this" is.
+
+What renders a screen is often a template rather than a script — a \`.vue\`, \`.svelte\`, \`.astro\`, \`.html\`, \`.hbs\` or \`.erb\` file, or the markup inside a \`.tsx\` / \`.jsx\` component. A class name or a label lives in that markup, so Grep those files too: searching only the logic finds none of them.
 
 `;
 }

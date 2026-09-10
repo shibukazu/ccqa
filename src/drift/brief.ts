@@ -33,7 +33,12 @@ export interface AuditBrief {
   recommendation: string;
   reasoning: string;
   /** `file:line` citations backing the finding, product source included. */
-  evidence: Array<{ file?: string; detail: string }>;
+  /**
+   * The finding's citations, each carrying what opening the cited line found
+   * (`citation`). A fix job reads a `corrected` line number as ccqa's and an
+   * `unverified` one as a place the quoted string was not.
+   */
+  evidence: Array<{ file?: string; detail: string; citation?: string }>;
   /** The generated test this finding is about, project-relative. Null for a live case. */
   test: string | null;
   repair: Repair;

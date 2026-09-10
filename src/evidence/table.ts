@@ -241,7 +241,10 @@ function sourceAnchorCells(needles: readonly SourceNeedle[], anchors: SourceAnch
         // Several places say it equally well, so none of them is the answer.
         // Naming one would read as "this is where it comes from".
         const where = anchor.places.join(", ");
-        return `\`${value}\` — ${anchor.places.length > 1 ? `ambiguous: ${where}` : where}`;
+        const found = anchor.places.length > 1 ? `ambiguous: ${where}` : where;
+        // The string is only ever inside a longer one, so the product renders
+        // something this locator matches — not this string.
+        return `\`${value}\` — ${found}${anchor.partial ? " (partial match)" : ""}`;
       })
       .join("<br>"),
   );
