@@ -1,4 +1,5 @@
 import { RunUsageError } from "../run/errors.ts";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { collectIncludedBlockNames } from "../spec/expand.ts";
@@ -15,6 +16,8 @@ export interface AvailableBlock {
 }
 
 const CCQA_DIR = ".ccqa";
+/** Where a case whose intent lives outside `.ccqa/` keeps its own files. */
+const CASES_DIR = "cases";
 const SPEC_FILE = "spec.yaml";
 /**
  * The spec directory as a path template (see src/targets/test-path.ts). Kept
@@ -29,6 +32,8 @@ const RECORDING_FILE = "ir.json";
 const FAILED_RECORDING_FILE = "ir.failed.json";
 // What `ccqa record` writes when it replaced an existing recording.
 const ROUTE_DIFF_FILE = "route-diff.md";
+// What the last generation's review of the test found, per step.
+const REVIEW_FILE = "review.json";
 const PERSPECTIVES_FILE = "perspectives.yaml";
 const PERSPECTIVES_MD_FILE = "perspectives.md";
 
@@ -86,6 +91,44 @@ export function getFeatureDir(featureName: string, cwd?: string): string {
 
 export function getSpecDir(featureName: string, specName: string, cwd?: string): string {
   return join(getFeatureDir(featureName, cwd), "test-cases", specName);
+}
+
+/**
+ * One test case's own working directory — where its recording, its route diff
+ * and its lock live.
+ *
+ * A case's intent comes from one of two places: ccqa's own `spec.yaml`, whose
+ * directory is also the case's, or a file in the consumer's repository (a
+ * markdown test case), which keeps nothing of ccqa's beside it. The second
+ * kind gets a directory under `.ccqa/cases/<id>`, mirroring the path the case
+ * has in the project — so what ccqa keeps about a case is findable from the
+ * case, and the consumer's own tree stays theirs.
+ */
+export interface CaseRef {
+  /** `<feature>/<spec>`, or the intent source's path-shaped id. */
+  id: string;
+  /** Absolute working directory. */
+  dir: string;
+}
+
+export function specCase(featureName: string, specName: string, cwd?: string): CaseRef {
+  return { id: `${featureName}/${specName}`, dir: getSpecDir(featureName, specName, cwd) };
+}
+
+/**
+ * A case id as the report rows and the hub still spell one: a feature and a
+ * spec. An intent id has more segments than that — its last is the case, and
+ * everything before it is where the project files it.
+ */
+export function splitCaseId(id: string): { featureName: string; specName: string } {
+  const parts = id.split("/");
+  const specName = parts.pop()!;
+  return { featureName: parts.join("/") || specName, specName };
+}
+
+/** The case an intent source names, by its root-relative id (no extension). */
+export function intentCase(id: string, cwd?: string): CaseRef {
+  return { id, dir: join(getCcqaDir(cwd), CASES_DIR, ...id.split("/")) };
 }
 
 
@@ -167,14 +210,56 @@ export interface Recording {
   recordedAt?: string;
   /** The route's first navigation, `${VAR}` refs intact. */
   origin?: string;
+  /**
+   * The undo the case states, recorded in the same session as the route and
+   * kept apart from it: what a test does and what it takes back are emitted to
+   * different places, and only the recording knows which actions were which.
+   */
+  cleanup?: RecordedAction[];
+  /**
+   * What the last `ccqa generate` wrote from this route. The one thing that
+   * can tell a hand edit from a regeneration: `ccqa generate` re-stamps it, so
+   * a test it produced still matches, and only someone else's edit does not.
+   *
+   * It lives here, on a file the consumer already commits, rather than in a
+   * ledger of its own — and only `ccqa generate` reads it. The audit and the
+   * run never do: the generated test belongs to the consumer, and neither
+   * command's answer may depend on who last wrote it.
+   */
+  generated?: { testSha256: string; at: string };
 }
 
-function buildRecording(actions: RecordedAction[]): Recording {
+/** Hex sha256 of a file's bytes, or null when it is not there to read. */
+export async function fileSha256(pathAbs: string): Promise<string | null> {
+  const bytes = await readFile(pathAbs).catch(() => null);
+  return bytes === null ? null : createHash("sha256").update(bytes).digest("hex");
+}
+
+/**
+ * Record what this generation wrote, leaving the route itself untouched. A
+ * recording with no test to stamp keeps whatever stamp it had: the generation
+ * produced nothing to attribute.
+ */
+export async function stampGeneratedTest(
+  ref: CaseRef,
+  testPathAbs: string,
+): Promise<void> {
+  const path = getRecordingPath(ref);
+  const content = await readFile(path, "utf-8").catch(() => null);
+  const testSha256 = await fileSha256(testPathAbs);
+  if (content === null || testSha256 === null) return;
+  const recording = parseRecording(content);
+  recording.generated = { testSha256, at: new Date().toISOString() };
+  await writeFile(path, JSON.stringify(recording, null, 2), "utf-8");
+}
+
+function buildRecording(actions: RecordedAction[], cleanup: RecordedAction[] = []): Recording {
   const origin = actions.find((a) => a.action === "navigate")?.value;
   return {
     recordedAt: new Date().toISOString(),
     ...(origin ? { origin } : {}),
     actions,
+    ...(cleanup.length > 0 ? { cleanup } : {}),
   };
 }
 
@@ -200,46 +285,59 @@ export function parseRecording(content: string): Recording {
 const LEGACY_RECORDING_FILES = ["actions.json", "route.md"];
 
 export async function saveRecording(
-  featureName: string,
-  specName: string,
+  ref: CaseRef,
   actions: RecordedAction[],
-  cwd?: string,
+  cleanup: RecordedAction[] = [],
 ): Promise<{ path: string; recording: Recording }> {
-  const specDir = getSpecDir(featureName, specName, cwd);
-  await mkdir(specDir, { recursive: true });
-  const recordingPath = join(specDir, RECORDING_FILE);
-  const recording = buildRecording(actions);
+  await mkdir(ref.dir, { recursive: true });
+  const recordingPath = join(ref.dir, RECORDING_FILE);
+  const recording = buildRecording(actions, cleanup);
   await writeFile(recordingPath, JSON.stringify(recording, null, 2), "utf-8");
   await Promise.all(
     // A successful save also removes a leftover failed-trace file: it
     // described an older attempt, and keeping it beside a good ir.json
     // reads as an open problem.
     [...LEGACY_RECORDING_FILES, FAILED_RECORDING_FILE].map((f) =>
-      unlink(join(specDir, f)).catch(() => {}),
+      unlink(join(ref.dir, f)).catch(() => {}),
     ),
   );
   return { path: recordingPath, recording };
 }
 
 /** Where `ccqa record` leaves the route diff against the previous recording. */
-export async function saveRouteDiff(
-  featureName: string,
-  specName: string,
-  markdown: string,
-  cwd?: string,
-): Promise<string> {
-  const path = join(getSpecDir(featureName, specName, cwd), ROUTE_DIFF_FILE);
+export async function saveRouteDiff(ref: CaseRef, markdown: string): Promise<string> {
+  const path = join(ref.dir, ROUTE_DIFF_FILE);
   await writeFile(path, markdown, "utf-8");
   return path;
 }
 
+/**
+ * Keep what the review of the generated test found, so the evidence table can
+ * show it per step rather than a reader having to scroll a generate log.
+ * `findings: null` means no review was obtained, which the record keeps apart
+ * from a clean one.
+ */
+export async function saveSpecReview(ref: CaseRef, review: unknown): Promise<string> {
+  await mkdir(ref.dir, { recursive: true });
+  const path = join(ref.dir, REVIEW_FILE);
+  await writeFile(path, JSON.stringify(review, null, 2) + "\n", "utf-8");
+  return path;
+}
+
+/** The last review of this case's generated test, or null when there is none. */
+export async function readSpecReview(ref: CaseRef): Promise<unknown | null> {
+  const raw = await readFile(join(ref.dir, REVIEW_FILE), "utf-8").catch(() => null);
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 /** Drop the route diff — there is no previous recording for it to describe. */
-export async function removeRouteDiff(
-  featureName: string,
-  specName: string,
-  cwd?: string,
-): Promise<void> {
-  await unlink(join(getSpecDir(featureName, specName, cwd), ROUTE_DIFF_FILE)).catch(() => {});
+export async function removeRouteDiff(ref: CaseRef): Promise<void> {
+  await unlink(join(ref.dir, ROUTE_DIFF_FILE)).catch(() => {});
 }
 
 /**
@@ -249,14 +347,11 @@ export async function removeRouteDiff(
  * successful {@link saveRecording} deletes the file.
  */
 export async function saveFailedRecording(
-  featureName: string,
-  specName: string,
+  ref: CaseRef,
   actions: RecordedAction[],
-  cwd?: string,
 ): Promise<string> {
-  const specDir = getSpecDir(featureName, specName, cwd);
-  await mkdir(specDir, { recursive: true });
-  const path = join(specDir, FAILED_RECORDING_FILE);
+  await mkdir(ref.dir, { recursive: true });
+  const path = join(ref.dir, FAILED_RECORDING_FILE);
   await writeFile(path, JSON.stringify(buildRecording(actions), null, 2), "utf-8");
   return path;
 }
@@ -428,31 +523,21 @@ export async function findStaleBlockArtifacts(cwd?: string): Promise<string[]> {
 
 // --- Recordings (IR) ---
 
-export function getRecordingPath(featureName: string, specName: string, cwd?: string): string {
-  return join(getSpecDir(featureName, specName, cwd), RECORDING_FILE);
+export function getRecordingPath(ref: CaseRef): string {
+  return join(ref.dir, RECORDING_FILE);
 }
 
-export async function getRecording(
-  featureName: string,
-  specName: string,
-  cwd?: string,
-): Promise<Recording & { path: string }> {
-  const path = getRecordingPath(featureName, specName, cwd);
+export async function getRecording(ref: CaseRef): Promise<Recording & { path: string }> {
+  const path = getRecordingPath(ref);
   const content = await readFile(path, "utf-8").catch(() => {
-    throw new Error(`No recording found for spec: ${featureName}/${specName}. Run \`ccqa record\` first.`);
+    throw new Error(`No recording found for: ${ref.id}. Run \`ccqa record\` first.`);
   });
   return { path, ...parseRecording(content) };
 }
 
 /** The saved recording, or null when the spec has none. */
-export async function tryGetRecording(
-  featureName: string,
-  specName: string,
-  cwd?: string,
-): Promise<Recording | null> {
-  const content = await readFile(getRecordingPath(featureName, specName, cwd), "utf-8").catch(
-    () => null,
-  );
+export async function tryGetRecording(ref: CaseRef): Promise<Recording | null> {
+  const content = await readFile(getRecordingPath(ref), "utf-8").catch(() => null);
   return content === null ? null : parseRecording(content);
 }
 

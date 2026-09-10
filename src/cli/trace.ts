@@ -2,9 +2,7 @@ import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from ".
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
-  loadAllBlocks,
   loadPromptBundleFromHub,
-  readSpecFile,
   saveFailedRecording,
   saveRecording,
   removeRouteDiff,
@@ -13,12 +11,15 @@ import {
 } from "../store/index.ts";
 import { diffRoutes, renderRouteDiff } from "../ir/route-diff.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
+import { RunUsageError } from "../run/errors.ts";
+import { loadStateIntoSession } from "../runtime/session-state.ts";
+import { loadConventions } from "../targets/resources.ts";
+import { resolve } from "node:path";
 import type { RunTeardown } from "./run-teardown.ts";
 import type { HubContext } from "./hub-conn.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import {
   collectIncludedBlockNames,
-  expandSpec,
   isExpandedActionStep,
   type ExpandedActionStep,
 } from "../spec/expand.ts";
@@ -31,7 +32,8 @@ import { languageDirective } from "../prompts/language.ts";
 import { parseAbActionLine, promoteMarkedAssert } from "../ir/from-agent-browser.ts";
 import { describeLocator, locatorToSelector } from "../ir/to-agent-browser.ts";
 import type { Locator, RecordedAction } from "../ir/types.ts";
-import type { Recording } from "../store/index.ts";
+import type { CaseRef, Recording } from "../store/index.ts";
+import type { TestCase } from "../intent/case.ts";
 import type { ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -100,6 +102,10 @@ export interface RunTraceOptions {
    * when learning is enabled.
    */
   validateFailedTrace?: boolean;
+  /** Saved browser session to restore first (config `record.sessionState`). */
+  sessionState?: string;
+  /** Documents telling the recorder how this project is driven. */
+  conventions?: string[];
 }
 
 /**
@@ -115,24 +121,23 @@ export function stepsWithoutAsserts(stepIds: string[], actions: RecordedAction[]
 }
 
 export async function runTrace(
-  featureName: string,
-  specName: string,
+  testCase: TestCase,
   model?: string,
   validationMode: ValidationMode = "lenient",
   language?: string,
   opts: RunTraceOptions = {},
 ): Promise<RunTraceResult> {
-  log.header("trace", `${featureName}/${specName}`);
+  log.header("trace", testCase.ref.id);
 
   await preflightAgentBrowserCommand();
 
-  const specContent = await readSpecFile(featureName, specName, opts.cwd);
-  const spec = parseTestSpec(specContent);
-  const blocks = await loadAllBlocks(opts.cwd);
+  // Include steps are a `spec.yaml` feature; a case from another document has
+  // none, and its own steps are already the flat list.
+  const specSteps = testCase.source.kind === "spec" ? testCase.source.spec.steps : [];
   // A judge step records nothing: it states a claim about the page rather than
   // an action to replay, and the generator places the call from the step list.
-  // Refusing one here would make a spec that carries a claim unrecordable.
-  const expanded = expandSpec(spec, { blocks });
+  // Refusing one here would make a case that carries a claim unrecordable.
+  const expanded = [...testCase.steps, ...testCase.cleanup];
   const steps = expanded.filter(isExpandedActionStep);
 
   // Build the env-value → `${VAR}` scrub map BEFORE the trace starts so
@@ -148,7 +153,7 @@ export async function runTrace(
   // (agentBrowserInvokeBase below), whatever the parent env holds — the
   // override keeps `${CCQA_RUN_ID}` scrubbing against the value the child
   // actually sees.
-  const envScrub = buildSpecEnvScrub(spec, expanded, { CCQA_RUN_ID: sessionName });
+  const envScrub = buildSpecEnvScrub(specSteps, expanded, { CCQA_RUN_ID: sessionName });
   const envScrubMap = envScrub.map;
   if (envScrub.unresolved.length > 0) {
     // An unset ref can't be scrubbed, so it bakes in (see above). Surface that
@@ -164,18 +169,54 @@ export async function runTrace(
     );
   }
 
-  log.meta("spec", spec.title);
+  log.meta("case", testCase.title);
   log.meta("steps", steps.length);
-  const includes = collectIncludedBlockNames(spec);
+  if (testCase.cleanup.length > 0) log.meta("cleanup steps", testCase.cleanup.length);
+  const includes =
+    testCase.source.kind === "spec" ? collectIncludedBlockNames(testCase.source.spec) : [];
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
   log.blank();
 
   opts.teardown?.trackSession(sessionName);
 
+  // A case whose precondition is "signed in" should not have to record the
+  // sign-in: the project points at a saved session and the recording starts
+  // where a person would. Attached before the first navigation, because
+  // agent-browser only takes a state on the invocation that boots the daemon.
+  if (opts.sessionState) {
+    const injected = loadStateIntoSession(sessionName, resolve(opts.cwd ?? process.cwd(), opts.sessionState));
+    if (!injected.ok) {
+      // Recording anyway would record the sign-in wall as the case's route, or
+      // spend the model's budget failing at it. Neither is the recording asked
+      // for, and both look like one until someone replays it.
+      throw new RunUsageError(
+        `could not restore ${opts.sessionState}: ${injected.error ?? "unknown error"} — ` +
+          `the case expects to start signed in, so recording was not attempted`,
+      );
+    }
+    log.meta("session", opts.sessionState);
+  }
+
+  // The project's own recording guidance, read the same way generation reads
+  // its convention documents — same globs, same size cap.
+  const conventions = opts.conventions
+    ? await loadConventions(opts.cwd ?? process.cwd(), {
+        guides: opts.conventions,
+        examples: [],
+        record: [],
+      })
+    : { sections: [], warnings: [] };
+  for (const w of conventions.warnings) log.warn(w);
+
   const baseSystemPrompt = buildTraceSystemPrompt({
-    title: spec.title,
+    title: testCase.title,
     steps,
     sessionName,
+    ...(conventions.sections.length > 0
+      ? { conventions: conventions.sections.map((s) => ({ heading: s.path, body: s.body })) }
+      : {}),
+    ...(testCase.expectations.length > 0 ? { expectations: testCase.expectations } : {}),
+    ...(testCase.context.length > 0 ? { context: testCase.context } : {}),
     ...(opts.instruction ? { instruction: opts.instruction } : {}),
   });
   const promptBundle = await loadPromptBundleFromHub(opts.hubContext ?? null, "record");
@@ -185,7 +226,7 @@ export async function runTrace(
       ? baseSystemPrompt
       : `${baseSystemPrompt}\n## Project-specific guidance\n\n${promptBundle.text}\n`) +
     languageDirective(language);
-  const prompt = buildTracePrompt(spec.title);
+  const prompt = buildTracePrompt(testCase.title);
 
   log.info("Running agent-browser session...");
   log.blank();
@@ -308,21 +349,26 @@ export async function runTrace(
   //
   // Read the recording being replaced before the write, not after: it is the
   // only thing that can say what this re-recording changed.
-  const previous =
-    overallStatus === "passed" ? await tryGetRecording(featureName, specName, opts.cwd) : null;
+  const caseRef = testCase.ref;
+  const previous = overallStatus === "passed" ? await tryGetRecording(caseRef) : null;
   let recordingPath: string;
+  // The undo was recorded in the same session, and is told apart by the step
+  // ids the case gave it — the one place that knows which actions were which.
+  const cleanupIds = new Set(testCase.cleanup.map((s) => s.id));
+  const routeActions = validatedActions.filter((a) => !cleanupIds.has(a.stepId ?? ""));
+  const cleanupActions = validatedActions.filter((a) => cleanupIds.has(a.stepId ?? ""));
   if (overallStatus === "passed") {
-    const saved = await saveRecording(featureName, specName, validatedActions, opts.cwd);
+    const saved = await saveRecording(caseRef, routeActions, cleanupActions);
     recordingPath = saved.path;
     if (previous) {
-      await reportRouteDiff(featureName, specName, previous, saved.recording, steps, opts.cwd);
+      await reportRouteDiff(caseRef, previous, saved.recording, steps);
     } else {
       // First recording of this spec: any diff beside it describes a route
       // that no longer exists, so it must not stay there looking current.
-      await removeRouteDiff(featureName, specName, opts.cwd);
+      await removeRouteDiff(caseRef);
     }
   } else {
-    recordingPath = await saveFailedRecording(featureName, specName, validatedActions, opts.cwd);
+    recordingPath = await saveFailedRecording(caseRef, validatedActions);
   }
 
   log.blank();
@@ -334,10 +380,11 @@ export async function runTrace(
     // A step whose actions carry no assertion produced a test that performs
     // the step but verifies nothing about its `expected` — the kind of green
     // that reads as coverage. Loud, per step, before codegen runs.
-    for (const stepId of stepsWithoutAsserts(steps.map((s) => s.id), validatedActions)) {
+    const caseStepIds = testCase.steps.filter(isExpandedActionStep).map((s) => s.id);
+    for (const stepId of stepsWithoutAsserts(caseStepIds, validatedActions)) {
       log.warn(`${stepId} recorded no assertion — nothing in the generated test verifies its 'expected'`);
     }
-    log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
+    log.hint(`run 'ccqa generate ${testCase.ref.id}' to generate a test script`);
   } else {
     log.warn(
       "trace FAILED — the recorded actions were saved beside the spec for diagnosis; the previous ir.json and generated code are left untouched",
@@ -362,20 +409,16 @@ export async function runTrace(
  * beside the new recording and read as current.
  */
 async function reportRouteDiff(
-  featureName: string,
-  specName: string,
+  ref: CaseRef,
   before: Recording,
   after: Recording,
   steps: ExpandedActionStep[],
-  cwd: string | undefined,
 ): Promise<void> {
   const stepTitles = new Map(steps.map((s) => [s.id, s.instruction.trim().split("\n")[0]!]));
   const diff = diffRoutes(before.actions, after.actions);
   const path = await saveRouteDiff(
-    featureName,
-    specName,
-    renderRouteDiff(diff, { specKey: `${featureName}/${specName}`, before, after, stepTitles }),
-    cwd,
+    ref,
+    renderRouteDiff(diff, { specKey: ref.id, before, after, stepTitles }),
   );
   log.meta(
     "route diff",

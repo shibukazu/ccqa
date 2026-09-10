@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { runCommand } from "./run.ts";
 import { recordCommand } from "./record.ts";
 import { generateCommand } from "./generate.ts";
+import { evidenceCommand } from "./evidence.ts";
 import { draftCommand } from "./draft.ts";
 import { auditCommand } from "./audit.ts";
 import { initCommand } from "./init.ts";
@@ -44,6 +45,7 @@ program.addCommand(perspectivesCommand);
 program.commandsGroup("Build tests from them:");
 program.addCommand(recordCommand);
 program.addCommand(generateCommand);
+program.addCommand(evidenceCommand);
 
 program.commandsGroup("Check them:");
 program.addCommand(runCommand);

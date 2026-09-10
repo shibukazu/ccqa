@@ -50,6 +50,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0026](0026-measured-edges-are-a-ledger.md) | Measured edges are a ledger, and an unmeasured spec runs | accepted |
 | [0027](0027-a-row-is-placed-by-its-own-window.md) | A row is placed against the deploy log by its own window | accepted |
 | [0028](0028-a-derived-test-path-and-a-recorded-route.md) | The test path is derived; the recording is the route | accepted |
+| [0029](0029-ccqa-ships-mechanism-the-project-supplies-the-facts.md) | ccqa ships mechanism; the project supplies the facts | accepted |
 
 ## Template
 

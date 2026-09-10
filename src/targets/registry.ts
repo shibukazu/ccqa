@@ -4,6 +4,7 @@ import type { TargetPlugin } from "./types.ts";
 import { agentBrowserTarget } from "./agent-browser/index.ts";
 import { playwrightTarget } from "./playwright/index.ts";
 import { runnTarget } from "./runn/index.ts";
+import { createExternalTarget } from "./external/index.ts";
 
 /**
  * Static registry of generation targets. Adding a target means registering
@@ -25,7 +26,22 @@ const REGISTERED_TARGETS: ReadonlyMap<string, TargetPlugin> = new Map(
  * (see TestSpecSchema's JSDoc).
  */
 export function resolveTarget(spec: TestSpec, config: ProjectConfig): TargetPlugin {
-  return resolveTargetFrom(spec, config, REGISTERED_TARGETS);
+  return resolveTargetFrom(spec, config, registryFor(config));
+}
+
+/**
+ * The targets ccqa ships, plus the ones this project defined in its own config
+ * (`kind: external`). Built per call rather than cached: a config-defined
+ * target is made of that config, so a stale one would answer for settings the
+ * project has since changed.
+ */
+export function registryFor(config: ProjectConfig): ReadonlyMap<string, TargetPlugin> {
+  const declared = Object.entries(config.targets).filter(([, c]) => c.kind === "external");
+  if (declared.length === 0) return REGISTERED_TARGETS;
+  return new Map([
+    ...REGISTERED_TARGETS,
+    ...declared.map(([id, c]): [string, TargetPlugin] => [id, createExternalTarget(id, c)]),
+  ]);
 }
 
 /**
@@ -36,11 +52,16 @@ export function resolveTarget(spec: TestSpec, config: ProjectConfig): TargetPlug
  * live spec has no recording to emit from, and a session-restored recording
  * only replays under agent-browser.
  */
-export function resolveTargetOverride(spec: TestSpec, id: string): TargetPlugin {
-  const plugin = REGISTERED_TARGETS.get(id);
+export function resolveTargetOverride(
+  spec: TestSpec,
+  id: string,
+  config?: ProjectConfig,
+): TargetPlugin {
+  const registry = config ? registryFor(config) : REGISTERED_TARGETS;
+  const plugin = registry.get(id);
   if (!plugin) {
     throw new Error(
-      `unknown target "${id}" (from --target) — registered targets: ${[...REGISTERED_TARGETS.keys()].join(", ")}`,
+      `unknown target "${id}" (from --target) — registered targets: ${[...registry.keys()].join(", ")}`,
     );
   }
   if (plugin.id !== AGENT_BROWSER_TARGET) {

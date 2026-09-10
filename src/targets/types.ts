@@ -1,10 +1,11 @@
 import type { TestSpec } from "../spec/yaml-schema.ts";
+import type { ExpandedStep } from "../spec/expand.ts";
 import type { RecordedAction } from "../ir/types.ts";
 import type { Conventions, ResourceRef, TargetConfig } from "../config/project-config.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
 import type { RunTeardown } from "../cli/run-teardown.ts";
 import type { FixMode } from "../diagnose/loop.ts";
-import type { SpecRef } from "../store/index.ts";
+import type { CaseRef, SpecRef } from "../store/index.ts";
 import type { GroupLookup } from "../run/serial-groups.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import type { ReportCoverage, ReportSpecResult } from "../report/schema.ts";
@@ -181,6 +182,25 @@ export interface GenerateContext {
   testPath: string;
   /** Recorded IR; set iff the target's `input` is "recording". */
   recording?: RecordedAction[];
+  /**
+   * The recorded undo, when the case states one. Kept apart from `recording`
+   * because it is emitted apart: what a test does and what it takes back are
+   * different phases, and a target that puts the second in `afterEach` needs
+   * to know which actions those are.
+   */
+  cleanupRecording?: RecordedAction[];
+  /** Where this case's own files live, and the id everything cites it by. */
+  ref: CaseRef;
+  /** The case's steps, already expanded — whichever document stated them. */
+  steps: ExpandedStep[];
+  /** What to undo afterwards; emitted apart from the steps. */
+  cleanup: ExpandedStep[];
+  /**
+   * Values a header or a title tag is written from, by the names the project's
+   * own config uses. Empty for a case ccqa's own `spec.yaml` states, which has
+   * no such fields.
+   */
+  fields: Record<string, string | undefined>;
   /** Existing code assets generated tests should reuse (config `resources`). */
   resources: ResourceRef[];
   /** Style/convention guide inputs for generation (config `conventions`). */

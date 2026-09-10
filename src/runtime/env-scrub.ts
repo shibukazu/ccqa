@@ -1,6 +1,5 @@
 import { isJudgeBody, type AnyStepBody, type ExpandedStep } from "../spec/expand.ts";
-import type { TestSpec } from "../spec/yaml-schema.ts";
-import { isIncludeStep } from "../spec/yaml-schema.ts";
+import { isIncludeStep, type Step } from "../spec/yaml-schema.ts";
 import { iterEnvRefNames } from "./env-vars.ts";
 
 export interface SpecEnvScrub {
@@ -39,12 +38,12 @@ export interface SpecEnvScrub {
  * stream.
  */
 export function buildSpecEnvScrub(
-  spec: TestSpec,
+  steps: readonly Step[],
   expanded: readonly ExpandedStep[],
   overrides: Record<string, string> = {},
 ): SpecEnvScrub {
   const refNames = new Set<string>();
-  for (const step of spec.steps) {
+  for (const step of steps) {
     if (isIncludeStep(step)) {
       for (const v of Object.values(step.params ?? {})) collect(v, refNames);
     } else {
@@ -100,11 +99,11 @@ const COMMON_PROSE_VALUES = new Set(["true", "false", "null", "none", "undefined
  * second map.
  */
 export function buildProseEnvScrubMap(
-  spec: TestSpec,
+  steps: readonly Step[],
   expanded: readonly ExpandedStep[],
   overrides: Record<string, string> = {},
 ): Array<[string, string]> {
-  return buildSpecEnvScrub(spec, expanded, overrides).map.filter(
+  return buildSpecEnvScrub(steps, expanded, overrides).map.filter(
     ([value]) =>
       value.length >= MIN_PROSE_SCRUB_LENGTH && !COMMON_PROSE_VALUES.has(value.toLowerCase()),
   );

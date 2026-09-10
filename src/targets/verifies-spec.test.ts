@@ -59,7 +59,7 @@ describe("reviewGeneratedTest", () => {
 
   test("turns each finding into a warning naming the step", async () => {
     const path = await testFile("await page.click();");
-    const warnings = await reviewGeneratedTest({
+    const { warnings, findings } = await reviewGeneratedTest({
       result: { files: [{ path, kind: "test" }], summary: "", warnings: [], passed: true },
       steps,
       language: "ja",
@@ -72,11 +72,13 @@ describe("reviewGeneratedTest", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("step-01");
     expect(warnings[0]).toContain("元のリンクを見ているだけ");
+    // Kept structured too: the evidence table shows it against the step.
+    expect(findings).toEqual([{ stepId: "step-01", problem: "元のリンクを見ているだけ" }]);
   });
 
   test("says nothing when every step is decided", async () => {
     const path = await testFile("await expect(other).toBeVisible();");
-    const warnings = await reviewGeneratedTest({
+    const { warnings, findings } = await reviewGeneratedTest({
       result: { files: [{ path, kind: "test" }], summary: "", warnings: [], passed: true },
       steps,
       language: "ja",
@@ -90,7 +92,7 @@ describe("reviewGeneratedTest", () => {
   // could not run; the warning it logs is the signal.
   test("a failed review warns rather than throwing", async () => {
     const path = await testFile("await page.click();");
-    const warnings = await reviewGeneratedTest({
+    const { warnings, findings } = await reviewGeneratedTest({
       result: { files: [{ path, kind: "test" }], summary: "", warnings: [], passed: true },
       steps,
       language: "ja",

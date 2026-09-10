@@ -42,11 +42,21 @@ export function formatFinding(finding: SpecCoverageFinding): string {
 }
 
 /**
+ * What the review found, for a caller that keeps it rather than only printing
+ * it. `findings: null` is "no review happened" — which is not the same as a
+ * clean one, and a reader of the record must be able to tell them apart.
+ */
+export interface SpecCoverageReview {
+  findings: SpecCoverageFinding[] | null;
+  /** The findings as the lines the generate log shows. */
+  warnings: string[];
+}
+
+/**
  * Read the generated test back and ask whether each step is actually decided
- * (see `verifiesSpecPrompt`). Returns warnings; an empty list means either a
- * clean review or one that could not be obtained, and the difference is
- * logged rather than encoded — a review that failed must not read as a pass,
- * but it must also not fail the generate that produced working files.
+ * (see `verifiesSpecPrompt`). A review that could not be obtained answers
+ * `findings: null` and is logged — it must not read as a pass, and it must
+ * also not fail the generate that produced working files.
  */
 export async function reviewGeneratedTest(input: {
   result: GenerateResult;
@@ -56,7 +66,7 @@ export async function reviewGeneratedTest(input: {
   cwd: string;
   /** Test seam — defaults to `invokeClaudeStreaming`. */
   invoke?: InvokeFn;
-}): Promise<string[]> {
+}): Promise<SpecCoverageReview> {
   const sources = await Promise.all(
     input.result.files
       .filter((f) => f.kind === "test")
@@ -65,7 +75,7 @@ export async function reviewGeneratedTest(input: {
   const source = sources.filter((s) => s.length > 0).join("\n\n");
   if (source.length === 0) {
     log.warn("could not check whether the generated test decides its spec (no test file to read)");
-    return [];
+    return { findings: null, warnings: [] };
   }
 
   const invoke = input.invoke ?? invokeClaudeStreaming;
@@ -80,12 +90,12 @@ export async function reviewGeneratedTest(input: {
   }, () => {});
   if (isError) {
     log.warn("could not check whether the generated test decides its spec (Claude returned an error)");
-    return [];
+    return { findings: null, warnings: [] };
   }
   const findings = parseVerifiesSpecFindings(answer);
   if (findings === null) {
     log.warn("could not check whether the generated test decides its spec (no usable answer)");
-    return [];
+    return { findings: null, warnings: [] };
   }
-  return findings.map(formatFinding);
+  return { findings, warnings: findings.map(formatFinding) };
 }

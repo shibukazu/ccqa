@@ -11,6 +11,7 @@ import {
 } from "../prompts/perspectives.ts";
 import {
   getRecordingPath,
+  specCase,
   listFeatureTree,
   removeLegacyPerspectivesFiles,
   tryReadSpecFile,
@@ -524,7 +525,7 @@ export async function deriveStatus(
 ): Promise<PerspectiveStatus> {
   const cwd = process.cwd();
   const ref = { featureName, specName };
-  const hasRecording = await exists(getRecordingPath(featureName, specName, cwd));
+  const hasRecording = await exists(getRecordingPath(specCase(featureName, specName, cwd)));
   // Both halves of "generated" are the same question — is there a test file at
   // the path this spec's target puts it? — so agent-browser and the external
   // targets differ only in which target answers it.

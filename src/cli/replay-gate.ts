@@ -7,7 +7,7 @@ import {
 import { closeSession } from "../diagnose/snapshot.ts";
 import { validateActions, type ValidationDrop } from "../runtime/replay-validate.ts";
 import { describeLocator } from "../ir/to-agent-browser.ts";
-import { specKey, type SpecRef } from "../store/index.ts";
+import type { CaseRef } from "../store/index.ts";
 import type { RecordedAction } from "../ir/types.ts";
 import type { RunTeardown } from "./run-teardown.ts";
 import * as log from "./logger.ts";
@@ -33,7 +33,7 @@ import * as log from "./logger.ts";
  */
 
 export interface ReplayGateInput {
-  ref: SpecRef;
+  ref: CaseRef;
   cwd: string;
   /** The saved route about to be recompiled. */
   recording: RecordedAction[];
@@ -86,7 +86,7 @@ export async function checkRecordedRouteReplays(
   return (
     `the recorded route no longer replays (${dropped.length} of ${input.recording.length} action(s) failed):\n` +
     `${failures}\n` +
-    `Re-record with 'ccqa record ${specKey(input.ref)}'. Pass --no-replay to regenerate from the ` +
+    `Re-record with 'ccqa record ${input.ref.id}'. Pass --no-replay to regenerate from the ` +
     `saved route anyway (e.g. with no browser or no variables in this environment).`
   );
 }

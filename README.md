@@ -75,8 +75,11 @@ what it compiles into:
 each step's `expected` — for UIs a fixed recording would break on.
 
 vitest and agent-browser are peer dependencies of the default target; a
-project on an external target alone needs just `ccqa` and that tool.
-`runCommand` and reusing your existing page objects:
+project on an external target alone needs just `ccqa` and that tool. A
+target can also be defined entirely in config, with no code of its own, to
+match a framework your repo already uses — and read its cases from
+markdown you already write instead of `spec.yaml`. `runCommand`, reusing
+your existing page objects, and `kind: external`:
 [Generation targets](./docs/targets.md).
 
 ## Audit, then run

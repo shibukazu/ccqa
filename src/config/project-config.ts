@@ -35,33 +35,131 @@ export const ResourceRefSchema = z.union(
 export type ResourceRef = z.infer<typeof ResourceRefSchema>;
 
 /**
- * How generated code should be written, as guide inputs to the prompt (never
- * imported as code): `guides` are convention documents, `examples` are
- * existing tests whose style to imitate. Entries may be glob patterns.
+ * How code should be written and how a recording should be driven, as guide
+ * inputs to the prompts (never imported as code): `guides` are convention
+ * documents and `examples` existing tests whose style to imitate, both read by
+ * generation; `record` is read by the recorder instead. Entries may be globs.
  */
 export const ConventionsSchema = z
   .object({
     guides: z.array(z.string().min(1)).default([]),
     examples: z.array(z.string().min(1)).default([]),
+    /**
+     * Documents the *recorder* reads, rather than the generator: how this
+     * project signs in, which account a case's precondition names, what to do
+     * before the first step. Kept as prose on purpose — a login is the part
+     * that differs most between projects, and mechanising it would put a
+     * project's own vocabulary into ccqa.
+     */
+    record: z.array(z.string().min(1)).default([]),
   })
   .strict();
 export type Conventions = z.infer<typeof ConventionsSchema>;
 
 /**
+ * Which sections of a markdown test case mean what. The keys are ccqa's
+ * vocabulary; the values are the headings the project actually writes, in the
+ * project's own language. Every one is optional — a case that states no
+ * cleanup simply has none — except `steps`, without which there is nothing to
+ * record.
+ *
+ * A heading no key names is not lost: it reaches the recorder as further
+ * information about the case, which is what a precondition usually is.
+ */
+export const IntentFieldsSchema = z
+  .object({
+    title: z.string().min(1).default("Title"),
+    precondition: z.string().min(1).default("Precondition"),
+    steps: z.string().min(1).default("Steps"),
+    expected: z.string().min(1).default("Expected"),
+    cleanup: z.string().min(1).default("Cleanup"),
+    priority: z.string().min(1).default("Priority"),
+    link: z.string().min(1).default("Link"),
+    /**
+     * The heading ccqa writes the generated test's path into. No default on
+     * purpose: this is the one section of the project's own file ccqa edits,
+     * and it does that only where the project pointed at a heading and said
+     * so. A guessed default would rewrite whatever a case happened to keep
+     * under that name.
+     */
+    outputPath: z.string().min(1).optional(),
+  })
+  .strict();
+export type IntentFields = z.infer<typeof IntentFieldsSchema>;
+
+/**
+ * Where a target's test cases are written, when they are not ccqa's own
+ * `spec.yaml`. `root` is the directory the cases live under, and a case's id
+ * is its path below it without the extension — which is also what `{case}`
+ * expands to in `testPath`.
+ */
+export const IntentSourceSchema = z
+  .object({
+    kind: z.literal("markdown"),
+    root: z.string().min(1),
+    fields: IntentFieldsSchema.prefault({}),
+  })
+  .strict();
+export type IntentSource = z.infer<typeof IntentSourceSchema>;
+
+/**
+ * How a generated test names the unique values it creates. `${CCQA_RUN_ID}` is
+ * what the recording holds; a repo with its own helper for this says so here,
+ * and the emitter calls that instead of leaving an env read in the test.
+ */
+export const RunIdConfigSchema = z
+  .object({
+    /** Module the expression comes from, imported by the generated test. */
+    import: z.string().min(1),
+    /** The expression itself, e.g. `utilsGenerateTimestampedUniqueId()`. */
+    expression: z.string().min(1),
+  })
+  .strict();
+export type RunIdConfig = z.infer<typeof RunIdConfigSchema>;
+
+/**
+ * A tag the test's title ends with, taken from an intent field. Mechanical on
+ * purpose: a title tag is a convention a reviewer greps, and a model that
+ * decides it per case gets it wrong in a way nobody notices.
+ */
+export const TitleTagsSchema = z
+  .object({
+    /** Intent field the value comes from (`priority`, ...). */
+    field: z.string().min(1),
+    /** Field value → tag value. A value the map does not name emits no tag. */
+    map: z.record(z.string().min(1), z.string().min(1)).default({}),
+    /** How the tag is written, `{value}` filled in. */
+    format: z.string().min(1).default("@{value}"),
+  })
+  .strict();
+export type TitleTags = z.infer<typeof TitleTagsSchema>;
+
+/**
  * Per-target settings.
  *
- * `testPath` is the template deciding where a spec's generated test lands
- * (`{feature}` / `{spec}`); omitted, the target's own default applies. It is a
- * template rather than a directory because every other command has to find
- * that file without asking the generator — see src/targets/test-path.ts.
+ * `testPath` is the template deciding where a case's generated test lands
+ * (`{feature}` / `{spec}` for `spec.yaml`, `{case}` for an intent source);
+ * omitted, the target's own default applies. It is a template rather than a
+ * directory because every other command has to find that file without asking
+ * the generator — see src/targets/test-path.ts.
  *
  * `runCommand` is how `ccqa run` executes them (`{files}` expands to the test
  * paths, `{artifactsDir}` to the spec's report artifacts dir — see
  * src/targets/run-artifacts.ts). Optional at this layer because not every
  * target needs one; a target that requires it validates that itself.
+ *
+ * `kind: external` names a target the project defines here rather than one
+ * ccqa ships: it has no code of its own, only this block. See
+ * src/targets/external/index.ts.
  */
 export const TargetConfigSchema = z
   .object({
+    /** Absent: a target ccqa ships (`playwright`, `runn`, `agent-browser`). */
+    kind: z.literal("external").optional(),
+    /** Which test framework the generated code is written for. */
+    framework: z.literal("playwright").optional(),
+    /** Where this target's cases are written; absent means ccqa's `spec.yaml`. */
+    intent: IntentSourceSchema.optional(),
     testPath: z
       .string()
       .min(1)
@@ -70,9 +168,31 @@ export const TargetConfigSchema = z
         if (error) ctx.addIssue({ code: "custom", message: error });
       })
       .optional(),
+    /**
+     * Directories generated support files may be created under. Only new files,
+     * and only here: `resources` is what the generated code reads and imports,
+     * never what it may rewrite.
+     */
+    writeRoots: z.array(z.string().min(1)).default([]),
     runCommand: z.string().min(1).optional(),
+    /**
+     * Checks run over the whole repository after generation (type check, lint).
+     * Separate from `runCommand`, which runs the one test: a generated file
+     * that breaks the project's build passes its own test and still cannot be
+     * merged.
+     */
+    checkCommands: z.array(z.string().min(1)).default([]),
     resources: z.array(ResourceRefSchema).default([]),
-    conventions: ConventionsSchema.default({ guides: [], examples: [] }),
+    conventions: ConventionsSchema.prefault({}),
+    runId: RunIdConfigSchema.optional(),
+    /** Emitter switches. `stepEvidence` off drops the per-step capture calls. */
+    hooks: z
+      .object({ stepEvidence: z.boolean().default(true) })
+      .strict()
+      .prefault({}),
+    /** Comment block the generated test opens with; intent fields fill it in. */
+    header: z.string().optional(),
+    titleTags: TitleTagsSchema.optional(),
   })
   .strict();
 export type TargetConfig = z.infer<typeof TargetConfigSchema>;
@@ -208,9 +328,63 @@ export const ProjectConfigSchema = z
     targets: z.record(TargetIdSchema, TargetConfigSchema).default({}),
     serialGroups: SerialGroupsSchema.default({}),
     coverage: CoverageConfigSchema.optional(),
+    /**
+     * Files the project keeps its own variables in (dotenv format, relative to
+     * the project root), loaded before a recording resolves `${VAR}`. A project
+     * that already has an env file for its tests points at it rather than
+     * duplicating those values into a ccqa profile. A named file that is not
+     * there is an error: recording against silently missing variables bakes
+     * whatever the browser happened to show into the route.
+     */
+    envFiles: z.array(z.string().min(1)).default([]),
+    /** Settings for `ccqa record` that are not a target's business. */
+    record: z
+      .object({
+        /**
+         * A saved browser session (Playwright `storageState` JSON) restored
+         * before a recording starts, so a case whose precondition is "signed
+         * in" does not have to record the sign-in.
+         */
+        sessionState: z.string().min(1).optional(),
+      })
+      .strict()
+      .prefault({}),
   })
   .strict()
   .superRefine((config, ctx) => {
+    for (const [id, target] of Object.entries(config.targets)) {
+      const at = (key: string): string[] => ["targets", id, key];
+      const refuse = (path: string[], message: string): void => {
+        ctx.addIssue({ code: "custom", path, message });
+      };
+      if (target.kind !== "external") {
+        // These only mean something for a target the project defines: a
+        // built-in one brings its own generation, and settings it ignores
+        // would read as configured behaviour that never happens.
+        for (const key of ["framework", "intent", "runId", "header", "titleTags"] as const) {
+          if (target[key] !== undefined) {
+            refuse(at(key), `${key} applies to a \`kind: external\` target; "${id}" is one ccqa ships`);
+          }
+        }
+        continue;
+      }
+      // A target with no code of its own cannot guess these.
+      if (target.framework === undefined) refuse(at("framework"), "a kind: external target must say which framework its tests are written for (framework: playwright)");
+      if (target.testPath === undefined) refuse(at("testPath"), "a kind: external target must say where its generated tests go (testPath)");
+      // A case read from the project's own files is addressed by a path, and
+      // `{spec}` is only its last segment: two cases filed in different
+      // directories under the same name would generate onto one file.
+      if (
+        target.intent !== undefined &&
+        target.testPath !== undefined &&
+        !target.testPath.includes("{case}")
+      ) {
+        refuse(
+          at("testPath"),
+          "a target reading an intent source addresses cases by their path, so its testPath must use {case} — {spec} is only the last segment, and two cases filed under the same name would collide",
+        );
+      }
+    }
     // The agent-browser target's vitest test is ccqa's own replay artifact,
     // not a consumer asset: `ccqa run` enumerates it in the spec directory. A
     // `testPath` there would be read by the audit and ignored by the runner.

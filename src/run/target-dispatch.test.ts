@@ -22,7 +22,11 @@ import type {
   TestRunner,
 } from "../targets/types.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
-import { ProjectConfigSchema, type ProjectConfig } from "../config/project-config.ts";
+import {
+  ProjectConfigSchema,
+  TargetConfigSchema,
+  type ProjectConfig,
+} from "../config/project-config.ts";
 import type { TestSpec } from "../spec/yaml-schema.ts";
 import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
 import type { SpecRef } from "../store/index.ts";
@@ -192,7 +196,7 @@ function group(runner: TestRunner, specs: ExternalTargetGroup["specs"]): Externa
   return {
     targetId: "ext-run",
     runner,
-    targetConfig: { runCommand: "echo {files}", resources: [], conventions: { guides: [], examples: [] } },
+    targetConfig: TargetConfigSchema.parse({ runCommand: "echo {files}" }),
     defaultTestPath: `${SPEC_DIR_TEMPLATE}/test.spec.ts`,
     stepEvidence: NO_EVIDENCE,
     browserCoverage: NO_COVERAGE,

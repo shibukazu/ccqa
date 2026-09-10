@@ -1,0 +1,31 @@
+defaultTarget: todo-e2e
+targets:
+  todo-e2e:
+    kind: external
+    framework: playwright
+    testPath: specs/{case}.spec.ts
+    writeRoots:
+      - pages
+    resources:
+      - path: pages
+        description: page objects, one per screen
+    conventions:
+      guides:
+        - docs/e2e-guidelines.md
+    intent:
+      kind: markdown
+      root: docs/testcase
+      fields:
+        steps: 手順
+        expected: 期待結果
+    header: |
+      // case: {case}
+      // source: {link.url}
+    titleTags:
+      field: priority
+      map:
+        high: smoke
+      format: "@{value}"
+    runId:
+      import: 'import { generateRunId } from "../utils/run-id";'
+      expression: "generateRunId()"

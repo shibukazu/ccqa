@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { playwrightTarget } from "./index.ts";
 import { loadProjectConfig, TargetConfigSchema } from "../../config/project-config.ts";
 import { parseTestSpec } from "../../spec/parser.ts";
+import { expandSpec } from "../../spec/expand.ts";
+import { specCase } from "../../store/index.ts";
 import { parseRecording } from "../../store/index.ts";
 import { resolveTestPath, resolveTestPathAbs } from "../test-path.ts";
 import type { GenerateContext } from "../types.ts";
@@ -83,11 +85,16 @@ describe("playwright target — reuse-first generation (mocked Claude)", () => {
     const ref = { featureName: "todos", specName: "add-item" };
     const testPath = resolveTestPath(playwrightTarget, targetConfig, ref);
 
+    const spec = parseTestSpec(specYaml);
     const ctx: GenerateContext = {
-      spec: parseTestSpec(specYaml),
+      spec,
       specYaml,
       featureName: "todos",
       specName: "add-item",
+      ref: specCase("todos", "add-item", cwd),
+      steps: expandSpec(spec, { blocks: new Map() }),
+      cleanup: [],
+      fields: {},
       cwd,
       testPath,
       recording,

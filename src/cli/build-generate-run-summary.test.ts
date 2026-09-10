@@ -16,7 +16,7 @@ function result(over: Partial<GenerateResult> = {}): GenerateResult {
 
 describe("buildGenerateRunSummary", () => {
   it("reports outcome, cwd-relative files, and the generation summary", () => {
-    const s = buildGenerateRunSummary("playwright", "tasks", "create", result(), cwd);
+    const s = buildGenerateRunSummary("playwright", "tasks/create", result(), cwd);
     expect(s).toContain("## playwright generation — tasks/create");
     expect(s).toContain("verification: passed");
     expect(s).toContain("- e2e/tasks/create.spec.ts (test)");
@@ -25,10 +25,7 @@ describe("buildGenerateRunSummary", () => {
   });
 
   it("surfaces a failed verification and its warnings as the learning signal", () => {
-    const s = buildGenerateRunSummary(
-      "runn",
-      "api",
-      "create-task",
+    const s = buildGenerateRunSummary("runn", "api/create-task",
       result({ passed: false, warnings: ["step step-02 is missing its capture calls"] }),
       cwd,
     );

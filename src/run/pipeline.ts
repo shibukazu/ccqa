@@ -646,6 +646,15 @@ export async function executeRun(
 
   if (specs.length === 0) {
     log.warn("no specs to run");
+    // A project whose cases live in its own documents has none of them under
+    // `.ccqa/features/`, and would otherwise read this as "ccqa found nothing"
+    // rather than "ccqa run does not reach these yet".
+    if (Object.values((await loadProjectConfig(cwd)).targets).some((t) => t.intent)) {
+      log.hint(
+        "this project has a target whose cases come from its own files; `ccqa run` enumerates " +
+          "`.ccqa/features/` only, so run those tests with your own test command",
+      );
+    }
     return { exitCode: 0, report: null, reportDir: null };
   }
 

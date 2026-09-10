@@ -462,6 +462,63 @@ describe("emitPlaywrightDraft — judgements", () => {
   });
 });
 
+describe("emitPlaywrightDraft — a project's own conventions", () => {
+  const recorded = [
+    { action: "navigate", value: "https://example.test/todos" },
+    { action: "fill", locator: { by: "label", value: "Title" }, value: "item-${CCQA_RUN_ID}" },
+  ] as const;
+
+  it("opens with the project's header and tags the test's name", () => {
+    const script = emitPlaywrightDraft({
+      actions: [...recorded],
+      testName: "Add a todo item",
+      header: "// sheet: https://example.test/sheet row 1030",
+      titleSuffix: " @high",
+    });
+    expect(script.startsWith("// sheet: https://example.test/sheet row 1030\n\nimport")).toBe(true);
+    expect(script).toContain(`test("Add a todo item @high", async ({ page }) => {`);
+  });
+
+  it("names the unique value the project's way, evaluated once per attempt", () => {
+    const script = emitPlaywrightDraft({
+      actions: [...recorded],
+      testName: "Add a todo item",
+      runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
+    });
+    expect(script).toContain(`import { uniqueId } from "./utils";`);
+    expect(script).toContain("let ccqaRunId: string | undefined;");
+    expect(script).toContain("ccqaRunId = uniqueId();");
+    // The recorded `${CCQA_RUN_ID}` now reads the project's value, and no
+    // environment read is left in the test.
+    expect(script).toContain("`item-${ccqaRunId}`");
+    expect(script).not.toContain("process.env.CCQA_RUN_ID");
+  });
+
+  it("undoes what it created in afterEach, and nothing when it created nothing", () => {
+    const script = emitPlaywrightDraft({
+      actions: [...recorded],
+      testName: "Add a todo item",
+      runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
+      cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
+    });
+    expect(script).toContain("test.afterEach(async ({ page }) => {");
+    expect(script).toContain("if (ccqaRunId === undefined) return;");
+    expect(script).toContain(`await page.getByRole("button", { name: "Delete" }).first().click();`);
+  });
+
+  it("drops the capture calls when the target captures no step evidence", () => {
+    const script = emitPlaywrightDraft({
+      actions: [...recorded],
+      testName: "Add a todo item",
+      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
+      stepEvidence: false,
+    });
+    expect(script).toContain("// step: step-01 [spec]");
+    expect(script).not.toContain("ccqaStepBefore");
+    expect(script).not.toContain("ccqa/step-evidence");
+  });
+});
+
 describe("an injected call's pattern", () => {
   const evidence = stepEvidenceCall("ccqaStepAfter", { stepId: "step-05", source: "spec" }).pattern;
 

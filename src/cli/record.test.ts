@@ -30,7 +30,7 @@ describe("sealRecordPush", () => {
     const patchRun = vi.fn().mockResolvedValue({});
     await withCostTally(async () => {
       tallyInvocation(ONE_CALL);
-      await sealRecordPush(fakePush(patchRun), "tasks", "create", false);
+      await sealRecordPush(fakePush(patchRun), "tasks/create", false);
     });
 
     expect(patchRun).toHaveBeenCalledTimes(1);
@@ -43,7 +43,7 @@ describe("sealRecordPush", () => {
 
   test("a recording that finished seals as passed", async () => {
     const patchRun = vi.fn().mockResolvedValue({});
-    await sealRecordPush(fakePush(patchRun), "tasks", "create", true);
+    await sealRecordPush(fakePush(patchRun), "tasks/create", true);
     expect(patchRun.mock.calls[0]![1].rows[0].status).toBe("passed");
   });
 
@@ -51,14 +51,14 @@ describe("sealRecordPush", () => {
     // It runs as a teardown finalizer: exiting here would skip the
     // browser-session reap queued behind it. The caller sets the exit code.
     const patchRun = vi.fn().mockRejectedValue(new Error("nope"));
-    await expect(sealRecordPush(fakePush(patchRun), "tasks", "create", true)).resolves.toBe(false);
+    await expect(sealRecordPush(fakePush(patchRun), "tasks/create", true)).resolves.toBe(false);
   });
 
   test("a failure note lands in the row's failureLogExcerpt", async () => {
     // The hole this closes: a CI wrapper's `timeout` SIGTERMs a stuck
     // recording, and the hub row said only status:"failed" — undiagnosable.
     const patchRun = vi.fn().mockResolvedValue({});
-    await sealRecordPush(fakePush(patchRun), "tasks", "create", false, "terminated by signal (SIGTERM) during step-03");
+    await sealRecordPush(fakePush(patchRun), "tasks/create", false, "terminated by signal (SIGTERM) during step-03");
     expect(patchRun.mock.calls[0]![1].rows[0]).toMatchObject({
       status: "failed",
       failureLogExcerpt: "terminated by signal (SIGTERM) during step-03",
@@ -67,7 +67,7 @@ describe("sealRecordPush", () => {
 
   test("a note never captions a successful recording", async () => {
     const patchRun = vi.fn().mockResolvedValue({});
-    await sealRecordPush(fakePush(patchRun), "tasks", "create", true, "terminated by signal (SIGTERM)");
+    await sealRecordPush(fakePush(patchRun), "tasks/create", true, "terminated by signal (SIGTERM)");
     expect(patchRun.mock.calls[0]![1].rows[0]).toMatchObject({ status: "passed", failureLogExcerpt: null });
   });
 });
@@ -113,7 +113,7 @@ describe("abortNote", () => {
 describe("seal with a deadline note", () => {
   test("a timed-out recording's reason lands in failureLogExcerpt", async () => {
     const patchRun = vi.fn().mockResolvedValue({});
-    await sealRecordPush(fakePush(patchRun), "tasks", "create", false, abortNote("timed out after 900s", "step-03"));
+    await sealRecordPush(fakePush(patchRun), "tasks/create", false, abortNote("timed out after 900s", "step-03"));
     expect(patchRun.mock.calls[0]![1].rows[0]).toMatchObject({
       status: "failed",
       failureLogExcerpt: "timed out after 900s during step-03",
@@ -140,7 +140,7 @@ describe("learnFromTrace", () => {
     // learnings and no record.agent prompt ever appeared on the hub.
     const update = vi.fn().mockResolvedValue(undefined);
     const fired = await learnFromTrace(
-      { enabled: true, featureName: "tasks", specName: "create", traceResult: traceResult(), hubContext: null },
+      { enabled: true, caseId: "tasks/create", traceResult: traceResult(), hubContext: null },
       update,
     );
     expect(fired).toBe(true);
@@ -155,7 +155,7 @@ describe("learnFromTrace", () => {
   test("no trace ran → learning stays silent", async () => {
     const update = vi.fn();
     const fired = await learnFromTrace(
-      { enabled: true, featureName: "tasks", specName: "create", traceResult: null, hubContext: null },
+      { enabled: true, caseId: "tasks/create", traceResult: null, hubContext: null },
       update,
     );
     expect(fired).toBe(false);
@@ -165,7 +165,7 @@ describe("learnFromTrace", () => {
   test("flag off → learning stays silent even when a trace ran", async () => {
     const update = vi.fn();
     const fired = await learnFromTrace(
-      { enabled: false, featureName: "tasks", specName: "create", traceResult: traceResult(), hubContext: null },
+      { enabled: false, caseId: "tasks/create", traceResult: traceResult(), hubContext: null },
       update,
     );
     expect(fired).toBe(false);

@@ -29,7 +29,35 @@ export interface PlaywrightEmitInput {
    * dropped would leave a spec asserting nothing and still green.
    */
   judgements?: Judgement[];
+  /**
+   * Comment block the file opens with — where the case came from, as the
+   * project writes it. Already expanded by the caller; emitted verbatim.
+   */
+  header?: string;
+  /** Appended to the test's name, e.g. a priority tag the project greps for. */
+  titleSuffix?: string;
+  /**
+   * What to undo afterwards. Emitted as `test.afterEach`, guarded so a test
+   * that failed before it created anything cleans up nothing.
+   */
+  cleanup?: { actions: RecordedAction[]; stepMarkers?: StepMarker[] };
+  /**
+   * How the project names the unique values a run creates. Given, the recorded
+   * `${CCQA_RUN_ID}` is emitted as a call to it, evaluated once per attempt —
+   * so the generated test carries the project's own convention rather than an
+   * environment variable ccqa happens to set.
+   */
+  runId?: { import: string; expression: string };
+  /** False drops the per-step capture calls (config `hooks.stepEvidence`). */
+  stepEvidence?: boolean;
 }
+
+/** Variable the emitted test holds its unique value in. */
+const RUN_ID_VAR = "ccqaRunId";
+/** Environment variable the recording carries a unique value as. */
+const RUN_ID_ENV = "CCQA_RUN_ID";
+/** What `envRefsToJsExpression` renders `${CCQA_RUN_ID}` as. */
+const RUN_ID_READ = `process.env.${RUN_ID_ENV} ?? ""`;
 
 /** A claim and the action index it is asserted after (-1: before any action). */
 export interface Judgement {
@@ -105,6 +133,20 @@ export function stepEvidencePreserveRule(): string {
 }
 
 /**
+ * Told to the rewrite because both are conventions the project greps: a
+ * missing tag drops the test out of whatever selection runs it, and a missing
+ * header loses where the case came from. Neither breaks a run, so nothing else
+ * would notice.
+ */
+export function headerPreserveRule(header: string, titleSuffix: string): string {
+  const parts = [
+    header ? `the comment block at the top of the draft, verbatim` : "",
+    titleSuffix ? `the \`${titleSuffix.trim()}\` suffix on the test's name` : "",
+  ].filter(Boolean);
+  return `**Keep ${parts.join(" and ")}.** Written from the case's own record, not decided per test; do not reword, move, or drop ${parts.length > 1 ? "either" : "it"}.`;
+}
+
+/**
  * Told to the rewrite, because the alternative failure is silent: a claim
  * turned into a text match passes on the wording of one run, which is the
  * assertion the judge exists to replace.
@@ -120,7 +162,11 @@ export function judgePreserveRule(): string {
 }
 
 export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
-  const { actions, testName, stepMarkers = [], judgements = [] } = input;
+  const { actions, testName, judgements = [] } = input;
+  // A target that captures no evidence emits no boundary calls, but the step
+  // comments stay: they are how a reviewer reads which step a line belongs to.
+  const captures = input.stepEvidence !== false;
+  const stepMarkers = input.stepMarkers ?? [];
   const markerByIndex = new Map(stepMarkers.map((m) => [m.actionIndex, m]));
 
   const lines: string[] = [];
@@ -135,7 +181,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   const flushJudgements = (afterActionIndex: number): void => {
     for (const { step } of judgements.filter((j) => j.afterActionIndex === afterActionIndex)) {
       if (openMarker) {
-        lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
+        if (captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
         openMarker = null;
       }
       if (lines.length > 0) lines.push("");
@@ -146,14 +192,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
 
   flushJudgements(-1);
   for (let i = 0; i < actions.length; i++) {
-    const marker = markerByIndex.get(i);
-    if (marker) {
-      if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
-      if (lines.length > 0) lines.push("");
-      lines.push(`// step: ${marker.stepId} [${marker.source}]`);
-      lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker).code);
-      openMarker = marker;
-    }
+    openMarker = openStep(lines, markerByIndex.get(i), openMarker, captures);
     const action = actions[i]!;
     const line = actionToLine(action);
     if (line !== null && line !== prevLine) {
@@ -165,7 +204,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     }
     flushJudgements(i);
   }
-  if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
+  closeStep(lines, openMarker, captures);
 
   // Nothing coverage-related is emitted: under `--coverage` the run attaches
   // to the browser from outside (see the target's `browserCoverage`), so the
@@ -176,23 +215,124 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   // so a consumer that already raised it keeps the raise.
   if (judgements.length > 0) lines.unshift("test.slow();", "");
 
-  const body = lines.map((l) => (l === "" ? "" : `  ${l}`)).join("\n");
-  return [
+  const cleanupLines = emitCleanup(input.cleanup, captures);
+  const title = `${testName}${input.titleSuffix ?? ""}`;
+  // Only when the route actually created something unique: a declared value
+  // nothing reads is an unused variable, and the project's own type check or
+  // lint — which this generation is checked against — is right to reject it.
+  const usesRunId =
+    input.runId !== undefined &&
+    [...lines, ...cleanupLines].some((line) => line.includes(RUN_ID_READ));
+  const runId = usesRunId ? input.runId : undefined;
+  const testLines = [
+    ...(runId ? [`${RUN_ID_VAR} = ${runId.expression};`] : []),
+    ...lines,
+  ];
+  const scoped = runId !== undefined || cleanupLines.length > 0;
+
+  const declaration = scoped
+    ? [
+        `test.describe(${j(testName)}, () => {`,
+        // Declared here, assigned in the test: `afterEach` needs to see it,
+        // and a value the project regenerates per attempt must not be shared
+        // between attempts.
+        ...(runId ? [`  let ${RUN_ID_VAR}: string | undefined;`, ""] : []),
+        `  test(${j(title)}, async ({ page }) => {`,
+        indent(testLines, 4),
+        "  });",
+        ...(cleanupLines.length > 0
+          ? [
+              "",
+              "  test.afterEach(async ({ page }) => {",
+              ...(runId
+                ? [
+                    // Nothing was created if the test never got that far, and
+                    // undoing nothing is what this must then do.
+                    `    if (${RUN_ID_VAR} === undefined) return;`,
+                  ]
+                : []),
+              indent(cleanupLines, 4),
+              "  });",
+            ]
+          : []),
+        "});",
+      ]
+    : [`test(${j(title)}, async ({ page }) => {`, indent(testLines, 2), "});"];
+
+  const source = [
+    ...(input.header ? [input.header.trimEnd(), ""] : []),
     `import { test, expect } from "@playwright/test";`,
     ...(judgements.length > 0 ? [`import { ${JUDGE_CALL} } from ${j(JUDGE_MODULE)};`] : []),
     // Only imported when there are boundaries to capture, so a marker-less
     // draft doesn't ship an unused import into the consumer's lint run.
-    ...(stepMarkers.length > 0
+    ...(stepMarkers.length > 0 && captures
       ? [
           `import { ${STEP_EVIDENCE_BEFORE}, ${STEP_EVIDENCE_AFTER} } from ${j(STEP_EVIDENCE_MODULE)};`,
         ]
       : []),
+    ...(runId ? [runId.import] : []),
     "",
-    `test(${j(testName)}, async ({ page }) => {`,
-    body,
-    "});",
+    ...declaration,
     "",
   ].join("\n");
+
+  // The recorded unique value becomes the project's own. A plain replace is
+  // exact here: the token is not free text but this emitter's own rendering of
+  // one env reference, produced by `envRefsToJsExpression` a few lines above.
+  return runId ? source.replaceAll(RUN_ID_READ, RUN_ID_VAR) : source;
+}
+
+function indent(lines: string[], by: number): string {
+  const pad = " ".repeat(by);
+  return lines.map((l) => (l === "" ? "" : `${pad}${l}`)).join("\n");
+}
+
+/**
+ * The recorded undo actions, with their step comments. Emitted from the
+ * recording like everything else: what the cleanup does was demonstrated in
+ * the browser, not guessed from the case's prose.
+ */
+function emitCleanup(cleanup: PlaywrightEmitInput["cleanup"], captures: boolean): string[] {
+  if (!cleanup || cleanup.actions.length === 0) return [];
+  const lines: string[] = [];
+  const markerByIndex = new Map((cleanup.stepMarkers ?? []).map((m) => [m.actionIndex, m]));
+  let open: StepMarker | null = null;
+  for (let i = 0; i < cleanup.actions.length; i++) {
+    open = openStep(lines, markerByIndex.get(i), open, captures);
+    const action = cleanup.actions[i]!;
+    if (action.replayUnstable) {
+      lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
+    }
+    const line = actionToLine(action);
+    if (line !== null) lines.push(line);
+  }
+  closeStep(lines, open, captures);
+  return lines;
+}
+
+/**
+ * Enter the step a marker starts: close the one before it, comment the
+ * boundary, and open the capture. Shared by the two places that walk an action
+ * list against markers, so a change to how a boundary is written cannot apply
+ * to the steps and miss the cleanup.
+ */
+function openStep(
+  lines: string[],
+  marker: StepMarker | undefined,
+  open: StepMarker | null,
+  captures: boolean,
+): StepMarker | null {
+  if (!marker) return open;
+  if (open && captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, open).code);
+  if (lines.length > 0) lines.push("");
+  lines.push(`// step: ${marker.stepId} [${marker.source}]`);
+  if (captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker).code);
+  return marker;
+}
+
+/** Close the step still open at the end of an action list. */
+function closeStep(lines: string[], open: StepMarker | null, captures: boolean): void {
+  if (open && captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, open).code);
 }
 
 /**

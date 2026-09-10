@@ -20,12 +20,14 @@ spec directory accumulates these files as you work:
   config.yaml                    # generation-target settings (see targets.md)
   blocks/
     login/spec.yaml              # reusable block (params + steps)
+  cases/
+    <id>/                        # (markdown intent source) one case's working files
   features/
     tasks/
       test-cases/
         create-and-complete/
           spec.yaml              # this document's subject
-          ir.json                # (recording targets) the recorded route
+          ir.json                # (recording targets) the recorded route + what was generated from it
           ir.failed.json         # last FAILED trace, kept for diagnosis only
           route-diff.md          # what the last re-record changed, if anything
           test.spec.ts           # generated test, when `testPath` is the default
@@ -34,6 +36,33 @@ spec directory accumulates these files as you work:
 
 Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/` and
 `ccqa-report*/`.
+
+## Where a case comes from
+
+Everything below describes `spec.yaml`, ccqa's own format — the default for
+every target. A target that declares
+[an `intent` source](./targets.md#intent--reading-test-cases-from-markdown)
+reads its cases from markdown instead, in whatever headings the project
+already writes them with:
+
+```markdown
+## Title
+
+Mark a task complete
+
+## Steps
+
+1. Open the task list.
+2. Click the checkbox next to "Buy milk".
+
+## Expected
+
+- The task's checkbox is checked.
+```
+
+A target either declares `intent` or it doesn't: with none, it reads
+`spec.yaml`; with one, it reads markdown, and `spec.yaml` plays no part for
+that target.
 
 ## Top-level fields
 

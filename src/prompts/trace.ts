@@ -8,12 +8,28 @@ export interface TracePromptStep {
   id: string;
   source: string;
   instruction: string;
+  /**
+   * What this step must make true. Empty for a case whose source states its
+   * expectations for the case as a whole — those arrive as `expectations`
+   * instead, and placing them is part of the recording.
+   */
   expected: string;
 }
 
 export interface TraceSystemPromptInput {
   title: string;
   steps: TracePromptStep[];
+  /**
+   * Expectations the case states without saying which step delivers each. A
+   * markdown test case is written for a person, who reads the flow and knows
+   * where each one becomes true; the recorder has to do the same reading, so
+   * the list is handed over whole with the rule for placing it.
+   */
+  expectations?: string[];
+  /** Sections of the case ccqa does not interpret — the precondition, notes. */
+  context?: Array<{ heading: string; body: string }>;
+  /** The project's own guidance for recording (config `conventions.record`). */
+  conventions?: Array<{ heading: string; body: string }>;
   sessionName?: string;
   /**
    * Extra caller guidance, rendered as its own delimited section — e.g. a
@@ -53,12 +69,17 @@ ${input.instruction}
 `
     : "";
   const stepsText = input.steps
-    .map(
-      (step) => `### ${step.id} [${step.source}]
-- **Instruction**: ${step.instruction}
-- **Expected**: ${step.expected}`,
+    .map((step) =>
+      [
+        `### ${step.id} [${step.source}]`,
+        `- **Instruction**: ${step.instruction}`,
+        ...(step.expected ? [`- **Expected**: ${step.expected}`] : []),
+      ].join("\n"),
     )
     .join("\n\n");
+  const expectationsText = renderExpectations(input.expectations ?? []);
+  const contextText = renderContext(input.context ?? []);
+  const conventionsText = renderConventions(input.conventions ?? []);
 
   return `You are an expert QA engineer executing a browser E2E test. Execute each step precisely and record every browser action as a structured log line.
 
@@ -193,7 +214,7 @@ Each step's instruction names the URL to open directly (or via \`\${ENV_VAR}\`).
 ## Steps
 
 ${stepsText}
-
+${expectationsText}${contextText}${conventionsText}
 ## Execution Workflow
 
 For each step:
@@ -479,4 +500,56 @@ step is responsible for opening the initial URL.
 
 export function buildTracePrompt(title: string): string {
   return `Execute the test for "${title}". Each step's instruction includes the URL or selector context it needs.`;
+}
+
+/**
+ * The case's expectations, plus the one rule that decides where each is
+ * recorded. Without the rule a recorder either asserts everything at the end —
+ * on a page the flow has already left — or asserts each item at every step it
+ * might apply to, which is the over-assertion the selector rules exist to
+ * prevent.
+ */
+function renderExpectations(expectations: string[]): string {
+  if (expectations.length === 0) return "";
+  const items = expectations.map((text) => `- ${text}`).join("\n");
+  return `
+## Expected results
+
+The case states these without saying which step delivers them:
+
+${items}
+
+**Assign each to the step it first becomes true in, and assert it there and nowhere else.** Read the flow to decide: an expectation about what a form did belongs to the step that submitted it, not to a later step that happens to still show it. Assert each one exactly once — a repeat adds no coverage and breaks first. An expectation you cannot place is one you report in \`STEP_DONE\` text as unplaced; never invent a step for it, and never assert it "just in case".
+`;
+}
+
+/**
+ * Sections of the case ccqa does not interpret — the precondition, notes the
+ * author left. Passed through verbatim: they are written for whoever runs the
+ * case, and the recorder is now that reader.
+ */
+function renderContext(context: Array<{ heading: string; body: string }>): string {
+  if (context.length === 0) return "";
+  const sections = context.map((s) => `### ${s.heading}\n\n${s.body}`).join("\n\n");
+  return `
+## About this case
+
+${sections}
+`;
+}
+
+/**
+ * The project's own recording guidance. Where the case says what to do, this
+ * says how this project is driven — which account signs in, what has to be
+ * true before the first step. Prose, verbatim: it is written for whoever runs
+ * the case, and this is now that reader.
+ */
+function renderConventions(conventions: Array<{ heading: string; body: string }>): string {
+  if (conventions.length === 0) return "";
+  const sections = conventions.map((c) => `### ${c.heading}\n\n${c.body}`).join("\n\n");
+  return `
+## How this project is driven
+
+${sections}
+`;
 }

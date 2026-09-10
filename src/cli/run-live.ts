@@ -524,7 +524,7 @@ async function runOneSpec(args: {
     // the child, so the map must scrub against that value, not whatever the
     // parent env holds. (The environment itself is stable: a profile is
     // applied once per invocation, before any spec runs.)
-    const envScrubMap = buildProseEnvScrubMap(spec, steps, { CCQA_RUN_ID: runId });
+    const envScrubMap = buildProseEnvScrubMap(spec.steps, steps, { CCQA_RUN_ID: runId });
     const runDir = opts.out ?? join(specDir, "runs", runId);
     await mkdir(runDir, { recursive: true });
     log.meta("runDir", runDir);

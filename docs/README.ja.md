@@ -74,9 +74,12 @@ spec の実行のしかたは 2 通りあります。
 各 step の `expected` を判定します。固定の記録では壊れてしまう UI 向けです。
 
 vitest と agent-browser は既定ターゲットの peer dependency です。外部ターゲット
-だけを使うプロジェクトは `ccqa` とそのツールだけで足ります。`runCommand` と
-既存のページオブジェクトの再利用は [Generation targets](./targets.md) を参照
-してください。
+だけを使うプロジェクトは `ccqa` とそのツールだけで足ります。ターゲットは ccqa
+側にコードを持たず、config だけで定義することもできます。すでに使っている
+フレームワークに合わせられ、spec.yaml の代わりにすでに書いているマークダウン
+からテストケースを読み込めます。`runCommand`、既存のページオブジェクトの
+再利用、`kind: external` については [Generation targets](./targets.md) を
+参照してください。
 
 ## 監査してから実行する
 

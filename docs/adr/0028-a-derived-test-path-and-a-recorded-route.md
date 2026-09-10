@@ -61,16 +61,24 @@ following the test's imports, resolving relative specifiers and the project's
 `tsconfig.json` `paths` aliases, to a bounded depth, never into
 `node_modules`. That set cannot go stale, because it is what actually runs.
 
-Nothing replaces the hash: **ccqa stops claiming to know whether a test was
-hand-edited.** The question needs a record of what the last generation wrote,
-which is the manifest itself. The two facts left — the test's and the
-recording's timestamps — cannot answer it, because `ccqa generate` rewrites
-the test and never touches the recording: after one regeneration is committed,
-"the test moved last" is true of every spec, and a gate reading it would refuse
-the very workflow this ADR exists to enable. `ccqa generate` therefore asks
-before replacing an existing test (`--overwrite` skips the prompt), which is
-what it did before this change, and says plainly that it cannot tell whose
-edit it is about to lose.
+The hash is kept, reduced to **one field on the recording**: `ir.json`'s
+`generated: { testSha256, at }`, written by `ccqa generate` after it writes the
+test. That is the smallest thing that can answer the question, and it has to be
+written by the generator — timestamps cannot answer it at all, because generate
+rewrites the test and never touches the recording, so after one regeneration
+"the test moved last" is true of every spec forever.
+
+`ccqa generate` compares the test on disk against that stamp: equal means ccqa
+wrote it and regenerating costs nobody anything, so it happens without asking;
+different means someone edited it, and regenerating is refused (`--overwrite`
+overrides) so the change goes back through `ccqa record` or through the
+consumer's own repair path. A recording with no stamp — never generated from,
+or recorded by an older ccqa — falls back to asking.
+
+Only `ccqa generate` reads it. `ccqa run` and the audit do not: the generated
+test belongs to the consumer, and neither command's answer may turn on who last
+wrote it. The field rides on a file the consumer already commits, so no second
+artifact appears in their tree.
 
 `ir.json` becomes the **record of the route**: the operations, locators, values
 and checks a recording actually performed, plus the minimum provenance
@@ -94,10 +102,9 @@ gone.
 
 Consequences:
 
-- **A hand-edited test is protected by a prompt, not by a check.** `ccqa run`
-  no longer warns that a generated file drifted from what generate produced —
-  that warning was the manifest's hash. A project that wants generated code
-  guarded keeps it in review, the way it guards any other file.
+- **A hand-edited test is refused, not warned about**, and only by `ccqa
+  generate`. `ccqa run` no longer warns that a generated file drifted from
+  what generate produced: a run's job is to run the test in front of it.
 - **The consumer's tree holds one ccqa artifact per spec**, the route. The
   generated test and its support files belong to the consumer, and ccqa keeps
   no ledger about them.

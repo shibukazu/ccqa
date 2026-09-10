@@ -3,7 +3,7 @@ import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
 import type { SpecCatalog } from "./spec-catalog.ts";
 import type { GroupLookup } from "./serial-groups.ts";
 import { targetConfigFor, type ProjectConfig, type TargetConfig } from "../config/project-config.ts";
-import { resolveTarget } from "../targets/registry.ts";
+import { registryFor, resolveTargetFrom } from "../targets/registry.ts";
 import type {
   BrowserCoverageDecl,
   StepEvidenceSupport,
@@ -69,11 +69,21 @@ export interface TargetDispatch {
  * per-spec instead of stopping the run. `resolve` is injectable so tests can
  * supply a registry of fake targets.
  */
+/**
+ * Resolve against a registry built once for the whole dispatch. A project that
+ * declares targets in its config has them constructed from that config, and
+ * doing that per spec would rebuild the same objects for every row of a run.
+ */
+function resolveTargetFor(config: ProjectConfig): (spec: TestSpec, c: ProjectConfig) => TargetPlugin {
+  const registry = registryFor(config);
+  return (spec, c) => resolveTargetFrom(spec, c, registry);
+}
+
 export function groupSpecsByTarget(
   specs: readonly SpecRef[],
   catalog: SpecCatalog,
   config: ProjectConfig,
-  resolve: (spec: TestSpec, config: ProjectConfig) => TargetPlugin = resolveTarget,
+  resolve: (spec: TestSpec, config: ProjectConfig) => TargetPlugin = resolveTargetFor(config),
 ): TargetDispatch {
   const agentBrowser: SpecRef[] = [];
   const externalById = new Map<string, ExternalTargetGroup>();

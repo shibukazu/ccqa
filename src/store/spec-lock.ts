@@ -1,6 +1,6 @@
-import { open, readFile, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { getSpecDir } from "./index.ts";
+import type { CaseRef } from "./index.ts";
 import * as log from "../cli/logger.ts";
 
 /**
@@ -44,17 +44,18 @@ function isPidAlive(pid: number): boolean {
 }
 
 /**
- * Acquire the lock for `<feature>/<spec>`; returns a release function. Throws
+ * Acquire the lock for one case; returns a release function. Throws
  * `SpecLockedError` when a live process already holds it. A stale lock (dead
  * PID or unreadable body) is reclaimed with a warning.
  */
 export async function acquireSpecLock(
-  featureName: string,
-  specName: string,
+  ref: CaseRef,
   command: string,
-  cwd?: string,
 ): Promise<() => Promise<void>> {
-  const lockPath = join(getSpecDir(featureName, specName, cwd), SPEC_LOCK_FILE);
+  // The first command against a case creates its directory here: the lock is
+  // the first thing written to it, and `open(…, "wx")` does not make parents.
+  await mkdir(ref.dir, { recursive: true });
+  const lockPath = join(ref.dir, SPEC_LOCK_FILE);
   const body: SpecLockBody = {
     pid: process.pid,
     command,

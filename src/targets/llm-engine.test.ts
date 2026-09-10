@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { specCase } from "../store/index.ts";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -48,10 +49,14 @@ function makeContext(overrides: Partial<GenerateContext> = {}): GenerateContext 
     specYaml: "title: add a todo item\n",
     featureName: "todos",
     specName: "add-item",
+    ref: specCase("todos", "add-item", cwd),
+    steps: [],
+    cleanup: [],
+    fields: {},
     cwd,
     testPath: "e2e/todos/add-item.spec.ts",
     resources: [],
-    conventions: { guides: [], examples: [] },
+    conventions: { guides: [], examples: [], record: [] },
     targetConfig: TargetConfigSchema.parse({}),
     language: "auto",
     hub: null,
@@ -298,6 +303,26 @@ describe("generateWithLlmEngine", () => {
     expect(res.files.map((f) => relative(cwd, f.path))).toEqual([specDirTest]);
   });
 
+  it("fails the project's own checks even when the spec's test passed", async () => {
+    await makeProject();
+    const { invoke } = fakeInvoke([okOutput(), okOutput()]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({
+        targetConfig: TargetConfigSchema.parse({
+          runCommand: "exit 0",
+          // What a project's type check or lint is to ccqa: a command that
+          // must also pass before the generated file is worth reviewing.
+          checkCommands: ["exit 3"],
+        }),
+      }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "x",
+      invoke,
+    });
+    expect(result.passed).toBe(false);
+  });
+
   it("runs the fix loop until the runCommand passes", async () => {
     await makeProject();
     // The verification command passes only once the fix pass writes the marker file.
@@ -477,7 +502,7 @@ describe("generateWithLlmEngine", () => {
           { path: "e2e/pages", description: "page objects" },
           { package: "@acme/e2e-kit", description: "shared fixtures" },
         ],
-        conventions: { guides: ["docs/style.md"], examples: [] },
+        conventions: { guides: ["docs/style.md"], examples: [], record: [] },
       }),
       target: "playwright",
       steps: [],

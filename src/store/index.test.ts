@@ -188,7 +188,7 @@ describe("saveRecording", () => {
     const { mkdtemp, mkdir, writeFile, readFile, stat } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { saveRecording } = await import("./index.ts");
+    const { saveRecording, specCase } = await import("./index.ts");
 
     const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-recording-"));
     const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
@@ -196,12 +196,7 @@ describe("saveRecording", () => {
     await writeFile(join(specDir, "actions.json"), "[]", "utf8");
     await writeFile(join(specDir, "route.md"), "# legacy", "utf8");
 
-    const { path, recording } = await saveRecording(
-      "demo",
-      "x",
-      [{ action: "navigate", value: "https://example.test" }],
-      cwd,
-    );
+    const { path, recording } = await saveRecording(specCase("demo", "x", cwd), [{ action: "navigate", value: "https://example.test" }]);
 
     expect(recording.actions).toHaveLength(1);
     expect(recording.origin).toBe("https://example.test");
@@ -214,16 +209,55 @@ describe("saveRecording", () => {
     const { mkdtemp, mkdir, writeFile, stat } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { saveRecording } = await import("./index.ts");
+    const { saveRecording, specCase } = await import("./index.ts");
 
     const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-recording-"));
     const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
     await mkdir(specDir, { recursive: true });
     await writeFile(join(specDir, "ir.failed.json"), "[]", "utf8");
 
-    await saveRecording("demo", "x", [{ action: "navigate", value: "https://example.test" }], cwd);
+    await saveRecording(specCase("demo", "x", cwd), [{ action: "navigate", value: "https://example.test" }]);
 
     await expect(stat(join(specDir, "ir.failed.json"))).rejects.toThrow();
+  });
+});
+
+describe("stampGeneratedTest", () => {
+  test("records what the generation wrote, and leaves the route untouched", async () => {
+    const { mkdtemp, mkdir, writeFile, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { saveRecording, specCase, stampGeneratedTest, fileSha256 } = await import("./index.ts");
+
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-stamp-"));
+    const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
+    await mkdir(specDir, { recursive: true });
+    const { path } = await saveRecording(specCase("demo", "x", cwd), [{ action: "navigate", value: "https://example.test" }]);
+    const testFile = join(specDir, "test.spec.ts");
+    await writeFile(testFile, "test('flow', () => {});\n", "utf8");
+
+    await stampGeneratedTest(specCase("demo", "x", cwd), testFile);
+
+    const recording = JSON.parse(await readFile(path, "utf8"));
+    expect(recording.generated.testSha256).toBe(await fileSha256(testFile));
+    expect(Date.parse(recording.generated.at)).not.toBeNaN();
+    // The route itself is what the trace wrote; a stamp must not disturb it.
+    expect(recording.actions).toEqual([{ action: "navigate", value: "https://example.test" }]);
+  });
+
+  test("stamps nothing when the generation produced no test", async () => {
+    const { mkdtemp, mkdir, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { saveRecording, specCase, stampGeneratedTest } = await import("./index.ts");
+
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-stamp-"));
+    await mkdir(join(cwd, ".ccqa", "features", "demo", "test-cases", "x"), { recursive: true });
+    const { path } = await saveRecording(specCase("demo", "x", cwd), [{ action: "click" }]);
+
+    await stampGeneratedTest(specCase("demo", "x", cwd), join(cwd, "nope.spec.ts"));
+
+    expect(JSON.parse(await readFile(path, "utf8")).generated).toBeUndefined();
   });
 });
 
@@ -248,14 +282,14 @@ describe("saveFailedRecording", () => {
     const { mkdtemp, mkdir, writeFile, readFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { saveFailedRecording } = await import("./index.ts");
+    const { saveFailedRecording, specCase } = await import("./index.ts");
 
     const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-failed-"));
     const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
     await mkdir(specDir, { recursive: true });
     await writeFile(join(specDir, "ir.json"), '[{"action":"navigate","value":"https://good.test"}]', "utf8");
 
-    const path = await saveFailedRecording("demo", "x", [], cwd);
+    const path = await saveFailedRecording(specCase("demo", "x", cwd), []);
 
     expect(path).toBe(join(specDir, "ir.failed.json"));
     expect(JSON.parse(await readFile(path, "utf8")).actions).toHaveLength(0);

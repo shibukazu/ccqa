@@ -43,8 +43,12 @@ export function expandPathTemplate(template: string, values: Record<string, stri
   });
 }
 
-/** The substitutions `resolveTestPath` fills in. */
-const KNOWN_PLACEHOLDERS = ["feature", "spec"];
+/**
+ * The substitutions `resolveTestPath` fills in. `{feature}`/`{spec}` name a
+ * case stated in ccqa's own `spec.yaml`; `{case}` names one read from the
+ * project's own test cases, whose id is already path-shaped.
+ */
+const KNOWN_PLACEHOLDERS = ["feature", "spec", "case"];
 
 /**
  * Reject a template that cannot name a per-spec file inside the project.
@@ -64,8 +68,8 @@ export function validateTestPathTemplate(template: string): string | null {
   if (template.split(/[\\/]+/).includes("..")) {
     return "testPath must not contain '..'";
   }
-  if (!template.includes("{spec}")) {
-    return "testPath must contain {spec}, or every spec would generate onto the same file";
+  if (!template.includes("{spec}") && !template.includes("{case}")) {
+    return "testPath must contain {spec} or {case}, or every case would generate onto the same file";
   }
   return null;
 }
@@ -79,6 +83,25 @@ export function resolveTestPath(
   return expandPathTemplate(targetConfig.testPath ?? target.defaultTestPath, {
     feature: ref.featureName,
     spec: ref.specName,
+    // A `spec.yaml` case's id is its two coordinates joined, so `{case}`
+    // resolves for it too. Every placeholder always has a value: a template
+    // one command accepts must not throw in another.
+    case: `${ref.featureName}/${ref.specName}`,
+  });
+}
+
+/** Where a case read from the project's own test cases generates to. */
+export function resolveCaseTestPath(
+  target: { defaultTestPath: string },
+  targetConfig: TestPathConfig,
+  caseId: string,
+): string {
+  const parts = caseId.split("/");
+  const spec = parts.pop()!;
+  return expandPathTemplate(targetConfig.testPath ?? target.defaultTestPath, {
+    case: caseId,
+    feature: parts.join("/") || spec,
+    spec,
   });
 }
 

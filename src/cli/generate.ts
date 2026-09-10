@@ -2,16 +2,29 @@ import { withUsageErrors } from "./usage-errors.ts";
 import { RunUsageError } from "../run/errors.ts";
 import { Command } from "commander";
 import { createInterface } from "node:readline";
-import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
-import { ensureCcqaDir, getRecording, parseSpecPath, readSpecFile } from "../store/index.ts";
+import { readFile, writeFile } from "node:fs/promises";
+import { relative, resolve } from "node:path";
+import {
+  ensureCcqaDir,
+  fileSha256,
+  getRecording,
+  splitCaseId,
+  stampGeneratedTest,
+  type Recording,
+} from "../store/index.ts";
+
+/** What `ccqa generate` last wrote from this route (`ir.json`'s `generated`). */
+type GenerationStamp = NonNullable<Recording["generated"]>;
 import { resolveTestPath } from "../targets/test-path.ts";
 import { checkRecordedRouteReplays } from "./replay-gate.ts";
+import { resolveCase, type ResolvedCase } from "./resolve-case.ts";
+import { replaceSectionBody } from "../intent/markdown.ts";
+import { loadEnvFiles } from "./env-files.ts";
 import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
 import { parseTestSpec } from "../spec/parser.ts";
-import { loadProjectConfig, targetConfigFor } from "../config/project-config.ts";
-import { resolveTarget, resolveTargetOverride } from "../targets/registry.ts";
+import { loadProjectConfig, type TargetConfig } from "../config/project-config.ts";
+import { resolveTargetOverride } from "../targets/registry.ts";
 import type { GenerateContext, GenerateResult, TargetPlugin } from "../targets/types.ts";
 import type { FixMode } from "../diagnose/loop.ts";
 import type { RecordedAction } from "../types.ts";
@@ -89,22 +102,21 @@ export interface RunGenerateOptions {
  * --report-to-hub` still has to seal the run holding what the retries cost.
  */
 export async function runGenerate(
-  featureName: string,
-  specName: string,
+  resolved: ResolvedCase,
   opts: RunGenerateOptions,
 ): Promise<{ passed: boolean }> {
-  log.header("generate", `${featureName}/${specName}`);
+  log.header("generate", resolved.testCase.ref.id);
 
   const cwd = opts.cwd ?? process.cwd();
   await ensureCcqaDir(cwd);
 
-  // Concurrent generations of the same spec interleave recording and output
+  // Concurrent generations of the same case interleave recording and output
   // writes with no defined winner — the second caller fails fast.
   // Re-entrant under `ccqa record`, which holds the lock across trace +
   // generate in the same process.
-  const releaseLock = await acquireSpecLock(featureName, specName, "generate", cwd);
+  const releaseLock = await acquireSpecLock(resolved.testCase.ref, "generate");
   try {
-    return await runGenerateLocked(featureName, specName, opts, cwd);
+    return await runGenerateLocked(resolved, opts, cwd);
   } finally {
     await releaseLock();
   }
@@ -125,44 +137,51 @@ export function resolveTargetOrExit(resolve: () => TargetPlugin): TargetPlugin {
 }
 
 async function runGenerateLocked(
-  featureName: string,
-  specName: string,
+  resolved: ResolvedCase,
   opts: RunGenerateOptions,
   cwd: string,
 ): Promise<{ passed: boolean }> {
-  const specYaml = await readSpecFile(featureName, specName, cwd);
-  const spec = parseTestSpec(specYaml);
+  const { testCase, target, targetConfig, testPath } = resolved;
+  const spec = testCase.source.kind === "spec" ? testCase.source.spec : null;
   // Same gate as `ccqa record`: a live spec has no recording to compile, and
   // `ccqa run` ignores generated code for it — a spec switched to live after
   // it was once recorded would otherwise still compile a test nothing runs.
-  if (spec.mode === "live") {
+  if (spec?.mode === "live") {
     log.error(
-      `this spec is 'mode: live' — a live spec runs without generated code. Run 'ccqa run ${featureName}/${specName}' instead`,
+      `this spec is 'mode: live' — a live spec runs without generated code. Run 'ccqa run ${testCase.ref.id}' instead`,
     );
     process.exit(2);
   }
-  const config = await loadProjectConfig(cwd);
-  const target = resolveTargetOrExit(() =>
-    opts.targetOverride !== undefined
-      ? resolveTargetOverride(spec, opts.targetOverride)
-      : resolveTarget(spec, config),
-  );
   log.meta("target", target.id + (opts.targetOverride !== undefined ? " (--target override)" : ""));
-
-  const targetConfig = targetConfigFor(config, target.id);
-  const testPath = resolveTestPath(target, targetConfig, { featureName, specName });
   log.meta("test", testPath);
 
-  // Refuse to overwrite an existing generated test unless --force. ccqa cannot
-  // tell whose edit is in that file — nothing records what the last generation
-  // wrote (ADR-0028) — so it asks rather than guessing. Always interactive,
-  // regardless of --auto-fix: losing a hand-patched selector is a different
-  // decision from auto-applying a fix. CI flows pass --overwrite.
-  const exists = await stat(resolve(cwd, testPath)).then(
-    () => true,
-    () => false,
-  );
-  if (exists && !opts.force) {
+  const testPathAbs = resolve(cwd, testPath);
+  let recording: RecordedAction[] | undefined;
+  let cleanupRecording: RecordedAction[] | undefined;
+  let stamp: GenerationStamp | undefined;
+  if (target.input === "recording") {
+    const saved = await getRecording(testCase.ref);
+    log.meta("recording", `${saved.path}${saved.recordedAt ? ` (recorded ${saved.recordedAt})` : ""}`);
+    log.meta("actions", saved.actions.length);
+    recording = saved.actions;
+    cleanupRecording = saved.cleanup;
+    stamp = saved.generated;
+  }
+
+  // One guard over the file about to be replaced, with three answers: ccqa
+  // wrote it and nobody has touched it (regenerate silently), someone edited
+  // it (refuse — that edit is work), or there is no stamp to tell the two
+  // apart (ask). Thrown rather than exited: the case lock is held here, and
+  // `process.exit` would skip its release.
+  const handEdit = await handEditRefusal({
+    key: testCase.ref.id,
+    testPath,
+    testPathAbs,
+    stamp: stamp ?? null,
+    force: opts.force,
+  });
+  if (handEdit !== null) throw new RunUsageError(handEdit);
+  if (stamp === undefined && !opts.force && (await fileSha256(testPathAbs)) !== null) {
     if (!(await confirmOverwrite(testPath))) {
       log.info("aborted; pass --overwrite to replace it without prompting");
       // Declining is not a failed generation: nothing was generated to fail.
@@ -170,37 +189,37 @@ async function runGenerateLocked(
     }
   }
 
-  let recording: RecordedAction[] | undefined;
-  if (target.input === "recording") {
-    const { path: recordingPath, actions, recordedAt } = await getRecording(featureName, specName, cwd);
-    log.meta("recording", `${recordingPath}${recordedAt ? ` (recorded ${recordedAt})` : ""}`);
-    log.meta("actions", actions.length);
-    recording = actions;
-    // A route the application has outgrown can only compile into a test that
-    // cannot pass, so it is refused before any generation work is paid for.
-    // Thrown, not exited: the spec lock is held here and `process.exit` would
-    // skip its release.
-    if (opts.replayGate) {
-      const refusal = await checkRecordedRouteReplays({
-        ref: { featureName, specName },
-        cwd,
-        recording: actions,
-        ...(opts.teardown ? { teardown: opts.teardown } : {}),
-      });
-      if (refusal) throw new RunUsageError(refusal);
-    }
+  // A route the application has outgrown can only compile into a test that
+  // cannot pass, so it is refused before any generation work is paid for.
+  if (recording && opts.replayGate) {
+    const dead = await checkRecordedRouteReplays({
+      ref: testCase.ref,
+      cwd,
+      recording,
+      ...(opts.teardown ? { teardown: opts.teardown } : {}),
+    });
+    if (dead) throw new RunUsageError(dead);
   }
 
   await warnStaleBlockArtifacts();
 
+  const { featureName, specName } = splitCaseId(testCase.ref.id);
   const ctx: GenerateContext = {
-    spec,
-    specYaml,
+    // A case from the project's own documents has no `spec.yaml`; what every
+    // target actually reads off it is the title, and its steps come already
+    // expanded on the context.
+    spec: spec ?? { title: testCase.title, steps: [] },
+    specYaml: testCase.source.kind === "spec" ? testCase.source.yaml : "",
     featureName,
     specName,
+    ref: testCase.ref,
+    steps: testCase.steps,
+    cleanup: testCase.cleanup,
+    fields: testCase.fields,
     cwd,
     testPath,
     recording,
+    ...(cleanupRecording ? { cleanupRecording } : {}),
     resources: targetConfig.resources,
     conventions: targetConfig.conventions,
     targetConfig,
@@ -212,14 +231,24 @@ async function runGenerateLocked(
   };
 
   const result = await target.generate(ctx);
+  // Stamped after the write, from the file on disk: what the fix loop left is
+  // what this generation produced, and it is that file the next one compares.
+  if (target.input === "recording") {
+    await stampGeneratedTest(testCase.ref, testPathAbs);
+  }
+
+  // The case asked to be told where its test ended up, so tell it — and
+  // nothing else: the file is the project's, and exactly one section of it was
+  // offered to ccqa.
+  if (result.passed) await writeBackOutputPath(testCase, targetConfig, testPath);
 
   // Learn from a failed generation too: the fix it couldn't land is a signal.
   if (opts.updateAgentPrompt) {
-    await runGenerateAgentPromptUpdate(target, featureName, specName, result, opts, cwd);
+    await runGenerateAgentPromptUpdate(target, testCase.ref.id, result, opts, cwd);
   }
 
   if (!result.passed) log.warn("auto-fix exhausted; test still failing");
-  else log.hint(`run 'ccqa run ${featureName}/${specName}' to execute the test`);
+  else log.hint(`run 'ccqa run ${testCase.ref.id}' to execute the test`);
   return { passed: result.passed };
 }
 
@@ -232,8 +261,7 @@ async function runGenerateLocked(
  */
 async function runGenerateAgentPromptUpdate(
   target: TargetPlugin,
-  featureName: string,
-  specName: string,
+  caseId: string,
   result: GenerateResult,
   opts: RunGenerateOptions,
   cwd: string,
@@ -252,11 +280,66 @@ async function runGenerateAgentPromptUpdate(
     // The summary relativizes written-file paths against the project root, not
     // process.cwd() — under `--cwd <subpackage>` those differ, and a learned
     // playbook keyed on `../..`-style paths would be useless.
-    runSummary: buildGenerateRunSummary(target.id, featureName, specName, result, cwd),
+    runSummary: buildGenerateRunSummary(target.id, caseId, result, cwd),
     hubContext: opts.hubContext ?? null,
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
   });
+}
+
+/**
+ * Write the generated test's path into the case's own `outputPath` section.
+ *
+ * Only when the project named that section and the case actually has it: a
+ * case file belongs to the project, and ccqa rewrites the one heading it was
+ * given permission to rewrite, leaving every other byte alone.
+ */
+async function writeBackOutputPath(
+  testCase: ResolvedCase["testCase"],
+  targetConfig: TargetConfig,
+  testPath: string,
+): Promise<void> {
+  const heading = targetConfig.intent?.fields.outputPath;
+  if (!heading || testCase.source.kind !== "markdown") return;
+  // Read again rather than reusing the copy the case was parsed from: a
+  // generation with auto-fix runs for minutes, and writing back a stale copy
+  // would silently undo whatever was edited in that window.
+  const { path } = testCase.source;
+  const before = await readFile(path, "utf8").catch(() => null);
+  if (before === null) return;
+  const after = replaceSectionBody(before, heading, testPath);
+  if (after === null) {
+    log.warn(`the case has no "${heading}" section, so the generated test's path was not written back`);
+    return;
+  }
+  if (after === before) return;
+  await writeFile(path, after, "utf8");
+  log.meta("wrote back", `${heading} in ${relative(process.cwd(), path) || path}`);
+}
+
+/**
+ * The reason regeneration is refused because the test on disk is not the one
+ * the last generation wrote — or null when it may proceed. A matching stamp
+ * means ccqa produced this file, so regenerating it costs nobody anything and
+ * happens without asking.
+ */
+async function handEditRefusal(input: {
+  key: string;
+  testPath: string;
+  testPathAbs: string;
+  stamp: GenerationStamp | null;
+  force: boolean;
+}): Promise<string | null> {
+  if (input.stamp === null || input.force) return null;
+  const current = await fileSha256(input.testPathAbs);
+  // Nothing on disk: the generation has nothing to overwrite.
+  if (current === null || current === input.stamp.testSha256) return null;
+  return (
+    `${input.testPath} is not the file ccqa generated on ${input.stamp.at} — it was edited by hand. ` +
+    `Regenerating would discard that edit, so fix it where it came from: re-record with ` +
+    `'ccqa record ${input.key}' to fold the change into the route, or repair the test in its own repo. ` +
+    `Pass --overwrite to regenerate over it anyway.`
+  );
 }
 
 async function confirmOverwrite(path: string): Promise<boolean> {
@@ -300,13 +383,13 @@ interface GenerateCliOptions {
 export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
   new Command("generate")
     .argument(
-      "<feature/spec>",
-      "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
+      "<case>",
+      "The case to generate from: a spec id ('<feature>/<spec>'), or — for a target that reads an intent source — a case id or the path of its source file",
     )
     .description(
-      "Generate test code from a spec via its target plugin. Recording-backed targets " +
-        "compile the existing ir.json (run `ccqa record` first); spec-input targets " +
-        "generate directly from the spec.",
+      "Generate test code from a case via its target. Recording-backed targets compile the " +
+        "existing ir.json (run `ccqa record` first); spec-input targets generate directly " +
+        "from the spec.",
     )
     .optionsGroup("How to generate:")
     .option(
@@ -356,8 +439,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
   await withCostReporting("generate", () => runGenerateCli(specPath, opts));
 }));
 
-async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promise<void> {
-  const { featureName, specName } = parseSpecPath(specPath);
+async function runGenerateCli(caseArgument: string, opts: GenerateCliOptions): Promise<void> {
   const language = opts.language ?? DEFAULT_LANGUAGE;
 
   // The generated test replays under vitest and resolves the spec's ${VAR}
@@ -395,7 +477,12 @@ async function runGenerateCli(specPath: string, opts: GenerateCliOptions): Promi
   const disposeSignalHandlers = installTeardownSignalHandlers(teardown);
   let passed: boolean;
   try {
-    ({ passed } = await runGenerate(featureName, specName, {
+    const config = await loadProjectConfig(cwd);
+    await loadEnvFiles(config.envFiles, cwd);
+    const resolved = await resolveCase(caseArgument, config, cwd, {
+      ...(opts.target ? { targetOverride: opts.target } : {}),
+    });
+    ({ passed } = await runGenerate(resolved, {
       maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
       fixMode: toFixMode(opts.autoFix ?? "interactive"),
       force: opts.overwrite ?? false,

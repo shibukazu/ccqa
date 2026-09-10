@@ -219,11 +219,11 @@ function specEnvScrubMap(
 ): Array<[string, string]> {
   if (spec === null) return [];
   try {
-    return buildProseEnvScrubMap(spec, expandSpec(spec, { blocks }));
+    return buildProseEnvScrubMap(spec.steps, expandSpec(spec, { blocks }));
   } catch {
     // An include that no longer resolves costs the refs inside that block's
     // steps; the spec's own, include params included, still scrub.
-    return buildProseEnvScrubMap(spec, []);
+    return buildProseEnvScrubMap(spec.steps, []);
   }
 }
 

@@ -154,8 +154,8 @@ export function validateOutputPath(
       ? null
       : `the test file must be written to ${policy.testPath} (configured as this target's testPath), not ${path}`;
   }
-  // Support files land beside the test or in a writable path resource. The
-  // test's own directory is included so a project with no path resources can
+  // Support files land beside the test or under a configured write root. The
+  // test's own directory is included so a project that configures none can
   // still receive the page object a rewrite pass had to create.
   const roots = [dirname(resolve(policy.cwd, policy.testPath)), ...policy.writeRootsAbs];
   if (!roots.some((root) => isWithin(root, abs))) {
@@ -251,6 +251,22 @@ export interface LlmEngineRequest {
   invoke?: InvokeFn;
 }
 
+/**
+ * Where new support files may be created.
+ *
+ * A project that lists `writeRoots` has said which directories generated code
+ * may appear in, and `resources` then means only "code you may read and
+ * import" — the shared assets a generation must not rewrite. Without
+ * `writeRoots`, path resources stay writable, which is what the built-in
+ * targets have always done.
+ */
+function configuredWriteRoots(ctx: GenerateContext, resources: ResolvedResource[]): string[] {
+  if (ctx.targetConfig.writeRoots.length > 0) {
+    return ctx.targetConfig.writeRoots.map((root) => resolve(ctx.cwd, root));
+  }
+  return resources.filter((r) => r.writable).map((r) => r.rootAbs);
+}
+
 /** Full LLM generation: prompt assembly → invoke → write → verify loop. */
 export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<GenerateResult> {
   const { ctx } = req;
@@ -264,12 +280,9 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
   const bundle = await loadPromptBundleFromHub(ctx.hub, req.target);
   if (bundle) log.meta("prompt-bundle", bundle.loaded.join(", "));
 
-  const policy: OutputPathPolicy = {
-    cwd: ctx.cwd,
-    testPath: ctx.testPath,
-    writeRootsAbs: resources.filter((r) => r.writable).map((r) => r.rootAbs),
-  };
-  const writeRoots = resources.filter((r) => r.writable).map((r) => r.rootDisplay);
+  const writeRootsAbs = configuredWriteRoots(ctx, resources);
+  const policy: OutputPathPolicy = { cwd: ctx.cwd, testPath: ctx.testPath, writeRootsAbs };
+  const writeRoots = writeRootsAbs.map((root) => relative(ctx.cwd, root) || ".");
 
   const prompt = buildLlmGenPrompt({
     taskInstructions: req.taskInstructions,
@@ -335,16 +348,13 @@ export interface PreparedFilesRequest {
 export async function finalizePreparedFiles(req: PreparedFilesRequest): Promise<GenerateResult> {
   const { ctx } = req;
   const resources = await resolveResources(ctx.cwd, ctx.resources);
-  const policy: OutputPathPolicy = {
-    cwd: ctx.cwd,
-    testPath: ctx.testPath,
-    writeRootsAbs: resources.filter((r) => r.writable).map((r) => r.rootAbs),
-  };
+  const writeRootsAbs = configuredWriteRoots(ctx, resources);
+  const policy: OutputPathPolicy = { cwd: ctx.cwd, testPath: ctx.testPath, writeRootsAbs };
   return finalizeAndVerify({
     ctx,
     target: req.target,
     policy,
-    writeRoots: resources.filter((r) => r.writable).map((r) => r.rootDisplay),
+    writeRoots: writeRootsAbs.map((root) => relative(ctx.cwd, root) || "."),
     initialFiles: req.files,
     summary: req.summary,
     warnings: req.warnings,
@@ -398,7 +408,14 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
  */
 async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise<boolean> {
   const runCommand = p.ctx.targetConfig.runCommand;
-  if (!runCommand) return true;
+  // A target with no test command of its own can still have project-wide
+  // checks, and generated code that fails them is not done.
+  if (!runCommand) {
+    const checks = await runCheckCommands(p.ctx);
+    if (checks === null) return true;
+    log.warn(`${checks.command} failed (exit ${checks.exitCode}) — generated files kept`);
+    return false;
+  }
   // `--auto-fix skip` disables the fix pass entirely: run verification once and
   // report the result, never rewriting the generated files.
   const maxRetries = p.ctx.fix.mode === "non-interactive" ? 0 : p.ctx.fix.maxRetries;
@@ -445,7 +462,19 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
     } finally {
       await rm(artifactsDir, { recursive: true, force: true });
     }
-    if (result.exitCode === 0) return true;
+    let failing = command;
+    if (result.exitCode === 0) {
+      // The spec's own test passing is not the whole bar: generated code that
+      // breaks the project's type check or lint cannot be merged, and finding
+      // that out in review costs another round trip. Run those here, where the
+      // fix loop can still act on the output.
+      const checks = await runCheckCommands(p.ctx);
+      if (checks === null) return true;
+      result = checks;
+      // The fix pass is shown this output, so it has to be told which command
+      // produced it — otherwise it reads lint errors under the test command.
+      failing = checks.command;
+    }
     if (attempt >= maxRetries) {
       log.warn(
         `verification still failing after ${maxRetries} fix attempt(s) — generated files kept`,
@@ -456,7 +485,7 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
     log.fix(`verification failed (exit ${result.exitCode}) — requesting a fix (${attempt + 1}/${maxRetries})`);
     const fixPrompt = buildLlmFixPrompt({
       targetId: p.target,
-      command,
+      command: failing,
       outputTail: tail(result.output),
       files: [...state.entries()].map(([path, f]) => ({
         path,
@@ -510,6 +539,23 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
     }
     await writeGeneratedFiles(p.ctx.cwd, output.files, state);
   }
+}
+
+/**
+ * The project's own checks over the whole repository (type check, lint), run
+ * after the spec's test passes. Answers null when they all pass — or when the
+ * project configured none — and the failing one's output otherwise, in the
+ * shape the fix loop already consumes.
+ */
+async function runCheckCommands(
+  ctx: GenerateContext,
+): Promise<{ exitCode: number; output: string; command: string } | null> {
+  for (const command of ctx.targetConfig.checkCommands) {
+    log.run(command);
+    const result = await log.timedPhase(`check: ${command}`, () => runShellCommand(command, ctx.cwd), "run");
+    if (result.exitCode !== 0) return { ...result, command };
+  }
+  return null;
 }
 
 /**
