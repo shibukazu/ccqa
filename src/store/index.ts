@@ -361,7 +361,8 @@ export async function clearCaseRun(ref: CaseRef): Promise<void> {
 }
 
 /**
- * Replace the route's actions, leaving the rest of the recording alone.
+ * Replace the route's actions — and its cleanup, when that was replayed too —
+ * leaving the rest of the recording alone.
  *
  * For the one thing that changes a saved route without re-recording it: the
  * replay's label fallback, which finds the form a locator has to take to
@@ -371,12 +372,14 @@ export async function clearCaseRun(ref: CaseRef): Promise<void> {
 export async function rewriteRecordingActions(
   ref: CaseRef,
   actions: RecordedAction[],
+  cleanup?: RecordedAction[],
 ): Promise<void> {
   const path = getRecordingPath(ref);
   const content = await readFile(path, "utf-8").catch(() => null);
   if (content === null) return;
   const recording = parseRecording(content);
   recording.actions = actions;
+  if (cleanup) recording.cleanup = cleanup;
   await writeFile(path, JSON.stringify(recording, null, 2), "utf-8");
 }
 

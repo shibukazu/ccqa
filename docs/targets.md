@@ -532,8 +532,27 @@ for environments with no browser or no variables. It does not run under `ccqa
 record`, which has just recorded and validated the route it is compiling.
 
 The replay starts from the project's `sessionState`, like a recording does,
-and skips the actions carrying this run's unique value — the record they made
-is not there now, so their failure says nothing about whether the route holds.
+and **resolves `${CCQA_RUN_ID}` to a value of its own**. A route that creates
+something names it after the run that created it, so a replay that skipped
+those actions would submit the form without the name and then wait for a
+confirmation that could never arrive — the route would read as dead because
+the check declined to walk it. One fresh value is used everywhere the route
+uses the reference: the fill that types it, the assertion that reads it back,
+the click that acts on it. `ir.json` keeps the reference; the value belongs to
+that replay and is never written back.
+
+This means the check **drives your application for real**, side effects
+included: it performs the recorded actions, so whatever the route creates, it
+creates. The case's recorded cleanup, where it has one, is attempted straight
+after with the same value — but only after a route that replayed whole. A
+cleanup locator is rarely scoped to the run id, so undoing a route that created
+nothing removes whatever was already there. What remains is an attempt, not a
+guarantee: a cleanup that does not fully replay is reported and never refuses
+the regeneration, because a tidy-up that failed says nothing about whether the
+route holds. So **a replay can leave changes behind** — after a route that
+broke, after a cleanup that did not replay, and on a case that records no
+cleanup at all. The check says so in each case. `--no-replay` skips the check,
+side effects and all.
 
 One kind of failure the replay repairs instead of reporting. A field addressed
 by its label (`getByLabel("Email")`) needs the page to associate a `<label>`

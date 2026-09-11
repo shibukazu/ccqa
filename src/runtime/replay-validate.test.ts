@@ -523,6 +523,41 @@ describe("validateActions — an element the page has not rendered yet", () => {
   });
 });
 
+// A route that creates something names it after the run. Skip those actions
+// and the form goes in empty, so the assertion that reads the name back can
+// never pass — a live route read as dead.
+describe("validateActions — a route carrying this run's unique value", () => {
+  const route = (): RecordedAction[] => [
+    { action: "fill", locator: css("#title"), value: "ccqa-${CCQA_RUN_ID}", stepId: "step-01" },
+    {
+      action: "assert",
+      assert: "text_visible",
+      value: "ccqa-${CCQA_RUN_ID}",
+      stepId: "step-02",
+    },
+  ];
+
+  test("the fill and the assertion that reads it back see one and the same value", () => {
+    replyBy(() => OK);
+    const actions = route();
+    const { dropped } = validateActions(actions, {
+      sessionName: SESSION,
+      mode: "strict",
+      envOverrides: { CCQA_RUN_ID: "replay-42" },
+    });
+    expect(dropped).toEqual([]);
+
+    const filled = mockedSpawnAB.mock.calls.find((c) => c[0]!.includes("fill"))![0];
+    const waited = mockedSpawnAB.mock.calls.find((c) => c[0]!.includes("--text"))![0];
+    expect(filled).toContain("ccqa-replay-42");
+    expect(waited).toContain("ccqa-replay-42");
+
+    // The reference belongs to the route; the value belongs to this replay.
+    expect(actions[0]!.value).toBe("ccqa-${CCQA_RUN_ID}");
+    expect(actions[1]!.value).toBe("ccqa-${CCQA_RUN_ID}");
+  });
+});
+
 describe("validateActions (a css locator that is not css)", () => {
   const textAssert = (): RecordedAction => ({
     action: "assert",

@@ -1,4 +1,5 @@
 import { generateSessionName } from "../prompts/trace.ts";
+import { buildRunId } from "../runtime/live-artifacts.ts";
 import {
   assertAgentBrowserAvailable,
   AgentBrowserUnavailableError,
@@ -44,6 +45,8 @@ export interface ReplayGateInput {
   cwd: string;
   /** The saved route about to be recompiled. */
   recording: RecordedAction[];
+  /** The case's recorded undo, attempted after a route that replayed whole. */
+  cleanup?: RecordedAction[];
   /**
    * The project's saved browser state (config `sessionState`), restored the
    * same way `ccqa record` restores it. Without it a case whose precondition
@@ -52,17 +55,6 @@ export interface ReplayGateInput {
    */
   sessionState?: string;
   teardown?: RunTeardown;
-}
-
-/**
- * A run's unique value belongs to the run that recorded it: the record it
- * created is not there now, and nothing can conjure it. An action that carries
- * the reference is therefore not replayable, and its failure says nothing
- * about whether the route still holds — so the gate does not ask.
- */
-function replayable(action: RecordedAction): boolean {
-  const texts = [action.value, action.locator?.value, action.target?.value];
-  return !texts.some((t) => typeof t === "string" && t.includes("${CCQA_RUN_ID}"));
 }
 
 /**
@@ -100,21 +92,51 @@ export async function checkRecordedRouteReplays(
       );
     }
   }
-  const replayed = input.recording.filter(replayable);
-  const skipped = input.recording.length - replayed.length;
-  log.info(
-    `replaying ${replayed.length} recorded action(s) to check the route still holds` +
-      (skipped > 0 ? ` (${skipped} carry this run's unique value and cannot be replayed)` : "") +
-      "...",
-  );
-  let dropped: ValidationDrop[];
-  let promoted: string[] | undefined;
-  try {
-    ({ dropped, promoted } = validateActions(replayed, {
+  // One fresh value, seen by every action in this replay: the fill that types
+  // it, the assertion that reads it back, the click that acts on it. `ir.json`
+  // keeps the reference — the value belongs to this replay.
+  const envOverrides = { CCQA_RUN_ID: buildRunId() };
+  const replay = (actions: RecordedAction[]) =>
+    validateActions(actions, {
       sessionName,
       mode: "strict",
+      envOverrides,
       onProgress: (i, total, action) => log.progress(i, total, action.action),
-    }));
+    });
+  // A route that names a thing after this run is a route that makes one, and
+  // this check just made it too.
+  const makesSomething = input.recording.some((a) => a.value?.includes("CCQA_RUN_ID"));
+  const cleanup = input.cleanup ?? [];
+
+  let dropped: ValidationDrop[];
+  let promoted: string[] = [];
+  let cleanupPromoted: string[] = [];
+  try {
+    log.info(
+      `replaying ${input.recording.length} recorded action(s) against the application ` +
+        `to check the route still holds...`,
+    );
+    const route = replay(input.recording);
+    dropped = route.dropped;
+    promoted = route.promoted ?? [];
+    // Only after a route that replayed whole. A cleanup locator is rarely
+    // scoped to the run id, so undoing a route that created nothing removes
+    // whatever was already there.
+    if (cleanup.length > 0 && dropped.length === 0) {
+      log.info(`replaying the ${cleanup.length} recorded cleanup action(s)...`);
+      const undone = replay(cleanup);
+      cleanupPromoted = undone.promoted ?? [];
+      if (undone.dropped.length > 0) {
+        // Cascade victims were never attempted, so naming one as left behind
+        // points at an action that changed nothing.
+        const failed = undone.dropped.filter((d) => !isCascadeReason(d.reason));
+        log.warn(
+          `the recorded cleanup did not fully replay (${failed.length || undone.dropped.length} ` +
+            `action(s)) — this check may have left ` +
+            `${describeStepAction((failed[0] ?? undone.dropped[0]!).action)} behind`,
+        );
+      }
+    }
   } finally {
     log.progressEnd();
     void (input.teardown?.closeTracked(sessionName) ?? closeSession(sessionName));
@@ -122,11 +144,21 @@ export async function checkRecordedRouteReplays(
   // The fallback rewrote the actions in place, so the generation about to
   // happen already uses them. Saved as well, or the route on disk keeps the
   // locator that does not replay and every later command asks again.
-  if (promoted !== undefined && promoted.length > 0) {
-    for (const p of promoted) log.info(formatPromotion(p));
-    await rewriteRecordingActions(input.ref, input.recording);
+  const learned = [...promoted, ...cleanupPromoted];
+  if (learned.length > 0) {
+    for (const p of learned) log.info(formatPromotion(p));
+    await rewriteRecordingActions(
+      input.ref,
+      input.recording,
+      cleanupPromoted.length > 0 ? cleanup : undefined,
+    );
   }
   if (dropped.length === 0) {
+    if (makesSomething && cleanup.length === 0) {
+      log.warn(
+        "this case records no cleanup, so what the check just created is still in the application",
+      );
+    }
     log.meta("replay", "route still holds");
     return null;
   }
@@ -145,6 +177,9 @@ export async function checkRecordedRouteReplays(
     `${describeStepAction(first.action)}` +
     (cascaded > 0 ? `, and ${cascaded} later action(s) were not replayed at all` : "") +
     `:\n${failures}\n` +
+    (makesSomething && cleanup.length > 0
+      ? `The recorded cleanup was not attempted — check the application for anything this left behind.\n`
+      : "") +
     `Re-record with 'ccqa record ${input.ref.id}'. Pass --no-replay to regenerate from the ` +
     `saved route anyway (e.g. with no browser or no variables in this environment).`
   );

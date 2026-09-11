@@ -215,6 +215,7 @@ async function runGenerateLocked(
       ref: testCase.ref,
       cwd,
       recording,
+      ...(cleanupRecording ? { cleanup: cleanupRecording } : {}),
       ...(sessionState ? { sessionState } : {}),
       ...(opts.teardown ? { teardown: opts.teardown } : {}),
     });
@@ -430,7 +431,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     .option("--auto-fix-max-retries <n>", "Maximum number of auto-fix retries", "3")
     .option(
       "--no-replay",
-      "Skip replaying the saved recording before regenerating from it. The replay needs a browser and the spec's variables; skip it where neither is available (and accept that a route the application has outgrown regenerates into a test that cannot pass).",
+      "Skip replaying the saved recording before regenerating from it. The replay drives your application for real — it performs the recorded actions, and whatever they create the recorded cleanup then tries to remove — and it needs a browser and the spec's variables. Skip it where that is unwelcome or unavailable, and accept that a route the application has outgrown regenerates into a test that cannot pass.",
     )
     .option(
       "--no-session-pin",
