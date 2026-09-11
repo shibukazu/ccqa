@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { rememberHubConfig } from "./hub-config.ts";
 import { z, ZodError } from "zod";
 import { AGENT_BROWSER_TARGET, TargetIdSchema } from "../spec/yaml-schema.ts";
 import { validateTestPathTemplate } from "../targets/test-path.ts";
@@ -34,24 +35,37 @@ export const ResourceRefSchema = z.union(
 );
 export type ResourceRef = z.infer<typeof ResourceRefSchema>;
 
+/** See `ProjectConfig.hub`. */
+export const HubConfigSchema = z
+  .object({
+    url: z.string().min(1).optional(),
+    project: z.string().min(1).optional(),
+    headers: z.record(z.string(), z.string()).default({}),
+  })
+  .strict();
+export type HubConfig = z.infer<typeof HubConfigSchema>;
+
 /**
- * How code should be written and how a recording should be driven, as guide
+ * How code should be written and how the application is driven, as guide
  * inputs to the prompts (never imported as code): `guides` are convention
  * documents and `examples` existing tests whose style to imitate, both read by
- * generation; `record` is read by the recorder instead. Entries may be globs.
+ * generation; `operate` is read by whatever drives the browser. Entries may be
+ * globs.
  */
 export const ConventionsSchema = z
   .object({
     guides: z.array(z.string().min(1)).default([]),
     examples: z.array(z.string().min(1)).default([]),
     /**
-     * Documents the *recorder* reads, rather than the generator: how this
-     * project signs in, which account a case's precondition names, what to do
-     * before the first step. Kept as prose on purpose — a login is the part
-     * that differs most between projects, and mechanising it would put a
-     * project's own vocabulary into ccqa.
+     * Documents whatever *drives the browser* reads, rather than the
+     * generator: how this project signs in, which account a case's
+     * precondition names, what to do before the first step. Read by both the
+     * recorder and a live run — how an application is operated does not change
+     * between the two. Kept as prose on purpose: a login is the part that
+     * differs most between projects, and mechanising it would put a project's
+     * own vocabulary into ccqa.
      */
-    record: z.array(z.string().min(1)).default([]),
+    operate: z.array(z.string().min(1)).default([]),
   })
   .strict();
 export type Conventions = z.infer<typeof ConventionsSchema>;
@@ -369,6 +383,15 @@ export const ProjectConfigSchema = z
      */
     sourceRoots: z.array(z.string().min(1)).default([]),
     /**
+     * Which hub this project talks to. A fact about the project, so it belongs
+     * beside the rest of them rather than in four flags repeated at every
+     * invocation. The **token is deliberately not here**: it is a credential,
+     * and it stays in `CCQA_HUB_TOKEN`. `headers` values may hold `${VAR}`,
+     * resolved from the environment when the connection is made, so a gateway
+     * secret is named here and kept elsewhere.
+     */
+    hub: HubConfigSchema.optional(),
+    /**
      * A saved browser session (Playwright `storageState` JSON) restored before
      * the browser is driven, so a case whose precondition is "signed in" does
      * not have to record or replay the sign-in. A fact about the project, not
@@ -449,10 +472,18 @@ export async function loadProjectConfig(cwd: string): Promise<ProjectConfig> {
   try {
     content = await readFile(join(cwd, PROJECT_CONFIG_PATH), "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return ProjectConfigSchema.parse({});
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
+      const empty = ProjectConfigSchema.parse({});
+      rememberHubConfig(undefined);
+      return empty;
+    }
     throw e;
   }
-  return parseProjectConfig(content);
+  const config = parseProjectConfig(content);
+  // Registered here rather than passed down: the hub connection is resolved
+  // from every command that talks to one, and only some of them have a project.
+  rememberHubConfig(config.hub);
+  return config;
 }
 
 /** Parse config YAML. Schema rejections are rewritten with actionable messages. */

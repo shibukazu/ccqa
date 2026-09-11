@@ -522,12 +522,37 @@ Order is priority. A needle resolved under an earlier root is not replaced by
 an equally good answer under a later one, so the first root listed is the
 application you mean.
 
+### Locators the audit is handed rather than asked to find
+
+A class name is not prose. Nothing about reading a file draws attention to it,
+and it is exactly what a refactor renames — so an audit that finds a changed
+button label reliably can read straight past a renamed class, twice, with the
+class in front of it and the instruction to inventory locators first.
+
+So ccqa does that search itself. Before the model is asked anything, the
+generated test and the support files it imports are scanned for the locator
+kinds that are not prose — CSS class tokens, id tokens and test ids — and each
+one is looked up in `sourceRoots`. The ones that are not there arrive in the
+prompt as a numbered list, and the audit has to answer for every one of them:
+drift, or a reason it is not. A reply that leaves one unanswered, or that calls
+one drifted while calling the case clean, is rejected and asked again.
+
+Being missing is not a verdict, and ccqa does not treat it as one. A selector
+assembled at runtime, a component this case never reaches, a name a library
+generates, a file the scan could not read — all of those produce a token the
+source does not contain, and the audit says so. What the scan removes is the
+chance of the question never being asked.
+
+This needs no configuration and changes no output shape. `--dump-inputs` below
+writes the whole scan — found, not found, and built at runtime — so a reader
+can tell "the scan looked and the product has it" from "the scan never looked".
+
 ### `--dump-inputs` — what the audit was actually given
 
 `ccqa audit --dump-inputs <dir>` writes one markdown file per case holding
 everything that audit received: the document stating the case, every file it
-was handed with the import that reached it, the source roots it could read,
-and the prompt itself.
+was handed with the import that reached it, the source roots it could read, the
+locators the scan looked up, and the prompt itself.
 
 ```sh
 ccqa audit --dump-inputs audit-inputs

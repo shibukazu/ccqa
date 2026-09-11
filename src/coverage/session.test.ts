@@ -73,6 +73,7 @@ describe("CoverageSession in hub-inbox mode", () => {
       unmappedScripts: 0,
       unmappedRanges: 0,
       unresolvedSources: 0,
+      unresolvedSamples: [],
       excludedDependencies: 0,
       stopped: false,
     };
@@ -111,6 +112,39 @@ describe("CoverageSession in hub-inbox mode", () => {
       { kind: "spec-open", runId: "run-1", specId: SPEC_ID },
       { kind: "spec-close", runId: "run-1", specId: SPEC_ID },
     ]);
+  });
+});
+
+describe("CoverageSession gaps", () => {
+  // The counts alone cannot say whether the base directory is wrong or the
+  // sources are genuinely foreign — which is the only question a reader has
+  // when a run reports that it resolved nothing.
+  test("a gap carries a few of the paths behind it, not just how many", async () => {
+    const session = await CoverageSession.start({
+      runId: "run-1",
+      cwd: root,
+      config: config(["src"]),
+      specs: [REF],
+    });
+    await session.beginSpec(REF);
+    const frontend: FrontendCoverage = {
+      specId: SPEC_ID,
+      // Only app.ts is in the working tree; the rest resolved somewhere else.
+      files: ["src/app.ts", "src/gone.ts", "../elsewhere/other.ts"],
+      unmappedScripts: 0,
+      unmappedRanges: 0,
+      unresolvedSources: 2,
+      unresolvedSamples: ["webpack://./nowhere.ts", "[project]/virtual.ts"],
+      excludedDependencies: 0,
+      stopped: false,
+    };
+    await writeFile(join(coverageDir, FRONTEND_COVERAGE_FILE), JSON.stringify(frontend));
+    const row = await session.collect(REF, coverageDir);
+    await session.close();
+
+    expect(row?.gaps.outsideProject).toBe(2);
+    expect(row?.gaps.outsideProjectSamples).toEqual(["src/gone.ts", "../elsewhere/other.ts"]);
+    expect(row?.gaps.unresolvedSamples).toEqual(["webpack://./nowhere.ts", "[project]/virtual.ts"]);
   });
 });
 

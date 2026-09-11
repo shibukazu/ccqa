@@ -1,4 +1,5 @@
 import { Command } from "commander";
+import { loadProjectConfig } from "../config/project-config.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./run.ts";
@@ -58,4 +59,14 @@ program.addCommand(serveCommand);
 program.commandsGroup("Building blocks:");
 program.addCommand(selectSpecsCommand);
 
-program.parse();
+// Before any subcommand runs, so every command that talks to a hub sees the
+// project's `hub:` block rather than only the ones that happen to read the
+// config first — and against the directory the command was pointed at, which
+// is known by now and is what the command itself will read. A project without
+// a config costs one missing-file read.
+program.hook("preAction", async (_program, action) => {
+  const cwd = (action.opts() as { cwd?: string }).cwd;
+  await loadProjectConfig(typeof cwd === "string" ? cwd : process.cwd()).catch(() => undefined);
+});
+
+await program.parseAsync();

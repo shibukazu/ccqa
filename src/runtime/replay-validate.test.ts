@@ -459,6 +459,60 @@ describe("validateActions — an element the page has not rendered yet", () => {
     expect(attempts("[data-b]")).toBe(2);
   });
 
+  // Measured: the click that signs in starts a client-side redirect, and the
+  // replay's next `open` is taken away by it. The recording never hit this,
+  // because the model's snapshot sat between the two.
+  test("a navigation another navigation took away is asked for once more", () => {
+    const ABORTED = { status: 1, stdout: "", stderr: "Navigation failed: net::ERR_ABORTED" };
+    let opens = 0;
+    replyBy((argv) => {
+      if (argv.includes("open")) return ++opens === 1 ? ABORTED : OK;
+      return OK;
+    });
+    const actions: RecordedAction[] = [
+      { action: "navigate", value: "https://example.test/policies", stepId: "step-01" },
+    ];
+    const { kept, dropped } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(dropped).toEqual([]);
+    expect(kept.length).toBe(1);
+    // The page was let to settle before the second attempt.
+    const waited = mockedSpawnAB.mock.calls.some((c) => c[0]!.includes("--load"));
+    expect(waited).toBe(true);
+  });
+
+  // Replaying a click is how a route creates a second record of whatever it
+  // just created. A click can report the same error as a navigation.
+  test("only a navigation is repeated; a click reporting the same error is not", () => {
+    let clicks = 0;
+    replyBy((argv) => {
+      if (argv.includes("click")) clicks++;
+      return { status: 1, stdout: "", stderr: "Navigation failed: net::ERR_ABORTED" };
+    });
+    validateActions([{ action: "click", locator: css("#submit"), stepId: "step-01" }], {
+      sessionName: SESSION,
+      mode: "strict",
+    });
+    // One in the pass and one in the rescue replay that follows it.
+    expect(clicks).toBe(2);
+  });
+
+  test("a navigation that keeps being taken away is not retried forever", () => {
+    let opens = 0;
+    replyBy((argv) => {
+      if (argv.includes("open")) {
+        opens++;
+        return { status: 1, stdout: "", stderr: "Navigation failed: net::ERR_ABORTED" };
+      }
+      return OK;
+    });
+    validateActions([{ action: "navigate", value: "https://example.test/x", stepId: "step-01" }], {
+      sessionName: SESSION,
+      mode: "strict",
+    });
+    // Two in the pass and two in the rescue replay that follows it.
+    expect(opens).toBe(4);
+  });
+
   test("says how long it waited, so a reader can tell absent from mis-addressed", () => {
     mockedSpawnAB.mockReturnValue(FAIL);
     const actions: RecordedAction[] = [

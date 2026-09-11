@@ -207,11 +207,7 @@ export async function runTrace(
   // The project's own recording guidance, read the same way generation reads
   // its convention documents — same globs, same size cap.
   const conventions = opts.conventions
-    ? await loadConventions(opts.cwd ?? process.cwd(), {
-        guides: opts.conventions,
-        examples: [],
-        record: [],
-      })
+    ? await loadConventions(opts.cwd ?? process.cwd(), opts.conventions)
     : { sections: [], warnings: [] };
   for (const w of conventions.warnings) log.warn(w);
 
@@ -673,6 +669,13 @@ function validateAndReport(
         log.warn(
           `${cascaded} further action(s) were not replayed at all` +
             (first ? `: they follow ${describeStepAction(first)}, which failed` : ""),
+        );
+      }
+      // Without this the list reads as a route whose every locator went stale.
+      if (failed.length > 1 && failed[0]!.action === "navigate") {
+        log.warn(
+          "the first failure was a navigation, so the replay never left the previous screen — " +
+            "the failures after it are that, not stale locators",
         );
       }
       log.meta(

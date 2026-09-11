@@ -139,11 +139,7 @@ describe("loadConventions", () => {
       "docs/style.md": "guide body",
       "e2e/sample.spec.ts": "example body",
     });
-    const { sections, warnings } = await loadConventions(cwd, {
-      record: [],
-      guides: ["docs/style.md"],
-      examples: ["e2e/sample.spec.ts"],
-    });
+    const { sections, warnings } = await loadConventions(cwd, ["docs/style.md", "e2e/sample.spec.ts"]);
     expect(sections.map((s) => s.path)).toEqual(["docs/style.md", "e2e/sample.spec.ts"]);
     expect(sections[0]!.body).toBe("guide body");
     expect(warnings).toEqual([]);
@@ -157,7 +153,7 @@ describe("loadConventions", () => {
     });
     const { sections, warnings } = await loadConventions(
       cwd,
-      { guides: ["docs/a.md", "docs/b.md", "docs/c.md"], examples: [], record: [] },
+      ["docs/a.md", "docs/b.md", "docs/c.md"],
       100,
     );
     // a fits (60), b would exceed (120) and is dropped whole, c still fits (90).
@@ -170,7 +166,7 @@ describe("loadConventions", () => {
     await makeProject({ "docs/huge.md": "x".repeat(200) });
     const { sections, warnings } = await loadConventions(
       cwd,
-      { guides: ["docs/huge.md"], examples: [], record: [] },
+      ["docs/huge.md"],
       100,
     );
     expect(sections[0]!.body).toHaveLength(100);
@@ -180,7 +176,7 @@ describe("loadConventions", () => {
   it("errors on a conventions entry that matches nothing", async () => {
     await makeProject({});
     await expect(
-      loadConventions(cwd, { guides: ["docs/style.md"], examples: [], record: [] }),
+      loadConventions(cwd, ["docs/style.md"]),
     ).rejects.toThrow(/conventions entry "docs\/style\.md" does not exist/);
   });
 

@@ -303,7 +303,7 @@ function configuredWriteRoots(ctx: GenerateContext, resources: ResolvedResource[
 export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<GenerateResult> {
   const { ctx } = req;
   const resources = await resolveResources(ctx.cwd, ctx.resources);
-  const conventions = await loadConventions(ctx.cwd, ctx.conventions);
+  const conventions = await loadConventions(ctx.cwd, [...ctx.conventions.guides, ...ctx.conventions.examples]);
   const warnings = [...conventions.warnings];
   for (const w of conventions.warnings) log.warn(w);
   log.meta("resources", resources.length);

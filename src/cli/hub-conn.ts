@@ -1,4 +1,5 @@
 import { createHubClient, HubApiError, type HubClient } from "../hub-client/index.ts";
+import { configuredHub } from "../config/hub-config.ts";
 import { resolveProjectOrThrow } from "./resolve-project.ts";
 import * as log from "./logger.ts";
 
@@ -60,8 +61,30 @@ function resolveHubHeaders(hubHeader?: string[]): Record<string, string> | undef
   if (hubHeader && hubHeader.length > 0) return parseHubHeaders(hubHeader);
   const envHeader = process.env.CCQA_HUB_HEADER;
   if (envHeader) return parseHubHeaders([envHeader]);
-  return undefined;
+  const fromConfig = Object.entries(configuredHub()?.headers ?? {});
+  if (fromConfig.length === 0) return undefined;
+  return Object.fromEntries(fromConfig.map(([k, v]) => [k, resolveHeaderValue(k, v)]));
 }
+
+/**
+ * `${VAR}` in a configured header value, from the environment. A gateway secret
+ * is a credential: the config names which variable holds it, never the value —
+ * so an unset one is an error rather than a header reading `${VAR}` and an
+ * opaque 403 from whatever was supposed to let the request through.
+ */
+function resolveHeaderValue(key: string, value: string): string {
+  return value.replace(BRACED_VAR, (_whole, name: string) => {
+    const resolved = process.env[name];
+    if (resolved === undefined) {
+      throw new HubConnectionError(
+        `hub header "${key}" needs ${name}, which is not set (.ccqa/config.yaml names the variable, never the value)`,
+      );
+    }
+    return resolved;
+  });
+}
+
+const BRACED_VAR = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 /** Thrown by `requireHubClient` when the URL and/or token can't be resolved from flags/env. */
 export class HubConnectionError extends Error {
@@ -83,7 +106,10 @@ export interface HubTransport {
 
 /** `resolveHubClient`'s resolution half: `null` when the URL or token is missing. */
 export function resolveHubTransport(opts: HubConnOptions): HubTransport | null {
-  const baseUrl = opts.hubUrl ?? process.env.CCQA_HUB_URL;
+  // Flag, then env, then the project's config: an invocation says more about
+  // what this run wants than a file everyone shares. The token has no config
+  // step — it is a credential, and it stays in the environment.
+  const baseUrl = opts.hubUrl ?? process.env.CCQA_HUB_URL ?? configuredHub()?.url;
   const token = opts.hubToken ?? process.env.CCQA_HUB_TOKEN;
   if (!baseUrl || !token) return null;
   const headers = resolveHubHeaders(opts.hubHeader);

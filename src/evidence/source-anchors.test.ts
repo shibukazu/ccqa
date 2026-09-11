@@ -117,6 +117,30 @@ describe("findSourceAnchors", () => {
     expect(found.get("submit-button")?.places).toEqual(["src/ui/Declares.tsx:1"]);
   });
 
+  // Both files are UI source, so the file rank ties and the rendered one has
+  // to win on how the string appears — otherwise a reviewer is handed the
+  // error message that mentions the button instead of the button.
+  it("prefers the line that renders the string over one that merely holds it", async () => {
+    const root = await makeRoot({
+      "ai/tools/showCreateButton.tsx": 'throw new Error("Add content is not available here");',
+      "features/policies/PoliciesPage.tsx": "<Button>Add content</Button>",
+    });
+    const { found } = await findSourceAnchors([text("Add content")], [root]);
+    expect(found.get("Add content")?.places).toEqual(["src/features/policies/PoliciesPage.tsx:1"]);
+  });
+
+  // A story sits beside the component it covers, so no path segment says what
+  // it is — only the file name does.
+  it("drops a story or a test by its file name, wherever it sits", async () => {
+    const root = await makeRoot({
+      "ui/Sidebar.stories.tsx": "<button>Category</button>",
+      "ui/Sidebar.spec.tsx": "<button>Category</button>",
+      "ui/Sidebar.tsx": "<button>Category</button>",
+    });
+    const { found } = await findSourceAnchors([text("Category")], [root]);
+    expect(found.get("Category")?.places).toEqual(["src/ui/Sidebar.tsx:1"]);
+  });
+
   it("skips node_modules, .git, dist, build, coverage, .next and dotted directories", async () => {
     // Nothing outside a skipped directory contains the needle, so it is only
     // found at all if the walker wrongly descends into one of them.
@@ -151,6 +175,52 @@ describe("findSourceAnchors", () => {
     });
     const { found } = await findSourceAnchors([text("submit")], [root], { maxFileBytes: 50 });
     expect(found.get("submit")?.places).toEqual(["src/small.ts:1"]);
+  });
+
+  // A large first root used to spend the shared budget outright, so a string
+  // that lives only in a later root came back as never searched.
+  it("gives each configured root its own budget", async () => {
+    const first = await mkdtemp(join(tmpdir(), "ccqa-anchors-a-"));
+    const second = await mkdtemp(join(tmpdir(), "ccqa-anchors-b-"));
+    await writeFile(join(first, "one.tsx"), `<button>Unrelated</button>`, "utf8");
+    await writeFile(join(first, "two.tsx"), `<button>Also unrelated</button>`, "utf8");
+    await writeFile(join(second, "late.tsx"), `<button>Publish</button>`, "utf8");
+
+    const { found, unsearched } = await findSourceAnchors(
+      [text("Publish")],
+      [
+        { configured: "../first", abs: first },
+        { configured: "../second", abs: second },
+      ],
+      { maxFiles: 2 },
+    );
+    expect(unsearched.has("Publish")).toBe(false);
+    expect(found.get("Publish")?.places[0]).toContain("late.tsx");
+
+    await rm(first, { recursive: true, force: true });
+    await rm(second, { recursive: true, force: true });
+  });
+
+  // docs/running.md promises the first root listed is the application you
+  // mean. A sibling checkout that happens to render the string in nicer markup
+  // must not take the citation away from it.
+  it("keeps the earlier root's answer even when a later root has a better line", async () => {
+    const first = await mkdtemp(join(tmpdir(), "ccqa-anchors-first-"));
+    const second = await mkdtemp(join(tmpdir(), "ccqa-anchors-second-"));
+    await writeFile(join(first, "app.tsx"), `const label = "Publish";`, "utf8");
+    await writeFile(join(second, "stale.tsx"), `<button aria-label="Publish" />`, "utf8");
+
+    const { found } = await findSourceAnchors(
+      [text("Publish")],
+      [
+        { configured: "../first", abs: first },
+        { configured: "../second", abs: second },
+      ],
+    );
+    expect(found.get("Publish")?.places[0]).toContain("app.tsx");
+
+    await rm(first, { recursive: true, force: true });
+    await rm(second, { recursive: true, force: true });
   });
 
   it("stops after maxFiles files, leaving later needles unresolved", async () => {

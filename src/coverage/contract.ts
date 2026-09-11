@@ -18,6 +18,14 @@ export const COVERAGE_COOKIE = "__ccqa_coverage";
 /** What the browser engine leaves for the run to read back at collect time. */
 export const FRONTEND_COVERAGE_FILE = "coverage-frontend.json";
 
+/**
+ * How many example paths a gap carries. A count alone cannot say whether the
+ * base directory is wrong or the sources are genuinely foreign, which is the
+ * only question a reader has when one is not zero; enough to see a pattern,
+ * not a dump.
+ */
+export const GAP_SAMPLES = 5;
+
 export interface FrontendCoverage {
   specId: string;
   files: string[];
@@ -27,6 +35,8 @@ export interface FrontendCoverage {
   unmappedRanges: number;
   /** Sources whose name could not be turned into a project path. */
   unresolvedSources: number;
+  /** The first `GAP_SAMPLES` of those, verbatim. See `GAP_SAMPLES`. */
+  unresolvedSamples: string[];
   /** Sources dropped because they are dependency code. Excluded on purpose, so not a gap. */
   excludedDependencies: number;
   /** Collection died mid-spec; what ran after that point was never seen. */

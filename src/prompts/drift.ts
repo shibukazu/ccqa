@@ -1,5 +1,6 @@
 import type { IntentKind, SpecArtifacts } from "../drift/artifacts.ts";
 import type { SourceRoot } from "../config/source-roots.ts";
+import type { LocatorInventory } from "../drift/locator-candidates.ts";
 import { formatBlockList, type AvailableBlock } from "./draft.ts";
 import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
 
@@ -137,6 +138,19 @@ No drift:
 { "drift": null }
 \`\`\`
 
+When the case above carries a **Locators this test uses that are not prose** section, add a \`locators\` array beside \`drift\` — one entry per \`L\` id listed as not found, whichever way the audit came out:
+
+\`\`\`json
+{
+  "drift": null,
+  "locators": [
+    { "id": "L1", "verdict": "drifted" | "fine", "note": "<what you found>" }
+  ]
+}
+\`\`\`
+
+An id with no entry is not an answer, and the reply is rejected: say \`fine\` with the reason instead. Answering \`drifted\` for any of them and \`null\` for the case is a contradiction — a locator the product does not render is a finding.
+
 Drift found:
 
 \`\`\`json
@@ -171,6 +185,7 @@ When the evidence does not support "gone", answer \`BEHAVIOUR_CHANGED\`. When ne
 export function buildDriftUserPrompt(
   artifacts: SpecArtifacts,
   sourceRoots: readonly SourceRoot[] = [],
+  locators?: LocatorInventory,
 ): string {
   const { kind, path, body } = artifacts.intent;
   const heading = kind === "spec" ? "spec.yaml" : `Test case document — ${path}`;
@@ -181,10 +196,56 @@ ${body}
 \`\`\`
 
 ${generatedSection(artifacts)}
-${sourceRootsSection(sourceRoots)}## Task
+${sourceRootsSection(sourceRoots)}${locatorSection(locators)}## Task
 
 Audit this test case against the code as it stands, across every surface above. Report no drift if they agree; otherwise return one labelled diagnosis, with its citations and the surface it is on.
 `;
+}
+
+/**
+ * The locators code has already looked up, as a list to answer rather than a
+ * list to build. Missing is not a verdict — a selector built at runtime, a
+ * component this case never reaches and a file the scan could not read all
+ * look the same from here — so each is asked about rather than reported.
+ */
+function locatorSection(inventory: LocatorInventory | undefined): string {
+  if (inventory === undefined) return "";
+  const { missing, found, unresolved, incomplete } = inventory;
+  if (missing.length === 0 && found.length === 0 && unresolved.length === 0) return "";
+  const lines = [`## Locators this test uses that are not prose`, ""];
+  if (missing.length > 0) {
+    lines.push(
+      `**Not found anywhere in the source that was read. Answer for every one of these.**`,
+      "",
+      ...missing.map((c) => `- \`${c.id}\` — ${c.kind} \`${c.value}\`, written as \`${c.selector}\` at ${c.from}`),
+      "",
+      `For each: is it drift, or is there another reason the product's source does not contain it? Look before you answer — what replaced it is what decides the label, and a name assembled at runtime or rendered by a library is not drift.`,
+      "",
+    );
+  }
+  if (found.length > 0) {
+    lines.push(
+      `Found in the source, which is not the same as correct — check it is the element this case means, in a branch this case reaches:`,
+      "",
+      ...found.map((c) => `- \`${c.id}\` — ${c.kind} \`${c.value}\` at ${c.at}`),
+      "",
+    );
+  }
+  if (unresolved.length > 0) {
+    lines.push(
+      `Built at runtime, so code could not look them up. Resolve them yourself if the case turns on one:`,
+      "",
+      ...unresolved.map((u) => `- \`${u.expression}\` at ${u.from}`),
+      "",
+    );
+  }
+  if (incomplete.length > 0) {
+    lines.push(
+      `The scan was incomplete, so "not found" above is weaker than it reads: ${incomplete.slice(0, 5).join("; ")}.`,
+      "",
+    );
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 /**

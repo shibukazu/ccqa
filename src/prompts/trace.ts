@@ -34,7 +34,7 @@ export interface TraceSystemPromptInput {
   cleanupExpectations?: string[];
   /** Sections of the case ccqa does not interpret — the precondition, notes. */
   context?: Array<{ heading: string; body: string }>;
-  /** The project's own guidance for recording (config `conventions.record`). */
+  /** The project's own guidance for driving it (config `conventions.operate`). */
   conventions?: Array<{ heading: string; body: string }>;
   sessionName?: string;
   /**

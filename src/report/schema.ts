@@ -349,6 +349,14 @@ export const CoverageGapsSchema = z.object({
   outsideProject: z.number(),
   /** Browser sources whose name could not be turned into a project path at all. */
   unresolvedSources: z.number(),
+  /**
+   * A few of each of the two above, verbatim. The counts say a run resolved
+   * badly; only the paths say whether the base directory is wrong or the
+   * sources are genuinely foreign. Optional: a report written before this
+   * field existed stays valid.
+   */
+  outsideProjectSamples: z.array(z.string()).default([]),
+  unresolvedSamples: z.array(z.string()).default([]),
   /** Server files the instrumentation could not rewrite — they can never report. */
   uninstrumentedFiles: z.number(),
   /**

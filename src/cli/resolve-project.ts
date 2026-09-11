@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { resolveCwd } from "./resolve-cwd.ts";
 import * as log from "./logger.ts";
+import { configuredHub } from "../config/hub-config.ts";
 
 /** Same shape the hub accepts for a path segment (validate.ts) — checked here so a bad name fails fast and actionably. */
 export const PROJECT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -39,7 +40,9 @@ export class ProjectNameError extends Error {
  * or swallow into a best-effort `undefined`).
  */
 export function resolveProjectOrThrow(project: string | undefined, cwd: string): string {
-  const resolved = project ?? basename(cwd);
+  // Flag, then the project's own config, then the directory name — the same
+  // order the hub URL is resolved in, and for the same reason.
+  const resolved = project ?? configuredHub()?.project ?? basename(cwd);
   if (resolved.length === 0 || resolved.length > 128 || !PROJECT_NAME.test(resolved)) {
     throw new ProjectNameError(
       project

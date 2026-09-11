@@ -81,6 +81,7 @@ import {
 } from "../intent/case.ts";
 import {
   loadProjectConfig,
+  targetConfigFor,
   type CoverageConfig,
   type IntentSource,
 } from "../config/project-config.ts";
@@ -1120,6 +1121,7 @@ export async function executeRun(
     triageUserPrompt,
     ...(opts.teardown ? { teardown: opts.teardown } : {}),
     report: incrementalReport,
+    conventions: targetConfigFor(projectConfig, AGENT_BROWSER_TARGET).conventions.operate,
   };
   // Built here rather than at selection: a `spec.yaml` case the agent-browser
   // target cannot honour (a `judgeByLlm` step) throws while being read, and

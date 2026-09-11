@@ -143,7 +143,7 @@ targets:
     conventions:
       guides: [docs/e2e-guidelines.md]
       examples: [e2e/support/sample.spec.ts]
-      record: [docs/how-we-sign-in.md]   # read by the recorder, not the generator
+      operate: [docs/how-we-sign-in.md]  # read by record/live run, not generate
 
     # a repo helper for unique values, called instead of ${CCQA_RUN_ID}
     runId:
@@ -223,9 +223,11 @@ the draft ships as-is — no LLM involved for the playwright target.
 
 - `guides` — convention documents, and `examples` — existing tests whose
   style the generated code should imitate. Both are read when generating.
-- `record` — documents the *recorder* reads instead: how this project is
-  signed into, which account a case's precondition names, anything that has
-  to be true before the first step. It stays prose because a login is the
+- `operate` — documents read by both `ccqa record` and a live `ccqa run`: how
+  this project is signed into, which account a case's precondition names,
+  anything that has to be true before the first step. The same guidance serves
+  both, because how the application is operated does not change between
+  recording a case and running one live. It stays prose because a login is the
   part that differs most between projects, and mechanising it would put your
   vocabulary into ccqa.
 

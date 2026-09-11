@@ -34,8 +34,27 @@ export function caseIdOf(target: SpecTarget): string {
   return target.caseId ?? `${target.featureName}/${target.specName}`;
 }
 
+/**
+ * What the audit says about one locator code could not find in the product.
+ *
+ * `drifted` says the test asks for something the product no longer renders;
+ * `fine` says the miss has another explanation — a selector built at runtime, a
+ * component this case never reaches, a file the scan did not read. Either is an
+ * answer; silence is not, which is what the required list below is for.
+ */
+export const LocatorVerdictSchema = z.object({
+  id: z.string().min(1),
+  verdict: z.enum(["drifted", "fine"]),
+  note: z.string().default(""),
+});
+export type LocatorVerdict = z.infer<typeof LocatorVerdictSchema>;
+
 /** The model's reply: a diagnosis, or `null` for "the spec still matches the code". */
-export const DriftReplySchema = z.object({ drift: DriftDiagnosisSchema.nullable() });
+export const DriftReplySchema = z.object({
+  drift: DriftDiagnosisSchema.nullable(),
+  /** Present when the audit was handed locators to check. See `checkLocatorVerdicts`. */
+  locators: z.array(LocatorVerdictSchema).default([]),
+});
 
 export interface SpecResult {
   target: SpecTarget;

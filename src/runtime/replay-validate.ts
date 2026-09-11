@@ -292,6 +292,18 @@ function notFound(result: { stderr: string; stdout: string }): boolean {
   return /not\s+found|no\s+element|no\s+such\s+element/i.test(`${result.stderr} ${result.stdout}`);
 }
 
+/** Whether this argv navigates — the only action safe to repeat wholesale. */
+function isOpen(argv: readonly string[]): boolean {
+  return argv[2] === "open";
+}
+
+/** A navigation another navigation took away, rather than one that failed. */
+function superseded(result: { stderr: string; stdout: string }): boolean {
+  return /ERR_ABORTED|navigation (?:was )?(?:interrupted|superseded|cancell?ed)/i.test(
+    `${result.stderr} ${result.stdout}`,
+  );
+}
+
 /** The one line both callers log when the fallback rewrote a locator. */
 export function formatPromotion(promotion: string): string {
   return `locator rewritten to the form that replays: ${promotion}`;
@@ -339,15 +351,29 @@ function runInteraction(
   argv: string[],
   alternate: string[] | null,
   patience: Patience,
+  sessionName: string,
 ): InteractionOutcome {
   const started = Date.now();
   const deadline = started + ASSERT_TIMEOUT_MS;
+  let settled = false;
   for (let attempt = 0; ; attempt++) {
     let result = spawnAB(argv);
     // agent-browser's daemon occasionally drops a request under load. One
     // extra attempt is cheaper than re-tracing.
     if (result.status !== 0 && result.wedged === true) result = spawnAB(argv);
     const waitedMs = Date.now() - started;
+    // A redirect the preceding click started is still in flight and took this
+    // navigation away. The recording never hit it: a snapshot sat between the
+    // two. Let it land and ask once — a page that keeps moving is not one this
+    // is going to reach.
+    //
+    // Navigations only. A click can report the same error, and replaying one
+    // is how a route creates a second record of whatever it just created.
+    if (result.status !== 0 && superseded(result) && !settled && isOpen(argv)) {
+      settled = true;
+      spawnAB(["--session", sessionName, "wait", "--load", "networkidle"]);
+      continue;
+    }
     if (result.status === 0 || !notFound(result)) return { result, viaAlternate: false, waitedMs };
     if (alternate !== null) {
       const alt = spawnAB(alternate);
@@ -388,6 +414,7 @@ function runValidationAction(
     built,
     alternate !== null && !isPollCheck(alternate) ? alternate : null,
     patience,
+    sessionName,
   );
   if (viaAlternate) {
     const promoted = `${action.locator!.by}=${action.locator!.value} → role=${fallback!.locator!.value} name="${action.locator!.value}"`;

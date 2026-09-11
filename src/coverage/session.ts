@@ -25,7 +25,7 @@ import { CoverageSink } from "./sink.ts";
 import type { RunEventInbox } from "./inbox.ts";
 import { startBrowserCoverage, type StoredSourceMapReader, type BrowserCoverageHandle } from "./browser/engine.ts";
 import { enumerateUniverse, type CoverageUniverse } from "./universe.ts";
-import { FRONTEND_COVERAGE_FILE, type FrontendCoverage } from "./contract.ts";
+import { FRONTEND_COVERAGE_FILE, GAP_SAMPLES, type FrontendCoverage } from "./contract.ts";
 
 /**
  * The application pushes on a timer, so the last second of a spec is still in
@@ -304,6 +304,8 @@ export class CoverageSession {
     // the server half is already confined to the directories the application
     // was told to instrument.
     const inProject = await this.keepExisting(frontend?.files ?? []);
+    const kept = new Set(inProject);
+    const outsideProject = (frontend?.files ?? []).filter((f) => !kept.has(f));
     const files = new Set<string>([...(backend ?? []), ...inProject]);
     return {
       files: [...files].sort(),
@@ -323,8 +325,10 @@ export class CoverageSession {
         unattributed: sink.unattributedFor(specId),
         unmappedScripts: frontend?.unmappedScripts ?? 0,
         unmappedRanges: frontend?.unmappedRanges ?? 0,
-        outsideProject: (frontend?.files.length ?? 0) - inProject.length,
+        outsideProject: outsideProject.length,
         unresolvedSources: frontend?.unresolvedSources ?? 0,
+        outsideProjectSamples: outsideProject.slice(0, GAP_SAMPLES),
+        unresolvedSamples: frontend?.unresolvedSamples ?? [],
         uninstrumentedFiles: sink.uninstrumentedFiles(),
         uninstrumentedProcesses: sink.uninstrumentedProcesses(),
         droppedPushes: sink.droppedPushes(),

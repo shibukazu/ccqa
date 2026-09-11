@@ -33,6 +33,22 @@ const DRIFT_REPLY = JSON.stringify({
 
 const NO_DRIFT = '{"drift": null}';
 
+// Same shape as DRIFT_REPLY, plus the `locators` array a case carrying a
+// listed locator must answer beside its verdict.
+const DRIFT_REPLY_WITH_LOCATOR = JSON.stringify({
+  drift: {
+    label: "TEST_DRIFT",
+    confidence: 0.9,
+    surface: "generated",
+    subDiagnosis: "SELECTOR_DRIFT",
+    headline: "the navigation bar is addressed by a class the source no longer renders",
+    recommendation: "re-record the case",
+    reasoning: "the page object asks for .nav-bar-old; the source renders .nav-bar",
+    evidence: [{ file: "pages/navigation_bar.ts:11", detail: "the class is nav-bar-old" }],
+  },
+  locators: [{ id: "L1", verdict: "drifted", note: "the source renders nav-bar, not nav-bar-old" }],
+});
+
 describe("ccqa audit — markdown cases against a product outside the project", () => {
   let project: FakeProject | null = null;
   let productDir: string | null = null;
@@ -68,6 +84,54 @@ describe("ccqa audit — markdown cases against a product outside the project", 
       { type: "result", subtype: "success", result: reply, is_error: false },
     ]);
     return mockPath;
+  }
+
+  // The reply is read fresh on every attempt — there is no cursor into the
+  // file, so a rejected reply that should still look rejected on the retry
+  // has to be written once per attempt rather than once for the whole test.
+  // The shape the dump-inputs test below establishes: a page object reached
+  // only through an import, so nothing in the test file itself names the
+  // class the audit has to check.
+  async function writeAddItemSpec(cwd: string): Promise<void> {
+    await mkdir(join(cwd, "specs", "todo"), { recursive: true });
+    await writeFile(
+      join(cwd, "specs", "todo", "add_item.spec.ts"),
+      [
+        `import { NavigationBar } from "../../pages/navigation_bar";`,
+        `test("Adding an item puts it on the list", async ({ page }) => {`,
+        `  await new NavigationBar(page).openTodos();`,
+        `});`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+  }
+
+  // Rewritten inside the project copy, not the shared fixture: the product
+  // still renders `.nav-bar`, so pointing the page object at `.nav-bar-old`
+  // is what makes the locator scan report the class missing.
+  async function useDriftedNavClass(cwd: string): Promise<void> {
+    await writeFile(
+      join(cwd, "pages", "navigation_bar.ts"),
+      [
+        `interface LocatorLike {`,
+        `  click(): Promise<void>;`,
+        `}`,
+        `interface PageLike {`,
+        `  locator(selector: string): LocatorLike;`,
+        `}`,
+        "",
+        `export class NavigationBar {`,
+        `  constructor(private readonly page: PageLike) {}`,
+        "",
+        `  async openTodos(): Promise<void> {`,
+        `    await this.page.locator(".nav-bar-old").click();`,
+        `  }`,
+        `}`,
+        "",
+      ].join("\n"),
+      "utf8",
+    );
   }
 
   test("audits the markdown case, reads a root outside cwd, and writes a brief", async () => {
@@ -148,6 +212,10 @@ describe("ccqa audit — markdown cases against a product outside the project", 
     expect(dump).toContain('.locator(".nav-bar")');
     // The product that renders the class is named as a root the audit may read.
     expect(dump).toContain(productDir!);
+    // The scan's own inventory is written too, so "the class was never
+    // checked" and "it was, and the product has it" read differently.
+    expect(dump).toContain("Locators the scan looked up");
+    expect(dump).toContain("| `nav-bar` | class |");
   });
 
   test("a sourceRoots entry that is not there stops the sweep", async () => {
@@ -161,5 +229,73 @@ describe("ccqa audit — markdown cases against a product outside the project", 
 
     expect(result.exitCode).toBe(2);
     expect(`${result.stdout}${result.stderr}`).toContain("nowhere-at-all");
+  });
+
+  // The control for the two tests below: the class the page object addresses
+  // is the one the product renders, so the scan finds it and the reply owes
+  // nothing beyond the ordinary "no drift".
+  test("a class the product renders leaves nothing for the reply to answer", async () => {
+    project = await setUp((product) => [product]);
+    await writeAddItemSpec(project.cwd);
+
+    const mockPath = await mockClaude(project.cwd, NO_DRIFT);
+    const result = await runCcqa(["audit", "--report-format", "json"], {
+      cwd: project.cwd,
+      env: { ...noColorEnv, CCQA_CLAUDE_MOCK_FILE: mockPath },
+    });
+
+    expect(result.exitCode).toBe(0);
+    const report = JSON.parse(result.stdout) as {
+      specs: Array<{ ok: boolean; drift: { label: string } | null }>;
+    };
+    expect(report.specs[0]!.ok).toBe(true);
+    expect(report.specs[0]!.drift).toBeNull();
+  });
+
+  // The class the page object now addresses is not in the product at all, so
+  // the scan hands it over as a locator the reply must answer for — and here
+  // it does, with a diagnosis. That must survive to the report, not just the
+  // retry machinery around it.
+  test("a class the product no longer renders becomes a TEST_DRIFT the audit reports", async () => {
+    project = await setUp((product) => [product]);
+    await useDriftedNavClass(project.cwd);
+    await writeAddItemSpec(project.cwd);
+
+    const mockPath = await mockClaude(project.cwd, DRIFT_REPLY_WITH_LOCATOR);
+    const result = await runCcqa(["audit", "--report-format", "json"], {
+      cwd: project.cwd,
+      env: { ...noColorEnv, CCQA_CLAUDE_MOCK_FILE: mockPath },
+    });
+
+    // TEST_DRIFT names a repair, so it fails the gate.
+    expect(result.exitCode).toBe(1);
+    const report = JSON.parse(result.stdout) as {
+      specs: Array<{ drift: { label: string } | null }>;
+    };
+    expect(report.specs[0]!.drift?.label).toBe("TEST_DRIFT");
+  });
+
+  // Same missing class as above, but the reply never mentions it. Silence on
+  // a listed locator is not a clean verdict — it is the one failure the list
+  // exists to catch — so both attempts must be rejected and the case must
+  // come out errored rather than quietly passed.
+  test("a reply that ignores a listed locator is rejected", async () => {
+    project = await setUp((product) => [product]);
+    await useDriftedNavClass(project.cwd);
+    await writeAddItemSpec(project.cwd);
+
+    const mockPath = await mockClaude(project.cwd, NO_DRIFT);
+    const result = await runCcqa(["audit", "--report-format", "json"], {
+      cwd: project.cwd,
+      env: { ...noColorEnv, CCQA_CLAUDE_MOCK_FILE: mockPath },
+    });
+
+    expect(result.exitCode).toBe(1);
+    const report = JSON.parse(result.stdout) as {
+      specs: Array<{ ok: boolean; error?: string; drift: { label: string } | null }>;
+    };
+    expect(report.specs[0]!.ok).toBe(false);
+    expect(report.specs[0]!.drift).toBeNull();
+    expect(report.specs[0]!.error).toMatch(/L1|verdict/);
   });
 });

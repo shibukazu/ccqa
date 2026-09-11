@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { extname, join, relative } from "node:path";
 import type { SourceRoot } from "../config/source-roots.ts";
 
@@ -18,8 +18,13 @@ import type { SourceRoot } from "../config/source-roots.ts";
 /** What a needle is, which decides how a line may match it. */
 export interface SourceNeedle {
   value: string;
-  /** `testid` matches only as a test-id attribute's value; `text` matches anywhere. */
-  kind: "testid" | "text";
+  /**
+   * `testid` matches only as a test-id attribute's value; `text` matches
+   * anywhere; `token` is a name rather than copy — a CSS class or id — so it
+   * matches only as a whole one, since `nav-bar` inside `nav-bar-item` is a
+   * different name rather than a weaker hit.
+   */
+  kind: "testid" | "text" | "token";
 }
 
 export interface SourceAnchor {
@@ -91,9 +96,17 @@ const NOT_THE_PRODUCT = new Set([
   "example", "examples", "sample", "samples",
 ]);
 
+/**
+ * File names that are about the product rather than part of it, wherever they
+ * sit. The list above matches whole path segments, which a story or a test
+ * living beside the component it covers never occupies.
+ */
+const NOT_THE_PRODUCT_FILE = /\.(?:stories|story|test|spec|e2e|cy)\.[^.]+$/i;
+
 /** Directory names that are never a product's own UI source. */
 const SKIP_DIRS = new Set(["node_modules", ".git", "dist", "build", "coverage", ".next"]);
 
+/** How many files one configured source root is worth reading. */
 const DEFAULT_MAX_FILES = 2000;
 const DEFAULT_MAX_FILE_BYTES = 512 * 1024;
 
@@ -109,11 +122,13 @@ function segments(relPath: string): string[] {
 }
 
 /** How much a file found in `relPath` is worth as evidence, before the line is read. */
-function rankFile(relPath: string): number {
+function rankFile(relPath: string, extra?: ReadonlySet<string>): number {
   const parts = segments(relPath);
   if (parts.some((part) => NOT_THE_PRODUCT.has(part.toLowerCase()))) return RANK_NONE;
+  if (NOT_THE_PRODUCT_FILE.test(parts.at(-1) ?? "")) return RANK_NONE;
   const ext = extname(relPath);
   if (UI_EXTENSIONS.has(ext)) return RANK_UI;
+  if (extra?.has(ext)) return RANK_CODE;
   const inMessages = parts.slice(0, -1).some((part) => MESSAGE_DIRS.has(part.toLowerCase()));
   if (inMessages && (MESSAGE_EXTENSIONS.has(ext) || CODE_EXTENSIONS.has(ext))) return RANK_MESSAGES;
   return CODE_EXTENSIONS.has(ext) ? RANK_CODE : RANK_NONE;
@@ -152,6 +167,8 @@ const LABELLING_ATTR = /(?:aria-label|label|placeholder|name|title|alt)\s*=\s*\{
 
 /** Characters a match may not be glued to, or it is part of a longer word. */
 const WORDISH = /[\p{L}\p{N}_]/u;
+/** A name runs across `-`, so `nav-bar` inside `nav-bar-item` is a different name. */
+const NAMEISH = /[\p{L}\p{N}_-]/u;
 
 /**
  * How well one line answers "is this string rendered here". Higher is better;
@@ -173,10 +190,15 @@ function rankLine(line: string, needle: SourceNeedle): number {
     const after = line[at + needle.value.length];
     // Glued to a letter on either side, this is a longer word that happens to
     // start or end with the string — reported only when nothing else matched.
-    if ((before && WORDISH.test(before)) || (after && WORDISH.test(after))) {
+    const boundary = needle.kind === "token" ? NAMEISH : WORDISH;
+    if ((before && boundary.test(before)) || (after && boundary.test(after))) {
+      // A token glued into a longer name is a different name, not a weaker
+      // hit — reporting it would clear a locator the product does not have.
+      if (needle.kind === "token") continue;
       best = Math.max(best, RANK_PARTIAL);
       continue;
     }
+    if (needle.kind === "token") return RANK_ATTRIBUTE_ONLY;
     if (attributeValue(LABELLING_ATTR, line, needle.value)) return RANK_LABELLED;
     // Between a `>` and a `<` is element text: what a screen actually shows.
     best = Math.max(best, before === ">" || after === "<" ? RANK_ELEMENT_TEXT : RANK_PLAIN);
@@ -215,11 +237,16 @@ const RANK_ATTRIBUTE_ONLY = 3;
  * how one ccqa output ends up citing a comment while another reports the same
  * string as not found.
  */
+/** The best a line can score for this kind of needle — nothing beats it. */
+function topLineRank(needle: SourceNeedle): number {
+  return needle.kind === "text" ? RANK_LABELLED : RANK_ATTRIBUTE_ONLY;
+}
+
 export function bestLineFor(
   lines: readonly string[],
   needle: SourceNeedle,
 ): { line: number; rank: number } {
-  const top = needle.kind === "testid" ? RANK_ATTRIBUTE_ONLY : RANK_LABELLED;
+  const top = topLineRank(needle);
   let line = -1;
   let rank = 0;
   for (let i = 0; i < lines.length; i++) {
@@ -263,7 +290,10 @@ function closesAfter(line: string, open: string, close: string, at: number): boo
  * matters here: a shallow, likely-relevant file should be read before this
  * scan burns its file budget descending into one deep subtree.
  */
-async function* walkSourceFiles(rootAbs: string): AsyncGenerator<string> {
+export async function* walkSourceFiles(
+  rootAbs: string,
+  searchable: (relPath: string) => boolean = isSearchable,
+): AsyncGenerator<string> {
   let level: string[] = [rootAbs];
   while (level.length > 0) {
     const next: string[] = [];
@@ -276,7 +306,7 @@ async function* walkSourceFiles(rootAbs: string): AsyncGenerator<string> {
           next.push(join(dir, entry.name));
         } else if (entry.isFile()) {
           const abs = join(dir, entry.name);
-          if (isSearchable(relative(rootAbs, abs))) yield abs;
+          if (searchable(relative(rootAbs, abs))) yield abs;
         }
       }
     }
@@ -299,6 +329,12 @@ const SHOWN = 2;
 /** What has been found for one needle so far: the best rank, and where. */
 interface Candidates {
   rank: number;
+  /**
+   * How the string appears on its best line (see `rankLine`). Compared after
+   * the file's rank, so among files that are equally part of the UI the one
+   * that renders the string beats the one that merely holds it in a variable.
+   */
+  lineRank: number;
   /** Which configured root it came from — earlier roots are the better answer. */
   rootIndex: number;
   /** The first two at that rank, in walk order — what the table shows. */
@@ -336,10 +372,30 @@ function settled(c: Candidates | undefined): boolean {
 export async function findSourceAnchors(
   needles: readonly SourceNeedle[],
   roots: readonly SourceRoot[],
-  opts?: { maxFiles?: number; maxFileBytes?: number },
+  opts?: {
+    /** Per source root, not across all of them. */
+    maxFiles?: number;
+    maxFileBytes?: number;
+    /**
+     * Extensions to read on top of the usual ones — stylesheets, when the
+     * needles are names rather than copy and a name's other home is the CSS
+     * that declares it.
+     */
+    extraExtensions?: ReadonlySet<string>;
+    /**
+     * Absolute paths to walk past. For a project whose tests and product share
+     * one checkout: the file *asking* about a name is not the product having
+     * it, and reading it would answer every needle.
+     */
+    skip?: ReadonlySet<string>;
+  },
 ): Promise<SourceAnchors> {
   const maxFiles = opts?.maxFiles ?? DEFAULT_MAX_FILES;
   const maxFileBytes = opts?.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES;
+  const extra = opts?.extraExtensions;
+  const searchable = extra
+    ? (relPath: string): boolean => extra.has(extname(relPath)) || isSearchable(relPath)
+    : isSearchable;
   // Shorter/blank needles match nearly every line — noise, not evidence. They
   // are reported as unsearched rather than dropped: a reviewer must not read
   // "not found" about a string nothing ever looked for.
@@ -351,18 +407,22 @@ export async function findSourceAnchors(
   }
   const candidates = new Map<string, Candidates>();
 
-  let filesRead = 0;
   let budgetSpent = false;
   let settledAll = false;
   for (const [rootIndex, root] of roots.entries()) {
-    if (budgetSpent || settledAll) break;
-    for await (const fileAbs of walkSourceFiles(root.abs)) {
+    if (settledAll) break;
+    // Per root, not shared: one large root would otherwise spend the whole
+    // budget and the roots after it would never be opened at all — every
+    // string that lives only in one of them reported as never searched.
+    let filesRead = 0;
+    for await (const fileAbs of walkSourceFiles(root.abs, searchable)) {
       if (filesRead >= maxFiles) {
         budgetSpent = true;
         break;
       }
+      if (opts?.skip?.has(fileAbs)) continue;
       const relPath = relative(root.abs, fileAbs);
-      const rank = rankFile(relPath);
+      const rank = rankFile(relPath, extra);
       // A file that could not change any answer is not worth reading: it
       // ranks below what every needle already has, or every needle is done.
       if (rank === RANK_NONE) continue;
@@ -373,10 +433,11 @@ export async function findSourceAnchors(
       }
       if (open.every((n) => (candidates.get(n.value)?.rank ?? 0) > rank)) continue;
       filesRead++;
-      const info = await stat(fileAbs).catch(() => null);
-      if (!info || info.size > maxFileBytes) continue;
       const content = await readFile(fileAbs, "utf8").catch(() => null);
-      if (content === null) continue;
+      // The cap guards against scanning a huge file, not against knowing how
+      // big it is — so it is applied after the read rather than by a `stat`
+      // before every one.
+      if (content === null || content.length > maxFileBytes) continue;
       collect(content, relPath, root.configured, rank, rootIndex, open, candidates);
     }
   }
@@ -411,20 +472,30 @@ function collect(
   for (const needle of pending) {
     const current = candidates.get(needle.value);
     if (current && current.rank > rank) continue;
-    // An earlier root already answered this as well as this file can. Root
-    // order is priority, so the later one adds nothing — not even doubt.
-    if (current && current.rootIndex < rootIndex && current.rank === rank) continue;
     // The best line in this file, not the first: one entry per file either
     // way, but which line it names is what a reviewer opens.
-    const { line: bestLine, rank: bestScore } = bestLineFor(lines, needle);
+    const { line: bestLine, rank: lineRank } = bestLineFor(lines, needle);
     if (bestLine === -1) continue;
+    // An earlier root already answered this as well as this file can. Root
+    // order is priority, so a later root replaces an answer only by being a
+    // better *kind* of one — never by finding a nicer line in the wrong
+    // checkout.
+    if (current && current.rank === rank && current.rootIndex < rootIndex) continue;
+    // A worse line at the same file rank says less than what is already held;
+    // an equally good one is the second place that makes an answer ambiguous.
+    if (current && current.rank === rank && current.lineRank > lineRank) continue;
     const at = anchorAt(configured, relPath, bestLine + 1);
-    const partial = bestScore <= RANK_PARTIAL;
-    if (!current || current.rank < rank) {
-      candidates.set(needle.value, { rank, rootIndex, best: [at], partial });
+    const partial = lineRank <= RANK_PARTIAL;
+    if (!current || outranks({ rank, lineRank }, current)) {
+      candidates.set(needle.value, { rank, lineRank, rootIndex, best: [at], partial });
     } else if (current.best.length < SHOWN) {
       current.best.push(at);
       current.partial = current.partial && partial;
     }
   }
+}
+
+/** File rank first, then how the string appears on the line. */
+function outranks(a: { rank: number; lineRank: number }, b: { rank: number; lineRank: number }): boolean {
+  return a.rank !== b.rank ? a.rank > b.rank : a.lineRank > b.lineRank;
 }

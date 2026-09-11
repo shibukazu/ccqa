@@ -89,7 +89,7 @@ describe("parseProjectConfig", () => {
     expect(config.targets["runn"]).toEqual({
       testPath: "runbooks/{feature}/{spec}.yaml",
       resources: [],
-      conventions: { guides: [], examples: [], record: [] },
+      conventions: { guides: [], examples: [], operate: [] },
       writeRoots: [],
       checkCommands: [],
       hooks: { stepEvidence: true },

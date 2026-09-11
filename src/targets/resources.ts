@@ -196,11 +196,11 @@ export interface LoadedConventions {
  */
 export async function loadConventions(
   cwd: string,
-  conventions: Conventions,
+  patterns: readonly string[],
   maxBytes: number = CONVENTIONS_MAX_BYTES,
 ): Promise<LoadedConventions> {
   const files: string[] = [];
-  for (const pattern of [...conventions.guides, ...conventions.examples]) {
+  for (const pattern of patterns) {
     const matched = await expandPatternToFiles(cwd, pattern).catch((e) => {
       throw new Error(`conventions entry ${(e as Error).message}`);
     });

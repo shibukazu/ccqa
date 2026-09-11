@@ -27,6 +27,7 @@ import {
   type SessionRestoreCheck,
   type StorageState,
 } from "../runtime/session-state.ts";
+import { loadConventions } from "../targets/resources.ts";
 import { runPool } from "../runtime/pool.ts";
 import { formatLiveCost } from "../runtime/live-cost-format.ts";
 import { runLiveExecutor, type LiveRunResult, type LiveStepResult } from "../runtime/live-executor.ts";
@@ -69,6 +70,13 @@ export interface RunLiveOptions {
   customPrompt?: AnalysisCustomPrompt | null;
   /** Human-maintained `triage.user` hub prompt, injected ahead of `customPrompt`. */
   triageUserPrompt?: string | null;
+  /**
+   * `conventions.operate` — the project's own documents on how its application
+   * is driven. The recorder reads the same ones: signing in, which account a
+   * precondition names and what has to be true before the first step do not
+   * change because a run judges instead of recording.
+   */
+  conventions?: readonly string[];
   /** Reaps orphaned agent-browser sessions on SIGINT/SIGTERM. See run-teardown.ts. */
   teardown?: RunTeardown;
   /**
@@ -143,7 +151,15 @@ export async function runLiveSpecs(
   if (userPromptBundle !== null) {
     log.meta("prompt", userPromptBundle.loaded.join(" + "));
   }
-  const userPromptSuffix = userPromptBundle?.text ?? null;
+  const conventions = await loadConventions(cwd, opts.conventions ?? []);
+  for (const w of conventions.warnings) log.warn(w);
+  const userPromptSuffix =
+    [
+      userPromptBundle?.text ?? "",
+      ...conventions.sections.map((s) => `### ${s.path}\n\n${s.body}`),
+    ]
+      .filter((part) => part !== "")
+      .join("\n\n") || null;
 
   // Both pieces of automated analysis cost Claude turns; they only run when
   // the pipeline resolved an `--on-fail-explain` baseline (diffProvider set).

@@ -289,8 +289,8 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
         // trace, so keep the replay when learning is on (see RunTraceOptions).
         validateFailedTrace: opts.learnHubTracePrompt === true,
         ...(config.sessionState ? { sessionState: config.sessionState } : {}),
-        ...(resolved.targetConfig.conventions.record.length > 0
-          ? { conventions: resolved.targetConfig.conventions.record }
+        ...(resolved.targetConfig.conventions.operate.length > 0
+          ? { conventions: resolved.targetConfig.conventions.operate }
           : {}),
         ...(opts.instruction ? { instruction: opts.instruction } : {}),
         onStep: (stepId: string) => {

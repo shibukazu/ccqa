@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { SourceRoot } from "../config/source-roots.ts";
+import type { LocatorInventory } from "./locator-candidates.ts";
 import type { SpecArtifacts } from "./artifacts.ts";
 
 /**
@@ -22,6 +23,8 @@ export interface AuditInputs {
   caseId: string;
   artifacts: SpecArtifacts;
   sourceRoots: readonly SourceRoot[];
+  /** What the locator scan found before the model was asked anything. */
+  locators?: LocatorInventory;
   systemPrompt: string;
   userPrompt: string;
 }
@@ -58,6 +61,33 @@ export function renderAuditInputs(input: AuditInputs): string {
       lines.push(`| \`${cell(f.path)}\` | \`${cell(f.from)}\` | ${read} |`);
     }
     lines.push("");
+  }
+
+  // The prompt carries the misses, because those are what the audit is asked
+  // about. Here the whole scan is written down: what was found is the half a
+  // reader needs to tell "the scan looked and the product has it" from "the
+  // scan never looked".
+  if (input.locators) {
+    const { found, missing, unresolved, incomplete } = input.locators;
+    lines.push("## Locators the scan looked up", "");
+    if (found.length + missing.length + unresolved.length === 0) {
+      lines.push("None: this case addresses nothing by class, id or test id.", "");
+    } else {
+      lines.push("| Locator | Kind | Written at | In the product |", "|---|---|---|---|");
+      for (const c of found) {
+        lines.push(`| \`${cell(c.value)}\` | ${c.kind} | \`${cell(c.from)}\` | \`${cell(c.at)}\` |`);
+      }
+      for (const c of missing) {
+        lines.push(`| \`${cell(c.value)}\` | ${c.kind} | \`${cell(c.from)}\` | not found |`);
+      }
+      for (const u of unresolved) {
+        lines.push(`| \`${cell(u.expression)}\` | built at runtime | \`${cell(u.from)}\` | not looked up |`);
+      }
+      lines.push("");
+    }
+    if (incomplete.length > 0) {
+      lines.push(`The scan was incomplete: ${incomplete.slice(0, 5).join("; ")}.`, "");
+    }
   }
 
   // The document and every file handed over are already inside the user prompt

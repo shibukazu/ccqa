@@ -36,7 +36,7 @@ function makeContext(): GenerateContext {
     cwd,
     testPath: "runbooks/tasks/create.yaml",
     resources: [],
-    conventions: { guides: [], examples: [], record: [] },
+    conventions: { guides: [], examples: [], operate: [] },
     targetConfig: TargetConfigSchema.parse({}),
     language: "auto",
     hub: null,

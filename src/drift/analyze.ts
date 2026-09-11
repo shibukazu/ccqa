@@ -17,6 +17,7 @@ import {
 } from "./artifacts.ts";
 import { runPool } from "../runtime/pool.ts";
 import { writeAuditInputs } from "./dump-inputs.ts";
+import { buildLocatorInventory, checkLocatorVerdicts } from "./locator-candidates.ts";
 import { verifyCitations } from "./verify-citations.ts";
 import { caseIdOf, DriftReplySchema, type SpecResult, type SpecTarget } from "./types.ts";
 import * as log from "../cli/logger.ts";
@@ -147,7 +148,12 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
   // One CI drift row shouldn't die on a single malformed reply (truncated
   // JSON, missing block) — retry the whole check once before reporting the
   // spec as errored.
-  const userPrompt = buildDriftUserPrompt(artifacts, opts.sourceRoots);
+  const locators = await buildLocatorInventory({
+    sources: new Map(artifacts.generated.map((f) => [f.path, f.content])),
+    roots: opts.sourceRoots.length > 0 ? opts.sourceRoots : [{ configured: ".", abs: opts.cwd }],
+    cwd: opts.cwd,
+  });
+  const userPrompt = buildDriftUserPrompt(artifacts, opts.sourceRoots, locators);
   const systemPrompt =
     buildDriftSystemPrompt(opts.blocks, opts.guidance ?? {}, artifacts.intent.kind) +
     languageDirective(opts.language);
@@ -159,6 +165,7 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
       caseId: name,
       artifacts,
       sourceRoots: opts.sourceRoots,
+      locators,
       systemPrompt,
       userPrompt,
     }).then(
@@ -174,7 +181,9 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const { result, isError } = await invokeClaudeStreaming(
       {
-        prompt: userPrompt,
+        // The retry says what was wrong with the first reply. Re-asking the
+        // same question the same way mostly buys the same answer.
+        prompt: lastError === "" ? userPrompt : `${userPrompt}\n## The previous reply was rejected\n\n${lastError}\n`,
         systemPrompt,
         allowedTools: ["Read", "Grep", "Glob"],
         // A ceiling, not a budget: the audit is asked to check a list of
@@ -200,6 +209,11 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
     }
     try {
       const reply = DriftReplySchema.parse(JSON.parse(json));
+      const unanswered = checkLocatorVerdicts(locators.missing, reply);
+      if (unanswered !== null) {
+        lastError = unanswered;
+        continue;
+      }
       // Normalized here, at the only place a drift verdict enters the process,
       // so every consumer downstream — `--report-format json`, the report rows,
       // the hub push — sees a diagnosis that already obeys the label's rules.

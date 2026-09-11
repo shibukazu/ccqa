@@ -58,6 +58,8 @@ function coverageRow(feature: string, spec: string, files: string[]): RunReportD
         unmappedRanges: 0,
         outsideProject: 0,
         unresolvedSources: 0,
+      outsideProjectSamples: [],
+      unresolvedSamples: [],
         uninstrumentedFiles: 0,
         uninstrumentedProcesses: 0,
         droppedPushes: 0,
