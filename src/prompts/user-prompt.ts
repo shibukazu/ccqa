@@ -37,14 +37,28 @@ export async function readUserPrompt(
   cwd: string,
 ): Promise<UserPrompt> {
   const path = resolvePromptLocalPath(name, cwd);
-  const local = normalizePromptText(await readFile(path, "utf8").catch(() => null));
+  const local = normalizePromptText(await readLocal(path));
   if (local !== null) {
-    // Only worth saying where a hub could also have answered.
-    if (ctx) log.meta("prompt", `${name}: ${PROMPT_DIR}/${name}.md (the hub's copy is not read)`);
+    // A file the project wrote and a document on the hub can say different
+    // things, and only one of them is used. Said where both could answer, so
+    // a copy pulled months ago cannot quietly outrank an edit made today.
+    if (ctx) log.warn(`${name}: using ${path} — the hub's copy is not read`);
     return { text: local, local: true };
   }
   if (!ctx) return { text: null, local: false };
   return { text: normalizePromptText(await ctx.hub.getPrompt(ctx.project, name)), local: false };
 }
 
-const PROMPT_DIR = ".ccqa/prompts";
+/**
+ * Absent is the only thing that falls through to the hub. A file that is
+ * there but cannot be read is a project asking for guidance it is not
+ * getting, and answering with somebody else's would be worse than stopping.
+ */
+async function readLocal(path: string): Promise<string | null> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw new Error(`cannot read ${path}: ${(e as Error).message}`);
+  }
+}
