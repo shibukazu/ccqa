@@ -120,12 +120,17 @@ describe("actionToAbArgs", () => {
     expect(actionToAbArgs({ action: "assert", assert: "element_not_visible", locator: css("[aria-label='X']") }, SESSION)).toBeNull();
   });
 
-  test("element_enabled/checked variants skip text= / [aria-label=] selectors that `is enabled` doesn't support reliably", () => {
+  // A naming attribute is the one CSS form that routinely matches nothing
+  // while the element is there, so a state answer about it is about no
+  // element at all; Playwright notation is not CSS and `is` takes a selector.
+  test("a state assert is asked as a state, and only of a selector that addresses the element", () => {
     expect(actionToAbArgs({ action: "assert", assert: "element_enabled", locator: css("text=Submit") }, SESSION)).toBeNull();
     expect(actionToAbArgs({ action: "assert", assert: "element_enabled", locator: css("[aria-label='Submit']") }, SESSION)).toBeNull();
-    // CSS selectors get a get-count existence poll (not a state check).
+    expect(actionToAbArgs({ action: "assert", assert: "element_unchecked", locator: css("#opt") }, SESSION)).toEqual({
+      kind: "state", state: "checked", selector: "#opt", expected: false,
+    });
     expect(actionToAbArgs({ action: "assert", assert: "element_enabled", locator: css(".btn-submit") }, SESSION)).toEqual({
-      kind: "poll-present", selector: ".btn-submit", timeoutMs: 10000,
+      kind: "state", state: "enabled", selector: ".btn-submit", expected: true,
     });
   });
 
@@ -526,6 +531,26 @@ describe("validateActions — an element the page has not rendered yet", () => {
 // A route that creates something names it after the run. Skip those actions
 // and the form goes in empty, so the assertion that reads the name back can
 // never pass — a live route read as dead.
+// `is` exits 0 whether the answer is true or false, so reading the exit code
+// would pass every state assert — the trap `get count` sets with its zero.
+describe("validateActions (a state assert asks the page, and reads the answer)", () => {
+  const unchecked = (): RecordedAction[] => [
+    { action: "assert", assert: "element_unchecked", locator: css("#opt"), stepId: "step-01" },
+  ];
+
+  test("the page agreeing keeps the action", () => {
+    replyBy((argv) => (argv.includes("is") ? { status: 0, stdout: "false", stderr: "" } : OK));
+    const { dropped } = validateActions(unchecked(), { sessionName: SESSION, mode: "strict" });
+    expect(dropped).toEqual([]);
+  });
+
+  test("the page disagreeing drops it, and says which way", () => {
+    replyBy((argv) => (argv.includes("is") ? { status: 0, stdout: "true", stderr: "" } : OK));
+    const { dropped } = validateActions(unchecked(), { sessionName: SESSION, mode: "strict" });
+    expect(dropped[0]!.reason).toContain("expected checked=false, page says true");
+  });
+});
+
 describe("validateActions — a route carrying this run's unique value", () => {
   const route = (): RecordedAction[] => [
     { action: "fill", locator: css("#title"), value: "ccqa-${CCQA_RUN_ID}", stepId: "step-01" },

@@ -929,7 +929,8 @@ export function extractAbActionFromBashCommand(cmd: string): string | null {
 }
 
 /**
- * Wire lines for the observation-only probes `get count <sel>` / `get url`.
+ * Wire lines for the observation-only probes `get count <sel>`, `get url` and
+ * `is <state> <sel>`.
  * These commands read state without mutating it, so they have no place in
  * the replay sequence and `extractAbActionFromBashCommand` ignores them.
  * They matter only when a `CCQA_ASSERT=<marker>` env prefix declares the
@@ -939,13 +940,19 @@ export function extractAbActionFromBashCommand(cmd: string): string | null {
  * unobserved as before.
  */
 export function extractObservationAbAction(cmd: string): string | null {
-  if (extractAbSubcommand(cmd) !== "get") return null;
+  const sub = extractAbSubcommand(cmd);
+  if (sub !== "get" && sub !== "is") return null;
   const abIdx = cmd.indexOf("agent-browser");
   const rest = cmd.slice(abIdx + "agent-browser".length).trim();
   const parts = shellTokenize(rest).filter(t => !/^(2?>|[|&>])/.test(t));
   let i = 0;
   while (i < parts.length && parts[i]!.startsWith("-")) { i += 2; }
   const args = parts.slice(i + 1);
+  if (sub === "is") {
+    // `is enabled|checked|visible <sel>` answers on stdout and exits 0 either
+    // way, so only a marker makes it an assertion — the same shape as `get`.
+    return args[0] && args[1] ? `AB_ACTION|is|${args[0]}|${args[1]}` : null;
+  }
   if (args[0] === "count" && args[1]) return `AB_ACTION|get_count|${args[1]}`;
   if (args[0] === "url") return "AB_ACTION|get_url";
   return null;

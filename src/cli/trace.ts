@@ -239,6 +239,8 @@ export async function runTrace(
 
   const statusLines: ParsedStatusLine[] = [];
   const traceActions: RecordedAction[] = [];
+  /** Assertions the model printed rather than performed; reported, never recorded. */
+  const printedAsserts: string[] = [];
   // Tags each recorded action with its spec step so codegen can group by
   // step even when a step opens no URL (e.g. a "fill the form" step
   // sandwiched between a `navigate` step and a navigation).
@@ -311,7 +313,14 @@ export async function runTrace(
             log.step(status.type, status.stepId, status.detail);
             continue;
           }
-          if (trimmed.startsWith("AB_ACTION|snapshot|") || trimmed.startsWith("AB_ACTION|assert|")) {
+          // Only a command that ran can be an assertion. A printed line is the
+          // model's claim: nothing was performed, nothing can fail, and the
+          // rollback that covers a failed command cannot cover it.
+          if (trimmed.startsWith("AB_ACTION|assert|")) {
+            printedAsserts.push(trimmed);
+            continue;
+          }
+          if (trimmed.startsWith("AB_ACTION|snapshot|")) {
             const action = withStepId(
               parseAbActionLine(scrubEnvValues(trimmed, envScrubMap)),
               stepTracker.current(),
@@ -323,6 +332,12 @@ export async function runTrace(
     },
   );
 
+  if (printedAsserts.length > 0) {
+    log.warn(
+      `${printedAsserts.length} printed assertion(s) were not recorded, e.g. ${printedAsserts[0]} — ` +
+        "an assertion is recorded from the command that performs it, marked with CCQA_ASSERT=<marker>",
+    );
+  }
   const failureReason = traceFailureReason(statusLines, { isError, errorDetail });
   const overallStatus: "passed" | "failed" = failureReason === null ? "passed" : "failed";
 

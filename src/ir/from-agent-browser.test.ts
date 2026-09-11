@@ -58,24 +58,10 @@ describe("parseAbActionLine", () => {
     });
   });
 
-  test("parses assert with a selector into a css locator", () => {
-    expect(
-      parseAbActionLine("AB_ACTION|assert|element_visible|[aria-label='OK']||dialog shown"),
-    ).toEqual({
-      action: "assert",
-      assert: "element_visible",
-      locator: { by: "css", value: "[aria-label='OK']" },
-      observation: "dialog shown",
-    });
-  });
-
-  test("parses a text assert (empty selector slot)", () => {
-    expect(parseAbActionLine("AB_ACTION|assert|text_visible||Done|op completed")).toEqual({
-      action: "assert",
-      assert: "text_visible",
-      value: "Done",
-      observation: "op completed",
-    });
+  // An assertion is recorded from the command that performs it, marked with
+  // `CCQA_ASSERT`. A printed line performs nothing, so it is not an action.
+  test("a printed assert line is not an action", () => {
+    expect(parseAbActionLine("AB_ACTION|assert|text_visible||Done|op completed")).toBeNull();
   });
 
   test("parses click into a css locator", () => {
@@ -237,6 +223,22 @@ describe("parseAbActionLine", () => {
 });
 
 describe("promoteMarkedAssert", () => {
+  // `is` prints true/false and exits 0 either way, so the marker is what says
+  // which answer the step expected.
+  test("a state marker on the `is` probe that asks for that state", () => {
+    expect(promoteMarkedAssert("AB_ACTION|is|enabled|#submit", "element_disabled")).toEqual([
+      { action: "assert", assert: "element_disabled", locator: { by: "css", value: "#submit" } },
+    ]);
+    expect(promoteMarkedAssert("AB_ACTION|is|checked|#opt", "element_checked")).toEqual([
+      { action: "assert", assert: "element_checked", locator: { by: "css", value: "#opt" } },
+    ]);
+  });
+
+  test("a state marker naming a state the command did not ask for records nothing", () => {
+    expect(promoteMarkedAssert("AB_ACTION|is|checked|#submit", "element_enabled")).toBeNull();
+    expect(promoteMarkedAssert("AB_ACTION|get_count|#submit", "element_checked")).toBeNull();
+  });
+
   test("'1' on a wait --text REPLACES the wait with a text_visible assert", () => {
     expect(promoteMarkedAssert("AB_ACTION|wait|--text|Submitted", "1")).toEqual([
       { action: "assert", assert: "text_visible", value: "Submitted" },

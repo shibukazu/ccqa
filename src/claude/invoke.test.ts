@@ -188,6 +188,13 @@ describe("extractCcqaAssertFromBashCommand", () => {
 });
 
 describe("extractObservationAbAction", () => {
+  test("`is <state> <selector>` surfaces so a marker can promote it", () => {
+    expect(
+      extractObservationAbAction(`CCQA_STEP=step-03 CCQA_ASSERT=element_disabled agent-browser --session s1 is enabled "#submit"`),
+    ).toBe("AB_ACTION|is|enabled|#submit");
+    expect(extractObservationAbAction(`agent-browser --session s1 is enabled`)).toBeNull();
+  });
+
   test("surfaces `get count <selector>` as a get_count wire line", () => {
     expect(
       extractObservationAbAction(`CCQA_STEP=step-03 CCQA_ASSERT=element_visible agent-browser --session s1 get count "[data-qa='panel']"`),

@@ -77,14 +77,6 @@ export function parseAbActionLine(line: string): RecordedAction | null {
       return { action: "scroll", ...opt("direction", parts[2]), ...opt("pixels", parts[3]) };
     case "snapshot":
       return { action: "snapshot", ...opt("observation", parts[2]) };
-    case "assert":
-      return {
-        action: "assert",
-        assert: parts[2] as AssertType,
-        ...(parts[3] ? { locator: assertLocator(parts[3]) } : {}),
-        ...(parts[4] ? { value: parts[4] } : {}),
-        ...(parts[5] ? { observation: parts[5] } : {}),
-      };
     case "click":
     case "dblclick":
     case "check":
@@ -164,9 +156,24 @@ export function parseAbActionLine(line: string): RecordedAction | null {
  *   keeping both would wait twice.
  * - `get count "<sel>"` + `element_visible` / `element_not_visible`
  *   → `assert <marker> <sel>` (the probe records nothing by itself).
+ * - `is enabled|checked "<sel>"` + `element_enabled` / `element_disabled` /
+ *   `element_checked` / `element_unchecked` → `assert <marker> <sel>`.
  * - any command + `url_contains:<substring>` → the command's own action (if
  *   it records one) followed by `assert url_contains <substring>`.
  */
+/**
+ * The state `is` is asked for, per marker. A marker naming a different state
+ * than the command asked is refused rather than recorded: `is checked` cannot
+ * answer whether something is enabled.
+ */
+const IS_STATE_OF: Record<string, string> = {
+  element_enabled: "enabled",
+  element_disabled: "enabled",
+  element_checked: "checked",
+  element_unchecked: "checked",
+};
+const IS_MARKERS = new Set(Object.keys(IS_STATE_OF));
+
 export function promoteMarkedAssert(
   abAction: string | null,
   marker: string,
@@ -184,6 +191,14 @@ export function promoteMarkedAssert(
       return [{ action: "assert", assert: "text_visible", value: parts[3] }];
     }
     return null;
+  }
+  // `is <state> <sel>` answers `true` / `false` on stdout and exits 0 either
+  // way, so the marker declares which answer the step expected.
+  if (IS_MARKERS.has(marker)) {
+    const parts2 = abAction === null ? [] : abAction.split("|");
+    if (parts2[1] !== "is" || !parts2[3]) return null;
+    if (IS_STATE_OF[marker] !== parts2[2]) return null;
+    return [{ action: "assert", assert: marker as AssertType, locator: assertLocator(parts2[3]) }];
   }
   if (marker === "element_visible" || marker === "element_not_visible") {
     if (parts[1] === "get_count" && parts[2]) {

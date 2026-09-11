@@ -26,8 +26,38 @@ export interface PollCheck {
   timeoutMs: number;
 }
 
-function isPollCheck(x: string[] | PollCheck | null): x is PollCheck {
-  return x !== null && !Array.isArray(x) && (x as PollCheck).kind === "poll-present";
+/**
+ * `is enabled|checked <sel>` answers `true` / `false` on stdout and exits 0
+ * either way, so the answer has to be read rather than inferred from the
+ * exit code — the same trap `get count` sets, where a zero reads as success.
+ */
+export interface StateCheck {
+  kind: "state";
+  state: "enabled" | "checked";
+  selector: string;
+  expected: boolean;
+}
+
+export type Probe = PollCheck | StateCheck;
+
+function isProbe(x: string[] | Probe | null): x is Probe {
+  return x !== null && !Array.isArray(x);
+}
+
+function runProbe(probe: Probe, sessionName: string): { ok: boolean; reason: string } {
+  return probe.kind === "state" ? runStateCheck(probe, sessionName) : runPollCheck(probe, sessionName);
+}
+
+function runStateCheck(check: StateCheck, sessionName: string): { ok: boolean; reason: string } {
+  const r = spawnAB(["--session", sessionName, "is", check.state, check.selector]);
+  const answer = r.stdout.trim();
+  if (r.status !== 0 || (answer !== "true" && answer !== "false")) {
+    return { ok: false, reason: `is ${check.state} answered ${answer || `exit ${r.status ?? "?"}`}` };
+  }
+  const actual = answer === "true";
+  return actual === check.expected
+    ? { ok: true, reason: "" }
+    : { ok: false, reason: `expected ${check.state}=${check.expected}, page says ${actual}` };
 }
 
 const SELECTOR_POLL_INTERVAL_MS = 500;
@@ -158,7 +188,7 @@ export function actionToAbArgs(
   action: RecordedAction,
   sessionName: string,
   envOverrides: Record<string, string> = {},
-): string[] | PollCheck | null {
+): string[] | Probe | null {
   const base = ["--session", sessionName];
 
   // Resolve env refs in any value/selector positions so the validation
@@ -224,7 +254,7 @@ function presenceCheck(
   selector: string,
   sub: (s: string | undefined) => string,
   base: string[],
-): string[] | PollCheck | null {
+): string[] | Probe | null {
   if (locator?.by === "text") {
     return [...base, "wait", "--text", sub(locator.value), "--timeout", String(ASSERT_TIMEOUT_MS)];
   }
@@ -248,7 +278,7 @@ function assertToAbArgs(
   action: RecordedAction,
   sub: (s: string | undefined) => string,
   sessionName: string,
-): string[] | PollCheck | null {
+): string[] | Probe | null {
   const base = ["--session", sessionName];
   const val = sub(action.value ?? action.observation);
   const sel = sub(
@@ -275,16 +305,21 @@ function assertToAbArgs(
     case "element_enabled":
     case "element_disabled":
     case "element_checked":
-    case "element_unchecked":
-      // `is enabled/checked` are state probes — re-running them on a fresh
-      // session before the prior actions have built up the right page state
-      // is meaningless. The replay loop runs the *whole* action list in
-      // order, so by the time we hit one of these, the page is in the
-      // right state. Validate the selector exists at all via a presence poll.
-      // Only a plain-CSS presence poll: a text or role locator proves the
-      // element exists, never what state it is in.
-      if (!sel || action.locator?.by !== "css" || sel.startsWith("[aria-label=")) return null;
-      return presenceCheck(action.locator, sel, sub, base);
+    case "element_unchecked": {
+      // The replay runs the whole list in order, so the page is in the state
+      // the recording left it in by the time this is reached — which is what
+      // makes asking for the state, rather than only for the element, mean
+      // something. Plain CSS only: `is` takes a selector, and a naming
+      // attribute is the one CSS form that routinely matches nothing while the
+      // element is there, which would answer about no element at all.
+      if (!sel || action.locator?.by !== "css") return null;
+      if (parseNotation(sel) !== null || nameFromAttributeSelector(sel) !== null) return null;
+      const state = action.assert === "element_checked" || action.assert === "element_unchecked"
+        ? "checked"
+        : "enabled";
+      const expected = action.assert === "element_enabled" || action.assert === "element_checked";
+      return { kind: "state", state, selector: sel, expected };
+    }
     default:
       return null;
   }
@@ -531,8 +566,8 @@ function runValidationAction(
 
   const built = actionToAbArgs(action, sessionName, envOverrides);
   if (built === null) return { skipped: true, ok: false, reason: "" };
-  if (isPollCheck(built)) {
-    const { ok, reason } = runPollCheck(built, sessionName);
+  if (isProbe(built)) {
+    const { ok, reason } = runProbe(built, sessionName);
     if (ok) return withName({ skipped: false, ok, reason });
     const resolve = (v: string | undefined): string => (v === undefined ? "" : resolveEnvRefs(v, envOverrides));
     return askTheAccessibilityTree(action, resolve, sessionName) ?? { skipped: false, ok, reason };
@@ -545,7 +580,7 @@ function runValidationAction(
   const alternate = fallback === null ? null : actionToAbArgs(fallback, sessionName, envOverrides);
   const { result, viaAlternate, waitedMs } = runInteraction(
     built,
-    alternate !== null && !isPollCheck(alternate) ? alternate : null,
+    alternate !== null && !isProbe(alternate) ? alternate : null,
     patience,
     sessionName,
   );

@@ -12,9 +12,9 @@ import { writeMockMessages } from "../_helpers/fake-claude.ts";
 // whose commands carry the CCQA_STEP=<step-id> / CCQA_ASSERT=<marker> env
 // prefixes, the replay shim fires the PreToolUse hooks, and the recorded
 // actions must land in ir.json with the right stepId — with NO STEP_START
-// text line for step-02/step-03 and NO AB_ACTION|assert text line for the
-// marked commands, proving neither attribution nor assertions depend on the
-// text protocol.
+// text line for step-02/step-03, proving attribution does not depend on the
+// text protocol. A printed `AB_ACTION|assert|` line is in the stream too, and
+// must NOT be recorded: an assertion is what a command performed.
 function mockTraceMessages(): Array<Record<string, unknown>> {
   const bash = (id: string, command: string): Record<string, unknown> => ({
     type: "assistant",
@@ -29,7 +29,7 @@ function mockTraceMessages(): Array<Record<string, unknown>> {
     bash("tu_1", `CCQA_STEP=step-01 agent-browser --session s1 open about:blank`),
     // step-02 emits NO STEP_START line — only the command prefix names it.
     bash("tu_2", `CCQA_STEP=step-02 agent-browser --session s1 click "text=Next"`),
-    // Text-channel assert must attach to step-02 via the prefix-advanced step.
+    // Printed, not performed: reported and left out of the route.
     text("AB_ACTION|assert|url_contains||about:blank|still on the page"),
     // step-03: every assertion comes from CCQA_ASSERT markers on the
     // verification commands themselves — no protocol text at all.
@@ -287,7 +287,6 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     expect(ir.map((a) => [a.action, a.assert, a.stepId])).toEqual([
       ["navigate", undefined, "step-01"],
       ["click", undefined, "step-02"],
-      ["assert", "url_contains", "step-02"],
       // step-03: promoted from CCQA_ASSERT markers. The marked `wait --text`
       // is REPLACED by its assert (no wait action anywhere), and the `get
       // count` / `get url` probes record only their asserts.
@@ -295,9 +294,12 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
       ["assert", "element_visible", "step-03"],
       ["assert", "url_contains", "step-03"],
     ]);
-    expect(ir[3]!.value).toBe("Ready");
-    expect(ir[4]!.locator).toEqual({ by: "css", value: "[data-qa='panel']" });
-    expect(ir[5]!.value).toBe("about");
+    expect(ir[2]!.value).toBe("Ready");
+    expect(ir[3]!.locator).toEqual({ by: "css", value: "[data-qa='panel']" });
+    expect(ir[4]!.value).toBe("about");
+    // Said, not swallowed: a recording that only printed its checks would
+    // otherwise look like one that verified nothing.
+    expect(combined).toContain("printed assertion(s) were not recorded");
 
     // The prefixes are trace-time plumbing only — they must never survive
     // into the generated test script, while the promoted asserts must.
