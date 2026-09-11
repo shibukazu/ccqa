@@ -73,6 +73,18 @@ function toolIdentifiers(file: string, source: string): EmittedFinding[] {
   });
 }
 
+/**
+ * Searching the whole page for something a name calls a container: its text,
+ * or a structural tag that says nothing about what the element is.
+ *
+ * Both forms, because the first version tested only `getByText` and the fix
+ * pass answered it with `page.locator("div").filter({ hasText }).last()` —
+ * the same page-wide search, now resting on DOM order, and invisible to a
+ * rule that only knew one shape. A generation that escapes a finding by
+ * changing shape is worse than one that never drew it.
+ */
+const PAGE_ROOTED = /^this\.page\.(?:getByText\(|locator\(["'](?:div|span|p|li|ul|ol|section|article)["']\))/;
+
 const CONTAINER =
   /\b(?:readonly\s+)?([a-zA-Z0-9_]*(?:Row|Cell|Card|Item|List))\s*(?:=\s*|\([^)]*\)\s*:\s*Locator\s*\{\s*(?:return\s+)?)(.*)$/;
 
@@ -93,7 +105,7 @@ function containerOfPageText(file: string, source: string): EmittedFinding[] {
     if (!m) return [];
     // A method's `return` is on the next line as often as not.
     const body = m[2]!.trim() || (all[i + 1] ?? "").trim().replace(/^return\s+/, "");
-    if (!/^this\.page\.getByText\(/.test(body)) return [];
+    if (!PAGE_ROOTED.test(body)) return [];
     return [{
       file,
       line: i + 1,

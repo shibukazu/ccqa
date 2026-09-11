@@ -38,9 +38,21 @@ describe("reviewEmittedFiles", () => {
       .toEqual(["unscoped-container", "unscoped-container"]);
   });
 
+  // The shape a fix pass reached for when the finding named only `getByText`:
+  // the same page-wide search, now resting on DOM order.
+  test("a container found by searching the page for a bare tag is the same fault", () => {
+    const page = `readonly notionCard = this.page.locator("div").filter({ hasText: "Buy milk" }).last();`;
+    expect(rules(review(`await expect(todoList.notionCard).toBeVisible();`, page)))
+      .toEqual(["unscoped-container"]);
+  });
+
   test("a container scoped to something is left alone", () => {
-    const page = `readonly firstCard = this.page.getByRole("row").filter({ hasText: "Buy milk" });`;
-    expect(review(`await expect(todoList.firstCard).toBeVisible();`, page)).toEqual([]);
+    const byRole = `readonly firstCard = this.page.getByRole("row").filter({ hasText: "Buy milk" });`;
+    expect(review(`await expect(todoList.firstCard).toBeVisible();`, byRole)).toEqual([]);
+    // Starting from a container this page object already addresses, which is
+    // how the hand-written ones reach a structural tag.
+    const scoped = `readonly firstCard = this.listSection.locator("div").filter({ hasText: "Buy milk" }).last();`;
+    expect(review(`await expect(todoList.firstCard).toBeVisible();`, scoped)).toEqual([]);
   });
 
   describe("an unusual choice is allowed, and has to be said", () => {
