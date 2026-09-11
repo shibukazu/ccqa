@@ -41,6 +41,31 @@ export type FindAction = (typeof FIND_ACTIONS)[number];
 
 const css = (value: string): Locator => ({ by: "css", value });
 
+/**
+ * Collapse a repeated `/` in a URL's path.
+ *
+ * A base URL ending in `/` plus a written `/path` is how one arrives: the
+ * browser follows `//path`, but the route recorded from it symbolises back to
+ * `${BASE}/path` — a URL the product does not have — and a re-record then
+ * alternates between the two forms.
+ */
+function collapseSlashes(url: string): string {
+  // Only after the authority: `file:///repo/x` is three slashes by design, and
+  // collapsing one turns its first path segment into a host.
+  const scheme = url.indexOf("://");
+  if (scheme === -1) return url;
+  const pathAt = url.indexOf("/", scheme + 3);
+  if (pathAt === -1) return url;
+  const end = url.slice(pathAt).search(/[?#]/);
+  const stop = end === -1 ? url.length : pathAt + end;
+  const path = url.slice(pathAt, stop);
+  // Split by hand rather than through `URL`, which also appends a root path to
+  // a bare origin — this module's parse is pinned as a round-trip, so it must
+  // return the string it was given whenever nothing actually moved.
+  const collapsed = path.replace(/\/{2,}/g, "/");
+  return collapsed === path ? url : url.slice(0, pathAt) + collapsed + url.slice(stop);
+}
+
 export function parseAbActionLine(line: string): RecordedAction | null {
   if (!line.startsWith("AB_ACTION|")) return null;
   const parts = line.split("|");
@@ -53,7 +78,7 @@ export function parseAbActionLine(line: string): RecordedAction | null {
       // Strip stray surrounding quotes that can appear when agent-browser is
       // called with a quoted URL.
       const url = (parts[2] ?? "").replace(/^["']|["']$/g, "");
-      return { action: "navigate", value: url };
+      return { action: "navigate", value: collapseSlashes(url) };
     }
     case "press":
       return { action: "press", ...opt("value", parts[2]) };

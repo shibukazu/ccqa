@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { spawnAB } from "./spawn-ab.ts";
+import { describeKill, killSessionDaemon } from "./agent-browser-daemon.ts";
+import * as log from "../cli/logger.ts";
 
 /**
  * A saved browser session: agent-browser's storage-state JSON (cookies +
@@ -349,6 +351,33 @@ export function recoverLiveSession(
   if (!restored.ok) return restored;
   if (verifyUrl) spawnAB(["--session", sessionName, "open", verifyUrl]);
   return { ok: true };
+}
+
+/**
+ * Kill a session's daemon and put the session back on its feet, saying what
+ * happened either way. Returns whether anything reaches the session again.
+ *
+ * Every command a caller would send next goes through the socket the daemon is
+ * ignoring, so a kill that did not take makes whatever follows pure cost.
+ */
+export async function reviveSession(
+  sessionName: string,
+  statePath: string | null,
+  verifyUrl: string | null,
+  reason: string,
+): Promise<boolean> {
+  const kill = await killSessionDaemon(sessionName);
+  log.warn(`${reason}; ${describeKill(kill)}`);
+  // Not "was anything killed" but "is anything still in the way": a daemon that
+  // crashed leaves its socket behind with no process to signal, and booting a
+  // fresh one is exactly what puts the session back.
+  if (!kill.killed && kill.stillRunning === true) return false;
+  const recovered = recoverLiveSession(sessionName, statePath, verifyUrl);
+  if (!recovered.ok) {
+    log.warn(`session recovery failed: ${recovered.error}`);
+    return false;
+  }
+  return true;
 }
 
 /** Take the last non-empty line of `agent-browser eval` stdout and JSON-unquote it. */

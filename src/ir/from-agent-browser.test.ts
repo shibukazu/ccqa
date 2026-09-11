@@ -20,6 +20,30 @@ describe("parseAbActionLine", () => {
     });
   });
 
+  test("collapses a doubled slash in the path, leaving the scheme and the query alone", () => {
+    const open = (url: string): unknown => parseAbActionLine(`AB_ACTION|open|${url}`);
+    expect(open("https://app.example//policies")).toEqual({
+      action: "navigate",
+      value: "https://app.example/policies",
+    });
+    expect(open("https://app.example/x?next=https://y")).toEqual({
+      action: "navigate",
+      value: "https://app.example/x?next=https://y",
+    });
+    // A URL with nothing to collapse comes back as it went in: this module's
+    // parse is pinned as a round-trip, and `URL` would append a root path here.
+    expect(open("http://localhost:3000")).toEqual({
+      action: "navigate",
+      value: "http://localhost:3000",
+    });
+    // Three slashes by design. Collapsing one makes the first path segment
+    // the host, and records a navigate the replay cannot reach.
+    expect(open("file:///repo/index.html")).toEqual({
+      action: "navigate",
+      value: "file:///repo/index.html",
+    });
+  });
+
   test("strips surrounding quotes from an opened URL", () => {
     expect(parseAbActionLine('AB_ACTION|open|"http://localhost:3000"')).toEqual({
       action: "navigate",

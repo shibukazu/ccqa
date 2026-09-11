@@ -28,7 +28,7 @@ describe("takeScreenshot", () => {
       SESSION,
       "screenshot",
       OUT_PATH,
-    ]);
+    ], expect.anything());
   });
 
   it("inserts --full before the output path when fullPage is set", () => {
@@ -44,7 +44,7 @@ describe("takeScreenshot", () => {
       "screenshot",
       "--full",
       OUT_PATH,
-    ]);
+    ], expect.anything());
   });
 
   it("omits --full when fullPage is explicitly false", () => {
@@ -57,7 +57,7 @@ describe("takeScreenshot", () => {
       SESSION,
       "screenshot",
       OUT_PATH,
-    ]);
+    ], expect.anything());
   });
 
   it("surfaces non-zero exit as ok:false without throwing", () => {

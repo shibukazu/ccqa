@@ -18,8 +18,13 @@ import { describeKill, killSessionDaemon } from "./agent-browser-daemon.ts";
 import { scrubEnvValues } from "./env-scrub.ts";
 import { stepArtifactPaths } from "./live-artifacts.ts";
 import { findLastStepResult } from "./live-result-parse.ts";
-import { takeScreenshot } from "./screenshot.ts";
-import { checkLiveSessionHealth, loadStateIntoSession, recoverLiveSession } from "./session-state.ts";
+import { screenshotWithRecovery } from "./screenshot-recovery.ts";
+import {
+  checkLiveSessionHealth,
+  loadStateIntoSession,
+  recoverLiveSession,
+  reviveSession,
+} from "./session-state.ts";
 
 /**
  * Per-step cost / usage / turn snapshot, derived from the SDK's `result`
@@ -224,12 +229,19 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     // `attempt` counts extra attempts beyond the first (feeds the "(after N
     // attempts)" reasoning below). It advances on both a budgeted --retry and
     // the one-shot session-loss recovery, so a run with --retry 0 still gets a
-    // second try when the daemon was replaced mid-step.
+    // second try when the daemon was replaced mid-step — and none when it could
+    // not be put back, because the retry would run against the same dead one.
     let attempt = 0;
-    let recoveredOnce = false;
+    let probed = false;
+    // Shared with the screenshot path: the before-shot, the after-shot and the
+    // health probe all notice the same wedged daemon, and one step is worth one
+    // reboot of the application that wedged it. Spent by a reboot that actually
+    // happens — a probe that found the session healthy has cost the step
+    // nothing and must not take the remedy away from a later attempt.
+    const recovery = { spent: false };
     let lastOutcome: StepAttemptOutcome | null = null;
     for (;;) {
-      lastOutcome = await executeStepAttempt(step, paths, systemPrompt, userPrompt);
+      lastOutcome = await executeStepAttempt(step, paths, systemPrompt, userPrompt, recovery);
       if (lastOutcome.status === "passed") break;
 
       // Session-loss recovery. A step can fail because its browser broke rather
@@ -238,23 +250,25 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
       // Probe (cheap, non-navigating) only after a failure and only once per
       // step, so a plain failure — wrong selector, real assertion miss — on a
       // healthy session is left alone and the model retries on its current page.
-      if (!recoveredOnce) {
-        // Telling the kinds apart needs the probe, so it always runs; spending
-        // the slot here is what keeps this to once per step either way.
-        recoveredOnce = true;
+      if (!probed && !recovery.spent) {
+        // The probe is the cheap half — one non-navigating read — and it runs
+        // once per step whatever it finds.
+        probed = true;
         const health = checkLiveSessionHealth(input.sessionName);
         // A blank page with no saved state has nothing to put back, and its
         // browser is still there — the other kinds leave the session unusable.
         if (!health.healthy && (health.kind !== "blank" || statePath)) {
-          const kill =
-            health.kind === "unresponsive" ? await killSessionDaemon(input.sessionName) : null;
-          log.warn(
-            `session broken during ${step.id} (${health.reason}); ` +
-              (kill ? describeKill(kill) : "re-injecting auth-state"),
-          );
-          // Every command below goes through the socket the daemon is ignoring,
-          // so a kill that failed makes the retry pure cost.
-          if (!kill || kill.killed) {
+          const reason = `session broken during ${step.id} (${health.reason})`;
+          // Only an unresponsive daemon is in the way; the other kinds kept
+          // their browser and need the auth-state put back, nothing killed.
+          recovery.spent = true;
+          if (health.kind === "unresponsive") {
+            if (await reviveSession(input.sessionName, statePath, verifyUrl, reason)) {
+              attempt++;
+              continue;
+            }
+          } else {
+            log.warn(`${reason}; re-injecting auth-state`);
             const rec = recoverLiveSession(input.sessionName, statePath, verifyUrl);
             if (!rec.ok) log.warn(`session recovery failed: ${rec.error}`);
             attempt++;
@@ -306,12 +320,20 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     paths: ReturnType<typeof stepArtifactPaths>,
     systemPrompt: string,
     userPrompt: string,
+    recovery: { spent: boolean },
   ): Promise<StepAttemptOutcome> {
     // No --state here: loadStateIntoSession already attached the auth-state to
     // the daemon before the loop, so this screenshot connects to that same
     // signed-in session. Passing --state now would only draw an "already
     // running" warning.
-    const before = takeScreenshot(input.sessionName, paths.beforePng);
+    const before = await screenshotWithRecovery({
+      sessionName: input.sessionName,
+      outPath: paths.beforePng,
+      label: `before, ${step.id}`,
+      statePath,
+      verifyUrl,
+      recovery,
+    });
     if (!before.ok) log.warn(`screenshot (before, ${step.id}) failed: ${before.error}`);
 
     const transcriptParts: string[] = [];
@@ -359,7 +381,15 @@ export async function runLiveExecutor(input: RunLiveExecutorInput): Promise<Live
     // After: full page so the assertion target is in the artifact regardless of
     // scroll position. Before stays viewport-only (lighter, and the before-state
     // doesn't usually need to prove "this row appeared below the fold").
-    const after = takeScreenshot(input.sessionName, paths.afterPng, { fullPage: true });
+    const after = await screenshotWithRecovery({
+      sessionName: input.sessionName,
+      outPath: paths.afterPng,
+      label: `after, ${step.id}`,
+      fullPage: true,
+      statePath,
+      verifyUrl,
+      recovery,
+    });
     if (after.degraded && !warnedDegraded) {
       warnedDegraded = true;
       log.warn("screenshots capture the viewport only: this page cannot be captured whole");

@@ -58,8 +58,8 @@ export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(buf), 0, 0, ms);
 }
 
-function spawnABOnce(args: string[]): Result {
-  const result = spawnSync(AB, args, { stdio: "pipe", timeout: PROCESS_HARD_TIMEOUT_MS });
+function spawnABOnce(args: string[], timeoutMs: number): Result {
+  const result = spawnSync(AB, args, { stdio: "pipe", timeout: timeoutMs });
   // ETIMEDOUT, not the SIGTERM it is delivered with: an interrupted run signals
   // the whole process group, and a healthy daemon must not be read as wedged.
   const wedged = (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT";
@@ -68,9 +68,18 @@ function spawnABOnce(args: string[]): Result {
     stdout: result.stdout?.toString() ?? "",
     stderr:
       (result.stderr?.toString() ?? "") +
-      (wedged ? "\n[ccqa] agent-browser killed after hard timeout" : ""),
+      // Names the command and the ceiling: "killed after hard timeout" alone
+      // leaves a reader to work out which invocation stopped answering.
+      (wedged
+        ? `\n[ccqa] agent-browser ${subcommand(args)} did not answer in ${timeoutMs}ms — killed after hard timeout`
+        : ""),
     wedged,
   };
+}
+
+/** The verb a reader recognises, past the one prefix every caller writes. */
+function subcommand(args: readonly string[]): string {
+  return (args[0] === "--session" ? args[2] : args[0]) ?? "(no command)";
 }
 
 /**
@@ -82,8 +91,9 @@ function spawnABOnce(args: string[]): Result {
  * module is also the public surface for generated test scripts — exposing
  * the raw spawner there would widen the contract for end users.
  */
-export function spawnAB(args: string[]): Result {
-  let result = spawnABOnce(args);
+export function spawnAB(args: string[], opts?: { timeoutMs?: number }): Result {
+  const timeoutMs = opts?.timeoutMs ?? PROCESS_HARD_TIMEOUT_MS;
+  let result = spawnABOnce(args, timeoutMs);
   let elapsed = 0;
   let attempt = 0;
   while (result.status !== 0 && elapsed < EAGAIN_TOTAL_BUDGET_MS) {
@@ -93,7 +103,7 @@ export function spawnAB(args: string[]): Result {
     sleepSync(wait);
     elapsed += wait;
     attempt++;
-    result = spawnABOnce(args);
+    result = spawnABOnce(args, timeoutMs);
   }
   return result;
 }
