@@ -615,6 +615,42 @@ describe("validateActions (a css locator that is not css)", () => {
     expect(mockedSpawnAB.mock.calls.some((c) => c[0]!.includes("find"))).toBe(false);
   });
 
+  // Measured: the DOM has `combobox "Category *"` named by an associated
+  // `<label>`, so `[aria-label='Category *']` counts 0 while the element is
+  // plainly there. The attribute being absent is not evidence the element is.
+  test("an attribute selector that counts nothing is asked of the accessibility tree", () => {
+    const SNAPSHOT = { status: 0, stdout: '- combobox "Category *"\n- button "Save"', stderr: "" };
+    replyBy((argv) => {
+      if (argv.includes("count")) return COUNT_ABSENT;
+      if (argv.includes("snapshot")) return SNAPSHOT;
+      return OK;
+    });
+    const actions: RecordedAction[] = [{
+      action: "assert",
+      assert: "element_visible",
+      locator: css("[aria-label='Category *']"),
+      stepId: "step-02",
+    }];
+    const { kept, dropped, promoted } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(dropped).toEqual([]);
+    expect(kept.length).toBe(1);
+    expect(actions[0]!.locator).toEqual({ by: "role", value: "combobox", name: "Category *", exact: true });
+    expect(promoted?.[0]).toContain("role=combobox");
+  });
+
+  test("a name the tree does not carry is still a failure", () => {
+    replyBy((argv) => {
+      if (argv.includes("count")) return COUNT_ABSENT;
+      if (argv.includes("snapshot")) return { status: 0, stdout: '- button "Save"', stderr: "" };
+      return OK;
+    });
+    const { dropped } = validateActions(
+      [{ action: "assert", assert: "element_visible", locator: css("[aria-label='Gone']"), stepId: "s" }],
+      { sessionName: SESSION, mode: "strict" },
+    );
+    expect(dropped.length).toBe(1);
+  });
+
   test("plain css is still counted", () => {
     replyBy((argv) => (argv.includes("count") ? COUNT_PRESENT : OK));
     validateActions(

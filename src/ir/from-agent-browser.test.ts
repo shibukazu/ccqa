@@ -270,6 +270,25 @@ describe("promoteMarkedAssert", () => {
     });
   });
 
+  // `find role <role> text --name <name>` is how the recorder asks the
+  // accessibility tree rather than the DOM. Like `get count`, it records
+  // nothing by itself; the marker is what makes it an assertion.
+  test("element_visible on a role probe records the role and its name", () => {
+    expect(promoteMarkedAssert("AB_ACTION|find_text|role|combobox|Category *|exact|", "element_visible")).toEqual([
+      {
+        action: "assert",
+        assert: "element_visible",
+        locator: { by: "role", value: "combobox", name: "Category *", exact: true },
+      },
+    ]);
+  });
+
+  test("a role probe recorded without --exact keeps matching the way it matched", () => {
+    expect(promoteMarkedAssert("AB_ACTION|find_text|role|button|Log in||", "element_visible")).toEqual([
+      { action: "assert", assert: "element_visible", locator: { by: "role", value: "button", name: "Log in" } },
+    ]);
+  });
+
   test("url_contains on a recorded command APPENDS the assert after the action", () => {
     expect(promoteMarkedAssert("AB_ACTION|click|text=Next|Next", "url_contains:/dashboard")).toEqual([
       { action: "click", locator: { by: "css", value: "text=Next" }, label: "Next" },

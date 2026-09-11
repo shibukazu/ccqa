@@ -189,6 +189,21 @@ export function promoteMarkedAssert(
     if (parts[1] === "get_count" && parts[2]) {
       return [{ action: "assert", assert: marker, locator: assertLocator(parts[2]) }];
     }
+    // `find role <role> text --name <name>` — the probe that asks the
+    // accessibility tree rather than the DOM. Like `get count`, it records
+    // nothing by itself; the marker is what makes it an assertion.
+    if (parts[1] === "find_text" && parts[2] === "role" && parts[3]) {
+      return [{
+        action: "assert",
+        assert: marker,
+        locator: {
+          by: "role",
+          value: parts[3],
+          ...(parts[4] ? { name: parts[4] } : {}),
+          ...((parts[5] ?? "") === "exact" ? { exact: true } : {}),
+        },
+      }];
+    }
     return null;
   }
   return null;

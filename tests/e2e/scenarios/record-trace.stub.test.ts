@@ -142,6 +142,96 @@ describe("ccqa record — a text= locator is named rather than counted", () => {
   }, 120_000);
 });
 
+// A recorder reads `combobox "Category *"` off a snapshot and writes
+// `[aria-label='Category *']`, which is valid CSS but matches nothing when
+// the name actually comes from an associated `<label>`. The `get count` poll
+// this drives therefore misses, and the validator must fall back to asking
+// the accessibility tree for a node with that exact accessible name instead
+// of reading the miss as "the element is gone".
+function mockAttributeNameTraceMessages(): Array<Record<string, unknown>> {
+  const bash = (id: string, command: string): Record<string, unknown> => ({
+    type: "assistant",
+    message: { content: [{ type: "tool_use", id, name: "Bash", input: { command } }] },
+  });
+  const text = (t: string): Record<string, unknown> => ({
+    type: "assistant",
+    message: { content: [{ type: "text", text: t }] },
+  });
+  return [
+    text("STEP_START|step-01|Open the page"),
+    bash("tu_1", `CCQA_STEP=step-01 agent-browser --session s1 open about:blank`),
+    // Recorded via a CCQA_ASSERT marker on the `get count` probe itself — see
+    // `promoteMarkedAssert` — with an `[aria-label=...]` selector that is
+    // really asking for the element's accessible name.
+    bash(
+      "tu_2",
+      `CCQA_STEP=step-01 CCQA_ASSERT=element_visible agent-browser --session s1 get count "[aria-label='Category *']"`,
+    ),
+    text("RUN_COMPLETED|passed|all steps done"),
+    { type: "result", subtype: "success", result: "", is_error: false },
+  ];
+}
+
+describe("ccqa record — an [aria-label=...] assert is asked of the accessibility tree when the count misses", () => {
+  let project: FakeProject | null = null;
+
+  afterEach(async () => {
+    if (project) {
+      await project.cleanup();
+      project = null;
+    }
+  });
+
+  test("the locator is promoted to role+name from the snapshot, kept (not dropped, not unstable), and reported", async () => {
+    project = await makeFakeProject("record-trace-stub", { linkCcqa: true });
+    await installFakeAgentBrowser(project.cwd);
+
+    const mockPath = join(project.cwd, "claude-mock.jsonl");
+    await writeMockMessages(mockPath, mockAttributeNameTraceMessages());
+
+    const result = await runCcqa(["record", "demo/x"], {
+      cwd: project.cwd,
+      env: {
+        ...noColorEnv(),
+        CCQA_CLAUDE_MOCK_FILE: mockPath,
+        CCQA_AB_BIN: join(project.cwd, "node_modules/agent-browser/bin/agent-browser.js"),
+        // Every `get count` poll misses (0), forcing the fallback to the
+        // accessibility snapshot below.
+        CCQA_FAKE_AB_COUNT: "0",
+        CCQA_FAKE_AB_SNAPSHOT: `- combobox "Category *"`,
+      },
+      timeoutMs: 90_000,
+    });
+    const combined = stripAnsi(result.stdout + result.stderr);
+    expect(result.exitCode, combined).toBe(0);
+
+    const caseDir = join(project.cwd, ".ccqa/features/demo/test-cases/x");
+    const recording = JSON.parse(await readFile(join(caseDir, "ir.json"), "utf8")) as {
+      actions: Array<{
+        action: string;
+        assert?: string;
+        locator?: { by: string; value: string; name?: string; exact?: boolean };
+        replayUnstable?: boolean;
+      }>;
+    };
+    const ir = recording.actions;
+    expect(ir.map((a) => [a.action, a.assert])).toEqual([
+      ["navigate", undefined],
+      ["assert", "element_visible"],
+    ]);
+    // Kept — not dropped, not flagged unstable — and holding the role+name
+    // form the accessibility tree confirmed, not the CSS selector that
+    // counted zero.
+    expect(ir[1]!.replayUnstable).toBeFalsy();
+    expect(ir[1]!.locator).toEqual({ by: "role", value: "combobox", name: "Category *", exact: true });
+
+    // The promotion is reported by accessible name, not silently applied.
+    expect(combined).toContain(
+      "locator rewritten to the form that replays: [aria-label='Category *'] names an element rather than an attribute — confirmed as role=combobox",
+    );
+  }, 120_000);
+});
+
 describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", () => {
   let project: FakeProject | null = null;
 

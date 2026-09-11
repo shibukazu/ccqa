@@ -1002,6 +1002,12 @@ export function extractFindAbAction(args: string[]): string | null {
       exact = "exact";
     } else if (FIND_ACTION_SET.has(tok)) {
       action = tok;
+    } else if (tok === "text" && action === "" && locator === "role") {
+      // `find role <role> text` reads an element without touching it, so it is
+      // no recordable action — but a `CCQA_ASSERT` marker turns it into a
+      // presence assertion, and the wire line has to carry it. Only before an
+      // action and only for a role, so `fill "text"` keeps its value.
+      action = tok;
     } else if (action) {
       // After the action token, the remaining positional is fill text.
       fillValue = tok;

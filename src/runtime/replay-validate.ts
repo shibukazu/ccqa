@@ -1,9 +1,15 @@
 import { spawnAB, sleepSync } from "./spawn-ab.ts";
 import { resolveEnvRefs } from "./env-vars.ts";
-import { describeLocator, locatorToSelector, toAgentBrowserArgs } from "../ir/to-agent-browser.ts";
+import {
+  describeLocator,
+  locatorToSelector,
+  roleProbeTokens,
+  toAgentBrowserArgs,
+} from "../ir/to-agent-browser.ts";
 import type { RecordedAction } from "../ir/types.ts";
 import { collapseUrlPath } from "../ir/url-path.ts";
 import { OPAQUE, parseNotation } from "../ir/playwright-notation.ts";
+import { nameFromAttributeSelector, roleOfAccessibleName } from "../ir/accessible-name.ts";
 
 /**
  * Some actions can't be validated by a single `agent-browser` argv because
@@ -204,23 +210,15 @@ export function actionToAbArgs(
   }
 }
 
+function roleProbe(base: string[], role: string, name: string): string[] {
+  return [...base, ...roleProbeTokens(role, name).map((t) => t.text)];
+}
+
 /**
  * Presence asked the way the locator addresses the element. `null` is
  * unverifiable rather than absent: a count from a selector the engine never
  * parsed is not evidence.
- *
- * `find role … text` names the action on purpose — `find role … --name` with
- * no action clicks the element it finds.
  */
-/**
- * `--exact` because `--name` matches by substring, and a locator recorded as
- * `role=button[name="Log in"]` must not be cleared by a "Log in with SSO".
- * `text` names the action: `find role … --name` with none clicks what it finds.
- */
-function roleProbe(base: string[], role: string, name: string): string[] {
-  return [...base, "find", "role", role, "text", "--name", name, "--exact"];
-}
-
 function presenceCheck(
   locator: RecordedAction["locator"],
   selector: string,
@@ -479,6 +477,39 @@ function nameNotation(action: RecordedAction): string | null {
 }
 
 /**
+ * An attribute selector that counted nothing, asked of the accessibility tree
+ * the name was read from. See docs/targets.md for why the two disagree.
+ *
+ * The snapshot is read for the role, then `find role` is asked as well: the
+ * tree says the name exists somewhere, the probe says the replay can reach it,
+ * and only the second is what the route will depend on.
+ */
+function askTheAccessibilityTree(
+  action: RecordedAction,
+  sub: (s: string | undefined) => string,
+  sessionName: string,
+): ActionOutcome | null {
+  // Assertions only. A `wait` also polls, but codegen has no role form for one,
+  // so promoting it would drop the spec's synchronisation point silently.
+  if (action.action !== "assert" || action.locator?.by !== "css") return null;
+  // The name as recorded, refs and all. `built.selector` has been resolved for
+  // this session, and writing that into the route would assert a value only
+  // this recording ever produced.
+  const name = nameFromAttributeSelector(action.locator.value);
+  if (name === null) return null;
+  const snapshot = spawnAB(["--session", sessionName, "snapshot"]);
+  if (snapshot.status !== 0) return null;
+  const role = roleOfAccessibleName(snapshot.stdout, sub(name));
+  if (role === null) return null;
+  const found = spawnAB(roleProbe(["--session", sessionName], role, sub(name)));
+  if (found.status !== 0) return null;
+  const promoted =
+    `${action.locator.value} names an element rather than an attribute — confirmed as role=${role}`;
+  action.locator = { by: "role", value: role, name, exact: true };
+  return { skipped: false, ok: true, reason: "", promoted };
+}
+
+/**
  * Replay one recorded action against the validation session. Element-presence
  * checks go through `runPollCheck` (which uses `get count`, never the blocking
  * `wait <selector>`); everything else spawns the agent-browser argv.
@@ -489,11 +520,22 @@ function runValidationAction(
   envOverrides: Record<string, string> = {},
   patience: Patience,
 ): ActionOutcome {
+  // Before the argv is built: a `by: "css"` value that is not CSS would go to
+  // `get count`, which answers 0 for it rather than failing. Here rather than
+  // in the caller's loop, so the rescue pass gets it too.
+  const named = nameNotation(action);
+  // Only what replayed: "rewritten to the form that replays" is a claim, and an
+  // action that then failed did not earn it.
+  const withName = (outcome: ActionOutcome): ActionOutcome =>
+    named === null || !outcome.ok ? outcome : { ...outcome, promoted: outcome.promoted ?? named };
+
   const built = actionToAbArgs(action, sessionName, envOverrides);
   if (built === null) return { skipped: true, ok: false, reason: "" };
   if (isPollCheck(built)) {
     const { ok, reason } = runPollCheck(built, sessionName);
-    return { skipped: false, ok, reason };
+    if (ok) return withName({ skipped: false, ok, reason });
+    const resolve = (v: string | undefined): string => (v === undefined ? "" : resolveEnvRefs(v, envOverrides));
+    return askTheAccessibilityTree(action, resolve, sessionName) ?? { skipped: false, ok, reason };
   }
   // The accessible-name form of a `label` locator, offered to the retry: the
   // recording keeps whichever form replayed, because a route that only holds
@@ -512,7 +554,7 @@ function runValidationAction(
     action.locator = fallback!.locator!;
     return { skipped: false, ok: true, reason: "", promoted };
   }
-  if (result.status === 0) return { skipped: false, ok: true, reason: "" };
+  if (result.status === 0) return withName({ skipped: false, ok: true, reason: "" });
   const detail =
     result.stderr.trim() || result.stdout.trim() || `agent-browser exit ${result.status ?? "?"}`;
   return {
@@ -559,13 +601,7 @@ export function validateActions(
       dropped.push({ index: i, action, reason: CASCADE_REASON });
       continue;
     }
-    // Before the argv is built: a `by: "css"` value that is not CSS would go to
-    // `get count`, which answers 0 for it rather than failing.
-    const named = nameNotation(action);
     const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides, patience);
-    // Only what replayed: "rewritten to the form that replays" is a claim, and
-    // an action that then failed did not earn it.
-    if (named !== null && outcome.ok) promoted.push(named);
     if (outcome.promoted) promoted.push(outcome.promoted);
     if (outcome.skipped) {
       kept.push(action);

@@ -163,7 +163,7 @@ CCQA_STEP=<step-id> agent-browser --session SESSION upload "<input[type=file] se
 
 | Format | Use when |
 |--------|----------|
-| \`[aria-label='label']\` | Element has aria-label (check snapshot output) — **FIRST CHOICE** |
+| \`[aria-label='label']\` | Element **has the \`aria-label\` attribute** — **FIRST CHOICE**. A name the snapshot shows is not proof of one: a name can come from a \`<label>\`, from the element's own text, or from \`aria-labelledby\`, and this selector then matches nothing. |
 | \`text=visible text\` | Unique visible text, no aria-label — for **actions**. Not for a \`get count\` probe: see step 3. |
 | \`[placeholder='text']\` | Input identified by placeholder |
 | \`[type='password']\` | Password inputs only |
@@ -216,7 +216,8 @@ find nth <index> "<ALLOWED-css>" <action>
 
 1. Run \`snapshot\` and read the ARIA tree.
 2. Identify the element; note its exact \`aria-label\` if present.
-3. If aria-label present → use \`[aria-label='...']\`. Otherwise → use \`text=...\` **for the action**. For a \`get count\` probe, \`text=\` is the wrong tool: \`get count\` takes plain CSS and answers \`0\` for anything else, so a probe written that way reports an element that is plainly there as missing. Probe with \`[aria-label='...']\`, \`[data-testid='...']\`, or a \`find role ... text --name\` instead.
+3. If the element really carries \`aria-label\` → use \`[aria-label='...']\`. Otherwise → use \`text=...\` **for the action**.
+   For a **\`get count\` probe** neither is safe: \`get count\` takes plain CSS and answers \`0\` for anything else, and an \`aria-label\` selector for a name the element does not carry as that attribute counts \`0\` too — both report an element that is plainly there as missing. Probe with \`[data-testid='...']\`, or with \`find role <role> text --name "<accessible name>" --exact\`, which asks the accessibility tree the snapshot came from.
 4. For links where \`text=\` fails, find the link's URL in the snapshot and use \`a[href*='...']\` with a distinctive substring.
 5. For checkboxes: try \`check "text=Label"\` or \`check "[aria-label='Label']"\`.
 6. If repeated labels make every ALLOWED selector ambiguous → use the \`find\` subset above.

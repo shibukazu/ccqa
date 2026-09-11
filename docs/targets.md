@@ -562,6 +562,15 @@ the shape that fails; a `role=` one is asked by name but left in the route
 exactly as recorded, and an *interaction* written `click "text=…"` is left
 alone too, because that one does work.
 
+The same holds for an accessible name written as an attribute. A recorder
+reads `combobox "Category *"` off a snapshot and writes
+`[aria-label='Category *']`, but a name can come from an associated `<label>`
+or from `aria-labelledby`, in which case there is no such attribute and the
+count is zero. An attribute selector that counted nothing is therefore asked of
+the accessibility tree the name came from, and where a node carries it the
+route keeps the role and name — which the replay and the generated test then
+probe with the same `find role … text --name … --exact`.
+
 **When a replay says an element is missing and you can see it.** Open the same
 session and compare three answers: `agent-browser --session <name> snapshot`
 for the accessibility tree, `get count "<the recorded selector>"`, and `get
