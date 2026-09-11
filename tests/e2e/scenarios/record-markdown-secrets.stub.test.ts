@@ -141,10 +141,10 @@ describe("ccqa record — a markdown case whose credentials come from envFiles",
     expect(generated).toContain("// step 1: Open the sign-in page");
     expect(generated).toContain("// cleanup 1: Delete the created note");
     // The project's own helper, and the guard assigned where the note was made.
-    expect(generated).toContain("ccqaRunId = runId();");
-    expect(generated).toContain("if (!ccqaCreated) return;");
+    expect(generated).toContain("uniqueValue = runId();");
+    expect(generated).toContain("if (!createdSomething) return;");
     const body = generated.split("\n").map((l) => l.trim());
-    expect(body.indexOf("ccqaCreated = true;")).toBe(
+    expect(body.indexOf("createdSomething = true;")).toBe(
       body.findIndex((l) => l.includes(`name: "Create"`)) + 1,
     );
     expect(generated).not.toContain(EMAIL);

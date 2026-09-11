@@ -6,6 +6,8 @@ import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
 import { caseRunDir, clearCaseRun, loadPromptBundle } from "../store/index.ts";
+import { formatEmittedReview, reviewEmittedFiles } from "./emitted-review.ts";
+import { isExpandedActionStep } from "../spec/expand.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import {
   buildLlmFixPrompt,
@@ -515,7 +517,7 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
       // breaks the project's type check or lint cannot be merged, and finding
       // that out in review costs another round trip. Run those here, where the
       // fix loop can still act on the output.
-      const checks = await runCheckCommands(p.ctx);
+      const checks = (await runCheckCommands(p.ctx)) ?? reviewOfEmitted(p.ctx, state);
       // What is on disk is this attempt's, and this attempt passed.
       if (checks === null) return true;
       result = checks;
@@ -609,6 +611,39 @@ async function runCheckCommands(
     if (result.exitCode !== 0) return { ...result, command };
   }
   return null;
+}
+
+/**
+ * The mechanical read of what this attempt wrote, shaped like a failed check
+ * so the fix loop carries it the same way.
+ *
+ * After the project's own commands, not instead of them: code that does not
+ * compile has a more urgent problem than how it reads, and a fix pass given
+ * both at once tends to answer the smaller one.
+ */
+function reviewOfEmitted(
+  ctx: GenerateContext,
+  state: FileState,
+): { exitCode: number; output: string; command: string } | null {
+  const findings = reviewEmittedFiles({
+    files: new Map([...state].map(([rel, f]) => [rel, f.contents])),
+    caseText: [
+      ...[...ctx.steps, ...ctx.cleanup].flatMap((s) =>
+        isExpandedActionStep(s) ? [s.instruction, s.expected] : [s.judgeByLlm],
+      ),
+      ...ctx.expectations,
+      ...ctx.cleanupExpectations,
+    ],
+  });
+  if (findings.length === 0) return null;
+  // Said here as well as handed to the fix pass: a run whose generation kept
+  // failing should show what it was failing on, not only that it did.
+  for (const f of findings) log.warn(`${f.file}:${f.line} [${f.rule}] ${f.message}`);
+  return {
+    exitCode: 1,
+    command: "ccqa: review of the generated code",
+    output: formatEmittedReview(findings),
+  };
 }
 
 /**

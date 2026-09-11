@@ -55,14 +55,17 @@ export interface PlaywrightEmitInput {
   japanese?: boolean;
 }
 
-/** Variable the emitted test holds its unique value in. */
-const RUN_ID_VAR = "ccqaRunId";
+/**
+ * Names the emitted test declares. The project maintains this file from here
+ * on, so they say what they hold rather than which tool wrote them.
+ */
+const RUN_ID_VAR = "uniqueValue";
 /**
  * Flag the `afterEach` guards on. Separate from {@link RUN_ID_VAR}, which is
  * assigned at the top of the test because the steps type it: a guard on that
  * one would be true before anything had been created.
  */
-const CREATED_VAR = "ccqaCreated";
+const CREATED_VAR = "createdSomething";
 /** Environment variable the recording carries a unique value as. */
 const RUN_ID_ENV = "CCQA_RUN_ID";
 /** What the recording holds where a run's unique value went. */
@@ -282,31 +285,36 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   // parameter lands in the generated file.
   const testParams = judgements.length > 0 ? "{ page }, testInfo" : "{ page }";
 
-  const declaration = scoped
-    ? [
-        `test.describe(${j(testName)}, () => {`,
-        // Declared here so `afterEach` can read them, assigned per attempt so
-        // one attempt's value never leaks into the next. `ccqaCreated` flips
-        // where the route created something, so an attempt that failed before
-        // that point cleans nothing up.
-        ...(runId ? [`  let ${RUN_ID_VAR}: string | undefined;`] : []),
-        ...(guarded ? [`  let ${CREATED_VAR} = false;`] : []),
-        ...(runId ? [""] : []),
-        `  test(${j(title)}, async (${testParams}) => {`,
-        indent(testLines, 4),
-        "  });",
-        ...(cleanupLines.length > 0
-          ? [
-              "",
-              "  test.afterEach(async ({ page }) => {",
-              ...(guarded ? [`    if (!${CREATED_VAR}) return;`] : []),
-              indent(cleanupLines, 4),
-              "  });",
-            ]
-          : []),
-        "});",
-      ]
-    : [`test(${j(title)}, async (${testParams}) => {`, indent(testLines, 2), "});"];
+  // No `test.describe`. One case is one test in one file, so a describe here
+  // could only be named after the test it contains — which reads as "X › X"
+  // in every report — and the variables it used to scope sit just as well at
+  // the top of the file.
+  //
+  // Declared outside the test so `afterEach` can read them, assigned per
+  // attempt so one attempt's value never leaks into the next.
+  // `createdSomething` flips where the route created something, so an attempt
+  // that failed before that point cleans nothing up.
+  const declaration = [
+    ...(scoped
+      ? [
+          ...(runId ? [`let ${RUN_ID_VAR}: string | undefined;`] : []),
+          ...(guarded ? [`let ${CREATED_VAR} = false;`] : []),
+          "",
+        ]
+      : []),
+    `test(${j(title)}, async (${testParams}) => {`,
+    indent(testLines, 2),
+    "});",
+    ...(cleanupLines.length > 0
+      ? [
+          "",
+          `test.afterEach(${j(cleanupTitle(input.cleanup?.stepMarkers, japanese))}, async ({ page }) => {`,
+          ...(guarded ? [`  if (!${CREATED_VAR}) return;`] : []),
+          indent(cleanupLines, 2),
+          "});",
+        ]
+      : []),
+  ];
 
   const source = [
     ...(input.header ? [input.header.trimEnd(), ""] : []),
@@ -563,22 +571,37 @@ function waitToLine(action: RecordedAction, locator: string | null): string | nu
   return `await ${locator}${pick}.waitFor();`;
 }
 
+/**
+ * What the undo is called in the report. The case's own first cleanup
+ * sentence where it has one — a hook named for what it takes back is the one
+ * thing a reader of a failing report needs from it.
+ */
+function cleanupTitle(cleanup: readonly StepMarker[] | undefined, japanese: boolean): string {
+  const first = cleanup?.find((m) => m.text?.trim())?.text?.trim().split("\n")[0]?.trim();
+  if (first) return first;
+  return japanese ? "後処理" : "clean up what the test created";
+}
+
 function assertToLine(action: RecordedAction, locator: string | null): string | null {
   // Like the agent-browser emitter: the LLM may put the expectation text in
   // `observation` instead of `value`.
   const value = action.value ?? action.observation;
   const comment = action.observation ? `// Assert: ${action.observation}` : null;
-  // Element asserts come from `get count`-style probes, whose semantic is
-  // "at least one such element" — `.first()` keeps that valid under strict
-  // mode when several match (unless an explicit index pick already applied).
-  const pick = action.index === undefined ? ".first()" : "";
+  // No `.first()` here, unlike the actions above.
+  //
+  // The probe these come from answers "at least one such element", and
+  // narrowing to the first match reproduces that faithfully — while asserting
+  // almost nothing: it holds wherever the string appears, including on the
+  // element the case did not mean. Strict mode failing on an ambiguous
+  // locator is the more useful outcome, because it says which locator needs
+  // scoping and the fix pass can scope it. An explicit index pick is a
+  // decision the recording made and stays.
+  const pick = action.index === undefined ? "" : "";
 
   let assertLine: string | null = null;
   switch (action.assert) {
     case "text_visible":
-      // `.first()`: the recorded semantic is "the text is visible somewhere".
-      if (value)
-        assertLine = `await expect(page.getByText(${jExpr(value)}).first()).toBeVisible();`;
+      if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toBeVisible();`;
       break;
     case "text_not_visible":
       if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toHaveCount(0);`;

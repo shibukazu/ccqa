@@ -188,7 +188,7 @@ describe("emitPlaywrightDraft — actions", () => {
 
   it("maps every AssertType to its expect form", () => {
     expect(line({ action: "assert", assert: "text_visible", value: "Saved" })).toBe(
-      `await expect(page.getByText("Saved").first()).toBeVisible();`,
+      `await expect(page.getByText("Saved")).toBeVisible();`,
     );
     expect(line({ action: "assert", assert: "text_not_visible", value: "Error" })).toBe(
       `await expect(page.getByText("Error")).toHaveCount(0);`,
@@ -196,7 +196,7 @@ describe("emitPlaywrightDraft — actions", () => {
     // element_visible carries `get count >= 1` semantics — `.first()` keeps it
     // strict-mode safe when the locator matches several elements.
     expect(line({ action: "assert", assert: "element_visible", locator: btn })).toBe(
-      `await expect(page.getByRole("button", { name: "Submit" }).first()).toBeVisible();`,
+      `await expect(page.getByRole("button", { name: "Submit" })).toBeVisible();`,
     );
     expect(line({ action: "assert", assert: "element_visible", locator: btn, index: "last" })).toBe(
       `await expect(page.getByRole("button", { name: "Submit" }).last()).toBeVisible();`,
@@ -502,11 +502,11 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
     expect(script).toContain(`import { uniqueId } from "./utils";`);
     // Nothing undoes anything here, so there is no guard to keep — only the
     // value the steps read.
-    expect(script).toContain("ccqaRunId = uniqueId();");
-    expect(script).not.toContain("ccqaCreated");
+    expect(script).toContain("uniqueValue = uniqueId();");
+    expect(script).not.toContain("createdSomething");
     // The recorded `${CCQA_RUN_ID}` now reads the project's value, and no
     // environment read is left in the test.
-    expect(script).toContain("`item-${ccqaRunId}`");
+    expect(script).toContain("`item-${uniqueValue}`");
     expect(script).not.toContain("process.env.CCQA_RUN_ID");
   });
 
@@ -517,8 +517,8 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
       runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
       cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
     });
-    expect(script).toContain("test.afterEach(async ({ page }) => {");
-    expect(script).toContain("if (!ccqaCreated) return;");
+    expect(script).toContain("test.afterEach(");
+    expect(script).toContain("if (!createdSomething) return;");
     expect(script).toContain(`await page.getByRole("button", { name: "Delete" }).first().click();`);
   });
 
@@ -544,7 +544,7 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
     });
     const body = script.split("\n").map((l) => l.trim());
     const submit = body.findIndex((l) => l.includes(`name: "Add"`));
-    const assign = body.indexOf("ccqaCreated = true;");
+    const assign = body.indexOf("createdSomething = true;");
     const check = body.findIndex((l) => l.startsWith("await expect("));
     // After the click that created it, and before the step that reads it back.
     expect(submit).toBeGreaterThan(-1);

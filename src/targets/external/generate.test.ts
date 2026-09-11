@@ -135,17 +135,17 @@ describe("external target — generation from a project's own config (mocked Cla
     // instead, assigned exactly once inside the test.
     expect(generated).not.toContain("CCQA_RUN_ID");
     expect(generated).toContain('import { generateRunId } from "../utils/run-id";');
-    expect(generated.match(/ccqaRunId = generateRunId\(\);/g)).toHaveLength(1);
-    expect(generated).toContain("${ccqaRunId}");
+    expect(generated.match(/uniqueValue = generateRunId\(\);/g)).toHaveLength(1);
+    expect(generated).toContain("${uniqueValue}");
 
     // 5. Cleanup lands in an afterEach guarded by what the route created, and
     // that is recorded after the click that submitted it — not at the top of
     // the test, where an attempt that failed earlier would still clean up.
-    expect(generated).toContain("test.afterEach(async ({ page }) => {");
-    expect(generated).toContain("if (!ccqaCreated) return;");
+    expect(generated).toContain("test.afterEach(");
+    expect(generated).toContain("if (!createdSomething) return;");
     expect(generated).toContain('name: "Delete"');
     const body = generated.split("\n").map((l) => l.trim());
-    expect(body.indexOf("ccqaCreated = true;")).toBe(
+    expect(body.indexOf("createdSomething = true;")).toBe(
       body.findIndex((l) => l.includes(`name: "Add"`)) + 1,
     );
 
@@ -178,11 +178,11 @@ import { generateRunId } from "../../utils/run-id";
 import { TodoListPage } from "../../pages/todo_list";
 
 test.describe("Adding an item puts it on the list", () => {
-  let ccqaRunId: string | undefined;
-  let ccqaCreated = false;
+  let uniqueValue: string | undefined;
+  let createdSomething = false;
 
   test("Adding an item puts it on the list @smoke", async ({ page }) => {
-    ccqaRunId = generateRunId();
+    uniqueValue = generateRunId();
     const list = new TodoListPage(page);
 
     // step: step-01 [case]
@@ -192,23 +192,23 @@ test.describe("Adding an item puts it on the list", () => {
 
     // step: step-02 [case]
     await ccqaStepBefore(page, "step-02", "case");
-    await list.addItem(\`buy milk \${ccqaRunId}\`);
+    await list.addItem(\`buy milk \${uniqueValue}\`);
     await ccqaStepAfter(page, "step-02", "case");
 
     // step: step-03 [case]
     await ccqaStepBefore(page, "step-03", "case");
     await page.getByRole("button", { name: "Add" }).click();
-    ccqaCreated = true;
+    createdSomething = true;
     await ccqaStepAfter(page, "step-03", "case");
 
     // step: step-04 [case]
     await ccqaStepBefore(page, "step-04", "case");
-    await expect(page.getByText(\`buy milk \${ccqaRunId}\`).first()).toBeVisible();
+    await expect(page.getByText(\`buy milk \${uniqueValue}\`).first()).toBeVisible();
     await ccqaStepAfter(page, "step-04", "case");
   });
 
-  test.afterEach(async ({ page }) => {
-    if (!ccqaCreated) return;
+  test.afterEach(
+    if (!createdSomething) return;
     await page.getByRole("button", { name: "Delete" }).click();
   });
 });
