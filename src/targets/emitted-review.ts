@@ -80,6 +80,11 @@ const CONTAINER =
  * A name that says "one of the things in a list" built from a match against
  * the whole page. It finds the string anywhere — a heading, a toast, another
  * row — so what it proves is not what its name claims.
+ *
+ * The message names the shapes that fix it, because the first version said
+ * only "scope it" and the fix pass answered with `page.locator("div")` filtered
+ * by the same text and narrowed with `.last()` — page-wide still, and now
+ * resting on which match the DOM happens to put last.
  */
 function containerOfPageText(file: string, source: string): EmittedFinding[] {
   const all = lines(source);
@@ -93,7 +98,13 @@ function containerOfPageText(file: string, source: string): EmittedFinding[] {
       file,
       line: i + 1,
       rule: "unscoped-container",
-      message: `\`${m[1]}\` is named for one element among others but matches text anywhere on the page. Scope it to the row/cell it means`,
+      message:
+        `\`${m[1]}\` is named for one element among others, but matches that text anywhere on the page — ` +
+        `a heading or a toast carrying it satisfies this too. Address the element itself: the role it has ` +
+        `(\`getByRole("row"|"listitem"|"article"|...)\` narrowed with \`.filter({ hasText })\`), or its test id. ` +
+        `Where the page offers neither, scope from a container this page object already addresses — ` +
+        `searching the whole page for a bare \`div\` and taking \`.first()\`/\`.last()\` is not scoping, ` +
+        `it only picks whichever the DOM happens to order that way.`,
     }];
   });
 }
