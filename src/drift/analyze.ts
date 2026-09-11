@@ -11,6 +11,7 @@ import { normalizeDiagnosis } from "../report/schema.ts";
 import type { AvailableBlock } from "../store/index.ts";
 import type { SourceRoot } from "../config/source-roots.ts";
 import {
+  caseWriteArea,
   collectCaseArtifacts,
   loadSpecArtifactsContext,
   type SpecArtifactsContext,
@@ -18,6 +19,7 @@ import {
 import { runPool } from "../runtime/pool.ts";
 import { writeAuditInputs } from "./dump-inputs.ts";
 import { buildLocatorInventory, checkLocatorVerdicts } from "./locator-candidates.ts";
+import { correctSurface } from "./write-roots.ts";
 import { verifyCitations } from "./verify-citations.ts";
 import { caseIdOf, DriftReplySchema, type SpecResult, type SpecTarget } from "./types.ts";
 import * as log from "../cli/logger.ts";
@@ -224,6 +226,13 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
         drift.evidence = await verifyCitations(drift.evidence, {
           headline: drift.headline,
           roots: [...opts.sourceRoots.map((r) => r.abs), opts.cwd],
+        });
+        // Resolved here rather than up front: it costs two reads, and only a
+        // finding that reached this point can need them.
+        correctSurface(drift, {
+          cwd: opts.cwd,
+          sourceRoots: opts.sourceRoots.map((r) => r.abs),
+          ...(await caseWriteArea(target, opts.cwd, opts.context)),
         });
       }
       return { target, ok: true, drift, live: artifacts.live, title: artifacts.title };

@@ -152,7 +152,9 @@ async function repairRoute(
   if (drift.surface !== "generated") {
     return {
       route: "external",
-      reason: "the finding is on the document, which a regeneration reads rather than rewrites",
+      reason:
+        "the finding is not on the generated test — the document, or a file the test imports and " +
+        "a regeneration only reads. Either way, regenerating rewrites neither",
     };
   }
   const recording = await getRecording(refOf(result.target, cwd)).catch(() => null);

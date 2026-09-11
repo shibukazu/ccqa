@@ -40,6 +40,11 @@ export function quotedStrings(text: string): string[] {
 }
 
 /** `path:line` split into its halves, or null when there is no line to check. */
+/** The path half of a `path:line` citation, or the whole of one with no line. */
+export function citedPath(file: string): string {
+  return splitCitation(file)?.path ?? file;
+}
+
 function splitCitation(file: string): { path: string; line: number } | null {
   const m = /^(.*):(\d+)$/.exec(file);
   const line = m ? Number.parseInt(m[2]!, 10) : NaN;

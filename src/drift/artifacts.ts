@@ -176,6 +176,32 @@ export async function caseTestPath(
   return abs === null ? null : relative(cwd, abs);
 }
 
+/**
+ * Where this case's test lands, and where its target lets ccqa write.
+ *
+ * Together because they answer one question — which files a finding about this
+ * case could be repaired by regenerating it — and because resolving the target
+ * once is what keeps the two consistent for a spec that names a non-default one.
+ */
+export async function caseWriteArea(
+  target: SpecTarget,
+  cwd: string,
+  ctx: SpecArtifactsContext,
+): Promise<{ testPath: string | null; writeRoots: readonly string[] }> {
+  const testPath = await caseTestPath(target, cwd, ctx);
+  if (target.caseId !== undefined) {
+    return { testPath, writeRoots: ctx.intentTarget?.targetConfig.writeRoots ?? [] };
+  }
+  const specYaml = await readSpecFile(target.featureName, target.specName, cwd).catch(() => null);
+  if (specYaml === null) return { testPath, writeRoots: [] };
+  try {
+    const resolved = resolveTarget(parseTestSpec(specYaml), ctx.config);
+    return { testPath, writeRoots: targetConfigFor(ctx.config, resolved.id).writeRoots };
+  } catch {
+    return { testPath, writeRoots: [] };
+  }
+}
+
 function describe(specYaml: string): { live: boolean; title: string | null } {
   try {
     const spec = parseTestSpec(specYaml);
