@@ -253,9 +253,21 @@ describe("promoteMarkedAssert", () => {
     expect(promoteMarkedAssert("AB_ACTION|get_count|[aria-label='Settings']", "element_visible")).toEqual([
       { action: "assert", assert: "element_visible", locator: { by: "css", value: "[aria-label='Settings']" } },
     ]);
+    // `get count` takes plain CSS and answers 0 for anything else, so a
+    // `text=` probe is recorded as the text locator it is.
     expect(promoteMarkedAssert("AB_ACTION|get_count|text=Deleted item", "element_not_visible")).toEqual([
-      { action: "assert", assert: "element_not_visible", locator: { by: "css", value: "text=Deleted item" } },
+      { action: "assert", assert: "element_not_visible", locator: { by: "text", value: "Deleted item" } },
     ]);
+  });
+
+  // An interaction is left alone: `click "text=…"` works, and the `find text`
+  // a `by: "text"` locator would replay through measurably does not.
+  test("an interaction's text= locator stays a css one", () => {
+    expect(promoteMarkedAssert("AB_ACTION|click|text=Next|Next", "url_contains:/dashboard")?.[0]).toEqual({
+      action: "click",
+      locator: { by: "css", value: "text=Next" },
+      label: "Next",
+    });
   });
 
   test("url_contains on a recorded command APPENDS the assert after the action", () => {

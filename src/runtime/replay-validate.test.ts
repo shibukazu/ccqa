@@ -523,6 +523,109 @@ describe("validateActions — an element the page has not rendered yet", () => {
   });
 });
 
+describe("validateActions (a css locator that is not css)", () => {
+  const textAssert = (): RecordedAction => ({
+    action: "assert",
+    assert: "element_visible",
+    locator: { by: "css", value: "text=Add ${WHAT}" },
+    stepId: "step-01",
+  });
+
+  // Measured against agent-browser 0.34: on a page whose a11y tree showed the
+  // button, `get count "button"` answered 12 while `get count "text=…"`,
+  // `role=…` and `:has-text(…)` all answered 0 — not an error, a zero, which
+  // reads as absence. `wait --text` found it.
+  test("a text= value is asked as a text wait, and the route keeps that form", () => {
+    process.env["WHAT"] = "content";
+    replyBy((argv) => (argv.includes("count") ? COUNT_ABSENT : OK));
+    const actions = [textAssert()];
+    const { kept, dropped, promoted } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(dropped).toEqual([]);
+    expect(kept.length).toBe(1);
+    // The string is kept as recorded — the resolved value belongs to this
+    // replay, never to the route.
+    expect(actions[0]!.locator).toEqual({ by: "text", value: "Add ${WHAT}" });
+    expect(promoted?.[0]).toContain("text=Add ${WHAT}");
+    // Never counted: `get count` would have answered 0 for it.
+    expect(mockedSpawnAB.mock.calls.some((c) => c[0]!.includes("count"))).toBe(false);
+    // ...and the wait it was asked with saw the resolved value.
+    const waits = mockedSpawnAB.mock.calls.filter((c) => c[0]!.includes("--text"));
+    expect(waits[0]![0]).toContain("Add content");
+  });
+
+  const roleAssert = (): RecordedAction => ({
+    action: "assert",
+    assert: "element_visible",
+    locator: { by: "css", value: 'role=button[name="Add content"]' },
+    stepId: "step-01",
+  });
+
+  // Asked by name, and left in the route exactly as recorded: `locatorToSelector`
+  // renders a role locator as the bare role, so saving one would have codegen
+  // emit `abAssertVisible("button")` — an assertion any page with a button
+  // passes.
+  test("a role= value is asked by role and name, and is not written into the route", () => {
+    replyBy(() => OK);
+    const actions = [roleAssert()];
+    validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(actions[0]!.locator).toEqual({ by: "css", value: 'role=button[name="Add content"]' });
+    const found = mockedSpawnAB.mock.calls.find((c) => c[0]!.includes("find"))![0];
+    expect(found).toEqual([
+      "--session", SESSION, "find", "role", "button", "text", "--name", "Add content", "--exact",
+    ]);
+  });
+
+  test("a role the page does not have is a failure, not a pass", () => {
+    replyBy((argv) => (argv.includes("find") ? FAIL : OK));
+    const { dropped } = validateActions([roleAssert()], { sessionName: SESSION, mode: "strict" });
+    expect(dropped.length).toBe(1);
+  });
+
+  // A fallback that made everything pass would be worse than none.
+  test("text the page really does not have is still a failure", () => {
+    replyBy((argv) => (argv.includes("--text") ? FAIL : OK));
+    const { dropped } = validateActions([textAssert()], { sessionName: SESSION, mode: "strict" });
+    expect(dropped.length).toBe(1);
+  });
+
+  // Not countable and not convertible: saying "absent" would be inventing an
+  // answer `get count`'s zero never gave.
+  test("notation this cannot convert is unverifiable rather than absent", () => {
+    replyBy((argv) => (argv.includes("count") ? COUNT_ABSENT : OK));
+    const actions: RecordedAction[] = [{
+      action: "assert",
+      assert: "element_visible",
+      locator: { by: "css", value: 'internal:label="Email"i' },
+      stepId: "step-01",
+    }];
+    const { kept, dropped } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(dropped).toEqual([]);
+    expect(kept.length).toBe(1);
+  });
+
+  // `click "text=…"` replays exactly as written; the `find text` a text locator
+  // would send it through measurably does not find the element.
+  test("an interaction's text= locator is left exactly as recorded", () => {
+    replyBy(() => OK);
+    const actions: RecordedAction[] = [
+      { action: "click", locator: { by: "css", value: "text=Next" }, stepId: "step-01" },
+    ];
+    validateActions(actions, { sessionName: SESSION, mode: "strict" });
+    expect(actions[0]!.locator).toEqual({ by: "css", value: "text=Next" });
+    expect(mockedSpawnAB.mock.calls.some((c) => c[0]!.includes("find"))).toBe(false);
+  });
+
+  test("plain css is still counted", () => {
+    replyBy((argv) => (argv.includes("count") ? COUNT_PRESENT : OK));
+    validateActions(
+      [{ action: "assert", assert: "element_visible", locator: css("[data-x]"), stepId: "step-01" }],
+      { sessionName: SESSION, mode: "strict" },
+    );
+    expect(mockedSpawnAB.mock.calls.some((c) => c[0]!.includes("count"))).toBe(true);
+    expect(mockedSpawnAB.mock.calls.some((c) => c[0]!.includes("--text"))).toBe(false);
+  });
+});
+
 describe("validateActions (label → role fallback)", () => {
   const labelFill = (): RecordedAction => ({
     action: "fill",

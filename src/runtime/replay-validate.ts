@@ -1,8 +1,9 @@
 import { spawnAB, sleepSync } from "./spawn-ab.ts";
 import { resolveEnvRefs } from "./env-vars.ts";
-import { locatorToSelector, toAgentBrowserArgs } from "../ir/to-agent-browser.ts";
+import { describeLocator, locatorToSelector, toAgentBrowserArgs } from "../ir/to-agent-browser.ts";
 import type { RecordedAction } from "../ir/types.ts";
 import { collapseUrlPath } from "../ir/url-path.ts";
+import { OPAQUE, parseNotation } from "../ir/playwright-notation.ts";
 
 /**
  * Some actions can't be validated by a single `agent-browser` argv because
@@ -27,16 +28,25 @@ const SELECTOR_POLL_INTERVAL_MS = 500;
 
 /** Poll `get count <selector>` until it matches (>=1) or the timeout elapses. */
 function runPollCheck(check: PollCheck, sessionName: string): { ok: boolean; reason: string } {
+  const present = (selector: string): number => {
+    const r = spawnAB(["--session", sessionName, "get", "count", selector]);
+    return r.status === 0 ? Number.parseInt(r.stdout.trim(), 10) : NaN;
+  };
   const deadline = Date.now() + check.timeoutMs;
-  for (;;) {
-    const r = spawnAB(["--session", sessionName, "get", "count", check.selector]);
-    const count = r.status === 0 ? Number.parseInt(r.stdout.trim(), 10) : NaN;
+  // One past the intervals that fit, so the last probe lands at the deadline
+  // rather than an interval short of the budget the failure message quotes.
+  const rounds = attemptsFor(check.timeoutMs, SELECTOR_POLL_INTERVAL_MS) + 1;
+  let count = NaN;
+  for (let round = 0; ; round++) {
+    count = present(check.selector);
     if (!Number.isNaN(count) && count > 0) return { ok: true, reason: "" };
-    if (Date.now() >= deadline) {
-      return { ok: false, reason: `selector not present within ${check.timeoutMs}ms (get count returned ${Number.isNaN(count) ? "error" : count})` };
-    }
+    if (round + 1 >= rounds || Date.now() >= deadline) break;
     sleepSync(SELECTOR_POLL_INTERVAL_MS);
   }
+  return {
+    ok: false,
+    reason: `selector not present within ${check.timeoutMs}ms (get count returned ${Number.isNaN(count) ? "error" : count})`,
+  };
 }
 
 /**
@@ -103,9 +113,10 @@ export interface ValidationResult {
    */
   rescuedSteps?: string[];
   /**
-   * Locators the label fallback rewrote, as `before → after`. Reported rather
-   * than applied silently: the recording now says the route was driven a way
-   * the trace did not describe, and a reader must be able to see that.
+   * Locators the replay rewrote, as `before → after` — the label fallback's,
+   * and the ones named for what they address. Reported rather than applied
+   * silently: the recording now says the route was driven a way the trace did
+   * not describe, and a reader must be able to see that.
    */
   promoted?: string[];
 }
@@ -121,8 +132,12 @@ export function isCascadeReason(reason: string | undefined): boolean {
 const SHORT_TIMEOUT_MS = 5_000;
 const ASSERT_TIMEOUT_MS = 10_000;
 const INTERACTION_POLL_INTERVAL_MS = 250;
-/** Bounds the poll when `sleepSync` is stubbed and the clock never moves. */
-const INTERACTION_ATTEMPTS = ASSERT_TIMEOUT_MS / INTERACTION_POLL_INTERVAL_MS;
+const INTERACTION_ATTEMPTS = attemptsFor(ASSERT_TIMEOUT_MS, INTERACTION_POLL_INTERVAL_MS);
+
+/** Bounds a poll when `sleepSync` is stubbed and the clock never moves. */
+function attemptsFor(timeoutMs: number, intervalMs: number): number {
+  return Math.max(1, Math.ceil(timeoutMs / intervalMs));
+}
 
 /**
  * Convert one recorded action into the `agent-browser` arg list that would
@@ -189,6 +204,48 @@ export function actionToAbArgs(
   }
 }
 
+/**
+ * Presence asked the way the locator addresses the element. `null` is
+ * unverifiable rather than absent: a count from a selector the engine never
+ * parsed is not evidence.
+ *
+ * `find role … text` names the action on purpose — `find role … --name` with
+ * no action clicks the element it finds.
+ */
+/**
+ * `--exact` because `--name` matches by substring, and a locator recorded as
+ * `role=button[name="Log in"]` must not be cleared by a "Log in with SSO".
+ * `text` names the action: `find role … --name` with none clicks what it finds.
+ */
+function roleProbe(base: string[], role: string, name: string): string[] {
+  return [...base, "find", "role", role, "text", "--name", name, "--exact"];
+}
+
+function presenceCheck(
+  locator: RecordedAction["locator"],
+  selector: string,
+  sub: (s: string | undefined) => string,
+  base: string[],
+): string[] | PollCheck | null {
+  if (locator?.by === "text") {
+    return [...base, "wait", "--text", sub(locator.value), "--timeout", String(ASSERT_TIMEOUT_MS)];
+  }
+  if (locator?.by === "role" && locator.name) {
+    return roleProbe(base, sub(locator.value), sub(locator.name));
+  }
+  if (locator !== undefined && locator.by !== "css") return null;
+  const named = parseNotation(selector);
+  if (named === OPAQUE) return null;
+  // A recorded `role=` selector: asked by name, never counted, and never
+  // rewritten into the route (see `nameNotation`).
+  if (named !== null && named.by === "role" && named.name) {
+    return roleProbe(base, sub(named.value), sub(named.name));
+  }
+  if (named !== null) return null;
+  // `wait <css-selector>` ignores --timeout and blocks; poll instead.
+  return { kind: "poll-present", selector, timeoutMs: ASSERT_TIMEOUT_MS };
+}
+
 function assertToAbArgs(
   action: RecordedAction,
   sub: (s: string | undefined) => string,
@@ -210,9 +267,7 @@ function assertToAbArgs(
       // after a click. Trust the codegen output for this case.
       return null;
     case "element_visible":
-      if (!sel) return null;
-      // `wait <css-selector>` ignores --timeout and blocks; poll instead.
-      return { kind: "poll-present", selector: sel, timeoutMs: ASSERT_TIMEOUT_MS };
+      return sel ? presenceCheck(action.locator, sel, sub, base) : null;
     case "element_not_visible":
       // Same vacuous-truth concern as text_not_visible.
       return null;
@@ -228,8 +283,10 @@ function assertToAbArgs(
       // is meaningless. The replay loop runs the *whole* action list in
       // order, so by the time we hit one of these, the page is in the
       // right state. Validate the selector exists at all via a presence poll.
-      if (!sel || sel.startsWith("text=") || sel.startsWith("[aria-label=")) return null;
-      return { kind: "poll-present", selector: sel, timeoutMs: ASSERT_TIMEOUT_MS };
+      // Only a plain-CSS presence poll: a text or role locator proves the
+      // element exists, never what state it is in.
+      if (!sel || action.locator?.by !== "css" || sel.startsWith("[aria-label=")) return null;
+      return presenceCheck(action.locator, sel, sub, base);
     default:
       return null;
   }
@@ -396,6 +453,32 @@ function runInteraction(
 }
 
 /**
+ * Say what a `by: "css"` locator that is not CSS actually addresses.
+ *
+ * `get count` answers 0 for Playwright's notation instead of failing, so a
+ * route holding one reads as dead. Rewritten in place, and reported, so the
+ * saved route carries the form that replays rather than the one that counts
+ * nothing. Notation this cannot convert leaves the locator alone; the assert
+ * path then treats it as unverifiable rather than absent.
+ */
+function nameNotation(action: RecordedAction): string | null {
+  const loc = action.locator;
+  // Assertions only. An interaction recorded as `click "text=…"` replays
+  // exactly as written, and the `find text` form a text locator would send it
+  // through measurably does not find the element.
+  if (action.action !== "assert" || loc?.by !== "css") return null;
+  const named = parseNotation(loc.value);
+  // Text only. `locatorToSelector` renders a role locator as the bare role, so
+  // saving one would have codegen emit `abAssertVisible("button")` — an
+  // assertion that passes on any page with a button. A role selector is asked
+  // by name for this replay and left in the route exactly as recorded, where
+  // it stays the visible failure it already was.
+  if (named === null || named === OPAQUE || named.by !== "text") return null;
+  action.locator = named;
+  return `${loc.value} is not a CSS selector — asked as ${describeLocator(named)}`;
+}
+
+/**
  * Replay one recorded action against the validation session. Element-presence
  * checks go through `runPollCheck` (which uses `get count`, never the blocking
  * `wait <selector>`); everything else spawns the agent-browser argv.
@@ -476,7 +559,13 @@ export function validateActions(
       dropped.push({ index: i, action, reason: CASCADE_REASON });
       continue;
     }
+    // Before the argv is built: a `by: "css"` value that is not CSS would go to
+    // `get count`, which answers 0 for it rather than failing.
+    const named = nameNotation(action);
     const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides, patience);
+    // Only what replayed: "rewritten to the form that replays" is a claim, and
+    // an action that then failed did not earn it.
+    if (named !== null && outcome.ok) promoted.push(named);
     if (outcome.promoted) promoted.push(outcome.promoted);
     if (outcome.skipped) {
       kept.push(action);

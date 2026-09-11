@@ -164,7 +164,7 @@ CCQA_STEP=<step-id> agent-browser --session SESSION upload "<input[type=file] se
 | Format | Use when |
 |--------|----------|
 | \`[aria-label='label']\` | Element has aria-label (check snapshot output) — **FIRST CHOICE** |
-| \`text=visible text\` | Unique visible text, no aria-label |
+| \`text=visible text\` | Unique visible text, no aria-label — for **actions**. Not for a \`get count\` probe: see step 3. |
 | \`[placeholder='text']\` | Input identified by placeholder |
 | \`[type='password']\` | Password inputs only |
 | \`a[href*='pattern']\` | Links where \`text=\` fails — use the URL pattern from the ARIA snapshot |
@@ -175,7 +175,7 @@ CCQA_STEP=<step-id> agent-browser --session SESSION upload "<input[type=file] se
 - \`@ref\` / \`@e1\` / \`e14\` — reference IDs are session-specific and change every run.
 - **Bare tag selectors**: \`button\`, \`a\`, \`div\`, \`td\`, \`tr\`, \`main a\`, \`table tbody tr:nth-child(N)\`. These match every element of that tag and are non-deterministic on replay. **This includes the inner selector inside \`find first/last/nth\`** — see the \`find\` rules below.
 - \`[role='button']\` or \`[type='checkbox']\` alone — matches too many elements.
-- **Playwright-only pseudo-classes**: \`:has-text()\`, \`:text-is()\`, \`:text-matches()\`, \`:visible\`. agent-browser's CSS engine does not implement them — they match nothing and every command using them fails. Use \`text=...\` or plain CSS instead.
+- **Playwright-only pseudo-classes**: \`:has-text()\`, \`:text-is()\`, \`:text-matches()\`, \`:visible\`. agent-browser's CSS engine does not implement them. They do not error — \`get count\` answers \`0\` and \`find\` reports no element — so a test using one fails while looking like the page lost the element. Use \`text=...\` or plain CSS instead.
 - JavaScript execution (\`eval\`, \`js\`) — blocked by the hook layer.
 
 ### \`find\` subset (fallback when no ALLOWED CSS uniquely targets the element)
@@ -216,7 +216,7 @@ find nth <index> "<ALLOWED-css>" <action>
 
 1. Run \`snapshot\` and read the ARIA tree.
 2. Identify the element; note its exact \`aria-label\` if present.
-3. If aria-label present → use \`[aria-label='...']\`. Otherwise → use \`text=...\`.
+3. If aria-label present → use \`[aria-label='...']\`. Otherwise → use \`text=...\` **for the action**. For a \`get count\` probe, \`text=\` is the wrong tool: \`get count\` takes plain CSS and answers \`0\` for anything else, so a probe written that way reports an element that is plainly there as missing. Probe with \`[aria-label='...']\`, \`[data-testid='...']\`, or a \`find role ... text --name\` instead.
 4. For links where \`text=\` fails, find the link's URL in the snapshot and use \`a[href*='...']\` with a distinctive substring.
 5. For checkboxes: try \`check "text=Label"\` or \`check "[aria-label='Label']"\`.
 6. If repeated labels make every ALLOWED selector ambiguous → use the \`find\` subset above.

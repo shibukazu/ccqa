@@ -546,6 +546,32 @@ line in the log saying so. It applies only where the element's role is not in
 doubt: a `fill` or a `type` is a textbox, a `check` is a checkbox, and a
 labelled `click` could be any of several things, so it is left as a failure.
 
+The other repair is about how a locator was written down. **`agent-browser get
+count` takes plain CSS and nothing else — handed Playwright's own notation
+(`text=`, `role=`, `:has-text()`, `internal:`) it answers `0` rather than
+failing**, and a zero reads as an element that is not there. An
+`element_visible` assertion recorded as `text=<string>` is checked with `get
+count`, so a page that plainly shows the string reported a dead route.
+
+An assertion whose locator is not CSS is therefore asked the way it addresses
+the element — `wait --text`, or `find role … text --name --exact` — rather than
+counted. Notation that cannot be converted, and one that names nothing, are
+reported as **unverifiable** rather than absent. Recording stores a `text=`
+probe as a text locator at the source, so a case recorded from here never takes
+the shape that fails; a `role=` one is asked by name but left in the route
+exactly as recorded, and an *interaction* written `click "text=…"` is left
+alone too, because that one does work.
+
+**When a replay says an element is missing and you can see it.** Open the same
+session and compare three answers: `agent-browser --session <name> snapshot`
+for the accessibility tree, `get count "<the recorded selector>"`, and `get
+count "<some tag the page certainly has>"` — the last as a probe only, never as
+a selector to record. The element in the snapshot with its own selector at zero
+and the generic one at many is a selector-form problem, and no amount of
+waiting changes it. The element missing from the snapshot, or a generic count
+of zero, is the session: wrong page, wrong tenant, or a sign-in that did not
+restore.
+
 When an action does fail, the report names the one that failed rather than the
 size of its wake: everything after it in the same step is not replayed at all,
 and is counted as such.
