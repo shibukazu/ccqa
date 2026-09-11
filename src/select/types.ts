@@ -58,6 +58,12 @@ export const SelectReportSchema = z.object({
    * root — so this never reports a false positive.
    */
   uncoveredFiles: z.array(z.string()).default([]),
+  /**
+   * How many changed files `coverage.exclude` kept out of the comparison. A
+   * count, not a list: the patterns are in the config, and what matters here
+   * is that a range whose only changes were excluded cleared every spec.
+   */
+  excludedFiles: z.number().int().nonnegative().default(0),
 });
 export type SelectReport = z.infer<typeof SelectReportSchema>;
 

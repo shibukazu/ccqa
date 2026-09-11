@@ -9,7 +9,7 @@ describe("specsToRun", () => {
       { featureName: "checkout", specName: "apply-coupon", verdict: "notNeeded", source: "mechanical", reason: "", testPath: "" },
       { featureName: "checkout", specName: "refund", verdict: "unknown", source: "coverage", reason: "", testPath: "" },
     ];
-    const report: SelectReport = { base: "a", head: "b", changedFiles: 1, specs, uncoveredFiles: [] };
+    const report: SelectReport = { base: "a", head: "b", changedFiles: 1, specs, uncoveredFiles: [], excludedFiles: 0 };
 
     expect(specsToRun(report).map((s) => s.specName)).toEqual(["purchase-with-card", "refund"]);
   });

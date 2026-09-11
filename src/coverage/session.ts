@@ -24,6 +24,7 @@ import * as log from "../cli/logger.ts";
 import { CoverageSink } from "./sink.ts";
 import type { RunEventInbox } from "./inbox.ts";
 import { startBrowserCoverage, type StoredSourceMapReader, type BrowserCoverageHandle } from "./browser/engine.ts";
+import { makeCoverageExcluder, type CoverageExcluder } from "./exclude.ts";
 import { enumerateUniverse, type CoverageUniverse } from "./universe.ts";
 import { FRONTEND_COVERAGE_FILE, GAP_SAMPLES, type FrontendCoverage } from "./contract.ts";
 
@@ -76,6 +77,8 @@ function resolveAbsoluteOrigins(origins: readonly string[], label: string): stri
 export class CoverageSession {
   private readonly existing = new Map<string, boolean>();
   private readonly fetchStoredSourceMap: StoredSourceMapReader | undefined;
+  /** `coverage.exclude`: files left out of the answer, both halves of it. */
+  private readonly excluded: CoverageExcluder;
 
   /**
    * Undefined in hub mode: nothing binds on the runner, and every read-side
@@ -124,6 +127,7 @@ export class CoverageSession {
     assetOrigins: readonly string[],
     universe: CoverageUniverse | undefined,
     fetchStoredSourceMap: StoredSourceMapReader | undefined,
+    excluded: CoverageExcluder,
   ) {
     this.sink = sink;
     this.inbox = inbox;
@@ -135,6 +139,7 @@ export class CoverageSession {
     this.assetOrigins = assetOrigins;
     this.universe = universe;
     this.fetchStoredSourceMap = fetchStoredSourceMap;
+    this.excluded = excluded;
   }
 
   static async start(options: CoverageSessionOptions): Promise<CoverageSession> {
@@ -158,10 +163,11 @@ export class CoverageSession {
     // Enumerated at start, not at close: the envelope that carries it is built
     // before the first spec runs (the incremental report), and the tree cannot
     // change mid-run — the run owns this checkout for its duration.
+    const excluded = makeCoverageExcluder(options.config.exclude);
     const universe =
       options.config.include === undefined
         ? undefined
-        : await enumerateUniverse(root, options.config.include, (text) => log.warn(text));
+        : await enumerateUniverse(root, options.config.include, (text) => log.warn(text), excluded);
     if (options.inbox !== undefined && universe !== undefined) {
       await options.inbox.append({
         kind: "universe",
@@ -183,6 +189,7 @@ export class CoverageSession {
       // carry it — the stream is the record.
       options.inbox === undefined ? universe : undefined,
       options.fetchStoredSourceMap,
+      excluded,
     );
   }
 
@@ -194,6 +201,15 @@ export class CoverageSession {
   async linkHubRun(hubRunId: string): Promise<void> {
     if (this.inbox === undefined) return;
     await this.inbox.append({ kind: "run-link", runId: this.runId, hubRunId });
+  }
+
+  /**
+   * `coverage.exclude` applied. Public because hub mode's application pushes
+   * go straight to the stream, so the hub's resolve comes back holding files
+   * this run alone knows the project excluded.
+   */
+  measurable(files: readonly string[]): string[] {
+    return files.filter((file) => !this.excluded(file));
   }
 
   /** Where the local sink listens. Hub mode binds nothing, so there is no URL. */
@@ -306,9 +322,12 @@ export class CoverageSession {
     const inProject = await this.keepExisting(frontend?.files ?? []);
     const kept = new Set(inProject);
     const outsideProject = (frontend?.files ?? []).filter((f) => !kept.has(f));
-    const files = new Set<string>([...(backend ?? []), ...inProject]);
+    // The file set only. The counts and gaps around it answer "did this half
+    // report anything", which an exclusion must not be able to turn into a no:
+    // the files were reached and placed, they just carry no selection signal.
+    const files = this.measurable([...(backend ?? []), ...inProject]);
     return {
-      files: [...files].sort(),
+      files: [...new Set(files)].sort(),
       frontendFiles: inProject.length,
       backendFiles: backend?.size ?? 0,
       backendReported: sink.heardFromApplication(),
@@ -414,7 +433,8 @@ export class CoverageSession {
     if (frontend !== undefined) {
       // The existence check is part of resolving the browser half, and only
       // the run holds the checkout to resolve against.
-      const files = [...new Set(await this.keepExisting(frontend.files))].sort();
+      const reached = this.measurable(await this.keepExisting(frontend.files));
+      const files = [...new Set(reached)].sort();
       await inbox.append({ kind: "browser", runId: this.runId, specId, files });
     }
     await inbox.append({ kind: "spec-close", runId: this.runId, specId });

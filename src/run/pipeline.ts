@@ -1225,15 +1225,25 @@ export async function executeRun(
     // whose application half never reported records nothing: its rows hold
     // only the browser's reach, and now that entries never expire, merging
     // them would shadow a fuller earlier measurement for good.
+    // Passing specs only: a spec that failed reached a prefix of its route,
+    // and stored as its reach that clears it against all the rest.
     if (coverage && hubCtx != null) {
       if (coverage.streamsToHub) {
-        await upsertMeasuredEdges(hubCtx, streamedEdges);
+        const passed = new Set(
+          report.results
+            .filter((row) => row.status === "passed")
+            .map((row) => `${row.feature}/${row.spec}`),
+        );
+        await upsertMeasuredEdges(
+          hubCtx,
+          Object.fromEntries(Object.entries(streamedEdges).filter(([key]) => passed.has(key))),
+        );
       } else if (hubRunId != null && coverage.heardFromApplication()) {
         await upsertMeasuredEdges(
           hubCtx,
           Object.fromEntries(
             report.results
-              .filter((row) => (row.coverage?.files.length ?? 0) > 0)
+              .filter((row) => row.status === "passed" && (row.coverage?.files.length ?? 0) > 0)
               .map((row) => [`${row.feature}/${row.spec}`, { files: row.coverage!.files }]),
           ),
         );
@@ -1518,10 +1528,15 @@ async function reportStreamedCoverageHealth(
   // A resolve whose application half never reported holds only the browser's
   // reach — see the merge gate at the call site.
   if (!h.heardFromApplication) return {};
+  // The stream is the record and the hub holds no config, so the resolve comes
+  // back with the application's own pushes unfiltered; `coverage.exclude` is
+  // applied here, where the run's config lives, before the ledger is written.
   return Object.fromEntries(
     measured.flatMap((spec) => {
       const key = specKeyFromSpecId(spec.specId, resolved.runId);
-      return key === null ? [] : [[key, { files: spec.files, runId: resolved.runId }]];
+      if (key === null) return [];
+      const files = coverage.measurable(spec.files);
+      return files.length === 0 ? [] : [[key, { files, runId: resolved.runId }]];
     }),
   );
 }

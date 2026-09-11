@@ -32,7 +32,7 @@ describe("renderPaths", () => {
 
   function report(specs: SpecSelection[]): SelectReport {
     // uncoveredFiles carries a marker so a test can assert it never leaks into paths output.
-    return { base: "a", head: "b", changedFiles: 0, specs, uncoveredFiles: ["should-not-print.ts"] };
+    return { base: "a", head: "b", changedFiles: 0, specs, uncoveredFiles: ["should-not-print.ts"], excludedFiles: 0 };
   }
 
   it("prints one deduplicated test path per selected spec, in report order, and drops notNeeded/empty ones", () => {

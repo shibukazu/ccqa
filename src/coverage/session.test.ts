@@ -31,11 +31,12 @@ let coverageDir: string;
 let events: RunEvent[];
 const inbox = { append: async (event: RunEvent): Promise<void> => void events.push(event) };
 
-function config(include?: readonly string[]): CoverageConfig {
+function config(include?: readonly string[], exclude: readonly string[] = []): CoverageConfig {
   return {
     instrumentedOrigins: ["http://127.0.0.1:9"],
     sink: "http://127.0.0.1:4757",
     ...(include ? { include: [...include] } : {}),
+    exclude: [...exclude],
     actors: {},
   };
 }
@@ -92,6 +93,38 @@ describe("CoverageSession in hub-inbox mode", () => {
     ]);
     // Every event must be valid against the frozen wire schema.
     for (const event of events) RunEventSchema.parse(event);
+  });
+
+  // An aggregate every spec reaches is measured correctly and says nothing
+  // about which spec to run, so it leaves neither as reach nor as a gap.
+  test("coverage.exclude keeps its files out of both the browser event and the universe", async () => {
+    await mkdir(join(root, "src", "generated"), { recursive: true });
+    await writeFile(join(root, "src", "generated", "client.ts"), "export {};\n");
+    const session = await CoverageSession.start({
+      runId: "run-1",
+      cwd: root,
+      config: config(["src"], ["src/generated/**"]),
+      specs: [REF],
+      inbox,
+    });
+
+    await session.beginSpec(REF);
+    const frontend: FrontendCoverage = {
+      specId: SPEC_ID,
+      files: ["src/app.ts", "src/generated/client.ts"],
+      unmappedScripts: 0,
+      unmappedRanges: 0,
+      unresolvedSources: 0,
+      unresolvedSamples: [],
+      excludedDependencies: 0,
+      stopped: false,
+    };
+    await writeFile(join(coverageDir, FRONTEND_COVERAGE_FILE), JSON.stringify(frontend));
+    await session.collect(REF, coverageDir);
+    await session.close();
+
+    expect(events.find((e) => e.kind === "universe")).toMatchObject({ files: ["src/app.ts"] });
+    expect(events.find((e) => e.kind === "browser")).toMatchObject({ files: ["src/app.ts"] });
   });
 
   test("without a universe, actors or a browser result, only the spec markers leave", async () => {

@@ -1,6 +1,7 @@
 import { relative, resolve } from "node:path";
 import * as log from "../cli/logger.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
+import { makeCoverageExcluder, type CoverageExcluder } from "../coverage/exclude.ts";
 import { resolveRoot } from "../coverage/session.ts";
 import { execFileP, type ChangedFile } from "../drift/affected.ts";
 import { parseBlockPath, specKey } from "../store/index.ts";
@@ -70,6 +71,7 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
 
   const undecided = specs.filter((s) => !byKey.has(specKey(s)));
   let uncoveredFiles: string[] = [];
+  let excludedFiles = 0;
 
   if (productChanges.length === 0) {
     // Nothing outside `.ccqa/` moved, so no product behaviour can have
@@ -92,6 +94,7 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
     const judged = await judgeWithCoverage({ pending: undecided, productChanges, cwd, repo, edges });
     for (const selection of judged.selections) byKey.set(specKey(selection), selection);
     uncoveredFiles = judged.uncoveredFiles;
+    excludedFiles = judged.excludedFiles;
   }
 
   return {
@@ -103,6 +106,7 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
     // flatMap over a possible miss is cheaper to reason about than asserting it.
     specs: specs.flatMap((s) => byKey.get(specKey(s)) ?? []),
     uncoveredFiles,
+    excludedFiles,
   };
 }
 
@@ -202,6 +206,8 @@ interface JudgeInput {
 interface JudgeResult {
   selections: SpecSelection[];
   uncoveredFiles: string[];
+  /** Changed files `coverage.exclude` kept out of the comparison. */
+  excludedFiles: number;
 }
 
 /**
@@ -233,14 +239,18 @@ async function judgeWithCoverage(input: JudgeInput): Promise<JudgeResult> {
   const { edges, degraded } = input.edges;
 
   const unreadable = "the hub's measured reach could not be read; not guessing";
-  const roots = await resolveCoverageRoots(productChanges, cwd, repo);
-  const measuredChanges = rerootChangesForCoverage(productChanges, roots);
+  const { roots, excluded } = await resolveCoverageSettings(productChanges, cwd, repo);
+  const inRoot = rerootChangesForCoverage(productChanges, roots);
+  // A file `coverage.exclude` names is reached by every spec and so tells
+  // selection nothing; the root checks below still answer for all of them.
+  const compared = inRoot.filter((c) => !excluded(c.measured));
+  const excludedFiles = inRoot.length - compared.length;
 
   // Not a verdict changer, deliberately: the measured root is the declared
   // boundary of what measurement governs, and changes beyond it clear specs
   // the same way any unreached file does. Loud in the log rather than the
   // verdicts — a root configured too narrow produces exactly this shape.
-  const dropped = productChanges.length - measuredChanges.length;
+  const dropped = productChanges.length - inRoot.length;
   if (dropped > 0) {
     log.warn(
       `select-specs: ${dropped} of ${productChanges.length} changed files fall outside ` +
@@ -250,7 +260,7 @@ async function judgeWithCoverage(input: JudgeInput): Promise<JudgeResult> {
   // A total drop means the intersection below would run against nothing, so
   // a spec with a measured edge would clear vacuously — "reached none of the
   // changed files" when no file could actually be checked against it.
-  const totalDrop = productChanges.length > 0 && measuredChanges.length === 0;
+  const totalDrop = productChanges.length > 0 && inRoot.length === 0;
   const rootMismatch =
     "every changed file fell outside coverage.projectRoot; the comparison could not be made, not guessing";
 
@@ -271,7 +281,7 @@ async function judgeWithCoverage(input: JudgeInput): Promise<JudgeResult> {
       };
     }
     if (totalDrop) return unknownSelection(spec, rootMismatch);
-    const touchedBy = measuredChanges.filter((c) => edge.files.has(c.measured)).map((c) => c.original);
+    const touchedBy = compared.filter((c) => edge.files.has(c.measured)).map((c) => c.original);
     if (touchedBy.length > 0) {
       return {
         featureName: spec.featureName,
@@ -296,18 +306,18 @@ async function judgeWithCoverage(input: JudgeInput): Promise<JudgeResult> {
   // Degraded reach can't tell "no spec reached this" from "we couldn't read
   // any spec's reach" — reporting it as uncovered here would be exactly the
   // false positive the verdict side already refuses to guess at above.
-  const uncoveredFiles = degraded ? [] : uncoveredProductFiles(measuredChanges, edges);
+  const uncoveredFiles = degraded ? [] : uncoveredProductFiles(compared, edges);
 
-  return { selections, uncoveredFiles };
+  return { selections, uncoveredFiles, excludedFiles };
 }
 
-/** Measured changes (already confined to the coverage root) touched by no spec's edge, by original path. */
-function uncoveredProductFiles(measuredChanges: MeasuredChange[], edges: CoverageEdges): string[] {
+/** Compared changes (inside the coverage root, not excluded) touched by no spec's edge, by original path. */
+function uncoveredProductFiles(compared: MeasuredChange[], edges: CoverageEdges): string[] {
   const reached = new Set<string>();
   for (const edge of edges.values()) {
     for (const file of edge.files) reached.add(file);
   }
-  return measuredChanges.filter((c) => !reached.has(c.measured)).map((c) => c.original);
+  return compared.filter((c) => !reached.has(c.measured)).map((c) => c.original);
 }
 
 function unknownSelection(spec: SpecDescription, reason: string): SpecSelection {
@@ -337,9 +347,15 @@ export interface MeasuredChange {
  * outside the coverage root is dropped — the measurement drops those files
  * too, so it could never intersect an edge.
  */
+export interface CoverageRoots {
+  cwd: string;
+  repoRoot: string | null;
+  coverageRoot: string;
+}
+
 export function rerootChangesForCoverage(
   changed: readonly ChangedFile[],
-  roots: { cwd: string; repoRoot: string | null; coverageRoot: string },
+  roots: CoverageRoots,
 ): MeasuredChange[] {
   const out: MeasuredChange[] = [];
   for (const file of changed) {
@@ -371,11 +387,11 @@ export function rerootChangesForCoverage(
  * rejects fails here too. Resolving it any other way would silently re-root
  * every path somewhere the measurement never stored files under.
  */
-async function resolveCoverageRoots(
+async function resolveCoverageSettings(
   changed: readonly ChangedFile[],
   cwd: string,
   repo: string,
-): Promise<{ cwd: string; repoRoot: string | null; coverageRoot: string }> {
+): Promise<{ roots: CoverageRoots; excluded: CoverageExcluder }> {
   const config = await loadProjectConfig(cwd);
   const coverageRoot = (await resolveRoot(cwd, config.coverage?.projectRoot)) ?? resolve(cwd);
   let repoRoot: string | null = null;
@@ -388,5 +404,8 @@ async function resolveCoverageRoots(
       // re-root skips them.
     }
   }
-  return { cwd: resolve(repo), repoRoot, coverageRoot };
+  return {
+    roots: { cwd: resolve(repo), repoRoot, coverageRoot },
+    excluded: makeCoverageExcluder(config.coverage?.exclude),
+  };
 }

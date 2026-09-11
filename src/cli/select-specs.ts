@@ -226,6 +226,11 @@ function renderText(report: SelectReport): string {
     lines.push("", `uncovered (${report.uncoveredFiles.length})`);
     for (const file of report.uncoveredFiles) lines.push(`  ${file}`);
   }
+  // Said, because it is the difference between "no spec reaches this" and
+  // "the project declared this file's changes carry no signal".
+  if (report.excludedFiles > 0) {
+    lines.push("", `excluded by coverage.exclude (${report.excludedFiles})`);
+  }
   const toRun = specsToRun(report).length;
   lines.push("", `${toRun} of ${report.specs.length} spec(s) to run (needed + unknown)`, "");
   return lines.join("\n");

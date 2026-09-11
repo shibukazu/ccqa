@@ -346,6 +346,13 @@ export const CoverageConfigSchema = z
      * and the hub's tree shows reached files only.
      */
     include: z.array(z.string().min(1)).optional(),
+    /**
+     * Globs (relative to `projectRoot`) whose files leave the answer: not
+     * recorded as reached, not part of the universe, and never held against a
+     * diff by `ccqa select-specs`. For aggregates every spec truthfully
+     * reaches, which therefore select the whole suite; see docs/coverage.md.
+     */
+    exclude: z.array(z.string().min(1)).default([]),
     /** Specs whose flows are attributed by who acted, not by what the request carried. */
     actors: CoverageActorsSchema.default({}),
   })

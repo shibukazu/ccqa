@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import type { ChangedFile } from "../drift/affected.ts";
 import { parseSpecDirPath, rerootChangesForCoverage, selectSpecs } from "./analyze.ts";
 import type { CoverageEdgesReadout } from "./coverage-edges.ts";
@@ -383,5 +386,61 @@ describe("rerootChangesForCoverage", () => {
       },
     );
     expect(out).toEqual([{ original: "src/a.ts", measured: "src/a.ts" }]);
+  });
+});
+
+describe("selectSpecs: coverage.exclude", () => {
+  let dir: string;
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A project whose config excludes the one file every screen imports. */
+  async function project(): Promise<string> {
+    dir = await mkdtemp(join(tmpdir(), "ccqa-select-exclude-"));
+    await mkdir(join(dir, ".ccqa"), { recursive: true });
+    await writeFile(
+      join(dir, ".ccqa/config.yaml"),
+      [
+        "coverage:",
+        "  instrumentedOrigins:",
+        "    - http://127.0.0.1:9",
+        "  exclude:",
+        "    - src/generated/**",
+      ].join("\n"),
+    );
+    return dir;
+  }
+
+  it("does not let an excluded file select a spec, count as uncovered, or hide the rest", async () => {
+    const cwd = await project();
+    const specs = [spec("checkout", "purchase-with-card"), spec("checkout", "apply-coupon")];
+    const changed = [file("src/generated/client.ts"), file("src/checkout/pay.ts")];
+    const edges = edgesOf({
+      // Both specs reach the generated file; only one reaches the real change.
+      "checkout/purchase-with-card": ["src/generated/client.ts", "src/checkout/pay.ts"],
+      "checkout/apply-coupon": ["src/generated/client.ts"],
+    });
+
+    const report = await selectSpecs({ changed, specs, cwd, base: "main", head: "HEAD", edges });
+
+    const purchase = report.specs.find((s) => s.specName === "purchase-with-card")!;
+    expect(purchase.verdict).toBe("needed");
+    expect(purchase.touchedBy).toEqual(["src/checkout/pay.ts"]);
+    expect(report.specs.find((s) => s.specName === "apply-coupon")!.verdict).toBe("notNeeded");
+    expect(report.uncoveredFiles).toEqual([]);
+    expect(report.excludedFiles).toBe(1);
+  });
+
+  it("clears every spec when the only changes were excluded, rather than calling the comparison impossible", async () => {
+    const cwd = await project();
+    const specs = [spec("checkout", "purchase-with-card")];
+    const changed = [file("src/generated/client.ts")];
+    const edges = edgesOf({ "checkout/purchase-with-card": ["src/generated/client.ts"] });
+
+    const report = await selectSpecs({ changed, specs, cwd, base: "main", head: "HEAD", edges });
+
+    expect(report.specs[0]!.verdict).toBe("notNeeded");
+    expect(report.excludedFiles).toBe(1);
   });
 });
