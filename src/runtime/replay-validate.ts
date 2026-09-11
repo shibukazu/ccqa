@@ -2,6 +2,7 @@ import { spawnAB, sleepSync } from "./spawn-ab.ts";
 import { resolveEnvRefs } from "./env-vars.ts";
 import { locatorToSelector, toAgentBrowserArgs } from "../ir/to-agent-browser.ts";
 import type { RecordedAction } from "../ir/types.ts";
+import { collapseUrlPath } from "../ir/url-path.ts";
 
 /**
  * Some actions can't be validated by a single `agent-browser` argv because
@@ -176,7 +177,14 @@ export function actionToAbArgs(
     default: {
       const tokens = toAgentBrowserArgs(action);
       if (tokens === null) return null;
-      return [...base, ...tokens.map((t) => sub(t.text))];
+      // A route recorded before the record side normalised these still holds
+      // `${BASE}/path` against a base that already ends in one, and the product
+      // answers the doubled form differently. Harmless on the verb beside it,
+      // which has no authority to collapse after.
+      const resolve = action.action === "navigate"
+        ? (text: string): string => collapseUrlPath(sub(text))
+        : sub;
+      return [...base, ...tokens.map((t) => resolve(t.text))];
     }
   }
 }
