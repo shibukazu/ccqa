@@ -22,9 +22,12 @@ describe("renderHeader", () => {
     );
   });
 
-  it("drops a line whose placeholders are all empty, and keeps a partly-filled one", () => {
+  // A partly-filled line reads as a reference and resolves to nothing: a
+  // template ending `&range={link.ref}:{link.ref}` rendered `&range=:` for a
+  // case with no row, which is a worse header than no header line at all.
+  it("drops a line any of whose placeholders is empty", () => {
     const out = renderHeader(template, { case: "todo/add_item", "link.ref": "1030" });
-    expect(out).toBe(["// case: todo/add_item", "// sheet:  row 1030"].join("\n"));
+    expect(out).toBe("// case: todo/add_item");
   });
 });
 

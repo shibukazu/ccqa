@@ -18,14 +18,20 @@ export type HeaderValues = Record<string, string | undefined>;
 const PLACEHOLDER = /\{([a-zA-Z][\w.]*)\}/g;
 
 /**
- * Fill a header template. A line whose placeholders are all empty is dropped:
- * a case with no sheet link should not ship a comment saying `// sheet:`.
+ * Fill a header template. A line is dropped unless every placeholder on it
+ * has a value.
+ *
+ * All-or-nothing, because a partly-filled line is worse than a missing one:
+ * a case with no sheet row rendered `// sheet: <url>&range=:`, a reference
+ * that looks like one and resolves to nothing. What a header is for is being
+ * followed back to the case, and a line nobody can follow fails at that more
+ * quietly than a line that is not there.
  */
 export function renderHeader(template: string, values: HeaderValues): string {
   const kept: string[] = [];
   for (const line of template.split("\n")) {
     const refs = [...line.matchAll(PLACEHOLDER)];
-    if (refs.length > 0 && refs.every((m) => !values[m[1]!])) continue;
+    if (refs.some((m) => !values[m[1]!])) continue;
     kept.push(line.replaceAll(PLACEHOLDER, (_m, key: string) => values[key] ?? ""));
   }
   return kept.join("\n").trim();
