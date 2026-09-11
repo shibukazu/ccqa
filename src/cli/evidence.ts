@@ -99,7 +99,7 @@ export const evidenceCommand = addLanguageOption(
   withUsageErrors(
     async (
       caseArgument: string,
-      opts: { out?: string; target?: string; reportDir?: string; cwd?: string },
+      opts: { out?: string; target?: string; reportDir?: string; cwd?: string; language?: string },
     ) => {
       const cwd = resolveCwd(opts.cwd);
       const config = await loadProjectConfig(cwd);
@@ -148,6 +148,7 @@ export const evidenceCommand = addLanguageOption(
         test: { path: testPath, source },
         screenshots: await stepScreenshots(cwd, opts.reportDir, testCase, dirname(out)),
         labels: config.evidence.labels,
+        ...(opts.language ? { language: opts.language } : {}),
         ...(review ? { review } : {}),
         ...(anchors ? { anchors } : {}),
       });

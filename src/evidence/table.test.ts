@@ -279,13 +279,34 @@ describe("renderEvidence — what the table folds away", () => {
     expect(markdown).toContain("<details><summary>1 not confirmed in the product's source</summary>`Notes` — ambiguous");
   });
 
-  it("prints the words the project asked for", () => {
+  it("prints the headings the project asked for", () => {
     const markdown = renderEvidence({
       ...base,
-      labels: { step: "手順", decides: "テストが判定していること", nothing: "判定なし" },
+      labels: { step: "手順", decides: "テストが判定していること" },
     });
     expect(markdown).toContain("| 手順 | What the case says |");
     expect(markdown).toContain("テストが判定していること");
+  });
+
+  // What the table concludes is ccqa's to word: a project that could rewrite
+  // it could make a step nothing checks read as one that passed.
+  it("translates its own verdicts, which the project cannot reword", () => {
+    const markdown = renderEvidence({ ...base, language: "ja" });
     expect(markdown).toContain("**判定なし**");
+    expect(markdown).toContain("| 手順 | テストケースの記述 |");
+    expect(markdown).toContain("この手順を判定しているものが、生成されたテストに見当たりません");
+  });
+
+  // Missing attribution is not evidence about when something happened.
+  it("keeps an action with no step apart from the ones marked as pre-step work", () => {
+    const markdown = renderEvidence({
+      ...base,
+      recording: {
+        ...base.recording,
+        actions: [...base.recording.actions, { action: "snapshot", observation: "stray" }],
+      },
+    });
+    expect(markdown).toContain("Before the first step:");
+    expect(markdown).toContain("Recorded under no step of the case:");
   });
 });

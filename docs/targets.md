@@ -490,8 +490,9 @@ a generation that never passed leaves none. Beside `runs/`, not inside it: a
 project gitignores `runs/`, and a review table linking into it would resolve to
 nothing once pasted into a pull request.
 
-The table's own words — its headings, `nothing`, the Review section — are
-English by default and can be put in the language the reviewers read:
+The table is written in the run's `--language`, so a Japanese project gets a
+Japanese table without configuring anything. Its **headings** can also be put
+in the project's own vocabulary:
 
 ```yaml
 # .ccqa/config.yaml
@@ -499,12 +500,15 @@ evidence:
   labels:
     step: 手順
     decides: テストが判定していること
-    nothing: 判定なし
 ```
 
 Only the keys the table prints are accepted, so a misspelt one is a config
-error rather than a setting that silently does nothing. The case's own text is
-already the project's; these are the words around it.
+error rather than a setting that silently does nothing.
+
+What the table *concludes* is not among them. `nothing`, and the Review
+section's wording, are ccqa's own and translated by ccqa: a project able to
+reword them could make a step nothing checks read as one that passed, and the
+table is read by people who did not write that config.
 
 With [`sourceRoots`](./running.md#sourceroots--where-the-product-actually-lives)
 configured, a **Where the source says so** column is added: each test id,

@@ -6,7 +6,7 @@ import * as log from "../cli/logger.ts";
 import { verifiesSpecPrompt } from "../prompts/verifies-spec.ts";
 import { isExpandedActionStep, type ExpandedStep } from "../spec/expand.ts";
 import { assertionsByStep } from "../evidence/table.ts";
-import { EVIDENCE_LABELS, type EvidenceLabels } from "../evidence/labels.ts";
+import { evidenceLabels, type EvidenceLabels } from "../evidence/labels.ts";
 import type { GenerateResult } from "./types.ts";
 import type { InvokeFn } from "./llm-engine.ts";
 
@@ -53,7 +53,7 @@ export const NOTHING_DECIDED =
  * for nothing. A step deciding nothing is its own explanation, so only the
  * model's own words are worth appending.
  */
-export function formatFinding(finding: SpecCoverageFinding, labels: EvidenceLabels = EVIDENCE_LABELS): string {
+export function formatFinding(finding: SpecCoverageFinding, labels: EvidenceLabels = evidenceLabels()): string {
   const nothing = finding.problem === NOTHING_DECIDED;
   const claim = nothing ? labels.findingNothing : labels.findingUndecided;
   return `${finding.stepId}: ${claim}${nothing ? "" : ` — ${finding.problem}`}`;

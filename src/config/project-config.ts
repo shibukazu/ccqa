@@ -363,11 +363,11 @@ export type CoverageConfig = z.infer<typeof CoverageConfigSchema>;
 /**
  * The evidence table a reviewer reads instead of the generated test.
  *
- * `labels` puts the table's fixed words in the language its reviewers read —
- * the case's own text is already the project's, and a table half in another
- * language is one a reviewer skims instead of checks. Only the keys the table
- * prints are accepted: an override it would never use is a typo, and ignoring
- * it silently leaves the reader wondering why nothing changed.
+ * `labels` puts the table's headings and furniture in the project's own
+ * vocabulary. Only the keys the table prints are accepted: an override it
+ * would never use is a typo, and ignoring it silently leaves the reader
+ * wondering why nothing changed. What the table *concludes* is not among them
+ * — ccqa owns those words, and translates them itself (`--language`).
  *
  * ```yaml
  * evidence:

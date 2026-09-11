@@ -1,4 +1,4 @@
-import type { RecordedAction } from "../ir/types.ts";
+import { SETUP_STEP_ID, type RecordedAction } from "../ir/types.ts";
 import type { Recording } from "../store/index.ts";
 import type { TestCase } from "../intent/case.ts";
 import { describeAction } from "../ir/route-diff.ts";
@@ -9,7 +9,7 @@ import {
   NOTHING_DECIDED,
   type SpecCoverageFinding,
 } from "../targets/verifies-spec.ts";
-import { evidenceLabels, type EvidenceLabels } from "./labels.ts";
+import { evidenceLabels, type EvidenceLabelKey, type EvidenceLabels } from "./labels.ts";
 import type { SourceAnchors, SourceNeedle } from "./source-anchors.ts";
 
 /**
@@ -63,8 +63,10 @@ export interface EvidenceInput {
    * misreport an unsearched project as a searched-and-empty one.
    */
   anchors?: SourceAnchors;
-  /** `evidence.labels`: the table's fixed words, in the reviewers' language. */
-  labels?: Partial<EvidenceLabels>;
+  /** `evidence.labels`: the table's headings, in the project's own vocabulary. */
+  labels?: Partial<Record<EvidenceLabelKey, string>>;
+  /** The run's `--language`, which picks ccqa's own words for the table. */
+  language?: string;
 }
 
 /** Assertion lines a reviewer can check without reading the whole file. */
@@ -167,7 +169,7 @@ const FOLD_OVER = 2;
 
 /** The evidence as markdown — a fragment, for whoever assembles the PR body. */
 export function renderEvidence(input: EvidenceInput): string {
-  const labels = evidenceLabels(input.labels);
+  const labels = evidenceLabels(input.labels, input.language);
   const steps = buildEvidenceSteps(input);
   const anchors = input.anchors;
   const lines = [
@@ -180,10 +182,13 @@ export function renderEvidence(input: EvidenceInput): string {
     "",
   ];
   // Signing in and reaching the first screen belong to no step of the case,
-  // and inside one they double its row. Anything the recorder could not
-  // attribute lands here too, rather than disappearing.
-  const before = unattributedActions(input, steps);
-  if (before.length > 0) lines.push(`${labels.setup}: ${fold(before, labels)}`, "");
+  // and inside one they double its row. An action the recorder could not
+  // attribute is shown too, but apart: missing attribution says nothing about
+  // when it happened, and calling it pre-step work would claim an order
+  // nobody recorded.
+  for (const [label, actions] of outsideTheCase(input, steps, labels)) {
+    lines.push(`${label}: ${fold(actions, labels)}`, "");
+  }
   lines.push(
     `| ${labels.step} | ${labels.instruction} | ${labels.recorded} | ${labels.decides}` +
       (anchors ? ` | ${labels.source}` : "") +
@@ -277,9 +282,21 @@ function fold(entries: readonly string[], labels: EvidenceLabels): string {
   return `<details><summary>${entries.length} ${labels.operations}</summary>${cell(entries.join("<br>"))}</details>`;
 }
 
-/** Recorded actions belonging to no step of the case — signing in, mostly. */
-function unattributedActions(input: EvidenceInput, steps: readonly EvidenceStep[]): string[] {
+/** Recorded actions belonging to no step of the case, kept apart by why. */
+function outsideTheCase(
+  input: EvidenceInput,
+  steps: readonly EvidenceStep[],
+  labels: EvidenceLabels,
+): Array<[string, string[]]> {
   const ofTheCase = new Set(steps.map((step) => step.id));
   const grouped = actionsByStep([...input.recording.actions, ...(input.recording.cleanup ?? [])]);
-  return [...grouped].filter(([id]) => !ofTheCase.has(id)).flatMap(([, actions]) => actions);
+  const setup: string[] = [];
+  const rest: string[] = [];
+  for (const [id, actions] of grouped) {
+    if (!ofTheCase.has(id)) (id === SETUP_STEP_ID ? setup : rest).push(...actions);
+  }
+  const rows: Array<[string, string[]]> = [];
+  if (setup.length > 0) rows.push([labels.setup, setup]);
+  if (rest.length > 0) rows.push([labels.unattributed, rest]);
+  return rows;
 }

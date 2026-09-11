@@ -1,4 +1,5 @@
 import { buildRunId } from "../runtime/live-artifacts.ts";
+import { SETUP_STEP_ID } from "../ir/types.ts";
 
 export function generateSessionName(): string {
   return `ccqa-trace-${buildRunId()}`;
@@ -107,7 +108,7 @@ CCQA_STEP=step-03 agent-browser --session ${sessionName} click "text=Submit"
 This prefix is what ties each recorded action to its step in the generated
 test — a command without it loses its step attribution.
 
-**Anything you do before the first step carries \`CCQA_STEP=setup\`.** Signing
+**Anything you do before the first step carries \`CCQA_STEP=${SETUP_STEP_ID}\`.** Signing
 in, opening the application, putting the account where the precondition says it
 starts — those are not step-01, and marking them as step-01 makes the first
 step of the case look like it does all of it. The next \`CCQA_STEP=\` names the

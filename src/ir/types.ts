@@ -7,6 +7,13 @@
  * `Locator` model.
  */
 
+/**
+ * The step id the recorder marks work that precedes the case's first step —
+ * signing in, reaching the starting screen. Not a step of the case, and not
+ * the same thing as an action it could not attribute at all.
+ */
+export const SETUP_STEP_ID = "setup";
+
 export type AssertType =
   | "text_visible" | "text_not_visible"
   | "element_visible" | "element_not_visible"
