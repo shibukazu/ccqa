@@ -27,31 +27,58 @@ export interface UnresolvedLocator {
 export interface LocatorInventory {
   /** Candidates whose token the product source does render, with where. */
   found: Array<LocatorCandidate & { at: string }>;
-  /** Candidates the search did not find. A shortlist, not a verdict. */
+  /**
+   * Every candidate the search did not find, whatever cut the search short. A
+   * shortlist to answer, not a verdict — and never a place a candidate can
+   * quietly leave, because a candidate outside this list is one the audit is
+   * not asked about, which is the oversight the list exists to prevent.
+   */
   missing: LocatorCandidate[];
   unresolved: UnresolvedLocator[];
   /**
    * Why `missing` is weaker than "the product does not have this": a file the
-   * scan could not read, or a budget it ran out of. Empty when the scan was
-   * complete, and the prompt says so either way.
+   * scan could not read, or a budget it ran out of. Reported beside the list
+   * rather than instead of part of it.
    */
   incomplete: string[];
 }
 
 
-/**
- * Locator calls whose argument is a plain string. The quote style is captured
- * so a matching close quote is required — an argument that is anything else
- * (an identifier, a call, a template holding `${`) falls to `UNREADABLE` and
- * is reported unresolved rather than guessed at.
- */
-const LOCATOR_CALL = /\.\s*(?:locator|getByTestId)\s*\(\s*(["'`])((?:(?!\1)[^\\])*?)\1/g;
-const UNREADABLE = /\.\s*(?:locator|getByTestId)\s*\(\s*(?![\s)"'`])([^),]{1,80})/g;
-const TEMPLATE_CALL = /\.\s*(?:locator|getByTestId)\s*\(\s*`([^`]*\$\{[^`]*)`/g;
+/** A locator call and everything the line has left after it opens. */
+const LOCATOR_CALL = /\.\s*(locator|getByTestId)\s*\(\s*(.*)$/g;
 
 const CLASS_TOKEN = /\.(-?[A-Za-z_][-\w]*)/g;
 const ID_TOKEN = /#(-?[A-Za-z_][-\w]*)/g;
 const TESTID_IN_SELECTOR = /\[\s*data-test-?id\s*[~^$*|]?=\s*["']?([^"'\]]+)/gi;
+
+/**
+ * What a locator call was given: a selector, when the argument is one whole
+ * string literal and nothing else, or the expression that stands where one
+ * would be.
+ *
+ * A literal that is interpolated or concatenated is not a selector — the
+ * string the page sees is assembled at run time — and taking the readable
+ * half for a name invents a candidate the audit is then required to answer
+ * for. Returns null when the line holds nothing worth reporting either way.
+ */
+function readArgument(rest: string): { selector: string | null; expression: string } | null {
+  const quote = rest[0];
+  if (quote !== '"' && quote !== "'" && quote !== "`") {
+    const expression = rest.slice(0, 80).split(/[),]/)[0]!.trim();
+    // A declaration rather than a call — `locator(selector: string)` — and an
+    // empty argument list have no expression to resolve.
+    return expression === "" || expression.includes(":") ? null : { selector: null, expression };
+  }
+  const close = rest.indexOf(quote, 1);
+  if (close === -1) return null;
+  const literal = rest.slice(1, close);
+  const tail = rest.slice(close + 1).trimStart();
+  const interpolated = quote === "`" && literal.includes("${");
+  if (interpolated || tail.startsWith("+")) {
+    return { selector: null, expression: `${quote}${literal}${quote}${tail.startsWith("+") ? " + …" : ""}` };
+  }
+  return { selector: literal, expression: literal };
+}
 
 /**
  * A selector's own class and id syntax lives outside its attribute filters:
@@ -87,27 +114,27 @@ export function locatorsIn(source: string, file: string): {
   for (const [i, line] of lines.entries()) {
     const at = `${file}:${i + 1}`;
     for (const call of line.matchAll(LOCATOR_CALL)) {
-      const selector = call[2] ?? "";
-      const testId = call[0].includes("getByTestId");
-      if (testId) {
+      const argument = readArgument(call[2] ?? "");
+      if (argument === null) continue;
+      if (argument.selector === null) {
+        unresolved.push({ from: at, expression: argument.expression });
+        continue;
+      }
+      const selector = argument.selector;
+      if (call[1] === "getByTestId") {
         if (selector !== "") candidates.push({ kind: "testid", value: selector, selector, from: at });
         continue;
       }
       const bare = outsideAttributes(selector);
-      for (const [regex, source, kind] of [
+      for (const [regex, text, kind] of [
         [CLASS_TOKEN, bare, "class"],
         [ID_TOKEN, bare, "id"],
         [TESTID_IN_SELECTOR, selector, "testid"],
       ] as const) {
-        for (const token of source.matchAll(regex)) {
+        for (const token of text.matchAll(regex)) {
           const value = token[1]!;
           if (value.length >= SHORTEST_TOKEN) candidates.push({ kind, value, selector, from: at });
         }
-      }
-    }
-    for (const regex of [TEMPLATE_CALL, UNREADABLE]) {
-      for (const call of line.matchAll(regex)) {
-        unresolved.push({ from: at, expression: (call[1] ?? "").trim() });
       }
     }
   }
@@ -120,6 +147,8 @@ export interface BuildInventoryInput {
   roots: readonly SourceRoot[];
   /** What `sources`' paths are relative to. */
   cwd: string;
+  /** Per source root. Defaults to `AUDIT_MAX_FILES`; only tests narrow it. */
+  maxFiles?: number;
 }
 
 /**
@@ -161,20 +190,26 @@ export async function buildLocatorInventory(input: BuildInventoryInput): Promise
       // the whole failure this scan exists to close. The walk stops as soon as
       // every token is located, so the full cost is paid only when something
       // really is absent — which is the case worth paying for.
-      maxFiles: AUDIT_MAX_FILES,
+      maxFiles: input.maxFiles ?? AUDIT_MAX_FILES,
     },
   );
 
   const found: LocatorInventory["found"] = [];
   const missing: LocatorCandidate[] = [];
-  const incomplete: string[] = [];
+  const cutShort: string[] = [];
   for (const candidate of candidates) {
     const at = anchors.found.get(candidate.value)?.places[0];
-    if (at !== undefined) found.push({ ...candidate, at });
-    else if (anchors.unsearched.has(candidate.value)) {
-      incomplete.push(`${candidate.kind} ${candidate.value}: the scan stopped before it was looked for`);
-    } else missing.push(candidate);
+    if (at !== undefined) {
+      found.push({ ...candidate, at });
+      continue;
+    }
+    missing.push(candidate);
+    if (anchors.unsearched.has(candidate.value)) cutShort.push(`${candidate.kind} ${candidate.value}`);
   }
+  const incomplete =
+    cutShort.length === 0
+      ? []
+      : [`the scan stopped before it reached everything: ${cutShort.join(", ")}`];
   return { found, missing, unresolved, incomplete };
 }
 

@@ -1,5 +1,7 @@
 import { Command } from "commander";
 import { loadProjectConfig } from "../config/project-config.ts";
+import { rememberHubConfig } from "../config/hub-config.ts";
+import * as log from "./logger.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./run.ts";
@@ -62,11 +64,21 @@ program.addCommand(selectSpecsCommand);
 // Before any subcommand runs, so every command that talks to a hub sees the
 // project's `hub:` block rather than only the ones that happen to read the
 // config first — and against the directory the command was pointed at, which
-// is known by now and is what the command itself will read. A project without
-// a config costs one missing-file read.
+// is known by now and is what the command itself will read.
+//
+// A config that cannot be read stops the command. Ignoring it would leave a
+// hub write addressed by the directory's basename instead of the configured
+// project, which lands in another project's variables and sessions — and a
+// config ccqa rejects is exactly when that happens.
 program.hook("preAction", async (_program, action) => {
   const cwd = (action.opts() as { cwd?: string }).cwd;
-  await loadProjectConfig(typeof cwd === "string" ? cwd : process.cwd()).catch(() => undefined);
+  try {
+    const config = await loadProjectConfig(typeof cwd === "string" ? cwd : process.cwd());
+    rememberHubConfig(config.hub);
+  } catch (err) {
+    log.error(err instanceof Error ? err.message : String(err));
+    process.exit(2);
+  }
 });
 
 await program.parseAsync();

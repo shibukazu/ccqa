@@ -48,7 +48,22 @@ describe("locatorsIn", () => {
       "e2e/pages/rows.ts",
     );
     expect(candidates).toEqual([]);
-    expect(unresolved.map((u) => u.expression)).toEqual(["selectorFromConfig", "row-${id}"]);
+    expect(unresolved.map((u) => u.expression)).toEqual(["selectorFromConfig", "`row-${id}`"]);
+  });
+
+  // Measured: each of these put a name nobody wrote into the list the audit is
+  // required to answer for — a phantom the model then investigates, and whose
+  // absence a reply cannot explain.
+  test("a selector assembled at run time yields no candidate, only an unresolved entry", () => {
+    for (const [line, expression] of [
+      ["page.locator(`.row-${id}`);", "`.row-${id}`"],
+      ["page.getByTestId(`item-${id}`);", "`item-${id}`"],
+      ['page.locator(".row-" + id);', '".row-" + …'],
+    ] as const) {
+      const { candidates, unresolved } = locatorsIn(line, "e2e/pages/rows.ts");
+      expect(candidates, line).toEqual([]);
+      expect(unresolved.map((u) => u.expression), line).toEqual([expression]);
+    }
   });
 
   // A phantom candidate is worse than a missed one: the audit is then required
@@ -176,6 +191,23 @@ describe("buildLocatorInventory", () => {
       cwd: "/does-not-matter",
     });
     expect(inventory.missing.map((c) => c.value)).toEqual(["site-navigationbar"]);
+  });
+
+  // A candidate that leaves the required list is one the audit is never asked
+  // about — the oversight the list exists to prevent. A search cut short makes
+  // the answer weaker, not the question optional.
+  test("a search that runs out of budget still asks about every candidate", async () => {
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 40; i++) files[`filler-${i}.tsx`] = "<div />";
+    const abs = await product(files);
+    const inventory = await buildLocatorInventory({
+      sources: new Map([["e2e/pages/nav.ts", `page.locator(".site-navigationbar")`]]),
+      roots: [{ configured: "../product/src", abs }],
+      cwd: "/does-not-matter",
+      maxFiles: 2,
+    });
+    expect(inventory.missing.map((c) => c.value)).toEqual(["site-navigationbar"]);
+    expect(inventory.incomplete.join(" ")).toContain("site-navigationbar");
   });
 
   test("the same token in two files is one candidate", async () => {

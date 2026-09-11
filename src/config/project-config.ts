@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { rememberHubConfig } from "./hub-config.ts";
 import { z, ZodError } from "zod";
 import { AGENT_BROWSER_TARGET, TargetIdSchema } from "../spec/yaml-schema.ts";
 import { validateTestPathTemplate } from "../targets/test-path.ts";
@@ -472,18 +471,10 @@ export async function loadProjectConfig(cwd: string): Promise<ProjectConfig> {
   try {
     content = await readFile(join(cwd, PROJECT_CONFIG_PATH), "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") {
-      const empty = ProjectConfigSchema.parse({});
-      rememberHubConfig(undefined);
-      return empty;
-    }
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return ProjectConfigSchema.parse({});
     throw e;
   }
-  const config = parseProjectConfig(content);
-  // Registered here rather than passed down: the hub connection is resolved
-  // from every command that talks to one, and only some of them have a project.
-  rememberHubConfig(config.hub);
-  return config;
+  return parseProjectConfig(content);
 }
 
 /** Parse config YAML. Schema rejections are rewritten with actionable messages. */

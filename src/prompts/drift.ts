@@ -211,8 +211,14 @@ Audit this test case against the code as it stands, across every surface above. 
 function locatorSection(inventory: LocatorInventory | undefined): string {
   if (inventory === undefined) return "";
   const { missing, found, unresolved, incomplete } = inventory;
-  if (missing.length === 0 && found.length === 0 && unresolved.length === 0) return "";
+  if (missing.length + found.length + unresolved.length + incomplete.length === 0) return "";
   const lines = [`## Locators this test uses that are not prose`, ""];
+  if (incomplete.length > 0) {
+    lines.push(
+      `The search did not finish, so "not found" below is weaker than it reads — ${incomplete.join("; ")}. Answer for them anyway, and say so if you find one yourself.`,
+      "",
+    );
+  }
   if (missing.length > 0) {
     lines.push(
       `**Not found anywhere in the source that was read. Answer for every one of these.**`,
@@ -236,12 +242,6 @@ function locatorSection(inventory: LocatorInventory | undefined): string {
       `Built at runtime, so code could not look them up. Resolve them yourself if the case turns on one:`,
       "",
       ...unresolved.map((u) => `- \`${u.expression}\` at ${u.from}`),
-      "",
-    );
-  }
-  if (incomplete.length > 0) {
-    lines.push(
-      `The scan was incomplete, so "not found" above is weaker than it reads: ${incomplete.slice(0, 5).join("; ")}.`,
       "",
     );
   }
