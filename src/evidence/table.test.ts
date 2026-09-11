@@ -82,7 +82,7 @@ describe("renderEvidence", () => {
   // **nothing** for step-01. It is derived from the same rows now, so the two
   // cannot disagree.
   it("summarises the table it just wrote, not a review that saw another file", () => {
-    expect(markdown).toContain("step step-01: nothing in the generated test is visibly deciding");
+    expect(markdown).toContain("step-01: nothing in the generated test is visibly deciding");
     expect(markdown).not.toContain("Every step's outcome is decided");
   });
 
@@ -223,5 +223,69 @@ describe("renderEvidence's source-anchor column, when a needle has more than one
     });
     const row = markdown.split("\n").find((l) => l.startsWith("| step-02 |"))!;
     expect(row).toContain("`Title` — ambiguous: src/A.tsx:1, src/B.tsx:4");
+  });
+});
+
+describe("renderEvidence — what the table folds away", () => {
+  const base: EvidenceInput = {
+    testCase: TEST_CASE,
+    recording: {
+      recordedAt: "2026-02-01T00:00:00.000Z",
+      actions: [
+        // Signing in is not a step of the case, and marking it as one would
+        // make step-01 look like it does all of this.
+        { action: "navigate", value: "https://id.example.test", stepId: "setup" },
+        { action: "fill", locator: { by: "label", value: "Email" }, value: "a@b.c", stepId: "setup" },
+        { action: "navigate", value: "https://example.test/todos", stepId: "step-01" },
+        { action: "click", locator: { by: "css", value: "#add" }, stepId: "step-01" },
+        { action: "click", locator: { by: "css", value: "#confirm" }, stepId: "step-01" },
+        { action: "fill", locator: { by: "label", value: "Title" }, value: "Buy milk", stepId: "step-02" },
+        { action: "fill", locator: { by: "label", value: "Notes" }, value: "later", stepId: "step-02" },
+      ],
+    },
+    test: { path: "specs/todo/add_item.spec.ts", source: GENERATED },
+    screenshots: new Map(),
+    review: [],
+  };
+
+  it("keeps the pre-step work out of the first step's row, and says it once above the table", () => {
+    const markdown = renderEvidence(base);
+    const [above, table] = markdown.split("| Step |");
+    expect(above).toContain("Before the first step");
+    expect(above).toContain("id.example.test");
+    expect(table).not.toContain("id.example.test");
+  });
+
+  it("folds a step's operations once there are more than a couple of them", () => {
+    const markdown = renderEvidence(base);
+    expect(markdown).toContain("<details><summary>3 operation(s)</summary>");
+    // Two are short enough to read in place; folding them would cost a click
+    // for nothing.
+    expect(markdown).not.toContain("<details><summary>2 operation(s)</summary>");
+    expect(markdown).toContain('fill label="Title" "Buy milk"');
+  });
+
+  it("gives a line to what the scan pinned to one place, and folds the rest behind its count", () => {
+    const anchors: SourceAnchors = {
+      found: new Map([
+        ["Title", { needle: "Title", places: ["src/TodoForm.tsx:12"], partial: false }],
+        ["Notes", { needle: "Notes", places: ["src/TodoForm.tsx:20", "src/Profile.tsx:9"], partial: false }],
+      ]),
+      unsearched: new Set<string>(),
+    };
+    const markdown = renderEvidence({ ...base, anchors });
+    expect(markdown).toContain("`Title` — src/TodoForm.tsx:12");
+    // Two homes is not an answer, so it does not get a line of its own.
+    expect(markdown).toContain("<details><summary>1 not confirmed in the product's source</summary>`Notes` — ambiguous");
+  });
+
+  it("prints the words the project asked for", () => {
+    const markdown = renderEvidence({
+      ...base,
+      labels: { step: "手順", decides: "テストが判定していること", nothing: "判定なし" },
+    });
+    expect(markdown).toContain("| 手順 | What the case says |");
+    expect(markdown).toContain("テストが判定していること");
+    expect(markdown).toContain("**判定なし**");
   });
 });

@@ -129,6 +129,7 @@ describe("countRedundantByStep", () => {
   });
 });
 
+
 describe("stepsWithoutAsserts", () => {
   const a = (o: Partial<RecordedAction>): RecordedAction => ({ action: "assert", assert: "text_visible", ...o });
   const click = (o: Partial<RecordedAction>): RecordedAction => ({ action: "click", ...o });

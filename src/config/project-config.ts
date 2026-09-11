@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z, ZodError } from "zod";
 import { AGENT_BROWSER_TARGET, TargetIdSchema } from "../spec/yaml-schema.ts";
+import { EVIDENCE_LABEL_KEYS, type EvidenceLabelKey } from "../evidence/labels.ts";
 import { validateTestPathTemplate } from "../targets/test-path.ts";
 
 /**
@@ -360,6 +361,34 @@ export const CoverageConfigSchema = z
 export type CoverageConfig = z.infer<typeof CoverageConfigSchema>;
 
 /**
+ * The evidence table a reviewer reads instead of the generated test.
+ *
+ * `labels` puts the table's fixed words in the language its reviewers read —
+ * the case's own text is already the project's, and a table half in another
+ * language is one a reviewer skims instead of checks. Only the keys the table
+ * prints are accepted: an override it would never use is a typo, and ignoring
+ * it silently leaves the reader wondering why nothing changed.
+ *
+ * ```yaml
+ * evidence:
+ *   labels:
+ *     step: 手順
+ *     decides: テストが判定していること
+ * ```
+ */
+export const EvidenceConfigSchema = z
+  .object({
+    labels: z
+      .partialRecord(
+        z.enum(EVIDENCE_LABEL_KEYS as [EvidenceLabelKey, ...EvidenceLabelKey[]]),
+        z.string().min(1),
+      )
+      .default({}),
+  })
+  .strict();
+export type EvidenceConfig = z.infer<typeof EvidenceConfigSchema>;
+
+/**
  * Top-level `.ccqa/config.yaml` schema. `defaultTarget` is used by specs
  * with no `target:` of their own. Both defaults make a missing config file
  * equivalent to "agent-browser only, no extra settings".
@@ -370,6 +399,7 @@ export const ProjectConfigSchema = z
     targets: z.record(TargetIdSchema, TargetConfigSchema).default({}),
     serialGroups: SerialGroupsSchema.default({}),
     coverage: CoverageConfigSchema.optional(),
+    evidence: EvidenceConfigSchema.prefault({}),
     /**
      * Files the project keeps its own variables in (dotenv format, relative to
      * the project root), loaded before a recording resolves `${VAR}`. A project

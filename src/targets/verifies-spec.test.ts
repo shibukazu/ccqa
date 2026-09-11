@@ -142,7 +142,7 @@ describe("reviewGeneratedTest", () => {
 describe("formatFinding", () => {
   test("says the test is green without deciding the claim", () => {
     expect(formatFinding({ stepId: "step-05", problem: "元のリンクを見ているだけ" })).toBe(
-      "step step-05: the generated test passes without deciding what this step claims — 元のリンクを見ているだけ",
+      "step-05: the generated test passes without deciding what this step claims — 元のリンクを見ているだけ",
     );
   });
 });

@@ -563,18 +563,16 @@ function scrubAndReport(actions: RecordedAction[]): RecordedAction[] {
 }
 
 /**
- * Drop *immediate* duplicate AB_ACTION emissions inside the same step.
- * Claude occasionally records the same semantic-locator click (identical
- * action, locator, value, fields) twice in a row when retrying a selector
- * after a snapshot — only the last attempt is "the canonical one". Collapsing
- * the dupes keeps ir.json from accumulating ghost-retries the LLM never
- * meant to commit.
+ * Drop *immediate* duplicate AB_ACTION emissions inside the same step, plus
+ * the same assert repeated later (non-adjacently) in one step. Claude
+ * occasionally records the same semantic-locator click twice in a row when
+ * retrying a selector after a snapshot, and separately reaches the same
+ * assertion through both the `CCQA_ASSERT=` env channel and an `AB_ACTION|
+ * assert|...` text line — two reports of one check, not two checks.
  *
- * The dedupe is intentionally conservative — adjacent + structurally
- * IDENTICAL only. We do NOT try to compress retries with different
- * locators (that would risk dropping a legitimate "click the neighbouring
- * button" sequence). The trace prompt now asks Claude not to emit failed
- * attempts in the first place, so this is the belt-and-braces pass.
+ * The adjacent pass stays conservative — structurally IDENTICAL neighbours
+ * only, no compressing retries with different locators (that would risk
+ * dropping a legitimate "click the neighbouring button" sequence).
  */
 function dedupAndReport(actions: RecordedAction[]): RecordedAction[] {
   if (actions.length === 0) return actions;
@@ -589,9 +587,11 @@ function dedupAndReport(actions: RecordedAction[]): RecordedAction[] {
     kept.push(action);
   }
   if (dropped === 0) return kept;
-  log.meta("deduped", `${kept.length}/${actions.length} kept (${dropped} adjacent duplicate(s) dropped)`);
+  log.meta("deduped", `${kept.length}/${actions.length} kept (${dropped} duplicate(s) dropped)`);
   return kept;
 }
+
+
 
 /**
  * Two actions are an "adjacent duplicate" when they would generate the

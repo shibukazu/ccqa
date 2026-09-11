@@ -107,10 +107,11 @@ CCQA_STEP=step-03 agent-browser --session ${sessionName} click "text=Submit"
 This prefix is what ties each recorded action to its step in the generated
 test — a command without it loses its step attribution.
 
-**Anything you do before the first step carries no \`CCQA_STEP\`.** Signing in,
-opening the application, putting the account where the precondition says it
-starts — those are not step-01. The first \`CCQA_STEP=\` names the first step
-the case actually lists.
+**Anything you do before the first step carries \`CCQA_STEP=setup\`.** Signing
+in, opening the application, putting the account where the precondition says it
+starts — those are not step-01, and marking them as step-01 makes the first
+step of the case look like it does all of it. The next \`CCQA_STEP=\` names the
+first step the case actually lists.
 
 Other env assignments may precede it (\`FOO=x CCQA_STEP=step-02 agent-browser ...\`); agent-browser
 itself ignores the variable.

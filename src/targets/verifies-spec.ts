@@ -6,6 +6,7 @@ import * as log from "../cli/logger.ts";
 import { verifiesSpecPrompt } from "../prompts/verifies-spec.ts";
 import { isExpandedActionStep, type ExpandedStep } from "../spec/expand.ts";
 import { assertionsByStep } from "../evidence/table.ts";
+import { EVIDENCE_LABELS, type EvidenceLabels } from "../evidence/labels.ts";
 import type { GenerateResult } from "./types.ts";
 import type { InvokeFn } from "./llm-engine.ts";
 
@@ -47,13 +48,15 @@ export const NOTHING_DECIDED =
   "no assertion is visible under this step in the generated test — one moved into a helper does " +
   "not show here, and does not show to a reviewer reading the file either";
 
-/** The warning a finding becomes, phrased so the reader knows the test is green for nothing. */
-export function formatFinding(finding: SpecCoverageFinding): string {
-  const claim =
-    finding.problem === NOTHING_DECIDED
-      ? "nothing in the generated test is visibly deciding this step"
-      : "the generated test passes without deciding what this step claims";
-  return `step ${finding.stepId}: ${claim} — ${finding.problem}`;
+/**
+ * The warning a finding becomes, phrased so the reader knows the test is green
+ * for nothing. A step deciding nothing is its own explanation, so only the
+ * model's own words are worth appending.
+ */
+export function formatFinding(finding: SpecCoverageFinding, labels: EvidenceLabels = EVIDENCE_LABELS): string {
+  const nothing = finding.problem === NOTHING_DECIDED;
+  const claim = nothing ? labels.findingNothing : labels.findingUndecided;
+  return `${finding.stepId}: ${claim}${nothing ? "" : ` — ${finding.problem}`}`;
 }
 
 /**
@@ -144,7 +147,7 @@ export async function reviewGeneratedTest(input: {
     );
   }
   const findings = mergeFindings(undecided, fromModel ?? []);
-  return { findings, complete: fromModel !== null, warnings: findings.map(formatFinding) };
+  return { findings, complete: fromModel !== null, warnings: findings.map((finding) => formatFinding(finding)) };
 }
 
 /**

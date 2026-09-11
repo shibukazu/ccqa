@@ -23,6 +23,7 @@ describe("loadProjectConfig", () => {
       defaultTarget: "agent-browser",
       targets: {},
       serialGroups: {},
+      evidence: { labels: {} },
       envFiles: [],
       sourceRoots: [],
     });
@@ -35,6 +36,7 @@ describe("loadProjectConfig", () => {
       defaultTarget: "agent-browser",
       targets: {},
       serialGroups: {},
+      evidence: { labels: {} },
       envFiles: [],
       sourceRoots: [],
     });

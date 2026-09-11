@@ -474,6 +474,13 @@ section is derived from that column — every step reading `**nothing**` is
 listed there, so the summary can never say "every step is decided" above a
 table that shows otherwise.
 
+A row is one line tall wherever it can be. A step's operations fold behind
+their count once there are more than a couple, and signing in — everything the
+recording did before the case's first step — is stated once above the table
+rather than inside the first step's row, where it would make that step look
+like it does all of it. Any action the recorder could not attribute to a step
+is stated there too, rather than disappearing.
+
 The **Screens** column links the step screenshots the last `ccqa run` left. A
 project whose generated tests belong to its own runner never calls `ccqa run`,
 so where there is no such report the screenshots the generation's own
@@ -483,13 +490,35 @@ a generation that never passed leaves none. Beside `runs/`, not inside it: a
 project gitignores `runs/`, and a review table linking into it would resolve to
 nothing once pasted into a pull request.
 
+The table's own words — its headings, `nothing`, the Review section — are
+English by default and can be put in the language the reviewers read:
+
+```yaml
+# .ccqa/config.yaml
+evidence:
+  labels:
+    step: 手順
+    decides: テストが判定していること
+    nothing: 判定なし
+```
+
+Only the keys the table prints are accepted, so a misspelt one is a config
+error rather than a setting that silently does nothing. The case's own text is
+already the project's; these are the words around it.
+
 With [`sourceRoots`](./running.md#sourceroots--where-the-product-actually-lives)
 configured, a **Where the source says so** column is added: each test id,
 accessible name, placeholder, label and asserted text the recording used,
-resolved to the `file:line` in the product's own source that renders it, or
-`not found`. It is a plain exact-match search — no model, bounded in files
-read — so it answers "is this locator addressing the thing the case means?"
-without anyone having to go and look.
+resolved to the `file:line` in the product's own source that renders it. It is
+a plain exact-match search — no model, bounded in files read — so it answers
+"is this locator addressing the thing the case means?" without anyone having
+to go and look.
+
+Only a string the scan pinned to exactly one place gets a line of its own. The
+column is read as "the product really says this", and a string found nowhere,
+never searched for, or found in several files equally does not answer that —
+those fold behind their count, where a reviewer who wants them can still open
+them.
 
 The first match is not the answer, because a string a screen renders also
 appears in the document that specified the screen and the script that seeded

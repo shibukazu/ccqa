@@ -9,6 +9,7 @@ import {
   NOTHING_DECIDED,
   type SpecCoverageFinding,
 } from "../targets/verifies-spec.ts";
+import { evidenceLabels, type EvidenceLabels } from "./labels.ts";
 import type { SourceAnchors, SourceNeedle } from "./source-anchors.ts";
 
 /**
@@ -62,6 +63,8 @@ export interface EvidenceInput {
    * misreport an unsearched project as a searched-and-empty one.
    */
   anchors?: SourceAnchors;
+  /** `evidence.labels`: the table's fixed words, in the reviewers' language. */
+  labels?: Partial<EvidenceLabels>;
 }
 
 /** Assertion lines a reviewer can check without reading the whole file. */
@@ -159,39 +162,50 @@ export function buildEvidenceSteps(input: EvidenceInput): EvidenceStep[] {
   });
 }
 
+/** Entries past this many fold away: a cell taller than the eye stops being read. */
+const FOLD_OVER = 2;
+
 /** The evidence as markdown — a fragment, for whoever assembles the PR body. */
 export function renderEvidence(input: EvidenceInput): string {
+  const labels = evidenceLabels(input.labels);
   const steps = buildEvidenceSteps(input);
   const anchors = input.anchors;
   const lines = [
     `# ${input.testCase.title}`,
     "",
-    `Case: \`${input.testCase.ref.id}\``,
-    `Test: \`${input.test.path}\``,
-    `Recorded: ${input.recording.recordedAt ?? "(unknown)"}`,
-    ...(input.recording.origin ? [`From: \`${input.recording.origin}\``] : []),
+    `${labels.case}: \`${input.testCase.ref.id}\``,
+    `${labels.test}: \`${input.test.path}\``,
+    `${labels.recordedAt}: ${input.recording.recordedAt ?? "(unknown)"}`,
+    ...(input.recording.origin ? [`${labels.from}: \`${input.recording.origin}\``] : []),
     "",
-    "| Step | What the case says | What was recorded | What the test decides" +
-      (anchors ? " | Where the source says so" : "") +
-      " | Screens |",
-    "|---|---|---|---|" + (anchors ? "---|" : "") + "---|",
   ];
+  // Signing in and reaching the first screen belong to no step of the case,
+  // and inside one they double its row. Anything the recorder could not
+  // attribute lands here too, rather than disappearing.
+  const before = unattributedActions(input, steps);
+  if (before.length > 0) lines.push(`${labels.setup}: ${fold(before, labels)}`, "");
+  lines.push(
+    `| ${labels.step} | ${labels.instruction} | ${labels.recorded} | ${labels.decides}` +
+      (anchors ? ` | ${labels.source}` : "") +
+      ` | ${labels.screens} |`,
+    "|---|---|---|---|" + (anchors ? "---|" : "") + "---|",
+  );
   for (const step of steps) {
     const cells = [
       step.id,
       cell(step.instruction),
-      cell(step.actions.join("<br>")),
+      fold(step.actions, labels),
       // The column that matters: empty means this step is performed and
       // nothing about its outcome is checked.
-      step.assertions.length > 0 ? cell(step.assertions.join("<br>")) : "**nothing**",
-      ...(anchors ? [sourceAnchorCells(step.needles, anchors)] : []),
+      step.assertions.length > 0 ? cell(step.assertions.join("<br>")) : `**${labels.nothing}**`,
+      ...(anchors ? [sourceAnchorCells(step.needles, anchors, labels)] : []),
       step.screenshots.map((path) => `![${step.id}](${path})`).join(" ") || "—",
     ];
     lines.push(`| ${cells.join(" | ")} |`);
   }
   lines.push("");
   if (input.testCase.expectations.length > 0) {
-    lines.push("## What the case expects", "");
+    lines.push(`## ${labels.expects}`, "");
     for (const expectation of input.testCase.expectations) lines.push(`- ${expectation}`);
     lines.push("");
   }
@@ -202,18 +216,12 @@ export function renderEvidence(input: EvidenceInput): string {
     .filter((step) => step.assertions.length === 0)
     .map((step) => ({ stepId: step.id, problem: NOTHING_DECIDED }));
   const findings = mergeFindings(undecided, input.review ?? []);
-  lines.push("## Review", "");
+  lines.push(`## ${labels.review}`, "");
   if (findings.length === 0) {
-    lines.push(
-      input.review === undefined
-        ? "The generated test was not reviewed against the case."
-        : "Every step's outcome is decided by the generated test.",
-    );
+    lines.push(input.review === undefined ? labels.reviewAbsent : labels.reviewClean);
   } else {
-    for (const finding of findings) lines.push(`- ${formatFinding(finding)}`);
-    if (input.review === undefined) {
-      lines.push("", "The generated test was not otherwise reviewed against the case.");
-    }
+    for (const finding of findings) lines.push(`- ${formatFinding(finding, labels)}`);
+    if (input.review === undefined) lines.push("", labels.reviewPartial);
   }
   lines.push("");
   return lines.join("\n");
@@ -230,22 +238,48 @@ function cell(text: string): string {
  * the scan never looked for says so instead — the reviewer's whole use of this
  * column is telling those two apart.
  */
-function sourceAnchorCells(needles: readonly SourceNeedle[], anchors: SourceAnchors): string {
-  return cell(
-    needles
-      .map(({ value }) => {
-        const anchor = anchors.found.get(value);
-        if (!anchor) {
-          return `\`${value}\` — ${anchors.unsearched.has(value) ? "not searched" : "not found"}`;
-        }
-        // Several places say it equally well, so none of them is the answer.
-        // Naming one would read as "this is where it comes from".
-        const where = anchor.places.join(", ");
-        const found = anchor.places.length > 1 ? `ambiguous: ${where}` : where;
-        // The string is only ever inside a longer one, so the product renders
-        // something this locator matches — not this string.
-        return `\`${value}\` — ${found}${anchor.partial ? " (partial match)" : ""}`;
-      })
-      .join("<br>"),
-  );
+function sourceAnchorCells(
+  needles: readonly SourceNeedle[],
+  anchors: SourceAnchors,
+  labels: EvidenceLabels,
+): string {
+  const confirmed: string[] = [];
+  const rest: string[] = [];
+  for (const { value } of needles) {
+    const anchor = anchors.found.get(value);
+    if (!anchor) {
+      rest.push(`\`${value}\` — ${anchors.unsearched.has(value) ? labels.notSearched : labels.notFound}`);
+    } else if (anchor.places.length > 1) {
+      // Several places say it equally well, so none of them is the answer.
+      // Naming one would read as "this is where it comes from".
+      rest.push(`\`${value}\` — ${labels.ambiguous}: ${anchor.places.join(", ")}`);
+    } else {
+      // The string is only ever inside a longer one, so the product renders
+      // something this locator matches — not this string.
+      const partial = anchor.partial ? ` (${labels.partialMatch})` : "";
+      confirmed.push(`\`${value}\` — ${anchor.places[0]}${partial}`);
+    }
+  }
+  // Only what the scan pinned to one place is worth a line: the column is read
+  // as "the product really says this", and the rest answers a different
+  // question. Kept, folded, because "not found" and "not searched" are facts a
+  // reviewer sometimes needs.
+  const folded =
+    rest.length === 0
+      ? []
+      : [`<details><summary>${rest.length} ${labels.unconfirmed}</summary>${rest.join("<br>")}</details>`];
+  return cell([...confirmed, ...folded].join("<br>"));
+}
+
+/** A cell that stays one line: past a couple of entries, the rest folds away. */
+function fold(entries: readonly string[], labels: EvidenceLabels): string {
+  if (entries.length <= FOLD_OVER) return cell(entries.join("<br>"));
+  return `<details><summary>${entries.length} ${labels.operations}</summary>${cell(entries.join("<br>"))}</details>`;
+}
+
+/** Recorded actions belonging to no step of the case — signing in, mostly. */
+function unattributedActions(input: EvidenceInput, steps: readonly EvidenceStep[]): string[] {
+  const ofTheCase = new Set(steps.map((step) => step.id));
+  const grouped = actionsByStep([...input.recording.actions, ...(input.recording.cleanup ?? [])]);
+  return [...grouped].filter(([id]) => !ofTheCase.has(id)).flatMap(([, actions]) => actions);
 }

@@ -147,6 +147,7 @@ export const evidenceCommand = addLanguageOption(
         recording,
         test: { path: testPath, source },
         screenshots: await stepScreenshots(cwd, opts.reportDir, testCase, dirname(out)),
+        labels: config.evidence.labels,
         ...(review ? { review } : {}),
         ...(anchors ? { anchors } : {}),
       });
