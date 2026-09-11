@@ -49,15 +49,23 @@ function runProbe(probe: Probe, sessionName: string): { ok: boolean; reason: str
 }
 
 function runStateCheck(check: StateCheck, sessionName: string): { ok: boolean; reason: string } {
-  const r = spawnAB(["--session", sessionName, "is", check.state, check.selector]);
-  const answer = r.stdout.trim();
-  if (r.status !== 0 || (answer !== "true" && answer !== "false")) {
-    return { ok: false, reason: `is ${check.state} answered ${answer || `exit ${r.status ?? "?"}`}` };
+  // Polled like a presence check, and for the same reason: a control the
+  // route just acted on settles into its state a moment later, and one
+  // question at the wrong moment would drop a route that is fine.
+  let answer = "";
+  const rounds = attemptsFor(ASSERT_TIMEOUT_MS, SELECTOR_POLL_INTERVAL_MS) + 1;
+  for (let round = 0; round < rounds; round++) {
+    const r = spawnAB(["--session", sessionName, "is", check.state, check.selector]);
+    answer = r.status === 0 ? r.stdout.trim() : "";
+    if (answer === String(check.expected)) return { ok: true, reason: "" };
+    if (round + 1 < rounds) sleepSync(SELECTOR_POLL_INTERVAL_MS);
   }
-  const actual = answer === "true";
-  return actual === check.expected
-    ? { ok: true, reason: "" }
-    : { ok: false, reason: `expected ${check.state}=${check.expected}, page says ${actual}` };
+  // Anything but the two words is agent-browser answering about something
+  // else — a selector it could not use, a version that does not have `is`.
+  // Said apart from a page that simply disagrees.
+  return answer === "true" || answer === "false"
+    ? { ok: false, reason: `expected ${check.state}=${check.expected}, page says ${answer}` }
+    : { ok: false, reason: `is ${check.state} answered ${answer || "nothing"}` };
 }
 
 const SELECTOR_POLL_INTERVAL_MS = 500;

@@ -13,8 +13,7 @@ import { writeMockMessages } from "../_helpers/fake-claude.ts";
 // prefixes, the replay shim fires the PreToolUse hooks, and the recorded
 // actions must land in ir.json with the right stepId — with NO STEP_START
 // text line for step-02/step-03, proving attribution does not depend on the
-// text protocol. A printed `AB_ACTION|assert|` line is in the stream too, and
-// must NOT be recorded: an assertion is what a command performed.
+// text protocol.
 function mockTraceMessages(): Array<Record<string, unknown>> {
   const bash = (id: string, command: string): Record<string, unknown> => ({
     type: "assistant",
@@ -29,8 +28,6 @@ function mockTraceMessages(): Array<Record<string, unknown>> {
     bash("tu_1", `CCQA_STEP=step-01 agent-browser --session s1 open about:blank`),
     // step-02 emits NO STEP_START line — only the command prefix names it.
     bash("tu_2", `CCQA_STEP=step-02 agent-browser --session s1 click "text=Next"`),
-    // Printed, not performed: reported and left out of the route.
-    text("AB_ACTION|assert|url_contains||about:blank|still on the page"),
     // step-03: every assertion comes from CCQA_ASSERT markers on the
     // verification commands themselves — no protocol text at all.
     bash("tu_3", `CCQA_STEP=step-03 CCQA_ASSERT=1 agent-browser --session s1 wait --text "Ready" --timeout 3000`),
@@ -297,9 +294,6 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     expect(ir[2]!.value).toBe("Ready");
     expect(ir[3]!.locator).toEqual({ by: "css", value: "[data-qa='panel']" });
     expect(ir[4]!.value).toBe("about");
-    // Said, not swallowed: a recording that only printed its checks would
-    // otherwise look like one that verified nothing.
-    expect(combined).toContain("printed assertion(s) were not recorded");
 
     // The prefixes are trace-time plumbing only — they must never survive
     // into the generated test script, while the promoted asserts must.
@@ -310,6 +304,45 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     expect(generated).toMatch(/abAssertVisible\(/);
     expect(generated).toMatch(/abAssertUrl\(/);
   }, 120_000);
+
+  // An assertion is what a command performed. A printed one verified nothing,
+  // and a recording that looks complete while its checks were dropped is
+  // worse than no recording: it would replace one whose checks are real.
+  test("a printed assertion is not a check, and the recording it came with is refused", async () => {
+    project = await makeFakeProject("record-trace-stub", { linkCcqa: true });
+    await installFakeAgentBrowser(project.cwd);
+
+    const mockPath = join(project.cwd, "claude-mock.jsonl");
+    const messages = mockTraceMessages();
+    messages.splice(messages.length - 2, 0, {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "AB_ACTION|assert|url_contains||about:blank|still there" }],
+      },
+    });
+    await writeMockMessages(mockPath, messages);
+
+    const result = await runCcqa(["record", "demo/x"], {
+      cwd: project.cwd,
+      env: {
+        ...noColorEnv(),
+        CCQA_CLAUDE_MOCK_FILE: mockPath,
+        CCQA_AB_BIN: join(project.cwd, "node_modules/agent-browser/bin/agent-browser.js"),
+        CCQA_FAKE_AB_STDOUT: "about:blank",
+        CCQA_FAKE_AB_COUNT: "1",
+      },
+      timeoutMs: 90_000,
+    });
+    const combined = stripAnsi(result.stdout + result.stderr);
+    expect(result.exitCode, combined).toBe(1);
+    expect(combined).toContain("printed rather than performed");
+    // The kind, not the line: what the model printed is not scrubbed.
+    expect(combined).toContain("url_contains");
+    expect(combined).not.toContain("still there");
+    await expect(
+      readFile(join(project.cwd, ".ccqa/features/demo/test-cases/x/ir.json"), "utf8"),
+    ).rejects.toThrow();
+  });
 
   test("a trace that finishes FAILED exits 1 and quarantines its actions", async () => {
     project = await makeFakeProject("record-trace-stub", { linkCcqa: true });

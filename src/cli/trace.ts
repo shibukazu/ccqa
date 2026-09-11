@@ -239,7 +239,7 @@ export async function runTrace(
 
   const statusLines: ParsedStatusLine[] = [];
   const traceActions: RecordedAction[] = [];
-  /** Assertions the model printed rather than performed; reported, never recorded. */
+  /** Assert kinds the model printed rather than performed; never recorded. */
   const printedAsserts: string[] = [];
   // Tags each recorded action with its spec step so codegen can group by
   // step even when a step opens no URL (e.g. a "fill the form" step
@@ -317,7 +317,10 @@ export async function runTrace(
           // model's claim: nothing was performed, nothing can fail, and the
           // rollback that covers a failed command cannot cover it.
           if (trimmed.startsWith("AB_ACTION|assert|")) {
-            printedAsserts.push(trimmed);
+            // The kind, never the line: what the model printed carries its
+            // own values, and this one does not go through the scrub the
+            // recorded actions do.
+            printedAsserts.push(trimmed.split("|")[2] ?? "?");
             continue;
           }
           if (trimmed.startsWith("AB_ACTION|snapshot|")) {
@@ -332,13 +335,16 @@ export async function runTrace(
     },
   );
 
-  if (printedAsserts.length > 0) {
-    log.warn(
-      `${printedAsserts.length} printed assertion(s) were not recorded, e.g. ${printedAsserts[0]} — ` +
-        "an assertion is recorded from the command that performs it, marked with CCQA_ASSERT=<marker>",
-    );
-  }
-  const failureReason = traceFailureReason(statusLines, { isError, errorDetail });
+  const failureReason =
+    // Not a warning: the trace walked the route, so it looks like a recording
+    // worth keeping — while the checks it printed instead of performing are
+    // gone. Kept as a failure, the actions go to the side file and the
+    // recording that did verify its steps stays where it is.
+    printedAsserts.length > 0
+      ? `${printedAsserts.length} assertion(s) were printed rather than performed ` +
+        `(${[...new Set(printedAsserts)].join(", ")}), so nothing recorded them. Mark the command ` +
+        `that performs each check with CCQA_ASSERT=<marker> and record again.`
+      : traceFailureReason(statusLines, { isError, errorDetail });
   const overallStatus: "passed" | "failed" = failureReason === null ? "passed" : "failed";
 
   const scrubbedActions = scrubAndReport(traceActions);

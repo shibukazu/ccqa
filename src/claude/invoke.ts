@@ -277,9 +277,14 @@ export async function invokeClaudeStreaming(
   // so PostToolUse and PostToolUseFailure can't both fire `onAbActionFailed`
   // for the same tool call (SDK order between the two channels is unspecified).
   let lastAbToolUseId: string | null = null;
+  // What the probe has to have printed for the marker on it to be true. A
+  // marked probe exits 0 whatever it answers, so without this the record would
+  // hold an assertion the page contradicted at the moment it was made.
+  let lastAbAnswerHolds: ((stdout: string) => boolean) | null = null;
   const claimAbToolUse = (toolUseId: string): boolean => {
     if (toolUseId !== lastAbToolUseId) return false;
     lastAbToolUseId = null;
+    lastAbAnswerHolds = null;
     return true;
   };
 
@@ -382,6 +387,8 @@ export async function invokeClaudeStreaming(
                         (assertMarker !== null ? extractObservationAbAction(cmd) : null);
                     if ((ab !== null || assertMarker !== null) && onAbAction) {
                       lastAbToolUseId = input.tool_use_id;
+                      lastAbAnswerHolds =
+                        assertMarker === null ? null : markerHolds(assertMarker, ab);
                       const stepId = extractCcqaStepFromBashCommand(cmd);
                       onAbAction({
                         ...(ab !== null ? { abAction: ab } : {}),
@@ -414,7 +421,14 @@ export async function invokeClaudeStreaming(
                   async (input: HookInput) => {
                     if (input.hook_event_name !== "PostToolUse") return {};
                     if (input.tool_name !== "Bash") return {};
-                    if (!isBashToolResponseError(input.tool_response)) return {};
+                    const holds = lastAbAnswerHolds;
+                    const output = bashToolOutput(input.tool_response);
+                    // A probe that ran and answered against its marker is a
+                    // failed check, not a failed command: the assertion it
+                    // would have recorded was false when it was made.
+                    const contradicted =
+                      holds !== null && output !== null && !holds(output);
+                    if (!isBashToolResponseError(input.tool_response) && !contradicted) return {};
                     if (claimAbToolUse(input.tool_use_id) && onAbActionFailed) {
                       onAbActionFailed();
                     }
@@ -626,6 +640,46 @@ export function isBashToolResponseError(tool_response: unknown): boolean {
   if (typeof r["exitCode"] === "number" && r["exitCode"] !== 0) return true;
   if (r["killed"] === true) return true;
   return false;
+}
+
+/** The Bash tool's own output, when the response carries one. */
+export function bashToolOutput(tool_response: unknown): string | null {
+  if (tool_response === null || typeof tool_response !== "object") return null;
+  const output = (tool_response as Record<string, unknown>)["output"];
+  return typeof output === "string" ? output : null;
+}
+
+/**
+ * Whether a marked probe's printed answer bears its marker out.
+ *
+ * `get count`, `get url` and `is` all exit 0 whatever they answer, so the
+ * exit code says only that the probe ran. The marker says what the step
+ * expected; this reads the answer and says whether it agreed. An unknown
+ * marker, or a probe with nothing to compare, answers null — nothing to
+ * check is not the same as a check that failed.
+ */
+export function markerHolds(
+  marker: string,
+  abAction: string | null,
+): ((stdout: string) => boolean) | null {
+  if (marker.startsWith("url_contains:")) {
+    const substring = marker.slice("url_contains:".length);
+    return substring ? (out) => out.includes(substring) : null;
+  }
+  const parts = abAction === null ? [] : abAction.split("|");
+  if (parts[1] === "get_count") {
+    const present = (out: string): number => Number.parseInt(out.trim(), 10);
+    if (marker === "element_visible") return (out) => present(out) > 0;
+    if (marker === "element_not_visible") return (out) => present(out) === 0;
+    return null;
+  }
+  if (parts[1] === "is") {
+    const yes = marker === "element_enabled" || marker === "element_checked";
+    const no = marker === "element_disabled" || marker === "element_unchecked";
+    if (!yes && !no) return null;
+    return (out) => out.trim() === String(yes);
+  }
+  return null;
 }
 
 /**
