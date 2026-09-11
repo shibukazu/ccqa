@@ -1,5 +1,8 @@
-import { describe, test, expect } from "vitest";
-import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundleFromHub, listActiveSpecs, resolveSpecTargets } from "./index.ts";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, test, expect } from "vitest";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundle, listActiveSpecs, resolveSpecTargets } from "./index.ts";
 import type { HubClient } from "../hub-client/index.ts";
 
 /** Minimal fake — only `getPrompt` is exercised by these tests. */
@@ -107,32 +110,65 @@ describe("parseBlockPath", () => {
   });
 });
 
-describe("loadPromptBundleFromHub", () => {
-  test("returns null when there's no hub client", async () => {
-    expect(await loadPromptBundleFromHub(null, "live")).toBeNull();
+describe("loadPromptBundle", () => {
+  let cwd: string;
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), "ccqa-prompts-"));
+  });
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  async function writeLocal(name: string, text: string): Promise<void> {
+    await mkdir(join(cwd, ".ccqa/prompts"), { recursive: true });
+    await writeFile(join(cwd, ".ccqa/prompts", `${name}.md`), text, "utf8");
+  }
+
+  test("returns null when there's no hub client and nothing local", async () => {
+    expect(await loadPromptBundle(null, "live", cwd)).toBeNull();
   });
 
   test("returns null when the hub has neither prompt stored", async () => {
     const hub = fakeHubClient(async () => null);
-    expect(await loadPromptBundleFromHub({ hub, project: "demo" }, "record")).toBeNull();
+    expect(await loadPromptBundle({ hub, project: "demo" }, "record", cwd)).toBeNull();
   });
 
   test("assembles a combined bundle with hub prompt names as `loaded` labels", async () => {
     const hub = fakeHubClient(async (_project, name) =>
       name === "live.user" ? "Stable rule." : name === "live.agent" ? "Learned hint." : null,
     );
-    const out = await loadPromptBundleFromHub({ hub, project: "demo" }, "live");
+    const out = await loadPromptBundle({ hub, project: "demo" }, "live", cwd);
     expect(out).not.toBeNull();
     expect(out!.loaded).toEqual(["live.user", "live.agent"]);
     expect(out!.text).toContain("Stable rule.");
     expect(out!.text).toContain("Learned hint.");
   });
 
+  // The project's own copy is the one a reviewer sees beside the tests it
+  // governs; the two are prose and concatenating them would contradict.
+  test("the project's own `.user` answers instead of the hub's, and says so", async () => {
+    await writeLocal("live.user", "What this project does.");
+    const hub = fakeHubClient(async (_project, name) =>
+      name === "live.user" ? "What the hub says." : name === "live.agent" ? "Learned hint." : null,
+    );
+    const out = await loadPromptBundle({ hub, project: "demo" }, "live", cwd);
+    expect(out!.text).toContain("What this project does.");
+    expect(out!.text).not.toContain("What the hub says.");
+    expect(out!.loaded).toEqual(["live.user (local)", "live.agent"]);
+  });
+
+  test("a project with no hub still gets its own `.user`", async () => {
+    await writeLocal("record.user", "What this project does.");
+    const out = await loadPromptBundle(null, "record", cwd);
+    expect(out!.text).toContain("What this project does.");
+    expect(out!.loaded).toEqual(["record.user (local)"]);
+  });
+
   test("propagates a hub failure rather than running without the stored guidance", async () => {
     const hub = fakeHubClient(async () => {
       throw new Error("network error");
     });
-    await expect(loadPromptBundleFromHub({ hub, project: "demo" }, "record")).rejects.toThrow("network error");
+    await expect(loadPromptBundle({ hub, project: "demo" }, "record", cwd)).rejects.toThrow("network error");
   });
 });
 

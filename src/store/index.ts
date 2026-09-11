@@ -8,6 +8,7 @@ import { isParamRequired } from "../spec/yaml-schema.ts";
 import type { BlockSpec, RecordedAction } from "../types.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
 import type { GuidanceKind, PromptName } from "../prompts/prompt-names.ts";
+import { normalizePromptText, readUserPrompt } from "../prompts/user-prompt.ts";
 
 export interface AvailableBlock {
   name: string;
@@ -526,19 +527,19 @@ export interface PromptBundle {
  * reached throws: running with silently different guidance than the project
  * configured is worse than stopping.
  */
-export async function loadPromptBundleFromHub(
+export async function loadPromptBundle(
   ctx: HubContext | null,
   kind: GuidanceKind,
+  cwd: string,
 ): Promise<PromptBundle | null> {
-  if (!ctx) return null;
   const userName: PromptName = `${kind}.user`;
   const agentName: PromptName = `${kind}.agent`;
-  const [userText, agentText] = await Promise.all([
-    ctx.hub.getPrompt(ctx.project, userName).then(normalizePromptText),
-    ctx.hub.getPrompt(ctx.project, agentName).then(normalizePromptText),
+  const [user, agentText] = await Promise.all([
+    readUserPrompt(ctx, userName, cwd),
+    ctx ? ctx.hub.getPrompt(ctx.project, agentName).then(normalizePromptText) : null,
   ]);
   return assemblePromptBundle(
-    { text: userText, label: userName },
+    { text: user.text, label: user.local ? `${userName} (local)` : userName },
     { text: agentText, label: agentName },
   );
 }
@@ -571,12 +572,7 @@ function assemblePromptBundle(
   return { text, loaded };
 }
 
-/** Trim + empty-string-to-null normalization applied to hub prompt sources. */
-function normalizePromptText(content: string | null): string | null {
-  if (content === null) return null;
-  const trimmed = content.trim();
-  return trimmed.length === 0 ? null : trimmed;
-}
+
 
 /**
  * Probe for orphaned files left over from earlier ccqa versions inside

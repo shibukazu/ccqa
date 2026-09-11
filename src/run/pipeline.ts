@@ -547,7 +547,7 @@ export async function executeRun(
   // what Claude does with nobody told.
   const [customPrompt, triageUserPrompt, ledgerEntries, rerunReport, fetchedDeployHead] = await Promise.all([
     forExecution ? fetchCustomPrompt(hubCtx) : null,
-    forExecution ? fetchTriageUserPrompt(hubCtx) : null,
+    forExecution ? fetchTriageUserPrompt(hubCtx, cwd) : null,
     forExecution && ledgerHub ? fetchLastGreenLedger(ledgerHub, opts.hubProfile, cwd) : null,
     rerunProfile !== null && hubCtx ? fetchRerunReport(hubCtx, rerunProfile) : null,
     // Only reached with no checkout to assert from. Skipped when the re-run

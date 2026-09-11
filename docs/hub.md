@@ -511,9 +511,10 @@ the next `ccqa run`, so it picks it up automatically.
 
 Alongside the learned note, the human-maintained `triage.user` prompt holds
 standing, project-specific classification guidance (e.g. "a stale seed-data
-fixture on staging always counts as ENVIRONMENT"). Write it in the UI's
-Prompts tab, or locally in `.ccqa/prompts/triage.user.md` and upload it with
-`ccqa hub prompt push triage.user`. `ccqa run` fetches it with the learned
+fixture on staging always counts as ENVIRONMENT"). Keep it in the project at
+`.ccqa/prompts/triage.user.md`, or on the hub (the UI's Prompts tab, or
+`ccqa hub prompt push triage.user`) — the project's own copy wins where both
+exist. `ccqa run` reads it with the learned
 note and injects it into the failure-analysis prompt ahead of the learned
 calibration — human standing guidance first, learned calibration second.
 

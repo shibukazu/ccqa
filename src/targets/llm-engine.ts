@@ -5,7 +5,7 @@ import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:pa
 import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
-import { caseRunDir, clearCaseRun, loadPromptBundleFromHub } from "../store/index.ts";
+import { caseRunDir, clearCaseRun, loadPromptBundle } from "../store/index.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import {
   buildLlmFixPrompt,
@@ -309,7 +309,7 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
   log.meta("resources", resources.length);
   log.meta("conventions", conventions.sections.length);
 
-  const bundle = await loadPromptBundleFromHub(ctx.hub, req.target);
+  const bundle = await loadPromptBundle(ctx.hub, req.target, ctx.cwd);
   if (bundle) log.meta("prompt-bundle", bundle.loaded.join(", "));
 
   const writeRootsAbs = configuredWriteRoots(ctx, resources);

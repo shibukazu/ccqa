@@ -54,10 +54,10 @@ The judge decides each step from its `expected` text alone, so a step whose outc
 
 ccqa's live-mode system prompt is deliberately product-agnostic. Anything specific to **your** project — staging URLs, login flow quirks, rich-editor types, common access-denied wording — belongs in a pair of prompts stored on the [hub](./hub.md), per project:
 
-- `live.user` — human-maintained stable guidance. Edit it in the hub UI's Prompts tab, or locally in `.ccqa/prompts/live.user.md` and upload with `ccqa hub prompt push live.user`.
-- `live.agent` — auto-updated on the hub by `ccqa run --learn-hub-live-prompt` from each run's summary. You can push a hand-edited version, but the next `--learn-hub-live-prompt` run may rewrite it; durable rules should live in `live.user`.
+- `live.user` — human-maintained stable guidance. **Keep it in the project at `.ccqa/prompts/live.user.md`, or on the hub** (the UI's Prompts tab, or `ccqa hub prompt push live.user`). The file in the project wins where both exist, and the run says so: these are prose, and reading both would put contradicting instructions in one prompt with nothing to say which is meant. A project keeping it in its own tree needs no hub for it at all.
+- `live.agent` — auto-updated on the hub by `ccqa run --learn-hub-live-prompt` from each run's summary. Hub only: ccqa writes it at run time and it has to outlive a checkout. You can push a hand-edited version, but the next `--learn-hub-live-prompt` run may rewrite it; durable rules should live in `live.user`.
 
-When hub credentials are configured, `ccqa run` fetches both prompts once per invocation and appends them to the system prompt (missing or unreachable prompts never stop a run — you just run without guidance). The `ccqa record` (trace) side has the same split: `record.user` + `record.agent`, refreshed by `ccqa record --learn-hub-trace-prompt`.
+Both are fetched once per invocation and appended to the system prompt (missing or unreachable prompts never stop a run — you just run without guidance). The `ccqa record` (trace) side has the same split: `record.user` + `record.agent`, refreshed by `ccqa record --learn-hub-trace-prompt`.
 
 Keep them short. A page or two of focused notes beats a long handbook — Claude has the spec's `expected` text to work from, these files are for the *non-obvious* product knowledge that isn't in any single spec. Examples of what's useful here:
 

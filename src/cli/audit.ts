@@ -489,7 +489,7 @@ export async function resolveAuditPromptContext(
 ): Promise<AuditPromptContext> {
   const hubCtx = resolveCtx(opts, cwd);
   const [triageUserPrompt, customPrompt] = await Promise.all([
-    fetchTriageUserPrompt(hubCtx, "audit.user"),
+    fetchTriageUserPrompt(hubCtx, cwd, "audit.user"),
     fetchCustomPrompt(hubCtx, "audit.agent"),
   ]).catch(asHubReadError);
   return {

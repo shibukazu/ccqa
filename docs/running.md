@@ -399,10 +399,11 @@ asks for a regrade rather than hide it.
 
 Standing, human-maintained classification guidance lives in the
 `triage.user` prompt (e.g. "a stale seed-data fixture on staging always
-counts as ENVIRONMENT"). Write it in the hub UI's Prompts tab, or edit
-`.ccqa/prompts/triage.user.md` locally and upload it with
-`ccqa hub prompt push triage.user`; `ccqa run` fetches it at run time and
-injects it ahead of the learned calibration note.
+counts as ENVIRONMENT"). Keep it in the project at
+`.ccqa/prompts/triage.user.md`, or on the hub (the UI's Prompts tab, or
+`ccqa hub prompt push triage.user`) — the project's own copy wins where both
+exist, and needs no hub. `ccqa run` reads it and injects it ahead of the
+learned calibration note.
 
 ## Drift detection
 

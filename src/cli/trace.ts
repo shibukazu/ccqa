@@ -2,7 +2,7 @@ import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from ".
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
-  loadPromptBundleFromHub,
+  loadPromptBundle,
   saveFailedRecording,
   saveRecording,
   removeRouteDiff,
@@ -225,7 +225,7 @@ export async function runTrace(
     ...(testCase.context.length > 0 ? { context: testCase.context } : {}),
     ...(opts.instruction ? { instruction: opts.instruction } : {}),
   });
-  const promptBundle = await loadPromptBundleFromHub(opts.hubContext ?? null, "record");
+  const promptBundle = await loadPromptBundle(opts.hubContext ?? null, "record", opts.cwd ?? process.cwd());
   if (promptBundle !== null) log.meta("prompt", promptBundle.loaded.join(" + "));
   const systemPrompt =
     (promptBundle === null

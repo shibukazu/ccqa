@@ -9,7 +9,7 @@ import type { DiffProvider } from "../run/diff-provider.ts";
 import { ANALYSIS_DISABLED } from "../run/failure-analysis.ts";
 import { analyzeFailure } from "../report/analyze.ts";
 import { buildLiveTranscriptExcerpt } from "../report/live-transcript-excerpt.ts";
-import { loadAvailableBlocks, loadPromptBundleFromHub, type AvailableBlock } from "../store/index.ts";
+import { loadAvailableBlocks, loadPromptBundle, type AvailableBlock } from "../store/index.ts";
 import type { LiveCase, LiveSession } from "./live-case.ts";
 import type { HubContext } from "./hub-conn.ts";
 import { isStorageStateShape } from "./hub.ts";
@@ -147,7 +147,7 @@ export async function runLiveSpecs(
 
   log.meta("live-specs", cases.length);
 
-  const userPromptBundle = await loadPromptBundleFromHub(opts.hubContext ?? null, "live");
+  const userPromptBundle = await loadPromptBundle(opts.hubContext ?? null, "live", cwd);
   if (userPromptBundle !== null) {
     log.meta("prompt", userPromptBundle.loaded.join(" + "));
   }
