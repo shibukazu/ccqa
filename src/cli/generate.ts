@@ -25,6 +25,7 @@ import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { loadProjectConfig, type TargetConfig } from "../config/project-config.ts";
+import { resolveLanguage } from "../prompts/language.ts";
 import { resolveTargetOverride } from "../targets/registry.ts";
 import type { GenerateContext, GenerateResult, TargetPlugin } from "../targets/types.ts";
 import type { FixMode } from "../diagnose/loop.ts";
@@ -461,7 +462,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
 }));
 
 async function runGenerateCli(caseArgument: string, opts: GenerateCliOptions): Promise<void> {
-  const language = opts.language ?? DEFAULT_LANGUAGE;
+  let language = opts.language ?? DEFAULT_LANGUAGE;
 
   // The generated test replays under vitest and resolves the spec's ${VAR}
   // references against process.env, so merge the profile (or default .env)
@@ -499,6 +500,7 @@ async function runGenerateCli(caseArgument: string, opts: GenerateCliOptions): P
   let passed: boolean;
   try {
     const config = await loadProjectConfig(cwd);
+    language = resolveLanguage(opts.language, config.language);
     await loadEnvFiles(config.envFiles, cwd);
     const resolved = await resolveCase(caseArgument, config, cwd, {
       ...(opts.target ? { targetOverride: opts.target } : {}),

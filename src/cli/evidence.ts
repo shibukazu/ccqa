@@ -4,6 +4,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { withUsageErrors } from "./usage-errors.ts";
 import { RunUsageError } from "../run/errors.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
+import { resolveLanguage } from "../prompts/language.ts";
 import { getRecording, keptCaseRun, readSpecReview, splitCaseId } from "../store/index.ts";
 import type { TestCase } from "../intent/case.ts";
 import { resolveCase } from "./resolve-case.ts";
@@ -148,7 +149,7 @@ export const evidenceCommand = addLanguageOption(
         test: { path: testPath, source },
         screenshots: await stepScreenshots(cwd, opts.reportDir, testCase, dirname(out)),
         labels: config.evidence.labels,
-        ...(opts.language ? { language: opts.language } : {}),
+        language: resolveLanguage(opts.language, config.language),
         ...(review ? { review } : {}),
         ...(anchors ? { anchors } : {}),
       });

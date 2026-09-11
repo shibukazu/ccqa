@@ -6,6 +6,7 @@ import { readSpecFile } from "../store/index.ts";
 import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
+import { resolveLanguage } from "../prompts/language.ts";
 import { resolveTarget } from "../targets/registry.ts";
 import { currentReportCost } from "../report/run-cost.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
@@ -131,7 +132,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
   );
 
 async function runRecord(caseArgument: string, opts: RecordOptions): Promise<void> {
-  const language = opts.language ?? DEFAULT_LANGUAGE;
+  let language = opts.language ?? DEFAULT_LANGUAGE;
 
   const cwdForProfile = resolveCwd(opts.cwd);
 
@@ -139,6 +140,7 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
   // target has no record phase at all, so fail fast — before any profile or
   // browser work — and point at `ccqa generate` instead.
   const config = await loadProjectConfig(cwdForProfile);
+  language = resolveLanguage(opts.language, config.language);
   await loadEnvFiles(config.envFiles, cwdForProfile);
   const resolved = await resolveCase(caseArgument, config, cwdForProfile);
   const { testCase, target } = resolved;

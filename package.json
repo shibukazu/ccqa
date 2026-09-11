@@ -56,6 +56,22 @@
       }
     }
   },
+  "typesVersions": {
+    "*": {
+      "test-helpers": [
+        "dist/runtime/test-helpers.d.mts"
+      ],
+      "step-evidence": [
+        "dist/runtime/step-evidence.d.mts"
+      ],
+      "hub-client": [
+        "dist/hub-client/index.d.mts"
+      ],
+      "judge": [
+        "dist/runtime/judge.d.mts"
+      ]
+    }
+  },
   "files": [
     "dist/"
   ],

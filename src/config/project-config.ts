@@ -401,6 +401,14 @@ export const ProjectConfigSchema = z
     coverage: CoverageConfigSchema.optional(),
     evidence: EvidenceConfigSchema.prefault({}),
     /**
+     * The language this project writes in (BCP-47, or `auto`), for everything
+     * ccqa produces that a person reads: the comments in a generated test,
+     * the evidence table, a model's findings. `--language` overrides it for
+     * one command; here because a project's language is a fact about the
+     * project, not a thing to remember on every invocation.
+     */
+    language: z.string().min(1).optional(),
+    /**
      * Files the project keeps its own variables in (dotenv format, relative to
      * the project root), loaded before a recording resolves `${VAR}`. A project
      * that already has an env file for its tests points at it rather than

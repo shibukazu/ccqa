@@ -12,6 +12,14 @@
 export const DEFAULT_LANGUAGE = "auto";
 
 /**
+ * The language a command writes in: the flag it was given, else the project's
+ * own (`language` in `.ccqa/config.yaml`), else "follow the material".
+ */
+export function resolveLanguage(flag?: string, configured?: string): string {
+  return flag ?? configured ?? DEFAULT_LANGUAGE;
+}
+
+/**
  * The instruction appended to a command's system prompt. Empty for "auto"
  * (and undefined / blank), so the model keeps its natural material-following
  * behaviour; otherwise it pins every human-readable field to the given tag.
