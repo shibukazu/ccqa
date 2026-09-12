@@ -246,6 +246,13 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
   // during step-NN", the difference between a diagnosable death and a mystery.
   // Signal and --timeout both die through this one seal-with-note path.
   let tracingStep: string | undefined;
+  /**
+   * Set once the trace has written its route. Distinct from `recorded`, which
+   * answers whether the whole invocation succeeded and is what the hub row
+   * reads: this one answers the narrower question the deadline needs — is
+   * there something on disk to carry on from.
+   */
+  let routeSaved = false;
   let abortCause: string | undefined;
   let traceFailureNote: string | undefined;
   const teardown = createRunTeardown();
@@ -275,6 +282,12 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
     deadline = setTimeout(() => {
       abortCause = `timed out after ${seconds}s`;
       log.error(`--timeout: ${abortNote(abortCause, tracingStep)}`);
+      if (routeSaved) {
+        log.hint(
+          `the recording finished and is saved — rerun 'ccqa generate ${caseId}' to carry on ` +
+            `from it, or raise --timeout. Recording again would repeat the expensive half for nothing.`,
+        );
+      }
       void teardown.run().finally(() => process.exit(124));
     }, seconds * 1000);
     deadline.unref();
@@ -302,6 +315,10 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
       // The trace finished: a later signal (during generate) is no longer
       // "during step-NN" — that would name a step that completed fine.
       tracingStep = undefined;
+      // ...and what it recorded is on disk. A deadline that expires from here
+      // on costs the generation, not the recording, and the difference is the
+      // expensive half: say so, or the next thing anyone does is record again.
+      routeSaved = traceResult.status === "passed";
       if (traceResult.status !== "passed") {
         traceFailureNote = `trace finished FAILED: ${traceResult.failureReason} — the recording does not demonstrate the spec`;
       }

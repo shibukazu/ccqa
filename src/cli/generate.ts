@@ -2,7 +2,7 @@ import { withUsageErrors } from "./usage-errors.ts";
 import { RunUsageError } from "../run/errors.ts";
 import { Command } from "commander";
 import { createInterface } from "node:readline";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import {
   ensureCcqaDir,
@@ -400,6 +400,31 @@ interface GenerateCliOptions {
   hubToken?: string;
   hubHeader?: string[];
   project?: string;
+}
+
+/**
+ * Say so when the case has been edited since it was recorded.
+ *
+ * Generation compiles the route, not the document: a step added to the case or
+ * an expectation reworded changes nothing until the case is recorded again.
+ * The generated test then comes out to the old case and passes, and the only
+ * clue is that what you just wrote is not in it — which reads as the generator
+ * ignoring you rather than as a stale recording. Cheap to say, and the one
+ * thing that makes the next step obvious.
+ */
+async function warnIfCaseOutranRecording(
+  testCase: { source: { kind: string; path?: string }; ref: { id: string } },
+  recordedAt: string | undefined,
+): Promise<void> {
+  const path = testCase.source.path;
+  if (recordedAt === undefined || path === undefined) return;
+  const edited = await stat(path).then((st) => st.mtime, () => null);
+  if (edited === null || edited.getTime() <= new Date(recordedAt).getTime()) return;
+  log.warn(
+    `the case was edited after it was recorded (case ${edited.toISOString()}, recording ${recordedAt}). ` +
+      `Generation compiles the recording, so anything added to the case since is not in it — ` +
+      `run 'ccqa record ${testCase.ref.id}' if the steps or the expected results changed.`,
+  );
 }
 
 export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
