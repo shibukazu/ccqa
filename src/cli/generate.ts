@@ -169,6 +169,7 @@ async function runGenerateLocked(
     const saved = await getRecording(testCase.ref);
     log.meta("recording", `${saved.path}${saved.recordedAt ? ` (recorded ${saved.recordedAt})` : ""}`);
     log.meta("actions", saved.actions.length);
+    await warnIfCaseOutranRecording(testCase, saved.recordedAt);
     recording = saved.actions;
     cleanupRecording = saved.cleanup;
     stamp = saved.generated;
@@ -412,19 +413,30 @@ interface GenerateCliOptions {
  * ignoring you rather than as a stale recording. Cheap to say, and the one
  * thing that makes the next step obvious.
  */
+export function staleRecordingWarning(
+  caseId: string,
+  editedAt: Date | null,
+  recordedAt: string | undefined,
+): string | null {
+  if (recordedAt === undefined || editedAt === null) return null;
+  const recorded = new Date(recordedAt);
+  if (Number.isNaN(recorded.getTime()) || editedAt.getTime() <= recorded.getTime()) return null;
+  return (
+    `the case was edited after it was recorded (case ${editedAt.toISOString()}, recording ${recordedAt}). ` +
+    `Generation compiles the recording, so anything added to the case since is not in it — ` +
+    `run 'ccqa record ${caseId}' if the steps or the expected results changed.`
+  );
+}
+
 async function warnIfCaseOutranRecording(
   testCase: { source: { kind: string; path?: string }; ref: { id: string } },
   recordedAt: string | undefined,
 ): Promise<void> {
   const path = testCase.source.path;
-  if (recordedAt === undefined || path === undefined) return;
-  const edited = await stat(path).then((st) => st.mtime, () => null);
-  if (edited === null || edited.getTime() <= new Date(recordedAt).getTime()) return;
-  log.warn(
-    `the case was edited after it was recorded (case ${edited.toISOString()}, recording ${recordedAt}). ` +
-      `Generation compiles the recording, so anything added to the case since is not in it — ` +
-      `run 'ccqa record ${testCase.ref.id}' if the steps or the expected results changed.`,
-  );
+  if (path === undefined) return;
+  const editedAt = await stat(path).then((st) => st.mtime, () => null);
+  const warning = staleRecordingWarning(testCase.ref.id, editedAt, recordedAt);
+  if (warning !== null) log.warn(warning);
 }
 
 export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
