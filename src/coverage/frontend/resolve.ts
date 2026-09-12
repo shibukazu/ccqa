@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { FRONTEND_COVERAGE_FILE, type FrontendCoverage } from "../contract.ts";
+import { FRONTEND_COVERAGE_FILE, GAP_SAMPLES, type FrontendCoverage } from "../contract.ts";
 import { sourceBehindBuildOutput } from "./build-output.ts";
 import { normalizeSourcePath, type SourcePath, type SourceRoots } from "./source-path.ts";
 import {
@@ -90,6 +90,8 @@ export class FrontendResolution {
   private unmappedScripts = 0;
   private unmappedRanges = 0;
   private unresolvedSources = 0;
+  /** See `FrontendCoverage.unresolvedSamples`. */
+  private readonly unresolvedSamples: string[] = [];
   private excludedDependencies = 0;
   /** Set once collection dies: everything after this point was never seen. */
   private stopped = false;
@@ -130,7 +132,10 @@ export class FrontendResolution {
       // file the result cannot mention, which reads as one no spec ever
       // reached. Dependency code is dropped too, but on purpose, so it is
       // counted apart.
-      if (source.kind === "unresolved") this.unresolvedSources++;
+      if (source.kind === "unresolved") {
+        this.unresolvedSources++;
+        if (this.unresolvedSamples.length < GAP_SAMPLES) this.unresolvedSamples.push(raw);
+      }
       else if (source.kind === "dependency") this.excludedDependencies++;
       else this.files.add(this.sourceOf(source.path));
     }
@@ -154,6 +159,7 @@ export class FrontendResolution {
       unmappedScripts: this.unmappedScripts,
       unmappedRanges: this.unmappedRanges,
       unresolvedSources: this.unresolvedSources,
+      unresolvedSamples: [...this.unresolvedSamples],
       excludedDependencies: this.excludedDependencies,
       stopped: this.stopped,
     };

@@ -1,4 +1,5 @@
 import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { specCase } from "../../store/index.ts";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -26,10 +27,17 @@ function makeContext(): GenerateContext {
     specYaml: "title: create a task via the API\n",
     featureName: "tasks",
     specName: "create",
+    ref: specCase("tasks", "create", cwd),
+    steps: [],
+    cleanup: [],
+  expectations: [],
+  cleanupExpectations: [],
+    fields: {},
     cwd,
+    testPath: "runbooks/tasks/create.yaml",
     resources: [],
-    conventions: { guides: [], examples: [] },
-    targetConfig: TargetConfigSchema.parse({ outDir: "runbooks" }),
+    conventions: { guides: [], examples: [], operate: [] },
+    targetConfig: TargetConfigSchema.parse({}),
     language: "auto",
     hub: null,
     fix: { maxRetries: 0, mode: "auto", useSnapshot: false },

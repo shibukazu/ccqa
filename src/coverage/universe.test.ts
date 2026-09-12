@@ -65,6 +65,26 @@ describe("enumerateUniverse", () => {
     expect(universe?.files).toEqual(["src/a.ts"]);
   });
 
+  // Excluded files are never recorded as reached, so keeping them in the
+  // denominator would leave a permanent gap nobody can close.
+  it("leaves coverage.exclude's files out of the denominator", async () => {
+    const root = scaffold(["src/a.ts", "src/generated/client.ts"]);
+    const universe = await enumerateUniverse(root, ["src"], () => {}, (file) =>
+      file.startsWith("src/generated/"),
+    );
+    expect(universe?.files).toEqual(["src/a.ts"]);
+  });
+
+  // Counted before the empty check, or an exclusion that covers everything
+  // ships `files: []` and the tree reads as 100% reached, 0 uncovered.
+  it("an exclude that covers the whole universe omits it like an empty include", async () => {
+    const root = scaffold(["src/generated/client.ts"]);
+    const warnings: string[] = [];
+    const universe = await enumerateUniverse(root, ["src"], (w) => warnings.push(w), () => true);
+    expect(universe).toBeUndefined();
+    expect(warnings.at(-1)).toContain("matched no files");
+  });
+
   it("omits an empty universe instead of reporting 100% coverage", async () => {
     const root = scaffold(["src/a.ts"]);
     const warnings: string[] = [];

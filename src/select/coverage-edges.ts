@@ -1,3 +1,5 @@
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 
 import type { HubContext } from "../cli/hub-conn.ts";
@@ -179,6 +181,10 @@ function ingestResolved(resolved: HubCoverageAnswer["resolved"], merge: Merge): 
   for (const spec of resolved.specs) {
     const key = specKeyFromSpecId(spec.specId, resolved.runId);
     if (key === null) continue;
+    // No verdict travels in the stream, so a failed spec's partial reach can
+    // become an edge here. Consulted only where no ledger answers, and the
+    // alternative there is no measurement at all.
+    //
     // An empty file set is indistinguishable from a measurement that never
     // landed (no instrumented process answered for this spec), so it is not
     // an edge — consulting it would clear the spec against no evidence.
@@ -197,10 +203,22 @@ const ReportCoverageRowsSchema = z.object({
     z.object({
       feature: z.string(),
       spec: z.string(),
+      status: z.string().optional(),
       coverage: z.object({ files: z.array(z.string()) }).optional(),
     }),
   ),
 });
+
+/**
+ * Whether a row's file set stands for what the spec reaches. A failed spec
+ * reached a prefix of its route, which is a fact about that run and not about
+ * the spec; a row with no verdict at all cannot say either way.
+ */
+function isSpecReach<T extends { status?: string; coverage?: { files: string[] } }>(
+  row: T,
+): row is T & { coverage: { files: string[] } } {
+  return row.status === "passed" && (row.coverage?.files.length ?? 0) > 0;
+}
 
 /**
  * Legacy: edges from pushed run reports, newest first. Only `kind: run` runs
@@ -225,7 +243,7 @@ async function collectReportEdges(input: HubContext, merge: Merge): Promise<numb
       const parsed = ReportCoverageRowsSchema.safeParse(await hub.getReport(id));
       if (!parsed.success) return true;
       for (const row of parsed.data.results) {
-        if (!row.coverage || row.coverage.files.length === 0) continue;
+        if (!isSpecReach(row)) continue;
         merge(`${row.feature}/${row.spec}`, { files: row.coverage.files, measuredAt });
       }
       return true;
@@ -234,4 +252,60 @@ async function collectReportEdges(input: HubContext, merge: Merge): Promise<numb
     }
   });
   return read.filter((ok) => !ok).length;
+}
+
+/**
+ * The one slice of a local `report.json` this reads, for `select-specs
+ * --report-dir` (no hub configured). Mirrors `ReportCoverageRowsSchema` plus
+ * each row's own `finishedAt`, which stands in for the hub's per-edge
+ * `measuredAt` when present.
+ */
+const LocalReportCoverageRowsSchema = z.object({
+  results: z.array(
+    z.object({
+      feature: z.string(),
+      spec: z.string(),
+      status: z.string().optional(),
+      finishedAt: z.string().optional(),
+      coverage: z.object({ files: z.array(z.string()) }).optional(),
+    }),
+  ),
+});
+
+/**
+ * Read coverage edges out of a local run report instead of the hub — the
+ * ledger for a project that has never pushed to one. Never throws: a missing
+ * or unparseable report degrades exactly like an unreachable hub does, so
+ * `select-specs` treats "no local report yet" the same as "no measurements
+ * yet" rather than crashing a first run.
+ */
+export async function loadCoverageEdgesFromReport(reportDirAbs: string): Promise<CoverageEdgesReadout> {
+  const path = join(reportDirAbs, "report.json");
+  let raw: string;
+  let mtimeMs: number;
+  try {
+    [raw, mtimeMs] = await Promise.all([readFile(path, "utf8"), stat(path).then((s) => s.mtimeMs)]);
+  } catch {
+    return { edges: new Map(), degraded: true };
+  }
+
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { edges: new Map(), degraded: true };
+  }
+  const parsed = LocalReportCoverageRowsSchema.safeParse(json);
+  if (!parsed.success) return { edges: new Map(), degraded: true };
+
+  const edges: CoverageEdges = new Map();
+  for (const row of parsed.data.results) {
+    if (!isSpecReach(row)) continue;
+    const rowMeasuredAt = row.finishedAt ? Date.parse(row.finishedAt) : NaN;
+    edges.set(`${row.feature}/${row.spec}`, {
+      files: new Set(row.coverage.files),
+      measuredAt: Number.isNaN(rowMeasuredAt) ? mtimeMs : rowMeasuredAt,
+    });
+  }
+  return { edges, degraded: false };
 }

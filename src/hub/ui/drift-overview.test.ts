@@ -74,6 +74,17 @@ describe("hub UI: run detail drift badges", () => {
     expect(driftRunState(run(null, "failed"))).toBe("found");
   });
 
+  test("a run whose only findings are PRODUCT_BUG/ENVIRONMENT reads clean, not found", () => {
+    // Neither blocks anything (driftSeverity: warn) — a badge that read them
+    // as "found" would blame the test case for something the audit itself
+    // said wasn't there.
+    const { driftRunState } = rowStates();
+    const run = (drift: unknown) => ({ status: "passed", drift });
+    expect(
+      driftRunState(run({ specs: 2, testDrift: 0, specChange: 0, productBug: 1, environment: 1, unknown: 0 })),
+    ).toBe("clean");
+  });
+
   test("an audit still running is not asked what it found", () => {
     // Its summary is absent because it has not finished, and `driftRunState`
     // reads an absent summary as "clean" — so an audit mid-sweep would claim

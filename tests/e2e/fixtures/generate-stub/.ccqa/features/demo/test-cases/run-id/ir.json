@@ -1,0 +1,25 @@
+{
+  "actions": [
+    { "action": "navigate", "value": "about:blank", "stepId": "step-01" },
+    {
+      "action": "fill",
+      "locator": { "by": "css", "value": "#title" },
+      "value": "ccqa-${CCQA_RUN_ID}",
+      "stepId": "step-01"
+    },
+    {
+      "action": "assert",
+      "assert": "text_visible",
+      "value": "ccqa-${CCQA_RUN_ID}",
+      "stepId": "step-02"
+    }
+  ],
+  "cleanup": [
+    {
+      "action": "fill",
+      "locator": { "by": "css", "value": "#cleanup-note" },
+      "value": "ccqa-${CCQA_RUN_ID}",
+      "stepId": "cleanup-01"
+    }
+  ]
+}

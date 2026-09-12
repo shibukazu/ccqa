@@ -291,6 +291,63 @@ describe("actionsToScript", () => {
     });
   });
 
+  describe("a locator with no plain-selector form", () => {
+    // `locatorToSelector` falls back to the raw value, so a role locator would
+    // render as the bare word `combobox` — an assertion every page with one
+    // passes, and `abAssertNotVisible` one that every such page fails.
+    it("asks a named role the way the replay does, not as a selector", () => {
+      const actions: RecordedAction[] = [
+        {
+          action: "assert",
+          assert: "element_visible",
+          locator: { by: "role", value: "combobox", name: "Priority *", exact: true },
+        },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).toContain('ab("find", "role", "combobox", "text", "--name", "Priority *", "--exact")');
+      expect(script).not.toContain('abAssertVisible("combobox")');
+    });
+
+    it("leaves a breadcrumb rather than a tautology when it cannot ask", () => {
+      const actions: RecordedAction[] = [
+        { action: "assert", assert: "element_not_visible", locator: { by: "role", value: "combobox" } },
+      ];
+      const script = actionsToScript({ actions, testName: "demo" });
+      expect(script).not.toContain('abAssertNotVisible("combobox")');
+      expect(script).toContain("[warn] assert not emitted: element_not_visible by role=combobox");
+    });
+
+    // A name recorded without `--exact` matched by substring; asking exactly
+    // would fail on the very element the recording verified.
+    it("asks exactly only when the locator was recorded that way", () => {
+      const loose = actionsToScript({
+        actions: [{
+          action: "assert",
+          assert: "element_visible",
+          locator: { by: "role", value: "button", name: "Log in" },
+        }],
+        testName: "demo",
+      });
+      expect(loose).toContain('ab("find", "role", "button", "text", "--name", "Log in")');
+      expect(loose).not.toContain("--exact");
+    });
+
+    // Prose handed to `get count` parses as nothing, so a "not visible"
+    // assertion built from it passes for ever.
+    it("never lets an observation stand in as a selector", () => {
+      const script = actionsToScript({
+        actions: [{
+          action: "assert",
+          assert: "element_not_visible",
+          locator: { by: "role", value: "combobox" },
+          observation: "the category dropdown is gone",
+        }],
+        testName: "demo",
+      });
+      expect(script).not.toContain('abAssertNotVisible("the category dropdown is gone")');
+    });
+  });
+
   describe("find-form locators", () => {
     it("emits ab(\"find\", \"text\", value, \"click\") for a text-locator click", () => {
       const actions: RecordedAction[] = [

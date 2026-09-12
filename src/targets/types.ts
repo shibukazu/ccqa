@@ -1,13 +1,15 @@
 import type { TestSpec } from "../spec/yaml-schema.ts";
+import type { ExpandedStep } from "../spec/expand.ts";
 import type { RecordedAction } from "../ir/types.ts";
 import type { Conventions, ResourceRef, TargetConfig } from "../config/project-config.ts";
 import type { HubContext } from "../cli/hub-conn.ts";
 import type { RunTeardown } from "../cli/run-teardown.ts";
 import type { FixMode } from "../diagnose/loop.ts";
-import type { SpecRef } from "../store/index.ts";
+import type { CaseRef, SpecRef } from "../store/index.ts";
 import type { GroupLookup } from "../run/serial-groups.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import type { ReportCoverage, ReportSpecResult } from "../report/schema.ts";
+import type { SpecCoverageReview } from "./verifies-spec.ts";
 
 /**
  * Target plugin abstraction: a target turns a spec into runnable test code
@@ -38,12 +40,13 @@ export interface TargetPlugin {
   /** Generate (and verify, when the target has a verification loop) test code. */
   generate(ctx: GenerateContext): Promise<GenerateResult>;
   /**
-   * Absolute path of a previously generated artifact that `generate` would
-   * overwrite, or null when there is none. The CLI uses this for its
-   * interactive overwrite guard (`--force` skips the prompt); targets with
-   * no overwrite hazard can omit the hook.
+   * Where this target's generated test lands when the project's config does
+   * not say (`targets.<id>.testPath`) — a template over `{feature}`/`{spec}`,
+   * see src/targets/test-path.ts. Required, never optional: every command that
+   * is not `generate` finds a spec's test through this path, so a target
+   * without one would generate code nothing could run, audit, or triage.
    */
-  existingOutput?(ref: SpecRef, cwd: string): Promise<string | null>;
+  defaultTestPath: string;
   /**
    * Executes previously generated tests under `ccqa run`. Absent means the
    * target is generate-only and the run pipeline records its specs as
@@ -171,13 +174,48 @@ export interface GenerateContext {
   specName: string;
   /** Project root — the directory holding `.ccqa/`. */
   cwd: string;
+  /**
+   * Where the generated test must be written, relative to `cwd`: the target's
+   * `testPath` template expanded for this spec. Resolved by the caller, from
+   * the same template `ccqa run` and the audit expand, so generation and every
+   * later reader of that file name it the same way.
+   */
+  testPath: string;
   /** Recorded IR; set iff the target's `input` is "recording". */
   recording?: RecordedAction[];
+  /**
+   * The recorded undo, when the case states one. Kept apart from `recording`
+   * because it is emitted apart: what a test does and what it takes back are
+   * different phases, and a target that puts the second in `afterEach` needs
+   * to know which actions those are.
+   */
+  cleanupRecording?: RecordedAction[];
+  /** Where this case's own files live, and the id everything cites it by. */
+  ref: CaseRef;
+  /** The case's steps, already expanded — whichever document stated them. */
+  steps: ExpandedStep[];
+  /** What to undo afterwards; emitted apart from the steps. */
+  cleanup: ExpandedStep[];
+  /**
+   * What the case states for the flow as a whole rather than per step, and
+   * what it states about its cleanup. Both empty for a `spec.yaml` case, whose
+   * steps carry their own `expected`. The review of the generated test reads
+   * them: a step whose claim lives here would otherwise look like a step that
+   * claims nothing.
+   */
+  expectations: string[];
+  cleanupExpectations: string[];
+  /**
+   * Values a header or a title tag is written from, by the names the project's
+   * own config uses. Empty for a case ccqa's own `spec.yaml` states, which has
+   * no such fields.
+   */
+  fields: Record<string, string | undefined>;
   /** Existing code assets generated tests should reuse (config `resources`). */
   resources: ResourceRef[];
   /** Style/convention guide inputs for generation (config `conventions`). */
   conventions: Conventions;
-  /** Full per-target config block — also carries `outDir` / `runCommand`. */
+  /** Full per-target config block — also carries `testPath` / `runCommand`. */
   targetConfig: TargetConfig;
   language: string;
   model?: string;
@@ -219,6 +257,11 @@ export interface GenerateResult {
    * non-zero exit. Targets without a verification step return true.
    */
   passed: boolean;
+  /**
+   * What the reading of the finished files found — whether the assertions
+   * decide what the case claims. Absent when the target never asked.
+   */
+  review?: SpecCoverageReview;
 }
 
 /** Options the run pipeline hands to a target's runner. */
@@ -247,6 +290,8 @@ export interface RunnerOptions {
   targetId: string;
   /** The target's resolved config block — runCommand runners read `runCommand` here. */
   targetConfig: TargetConfig;
+  /** The plugin's `defaultTestPath`, so the runner can resolve each spec's test. */
+  defaultTestPath: string;
   /**
    * Resolved from the plugin's `stepEvidence` (absent ⇒ unsupported). Runners
    * point the child at a per-spec `CCQA_EVIDENCE_DIR` only when supported.

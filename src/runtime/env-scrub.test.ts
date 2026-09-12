@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { buildProseEnvScrubMap, buildSpecEnvScrub, scrubEnvValues } from "./env-scrub.ts";
+import {
+  actionTexts,
+  buildProseEnvScrubMap,
+  buildSpecEnvScrub,
+  findLoadedValueLiterals,
+  scrubEnvValues,
+} from "./env-scrub.ts";
 import { BlockSpecSchema, TestSpecSchema, type TestSpec } from "../spec/yaml-schema.ts";
 import { expandSpec } from "../spec/expand.ts";
+import { forgetLoadedEnv, rememberLoadedEnv } from "./profile-env.ts";
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -26,7 +33,7 @@ describe("buildSpecEnvScrub", () => {
   test("captures ${VAR} refs from action steps and resolves them against process.env", () => {
     process.env["APP_URL"] = "https://example.com";
     const spec = specOf([{ instruction: "open ${APP_URL}/", expected: "loaded" }]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }));
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }));
     expect(out.map).toEqual([["https://example.com", "${APP_URL}"]]);
     expect(out.unresolved).toEqual([]);
   });
@@ -34,7 +41,7 @@ describe("buildSpecEnvScrub", () => {
   test("an override beats the parent env — the child runs with the injected value", () => {
     process.env["CCQA_RUN_ID"] = "parent-value";
     const spec = specOf([{ instruction: "name it item-${CCQA_RUN_ID}", expected: "created" }]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }), {
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }), {
       CCQA_RUN_ID: "injected-session-name",
     });
     expect(out.map).toEqual([["injected-session-name", "${CCQA_RUN_ID}"]]);
@@ -45,7 +52,7 @@ describe("buildSpecEnvScrub", () => {
   test("an override resolves a ref the parent env leaves unset", () => {
     delete process.env["CCQA_RUN_ID"];
     const spec = specOf([{ instruction: "name it item-${CCQA_RUN_ID}", expected: "created" }]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }), {
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }), {
       CCQA_RUN_ID: "injected-session-name",
     });
     expect(out.map).toEqual([["injected-session-name", "${CCQA_RUN_ID}"]]);
@@ -64,7 +71,7 @@ describe("buildSpecEnvScrub", () => {
       { include: "login", params: { loginUrl: "${APP_LOGIN_URL}", email: "${LOGIN_EMAIL}" } },
       { instruction: "click", expected: "ok" },
     ]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map([["login", login]]) }));
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map([["login", login]]) }));
     const placeholders = out.map.map(([, p]) => p).sort();
     expect(placeholders).toEqual(["${APP_LOGIN_URL}", "${LOGIN_EMAIL}"]);
   });
@@ -80,14 +87,14 @@ describe("buildSpecEnvScrub", () => {
       steps: [{ instruction: "open ${APP_URL}/", expected: "loaded" }],
     });
     const spec = specOf([{ include: "home" }]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map([["home", home]]) }));
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map([["home", home]]) }));
     expect(out.map).toEqual([["https://example.com", "${APP_URL}"]]);
   });
 
   test("supports the bare `$VAR` form as well as `${VAR}`", () => {
     process.env["RUN_ID"] = "run-123";
     const spec = specOf([{ instruction: "wait $RUN_ID", expected: "ok" }]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }));
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }));
     expect(out.map).toEqual([["run-123", "${RUN_ID}"]]);
   });
 
@@ -95,7 +102,7 @@ describe("buildSpecEnvScrub", () => {
     delete process.env["MISSING"];
     process.env["BLANK"] = "";
     const spec = specOf([{ instruction: "${MISSING} ${BLANK}", expected: "x" }]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }));
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }));
     expect(out.map).toEqual([]);
     expect(out.unresolved.sort()).toEqual(["BLANK", "MISSING"]);
   });
@@ -104,15 +111,74 @@ describe("buildSpecEnvScrub", () => {
     process.env["SHORT"] = "abc";
     process.env["LONG"] = "abcdef";
     const spec = specOf([{ instruction: "${SHORT} ${LONG}", expected: "x" }]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }));
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }));
     expect(out.map[0]).toEqual(["abcdef", "${LONG}"]);
     expect(out.map[1]).toEqual(["abc", "${SHORT}"]);
   });
   test("captures refs from a claim and its selector", () => {
     process.env["TENANT"] = "acme-corp";
     const spec = specOf([{ judgeByLlm: "the answer names ${TENANT}", from: "[data-for='${TENANT}']" }]);
-    const out = buildSpecEnvScrub(spec, expandSpec(spec, { blocks: new Map() }));
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }));
     expect(out.map).toEqual([["acme-corp", "${TENANT}"]]);
+  });
+});
+
+describe("buildSpecEnvScrub — loaded variables", () => {
+  afterEach(() => forgetLoadedEnv());
+
+  test("maps a loaded variable no step mentions, once its value clears the length bar", () => {
+    process.env["LOGIN_PASSWORD"] = "s3cr3t-pw";
+    const spec = specOf([{ instruction: "sign in", expected: "signed in" }]);
+    rememberLoadedEnv(["LOGIN_PASSWORD"]);
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }));
+    expect(out.map).toEqual([["s3cr3t-pw", "${LOGIN_PASSWORD}"]]);
+  });
+
+  test("does not map a loaded value shorter than 8 characters — it would corrupt ordinary text", () => {
+    process.env["PORT"] = "3000";
+    const spec = specOf([{ instruction: "open the app", expected: "loaded" }]);
+    rememberLoadedEnv(["PORT"]);
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }));
+    expect(out.map).toEqual([]);
+  });
+
+  test("does not duplicate a loaded name a step already mentions by ${VAR}", () => {
+    process.env["LOGIN_PASSWORD"] = "s3cr3t-pw";
+    const spec = specOf([{ instruction: "fill password with ${LOGIN_PASSWORD}", expected: "filled" }]);
+    rememberLoadedEnv(["LOGIN_PASSWORD"]);
+    const out = buildSpecEnvScrub(spec.steps, expandSpec(spec, { blocks: new Map() }));
+    expect(out.map).toEqual([["s3cr3t-pw", "${LOGIN_PASSWORD}"]]);
+  });
+});
+
+describe("findLoadedValueLiterals / actionTexts", () => {
+  afterEach(() => forgetLoadedEnv());
+
+  test("returns the variable name, never the value, for text containing a loaded value", () => {
+    process.env["LOGIN_PASSWORD"] = "s3cr3t-pw";
+    rememberLoadedEnv(["LOGIN_PASSWORD"]);
+    expect(findLoadedValueLiterals(["typed s3cr3t-pw into the password field"])).toEqual([
+      "LOGIN_PASSWORD",
+    ]);
+  });
+
+  test("returns an empty array when nothing matches", () => {
+    process.env["LOGIN_PASSWORD"] = "s3cr3t-pw";
+    rememberLoadedEnv(["LOGIN_PASSWORD"]);
+    expect(findLoadedValueLiterals(["nothing to see here"])).toEqual([]);
+  });
+
+  test("finds a loaded value baked into any of an action's fields via actionTexts", () => {
+    process.env["LOGIN_PASSWORD"] = "s3cr3t-pw";
+    rememberLoadedEnv(["LOGIN_PASSWORD"]);
+    const texts = actionTexts({
+      action: "fill",
+      value: "s3cr3t-pw",
+      locator: { by: "css", value: "[aria-label='Password']" },
+    });
+    expect(findLoadedValueLiterals(texts)).toEqual(["LOGIN_PASSWORD"]);
+    const clean = actionTexts({ action: "click", locator: { by: "css", value: "[aria-label='Submit']" } });
+    expect(findLoadedValueLiterals(clean)).toEqual([]);
   });
 });
 
@@ -124,7 +190,7 @@ describe("buildProseEnvScrubMap", () => {
     const spec = specOf([
       { instruction: "open ${APP_URL}/${PAGE} with ${FEATURE_ON}", expected: "loaded" },
     ]);
-    const map = buildProseEnvScrubMap(spec, expandSpec(spec, { blocks: new Map() }));
+    const map = buildProseEnvScrubMap(spec.steps, expandSpec(spec, { blocks: new Map() }));
     expect(map).toEqual([["https://example.com", "${APP_URL}"]]);
   });
 });
@@ -144,8 +210,8 @@ describe("scrubEnvValues", () => {
     // A navigate target must reverse-mask like any fill value, else the
     // recording pins to the environment it was captured against (`--profile`).
     const map: Array<[string, string]> = [["https://app.example.com", "${APP_BASE_URL}"]];
-    expect(scrubEnvValues("AB_ACTION|open|https://app.example.com/policies", map))
-      .toBe("AB_ACTION|open|${APP_BASE_URL}/policies");
+    expect(scrubEnvValues("AB_ACTION|open|https://app.example.com/todos", map))
+      .toBe("AB_ACTION|open|${APP_BASE_URL}/todos");
   });
 
   test("preserves longer matches first (relies on the builder's sort guarantee)", () => {

@@ -17,10 +17,14 @@ import { FIXABLE_DIAGNOSIS_TYPES } from "../diagnose/types.ts";
  *  - ENVIRONMENT: nothing in the repository. A service that is down, a
  *                 missing or expired credential, absent seeded data, timing.
  *
- * The audit answers the first two and no more: it never opens a browser, so
- * it has no standing to say the product is broken or the environment failed.
- * A run answers all four in one call — it holds the execution evidence and
- * reads the source itself, so the question is never split across stages.
+ * The audit may name any of the four (ADR-0030: `sourceRoots` gives it the
+ * product's own source to read), but it never opens a browser, so only two of
+ * its answers are backed by execution evidence. `driftSeverity` is where that
+ * shows: `TEST_DRIFT`/`SPEC_CHANGE` name a repair and hold the gate shut,
+ * while `PRODUCT_BUG`/`ENVIRONMENT` are reported and the case still runs,
+ * since running it is what actually settles them. A run answers all four in
+ * one call with equal footing — it holds the execution evidence itself, so
+ * none of its four is a mere suspicion.
  *
  * The stakeholder ask behind this module is measurement-first: the call is
  * known to be hard, so every prediction is carried in report.json where the
@@ -47,7 +51,6 @@ export type PredictedLabel = z.infer<typeof PredictedLabelSchema>;
  * "I don't know" is a reason not to grade rather than a grade.
  */
 export const NO_DRIFT_CAUSE = "NO_DRIFT";
-export const DRIFT_ACTUAL_CAUSES = [...DRIFT_FAILURE_CAUSES, NO_DRIFT_CAUSE] as const;
 export const ACTUAL_CAUSES = [...FAILURE_CAUSES, NO_DRIFT_CAUSE] as const;
 export const ActualCauseSchema = z.enum(ACTUAL_CAUSES);
 export type ActualCause = z.infer<typeof ActualCauseSchema>;
@@ -65,18 +68,21 @@ export type ActualCause = z.infer<typeof ActualCauseSchema>;
 export const ReportKindSchema = z.enum(["run", "drift", "record"]);
 export type ReportKind = z.infer<typeof ReportKindSchema>;
 
-/** What a person may record on a row of this kind. */
+/**
+ * What a person may record on a row of this kind.
+ *
+ * An audit row offers one answer a run row cannot: `NO_DRIFT`, for a finding
+ * against a case that still describes the product. Everything else is the same
+ * vocabulary, so a grade means the same thing on either kind of row.
+ */
 export function causesForKind(kind: ReportKind): readonly ActualCause[] {
   if (kind === "record") return [];
-  return kind === "drift" ? DRIFT_ACTUAL_CAUSES : FAILURE_CAUSES;
+  return kind === "drift" ? ACTUAL_CAUSES : FAILURE_CAUSES;
 }
 
 /** What the model may answer on a row of this kind. */
 export function predictedForKind(kind: ReportKind): readonly PredictedLabel[] {
-  if (kind === "record") return [];
-  return kind === "drift"
-    ? ([...DRIFT_FAILURE_CAUSES, "UNKNOWN"] as const)
-    : PREDICTED_LABELS;
+  return kind === "record" ? [] : PREDICTED_LABELS;
 }
 
 export const SUB_DIAGNOSES = [...FIXABLE_DIAGNOSIS_TYPES, "NONE"] as const;
@@ -85,6 +91,15 @@ export const FailureEvidenceSchema = z.object({
   /** file:line or diff-hunk reference backing the claim. Optional for log-only evidence. */
   file: z.string().optional(),
   detail: z.string(),
+  /**
+   * Set only when opening the cited line found something worth saying
+   * (`src/drift/verify-citations.ts`): `corrected` means the line number here
+   * is ccqa's rather than the model's, `unverified` that the file holds the
+   * quoted string nowhere. Absent covers both "checked and right" and
+   * "nothing to check" — a reader acts on neither, and a published field with
+   * four states two of which mean the same thing is surface nobody needs.
+   */
+  citation: z.enum(["corrected", "unverified"]).optional(),
 });
 export type FailureEvidence = z.infer<typeof FailureEvidenceSchema>;
 
@@ -124,6 +139,16 @@ export const SpecChangeKindSchema = z.enum(["FEATURE_REMOVED", "BEHAVIOUR_CHANGE
 export type SpecChangeKind = z.infer<typeof SpecChangeKindSchema>;
 
 /**
+ * The field as every parser reads it: a value outside the two is dropped, not
+ * rejected. Models put this field on labels the prompt scopes it away from,
+ * sometimes with a value of their own — and a whole usable verdict must not be
+ * lost over a field `normalizeDiagnosis` drops a line later. Dropped rather
+ * than coerced: guessing which of the two was meant would put ccqa's invention
+ * where its evidence should be.
+ */
+const specChangeKindField = SpecChangeKindSchema.optional().catch(undefined);
+
+/**
  * LLM output shape. Deliberately NOT .strict(): the model occasionally adds
  * keys, and rejecting the whole analysis over an extra field would collapse
  * a usable prediction into UNKNOWN. Zod's default strips unknown keys.
@@ -159,7 +184,7 @@ export const FailureAnalysisSchema = z.object({
    * travels in a report row's `analysis`, which is parsed by this schema —
    * today only the audit sets it.
    */
-  specChangeKind: SpecChangeKindSchema.optional(),
+  specChangeKind: specChangeKindField,
 });
 export type FailureAnalysis = z.infer<typeof FailureAnalysisSchema>;
 
@@ -170,16 +195,13 @@ export type FailureAnalysis = z.infer<typeof FailureAnalysisSchema>;
  * a reader never translates between two taxonomies, and the hub renders,
  * grades and learns from both through one path.
  *
- * `PRODUCT_BUG` is deliberately absent. Drift never opens a browser, so "the
- * product regressed" is not something it can observe: a static read cannot
- * tell a dropped side effect from a working one. Claiming it would be guessing
- * in the one direction that wastes a developer's time. Unifying the vocabulary
- * means sharing the definitions, not emitting every label.
+ * All four causes are answerable, but only two of them are answerable *well*
+ * from a static read, and `driftSeverity` is where that shows: `TEST_DRIFT`
+ * and `SPEC_CHANGE` name a repair the reader can make and hold the gate shut,
+ * while `PRODUCT_BUG` and `ENVIRONMENT` are suspicions a browser has to
+ * settle and are reported without blocking.
  */
-export const DriftLabelSchema = PredictedLabelSchema.extract([
-  ...DRIFT_FAILURE_CAUSES,
-  "UNKNOWN",
-]);
+export const DriftLabelSchema = PredictedLabelSchema;
 export type DriftLabel = z.infer<typeof DriftLabelSchema>;
 
 /**
@@ -206,7 +228,7 @@ export const DriftDiagnosisSchema = z.object({
   surface: DriftSurfaceSchema.default("spec"),
   subDiagnosis: DriftSubDiagnosisSchema.default("NONE"),
   /** See `SpecChangeKindSchema`. */
-  specChangeKind: SpecChangeKindSchema.optional(),
+  specChangeKind: specChangeKindField,
   /** One line: what is out of sync. */
   headline: z.string(),
   /** What to change to bring them back in sync. */
@@ -327,6 +349,14 @@ export const CoverageGapsSchema = z.object({
   outsideProject: z.number(),
   /** Browser sources whose name could not be turned into a project path at all. */
   unresolvedSources: z.number(),
+  /**
+   * A few of each of the two above, verbatim. The counts say a run resolved
+   * badly; only the paths say whether the base directory is wrong or the
+   * sources are genuinely foreign. Optional: a report written before this
+   * field existed stays valid.
+   */
+  outsideProjectSamples: z.array(z.string()).default([]),
+  unresolvedSamples: z.array(z.string()).default([]),
   /** Server files the instrumentation could not rewrite — they can never report. */
   uninstrumentedFiles: z.number(),
   /**

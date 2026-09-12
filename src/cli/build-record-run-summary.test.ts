@@ -17,6 +17,7 @@ function action(overrides: Partial<RecordedAction> = {}): RecordedAction {
 function traceResult(overrides: Partial<RunTraceResult> = {}): RunTraceResult {
   return {
     status: "passed",
+    failureReason: null,
     statusLines: statusLines(),
     actionsKept: 1,
     actionsRecorded: 1,
@@ -32,7 +33,7 @@ describe("buildRecordRunSummary", () => {
       actions: [action({ stepId: "step-01" })],
     });
 
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
 
     expect(summary).toContain("- kept commands: fill #email = x");
   });
@@ -46,7 +47,7 @@ describe("buildRecordRunSummary", () => {
       actions: [action({ stepId: "step-01" })],
     });
 
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
 
     expect(summary).toContain("### step-01 — fill the form (DONE)");
     expect(summary).toContain("- result: email field shows the value");
@@ -62,7 +63,7 @@ describe("buildRecordRunSummary", () => {
       actions: [],
     });
 
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
 
     expect(summary).toContain("## checkout/happy-path — failed");
     expect(summary).toContain("### step-02 — submit the form (FAILED)");
@@ -77,7 +78,7 @@ describe("buildRecordRunSummary", () => {
       ],
     });
 
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
 
     expect(summary).toContain("- observations: form rendered with two fields");
   });
@@ -87,7 +88,7 @@ describe("buildRecordRunSummary", () => {
       actions: [action({ stepId: "step-01" })],
     });
 
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
 
     expect(summary).toContain("#email");
   });
@@ -97,7 +98,7 @@ describe("buildRecordRunSummary", () => {
       actions: [action({ stepId: undefined, locator: { by: "css", value: "#orphan" } })],
     });
 
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
 
     expect(summary).not.toContain("#orphan");
     expect(summary).not.toContain("kept commands:");
@@ -106,7 +107,7 @@ describe("buildRecordRunSummary", () => {
   test("empty status lines", () => {
     const t = traceResult({ statusLines: [] });
 
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
 
     expect(summary).toContain("(no step status lines recorded)");
   });
@@ -116,7 +117,7 @@ describe("buildRecordRunSummary", () => {
       actions: [action({ stepId: "step-01" })],
       churnByStep: new Map([["step-01", { recorded: 5, kept: 2, redundant: 0 }]]),
     });
-    expect(buildRecordRunSummary("checkout", "happy-path", churned)).toContain(
+    expect(buildRecordRunSummary("checkout/happy-path", churned)).toContain(
       "- churn: 5 attempts → 2 kept (3 dropped)",
     );
 
@@ -124,7 +125,7 @@ describe("buildRecordRunSummary", () => {
       actions: [action({ stepId: "step-01" })],
       churnByStep: new Map([["step-01", { recorded: 2, kept: 2, redundant: 0 }]]),
     });
-    expect(buildRecordRunSummary("checkout", "happy-path", clean)).not.toContain("- churn:");
+    expect(buildRecordRunSummary("checkout/happy-path", clean)).not.toContain("- churn:");
   });
 
   test("a step with a field entered via 2+ selectors gets a redundant line", () => {
@@ -132,7 +133,7 @@ describe("buildRecordRunSummary", () => {
       actions: [action({ stepId: "step-01" })],
       churnByStep: new Map([["step-01", { recorded: 3, kept: 3, redundant: 1 }]]),
     });
-    expect(buildRecordRunSummary("checkout", "happy-path", t)).toContain(
+    expect(buildRecordRunSummary("checkout/happy-path", t)).toContain(
       "- redundant: 1 field(s) entered via 2+ selectors",
     );
   });
@@ -151,7 +152,7 @@ describe("buildRecordRunSummary", () => {
       ],
       churnByStep: new Map([["step-01", { recorded: 1, kept: 1, redundant: 0 }]]),
     });
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
     // The command carries the marker + reason so the learner won't record it.
     expect(summary).toContain("[unstable](selector not present within 10000ms)");
     // And the step gets a one-line warning above kept commands.
@@ -163,7 +164,7 @@ describe("buildRecordRunSummary", () => {
       actions: [action({ stepId: "step-01" })],
       churnByStep: new Map([["step-01", { recorded: 1, kept: 1, redundant: 0 }]]),
     });
-    const summary = buildRecordRunSummary("checkout", "happy-path", t);
+    const summary = buildRecordRunSummary("checkout/happy-path", t);
     expect(summary).not.toContain("[unstable]");
     expect(summary).not.toContain("- replay-unstable:");
   });

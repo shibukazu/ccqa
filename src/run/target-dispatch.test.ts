@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  groupIntentCases,
   groupSpecsByTarget,
   runExternalSpecs,
+  type DispatchedSpec,
   type ExternalTargetGroup,
   type TargetDispatch,
 } from "./target-dispatch.ts";
@@ -12,6 +14,8 @@ import { readSpecs } from "./spec-catalog.ts";
 import { createIncrementalReport, type ReportEnvelope } from "./incremental-report.ts";
 import { resolveTargetFrom } from "../targets/registry.ts";
 import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
+import { playwrightTarget } from "../targets/playwright/index.ts";
+import { SPEC_DIR_TEMPLATE } from "../store/index.ts";
 import type {
   BrowserCoverageDecl,
   GenerateResult,
@@ -21,7 +25,11 @@ import type {
   TestRunner,
 } from "../targets/types.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
-import { ProjectConfigSchema, type ProjectConfig } from "../config/project-config.ts";
+import {
+  ProjectConfigSchema,
+  TargetConfigSchema,
+  type ProjectConfig,
+} from "../config/project-config.ts";
 import type { TestSpec } from "../spec/yaml-schema.ts";
 import type { ReportSpecResult, RunReportData } from "../report/schema.ts";
 import type { SpecRef } from "../store/index.ts";
@@ -65,6 +73,7 @@ function fakePlugin(id: string, runner?: TestRunner): TargetPlugin {
     generate: (): Promise<GenerateResult> => {
       throw new Error("not under test");
     },
+    defaultTestPath: `${SPEC_DIR_TEMPLATE}/test.spec.ts`,
     judgeSteps: { supported: true },
     browserCoverage: { browser: "none", reason: "test target" },
     ...(runner ? { runner } : {}),
@@ -165,6 +174,62 @@ describe("groupSpecsByTarget", () => {
   });
 });
 
+describe("groupIntentCases", () => {
+  const CASES: DispatchedSpec[] = [
+    { featureName: "demo", specName: "a", title: "Case A" },
+    { featureName: "demo", specName: "b", title: "Case B" },
+  ];
+
+  it("returns empty groups for an empty case list without touching the registry", () => {
+    // A config that throws on any read proves the early return skips resolving
+    // the target entirely, not just that the result happens to be empty.
+    const config = new Proxy({} as ProjectConfig, {
+      get(): never {
+        throw new Error("registry must not be consulted for zero cases");
+      },
+    });
+    expect(groupIntentCases([], "playwright", config)).toEqual({ external: [], skipped: [] });
+  });
+
+  it("groups every case into one external group carrying the target's own settings", () => {
+    const config = ProjectConfigSchema.parse({
+      targets: { playwright: { runCommand: "echo {files}" } },
+    });
+    const { external, skipped } = groupIntentCases(CASES, "playwright", config);
+    expect(skipped).toEqual([]);
+    expect(external).toHaveLength(1);
+    const group = external[0]!;
+    expect(group.targetId).toBe("playwright");
+    expect(group.specs).toEqual(CASES);
+    expect(group.defaultTestPath).toBe(playwrightTarget.defaultTestPath);
+    expect(group.stepEvidence).toEqual(playwrightTarget.stepEvidence);
+    expect(group.browserCoverage).toEqual(playwrightTarget.browserCoverage);
+  });
+
+  it("skips every case, naming runCommand, when the target's config has none", () => {
+    const config = ProjectConfigSchema.parse({});
+    const { external, skipped } = groupIntentCases(CASES, "playwright", config);
+    expect(external).toEqual([]);
+    expect(skipped).toHaveLength(2);
+    skipped.forEach((s, i) => {
+      expect(s.reason).toContain("runCommand");
+      expect(s.title).toBe(CASES[i]!.title);
+      expect(s.targetId).toBe("playwright");
+    });
+  });
+
+  it("skips every case for an unknown target id", () => {
+    const config = ProjectConfigSchema.parse({});
+    const { external, skipped } = groupIntentCases(CASES, "no-such-target", config);
+    expect(external).toEqual([]);
+    expect(skipped).toHaveLength(2);
+    skipped.forEach((s, i) => {
+      expect(s.title).toBe(CASES[i]!.title);
+      expect(s.targetId).toBe("no-such-target");
+    });
+  });
+});
+
 const ENVELOPE: ReportEnvelope = {
   schemaVersion: 1,
   kind: "run",
@@ -190,7 +255,8 @@ function group(runner: TestRunner, specs: ExternalTargetGroup["specs"]): Externa
   return {
     targetId: "ext-run",
     runner,
-    targetConfig: { runCommand: "echo {files}", resources: [], conventions: { guides: [], examples: [] } },
+    targetConfig: TargetConfigSchema.parse({ runCommand: "echo {files}" }),
+    defaultTestPath: `${SPEC_DIR_TEMPLATE}/test.spec.ts`,
     stepEvidence: NO_EVIDENCE,
     browserCoverage: NO_COVERAGE,
     specs,

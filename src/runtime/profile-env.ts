@@ -93,5 +93,32 @@ export function applyProfileEnv(
     process.env[name] = value;
     applied.push(name);
   }
+  rememberLoadedEnv(applied);
   return applied;
+}
+
+/**
+ * Variables ccqa itself put into `process.env` — a hub profile, an `envFiles`
+ * entry. Their values are the project's own credentials and addresses, and a
+ * recording must carry the reference rather than what it resolved to, whether
+ * or not the case happens to mention the variable by name.
+ *
+ * A registry beside `process.env` rather than a return value threaded through
+ * every caller: the loaders already write to one process-wide place, and the
+ * question this answers — "which of these did ccqa supply" — is about that
+ * same place.
+ */
+const loadedNames = new Set<string>();
+
+export function rememberLoadedEnv(names: readonly string[]): void {
+  for (const name of names) loadedNames.add(name);
+}
+
+export function loadedEnvNames(): string[] {
+  return [...loadedNames];
+}
+
+/** Test seam: forget what earlier cases loaded. */
+export function forgetLoadedEnv(): void {
+  loadedNames.clear();
 }

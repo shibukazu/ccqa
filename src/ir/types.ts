@@ -7,6 +7,13 @@
  * `Locator` model.
  */
 
+/**
+ * The step id the recorder marks work that precedes the case's first step —
+ * signing in, reaching the starting screen. Not a step of the case, and not
+ * the same thing as an action it could not attribute at all.
+ */
+export const SETUP_STEP_ID = "setup";
+
 export type AssertType =
   | "text_visible" | "text_not_visible"
   | "element_visible" | "element_not_visible"
@@ -70,6 +77,14 @@ export interface RecordedAction {
   observation?: string;
   /** Spec step this action belongs to (from the last STEP_START line). */
   stepId?: string;
+  /**
+   * This action types a credential. Set from the `CCQA_SECRET=1` prefix on
+   * the recorded command, or from a locator that addresses a password input.
+   * A value that did not resolve to a `${VAR}` reference is not recorded at
+   * all — the action is dropped (`literal-scrub.ts`) rather than kept with a
+   * password in it.
+   */
+  secret?: boolean;
   /**
    * Set by the lenient post-trace validator when this action failed to
    * replay on a fresh session but is still kept in ir.json (and therefore

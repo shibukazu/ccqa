@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { createStepTracker, parseStatusLine, countRedundantByStep, stepsWithoutAsserts } from "./trace.ts";
+import { createStepTracker, parseStatusLine, countRedundantByStep, stepsWithoutAsserts, traceFailureReason } from "./trace.ts";
 import type { RecordedAction } from "../types.ts";
 
 describe("createStepTracker", () => {
@@ -129,6 +129,7 @@ describe("countRedundantByStep", () => {
   });
 });
 
+
 describe("stepsWithoutAsserts", () => {
   const a = (o: Partial<RecordedAction>): RecordedAction => ({ action: "assert", assert: "text_visible", ...o });
   const click = (o: Partial<RecordedAction>): RecordedAction => ({ action: "click", ...o });
@@ -149,5 +150,55 @@ describe("stepsWithoutAsserts", () => {
 
   test("an assert without a stepId claims no step", () => {
     expect(stepsWithoutAsserts(["step-01"], [a({})])).toEqual(["step-01"]);
+  });
+});
+
+describe("traceFailureReason", () => {
+  const ok = { isError: false, errorDetail: null };
+  const line = (text: string) => parseStatusLine(text)!;
+
+  test("a run the model declared passed has no failure", () => {
+    expect(traceFailureReason([line("RUN_COMPLETED|passed|all steps done")], ok)).toBeNull();
+  });
+
+  // The hole this closes: a session that stops mid-step emits no verdict, and
+  // a trace read as passed saves the truncated route over the case's route.
+  test("a session that ended without a RUN_COMPLETED line failed", () => {
+    expect(traceFailureReason([line("STEP_START|step-01|Open the page")], ok)).toMatch(
+      /without a RUN_COMPLETED line/,
+    );
+  });
+
+  test("an SDK error carries its detail", () => {
+    const reason = traceFailureReason([], { isError: true, errorDetail: "SDK reported error_max_turns" });
+    expect(reason).toContain("error_max_turns");
+  });
+
+  // The only answer that is about the page, so it outranks the session's own.
+  test("a reported assertion failure names the step and outranks an SDK error", () => {
+    const reason = traceFailureReason([line("ASSERTION_FAILED|step-01|app-bug: the panel never appeared")], {
+      isError: true,
+      errorDetail: "SDK reported error_max_turns",
+    });
+    expect(reason).toBe("step-01 reported ASSERTION_FAILED");
+  });
+
+  // A cosmetically odd verdict line must not cost the recording the run paid
+  // for: an indented one, an emphasised one, and one with no summary field.
+  test("reads a verdict through indentation, emphasis, a missing summary and a shouted case", () => {
+    for (const text of [
+      "  RUN_COMPLETED|passed|all steps done",
+      "**RUN_COMPLETED|passed|all steps done**",
+      "RUN_COMPLETED|passed",
+      "RUN_COMPLETED|PASSED|all steps done",
+    ]) {
+      expect(traceFailureReason([line(text)], ok), text).toBeNull();
+    }
+  });
+
+  test("a verdict that is neither passed nor failed is not read as passed", () => {
+    expect(traceFailureReason([line("RUN_COMPLETED|partial|some steps done")], ok)).toBe(
+      "the model reported RUN_COMPLETED|partial",
+    );
   });
 });

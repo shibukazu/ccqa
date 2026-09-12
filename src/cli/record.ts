@@ -2,15 +2,19 @@ import { expandActionSteps } from "../spec/expand.ts";
 import { loadAllBlocks } from "../store/index.ts";
 import { withUsageErrors } from "./usage-errors.ts";
 import { Command } from "commander";
-import { parseSpecPath, readSpecFile } from "../store/index.ts";
+import { readSpecFile } from "../store/index.ts";
 import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
+import { resolveLanguage } from "../prompts/language.ts";
 import { resolveTarget } from "../targets/registry.ts";
 import { currentReportCost } from "../report/run-cost.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
 import { runTrace, type RunTraceResult } from "./trace.ts";
-import { parseAutoFixFlag, resolveTargetOrExit, runGenerate, toFixMode, type AutoFixMode } from "./generate.ts";
+import { parseAutoFixFlag, runGenerate, toFixMode, type AutoFixMode } from "./generate.ts";
+import { resolveCase } from "./resolve-case.ts";
+import { splitCaseId } from "../store/index.ts";
+import { loadEnvFiles } from "./env-files.ts";
 import { addHubOptions, addLanguageOption, addProfileOption, applyProfileFromOption, DEFAULT_LANGUAGE } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import { resolveProject } from "./resolve-project.ts";
@@ -40,7 +44,6 @@ interface RecordOptions {
   autoFix?: AutoFixMode;
   autoFixMaxRetries?: string;
   timeout?: number;
-  overwrite?: boolean;
   sessionPin?: boolean;
   traceOnly?: boolean;
   learnHubTracePrompt?: boolean;
@@ -55,14 +58,15 @@ interface RecordOptions {
 export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
   new Command("record")
     .argument(
-      "<feature/spec>",
-      "Spec id in '<feature>/<spec>' form (resolves to .ccqa/features/<feature>/test-cases/<spec>/)",
+      "<case>",
+      "The case to record: a spec id ('<feature>/<spec>'), or — for a target that reads an intent source — a case id or the path of its source file",
     )
     .description(
-      "Record a test from a spec: run agent-browser to collect actions (trace), then compile them " +
-        "into runnable code via the spec's target (generate) — a vitest test.spec.ts for agent-browser, " +
-        "a @playwright/test spec for the playwright target. Recording-backed targets only; spec-input " +
-        "targets like runn have no trace step (use `ccqa generate`), and agent-browser live specs need no recording.",
+      "Record a test from a case: run agent-browser to collect actions (trace), then compile them " +
+        "into runnable code via the case's target (generate) — a vitest test.spec.ts for agent-browser, " +
+        "a @playwright/test spec for playwright and for a target the project defines. Recording-backed " +
+        "targets only; spec-input targets like runn have no trace step (use `ccqa generate`), and " +
+        "agent-browser live specs need no recording.",
     )
     .optionsGroup("How to record:")
     .option(
@@ -100,7 +104,6 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       "Don't pin AGENT_BROWSER_SESSION / capture page snapshots after a failure (debug toggle)",
     )
     .optionsGroup("What to do with the result:")
-    .option("--overwrite", "Replace an existing test.spec.ts without warning")
     .option(
       "--report-to-hub",
       "Leave a run (kind: record) on the hub saying this spec was recorded and what the recording spent on Claude, so a budget summed over the hub's runs sees it. It advances no ledger: a recording verifies nothing.",
@@ -128,30 +131,33 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
     }),
   );
 
-async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
-  const { featureName, specName } = parseSpecPath(specPath);
-  const language = opts.language ?? DEFAULT_LANGUAGE;
+async function runRecord(caseArgument: string, opts: RecordOptions): Promise<void> {
+  let language = opts.language ?? DEFAULT_LANGUAGE;
 
   const cwdForProfile = resolveCwd(opts.cwd);
 
-  // Resolve the spec's generation target up front: an input:"spec" target has
-  // no record phase at all, so fail fast — before any profile or browser
-  // work — and point at `ccqa generate` instead.
-  const spec = parseTestSpec(await readSpecFile(featureName, specName, cwdForProfile));
+  // Resolve the case and its generation target up front: an input:"spec"
+  // target has no record phase at all, so fail fast — before any profile or
+  // browser work — and point at `ccqa generate` instead.
   const config = await loadProjectConfig(cwdForProfile);
-  const target = resolveTargetOrExit(() => resolveTarget(spec, config));
+  language = resolveLanguage(opts.language, config.language);
+  await loadEnvFiles(config.envFiles, cwdForProfile);
+  const resolved = await resolveCase(caseArgument, config, cwdForProfile);
+  const { testCase, target } = resolved;
+  const caseId = testCase.ref.id;
+  const spec = testCase.source.kind === "spec" ? testCase.source.spec : null;
   if (target.input === "spec") {
     log.error(
-      `target "${target.id}" does not use a browser recording — run 'ccqa generate ${featureName}/${specName}' instead`,
+      `target "${target.id}" does not use a browser recording — run 'ccqa generate ${caseId}' instead`,
     );
     process.exit(2);
   }
   // Refused here rather than at generate: recording drives a browser through a
   // model, so a spec that cannot be generated should not pay for that first.
-  if (!target.judgeSteps.supported) {
+  if (!target.judgeSteps.supported && spec) {
     const blocks = await loadAllBlocks(cwdForProfile);
     try {
-      expandActionSteps(spec, { blocks }, `${featureName}/${specName}`, {
+      expandActionSteps(spec, { blocks }, caseId, {
         id: target.id,
         reason: target.judgeSteps.reason,
       });
@@ -162,9 +168,9 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   }
   // A live spec has no recording: `ccqa run` executes the spec itself, and
   // ignores any generated file — so a recording of it could only mislead.
-  if (spec.mode === "live") {
+  if (spec?.mode === "live") {
     log.error(
-      `this spec is 'mode: live' — a live spec runs without a recording. Run 'ccqa run ${featureName}/${specName}' instead`,
+      `this spec is 'mode: live' — a live spec runs without a recording. Run 'ccqa run ${caseId}' instead`,
     );
     process.exit(2);
   }
@@ -210,7 +216,7 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // Hold the spec lock across trace + generate: a concurrent record/generate
   // of the same spec would interleave ir.json and output writes. runGenerate
   // re-acquires re-entrantly inside the same process.
-  const releaseLock = await acquireSpecLock(featureName, specName, "record", cwdForProfile).catch(
+  const releaseLock = await acquireSpecLock(testCase.ref, "record").catch(
     (e: unknown) => {
       if (e instanceof SpecLockedError) {
         log.error(e.message);
@@ -240,6 +246,13 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   // during step-NN", the difference between a diagnosable death and a mystery.
   // Signal and --timeout both die through this one seal-with-note path.
   let tracingStep: string | undefined;
+  /**
+   * Set once the trace has written its route. Distinct from `recorded`, which
+   * answers whether the whole invocation succeeded and is what the hub row
+   * reads: this one answers the narrower question the deadline needs — is
+   * there something on disk to carry on from.
+   */
+  let routeSaved = false;
   let abortCause: string | undefined;
   let traceFailureNote: string | undefined;
   const teardown = createRunTeardown();
@@ -247,8 +260,7 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
     if (!push) return;
     sealed = await sealRecordPush(
       push,
-      featureName,
-      specName,
+      caseId,
       recorded,
       abortCause !== undefined ? abortNote(abortCause, tracingStep) : traceFailureNote,
     );
@@ -270,6 +282,12 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
     deadline = setTimeout(() => {
       abortCause = `timed out after ${seconds}s`;
       log.error(`--timeout: ${abortNote(abortCause, tracingStep)}`);
+      if (routeSaved) {
+        log.hint(
+          `the recording finished and is saved — rerun 'ccqa generate ${caseId}' to carry on ` +
+            `from it, or raise --timeout. Recording again would repeat the expensive half for nothing.`,
+        );
+      }
       void teardown.run().finally(() => process.exit(124));
     }, seconds * 1000);
     deadline.unref();
@@ -278,23 +296,31 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
   try {
     let generated = true;
     try {
-      const traceResult = await runTrace(featureName, specName, opts.model, opts.traceValidation ?? "lenient", language, {
+      const traceResult = await runTrace(testCase, opts.model, opts.traceValidation ?? "lenient", language, {
         cwd: cwdForProfile,
         hubContext,
         teardown,
         // The learner reads validation's stability tags even from a failed
         // trace, so keep the replay when learning is on (see RunTraceOptions).
         validateFailedTrace: opts.learnHubTracePrompt === true,
+        ...(config.sessionState ? { sessionState: config.sessionState } : {}),
+        ...(resolved.targetConfig.conventions.operate.length > 0
+          ? { conventions: resolved.targetConfig.conventions.operate }
+          : {}),
         ...(opts.instruction ? { instruction: opts.instruction } : {}),
-        onStep: (stepId) => {
+        onStep: (stepId: string) => {
           tracingStep = stepId;
         },
       });
       // The trace finished: a later signal (during generate) is no longer
       // "during step-NN" — that would name a step that completed fine.
       tracingStep = undefined;
+      // ...and what it recorded is on disk. A deadline that expires from here
+      // on costs the generation, not the recording, and the difference is the
+      // expensive half: say so, or the next thing anyone does is record again.
+      routeSaved = traceResult.status === "passed";
       if (traceResult.status !== "passed") {
-        traceFailureNote = "trace finished FAILED — a step did not complete, so the recording does not demonstrate the spec";
+        traceFailureNote = `trace finished FAILED: ${traceResult.failureReason} — the recording does not demonstrate the spec`;
       }
       log.blank();
 
@@ -304,8 +330,7 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       // must not take a completed trace's learnings with it.
       await learnFromTrace({
         enabled: opts.learnHubTracePrompt === true,
-        featureName,
-        specName,
+        caseId,
         traceResult,
         hubContext,
         ...(opts.model ? { model: opts.model } : {}),
@@ -317,10 +342,13 @@ async function runRecord(specPath: string, opts: RecordOptions): Promise<void> {
       // here could only recompile the old recording — or error on a spec
       // never recorded. `--trace-only` skips generation by request.
       if (!opts.traceOnly && traceResult.status === "passed") {
-        generated = (await runGenerate(featureName, specName, {
+        generated = (await runGenerate(resolved, {
           maxRetries: parseInt(opts.autoFixMaxRetries ?? "3", 10),
           fixMode: toFixMode(opts.autoFix ?? "interactive"),
-          force: opts.overwrite ?? false,
+          // The trace just replaced this recording and validated it by
+          // replay, so neither regeneration gate has anything left to check.
+          force: true,
+          replayGate: false,
           useSnapshot: opts.sessionPin !== false,
           language,
           model: opts.model,
@@ -379,8 +407,7 @@ export function abortNote(cause: string, tracingStep?: string): string {
 export interface LearnFromTraceArgs {
   /** The caller's `--learn-hub-trace-prompt`. */
   enabled: boolean;
-  featureName: string;
-  specName: string;
+  caseId: string;
   /** Null when no browser trace ran (or one died before producing a result). */
   traceResult: RunTraceResult | null;
   hubContext: HubContext | null;
@@ -405,7 +432,7 @@ export async function learnFromTrace(
   await update({
     kind: "record",
     flag: "--learn-hub-trace-prompt",
-    runSummary: buildRecordRunSummary(args.featureName, args.specName, args.traceResult),
+    runSummary: buildRecordRunSummary(args.caseId, args.traceResult),
     hubContext: args.hubContext,
     ...(args.model !== undefined ? { model: args.model } : {}),
     ...(args.language !== undefined ? { language: args.language } : {}),
@@ -425,17 +452,17 @@ export async function learnFromTrace(
  */
 export async function sealRecordPush(
   push: HubRunPush,
-  featureName: string,
-  specName: string,
+  caseId: string,
   recorded: boolean,
   failureNote?: string,
 ): Promise<boolean> {
+  const { featureName: feature, specName: spec } = splitCaseId(caseId);
   return sealHubRun(push, {
     rows: [
       {
         ...emptySpecRow({
-          feature: featureName,
-          spec: specName,
+          feature,
+          spec,
           title: null,
           status: recorded ? "passed" : "failed",
         }),
@@ -457,8 +484,8 @@ export async function sealRecordPush(
  * header's kept/recorded totals flag how much the run thrashed through
  * selectors overall.
  */
-export function buildRecordRunSummary(featureName: string, specName: string, t: RunTraceResult): string {
-  const header = `## ${featureName}/${specName} — ${t.status}\nActions: ${t.actionsKept} kept / ${t.actionsRecorded} recorded`;
+export function buildRecordRunSummary(caseId: string, t: RunTraceResult): string {
+  const header = `## ${caseId} — ${t.status}\nActions: ${t.actionsKept} kept / ${t.actionsRecorded} recorded`;
   const steps = collectStepSummaries(t.statusLines);
   if (steps.length === 0) return `${header}\n\n(no step status lines recorded)`;
   const commandsByStep = groupCommandsByStep(t.actions);

@@ -2,6 +2,7 @@ import type { ExpandedJudgeByLlmStep } from "../../spec/expand.ts";
 import { bracedRefsToJsExpression, envRefsToJsExpression } from "../../runtime/env-vars.ts";
 import type { Locator, LocatorIndex, RecordedAction } from "../../ir/types.ts";
 import type { StepMarker } from "../../codegen/actions-to-script.ts";
+import { renderStepComment } from "../../codegen/step-comment.ts";
 
 /**
  * Deterministic IR → plain `@playwright/test` emitter — no LLM involved.
@@ -29,6 +30,110 @@ export interface PlaywrightEmitInput {
    * dropped would leave a spec asserting nothing and still green.
    */
   judgements?: Judgement[];
+  /**
+   * Comment block the file opens with — where the case came from, as the
+   * project writes it. Already expanded by the caller; emitted verbatim.
+   */
+  header?: string;
+  /** Appended to the test's name, e.g. a priority tag the project greps for. */
+  titleSuffix?: string;
+  /**
+   * What to undo afterwards. Emitted as `test.afterEach`, guarded so a test
+   * that failed before it created anything cleans up nothing.
+   */
+  cleanup?: { actions: RecordedAction[]; stepMarkers?: StepMarker[] };
+  /** False: the undo is emitted as actions only (config `allowExpectInCleanup`). */
+  allowExpectInCleanup?: boolean;
+  /**
+   * How the project names the unique values a run creates. Given, the recorded
+   * `${CCQA_RUN_ID}` is emitted as a call to it, evaluated once per attempt —
+   * so the generated test carries the project's own convention rather than an
+   * environment variable ccqa happens to set.
+   */
+  runId?: { import: string; expression: string };
+  /** False drops the per-step capture calls (config `hooks.stepEvidence`). */
+  stepEvidence?: boolean;
+  /** Write the step comments in Japanese (the CLI's `--language`). */
+  japanese?: boolean;
+}
+
+/**
+ * Names the emitted test declares. The project maintains this file from here
+ * on, so they say what they hold rather than which tool wrote them.
+ */
+const RUN_ID_VAR = "uniqueValue";
+/**
+ * Flag the `afterEach` guards on. Separate from {@link RUN_ID_VAR}, which is
+ * assigned at the top of the test because the steps type it: a guard on that
+ * one would be true before anything had been created.
+ */
+const CREATED_VAR = "createdSomething";
+/** Environment variable the recording carries a unique value as. */
+const RUN_ID_ENV = "CCQA_RUN_ID";
+/** What the recording holds where a run's unique value went. */
+const RUN_ID_REF = `\${${RUN_ID_ENV}}`;
+/** What `envRefsToJsExpression` renders `${CCQA_RUN_ID}` as. */
+const RUN_ID_READ = `process.env.${RUN_ID_ENV} ?? ""`;
+
+/** Actions that put a value into the page, and those that submit it. */
+const TYPING_ACTIONS = new Set<RecordedAction["action"]>(["fill", "type", "select"]);
+const SUBMITTING_ACTIONS = new Set<RecordedAction["action"]>(["click", "dblclick", "press"]);
+/**
+ * A fill the very next action overwrites.
+ *
+ * `fill` replaces a field's contents, so two in a row on the same element
+ * leave only the second — the first was never on screen for anything to
+ * observe. It happens when the recording agent types a value, sees it is
+ * wrong, and types again: both keystrokes really happened, which is why the
+ * recording keeps them, but only one of them was ever state. Answered here
+ * rather than at record time so a case already recorded need not be recorded
+ * again, and so the route keeps the honest account of what was typed.
+ *
+ * Adjacent only, and never across a step boundary: anything in between makes
+ * the first value observable, and then it is part of what the case does.
+ * `type` appends rather than replaces, so it is left alone.
+ */
+function overwrittenByNext(a: RecordedAction, b: RecordedAction | undefined): boolean {
+  if (!b || a.action !== "fill" || b.action !== "fill") return false;
+  if ((a.stepId ?? "") !== (b.stepId ?? "")) return false;
+  if (a.secret || b.secret) return false;
+  return JSON.stringify([a.locator, a.index]) === JSON.stringify([b.locator, b.index]);
+}
+
+/** Observation only: these decide what happened, they do not make it happen. */
+const OBSERVING_ACTIONS = new Set<RecordedAction["action"]>(["assert", "snapshot", "wait"]);
+
+/**
+ * The action after which the route has created the thing the cleanup undoes.
+ *
+ * Mechanical, so a reader can predict it: the first action that submits
+ * (a click, a double click, a key press) after the first one that typed the
+ * run's unique value — and then the end of that action's step, since what the
+ * step does is one act. A route that types the value and never submits it, or
+ * never types it at all, has no such moment, so the last action stands in:
+ * assigning at the end is still later than the creation, and never earlier.
+ *
+ * The step's own checks are not part of the act. The flag answers whether the
+ * route created the thing, and that is settled when the acting stops, not when
+ * the checking passes — put it after an assertion and a run whose creation
+ * succeeded but whose check failed skips its own undo, leaving what it made in
+ * the environment. That is the run the undo exists for.
+ */
+export function creationActionIndex(
+  actions: readonly RecordedAction[],
+  markers: readonly StepMarker[],
+): number {
+  const last = actions.length - 1;
+  const typed = actions.findIndex(
+    (a) => TYPING_ACTIONS.has(a.action) && (a.value ?? "").includes(RUN_ID_REF),
+  );
+  if (typed === -1) return last;
+  const submitted = actions.findIndex((a, i) => i > typed && SUBMITTING_ACTIONS.has(a.action));
+  if (submitted === -1) return last;
+  const next = markers.find((m) => m.actionIndex > submitted);
+  let end = next ? next.actionIndex - 1 : last;
+  while (end > submitted && OBSERVING_ACTIONS.has(actions[end]!.action)) end -= 1;
+  return end;
 }
 
 /** A claim and the action index it is asserted after (-1: before any action). */
@@ -105,6 +210,35 @@ export function stepEvidencePreserveRule(): string {
 }
 
 /**
+ * Told to the rewrite because both are conventions the project greps: a
+ * missing tag drops the test out of whatever selection runs it, and a missing
+ * header loses where the case came from. Neither breaks a run, so nothing else
+ * would notice.
+ */
+export function headerPreserveRule(header: string, titleSuffix: string): string {
+  const parts = [
+    header ? `the comment block at the top of the draft, verbatim` : "",
+    titleSuffix ? `the \`${titleSuffix.trim()}\` suffix on the test's name` : "",
+  ].filter(Boolean);
+  return `**Keep ${parts.join(" and ")}.** Written from the case's own record, not decided per test; do not reword, move, or drop ${parts.length > 1 ? "either" : "it"}.`;
+}
+
+/**
+ * Told to the rewrite, because the alternative failure is silent in the worst
+ * way: nothing breaks at run time, and the file's assertions simply stop
+ * belonging to any step. A rewrite that reshapes the line learns that only by
+ * rejection, which costs a whole round.
+ */
+export function stepCommentPreserveRule(): string {
+  return (
+    "**Keep each step's opening comment exactly as the draft wrote it.** Those lines are how the " +
+    "evidence table and the review of this test say which assertions belong to which step. A " +
+    "reshaped one parses as no step at all, and every step then reads as deciding nothing. Keep " +
+    "the wording, the numbering and the punctuation; add your own comments on their own lines."
+  );
+}
+
+/**
  * Told to the rewrite, because the alternative failure is silent: a claim
  * turned into a text match passes on the wording of one run, which is the
  * assertion the judge exists to replace.
@@ -120,7 +254,11 @@ export function judgePreserveRule(): string {
 }
 
 export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
-  const { actions, testName, stepMarkers = [], judgements = [] } = input;
+  const { actions, testName, judgements = [], japanese = false } = input;
+  // A target that captures no evidence emits no boundary calls, but the step
+  // comments stay: they are how a reviewer reads which step a line belongs to.
+  const captures = input.stepEvidence !== false;
+  const stepMarkers = input.stepMarkers ?? [];
   const markerByIndex = new Map(stepMarkers.map((m) => [m.actionIndex, m]));
 
   const lines: string[] = [];
@@ -135,27 +273,24 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   const flushJudgements = (afterActionIndex: number): void => {
     for (const { step } of judgements.filter((j) => j.afterActionIndex === afterActionIndex)) {
       if (openMarker) {
-        lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
+        if (captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
         openMarker = null;
       }
       if (lines.length > 0) lines.push("");
-      lines.push(`// step: ${step.id} [${step.source}]`);
+      lines.push(renderStepComment({ stepId: step.id, source: step.source }, japanese));
       lines.push(judgeCall(step).code);
     }
   };
 
+  const createdAt = creationActionIndex(actions, stepMarkers);
+  let createdLine = lines.length;
+
   flushJudgements(-1);
   for (let i = 0; i < actions.length; i++) {
-    const marker = markerByIndex.get(i);
-    if (marker) {
-      if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
-      if (lines.length > 0) lines.push("");
-      lines.push(`// step: ${marker.stepId} [${marker.source}]`);
-      lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker).code);
-      openMarker = marker;
-    }
+    openMarker = openStep(lines, markerByIndex.get(i), openMarker, japanese, captures);
     const action = actions[i]!;
-    const line = actionToLine(action);
+    if (overwrittenByNext(action, actions[i + 1])) continue;
+    const line = actionToLine(action, japanese);
     if (line !== null && line !== prevLine) {
       if (action.replayUnstable) {
         lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
@@ -163,36 +298,159 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
       lines.push(line);
       prevLine = line;
     }
+    if (i === createdAt) createdLine = lines.length;
     flushJudgements(i);
   }
-  if (openMarker) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
+  closeStep(lines, openMarker, captures);
 
   // Nothing coverage-related is emitted: under `--coverage` the run attaches
   // to the browser from outside (see the target's `browserCoverage`), so the
   // generated test carries no measurement code an LLM rewrite could drop.
 
+  const cleanupLines = emitCleanup(input.cleanup, captures, japanese, input.allowExpectInCleanup ?? true);
+  const title = `${testName}${input.titleSuffix ?? ""}`;
+  // Only when the route actually created something unique: a declared value
+  // nothing reads is an unused variable, and the project's own type check or
+  // lint — which this generation is checked against — is right to reject it.
+  const usesRunId =
+    input.runId !== undefined &&
+    [...lines, ...cleanupLines].some((line) => line.includes(RUN_ID_READ));
+  const runId = usesRunId ? input.runId : undefined;
+  const guarded = runId !== undefined && cleanupLines.length > 0;
+  // Spliced before anything is prepended: an index taken during the action
+  // loop counts from the loop's own first line, and a later `unshift` would
+  // slide the marker above the action that created the thing it marks.
+  if (guarded) lines.splice(createdLine, 0, `${CREATED_VAR} = true;`);
   // A claim costs a model round trip, which the default per-test budget was
   // not sized for. Relative to the project's own timeout rather than absolute,
   // so a consumer that already raised it keeps the raise.
   if (judgements.length > 0) lines.unshift("test.slow();", "");
+  const testLines = [
+    ...(runId ? [`${RUN_ID_VAR} = ${runId.expression};`, ""] : []),
+    ...lines,
+  ];
+  const scoped = cleanupLines.length > 0 || runId !== undefined;
+  // A judge call needs Playwright's `testInfo` to attach its verdict to the
+  // report; a case with no judgement keeps the plain signature so no unused
+  // parameter lands in the generated file.
+  const testParams = judgements.length > 0 ? "{ page }, testInfo" : "{ page }";
 
-  const body = lines.map((l) => (l === "" ? "" : `  ${l}`)).join("\n");
-  return [
+  // No `test.describe`. One case is one test in one file, so a describe here
+  // could only be named after the test it contains — which reads as "X › X"
+  // in every report — and the variables it used to scope sit just as well at
+  // the top of the file.
+  //
+  // Declared outside the test so `afterEach` can read them, assigned per
+  // attempt so one attempt's value never leaks into the next.
+  // `createdSomething` flips where the route created something, so an attempt
+  // that failed before that point cleans nothing up.
+  const declaration = [
+    ...(scoped
+      ? [
+          ...(runId ? [`let ${RUN_ID_VAR}: string | undefined;`] : []),
+          ...(guarded ? [`let ${CREATED_VAR} = false;`] : []),
+          "",
+        ]
+      : []),
+    `test(${j(title)}, async (${testParams}) => {`,
+    indent(testLines, 2),
+    "});",
+    ...(cleanupLines.length > 0
+      ? [
+          "",
+          `test.afterEach(${j(cleanupTitle(input.cleanup?.stepMarkers, japanese))}, async ({ page }) => {`,
+          ...(guarded ? [`  if (!${CREATED_VAR}) return;`] : []),
+          indent(cleanupLines, 2),
+          "});",
+        ]
+      : []),
+  ];
+
+  const source = [
+    ...(input.header ? [input.header.trimEnd(), ""] : []),
     `import { test, expect } from "@playwright/test";`,
     ...(judgements.length > 0 ? [`import { ${JUDGE_CALL} } from ${j(JUDGE_MODULE)};`] : []),
     // Only imported when there are boundaries to capture, so a marker-less
     // draft doesn't ship an unused import into the consumer's lint run.
-    ...(stepMarkers.length > 0
+    ...(stepMarkers.length > 0 && captures
       ? [
           `import { ${STEP_EVIDENCE_BEFORE}, ${STEP_EVIDENCE_AFTER} } from ${j(STEP_EVIDENCE_MODULE)};`,
         ]
       : []),
+    ...(runId ? [runId.import] : []),
     "",
-    `test(${j(testName)}, async ({ page }) => {`,
-    body,
-    "});",
+    ...declaration,
     "",
   ].join("\n");
+
+  // The recorded unique value becomes the project's own. A plain replace is
+  // exact here: the token is not free text but this emitter's own rendering of
+  // one env reference, produced by `envRefsToJsExpression` a few lines above.
+  return runId ? source.replaceAll(RUN_ID_READ, RUN_ID_VAR) : source;
+}
+
+function indent(lines: string[], by: number): string {
+  const pad = " ".repeat(by);
+  return lines.map((l) => (l === "" ? "" : `${pad}${l}`)).join("\n");
+}
+
+/**
+ * The recorded undo actions, with their step comments. Emitted from the
+ * recording like everything else: what the cleanup does was demonstrated in
+ * the browser, not guessed from the case's prose.
+ */
+function emitCleanup(
+  cleanup: PlaywrightEmitInput["cleanup"],
+  captures: boolean,
+  japanese: boolean,
+  allowExpect: boolean,
+): string[] {
+  if (!cleanup || cleanup.actions.length === 0) return [];
+  const lines: string[] = [];
+  const markerByIndex = new Map((cleanup.stepMarkers ?? []).map((m) => [m.actionIndex, m]));
+  let open: StepMarker | null = null;
+  for (let i = 0; i < cleanup.actions.length; i++) {
+    open = openStep(lines, markerByIndex.get(i), open, japanese, captures);
+    const action = cleanup.actions[i]!;
+    // A project that forbids `expect` in its teardown gets the undo's actions
+    // and nothing else. What the recorded check was for is not lost — the
+    // evidence table reports the cleanup expectation as unchecked.
+    if (!allowExpect && action.action === "assert") continue;
+    if (overwrittenByNext(action, cleanup.actions[i + 1])) continue;
+    if (action.replayUnstable) {
+      lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
+    }
+    const line = actionToLine(action, japanese);
+    if (line !== null) lines.push(line);
+  }
+  closeStep(lines, open, captures);
+  return lines;
+}
+
+/**
+ * Enter the step a marker starts: close the one before it, comment the
+ * boundary, and open the capture. Shared by the two places that walk an action
+ * list against markers, so a change to how a boundary is written cannot apply
+ * to the steps and miss the cleanup.
+ */
+function openStep(
+  lines: string[],
+  marker: StepMarker | undefined,
+  open: StepMarker | null,
+  japanese: boolean,
+  captures: boolean,
+): StepMarker | null {
+  if (!marker) return open;
+  if (open && captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, open).code);
+  if (lines.length > 0) lines.push("");
+  lines.push(renderStepComment(marker, japanese));
+  if (captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker).code);
+  return marker;
+}
+
+/** Close the step still open at the end of an action list. */
+function closeStep(lines: string[], open: StepMarker | null, captures: boolean): void {
+  if (open && captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, open).code);
 }
 
 /**
@@ -250,7 +508,7 @@ function exactArg(exact: boolean | undefined): string {
 /** Default wheel delta for scrolls recorded without an explicit pixel count. */
 const DEFAULT_SCROLL_PIXELS = 400;
 
-function actionToLine(action: RecordedAction): string | null {
+function actionToLine(action: RecordedAction, japanese = false): string | null {
   // Same rule as the agent-browser emitter: an element assert whose selector
   // the post-trace validator could not even find (`get count` returned 0)
   // fails on every run — emit a breadcrumb comment instead of a runnable line.
@@ -327,7 +585,7 @@ function actionToLine(action: RecordedAction): string | null {
     case "wait":
       return waitToLine(action, locator);
     case "assert":
-      return assertToLine(action, locator);
+      return assertToLine(action, locator, japanese);
     case "snapshot":
       return action.observation ? `// ${action.observation}` : null;
     case "cookies_clear":
@@ -369,22 +627,45 @@ function waitToLine(action: RecordedAction, locator: string | null): string | nu
   return `await ${locator}${pick}.waitFor();`;
 }
 
-function assertToLine(action: RecordedAction, locator: string | null): string | null {
+/**
+ * What the undo is called in the report. The case's own first cleanup
+ * sentence where it has one — a hook named for what it takes back is the one
+ * thing a reader of a failing report needs from it.
+ */
+function cleanupTitle(cleanup: readonly StepMarker[] | undefined, japanese: boolean): string {
+  const first = cleanup?.find((m) => m.text?.trim())?.text?.trim().split("\n")[0]?.trim();
+  if (first) return first;
+  return japanese ? "後処理" : "clean up what the test created";
+}
+
+function assertToLine(
+  action: RecordedAction,
+  locator: string | null,
+  japanese: boolean,
+): string | null {
   // Like the agent-browser emitter: the LLM may put the expectation text in
   // `observation` instead of `value`.
   const value = action.value ?? action.observation;
-  const comment = action.observation ? `// Assert: ${action.observation}` : null;
-  // Element asserts come from `get count`-style probes, whose semantic is
-  // "at least one such element" — `.first()` keeps that valid under strict
-  // mode when several match (unless an explicit index pick already applied).
-  const pick = action.index === undefined ? ".first()" : "";
+  // The label as well as the note: a file whose steps read in one language
+  // and whose assertions are introduced in another is one nobody skims.
+  const comment = action.observation
+    ? `// ${japanese ? "期待値" : "Assert"}: ${action.observation}`
+    : null;
+  // No `.first()` here, unlike the actions above.
+  //
+  // The probe these come from answers "at least one such element", and
+  // narrowing to the first match reproduces that faithfully — while asserting
+  // almost nothing: it holds wherever the string appears, including on the
+  // element the case did not mean. Strict mode failing on an ambiguous
+  // locator is the more useful outcome, because it says which locator needs
+  // scoping and the fix pass can scope it. An explicit index pick is a
+  // decision the recording made and stays.
+  const pick = action.index === undefined ? "" : "";
 
   let assertLine: string | null = null;
   switch (action.assert) {
     case "text_visible":
-      // `.first()`: the recorded semantic is "the text is visible somewhere".
-      if (value)
-        assertLine = `await expect(page.getByText(${jExpr(value)}).first()).toBeVisible();`;
+      if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toBeVisible();`;
       break;
     case "text_not_visible":
       if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toHaveCount(0);`;
@@ -456,11 +737,17 @@ const j = (s: string): string => JSON.stringify(s);
  */
 const jExpr = (s: string): string => envRefsToJsExpression(s);
 
-/** One claim, asserted through the judge. Exported so the generation gate can require it back. */
+/**
+ * One claim, asserted through the judge. Exported so the generation gate can
+ * require it back. `testInfo` is always passed — the case's `test(...)`
+ * callback is emitted with that second parameter whenever it has a judgement
+ * — so the verdict lands on the report whether the claim held or not.
+ */
 export function judgeCall(step: ExpandedJudgeByLlmStep): InjectedCall {
   // A claim is prose, so only the braced form is a reference here — a bare
   // `$WORD` is a word, and expanding it would quietly rewrite the claim.
   const args = [bracedRefsToJsExpression(step.judgeByLlm.trim())];
-  if (step.from !== undefined) args.push(jExpr(step.from));
+  const optionsFields = step.from !== undefined ? [`from: ${jExpr(step.from)}`, "testInfo"] : ["testInfo"];
+  args.push(`{ ${optionsFields.join(", ")} }`);
   return injectedCall(JUDGE_CALL, args);
 }

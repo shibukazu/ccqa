@@ -20,20 +20,53 @@ spec directory accumulates these files as you work:
   config.yaml                    # generation-target settings (see targets.md)
   blocks/
     login/spec.yaml              # reusable block (params + steps)
+  cases/
+    <id>/                        # (markdown intent source) one case's working files
   features/
     tasks/
       test-cases/
         create-and-complete/
           spec.yaml              # this document's subject
-          ir.json                # (recording targets) recorded actions
+          ir.json                # (recording targets) the recorded route + what was generated from it
           ir.failed.json         # last FAILED trace, kept for diagnosis only
-          test.spec.ts           # (agent-browser, deterministic) generated test
-          generated.json         # (other targets) manifest of generated files
+          route-diff.md          # what the last re-record changed, if anything
+          test.spec.ts           # generated test, when `testPath` is the default
           runs/<timestamp>/      # (live) one run's step screenshots + summary
 ```
 
-Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/` and
-`ccqa-report*/`.
+Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/`,
+`.ccqa/cases/*/runs/` and `ccqa-report*/`. Not `evidence/` beside them: those
+are the screenshots [`ccqa evidence`](./targets.md#ccqa-evidence--the-table-a-reviewer-reads-instead-of-the-test)
+links from the review table, so ignoring them leaves a table pasted into a pull
+request pointing at nothing. Whether to commit them is your call — they are
+small, and they are the only part of the table a reader cannot reconstruct.
+
+## Where a case comes from
+
+Everything below describes `spec.yaml`, ccqa's own format — the default for
+every target. A target that declares
+[an `intent` source](./targets.md#intent--reading-test-cases-from-markdown)
+reads its cases from markdown instead, in whatever headings the project
+already writes them with:
+
+```markdown
+## Title
+
+Mark a task complete
+
+## Steps
+
+1. Open the task list.
+2. Click the checkbox next to "Buy milk".
+
+## Expected
+
+- The task's checkbox is checked.
+```
+
+A target either declares `intent` or it doesn't: with none, it reads
+`spec.yaml`; with one, it reads markdown, and `spec.yaml` plays no part for
+that target.
 
 ## Top-level fields
 
@@ -260,6 +293,21 @@ Only targets that emit the call can carry one — `playwright` today. The
 agent-browser target decides each step through its own `expected`, and runn
 has no page to read; a claim reaching either is refused by name rather than
 dropped.
+
+### Running a judged test outside `ccqa run`
+
+The generated `judgeByLlm` call reads its own Claude credentials, so the
+test also runs under a plain `playwright test` — no ccqa process around it.
+Set `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription
+token) in the environment that runs the test — a Bedrock or Vertex
+environment, or a local `claude login`, also count. Missing credentials
+fail with an error naming these instead of an opaque SDK error.
+`CCQA_JUDGE_MODEL` picks the model for judgements, falling back to
+`CCQA_MODEL`, then the Claude Code default.
+
+The generator passes Playwright's `testInfo` to every `judgeByLlm` call, so
+the verdict — the claim, what it read, and whether it held — is attached to
+the test's report as `ccqa-judge`, whether the claim passed or failed.
 
 ## File uploads
 

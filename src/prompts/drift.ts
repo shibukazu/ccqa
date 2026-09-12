@@ -1,4 +1,6 @@
-import type { SpecArtifacts } from "../drift/artifacts.ts";
+import type { IntentKind, SpecArtifacts } from "../drift/artifacts.ts";
+import type { SourceRoot } from "../config/source-roots.ts";
+import type { LocatorInventory } from "../drift/locator-candidates.ts";
 import { formatBlockList, type AvailableBlock } from "./draft.ts";
 import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
 
@@ -12,13 +14,14 @@ import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
  * that answer a different question than the one CI asks.
  *
  * The vocabulary is failure analysis's vocabulary (`src/report/prompt.ts`),
- * deliberately: there are four causes, of which a static read can answer only
- * two (TEST_DRIFT, SPEC_CHANGE) — but those two mean the same thing whether
- * the conclusion was reached by running the spec or by reading the code.
+ * deliberately: the same four causes mean the same thing whether the
+ * conclusion was reached by running the case or by reading the code. Two of
+ * them are what a static read is good at and hold the gate shut; the other two
+ * are suspicions it can raise but not settle (see `driftSeverity`).
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "7";
+export const DRIFT_PROMPT_VERSION = "9";
 
 /**
  * Project guidance injected into the audit, in the same order the run's
@@ -34,17 +37,18 @@ export interface DriftGuidance {
 export function buildDriftSystemPrompt(
   blocks: AvailableBlock[],
   guidance: DriftGuidance = {},
+  intentKind: IntentKind = "spec",
 ): string {
-  return `You audit whether a ccqa test spec still describes the product's code correctly.
+  return `You audit whether a test case still describes the product's code correctly.
 
 You are given one test case and read-only access to the codebase. You do not run anything and no browser is involved: your evidence is what the source says today.
 
 ## What a test case is made of
 
-- **spec.yaml** — always present. Pure YAML: \`title\`, then \`steps\`, each either an action (\`instruction\` + \`expected\`) or \`include: <block-name>\` with \`params\`. \`expected\` names something observable — visible text, an aria-label, a URL, an element state.
-- **generated test code** — present for a \`deterministic\` spec, which \`ccqa generate\` compiled from a recording. This is what actually runs, and it holds the concrete selectors the spec only describes in prose.
+${intentSurfaceBlock(intentKind)}
+- **generated test code** — present for a recorded case, which \`ccqa generate\` compiled from a recording. This is what actually runs, and it holds the concrete selectors the case only describes in prose.
 
-Both are the test case, and either can fall out of step with the source. A \`mode: live\` spec has no generated code — the spec itself is what runs — and you will be told so.
+Both are the test case, and either can fall out of step with the source. A case that runs live has no generated code — the document itself is what runs — and you will be told so.
 
 Audit every surface you are given. The concrete strings on both sides are what an audit checks.
 
@@ -52,17 +56,19 @@ Audit every surface you are given. The concrete strings on both sides are what a
 
 ${formatBlockList(blocks)}
 
-## The question, and the three answers
+## The question, and the answers
 
-Does the spec still describe the code? If yes, report no drift. If not, say which of these it is:
+Does the test case still describe the code? If yes, report no drift. If not, say which of these it is:
 
-- **TEST_DRIFT** — what the spec verifies is unchanged; only the way the test reaches it went stale. A renamed selector, aria-label, placeholder or test id; an assertion tightened onto a string the source no longer renders in that spot. The user-visible flow the spec describes still exists.
-- **SPEC_CHANGE** — the thing being verified itself changed. The page is gone, the flow was reworked, the feature was removed or redefined, an \`include\` points at a block that no longer exists. The spec asks about something the product no longer does.
-- **UNKNOWN** — you cannot tell. The spec is vague enough that no concrete string can be checked, or the relevant code is generated / behind indirection you cannot follow.
+- **TEST_DRIFT** — what the case verifies is unchanged; only the way the test reaches it went stale. A renamed selector, aria-label, placeholder or test id; an assertion tightened onto a string the source no longer renders in that spot. The user-visible flow the case describes still exists.
+- **SPEC_CHANGE** — the thing being verified itself changed. The page is gone, the flow was reworked, the feature was removed or redefined, an \`include\` points at a block that no longer exists. The case asks about something the product no longer does.
+- **PRODUCT_BUG** — the case and the test both still describe what the product is supposed to do, and the source shows it no longer does it. Not "I suspect a regression": a line you can point at that contradicts the intent, such as a branch that returns before the effect the case expects, or a call that was deleted while everything around it still promises the result.
+- **ENVIRONMENT** — the case's outcome is not decided by this source at all. It depends on data that has to already exist, on an account's permissions, on a tenant or a configured feature flag. The code is consistent with the case; whether the case passes is a question about the environment it runs in.
+- **UNKNOWN** — you cannot tell. The case is vague enough that no concrete string can be checked, or the relevant code is generated / behind indirection you cannot follow.
 
-These are the same definitions failure analysis uses on a spec that actually failed. Use them the same way.
+These are the same definitions failure analysis uses on a case that actually failed. Use them the same way.
 
-**You may not answer PRODUCT_BUG or ENVIRONMENT.** Both are real labels there and not available here, because you are not running anything: a static read cannot tell a dropped side effect from a working one, or a flaky service from a working one. If you suspect the product is broken, or the failure would be environmental, but the spec matches the source, that is not drift — report no drift and say so in the headline.
+**The first two are the answers that act.** TEST_DRIFT and SPEC_CHANGE name a repair someone can make from what you read, and they stop the case from running until it is made. PRODUCT_BUG and ENVIRONMENT do not: they are reported and the case still runs, because running it is what settles them. So do not reach for them to avoid a harder call — if the source shows a rename, that is TEST_DRIFT, not a product bug. And do not reach for them when you simply did not find the answer: that is UNKNOWN.
 
 ## What separates TEST_DRIFT from SPEC_CHANGE
 
@@ -70,12 +76,12 @@ This is the distinction that matters, because the two lead to different actions:
 
 Ask whether the **intent** the step describes still exists in the product:
 
-- The intent exists, but the string or selector the spec names is gone or renamed → **TEST_DRIFT**. Cite where the replacement lives.
+- The intent exists, but the string or selector the case names is gone or renamed → **TEST_DRIFT**. Cite where the replacement lives.
 - The intent itself is gone, or deliberately different → **SPEC_CHANGE**. Cite the source that shows the new shape.
 
 A renamed button is TEST_DRIFT. A button that no longer exists because the flow was replaced is SPEC_CHANGE. If the source shows a rename you can point at, prefer TEST_DRIFT.
 
-SPEC_CHANGE is the more expensive answer — it sends a human to rewrite or retire the spec — so it takes the *stronger* evidence, not the weaker. Failing to find where the intent went is not a finding; that is UNKNOWN. Claim SPEC_CHANGE only when you can point at the source that shows the new shape, or at where the implementation would sit if it still existed.
+SPEC_CHANGE is the more expensive answer — it sends a human to rewrite or retire the case — so it takes the *stronger* evidence, not the weaker. Failing to find where the intent went is not a finding; that is UNKNOWN. Claim SPEC_CHANGE only when you can point at the source that shows the new shape, or at where the implementation would sit if it still existed.
 
 ## Which surface drifted
 
@@ -83,7 +89,7 @@ Say where the drift is, because it decides the repair:
 
 ${surfaceDefinitionBlock()}
 
-For a \`mode: live\` spec there is no generated surface, so always \`spec\`.
+For a case that runs live there is no generated surface, so always \`spec\`. \`spec\` means the document that states the case, whichever kind of document that is.
 
 **Audit each surface on its own terms. One being right does not excuse the other.** The generated code being correct does not make a stale spec acceptable, and a correct spec does not make stale generated code acceptable. They are wrong in different ways and cost different things: generated code that names a string the product no longer renders fails the next replay, while a spec that quotes a string the product no longer shows misleads every human who reads it and will be regenerated from — reintroducing the error. Do not reason "the test would still pass, so there is no drift": whether a replay passes is not the question. The question is whether the test case still describes the product.
 
@@ -108,18 +114,19 @@ sit nearby.
 
 - **No drift is a claim, not a default.** Make it after picking the concrete strings from *every* surface you were given — the spec's \`expected\` and the generated code's selectors alike — and finding each of them in the source. Clearing the test case because one surface checked out is the most common way to miss a real finding. If you never looked, the honest answer is UNKNOWN.
 - **A finding needs a citation.** Every TEST_DRIFT and SPEC_CHANGE must carry at least one \`evidence\` entry with a real \`file\`, and a line where you can give one. A label with no citation is a guess wearing a verdict's clothes — answer UNKNOWN instead.
-- **A citation must apply to the case at hand.** Finding the string is not the end of it — read what encloses the line before you cite it. A line inside a guard, behind an early \`return\`, or in a branch this spec's steps never enter says nothing about this spec. Name the conditions that must hold for that line to run, and check the spec puts the product in them. A citation that only proves the line exists is not evidence.
+- **A citation must apply to the case at hand.** Finding the string is not the end of it — read what encloses the line before you cite it. A line inside a guard, behind an early \`return\`, or in a branch this case's steps never enter says nothing about this case. Name the conditions that must hold for that line to run, and check the case puts the product in them. A citation that only proves the line exists is not evidence.
 - **A comment is not the code.** Comments in the product's source say what someone intended, and they rarely restate the conditions they sit under. A line reading "this is not supported", sitting inside a guarded branch, is true only inside that branch. Cite the control flow you traced, not the sentence you found.
 - **Do not report style.** Wording you would have phrased differently is not drift. Report only what would make a replay fail, or what asks about something the product no longer does.
 - \`confidence\` is about the label: how sure you are it is the right one, not how bad the finding is.
 
 ## How to look
 
-1. Pick the concrete strings each step asserts: visible text, aria-labels, placeholders, button labels, route paths. Do the same for the generated code, which names them literally — selectors, roles, texts, URLs.
-2. \`Grep\` the source for them, at the page, component or handler the step is about.
-3. For \`include\` steps, confirm the block exists under \`.ccqa/blocks/<name>/spec.yaml\` and that every \`params\` key is declared on it.
-4. When a string is missing, look for what replaced it before concluding. Where it went is what decides the label.
-5. Before citing any line, read the block that encloses it. Which conditions must hold for it to run, and does the spec put the product in those conditions? A line that only runs in a case the spec never enters proves nothing about the spec.
+1. **List every locator the test and its support files use, before checking any of them** — by role + accessible name, visible text, label, placeholder, test id, and, the two an audit skips, **CSS class or id** (\`.some-class\`, \`#some-id\`, any attribute selector) and **XPath or structural path**. A class name is not prose, so nothing about reading the file draws attention to it, and it is exactly what a refactor renames.
+2. Add the concrete strings each step of the document asserts: visible text, labels, route paths.
+3. **Check the whole list against the source**, one \`Grep\` per page/component/handler with the strings alternated into a single pattern rather than one search per string. A locator whose string the product renders nowhere is a TEST_DRIFT candidate whatever kind it is, and fails the same replay as a renamed button.
+4. For \`include\` steps, if the case has any, confirm the block exists under \`.ccqa/blocks/<name>/spec.yaml\` and that every \`params\` key is declared on it.
+5. When a string is missing, look for what replaced it before concluding. Where it went is what decides the label.
+6. Before citing any line, read the block that encloses it. Which conditions must hold for it to run, and does the case put the product in those conditions? A line that only runs in a branch the case never enters proves nothing about the case.
 
 ${guidance.userPromptBlock ?? ""}${guidance.customPromptBlock ?? ""}## Output (STRICT)
 
@@ -131,12 +138,25 @@ No drift:
 { "drift": null }
 \`\`\`
 
+When the case above carries a **Locators this test uses that are not prose** section, add a \`locators\` array beside \`drift\` — one entry per \`L\` id listed as not found, whichever way the audit came out:
+
+\`\`\`json
+{
+  "drift": null,
+  "locators": [
+    { "id": "L1", "verdict": "drifted" | "fine", "note": "<what you found>" }
+  ]
+}
+\`\`\`
+
+An id with no entry is not an answer, and the reply is rejected: say \`fine\` with the reason instead. Answering \`drifted\` for any of them and \`null\` for the case is a contradiction — a locator the product does not render is a finding.
+
 Drift found:
 
 \`\`\`json
 {
   "drift": {
-    "label": "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN",
+    "label": "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG" | "ENVIRONMENT" | "UNKNOWN",
     "confidence": 0.0,
     "surface": "spec" | "generated",
     "subDiagnosis": "SELECTOR_DRIFT" | "OVER_ASSERTION" | "NONE",
@@ -151,9 +171,9 @@ Drift found:
 }
 \`\`\`
 
-\`subDiagnosis\`: \`SELECTOR_DRIFT\` when a selector or string was renamed, \`OVER_ASSERTION\` when the spec asserts something narrower than the product ever promised, \`NONE\` otherwise.
+\`subDiagnosis\`: \`SELECTOR_DRIFT\` when a selector or string was renamed, \`OVER_ASSERTION\` when the case asserts something narrower than the product ever promised, \`NONE\` otherwise.
 
-\`specChangeKind\`: set it only when the label is \`SPEC_CHANGE\`, and omit the field entirely otherwise. It says which repair the spec needs — deleting it, or rewriting and re-recording it:
+\`specChangeKind\`: set it only when the label is \`SPEC_CHANGE\`, and omit the field entirely otherwise. It says which repair the case needs — deleting it, or rewriting and re-recording it:
 
 - \`FEATURE_REMOVED\` — the code no longer implements the behaviour at all: removed, moved elsewhere, or deliberately disabled. This is the stronger claim, so earn it: your evidence must point at where the implementation would be if it still existed.
 - \`BEHAVIOUR_CHANGED\` — the behaviour is still there, but its wording, its route, or the conditions it runs under moved.
@@ -162,32 +182,119 @@ When the evidence does not support "gone", answer \`BEHAVIOUR_CHANGED\`. When ne
 `;
 }
 
-export function buildDriftUserPrompt(artifacts: SpecArtifacts): string {
-  return `## spec.yaml
+export function buildDriftUserPrompt(
+  artifacts: SpecArtifacts,
+  sourceRoots: readonly SourceRoot[] = [],
+  locators?: LocatorInventory,
+): string {
+  const { kind, path, body } = artifacts.intent;
+  const heading = kind === "spec" ? "spec.yaml" : `Test case document — ${path}`;
+  return `## ${heading}
 
-\`\`\`yaml
-${artifacts.specYaml}
+\`\`\`${kind === "spec" ? "yaml" : "markdown"}
+${body}
 \`\`\`
 
 ${generatedSection(artifacts)}
-## Task
+${sourceRootsSection(sourceRoots)}${locatorSection(locators)}## Task
 
 Audit this test case against the code as it stands, across every surface above. Report no drift if they agree; otherwise return one labelled diagnosis, with its citations and the surface it is on.
 `;
+}
+
+/**
+ * The locators code has already looked up, as a list to answer rather than a
+ * list to build. Missing is not a verdict — a selector built at runtime, a
+ * component this case never reaches and a file the scan could not read all
+ * look the same from here — so each is asked about rather than reported.
+ */
+function locatorSection(inventory: LocatorInventory | undefined): string {
+  if (inventory === undefined) return "";
+  const { missing, found, unresolved, incomplete } = inventory;
+  if (missing.length + found.length + unresolved.length + incomplete.length === 0) return "";
+  const lines = [`## Locators this test uses that are not prose`, ""];
+  if (incomplete.length > 0) {
+    lines.push(
+      `The search did not finish, so "not found" below is weaker than it reads — ${incomplete.join("; ")}. Answer for them anyway, and say so if you find one yourself.`,
+      "",
+    );
+  }
+  if (missing.length > 0) {
+    lines.push(
+      `**Not found anywhere in the source that was read. Answer for every one of these.**`,
+      "",
+      ...missing.map((c) => `- \`${c.id}\` — ${c.kind} \`${c.value}\`, written as \`${c.selector}\` at ${c.from}`),
+      "",
+      `For each: is it drift, or is there another reason the product's source does not contain it? Look before you answer — what replaced it is what decides the label, and a name assembled at runtime or rendered by a library is not drift.`,
+      "",
+    );
+  }
+  if (found.length > 0) {
+    lines.push(
+      `Found in the source, which is not the same as correct — check it is the element this case means, in a branch this case reaches:`,
+      "",
+      ...found.map((c) => `- \`${c.id}\` — ${c.kind} \`${c.value}\` at ${c.at}`),
+      "",
+    );
+  }
+  if (unresolved.length > 0) {
+    lines.push(
+      `Built at runtime, so code could not look them up. Resolve them yourself if the case turns on one:`,
+      "",
+      ...unresolved.map((u) => `- \`${u.expression}\` at ${u.from}`),
+      "",
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Where the product's source is, when it is not the working directory. Named
+ * as directories and nothing else: what lives there is the audit's to find,
+ * and describing it would put one project's vocabulary into every project's
+ * prompt.
+ */
+function sourceRootsSection(roots: readonly SourceRoot[]): string {
+  if (roots.length === 0) return "";
+  const list = roots.map((r) => `\`${r.abs}\``).join(", ");
+  return `## Where the product's source is
+
+The application this test case describes lives under ${list}. Read and Grep reach there as well as into the working directory, and that is where the answer to "does the product still do this" is.
+
+What renders a screen is often a template rather than a script — a \`.vue\`, \`.svelte\`, \`.astro\`, \`.html\`, \`.hbs\` or \`.erb\` file, or the markup inside a \`.tsx\` / \`.jsx\` component. A class name or a label lives in that markup, so Grep those files too: searching only the logic finds none of them.
+
+`;
+}
+
+/** What states the case, in the vocabulary of the document the project writes. */
+function intentSurfaceBlock(kind: IntentKind): string {
+  if (kind === "markdown") {
+    return `- **the test case document** — always present. Markdown the project's own authors wrote and own: a heading for what to do, a heading for what must then be true, and whatever else their format carries. Read it as prose stating intent — the headings are theirs, not ccqa's.`;
+  }
+  return `- **spec.yaml** — always present. Pure YAML: \`title\`, then \`steps\`, each either an action (\`instruction\` + \`expected\`) or \`include: <block-name>\` with \`params\`. \`expected\` names something observable — visible text, an aria-label, a URL, an element state.`;
 }
 
 function generatedSection(artifacts: SpecArtifacts): string {
   if (artifacts.live) {
     return `## Generated test code
 
-None: this is a \`mode: live\` spec, so there is nothing compiled from it — the spec above is what runs. The only surface is \`spec\`.
+None: this case runs live, so there is nothing compiled from it — the document above is what runs. The only surface is \`spec\`.
 
 `;
   }
   if (artifacts.generated.length === 0) {
+    // "Nothing here" has two causes and opposite readings: never generated
+    // (not drift) versus generated but too large to show (not audited).
+    if (artifacts.unaudited.length > 0) {
+      return `## Generated test code
+
+Not shown: ${artifacts.unaudited.join(", ")} did not fit here. This case IS generated — the code simply could not be included. It was NOT audited, so report no finding on the \`generated\` surface, and Read a file if you need it.
+
+`;
+    }
     return `## Generated test code
 
-None found. The spec is \`deterministic\` but has not been generated yet, so only the spec surface can be audited. Do not treat the absence as drift.
+None found. The case is recorded rather than live, but has not been generated yet, so only the document surface can be audited. Do not treat the absence as drift.
 
 `;
   }
@@ -196,9 +303,23 @@ None found. The spec is \`deterministic\` but has not been generated yet, so onl
     .join("\n\n");
   return `## Generated test code
 
-This is what actually runs. The selectors and strings here are literal — check them against the source the same way you check the spec's \`expected\`.
+This is what actually runs: the generated test first, then the project files it imports. The selectors and strings here are literal — check them against the source the same way you check what the case says must be true. An imported file may be the project's own code rather than something ccqa generated; a finding about one belongs to the \`spec\` surface, not to code a regeneration would rewrite.
 
 ${files}
+${unauditedNote(artifacts.unaudited)}
+`;
+}
 
+/**
+ * Files that belong to the test case but did not fit the budget. Named so the
+ * audit cannot report "no drift" as if it had read them; it may Read one when
+ * a finding turns on what it contains.
+ */
+function unauditedNote(unaudited: string[]): string {
+  if (unaudited.length === 0) return "";
+  return `
+### Not shown
+
+These files are part of this test case but did not fit here: ${unaudited.join(", ")}. They were NOT audited — do not count them as checked, and Read one if a finding depends on it.
 `;
 }

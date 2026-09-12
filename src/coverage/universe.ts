@@ -2,6 +2,7 @@ import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 
 import type { CoverageUniverse } from "../report/schema.ts";
+import type { CoverageExcluder } from "./exclude.ts";
 import { SOURCE_FILE } from "./frontend/resolve.ts";
 
 /**
@@ -35,6 +36,7 @@ export async function enumerateUniverse(
   root: string,
   include: readonly string[],
   warn: (text: string) => void,
+  excluded: CoverageExcluder = () => false,
 ): Promise<CoverageUniverse | undefined> {
   const files: string[] = [];
   // Normalised so the emitted paths byte-match the reached side's relative
@@ -43,7 +45,7 @@ export async function enumerateUniverse(
   // once reached, once "uncovered".
   const dirs = [...new Set(include.map(normalizeDir))];
   for (const dir of dirs) {
-    await walk(dir === "" ? root : join(root, dir), dir, files, warn);
+    await walk(dir === "" ? root : join(root, dir), dir, files, warn, excluded);
     if (files.length > MAX_FILES) {
       warn(
         `coverage.include matched more than ${MAX_FILES} files — the universe was omitted ` +
@@ -73,11 +75,16 @@ function normalizeDir(dir: string): string {
   return posix === "." ? "" : posix;
 }
 
+/**
+ * Excluded files are dropped here rather than from the finished list, so the
+ * ceiling and the empty check above both count what will actually be shipped.
+ */
 async function walk(
   abs: string,
   rel: string,
   out: string[],
   warn: (text: string) => void,
+  excluded: CoverageExcluder,
 ): Promise<void> {
   let entries;
   try {
@@ -93,9 +100,10 @@ async function walk(
   for (const entry of entries) {
     if (entry.isDirectory()) {
       if (entry.name.startsWith(".") || SKIP_DIRS.has(entry.name)) continue;
-      await walk(join(abs, entry.name), rel === "" ? entry.name : `${rel}/${entry.name}`, out, warn);
+      await walk(join(abs, entry.name), rel === "" ? entry.name : `${rel}/${entry.name}`, out, warn, excluded);
     } else if (entry.isFile() && SOURCE_FILE.test(entry.name)) {
-      out.push(rel === "" ? entry.name : `${rel}/${entry.name}`);
+      const path = rel === "" ? entry.name : `${rel}/${entry.name}`;
+      if (!excluded(path)) out.push(path);
     }
   }
 }

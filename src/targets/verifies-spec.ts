@@ -1,11 +1,11 @@
-import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { extractJsonBlock } from "../claude/extract-json.ts";
 import * as log from "../cli/logger.ts";
 import { verifiesSpecPrompt } from "../prompts/verifies-spec.ts";
-import type { ExpandedStep } from "../spec/expand.ts";
-import type { GenerateResult } from "./types.ts";
+import { isExpandedActionStep, type ExpandedStep } from "../spec/expand.ts";
+import { assertionsByStep } from "../evidence/table.ts";
+import { evidenceLabels, type EvidenceLabels } from "../evidence/labels.ts";
 import type { InvokeFn } from "./llm-engine.ts";
 
 // `findings` は必須。既定値を与えると、キー名を間違えた返答や指摘を落とした
@@ -33,59 +33,150 @@ export function parseVerifiesSpecFindings(answer: string): SpecCoverageFinding[]
   }
 }
 
-/** The warning a finding becomes, phrased so the reader knows the test is green for nothing. */
-export function formatFinding(finding: SpecCoverageFinding): string {
-  return (
-    `step ${finding.stepId}: the generated test passes without deciding what this step claims — ` +
-    `${finding.problem}`
-  );
+/**
+ * Whether a step claims an outcome of its own. "Open the list", "click Add",
+ * "type a title" do not: nothing follows from them that a test could check,
+ * and a hand-written test asserts nothing after them either. A markdown case
+ * states its expectations for the flow, so none of its steps claim one.
+ *
+ * One predicate, two readers — the review below and the evidence table, which
+ * reach the same verdict from the same file and must not be able to disagree
+ * about which steps were supposed to decide something.
+ */
+export function claimsAnOutcome(step: { expected?: string }): boolean {
+  return (step.expected ?? "").trim().length > 0;
+}
+
+/**
+ * What a step that states an outcome, and carries no assertion under it, is
+ * told. Shared with the evidence table, which reaches the same verdict from
+ * the same file — a reader must not meet two wordings for one fact.
+ *
+ * It reports what was seen, not what was concluded. An assertion a rewrite
+ * moved into a page object is invisible here, and calling that "decides
+ * nothing" would be ccqa claiming more than it looked at.
+ */
+export const NOTHING_DECIDED =
+  "no assertion is visible under this step in the generated test — one moved into a helper does " +
+  "not show here, and does not show to a reviewer reading the file either";
+
+/**
+ * The warning a finding becomes, phrased so the reader knows the test is green
+ * for nothing. A step deciding nothing is its own explanation, so only the
+ * model's own words are worth appending.
+ */
+export function formatFinding(finding: SpecCoverageFinding, labels: EvidenceLabels = evidenceLabels()): string {
+  const nothing = finding.problem === NOTHING_DECIDED;
+  const claim = nothing ? labels.findingNothing : labels.findingUndecided;
+  return `${finding.stepId}: ${claim}${nothing ? "" : ` — ${finding.problem}`}`;
+}
+
+/**
+ * What the review found, for a caller that keeps it rather than only printing
+ * it. `findings: null` is "no review happened" — which is not the same as a
+ * clean one, and a reader of the record must be able to tell them apart.
+ */
+export interface SpecCoverageReview {
+  findings: SpecCoverageFinding[] | null;
+  /**
+   * False when the model's half could not be obtained. The mechanical half
+   * still ran, so `findings` may be an empty array — which must not read as a
+   * clean review, because only part of the review happened.
+   */
+  complete: boolean;
+  /** The findings as the lines the generate log shows. */
+  warnings: string[];
 }
 
 /**
  * Read the generated test back and ask whether each step is actually decided
- * (see `verifiesSpecPrompt`). Returns warnings; an empty list means either a
- * clean review or one that could not be obtained, and the difference is
- * logged rather than encoded — a review that failed must not read as a pass,
- * but it must also not fail the generate that produced working files.
+ * (see `verifiesSpecPrompt`). A review that could not be obtained answers
+ * `findings: null` and is logged — it must not read as a pass, and it must
+ * also not fail the generate that produced working files.
  */
 export async function reviewGeneratedTest(input: {
-  result: GenerateResult;
+  /** The generated test files' source, as a reviewer opening them would read it. */
+  source: string;
   steps: readonly ExpandedStep[];
+  /**
+   * What the case states for the flow as a whole, when its steps carry no
+   * `expected` of their own. Without it a markdown case gives the model steps
+   * that claim nothing, and the honest answer to "does the test decide this"
+   * is then always yes.
+   */
+  expectations?: readonly string[];
+  /** Cleanup steps, when the case says what its undo must make true. */
+  cleanup?: readonly ExpandedStep[];
+  /** The page objects and helpers the test leans on — see `verifiesSpecPrompt`. */
+  support?: readonly { path: string; source: string }[];
   language: string;
   model?: string;
   cwd: string;
   /** Test seam — defaults to `invokeClaudeStreaming`. */
   invoke?: InvokeFn;
-}): Promise<string[]> {
-  const sources = await Promise.all(
-    input.result.files
-      .filter((f) => f.kind === "test")
-      .map((f) => readFile(f.path, "utf8").catch(() => "")),
-  );
-  const source = sources.filter((s) => s.length > 0).join("\n\n");
-  if (source.length === 0) {
+}): Promise<SpecCoverageReview> {
+  const source = input.source;
+  if (source.trim().length === 0) {
     log.warn("could not check whether the generated test decides its spec (no test file to read)");
-    return [];
+    return { findings: null, complete: false, warnings: [] };
   }
+
+  // Asked of the file, not of the model: a step with no assertion under it is
+  // a fact anyone can read off the source, and the evidence table reads it the
+  // same way — so the two must not be able to disagree about it.
+  const checked = assertionsByStep(source);
+  const undecided = [...input.steps, ...(input.cleanup ?? [])]
+    .filter(isExpandedActionStep)
+    // A case that states its expectations for the flow rather than per step
+    // leaves this half silent by design; the reading below is what covers it.
+    .filter(claimsAnOutcome)
+    .filter((step) => (checked.get(step.id) ?? []).length === 0)
+    .map((step) => ({ stepId: step.id, problem: NOTHING_DECIDED }));
 
   const invoke = input.invoke ?? invokeClaudeStreaming;
   const { result: answer, isError } = await invoke({
-    prompt: verifiesSpecPrompt({ steps: input.steps, source, language: input.language }),
+    prompt: verifiesSpecPrompt({
+      steps: input.steps,
+      source,
+      language: input.language,
+      ...(input.expectations && input.expectations.length > 0
+        ? { expectations: [...input.expectations] }
+        : {}),
+      ...(input.cleanup && input.cleanup.length > 0 ? { cleanup: [...input.cleanup] } : {}),
+      ...(input.support && input.support.length > 0 ? { support: input.support } : {}),
+    }),
     allowedTools: [],
-    disableThinking: true,
+    // The one part of a generate that is a judgement rather than a fact, and
+    // now the part that spends a fix round. It was asked without thinking
+    // while it only ever printed advice; asked twice of the same file it gave
+    // two different answers, and the cheaper one accepted a test that checked
+    // one of three things a case asked about for each of them.
     maxTurns: 1,
     silenceBashLog: true,
     ...(input.model ? { model: input.model } : {}),
     cwd: input.cwd,
   }, () => {});
-  if (isError) {
-    log.warn("could not check whether the generated test decides its spec (Claude returned an error)");
-    return [];
+  // A review that could not be obtained still leaves the mechanical half,
+  // which needed no model: reporting nothing here would read as a clean pass.
+  const fromModel = isError ? null : parseVerifiesSpecFindings(answer);
+  if (fromModel === null) {
+    log.warn(
+      `could not check whether the generated test decides its spec (${isError ? "Claude returned an error" : "no usable answer"})`,
+    );
   }
-  const findings = parseVerifiesSpecFindings(answer);
-  if (findings === null) {
-    log.warn("could not check whether the generated test decides its spec (no usable answer)");
-    return [];
-  }
-  return findings.map(formatFinding);
+  const findings = mergeFindings(undecided, fromModel ?? []);
+  return { findings, complete: fromModel !== null, warnings: findings.map((finding) => formatFinding(finding)) };
+}
+
+/**
+ * The mechanical finding wins its step: it is a fact, not a reading. Shared
+ * with the evidence table, which merges the same two sources — one of them
+ * recomputed from the file as it is now — and must show each step once.
+ */
+export function mergeFindings(
+  undecided: SpecCoverageFinding[],
+  fromModel: readonly SpecCoverageFinding[],
+): SpecCoverageFinding[] {
+  const claimed = new Set(undecided.map((f) => f.stepId));
+  return [...undecided, ...fromModel.filter((f) => !claimed.has(f.stepId))];
 }

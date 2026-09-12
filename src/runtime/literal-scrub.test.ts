@@ -3,8 +3,10 @@ import type { RecordedAction } from "../types.ts";
 import {
   detectUnstableLiterals,
   formatUnstableDrop,
+  isSecretInput,
   scrubUnstableActions,
   findOpaqueIdSegment,
+  type UnstableLiteralDrop,
 } from "./literal-scrub.ts";
 
 function action(partial: Partial<RecordedAction> & { action: RecordedAction["action"] }): RecordedAction {
@@ -322,5 +324,50 @@ describe("scrubUnstableActions — run-produced navigations", () => {
       value: "01H8XZK9WQRSTV3M5N7P2B4C6D",
     };
     expect(scrubUnstableActions([fill]).kept).toHaveLength(1);
+  });
+});
+
+describe("isSecretInput / unrouted-secret", () => {
+  test("a fill marked secret:true with a literal value is dropped", () => {
+    const actions: RecordedAction[] = [
+      { action: "fill", locator: css("[aria-label='Password']"), value: "hunter2", secret: true },
+    ];
+    const result = scrubUnstableActions(actions);
+    expect(result.kept).toEqual([]);
+    expect(result.dropped[0]!.hits[0]!.patternId).toBe("unrouted-secret");
+  });
+
+  test("the same fill is kept once its value is routed through ${VAR}", () => {
+    const actions: RecordedAction[] = [
+      { action: "fill", locator: css("[aria-label='Password']"), value: "${LOGIN_PASSWORD}", secret: true },
+    ];
+    expect(scrubUnstableActions(actions).kept).toEqual(actions);
+  });
+
+  test("a css locator addressing a password input is secret without the flag", () => {
+    const action: RecordedAction = {
+      action: "fill",
+      locator: css('input[type="password"]'),
+      value: "hunter2",
+    };
+    expect(isSecretInput(action)).toBe(true);
+    expect(detectUnstableLiterals(action).map((h) => h.patternId)).toEqual(["unrouted-secret"]);
+  });
+
+  test("secret:true on a non-fill action has no effect", () => {
+    const action: RecordedAction = { action: "click", locator: css("[aria-label='Submit']"), secret: true };
+    expect(isSecretInput(action)).toBe(false);
+    expect(detectUnstableLiterals(action)).toEqual([]);
+  });
+
+  test("formatUnstableDrop never echoes the literal value and points at envFiles", () => {
+    const drop: UnstableLiteralDrop = {
+      index: 0,
+      action: { action: "fill", locator: css("[aria-label='Password']"), value: "hunter2", secret: true },
+      hits: [{ field: "value", patternId: "unrouted-secret", match: "(not shown)" }],
+    };
+    const msg = formatUnstableDrop(drop);
+    expect(msg).not.toContain("hunter2");
+    expect(msg).toContain("envFiles");
   });
 });

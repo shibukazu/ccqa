@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HubClient, HubCoverageAnswer } from "../hub-client/index.ts";
 import type { Run } from "../hub/contract/schema.ts";
-import { loadCoverageEdges } from "./coverage-edges.ts";
+import { loadCoverageEdges, loadCoverageEdgesFromReport } from "./coverage-edges.ts";
 
 const NOW = Date.now();
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
@@ -146,18 +149,18 @@ describe("loadCoverageEdges: report source", () => {
         run("r-old", iso(3000)),
       ],
       reports: {
-        "r-running": { results: [{ feature: "checkout", spec: "a", coverage: { files: ["src/never.ts"] } }] },
+        "r-running": { results: [{ feature: "checkout", spec: "a", status: "passed", coverage: { files: ["src/never.ts"] } }] },
         "r-new": {
           results: [
-            { feature: "checkout", spec: "a", coverage: { files: ["src/new.ts"] } },
+            { feature: "checkout", spec: "a", status: "passed", coverage: { files: ["src/new.ts"] } },
             { feature: "checkout", spec: "no-coverage" },
           ],
         },
         "r-broken": "not a report",
         "r-old": {
           results: [
-            { feature: "checkout", spec: "a", coverage: { files: ["src/old.ts"] } },
-            { feature: "checkout", spec: "b", coverage: { files: ["src/b.ts"] } },
+            { feature: "checkout", spec: "a", status: "passed", coverage: { files: ["src/old.ts"] } },
+            { feature: "checkout", spec: "b", status: "passed", coverage: { files: ["src/b.ts"] } },
           ],
         },
       },
@@ -169,6 +172,26 @@ describe("loadCoverageEdges: report source", () => {
     expect(edges.get("checkout/a")!.files.has("src/never.ts")).toBe(false);
     expect(edges.get("checkout/b")!.files.has("src/b.ts")).toBe(true);
     expect(edges.has("checkout/no-coverage")).toBe(false);
+  });
+
+  it("skips a failed row on the hub too, so an older passing report still answers", async () => {
+    const hub = fakeHub({
+      ...NO_STREAM,
+      runs: [run("r-new", iso(1000)), run("r-old", iso(2000))],
+      reports: {
+        "r-new": {
+          results: [{ feature: "checkout", spec: "a", status: "failed", coverage: { files: ["src/partial.ts"] } }],
+        },
+        "r-old": {
+          results: [{ feature: "checkout", spec: "a", status: "passed", coverage: { files: ["src/whole.ts"] } }],
+        },
+      },
+    });
+
+    const { edges } = await loadCoverageEdges({ hub, project: "demo" });
+
+    expect(edges.get("checkout/a")!.files.has("src/whole.ts")).toBe(true);
+    expect(edges.get("checkout/a")!.files.has("src/partial.ts")).toBe(false);
   });
 });
 
@@ -185,7 +208,7 @@ describe("loadCoverageEdges: merging and degradation", () => {
       },
       runs: [run("hub-run", iso(1000))],
       reports: {
-        "hub-run": { results: [{ feature: "checkout", spec: "a", coverage: { files: ["src/report.ts"] } }] },
+        "hub-run": { results: [{ feature: "checkout", spec: "a", status: "passed", coverage: { files: ["src/report.ts"] } }] },
       },
     });
 
@@ -270,12 +293,71 @@ describe("loadCoverageEdges: merging and degradation", () => {
       // Stream unreadable (no coverage entry); reports readable.
       runs: [run("hub-run", iso(1000))],
       reports: {
-        "hub-run": { results: [{ feature: "checkout", spec: "a", coverage: { files: ["src/a.ts"] } }] },
+        "hub-run": { results: [{ feature: "checkout", spec: "a", status: "passed", coverage: { files: ["src/a.ts"] } }] },
       },
     });
 
     const { edges } = await loadCoverageEdges({ hub, project: "demo" });
 
     expect(edges.get("checkout/a")!.files.has("src/a.ts")).toBe(true);
+  });
+});
+
+describe("loadCoverageEdgesFromReport", () => {
+  let dir: string;
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  it("reads coverage edges off a local report.json, using each row's own finishedAt", async () => {
+    dir = await mkdtemp(join(tmpdir(), "ccqa-local-report-"));
+    const finishedAt = iso(1000);
+    await writeFile(
+      join(dir, "report.json"),
+      JSON.stringify({
+        results: [
+          { feature: "checkout", spec: "a", finishedAt, status: "passed", coverage: { files: ["src/a.ts"] } },
+          { feature: "checkout", spec: "no-coverage" },
+        ],
+      }),
+    );
+
+    const { edges, degraded } = await loadCoverageEdgesFromReport(dir);
+
+    expect(degraded).toBe(false);
+    expect(edges.get("checkout/a")!.files.has("src/a.ts")).toBe(true);
+    expect(edges.get("checkout/a")!.measuredAt).toBe(Date.parse(finishedAt));
+    expect(edges.has("checkout/no-coverage")).toBe(false);
+  });
+
+  // A spec that failed stopped part-way: what it reached is a prefix of its
+  // route, and taking it as the spec's reach clears the spec against the rest.
+  it("ignores a failed row's measurement and keeps the passing one from the same report", async () => {
+    dir = await mkdtemp(join(tmpdir(), "ccqa-local-report-"));
+    await writeFile(
+      join(dir, "report.json"),
+      JSON.stringify({
+        results: [
+          { feature: "checkout", spec: "a", status: "failed", finishedAt: iso(2000), coverage: { files: [] } },
+          { feature: "checkout", spec: "a", status: "passed", finishedAt: iso(1000), coverage: { files: ["src/a.ts"] } },
+          { feature: "checkout", spec: "b", status: "failed", finishedAt: iso(1000), coverage: { files: ["src/partial.ts"] } },
+        ],
+      }),
+    );
+
+    const { edges } = await loadCoverageEdgesFromReport(dir);
+
+    expect(edges.get("checkout/a")!.files.has("src/a.ts")).toBe(true);
+    // No passing measurement at all: absent, which selects the spec.
+    expect(edges.has("checkout/b")).toBe(false);
+  });
+
+  it("degrades instead of throwing when report.json is missing", async () => {
+    dir = await mkdtemp(join(tmpdir(), "ccqa-local-report-"));
+
+    const { edges, degraded } = await loadCoverageEdgesFromReport(dir);
+
+    expect(edges.size).toBe(0);
+    expect(degraded).toBe(true);
   });
 });

@@ -46,6 +46,17 @@ export interface AuditSelection {
  * deploy-based, and a merged fix changes only the spec tree — no deploy lands
  * on the spec, so the hub would never call it due again and the entry would
  * stay open forever. A drifted spec is due until the audit itself clears it.
+ *
+ * `PRODUCT_BUG`/`ENVIRONMENT` are the exception, not `UNKNOWN`. Each of the
+ * first two read the test case and found it faithful before naming something
+ * else — the same reading `auditState` (src/hub/core/rerun.ts) gives them,
+ * clean rather than drifted — and that something else lives outside the spec
+ * tree, so no edit to the case can ever resolve them; counting them here would
+ * spend a Claude call every sweep on a verdict a merged fix can never change.
+ * `TEST_DRIFT`, `SPEC_CHANGE` and `UNKNOWN` all stay open: a person editing the
+ * case — fixing the drift, rewriting the spec, or making an unclear one easier
+ * to read — is exactly the kind of change this function exists to notice.
+ *
  * Unreadable ledger degrades to the deploy-based answer alone: the sweep must
  * not die over the supplementary question.
  */
@@ -54,7 +65,7 @@ export async function fetchStillDrifted(ctx: HubContext): Promise<ReadonlySet<st
     const ledger = await ctx.hub.getDriftLedger(ctx.project);
     return new Set(
       Object.entries(ledger.specs ?? {})
-        .filter(([, entry]) => entry.label != null)
+        .filter(([, entry]) => entry.label != null && entry.label !== "PRODUCT_BUG" && entry.label !== "ENVIRONMENT")
         .map(([key]) => key),
     );
   } catch {

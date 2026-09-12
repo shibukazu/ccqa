@@ -41,6 +41,19 @@ export function locatorToSelector(locator: Locator): string {
 }
 
 /**
+ * Ask whether one role + accessible name is on the page, without touching it.
+ * `text` or it *clicks* what it finds. `--exact` follows the locator: a name
+ * recorded without it matched by substring, and asking exactly would fail on
+ * the element the recording verified.
+ */
+export function roleProbeTokens(role: string, name: string, exact = true): AbToken[] {
+  return [
+    lit("find"), lit("role"), val(role), lit("text"), lit("--name"), val(name),
+    ...(exact ? [lit("--exact")] : []),
+  ];
+}
+
+/**
  * Compact human-readable locator form for logs and LLM-prompt summaries: the
  * raw selector for `css`, `by=value` otherwise. Distinct from
  * `locatorToSelector` (which produces a selector agent-browser can execute) —

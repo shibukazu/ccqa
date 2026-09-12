@@ -1936,11 +1936,12 @@ const CLIENT_JS = `
   // rerunSegments below: a "0" chip next to a real count reads as a finding.
   // DRIFT_LABELS / DRIFT_CAUSES / RUN_CAUSES are declared above, sourced from
   // causesForKind / predictedForKind. The two sides overlap but are not equal:
-  // an audit opens no browser (no PRODUCT_BUG/ENVIRONMENT) and NO_DRIFT is not
-  // an answer about a run. Offering one side's label in the other's control
-  // would let a grade land in a cell that does not exist.
+  // NO_DRIFT is not an answer about a run — a run holds execution evidence,
+  // so "the finding was wrong" is not a thing it can say about itself.
+  // Offering one side's label in the other's control would let a grade land
+  // in a cell that does not exist.
   function causeLabels(isDrift) { return isDrift ? DRIFT_CAUSES : RUN_CAUSES; }
-  var DRIFT_LABEL_COUNT_KEY = { TEST_DRIFT: "testDrift", SPEC_CHANGE: "specChange", UNKNOWN: "unknown" };
+  var DRIFT_LABEL_COUNT_KEY = { TEST_DRIFT: "testDrift", SPEC_CHANGE: "specChange", PRODUCT_BUG: "productBug", ENVIRONMENT: "environment", UNKNOWN: "unknown" };
   // A run stored by an older hub carries the previous drift summary shape
   // (issue/severity counts). The read path returns runs as stored, so the
   // label counts this build wants are simply absent — render nothing rather
@@ -1981,7 +1982,17 @@ const CLIENT_JS = `
     return run.kind === "drift" && run.status !== "running";
   }
 
-  /** A whole drift run's state. Label counts beat status for the same reason. */
+  /**
+   * A whole drift run's state. Label counts beat status for the same reason.
+   *
+   * Only testDrift/specChange count toward "found": those are the two labels
+   * that say the test case itself is stale, the same split auditState
+   * (src/hub/core/rerun.ts) uses for the re-run axis. A run whose only
+   * findings are productBug/environment reads "clean" here on purpose — they
+   * do not block anything (driftSeverity: warn), and a badge that reads like
+   * a failure would blame the test case for something the audit itself said
+   * wasn't there. Their counts still reach the reader via driftChips below.
+   */
   function driftRunState(run) {
     var d = driftSummary(run);
     if (!d) return run.status === "failed" ? "found" : "clean";
@@ -3593,11 +3604,15 @@ const CLIENT_JS = `
       ? graded
       : graded.filter(function (c) { return caseTarget(c) === filter; });
 
-    // A drift audit opens no browser, so it never answers PRODUCT_BUG or
-    // ENVIRONMENT, and NO_DRIFT is not an answer about a run. A row or column
-    // for a label this kind cannot produce would sit at zero forever and read
-    // as "it never predicted this" — an accuracy claim, when it is only a
-    // definition.
+    // The predicted-label ROWS are the same five values either way (ADR-0030
+    // let the audit name PRODUCT_BUG/ENVIRONMENT too, like a run's failure
+    // analysis already could) — kept as a lookup on isDrift anyway so a
+    // future split does not have to rediscover this call site. The
+    // actual-cause COLUMNS still differ: NO_DRIFT is drift-only, since only
+    // an audit finding can be wrong about a spec that still describes the
+    // product. A row or column for a label this kind cannot produce would sit
+    // at zero forever and read as "it never predicted this" — an accuracy
+    // claim, when it is only a definition.
     var predictedRows = triageState.isDrift ? DRIFT_LABELS : RUN_LABELS;
     var actualCols = causeLabels(triageState.isDrift);
     var matrix = {};

@@ -1,11 +1,15 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
-import { getSpecDir, loadPromptBundleFromHub } from "../store/index.ts";
+import { caseRunDir, clearCaseRun, loadPromptBundle } from "../store/index.ts";
+import { formatEmittedReview, reviewEmittedFiles } from "./emitted-review.ts";
+import { formatFinding, type SpecCoverageReview } from "./verifies-spec.ts";
+import { isExpandedActionStep } from "../spec/expand.ts";
+import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import {
   buildLlmFixPrompt,
   buildLlmGenPrompt,
@@ -14,16 +18,11 @@ import {
 } from "../prompts/llm-gen.ts";
 import { isWithin, loadConventions, resolveResources, type ResolvedResource } from "./resources.ts";
 import { printUnifiedDiff, prompt } from "../cli/draft.ts";
-import {
-  GENERATED_MANIFEST_FILE,
-  GeneratedManifestSchema,
-  manifestSha256,
-  substituteRunCommandFiles,
-  type GeneratedManifest,
-} from "./run-command-runner.ts";
+import { substituteRunCommandFiles } from "./run-command-runner.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { ARTIFACTS_DIR_ENV, substituteArtifactsDir } from "./run-artifacts.ts";
-import type { GenerateContext, GenerateResult, SpecRef } from "./types.ts";
+import { buildProseEnvScrubMap, findLoadedValueLiterals, scrubEnvValues } from "../runtime/env-scrub.ts";
+import type { GenerateContext, GenerateResult } from "./types.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import * as log from "../cli/logger.ts";
 
@@ -34,12 +33,12 @@ import * as log from "../cli/logger.ts";
  *   resolve resources + conventions → assemble the prompt (spec, optional
  *   mechanical draft, hub prompt bundle, reuse-first contract) → invoke
  *   Claude read-only (Read/Grep/Glob — no Bash, no browser) → parse the JSON
- *   output contract → validate output paths → write files + the
- *   `generated.json` manifest → optionally verify via the target's
- *   `runCommand`, feeding failures back to Claude in a bounded fix loop.
+ *   output contract → validate output paths → write files → optionally verify
+ *   via the target's `runCommand`, feeding failures back to Claude in a
+ *   bounded fix loop.
  *
  * Targets whose first pass is deterministic (playwright without resources)
- * enter at `finalizePreparedFiles`, sharing the write/manifest/verify half.
+ * enter at `finalizePreparedFiles`, sharing the write/verify half.
  */
 
 /** Read-only exploration: generation must never mutate the repo via tools. */
@@ -47,6 +46,20 @@ export const LLM_GEN_ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
 
 /** Test seam: the engine invokes Claude through this signature. */
 export type InvokeFn = typeof invokeClaudeStreaming;
+
+/**
+ * A target's reading of the files one attempt produced: whether their
+ * assertions decide what the case claims.
+ *
+ * Supplied by the target rather than built here. What counts as an assertion
+ * is the generated language's business — a target whose runbooks are YAML has
+ * none in the shape a reader of test code looks for, and would otherwise be
+ * told that every step of every case decides nothing. A target that offers no
+ * reading is simply not read.
+ */
+export type Reading = (
+  files: readonly LlmGeneratedFile[],
+) => Promise<SpecCoverageReview>;
 
 const LlmFileSchema = z.object({
   path: z.string().min(1),
@@ -123,18 +136,23 @@ export function parseLlmGenOutput(raw: string): LlmGenOutput {
 
 export interface OutputPathPolicy {
   cwd: string;
-  /** Absolute `targetConfig.outDir`. */
-  outDirAbs: string;
-  /** Absolute path-resource roots that may also receive support files. */
+  /** The one path the test file may take (project-root-relative). */
+  testPath: string;
+  /** Absolute path-resource roots that may receive support files. */
   writeRootsAbs: string[];
 }
 
 /**
- * Validate one output path against the write policy: project-root-relative,
- * no traversal, never under node_modules, and confined to outDir or a
- * writable path-resource root. Returns an error message, or null when valid.
+ * Validate one output path against the write policy: project-root-relative, no
+ * traversal, never under node_modules, and — for the test itself — exactly the
+ * configured `testPath`, so a rewrite pass cannot decide where a spec's test
+ * lives. Returns an error message, or null when valid.
  */
-export function validateOutputPath(policy: OutputPathPolicy, path: string): string | null {
+export function validateOutputPath(
+  policy: OutputPathPolicy,
+  path: string,
+  kind: "test" | "support",
+): string | null {
   if (isAbsolute(path) || /^[A-Za-z]:[\\/]/.test(path)) {
     return `absolute output path is not allowed: ${path}`;
   }
@@ -150,62 +168,56 @@ export function validateOutputPath(policy: OutputPathPolicy, path: string): stri
     return `output path contains shell-unsafe characters: ${path}`;
   }
   const abs = resolve(policy.cwd, path);
-  const roots = [policy.outDirAbs, ...policy.writeRootsAbs];
+  if (kind === "test") {
+    return abs === resolve(policy.cwd, policy.testPath)
+      ? null
+      : `the test file must be written to ${policy.testPath} (configured as this target's testPath), not ${path}`;
+  }
+  // Support files land beside the test or under a configured write root. The
+  // test's own directory is included so a project that configures none can
+  // still receive the page object a rewrite pass had to create.
+  const roots = [dirname(resolve(policy.cwd, policy.testPath)), ...policy.writeRootsAbs];
   if (!roots.some((root) => isWithin(root, abs))) {
     const allowed = roots.map((r) => relative(policy.cwd, r) || ".").join(", ");
-    return `output path escapes the allowed roots (${allowed}): ${path}`;
+    return `support file escapes the allowed roots (${allowed}): ${path}`;
   }
   return null;
-}
-
-// --- generated.json manifest ---
-// The shape (`GeneratedManifestSchema`) lives in run-command-runner.ts — the
-// consumer side of the contract — and is written here:
-//   { target, generatedAt (ISO8601), files: [{ path (cwd-relative), kind, sha256 }] }
-
-function manifestPath(ref: SpecRef, cwd: string): string {
-  return join(getSpecDir(ref.featureName, ref.specName, cwd), GENERATED_MANIFEST_FILE);
-}
-
-export async function loadGeneratedManifest(
-  ref: SpecRef,
-  cwd: string,
-): Promise<GeneratedManifest | null> {
-  const content = await readFile(manifestPath(ref, cwd), "utf8").catch(() => null);
-  if (content === null) return null;
-  try {
-    return GeneratedManifestSchema.parse(JSON.parse(content));
-  } catch {
-    return null;
-  }
 }
 
 /**
- * `existingOutput` hook shared by manifest-writing targets: the first still-
- * existing generated file (tests first), i.e. what a re-generate would
- * clobber. Null when nothing was generated or every listed file is gone.
+ * The variables ccqa loaded whose values appear verbatim in `contents`, or an
+ * empty list. Values reach a generated file through the model, not through the
+ * emitter: a rewrite pass is shown the project's own conventions and page
+ * objects, and it writes what it read — in the observed case a sign-in comment
+ * naming the account the recording used.
+ *
+ * Rewriting the value into a `${VAR}` is the wrong repair. Code is not a
+ * recording: a credential a model chose to write into a comment or a fixture
+ * is not a reference the test needs, so the answer is to reject the file and
+ * ask again, not to launder it.
  */
-export async function existingOutputFromManifest(
-  ref: SpecRef,
-  cwd: string,
-): Promise<string | null> {
-  const manifest = await loadGeneratedManifest(ref, cwd);
-  if (!manifest) return null;
-  const files = [...manifest.files].sort((a, b) =>
-    a.kind === b.kind ? 0 : a.kind === "test" ? -1 : 1,
+export function leakedVariables(contents: string): string[] {
+  return findLoadedValueLiterals([contents]);
+}
+
+/** The rejection a leak becomes, naming the variable and never the value. */
+export function leakMessage(path: string, names: string[]): string {
+  return (
+    `${path} contains the value of ${names.join(", ")} — a credential this project keeps in a ` +
+    `variable. Never write a resolved value into generated code, in a comment or anywhere else; ` +
+    `read it from the environment, or leave it out.`
   );
-  for (const f of files) {
-    const abs = resolve(cwd, f.path);
-    const exists = await stat(abs)
-      .then(() => true)
-      .catch(() => false);
-    if (exists) return abs;
-  }
-  return null;
 }
 
 /** Written-files state: cwd-relative path → what's on disk. */
-type FileState = Map<string, { abs: string; kind: "test" | "support"; contents: string }>;
+type FileState = Map<
+  string,
+  {
+    abs: string;
+    kind: "test" | "support";
+    contents: string;
+  }
+>;
 
 async function writeGeneratedFiles(
   cwd: string,
@@ -213,6 +225,11 @@ async function writeGeneratedFiles(
   state: FileState,
 ): Promise<void> {
   for (const file of files) {
+    // The last gate before a secret reaches the consumer's repository. Every
+    // path that produces files ends here, which is why the check is here as
+    // well as in the retryable one above.
+    const leaked = leakedVariables(file.contents);
+    if (leaked.length > 0) throw new Error(leakMessage(file.path, leaked));
     const abs = resolve(cwd, file.path);
     await mkdir(dirname(abs), { recursive: true });
     await writeFile(abs, file.contents, "utf8");
@@ -221,31 +238,10 @@ async function writeGeneratedFiles(
   }
 }
 
-async function saveGeneratedManifest(
-  ref: SpecRef,
-  cwd: string,
-  target: string,
-  state: FileState,
-): Promise<void> {
-  const manifest: GeneratedManifest = {
-    target,
-    generatedAt: new Date().toISOString(),
-    files: [...state.entries()].map(([path, f]) => ({
-      path,
-      kind: f.kind,
-      sha256: manifestSha256(f.contents),
-    })),
-  };
-  // Contract with the run side (`GeneratedManifestSchema`) — see run-command-runner.ts.
-  const path = manifestPath(ref, cwd);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-}
-
 // --- runCommand execution ---
 
-// `{files}` substitution (shell-quoted) lives with the run-side consumer of
-// the manifest; re-exported here for existing importers.
+// `{files}` substitution (shell-quoted) lives with the run-side consumer;
+// re-exported here for existing importers.
 export { substituteRunCommandFiles };
 
 /**
@@ -309,43 +305,42 @@ export interface LlmEngineRequest {
   validateFile?: (file: LlmGeneratedFile) => string | null;
   /** Test seam — defaults to `invokeClaudeStreaming`. */
   invoke?: InvokeFn;
+  /** How this target reads back what it wrote (see `Reading`). Absent: not read. */
+  reading?: Reading;
 }
 
 /**
- * The spec's own directory, relative to the project root. This is the
- * default write root when `targets.<target>.outDir` is not configured —
- * mirroring the agent-browser target, one spec directory carries its own
- * runnable test regardless of which target generated it.
+ * Where new support files may be created.
+ *
+ * A project that lists `writeRoots` has said which directories generated code
+ * may appear in, and `resources` then means only "code you may read and
+ * import" — the shared assets a generation must not rewrite. Without
+ * `writeRoots`, path resources stay writable, which is what the built-in
+ * targets have always done.
  */
-export function specDirRel(ctx: Pick<GenerateContext, "featureName" | "specName">): string {
-  return `.ccqa/features/${ctx.featureName}/test-cases/${ctx.specName}`;
-}
-
-/** `targets.<target>.outDir` when configured, else the spec's own directory. */
-export function resolveOutDir(ctx: GenerateContext): string {
-  return ctx.targetConfig.outDir ?? specDirRel(ctx);
+function configuredWriteRoots(ctx: GenerateContext, resources: ResolvedResource[]): string[] {
+  if (ctx.targetConfig.writeRoots.length > 0) {
+    return ctx.targetConfig.writeRoots.map((root) => resolve(ctx.cwd, root));
+  }
+  return resources.filter((r) => r.writable).map((r) => r.rootAbs);
 }
 
 /** Full LLM generation: prompt assembly → invoke → write → verify loop. */
 export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<GenerateResult> {
   const { ctx } = req;
-  const outDir = resolveOutDir(ctx);
   const resources = await resolveResources(ctx.cwd, ctx.resources);
-  const conventions = await loadConventions(ctx.cwd, ctx.conventions);
+  const conventions = await loadConventions(ctx.cwd, [...ctx.conventions.guides, ...ctx.conventions.examples]);
   const warnings = [...conventions.warnings];
   for (const w of conventions.warnings) log.warn(w);
   log.meta("resources", resources.length);
   log.meta("conventions", conventions.sections.length);
 
-  const bundle = await loadPromptBundleFromHub(ctx.hub, req.target);
+  const bundle = await loadPromptBundle(ctx.hub, req.target, ctx.cwd);
   if (bundle) log.meta("prompt-bundle", bundle.loaded.join(", "));
 
-  const policy: OutputPathPolicy = {
-    cwd: ctx.cwd,
-    outDirAbs: resolve(ctx.cwd, outDir),
-    writeRootsAbs: resources.filter((r) => r.writable).map((r) => r.rootAbs),
-  };
-  const extraWriteRoots = resources.filter((r) => r.writable).map((r) => r.rootDisplay);
+  const writeRootsAbs = configuredWriteRoots(ctx, resources);
+  const policy: OutputPathPolicy = { cwd: ctx.cwd, testPath: ctx.testPath, writeRootsAbs };
+  const writeRoots = writeRootsAbs.map((root) => relative(ctx.cwd, root) || ".");
 
   const prompt = buildLlmGenPrompt({
     taskInstructions: req.taskInstructions,
@@ -356,8 +351,8 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
     resources: resources.map(toPromptResource),
     conventionSections: conventions.sections,
     promptBundle: bundle?.text,
-    outDir,
-    extraWriteRoots,
+    testPath: ctx.testPath,
+    writeRoots,
     language: ctx.language,
   });
 
@@ -382,14 +377,14 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
   return finalizeAndVerify({
     ctx,
     target: req.target,
-    outDir,
     policy,
-    extraWriteRoots,
+    writeRoots,
     initialFiles: output.files,
     summary: output.summary,
     warnings,
     validateFile: req.validateFile,
     invoke,
+    reading: req.reading,
   });
 }
 
@@ -402,63 +397,59 @@ export interface PreparedFilesRequest {
   warnings: string[];
   validateFile?: (file: LlmGeneratedFile) => string | null;
   invoke?: InvokeFn;
+  reading?: Reading;
 }
 
 /**
  * Entry point for targets whose files are already prepared: shares the
- * engine's write + manifest + runCommand verification half (the fix loop
- * still consults Claude on failures).
+ * engine's write + runCommand verification half (the fix loop still consults
+ * Claude on failures).
  */
 export async function finalizePreparedFiles(req: PreparedFilesRequest): Promise<GenerateResult> {
   const { ctx } = req;
-  const outDir = resolveOutDir(ctx);
   const resources = await resolveResources(ctx.cwd, ctx.resources);
-  const policy: OutputPathPolicy = {
-    cwd: ctx.cwd,
-    outDirAbs: resolve(ctx.cwd, outDir),
-    writeRootsAbs: resources.filter((r) => r.writable).map((r) => r.rootAbs),
-  };
+  const writeRootsAbs = configuredWriteRoots(ctx, resources);
+  const policy: OutputPathPolicy = { cwd: ctx.cwd, testPath: ctx.testPath, writeRootsAbs };
   return finalizeAndVerify({
     ctx,
     target: req.target,
-    outDir,
     policy,
-    extraWriteRoots: resources.filter((r) => r.writable).map((r) => r.rootDisplay),
+    writeRoots: writeRootsAbs.map((root) => relative(ctx.cwd, root) || "."),
     initialFiles: req.files,
     summary: req.summary,
     warnings: req.warnings,
     validateFile: req.validateFile,
     invoke: req.invoke ?? invokeClaudeStreaming,
+    reading: req.reading,
   });
 }
 
 interface FinalizeParams {
   ctx: GenerateContext;
   target: GuidanceKind;
-  outDir: string;
   policy: OutputPathPolicy;
-  extraWriteRoots: string[];
+  writeRoots: string[];
   initialFiles: LlmGeneratedFile[];
   summary: string;
   warnings: string[];
   validateFile?: (file: LlmGeneratedFile) => string | null;
   invoke: InvokeFn;
+  reading?: Reading;
 }
 
-/** Write files + manifest, then run the bounded runCommand verify/fix loop. */
+/** Write the files, then run the bounded runCommand verify/fix loop. */
 async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
   const { ctx } = p;
-  const ref: SpecRef = { featureName: ctx.featureName, specName: ctx.specName };
   const state: FileState = new Map();
   await writeGeneratedFiles(ctx.cwd, p.initialFiles, state);
-  await saveGeneratedManifest(ref, ctx.cwd, p.target, state);
 
-  const passed = await runVerificationLoop(p, ref, state);
+  const { passed, review } = await runVerificationLoop(p, state);
   return {
     files: [...state.values()].map((f) => ({ path: f.abs, kind: f.kind })),
     summary: p.summary || `${state.size} file(s) generated for the ${p.target} target`,
     warnings: p.warnings,
     passed,
+    review,
   };
 }
 
@@ -480,14 +471,29 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
  */
 async function runVerificationLoop(
   p: FinalizeParams,
-  ref: SpecRef,
   state: FileState,
-): Promise<boolean> {
+): Promise<{ passed: boolean; review?: SpecCoverageReview }> {
   const runCommand = p.ctx.targetConfig.runCommand;
-  if (!runCommand) return true;
+  // A target with no test command of its own can still have project-wide
+  // checks, and generated code that fails them is not done.
+  if (!runCommand) {
+    const checks = await runCheckCommands(p.ctx);
+    if (checks !== null) {
+      log.warn(`${checks.command} failed (exit ${checks.exitCode}) — generated files kept`);
+      return { passed: false };
+    }
+    const review = await readingOfEmitted(p, state);
+    for (const w of review?.warnings ?? []) log.warn(w);
+    return { passed: true, review };
+  }
   // `--auto-fix skip` disables the fix pass entirely: run verification once and
   // report the result, never rewriting the generated files.
   const maxRetries = p.ctx.fix.mode === "non-interactive" ? 0 : p.ctx.fix.maxRetries;
+  // Only a target whose generated tests call `ccqa/step-evidence` captures
+  // anything; for the rest the variable stays unset and the helper is a no-op.
+  const captures = p.ctx.targetConfig.hooks.stepEvidence;
+  // Loop-invariant: it reads the process env, which no attempt changes.
+  const outputScrub = buildProseEnvScrubMap([], []);
 
   // `useSnapshot` pins an agent-browser session so that target can re-attach
   // for a post-failure page snapshot; a runCommand target has no such session
@@ -500,6 +506,7 @@ async function runVerificationLoop(
     );
   }
 
+  let review: SpecCoverageReview | undefined;
   for (let attempt = 0; ; attempt++) {
     const testFiles = [...state.entries()]
       .filter(([, f]) => f.kind === "test")
@@ -508,6 +515,15 @@ async function runVerificationLoop(
     // verification run has no report dir, so it (and CCQA_ARTIFACTS_DIR)
     // points at a throwaway temp dir instead, discarded after the attempt.
     const artifactsDir = await mkdtemp(join(tmpdir(), "ccqa-verify-artifacts-"));
+    // The step screenshots this attempt takes, kept when it passes. A project
+    // whose tests belong to its own runner never calls `ccqa run`, so this is
+    // the only time ccqa sees the case executed — and `ccqa evidence` has no
+    // pictures at all without it. Cleared first: what is here is one attempt's.
+    const evidenceDir = captures ? caseRunDir(p.ctx.ref) : null;
+    if (evidenceDir) {
+      await clearCaseRun(p.ctx.ref);
+      await mkdir(evidenceDir, { recursive: true });
+    }
     const command = substituteArtifactsDir(
       substituteRunCommandFiles(runCommand, testFiles),
       artifactsDir,
@@ -525,32 +541,75 @@ async function runVerificationLoop(
             ...process.env,
             [ARTIFACTS_DIR_ENV]: artifactsDir,
             CCQA_RUN_ID: buildRunId(),
+            ...(evidenceDir ? { [EVIDENCE_DIR_ENV]: evidenceDir } : {}),
           }),
         "run",
       );
     } finally {
       await rm(artifactsDir, { recursive: true, force: true });
     }
-    if (result.exitCode === 0) return true;
+    let failing = command;
+    if (result.exitCode === 0) {
+      // The spec's own test passing is not the whole bar: generated code that
+      // breaks the project's type check or lint cannot be merged, and finding
+      // that out in review costs another round trip. Run those here, where the
+      // fix loop can still act on the output.
+      const checks = await runCheckCommands(p.ctx);
+      if (checks !== null) {
+        result = checks;
+        // The fix pass is shown this output, so it has to be told which command
+        // produced it — otherwise it reads lint errors under the test command.
+        failing = checks.command;
+      } else {
+        // Everything the project can decide for itself is green. What is left
+        // is how the code reads, asked two ways — mechanically, and by reading
+        // it against the case. Both at once: they are the same kind of
+        // question, and answering them in turn spends a whole round on the
+        // cheaper one while the other waits for a budget that may be gone.
+        // (Observed: three rounds went to two failures and one mechanical
+        // finding, and the reading first spoke with nothing left to act on.)
+        review = await readingOfEmitted(p, state);
+        const reads = bothReadings(
+          await reviewOfEmitted(p.ctx, state, p.writeRoots),
+          uncheckedSteps(review),
+        );
+        if (reads === null || attempt >= maxRetries) {
+          for (const w of review?.warnings ?? []) log.warn(w);
+          if (reads !== null) {
+            log.warn(
+              "generated with review findings still open — the files are kept and the findings " +
+                "are recorded against the case, but nothing acted on them",
+            );
+          }
+          return { passed: true, review };
+        }
+        result = reads;
+        failing = reads.command;
+      }
+    }
     if (attempt >= maxRetries) {
       log.warn(
         `verification still failing after ${maxRetries} fix attempt(s) — generated files kept`,
       );
-      return false;
+      await clearCaseRun(p.ctx.ref);
+      return { passed: false, review };
     }
 
     log.fix(`verification failed (exit ${result.exitCode}) — requesting a fix (${attempt + 1}/${maxRetries})`);
     const fixPrompt = buildLlmFixPrompt({
       targetId: p.target,
-      command,
-      outputTail: tail(result.output),
+      command: failing,
+      // The command's own output can echo a value the test resolved (a URL,
+      // an account). It reaches the model as prose, which is how the leak
+      // above happened, so it is symbolised before it goes.
+      outputTail: scrubEnvValues(tail(result.output), outputScrub),
       files: [...state.entries()].map(([path, f]) => ({
         path,
         contents: f.contents,
         kind: f.kind,
       })),
-      outDir: p.outDir,
-      extraWriteRoots: p.extraWriteRoots,
+      testPath: p.ctx.testPath,
+      writeRoots: p.writeRoots,
       language: p.ctx.language,
     });
     let output: LlmGenOutput;
@@ -588,15 +647,200 @@ async function runVerificationLoop(
       continue;
     }
     // Interactive mode: the fix pass rewrites files in the consumer's tree
-    // (possibly outside `.ccqa/` when outDir is set), so show what changes and
-    // ask before writing. Declining keeps the current files and ends the loop.
+    // (wherever `testPath` puts them), so show what changes and ask before
+    // writing. Declining keeps the current files and ends the loop.
     if (p.ctx.fix.mode === "interactive" && !(await confirmFixWrite(output.files, p.ctx.cwd))) {
       log.info("fix not applied (declined) — keeping current files");
-      return false;
+      await clearCaseRun(p.ctx.ref);
+      return { passed: false, review };
     }
     await writeGeneratedFiles(p.ctx.cwd, output.files, state);
-    await saveGeneratedManifest(ref, p.ctx.cwd, p.target, state);
+    // The reading described the files as they were before this write. It is
+    // saved against the case and read back by `ccqa evidence`, so carrying it
+    // past the rewrite would pair findings with a file that no longer has
+    // them — or, worse, say "checked" of one nobody read.
+    review = undefined;
   }
+}
+
+/**
+ * The project's own checks over the whole repository (type check, lint), run
+ * after the spec's test passes. Answers null when they all pass — or when the
+ * project configured none — and the failing one's output otherwise, in the
+ * shape the fix loop already consumes.
+ */
+async function runCheckCommands(
+  ctx: GenerateContext,
+): Promise<{ exitCode: number; output: string; command: string } | null> {
+  for (const command of ctx.targetConfig.checkCommands) {
+    log.run(command);
+    const result = await log.timedPhase(`check: ${command}`, () => runShellCommand(command, ctx.cwd), "run");
+    if (result.exitCode !== 0) return { ...result, command };
+  }
+  return null;
+}
+
+/**
+ * The mechanical read of what this attempt wrote, shaped like a failed check
+ * so the fix loop carries it the same way.
+ *
+ * After the project's own commands, not instead of them: code that does not
+ * compile has a more urgent problem than how it reads, and a fix pass given
+ * both at once tends to answer the smaller one.
+ */
+async function reviewOfEmitted(
+  ctx: GenerateContext,
+  state: FileState,
+  writeRoots: readonly string[],
+): Promise<{ exitCode: number; output: string; command: string } | null> {
+  const findings = reviewEmittedFiles({
+    usedInProject: await identifiersInProject(
+      ctx,
+      writeRoots,
+      new Map([...state].map(([rel, f]) => [rel, f.contents])),
+    ),
+    files: new Map([...state].map(([rel, f]) => [rel, f.contents])),
+    caseText: [
+      ...[...ctx.steps, ...ctx.cleanup].flatMap((s) =>
+        isExpandedActionStep(s) ? [s.instruction, s.expected] : [s.judgeByLlm],
+      ),
+      ...ctx.expectations,
+      ...ctx.cleanupExpectations,
+    ],
+    testPath: ctx.testPath,
+  });
+  if (findings.length === 0) return null;
+  // Said here as well as handed to the fix pass: a run whose generation kept
+  // failing should show what it was failing on, not only that it did.
+  for (const f of findings) log.warn(`${f.file}:${f.line} [${f.rule}] ${f.message}`);
+  return {
+    exitCode: 1,
+    command: "ccqa: review of the generated code",
+    output: formatEmittedReview(findings),
+  };
+}
+
+/** What this attempt wrote, as the target's reading opens it. */
+async function readingOfEmitted(
+  p: FinalizeParams,
+  state: FileState,
+): Promise<SpecCoverageReview | undefined> {
+  if (!p.reading) return undefined;
+  return p.reading(
+    [...state.entries()].map(([path, f]) => ({ path, contents: f.contents, kind: f.kind })),
+  );
+}
+
+/**
+ * The reading's findings, shaped like a failed check so the fix loop carries
+ * them the same way — or null when there is nothing to act on.
+ *
+ * It spends a fix round; it never decides the verdict. A green test says the
+ * code runs and the project's checks say it may be merged, and neither of
+ * those is a judgement — this is, and a judgement that could fail a generate
+ * would make generation only as repeatable as the model behind it. A run that
+ * exhausts its rounds still passes, with the findings reported, as it did when
+ * nothing acted on them at all.
+ *
+ * What the round asks for is verified like any other rewrite, and that can
+ * end red: an assertion strengthened to check what the case claims may simply
+ * not hold. The generate then reports failed — on the test run, not on this —
+ * and the files are kept. That is the honest outcome, and the alternative
+ * (restoring what passed weakly) would hide a case the product does not meet.
+ *
+ * A review that could not be obtained is not acted on either: spending a round
+ * answering a question nobody asked is worse than leaving it unanswered.
+ */
+export function uncheckedSteps(
+  review: SpecCoverageReview | undefined,
+): { exitCode: number; output: string; command: string } | null {
+  if (!review?.complete || review.findings === null || review.findings.length === 0) return null;
+  return {
+    exitCode: 1,
+    command: "ccqa: reading of the generated test",
+    output: [
+      "These steps pass without deciding what the case says they must:",
+      "",
+      ...review.findings.map((f) => `- ${formatFinding(f)}`),
+      "",
+      "Strengthen the assertions (and the locators they resolve through) so each",
+      "step fails when its expectation stops holding. Do not weaken or delete a",
+      "step to silence this.",
+    ].join("\n"),
+  };
+}
+
+/**
+ * Every identifier the project's own test assets mention, outside the files
+ * this generation just wrote.
+ *
+ * Only where the project said its test code lives — the roots it declared as
+ * resources or as writable. ccqa does not go looking through a repository it
+ * was not pointed at, and a definition nobody in those roots reaches is one
+ * nobody reaches.
+ */
+async function identifiersInProject(
+  ctx: GenerateContext,
+  writeRoots: readonly string[],
+  emitted: ReadonlyMap<string, string>,
+): Promise<Map<string, Set<string>>> {
+  // What each emitted file calls itself. A property of a class is only
+  // reachable from code that names the class, so a file that never mentions it
+  // cannot be the one using the property — however common the property's name.
+  const owners = new Map<string, string[]>();
+  for (const [rel, source] of emitted) {
+    const names = [...source.matchAll(/\bexport\s+(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_]+)/g)]
+      .map((m) => m[1]!);
+    owners.set(rel, names);
+  }
+  const roots = new Set(
+    [...writeRoots, ...ctx.resources.map((r) => ("path" in r ? r.path : "")), dirname(ctx.testPath)]
+      .filter((r) => r.length > 0)
+      .map((r) => resolve(ctx.cwd, r)),
+  );
+  const found = new Map<string, Set<string>>([...emitted.keys()].map((rel) => [rel, new Set<string>()]));
+  const seen = new Set<string>();
+  const walk = async (dir: string): Promise<void> => {
+    if (seen.has(dir)) return;
+    seen.add(dir);
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const abs = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "node_modules" && !entry.name.startsWith(".")) await walk(abs);
+        continue;
+      }
+      if (!/\.[cm]?tsx?$/.test(entry.name)) continue;
+      if (emitted.has(relative(ctx.cwd, abs))) continue;
+      const source = await readFile(abs, "utf8").catch(() => "");
+      const words = new Set([...source.matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]));
+      for (const [rel, classNames] of owners) {
+        // Nameless (no exported class) falls back to every file: there is no
+        // owner to scope by, and over-counting only makes the rule quieter.
+        if (classNames.length > 0 && !classNames.some((c) => words.has(c))) continue;
+        const into = found.get(rel)!;
+        for (const w of words) into.add(w);
+      }
+    }
+  };
+  await Promise.all([...roots].map(walk));
+  return found;
+}
+
+/**
+ * The two readings of the finished files as one report, since one fix pass
+ * answers both. Either may be absent; both absent is nothing to act on.
+ */
+function bothReadings(
+  ...reports: ({ exitCode: number; output: string; command: string } | null)[]
+): { exitCode: number; output: string; command: string } | null {
+  const found = reports.filter((r) => r !== null);
+  if (found.length === 0) return null;
+  return {
+    exitCode: 1,
+    command: found.map((r) => r.command).join(" + "),
+    output: found.map((r) => `${r.command}\n\n${r.output}`).join("\n\n"),
+  };
 }
 
 /**
@@ -696,16 +940,28 @@ function validateOutput(output: LlmGenOutput, p: InvokeForFilesParams): string[]
       continue;
     }
     seen.add(key);
-    const pathError = validateOutputPath(p.policy, file.path);
+    const pathError = validateOutputPath(p.policy, file.path, file.kind);
     if (pathError) {
       errors.push(pathError);
+      continue;
+    }
+    const leaked = leakedVariables(file.contents);
+    if (leaked.length > 0) {
+      errors.push(leakMessage(file.path, leaked));
       continue;
     }
     const fileError = p.validateFile?.(file) ?? null;
     if (fileError) errors.push(fileError);
   }
-  if (p.requireTestFile && !output.files.some((f) => f.kind === "test")) {
+  const tests = output.files.filter((f) => f.kind === "test");
+  if (p.requireTestFile && tests.length === 0) {
     errors.push('output contains no "kind": "test" file');
+  }
+  // Two test files would mean one of them is not the spec's test — and the
+  // path check above already fails for whichever one is not at `testPath`, so
+  // this only makes the reason legible in the retry note.
+  if (tests.length > 1) {
+    errors.push(`output contains ${tests.length} "kind": "test" files; a spec has exactly one`);
   }
   return errors;
 }

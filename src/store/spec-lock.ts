@@ -1,16 +1,15 @@
-import { open, readFile, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
-import { getSpecDir } from "./index.ts";
+import type { CaseRef } from "./index.ts";
 import * as log from "../cli/logger.ts";
 
 /**
  * Per-spec advisory lock for `ccqa record` / `ccqa generate`. Two concurrent
- * generations of the same spec interleave writes to ir.json, test files, and
- * the generated.json manifest with no defined winner, so the second caller
- * must fail fast instead. The lock is a JSON file in the spec directory
- * created with O_EXCL; a lock whose PID is no longer alive (crashed or
- * SIGKILLed run) is reclaimed automatically, so abnormal exits never wedge a
- * spec. Same-machine only by design — the spec tree is a local working copy.
+ * generations of the same spec interleave writes to ir.json and the test files
+ * with no defined winner, so the second caller must fail fast instead. The lock
+ * is a JSON file in the spec directory created with O_EXCL; a lock whose PID is
+ * no longer alive (crashed or SIGKILLed run) is reclaimed automatically, so
+ * abnormal exits never wedge a spec. Same-machine only by design — the spec tree is a local working copy.
  */
 
 export const SPEC_LOCK_FILE = ".ccqa-lock.json";
@@ -45,17 +44,18 @@ function isPidAlive(pid: number): boolean {
 }
 
 /**
- * Acquire the lock for `<feature>/<spec>`; returns a release function. Throws
+ * Acquire the lock for one case; returns a release function. Throws
  * `SpecLockedError` when a live process already holds it. A stale lock (dead
  * PID or unreadable body) is reclaimed with a warning.
  */
 export async function acquireSpecLock(
-  featureName: string,
-  specName: string,
+  ref: CaseRef,
   command: string,
-  cwd?: string,
 ): Promise<() => Promise<void>> {
-  const lockPath = join(getSpecDir(featureName, specName, cwd), SPEC_LOCK_FILE);
+  // The first command against a case creates its directory here: the lock is
+  // the first thing written to it, and `open(…, "wx")` does not make parents.
+  await mkdir(ref.dir, { recursive: true });
+  const lockPath = join(ref.dir, SPEC_LOCK_FILE);
   const body: SpecLockBody = {
     pid: process.pid,
     command,

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, expect } from "vitest";
-import { builtinToolNames, extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, findRunProducedOpenUrl, withoutEmptyEndpointVars, buildInvocationEnv } from "./invoke.ts";
+import { builtinToolNames, extractAbActionFromBashCommand, extractCcqaAssertFromBashCommand, extractCcqaStepFromBashCommand, extractInvocationCost, extractObservationAbAction, invokeClaudeStreaming, markerHolds, isBlockedAbSubcommand, hasRefSelector, isBashToolResponseError, shellTokenize, findPositionalBareTag, hasMultipleAbInvocations, hasErrorSuppression, findRunProducedOpenUrl, withoutEmptyEndpointVars, buildInvocationEnv } from "./invoke.ts";
 import * as log from "../cli/logger.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
@@ -187,7 +187,48 @@ describe("extractCcqaAssertFromBashCommand", () => {
   });
 });
 
+// A marked probe exits 0 whatever it answers, so the exit code says only that
+// it ran. Without reading the answer the record would hold an assertion the
+// page contradicted at the moment it was made.
+describe("markerHolds", () => {
+  const holds = (marker: string, ab: string | null, out: string): boolean | null => {
+    const fn = markerHolds(marker, ab);
+    return fn === null ? null : fn(out);
+  };
+
+  test("a state probe agrees only with the marker naming its answer", () => {
+    expect(holds("element_disabled", "AB_ACTION|is|enabled|#x", "false")).toBe(true);
+    expect(holds("element_disabled", "AB_ACTION|is|enabled|#x", "true")).toBe(false);
+    expect(holds("element_checked", "AB_ACTION|is|checked|#x", "true\n")).toBe(true);
+  });
+
+  test("a count probe agrees with presence, or with absence", () => {
+    expect(holds("element_visible", "AB_ACTION|get_count|#x", "3")).toBe(true);
+    expect(holds("element_visible", "AB_ACTION|get_count|#x", "0")).toBe(false);
+    expect(holds("element_not_visible", "AB_ACTION|get_count|#x", "0")).toBe(true);
+  });
+
+  test("a url marker agrees when the substring is in what was printed", () => {
+    expect(holds("url_contains:/dashboard", null, "https://app.test/dashboard")).toBe(true);
+    expect(holds("url_contains:/dashboard", null, "https://app.test/login")).toBe(false);
+  });
+
+  // Nothing to compare is not a check that failed.
+  test("nothing to compare answers null", () => {
+    expect(markerHolds("1", "AB_ACTION|wait|--text|Done")).toBeNull();
+    expect(markerHolds("element_visible", "AB_ACTION|is|enabled|#x")).toBeNull();
+    expect(markerHolds("url_contains:", null)).toBeNull();
+  });
+});
+
 describe("extractObservationAbAction", () => {
+  test("`is <state> <selector>` surfaces so a marker can promote it", () => {
+    expect(
+      extractObservationAbAction(`CCQA_STEP=step-03 CCQA_ASSERT=element_disabled agent-browser --session s1 is enabled "#submit"`),
+    ).toBe("AB_ACTION|is|enabled|#submit");
+    expect(extractObservationAbAction(`agent-browser --session s1 is enabled`)).toBeNull();
+  });
+
   test("surfaces `get count <selector>` as a get_count wire line", () => {
     expect(
       extractObservationAbAction(`CCQA_STEP=step-03 CCQA_ASSERT=element_visible agent-browser --session s1 get count "[data-qa='panel']"`),

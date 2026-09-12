@@ -47,16 +47,37 @@ describe("fetchStillDrifted", () => {
   const ctxWith = (getDriftLedger: () => Promise<unknown>): HubContext =>
     ({ hub: { getDriftLedger } as never, project: "demo" }) as HubContext;
 
-  test("collects the keys whose entry has a label", async () => {
+  test("collects the keys a person could still resolve by editing the case", async () => {
+    // TEST_DRIFT/SPEC_CHANGE say the case itself is stale; UNKNOWN says the
+    // audit could not read it — all three are answered by a person touching
+    // the spec tree, which is exactly what would get the entry re-audited.
     const set = await fetchStillDrifted(
       ctxWith(async () => ({
         specs: {
           "a/one": { label: "TEST_DRIFT" },
-          "a/two": { label: null },
+          "a/two": { label: "SPEC_CHANGE" },
+          "a/three": { label: "UNKNOWN" },
+          "a/four": { label: null },
         },
       })),
     );
-    expect([...set]).toEqual(["a/one"]);
+    expect([...set].sort()).toEqual(["a/one", "a/three", "a/two"]);
+  });
+
+  test("a PRODUCT_BUG or ENVIRONMENT finding does not hold a spec open forever", async () => {
+    // Both read the test case and found it faithful before naming something
+    // outside the spec tree — no edit to the case can ever change the
+    // verdict, so re-auditing them on every sweep would spend a Claude call
+    // for nothing.
+    const set = await fetchStillDrifted(
+      ctxWith(async () => ({
+        specs: {
+          "a/bug": { label: "PRODUCT_BUG" },
+          "a/env": { label: "ENVIRONMENT" },
+        },
+      })),
+    );
+    expect(set.size).toBe(0);
   });
 
   test("an unreadable ledger degrades to an empty set", async () => {

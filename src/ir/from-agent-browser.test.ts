@@ -20,6 +20,15 @@ describe("parseAbActionLine", () => {
     });
   });
 
+  // What the normalisation is for, and every shape it must not touch, live in
+  // url-path.test.ts; this pins that the parse applies it at all.
+  test("normalises a doubled slash in an opened URL", () => {
+    expect(parseAbActionLine("AB_ACTION|open|https://app.example//todos")).toEqual({
+      action: "navigate",
+      value: "https://app.example/todos",
+    });
+  });
+
   test("strips surrounding quotes from an opened URL", () => {
     expect(parseAbActionLine('AB_ACTION|open|"http://localhost:3000"')).toEqual({
       action: "navigate",
@@ -49,24 +58,10 @@ describe("parseAbActionLine", () => {
     });
   });
 
-  test("parses assert with a selector into a css locator", () => {
-    expect(
-      parseAbActionLine("AB_ACTION|assert|element_visible|[aria-label='OK']||dialog shown"),
-    ).toEqual({
-      action: "assert",
-      assert: "element_visible",
-      locator: { by: "css", value: "[aria-label='OK']" },
-      observation: "dialog shown",
-    });
-  });
-
-  test("parses a text assert (empty selector slot)", () => {
-    expect(parseAbActionLine("AB_ACTION|assert|text_visible||Done|op completed")).toEqual({
-      action: "assert",
-      assert: "text_visible",
-      value: "Done",
-      observation: "op completed",
-    });
+  // An assertion is recorded from the command that performs it, marked with
+  // `CCQA_ASSERT`. A printed line performs nothing, so it is not an action.
+  test("a printed assert line is not an action", () => {
+    expect(parseAbActionLine("AB_ACTION|assert|text_visible||Done|op completed")).toBeNull();
   });
 
   test("parses click into a css locator", () => {
@@ -228,6 +223,22 @@ describe("parseAbActionLine", () => {
 });
 
 describe("promoteMarkedAssert", () => {
+  // `is` prints true/false and exits 0 either way, so the marker is what says
+  // which answer the step expected.
+  test("a state marker on the `is` probe that asks for that state", () => {
+    expect(promoteMarkedAssert("AB_ACTION|is|enabled|#submit", "element_disabled")).toEqual([
+      { action: "assert", assert: "element_disabled", locator: { by: "css", value: "#submit" } },
+    ]);
+    expect(promoteMarkedAssert("AB_ACTION|is|checked|#opt", "element_checked")).toEqual([
+      { action: "assert", assert: "element_checked", locator: { by: "css", value: "#opt" } },
+    ]);
+  });
+
+  test("a state marker naming a state the command did not ask for records nothing", () => {
+    expect(promoteMarkedAssert("AB_ACTION|is|checked|#submit", "element_enabled")).toBeNull();
+    expect(promoteMarkedAssert("AB_ACTION|get_count|#submit", "element_checked")).toBeNull();
+  });
+
   test("'1' on a wait --text REPLACES the wait with a text_visible assert", () => {
     expect(promoteMarkedAssert("AB_ACTION|wait|--text|Submitted", "1")).toEqual([
       { action: "assert", assert: "text_visible", value: "Submitted" },
@@ -244,8 +255,39 @@ describe("promoteMarkedAssert", () => {
     expect(promoteMarkedAssert("AB_ACTION|get_count|[aria-label='Settings']", "element_visible")).toEqual([
       { action: "assert", assert: "element_visible", locator: { by: "css", value: "[aria-label='Settings']" } },
     ]);
+    // `get count` takes plain CSS and answers 0 for anything else, so a
+    // `text=` probe is recorded as the text locator it is.
     expect(promoteMarkedAssert("AB_ACTION|get_count|text=Deleted item", "element_not_visible")).toEqual([
-      { action: "assert", assert: "element_not_visible", locator: { by: "css", value: "text=Deleted item" } },
+      { action: "assert", assert: "element_not_visible", locator: { by: "text", value: "Deleted item" } },
+    ]);
+  });
+
+  // An interaction is left alone: `click "text=…"` works, and the `find text`
+  // a `by: "text"` locator would replay through measurably does not.
+  test("an interaction's text= locator stays a css one", () => {
+    expect(promoteMarkedAssert("AB_ACTION|click|text=Next|Next", "url_contains:/dashboard")?.[0]).toEqual({
+      action: "click",
+      locator: { by: "css", value: "text=Next" },
+      label: "Next",
+    });
+  });
+
+  // `find role <role> text --name <name>` is how the recorder asks the
+  // accessibility tree rather than the DOM. Like `get count`, it records
+  // nothing by itself; the marker is what makes it an assertion.
+  test("element_visible on a role probe records the role and its name", () => {
+    expect(promoteMarkedAssert("AB_ACTION|find_text|role|combobox|Priority *|exact|", "element_visible")).toEqual([
+      {
+        action: "assert",
+        assert: "element_visible",
+        locator: { by: "role", value: "combobox", name: "Priority *", exact: true },
+      },
+    ]);
+  });
+
+  test("a role probe recorded without --exact keeps matching the way it matched", () => {
+    expect(promoteMarkedAssert("AB_ACTION|find_text|role|button|Log in||", "element_visible")).toEqual([
+      { action: "assert", assert: "element_visible", locator: { by: "role", value: "button", name: "Log in" } },
     ]);
   });
 

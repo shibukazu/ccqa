@@ -15,8 +15,7 @@ import type { GenerateResult } from "../targets/types.ts";
  */
 export function buildGenerateRunSummary(
   targetId: string,
-  featureName: string,
-  specName: string,
+  caseId: string,
   result: GenerateResult,
   cwd: string = process.cwd(),
 ): string {
@@ -29,7 +28,7 @@ export function buildGenerateRunSummary(
     ? result.warnings.map((w) => `- ${w}`).join("\n")
     : "- (none)";
   return [
-    `## ${targetId} generation — ${featureName}/${specName}`,
+    `## ${targetId} generation — ${caseId}`,
     `verification: ${result.passed ? "passed" : "FAILED (auto-fix exhausted)"}`,
     "",
     "### Files written",

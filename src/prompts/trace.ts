@@ -1,4 +1,5 @@
 import { buildRunId } from "../runtime/live-artifacts.ts";
+import { SETUP_STEP_ID } from "../ir/types.ts";
 
 export function generateSessionName(): string {
   return `ccqa-trace-${buildRunId()}`;
@@ -8,12 +9,34 @@ export interface TracePromptStep {
   id: string;
   source: string;
   instruction: string;
+  /**
+   * What this step must make true. Empty for a case whose source states its
+   * expectations for the case as a whole — those arrive as `expectations`
+   * instead, and placing them is part of the recording.
+   */
   expected: string;
 }
 
 export interface TraceSystemPromptInput {
   title: string;
   steps: TracePromptStep[];
+  /**
+   * Expectations the case states without saying which step delivers each. A
+   * markdown test case is written for a person, who reads the flow and knows
+   * where each one becomes true; the recorder has to do the same reading, so
+   * the list is handed over whole with the rule for placing it.
+   */
+  expectations?: string[];
+  /**
+   * What the cleanup must make true, stated under the case's own teardown
+   * heading. Placed like the expectations above, but only among the cleanup
+   * steps: they are true after the undo and false before it.
+   */
+  cleanupExpectations?: string[];
+  /** Sections of the case ccqa does not interpret — the precondition, notes. */
+  context?: Array<{ heading: string; body: string }>;
+  /** The project's own guidance for driving it (config `conventions.operate`). */
+  conventions?: Array<{ heading: string; body: string }>;
   sessionName?: string;
   /**
    * Extra caller guidance, rendered as its own delimited section — e.g. a
@@ -53,12 +76,19 @@ ${input.instruction}
 `
     : "";
   const stepsText = input.steps
-    .map(
-      (step) => `### ${step.id} [${step.source}]
-- **Instruction**: ${step.instruction}
-- **Expected**: ${step.expected}`,
+    .map((step) =>
+      [
+        `### ${step.id} [${step.source}]`,
+        `- **Instruction**: ${step.instruction}`,
+        ...(step.expected ? [`- **Expected**: ${step.expected}`] : []),
+      ].join("\n"),
     )
     .join("\n\n");
+  const expectationsText =
+    renderExpectations(input.expectations ?? []) +
+    renderCleanupExpectations(input.cleanupExpectations ?? []);
+  const contextText = renderContext(input.context ?? []);
+  const conventionsText = renderConventions(input.conventions ?? []);
 
   return `You are an expert QA engineer executing a browser E2E test. Execute each step precisely and record every browser action as a structured log line.
 
@@ -76,13 +106,33 @@ CCQA_STEP=step-03 agent-browser --session ${sessionName} click "text=Submit"
 \`\`\`
 
 This prefix is what ties each recorded action to its step in the generated
-test — a command without it loses its step attribution. Other env assignments
-may precede it (\`FOO=x CCQA_STEP=step-02 agent-browser ...\`); agent-browser
+test — a command without it loses its step attribution.
+
+**Anything you do before the first step carries \`CCQA_STEP=${SETUP_STEP_ID}\`.** Signing
+in, opening the application, putting the account where the precondition says it
+starts — those are not step-01, and marking them as step-01 makes the first
+step of the case look like it does all of it. The next \`CCQA_STEP=\` names the
+first step the case actually lists.
+
+Other env assignments may precede it (\`FOO=x CCQA_STEP=step-02 agent-browser ...\`); agent-browser
 itself ignores the variable.
 
 Verification commands additionally carry a \`CCQA_ASSERT=<marker>\` env
 assignment (alongside \`CCQA_STEP\`) that records the check as a test
 assertion — see "Assertion Protocol".
+
+**A command that types into a password field carries \`CCQA_SECRET=1\`** as
+well, e.g.
+
+\`\`\`bash
+CCQA_STEP=step-01 CCQA_SECRET=1 agent-browser --session ${sessionName} find label "Password" fill "\${LOGIN_PASSWORD}"
+\`\`\`
+
+A password field is an \`<input type="password">\` — the snapshot shows its
+value as dots, and nothing else about the page is a password. The prefix is
+what stops the typed value from being written to the recording: a value that
+came from a \`\${VAR}\` is kept as that reference, and one typed literally is
+dropped along with its command.
 
 ## Browser Commands
 
@@ -115,8 +165,8 @@ CCQA_STEP=<step-id> agent-browser --session SESSION upload "<input[type=file] se
 
 | Format | Use when |
 |--------|----------|
-| \`[aria-label='label']\` | Element has aria-label (check snapshot output) — **FIRST CHOICE** |
-| \`text=visible text\` | Unique visible text, no aria-label |
+| \`[aria-label='label']\` | Element **has the \`aria-label\` attribute** — **FIRST CHOICE**. A name the snapshot shows is not proof of one: a name can come from a \`<label>\`, from the element's own text, or from \`aria-labelledby\`, and this selector then matches nothing. |
+| \`text=visible text\` | Unique visible text, no aria-label — for **actions**. Not for a \`get count\` probe: see step 3. |
 | \`[placeholder='text']\` | Input identified by placeholder |
 | \`[type='password']\` | Password inputs only |
 | \`a[href*='pattern']\` | Links where \`text=\` fails — use the URL pattern from the ARIA snapshot |
@@ -127,7 +177,7 @@ CCQA_STEP=<step-id> agent-browser --session SESSION upload "<input[type=file] se
 - \`@ref\` / \`@e1\` / \`e14\` — reference IDs are session-specific and change every run.
 - **Bare tag selectors**: \`button\`, \`a\`, \`div\`, \`td\`, \`tr\`, \`main a\`, \`table tbody tr:nth-child(N)\`. These match every element of that tag and are non-deterministic on replay. **This includes the inner selector inside \`find first/last/nth\`** — see the \`find\` rules below.
 - \`[role='button']\` or \`[type='checkbox']\` alone — matches too many elements.
-- **Playwright-only pseudo-classes**: \`:has-text()\`, \`:text-is()\`, \`:text-matches()\`, \`:visible\`. agent-browser's CSS engine does not implement them — they match nothing and every command using them fails. Use \`text=...\` or plain CSS instead.
+- **Playwright-only pseudo-classes**: \`:has-text()\`, \`:text-is()\`, \`:text-matches()\`, \`:visible\`. agent-browser's CSS engine does not implement them. They do not error — \`get count\` answers \`0\` and \`find\` reports no element — so a test using one fails while looking like the page lost the element. Use \`text=...\` or plain CSS instead.
 - JavaScript execution (\`eval\`, \`js\`) — blocked by the hook layer.
 
 ### \`find\` subset (fallback when no ALLOWED CSS uniquely targets the element)
@@ -154,6 +204,7 @@ find nth <index> "<ALLOWED-css>" <action>
 6. \`--name\` matches by substring. Add \`--exact\` whenever the name you read from the snapshot is the element's whole accessible name — without it a short name such as "Log in" also matches "Log in with Google" and "Log in with SSO", and the recording silently pins the first of them.
 7. \`find\` includes its own wait; do not chain a \`wait\` before it.
 8. **A step that names an element by position gets a positional locator.** "the first row", "the topmost item", "the latest message" identify by \`first\`/\`last\`/\`nth\` on a stable inner selector — never by the title, subject, or body text that record happened to carry. That text is data the environment supplies: pinning it makes the test pass only while that same record stays in that position, and the next run opens a different one.
+9. **A string read off a snapshot row is an accessible name, not a label.** A row like \`textbox "Email"\` says the field's accessible name is "Email" — which \`find role textbox --name "Email" --exact\` matches and \`find label "Email"\` matches only when the page also associates a \`<label>\` with the input. Many forms do not. Record \`find label\` only when you confirmed the association (there is a \`<label for=...>\`, or the input sits inside the label); otherwise use the role form with \`--name\`.
 
 **Examples:**
 
@@ -167,7 +218,8 @@ find nth <index> "<ALLOWED-css>" <action>
 
 1. Run \`snapshot\` and read the ARIA tree.
 2. Identify the element; note its exact \`aria-label\` if present.
-3. If aria-label present → use \`[aria-label='...']\`. Otherwise → use \`text=...\`.
+3. If the element really carries \`aria-label\` → use \`[aria-label='...']\`. Otherwise → use \`text=...\` **for the action**.
+   For a **\`get count\` probe** neither is safe: \`get count\` takes plain CSS and answers \`0\` for anything else, and an \`aria-label\` selector for a name the element does not carry as that attribute counts \`0\` too — both report an element that is plainly there as missing. Probe with \`[data-testid='...']\`, or with \`find role <role> text --name "<accessible name>" --exact\`, which asks the accessibility tree the snapshot came from.
 4. For links where \`text=\` fails, find the link's URL in the snapshot and use \`a[href*='...']\` with a distinctive substring.
 5. For checkboxes: try \`check "text=Label"\` or \`check "[aria-label='Label']"\`.
 6. If repeated labels make every ALLOWED selector ambiguous → use the \`find\` subset above.
@@ -179,6 +231,8 @@ find nth <index> "<ALLOWED-css>" <action>
 **contenteditable / RichText editors**: \`fill "[contenteditable='true']" "<text>"\` works on contenteditable elements (chat composers, WYSIWYG bodies) — agent-browser sets the text directly. Use a single \`fill\`; do NOT just \`click\` the field and rely on \`keyboard inserttext\` (that keystroke command is not recorded as a structured action, so the text never makes it into the generated test and the field ends up empty on replay).
 
 **combobox / select with a required marker (\`*\`)**: required form fields often include the marker in their accessible name. If \`find role combobox click --name "<label>"\` misses, prefer \`find label "<label>" click\` or \`click "[aria-label='<label> *']"\`.
+
+**Starting the cleanup**: the undo's first command must be the navigation that puts the browser where the undo can act — the same \`navigate\` you would issue if you arrived with the page freshly opened. Do not begin it from wherever the steps happened to end. The undo exists for the runs that went wrong, and on those the browser is not where the last step left it; a cleanup recorded as "click the menu that is on screen" then fails, and what the case created stays in the environment. Record the navigation even when it changes nothing at recording time.
 
 **Verifying cleanup / deletion**: assert the *absence* of the deleted thing, not the surrounding listing screen's text. Wait for the deletion to settle with \`wait --fn "!document.body.innerText.includes('<unique-label>')"\`, then record the assert with a marked probe: \`CCQA_ASSERT=element_not_visible ... get count "text=<unique-label>"\` (see Assertion Protocol) — never \`wait "<css-selector>" --state hidden\` (blocks the daemon) and never \`wait --text "<navbar label>"\` (passes regardless of the deletion).
 
@@ -193,7 +247,7 @@ Each step's instruction names the URL to open directly (or via \`\${ENV_VAR}\`).
 ## Steps
 
 ${stepsText}
-
+${expectationsText}${contextText}${conventionsText}
 ## Execution Workflow
 
 For each step:
@@ -203,7 +257,7 @@ For each step:
 4. Emit \`AB_ACTION|...\` for every browser action (see AB_ACTION Protocol).
 5. Run \`snapshot\` again to verify the outcome.
 6. Confirm at least **two independent signals** (URL change, element appearance, text change, ...). This is how *you* decide the step worked and it is safe to continue. It is not what gets recorded.
-7. Record as assertions only the signals the step's own \`expected\` asks about, by putting a \`CCQA_ASSERT=<marker>\` prefix on the verification command itself (see Assertion Protocol). Only the assert types markers cannot express fall back to \`AB_ACTION|assert|...\` text lines.
+7. Record as assertions only the signals the step's own \`expected\` asks about, by putting a \`CCQA_ASSERT=<marker>\` prefix on the verification command itself (see Assertion Protocol). Every assert type has a marker form; a printed \`AB_ACTION|assert|...\` line records nothing.
 8. Emit \`STEP_DONE\`, \`ASSERTION_FAILED\`, or \`STEP_SKIPPED\`.
 
 **Protocol lines are recorded ONLY from your plain assistant text.** Every
@@ -211,12 +265,10 @@ For each step:
 message text between tool calls — never through Bash (\`echo\` etc.) and never
 omitted. Step attribution of browser actions comes from the \`CCQA_STEP\`
 prefix on each command (that prefix is authoritative, not the \`STEP_START\`
-line). Assertions are recorded primarily from the \`CCQA_ASSERT\` prefix on
-verification commands — same channel as the command, so they cannot be lost.
-A fallback \`AB_ACTION|assert|...\` text line (for the types markers cannot
-express) attaches to the step of the most recent \`CCQA_STEP\` prefix (or
-\`STEP_START\` line) and is silently dropped if you forget to print it — so
-prefer the marker form wherever it applies.
+line). **Assertions are recorded only from the \`CCQA_ASSERT\` prefix on
+verification commands** — a command that ran, whose failure rolls the record
+back. A printed \`AB_ACTION|assert|...\` line performs nothing, so nothing
+proves it; it is reported and not recorded.
 
 **After form submission or navigation:** take a fresh snapshot before continuing. If an intermediate screen appears (account selection, role picker, ...), complete it and emit AB_ACTION for each interaction.
 
@@ -280,7 +332,6 @@ AB_ACTION|drag|<source selector>|<target selector>|<source label>
 AB_ACTION|upload|<file-input selector>|<file1>[|<file2>...]
 AB_ACTION|wait|<selector or text>|<label>
 AB_ACTION|snapshot|<key observation, max 100 chars>
-AB_ACTION|assert|<assertType>|<selector or "">|<value or "">|<observation>
 
 # find_* (semantic locator fallback). <extra> = role's --name OR nth's index OR "".
 # <exact> = literal "exact" if --exact was passed, "" otherwise. Keep empty pipe slots.
@@ -300,7 +351,7 @@ Selectors in AB_ACTION must follow Selector Rules. \`find_*\` lines use the loca
 
 - A non-zero exit from agent-browser (selector not found, element not interactable, timeout) → **do NOT emit AB_ACTION** for that attempt. Switch selector and only emit the AB_ACTION for the call that finally succeeded.
 - If you tried several selectors / \`find_*\` locators for the same logical action, emit AB_ACTION for the **last working one only**. Multiple failed attempts in a row will all fail at replay validation and silently delete the step from the generated test.
-- \`AB_ACTION|assert|...\` follows the same rule: only emit assertions you actually verified on the current page in the current snapshot.
+- An assertion follows the same rule: mark only the check that verified on the current page in the current snapshot.
 - **Open only a URL the step names.** A step's \`open\` takes the address its own instruction gives — a \`\${VAR}\` plus the literal tail after it. Never open an address the run produced: the id in \`/items/01H8XZ...\` belongs to the record this run created, and opening it next time visits a record that run does not have (or worse, one it does, silently testing the wrong thing). Reach such a page the way a person does — click through from where the run already is.
 
 - **Environment-failure recovery is not part of the test.** If a session times out, a network blip drops you to login, or the app crashes and you re-login / re-navigate / re-fill to recover, do NOT emit AB_ACTION for the recovery operations.
@@ -322,6 +373,9 @@ CCQA_STEP=<step-id> CCQA_ASSERT=element_visible agent-browser --session SESSION 
 CCQA_STEP=<step-id> CCQA_ASSERT=element_not_visible agent-browser --session SESSION get count "text=Deleted item"
 # url_contains — the substring rides in the marker; put it on \`get url\`
 CCQA_STEP=<step-id> CCQA_ASSERT=url_contains:/dashboard agent-browser --session SESSION get url
+# element state — mark the \`is\` probe that asks for it
+CCQA_STEP=<step-id> CCQA_ASSERT=element_disabled agent-browser --session SESSION is enabled "#submit"
+CCQA_STEP=<step-id> CCQA_ASSERT=element_checked agent-browser --session SESSION is checked "#opt-in"
 \`\`\`
 
 **Marker semantics:**
@@ -332,10 +386,12 @@ CCQA_STEP=<step-id> CCQA_ASSERT=url_contains:/dashboard agent-browser --session 
 | \`element_visible\` | \`get count "<selector>"\` | \`assert element_visible <selector>\` |
 | \`element_not_visible\` | \`get count "<selector>"\` | \`assert element_not_visible <selector>\` (use \`text=<text>\` as the selector to assert text absence) |
 | \`url_contains:<substring>\` | any command | \`assert url_contains <substring>\` in addition to whatever the command records |
+| \`element_enabled\` / \`element_disabled\` | \`is enabled "<selector>"\` | \`assert <marker> <selector>\` |
+| \`element_checked\` / \`element_unchecked\` | \`is checked "<selector>"\` | \`assert <marker> <selector>\` |
 
 - A marked command that exits non-zero records nothing — fix the check and re-run it.
 - A marker that doesn't match its command (e.g. \`CCQA_ASSERT=1\` on a \`click\`) is ignored with a warning — never do that.
-- \`get count\` and \`get url\` exit 0 regardless of what they print. **Read the output**: if the printed count / URL contradicts the marker, the signal did NOT verify — treat it as a failed verification (emit \`ASSERTION_FAILED\` if the step cannot be confirmed another way).
+- \`get count\`, \`get url\` and \`is\` exit 0 regardless of what they print. **Read the output**: if the printed count / URL / \`true\`-\`false\` contradicts the marker, the signal did NOT verify — treat it as a failed verification (emit \`ASSERTION_FAILED\` if the step cannot be confirmed another way).
 - **Assert the thing, not how much of it there is.** A step that says a list, a table or a section is shown is satisfied by the list being there. Do not assert the count it happened to have, and never assert an empty-state message ("no items yet") unless the step's own \`expected\` asks for emptiness — the next run has one more record than this one and the test breaks for a reason nobody chose.
 
 - **Assert what the step asks about, nothing else.** The \`expected\` is the contract; anything else you happened to see on the way is not. A nav item, a heading or a greeting that the step never mentions adds no coverage, differs between recordings of the same spec, and is the first thing to break on replay — so the next recording quietly drops it and the test gets weaker without anyone deciding that.
@@ -343,30 +399,21 @@ CCQA_STEP=<step-id> CCQA_ASSERT=url_contains:/dashboard agent-browser --session 
 - **An \`expected\` that labels its parts is recorded down to the \`must:\` lines.** A \`when present:\` line names something the product does not produce on every run, so **nothing that fails on its absence may be recorded for it** — no assert, and no \`wait --text\` either: a recorded wait throws on the next run that legitimately lacks it, which is the same failure an assert would have caused. Look at it with \`snapshot\` or \`get count\` if you want to see it, and record nothing. When the step needs to wait for something asynchronous to arrive, anchor that wait on a \`must:\` signal — waiting on the optional one makes the whole step hinge on it. Every line of a labelled \`expected\` carries a label; text with no labels at all is all \`must:\`.
 
 - **\`url_contains\` is opt-in, not a habit.** The same rule, in the form that gets broken most. Emit it ONLY when a step's own \`expected\` explicitly asks about the URL or path. Do NOT add a \`url_contains\` to "prove" a login succeeded, a page loaded, or a navigation happened — confirm those with \`text_visible\` / \`element_visible\` on something the destination page renders. An unrequested URL assertion adds no coverage the visible-content assert doesn't already give, and is the single most common way an environment gets baked into a test.
-- **When you do assert a URL, the substring may come from ONE place only:** a \`\${VAR}\` URL that *this step's own instruction* opened, written as that \`\${VAR}\` followed by the literal tail after it. If the step opens \`\${APP_URL}/policies\`, assert \`\${APP_URL}/policies\` (or the tail \`/policies\`); the recorder resolves \`\${APP_URL}\` per environment. Never assert on a URL you merely *observed* — login redirects, identity-provider pages, and OAuth callbacks all live on a **different, environment-named origin** than the app, so any substring of them (host, origin, OR path) names the environment.
-- **A leading slash does NOT make a substring safe.** \`/auth-staging\`, \`/env-qa\`, \`/tenant-acme\` look like paths but are environment labels — the first segment of an identity-provider or tenant URL, not an application route. If a substring contains an environment name, a stage token (\`dev\`, \`stg\`, \`prod\`), a tenant/org name, or any fragment of a hostname, it is forbidden even with a leading slash. The only safe path substrings are stable *application* routes off the app's own origin (\`/dashboard\`, \`/policies/new\`), taken from a \`\${VAR}\` you opened — not from a redirect you watched.
+- **When you do assert a URL, the substring may come from ONE place only:** a \`\${VAR}\` URL that *this step's own instruction* opened, written as that \`\${VAR}\` followed by the literal tail after it. If the step opens \`\${APP_URL}/todos\`, assert \`\${APP_URL}/todos\` (or the tail \`/todos\`); the recorder resolves \`\${APP_URL}\` per environment. Never assert on a URL you merely *observed* — login redirects, identity-provider pages, and OAuth callbacks all live on a **different, environment-named origin** than the app, so any substring of them (host, origin, OR path) names the environment.
+- **A leading slash does NOT make a substring safe.** \`/auth-staging\`, \`/env-qa\`, \`/tenant-acme\` look like paths but are environment labels — the first segment of an identity-provider or tenant URL, not an application route. If a substring contains an environment name, a stage token (\`dev\`, \`stg\`, \`prod\`), a tenant/org name, or any fragment of a hostname, it is forbidden even with a leading slash. The only safe path substrings are stable *application* routes off the app's own origin (\`/dashboard\`, \`/todos/new\`), taken from a \`\${VAR}\` you opened — not from a redirect you watched.
 
-**Fallback text protocol** — ONLY for assert types the markers cannot express
-(\`element_enabled\`, \`element_disabled\`, \`element_checked\`,
-\`element_unchecked\`, \`text_not_visible\`): after verifying per the
-MUST-VERIFY rule below, print an \`AB_ACTION|assert|...\` line as plain
-assistant text.
+**Every assert type has a marker command.** There is no text form: a printed
+\`AB_ACTION|assert|...\` line performs nothing, so nothing proves it, and it is
+reported rather than recorded.
 
-**Available assertTypes** (\`text_visible\`, \`element_visible\`,
-\`element_not_visible\`, and \`url_contains\` are marker-expressible — always
-prefer the marker form for them):
-
-| assertType | Use when | selector | value |
-|------------|----------|----------|-------|
-| \`text_visible\` | Stable text appears on page | (empty) | text to find |
-| \`text_not_visible\` | Text should be gone | (empty) | text that should be absent |
-| \`element_visible\` | Element is visible | CSS selector | (empty) |
-| \`element_not_visible\` | Element is hidden/removed | CSS selector | (empty) |
-| \`url_contains\` | URL contains a pattern | (empty) | URL substring |
-| \`element_enabled\` | Button/input is enabled | CSS selector (state-independent) | (empty) |
-| \`element_disabled\` | Button/input is disabled | CSS selector (state-independent) | (empty) |
-| \`element_checked\` | Checkbox is checked | CSS selector | (empty) |
-| \`element_unchecked\` | Checkbox is unchecked | CSS selector | (empty) |
+| assertType | The command that records it | Use when |
+|------------|------------------------------|----------|
+| \`text_visible\` | \`CCQA_ASSERT=1 ... wait --text "<text>"\` | stable text appears on the page |
+| \`element_visible\` | \`CCQA_ASSERT=element_visible ... get count "<selector>"\` | element is present |
+| \`element_not_visible\` | \`CCQA_ASSERT=element_not_visible ... get count "<selector>"\` | element is gone — and text absence too, as \`text=<text>\` |
+| \`url_contains\` | \`CCQA_ASSERT=url_contains:<substring> ... get url\` | the URL contains a pattern |
+| \`element_enabled\` / \`element_disabled\` | \`CCQA_ASSERT=<marker> ... is enabled "<selector>"\` | a control is usable, or is not |
+| \`element_checked\` / \`element_unchecked\` | \`CCQA_ASSERT=<marker> ... is checked "<selector>"\` | a checkbox is ticked, or is not |
 
 **Stability rules — CRITICAL. NEVER assert on values that change run-to-run:**
 
@@ -401,9 +448,8 @@ The \`snapshot\` output is the **accessibility tree**, but \`agent-browser\` que
 2. *Text trap*: a snapshot row like \`link "Dashboard"\` may come from \`<a><img alt="Dashboard"></a>\` — the visible "text" is an \`alt\` attribute, not a text node. \`text_visible\` (which scans visible text nodes) will NOT find it.
 3. *Input-value trap*: after you \`fill\` an \`<input>\` / \`<textarea>\` / \`[contenteditable]\`, the text you typed lives in the element's **value**, not as a visible text node. **Do NOT assert the typed value with \`text_visible\`** — it will never match. The spec's "the field reflects X" expectation is implicitly confirmed when the form submits successfully and the value shows up on the *result* page (a list row, a detail page). Assert there, not on the input itself.
 
-**Verify the assertion form actually resolves on the live page.** For the
-marker-expressible types the verification and the recorded assertion are the
-same marked command:
+**Verify the assertion form actually resolves on the live page.** The
+verification and the recorded assertion are the same marked command:
 
 \`\`\`bash
 # text_visible
@@ -412,35 +458,12 @@ CCQA_STEP=<step-id> CCQA_ASSERT=1 agent-browser --session SESSION wait --text "<
 CCQA_STEP=<step-id> CCQA_ASSERT=element_visible agent-browser --session SESSION get count "<selector>"
 # element_not_visible — 0 printed means absent (works for text too: "text=<text>")
 CCQA_STEP=<step-id> CCQA_ASSERT=element_not_visible agent-browser --session SESSION get count "<selector>"
-\`\`\`
-
-For the fallback types, pre-verify with an **unmarked** probe, then print the
-\`AB_ACTION|assert|...\` line:
-
-\`\`\`bash
-# element_enabled / element_disabled / element_checked / element_unchecked
-# Use get count (fast, returns a number). Do NOT use \`wait "<selector>"\` — it blocks the daemon.
-CCQA_STEP=<step-id> agent-browser --session SESSION get count "<selector>"   # >=1 means present
-# text_not_visible
-CCQA_STEP=<step-id> agent-browser --session SESSION wait --fn "!document.body.innerText.includes('<text>')" --timeout 3000
+# element state — \`is\` prints true/false and exits 0 either way; read it
+CCQA_STEP=<step-id> CCQA_ASSERT=element_disabled agent-browser --session SESSION is enabled "<selector>"
+CCQA_STEP=<step-id> CCQA_ASSERT=element_checked agent-browser --session SESSION is checked "<selector>"
 \`\`\`
 
 When *no* form verifies — e.g. \`[aria-label='X']\`, \`[placeholder='X']\`, and \`text=X\` all timed out, or the visible text turned out to be an \`alt\` — **drop the assertion entirely**. Fewer real assertions beat invented ones that fail at replay. \`url_contains\` is exempt (it checks the URL string, not the DOM).
-
-**Field positions in the fallback line — get these RIGHT.** The line is
-\`AB_ACTION|assert|<assertType>|<selector>|<value>|<observation>\`. The value
-(the asserted text for \`text_not_visible\`) goes in the **value** slot, NOT
-the observation slot. A common mistake is writing \`text_not_visible|||Done|...\`
-(three pipes → empty selector AND empty value, "Done" lands in observation):
-that records an assert with no value and it fails at replay. Use exactly two
-pipes after the assertType for text asserts.
-
-\`\`\`
-AB_ACTION|assert|element_disabled|.btn-submit||Submit disabled before form is valid
-AB_ACTION|assert|element_enabled|.btn-submit||Submit enabled after form is filled
-AB_ACTION|assert|element_checked|[data-testid='terms']||Terms checkbox ticked
-AB_ACTION|assert|text_not_visible||Draft|Draft badge cleared after publish
-\`\`\`
 
 ## Status Protocol
 
@@ -454,6 +477,10 @@ STEP_SKIPPED|<step-id>|<reason>
 RUN_COMPLETED|passed|<summary>
 RUN_COMPLETED|failed|<summary>
 \`\`\`
+
+**\`RUN_COMPLETED\` is what ends the run.** A session that stops without it is
+recorded as FAILED, however many steps went well: nothing else can tell a
+finished route from one you abandoned halfway.
 
 ${callerGuidance}## Start
 
@@ -479,4 +506,76 @@ step is responsible for opening the initial URL.
 
 export function buildTracePrompt(title: string): string {
   return `Execute the test for "${title}". Each step's instruction includes the URL or selector context it needs.`;
+}
+
+/**
+ * The case's expectations, plus the one rule that decides where each is
+ * recorded. Without the rule a recorder either asserts everything at the end —
+ * on a page the flow has already left — or asserts each item at every step it
+ * might apply to, which is the over-assertion the selector rules exist to
+ * prevent.
+ */
+function renderExpectations(expectations: string[]): string {
+  if (expectations.length === 0) return "";
+  const items = expectations.map((text) => `- ${text}`).join("\n");
+  return `
+## Expected results
+
+The case states these without saying which step delivers them:
+
+${items}
+
+**Assign each to the step it first becomes true in, and assert it there and nowhere else.** Read the flow to decide: an expectation about what a form did belongs to the step that submitted it, not to a later step that happens to still show it. Assert each one exactly once — a repeat adds no coverage and breaks first. An expectation you cannot place is one you report in \`STEP_DONE\` text as unplaced; never invent a step for it, and never assert it "just in case".
+`;
+}
+
+/**
+ * What the cleanup must make true. Separate from the case's expectations
+ * because its steps are: a deletion is confirmed by the thing being gone,
+ * which is only true after the undo has run, and asserting it among the
+ * case's own steps would check it while the thing still exists.
+ */
+function renderCleanupExpectations(expectations: string[]): string {
+  if (expectations.length === 0) return "";
+  const items = expectations.map((text) => `- ${text}`).join("\n");
+  return `
+## Expected results of the cleanup
+
+The case states these about its cleanup steps:
+
+${items}
+
+**Assert each in the cleanup step that makes it true, and nowhere else.** They describe the state after the undo, so a cleanup step is not done when the command returns — it is done when what the case says here holds. Record the check as an assertion the same way a step's own is recorded.
+`;
+}
+
+/**
+ * Sections of the case ccqa does not interpret — the precondition, notes the
+ * author left. Passed through verbatim: they are written for whoever runs the
+ * case, and the recorder is now that reader.
+ */
+function renderContext(context: Array<{ heading: string; body: string }>): string {
+  if (context.length === 0) return "";
+  const sections = context.map((s) => `### ${s.heading}\n\n${s.body}`).join("\n\n");
+  return `
+## About this case
+
+${sections}
+`;
+}
+
+/**
+ * The project's own recording guidance. Where the case says what to do, this
+ * says how this project is driven — which account signs in, what has to be
+ * true before the first step. Prose, verbatim: it is written for whoever runs
+ * the case, and this is now that reader.
+ */
+function renderConventions(conventions: Array<{ heading: string; body: string }>): string {
+  if (conventions.length === 0) return "";
+  const sections = conventions.map((c) => `### ${c.heading}\n\n${c.body}`).join("\n\n");
+  return `
+## How this project is driven
+
+${sections}
+`;
 }

@@ -306,12 +306,17 @@ const sourcemapPush = new Command("push")
       // mistyped path would otherwise pass, the maps would be deleted with the
       // build, and coverage would report a frontend it could not name.
       if (!existsSync(dir)) throw new Error(`no such directory: ${dir}`);
-      const maps = (await listFilesRecursive(dir)).filter((f) => f.endsWith(".map"));
+      const found = (await listFilesRecursive(dir)).filter((f) => f.endsWith(".map"));
+      // A stylesheet map describes CSS, which nothing here ever resolves a
+      // script against — skipped before it is read, so a valid one is not
+      // stored for a request that will never come.
+      const stylesheetMaps = found.filter((f) => f.endsWith(".css.map"));
+      const maps = found.filter((f) => !f.endsWith(".css.map"));
       const prefix = opts.assetPrefix.replace(/^\/+|\/+$/g, "");
 
       log.header("hub sourcemap push", `${project}@${opts.sha.slice(0, 12)}`);
       log.meta("dir", dir);
-      if (maps.length === 0) {
+      if (found.length === 0) {
         log.warn(`no *.map under ${dir} — nothing to push (was the build run with source maps enabled?)`);
         return;
       }
@@ -336,7 +341,9 @@ const sourcemapPush = new Command("push")
         log.warn(`${unusable.length} map(s) were not source maps this side can read, e.g. ${unusable[0]}`);
       }
       await hub.sweepSourceMaps(project);
-      log.info(`pushed ${pushed} source map(s), ${Math.round(bytes / 1024)} KiB`);
+      const skipped =
+        stylesheetMaps.length > 0 ? ` (skipped ${stylesheetMaps.length} stylesheet map(s))` : "";
+      log.info(`pushed ${pushed} source map(s), ${Math.round(bytes / 1024)} KiB${skipped}`);
     }),
   );
 

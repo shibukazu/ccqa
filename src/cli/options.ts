@@ -16,10 +16,14 @@ export { DEFAULT_LANGUAGE, languageDirective, useJapanesePrompts } from "../prom
  * "en") or "auto" (default), which follows the language of the material.
  */
 export function addLanguageOption(command: Command): Command {
+  // No default value on purpose. A default here is indistinguishable from the
+  // flag being passed, so `.ccqa/config.yaml`'s `language` could never be
+  // reached: the absent flag would out-rank it every time. Absent means
+  // absent, and the resolution order lives in `resolveLanguage`.
   return command.option(
     "--language <bcp47>",
-    "Language for human-readable output (e.g. 'en', 'ja'). Default 'auto' follows the language of the spec/codebase.",
-    DEFAULT_LANGUAGE,
+    `Language for human-readable output (e.g. 'en', 'ja'). Overrides the project's \`language\`; ` +
+      `without either, '${DEFAULT_LANGUAGE}' follows the language of the spec/codebase.`,
   );
 }
 

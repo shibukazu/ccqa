@@ -2,30 +2,43 @@ import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from ".
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
-  loadAllBlocks,
-  loadPromptBundleFromHub,
-  readSpecFile,
+  loadPromptBundle,
   saveFailedRecording,
   saveRecording,
+  removeRouteDiff,
+  saveRouteDiff,
+  tryGetRecording,
 } from "../store/index.ts";
+import { describeStepAction, diffRoutes, renderRouteDiff } from "../ir/route-diff.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
+import { RunUsageError } from "../run/errors.ts";
+import { loadStateIntoSession } from "../runtime/session-state.ts";
+import { loadConventions } from "../targets/resources.ts";
+import { resolve } from "node:path";
 import type { RunTeardown } from "./run-teardown.ts";
 import type { HubContext } from "./hub-conn.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import {
   collectIncludedBlockNames,
-  expandSpec,
   isExpandedActionStep,
+  type ExpandedActionStep,
 } from "../spec/expand.ts";
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
-import { validateActions, type ValidationMode } from "../runtime/replay-validate.ts";
+import {
+  formatPromotion,
+  isCascadeReason,
+  validateActions,
+  type ValidationMode,
+} from "../runtime/replay-validate.ts";
 import { buildSpecEnvScrub, scrubEnvValues } from "../runtime/env-scrub.ts";
 import { formatUnstableDrop, scrubUnstableActions } from "../runtime/literal-scrub.ts";
 import { languageDirective } from "../prompts/language.ts";
 import { parseAbActionLine, promoteMarkedAssert } from "../ir/from-agent-browser.ts";
 import { describeLocator, locatorToSelector } from "../ir/to-agent-browser.ts";
 import type { Locator, RecordedAction } from "../ir/types.ts";
+import type { CaseRef, Recording } from "../store/index.ts";
+import type { TestCase } from "../intent/case.ts";
 import type { ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -44,6 +57,8 @@ export interface StepChurn {
 export interface RunTraceResult {
   /** Overall run status, derived from the status-line protocol. */
   status: "passed" | "failed";
+  /** Why the status is `failed`; null when it passed. See `traceFailureReason`. */
+  failureReason: string | null;
   /**
    * Every STEP_START / STEP_DONE / ASSERTION_FAILED / STEP_SKIPPED /
    * RUN_COMPLETED line captured from the trace, in order. The record
@@ -94,6 +109,10 @@ export interface RunTraceOptions {
    * when learning is enabled.
    */
   validateFailedTrace?: boolean;
+  /** Saved browser session to restore first (config `sessionState`). */
+  sessionState?: string;
+  /** Documents telling the recorder how this project is driven. */
+  conventions?: string[];
 }
 
 /**
@@ -109,24 +128,23 @@ export function stepsWithoutAsserts(stepIds: string[], actions: RecordedAction[]
 }
 
 export async function runTrace(
-  featureName: string,
-  specName: string,
+  testCase: TestCase,
   model?: string,
   validationMode: ValidationMode = "lenient",
   language?: string,
   opts: RunTraceOptions = {},
 ): Promise<RunTraceResult> {
-  log.header("trace", `${featureName}/${specName}`);
+  log.header("trace", testCase.ref.id);
 
   await preflightAgentBrowserCommand();
 
-  const specContent = await readSpecFile(featureName, specName, opts.cwd);
-  const spec = parseTestSpec(specContent);
-  const blocks = await loadAllBlocks(opts.cwd);
+  // Include steps are a `spec.yaml` feature; a case from another document has
+  // none, and its own steps are already the flat list.
+  const specSteps = testCase.source.kind === "spec" ? testCase.source.spec.steps : [];
   // A judge step records nothing: it states a claim about the page rather than
   // an action to replay, and the generator places the call from the step list.
-  // Refusing one here would make a spec that carries a claim unrecordable.
-  const expanded = expandSpec(spec, { blocks });
+  // Refusing one here would make a case that carries a claim unrecordable.
+  const expanded = [...testCase.steps, ...testCase.cleanup];
   const steps = expanded.filter(isExpandedActionStep);
 
   // Build the env-value → `${VAR}` scrub map BEFORE the trace starts so
@@ -142,7 +160,7 @@ export async function runTrace(
   // (agentBrowserInvokeBase below), whatever the parent env holds — the
   // override keeps `${CCQA_RUN_ID}` scrubbing against the value the child
   // actually sees.
-  const envScrub = buildSpecEnvScrub(spec, expanded, { CCQA_RUN_ID: sessionName });
+  const envScrub = buildSpecEnvScrub(specSteps, expanded, { CCQA_RUN_ID: sessionName });
   const envScrubMap = envScrub.map;
   if (envScrub.unresolved.length > 0) {
     // An unset ref can't be scrubbed, so it bakes in (see above). Surface that
@@ -158,35 +176,71 @@ export async function runTrace(
     );
   }
 
-  log.meta("spec", spec.title);
+  log.meta("case", testCase.title);
   log.meta("steps", steps.length);
-  const includes = collectIncludedBlockNames(spec);
+  if (testCase.cleanup.length > 0) log.meta("cleanup steps", testCase.cleanup.length);
+  const includes =
+    testCase.source.kind === "spec" ? collectIncludedBlockNames(testCase.source.spec) : [];
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
   log.blank();
 
   opts.teardown?.trackSession(sessionName);
 
+  // A case whose precondition is "signed in" should not have to record the
+  // sign-in: the project points at a saved session and the recording starts
+  // where a person would. Attached before the first navigation, because
+  // agent-browser only takes a state on the invocation that boots the daemon.
+  if (opts.sessionState) {
+    const injected = loadStateIntoSession(sessionName, resolve(opts.cwd ?? process.cwd(), opts.sessionState));
+    if (!injected.ok) {
+      // Recording anyway would record the sign-in wall as the case's route, or
+      // spend the model's budget failing at it. Neither is the recording asked
+      // for, and both look like one until someone replays it.
+      throw new RunUsageError(
+        `could not restore ${opts.sessionState}: ${injected.error ?? "unknown error"} — ` +
+          `the case expects to start signed in, so recording was not attempted`,
+      );
+    }
+    log.meta("session", opts.sessionState);
+  }
+
+  // The project's own recording guidance, read the same way generation reads
+  // its convention documents — same globs, same size cap.
+  const conventions = opts.conventions
+    ? await loadConventions(opts.cwd ?? process.cwd(), opts.conventions)
+    : { sections: [], warnings: [] };
+  for (const w of conventions.warnings) log.warn(w);
+
   const baseSystemPrompt = buildTraceSystemPrompt({
-    title: spec.title,
+    title: testCase.title,
     steps,
     sessionName,
+    ...(conventions.sections.length > 0
+      ? { conventions: conventions.sections.map((s) => ({ heading: s.path, body: s.body })) }
+      : {}),
+    ...(testCase.expectations.length > 0 ? { expectations: testCase.expectations } : {}),
+    ...(testCase.cleanupExpectations.length > 0
+      ? { cleanupExpectations: testCase.cleanupExpectations }
+      : {}),
+    ...(testCase.context.length > 0 ? { context: testCase.context } : {}),
     ...(opts.instruction ? { instruction: opts.instruction } : {}),
   });
-  const promptBundle = await loadPromptBundleFromHub(opts.hubContext ?? null, "record");
+  const promptBundle = await loadPromptBundle(opts.hubContext ?? null, "record", opts.cwd ?? process.cwd());
   if (promptBundle !== null) log.meta("prompt", promptBundle.loaded.join(" + "));
   const systemPrompt =
     (promptBundle === null
       ? baseSystemPrompt
       : `${baseSystemPrompt}\n## Project-specific guidance\n\n${promptBundle.text}\n`) +
     languageDirective(language);
-  const prompt = buildTracePrompt(spec.title);
+  const prompt = buildTracePrompt(testCase.title);
 
   log.info("Running agent-browser session...");
   log.blank();
 
   const statusLines: ParsedStatusLine[] = [];
-  let overallStatus: "passed" | "failed" = "passed";
   const traceActions: RecordedAction[] = [];
+  /** Assert kinds the model printed rather than performed; never recorded. */
+  const printedAsserts: string[] = [];
   // Tags each recorded action with its spec step so codegen can group by
   // step even when a step opens no URL (e.g. a "fill the form" step
   // sandwiched between a `navigate` step and a navigation).
@@ -202,14 +256,14 @@ export async function runTrace(
   // `url_contains:` marker pushes two actions, an unparseable command none.
   let lastCommandPushCount = 0;
 
-  const { isError } = await invokeClaudeStreaming(
+  const { isError, errorDetail } = await invokeClaudeStreaming(
     {
       prompt,
       systemPrompt,
       ...agentBrowserInvokeBase({ sessionName, runId: sessionName }),
       model,
       envScrubMap,
-      onAbAction: ({ abAction, stepId, assertMarker }) => {
+      onAbAction: ({ abAction, stepId, assertMarker, secret }) => {
         const stepForCommand = stepTracker.fromCommand(stepId);
         const line = abAction === undefined ? null : scrubEnvValues(abAction, envScrubMap);
         let recorded: RecordedAction[] | null = null;
@@ -229,7 +283,7 @@ export async function runTrace(
         for (const action of recorded) {
           const stamped = withStepId(action, stepForCommand);
           if (stamped) {
-            traceActions.push(stamped);
+            traceActions.push(secret ? { ...stamped, secret: true } : stamped);
             pushed += 1;
           }
         }
@@ -255,13 +309,21 @@ export async function runTrace(
             if (status.type === "STEP_START" && status.stepId) {
               stepTracker.fromStepStartLine(status.stepId);
             }
-            if (status.type === "ASSERTION_FAILED") overallStatus = "failed";
-            if (status.type === "RUN_COMPLETED" && status.stepId === "failed") overallStatus = "failed";
             statusLines.push(status);
             log.step(status.type, status.stepId, status.detail);
             continue;
           }
-          if (trimmed.startsWith("AB_ACTION|snapshot|") || trimmed.startsWith("AB_ACTION|assert|")) {
+          // Only a command that ran can be an assertion. A printed line is the
+          // model's claim: nothing was performed, nothing can fail, and the
+          // rollback that covers a failed command cannot cover it.
+          if (trimmed.startsWith("AB_ACTION|assert|")) {
+            // The kind, never the line: what the model printed carries its
+            // own values, and this one does not go through the scrub the
+            // recorded actions do.
+            printedAsserts.push(trimmed.split("|")[2] ?? "?");
+            continue;
+          }
+          if (trimmed.startsWith("AB_ACTION|snapshot|")) {
             const action = withStepId(
               parseAbActionLine(scrubEnvValues(trimmed, envScrubMap)),
               stepTracker.current(),
@@ -273,7 +335,17 @@ export async function runTrace(
     },
   );
 
-  if (isError) overallStatus = "failed";
+  const failureReason =
+    // Not a warning: the trace walked the route, so it looks like a recording
+    // worth keeping — while the checks it printed instead of performing are
+    // gone. Kept as a failure, the actions go to the side file and the
+    // recording that did verify its steps stays where it is.
+    printedAsserts.length > 0
+      ? `${printedAsserts.length} assertion(s) were printed rather than performed ` +
+        `(${[...new Set(printedAsserts)].join(", ")}), so nothing recorded them. Mark the command ` +
+        `that performs each check with CCQA_ASSERT=<marker> and record again.`
+      : traceFailureReason(statusLines, { isError, errorDetail });
+  const overallStatus: "passed" | "failed" = failureReason === null ? "passed" : "failed";
 
   const scrubbedActions = scrubAndReport(traceActions);
   const dedupedActions = dedupAndReport(scrubbedActions);
@@ -299,10 +371,30 @@ export async function runTrace(
   // A FAILED trace did not demonstrate the spec, so its actions must never
   // replace a recording that did. They go to a side file for diagnosis;
   // ir.json (and therefore the generated test) is left untouched.
-  const recordingPath =
-    overallStatus === "passed"
-      ? await saveRecording(featureName, specName, validatedActions, opts.cwd)
-      : await saveFailedRecording(featureName, specName, validatedActions, opts.cwd);
+  //
+  // Read the recording being replaced before the write, not after: it is the
+  // only thing that can say what this re-recording changed.
+  const caseRef = testCase.ref;
+  const previous = overallStatus === "passed" ? await tryGetRecording(caseRef) : null;
+  let recordingPath: string;
+  // The undo was recorded in the same session, and is told apart by the step
+  // ids the case gave it — the one place that knows which actions were which.
+  const cleanupIds = new Set(testCase.cleanup.map((s) => s.id));
+  const routeActions = validatedActions.filter((a) => !cleanupIds.has(a.stepId ?? ""));
+  const cleanupActions = validatedActions.filter((a) => cleanupIds.has(a.stepId ?? ""));
+  if (overallStatus === "passed") {
+    const saved = await saveRecording(caseRef, routeActions, cleanupActions);
+    recordingPath = saved.path;
+    if (previous) {
+      await reportRouteDiff(caseRef, previous, saved.recording, steps);
+    } else {
+      // First recording of this spec: any diff beside it describes a route
+      // that no longer exists, so it must not stay there looking current.
+      await removeRouteDiff(caseRef);
+    }
+  } else {
+    recordingPath = await saveFailedRecording(caseRef, validatedActions);
+  }
 
   log.blank();
   log.meta("saved", recordingPath);
@@ -313,24 +405,84 @@ export async function runTrace(
     // A step whose actions carry no assertion produced a test that performs
     // the step but verifies nothing about its `expected` — the kind of green
     // that reads as coverage. Loud, per step, before codegen runs.
-    for (const stepId of stepsWithoutAsserts(steps.map((s) => s.id), validatedActions)) {
+    const caseStepIds = testCase.steps.filter(isExpandedActionStep).map((s) => s.id);
+    // A cleanup step joins the check only when the case says what its undo
+    // must make true; one that states nothing is asked to verify nothing.
+    const cleanupStepIds =
+      testCase.cleanupExpectations.length > 0 ? testCase.cleanup.map((s) => s.id) : [];
+    for (const stepId of stepsWithoutAsserts([...caseStepIds, ...cleanupStepIds], validatedActions)) {
       log.warn(`${stepId} recorded no assertion — nothing in the generated test verifies its 'expected'`);
     }
-    log.hint(`run 'ccqa generate ${featureName}/${specName}' to generate a test script`);
+    log.hint(`run 'ccqa generate ${testCase.ref.id}' to generate a test script`);
   } else {
     log.warn(
-      "trace FAILED — the recorded actions were saved beside the spec for diagnosis; the previous ir.json and generated code are left untouched",
+      `trace FAILED (${failureReason}) — the recorded actions were saved beside the spec for diagnosis; ` +
+        "the previous ir.json and generated code are left untouched",
     );
   }
 
   return {
     status: overallStatus,
+    failureReason,
     statusLines,
     actionsKept: validatedActions.length,
     actionsRecorded: traceActions.length,
     actions: validatedActions,
     churnByStep: buildChurnByStep(traceActions, validatedActions),
   };
+}
+
+/**
+ * Why a trace failed, or null when it did not. A reported assertion is ranked
+ * first because it is the only answer that is about the page; the rest say the
+ * session ended before the model could give one. `RUN_COMPLETED` is required
+ * by the protocol, so its absence is a failure and not a silent pass.
+ */
+export function traceFailureReason(
+  lines: readonly ParsedStatusLine[],
+  session: { isError: boolean; errorDetail: string | null },
+): string | null {
+  const assertionFailed = lines.find((l) => l.type === "ASSERTION_FAILED");
+  if (assertionFailed) {
+    return `${assertionFailed.stepId || "(unnamed step)"} reported ASSERTION_FAILED`;
+  }
+  if (session.isError) {
+    return `the Claude session ended in an error: ${session.errorDetail ?? "no detail reported"}`;
+  }
+  const completed = lines.filter((l) => l.type === "RUN_COMPLETED").at(-1);
+  if (completed === undefined) {
+    return "the session ended without a RUN_COMPLETED line — the model stopped before it reported an outcome";
+  }
+  // The verdict's case is cosmetic; refusing `PASSED` would discard the whole
+  // recording the run just paid for.
+  return completed.stepId.trim().toLowerCase() === "passed"
+    ? null
+    : `the model reported RUN_COMPLETED|${completed.stepId}`;
+}
+
+/**
+ * What this re-recording changed, as markdown beside the spec and a count in
+ * the log. The route is replaced wholesale by a re-record, so without this the
+ * only way to see what moved is to diff two JSON files by eye. Written even
+ * when nothing moved: a diff left over from an earlier re-record would sit
+ * beside the new recording and read as current.
+ */
+async function reportRouteDiff(
+  ref: CaseRef,
+  before: Recording,
+  after: Recording,
+  steps: ExpandedActionStep[],
+): Promise<void> {
+  const stepTitles = new Map(steps.map((s) => [s.id, s.instruction.trim().split("\n")[0]!]));
+  const diff = diffRoutes(before.actions, after.actions);
+  const path = await saveRouteDiff(
+    ref,
+    renderRouteDiff(diff, { specKey: ref.id, before, after, stepTitles }),
+  );
+  const parts: string[] = [];
+  if (diff.changes.length > 0) parts.push(`${diff.changes.length} change(s)`);
+  if (diff.moved.length > 0) parts.push(`${diff.moved.length} moved between steps`);
+  log.meta("route diff", `${parts.join(", ") || "unchanged"} — ${path}`);
 }
 
 /**
@@ -432,18 +584,16 @@ function scrubAndReport(actions: RecordedAction[]): RecordedAction[] {
 }
 
 /**
- * Drop *immediate* duplicate AB_ACTION emissions inside the same step.
- * Claude occasionally records the same semantic-locator click (identical
- * action, locator, value, fields) twice in a row when retrying a selector
- * after a snapshot — only the last attempt is "the canonical one". Collapsing
- * the dupes keeps ir.json from accumulating ghost-retries the LLM never
- * meant to commit.
+ * Drop *immediate* duplicate AB_ACTION emissions inside the same step, plus
+ * the same assert repeated later (non-adjacently) in one step. Claude
+ * occasionally records the same semantic-locator click twice in a row when
+ * retrying a selector after a snapshot, and separately reaches the same
+ * assertion through both the `CCQA_ASSERT=` env channel and an `AB_ACTION|
+ * assert|...` text line — two reports of one check, not two checks.
  *
- * The dedupe is intentionally conservative — adjacent + structurally
- * IDENTICAL only. We do NOT try to compress retries with different
- * locators (that would risk dropping a legitimate "click the neighbouring
- * button" sequence). The trace prompt now asks Claude not to emit failed
- * attempts in the first place, so this is the belt-and-braces pass.
+ * The adjacent pass stays conservative — structurally IDENTICAL neighbours
+ * only, no compressing retries with different locators (that would risk
+ * dropping a legitimate "click the neighbouring button" sequence).
  */
 function dedupAndReport(actions: RecordedAction[]): RecordedAction[] {
   if (actions.length === 0) return actions;
@@ -458,9 +608,11 @@ function dedupAndReport(actions: RecordedAction[]): RecordedAction[] {
     kept.push(action);
   }
   if (dropped === 0) return kept;
-  log.meta("deduped", `${kept.length}/${actions.length} kept (${dropped} adjacent duplicate(s) dropped)`);
+  log.meta("deduped", `${kept.length}/${actions.length} kept (${dropped} duplicate(s) dropped)`);
   return kept;
 }
+
+
 
 /**
  * Two actions are an "adjacent duplicate" when they would generate the
@@ -503,7 +655,7 @@ function validateAndReport(
   teardown?.trackSession(sessionName);
   log.blank();
   log.info(`post-trace validation in ${mode} mode (replaying ${actions.length} recorded action(s))...`);
-  const { kept, unstable, dropped, rescuedSteps = [] } = validateActions(actions, {
+  const { kept, unstable, dropped, rescuedSteps = [], promoted = [] } = validateActions(actions, {
     sessionName,
     mode,
     envOverrides,
@@ -520,17 +672,38 @@ function validateAndReport(
   if (rescuedSteps.length > 0) {
     log.info(`rescued ${rescuedSteps.length} step(s) that had lost every action: ${rescuedSteps.join(", ")}`);
   }
+  for (const p of promoted) log.info(formatPromotion(p));
   if (mode === "lenient") {
     if (unstable.length === 0) {
       log.meta("validated", `${kept.length}/${actions.length} kept`);
     } else {
-      for (const u of unstable) {
-        const head = `${u.action}${u.locator ? " " + describeLocator(u.locator) : ""}`;
-        log.warn(`replay-unstable: ${head} — ${u.replayReason ?? "(no reason)"} (kept in ir.json with warning)`);
+      // The cascade is reported as one line naming what actually failed. One
+      // warning per skipped action reads as a route that broke everywhere,
+      // when the whole set follows from a single locator that found nothing.
+      const failed = unstable.filter((u) => !isCascadeReason(u.replayReason));
+      const cascaded = unstable.length - failed.length;
+      for (const u of failed) {
+        log.warn(`replay-unstable: ${describeStepAction(u)} — ${u.replayReason ?? "(no reason)"} (kept in ir.json with warning)`);
+      }
+      if (cascaded > 0) {
+        const first = failed[0];
+        log.warn(
+          `${cascaded} further action(s) were not replayed at all` +
+            (first ? `: they follow ${describeStepAction(first)}, which failed` : ""),
+        );
+      }
+      // Without this the list reads as a route whose every locator went stale.
+      if (failed.length > 1 && failed[0]!.action === "navigate") {
+        log.warn(
+          "the first failure was a navigation, so the replay never left the previous screen — " +
+            "the failures after it are that, not stale locators",
+        );
       }
       log.meta(
         "validated",
-        `${kept.length}/${actions.length} kept, ${unstable.length} flagged replay-unstable (kept with warning)`,
+        `${kept.length}/${actions.length} kept, ${failed.length} flagged replay-unstable` +
+          (cascaded > 0 ? `, ${cascaded} not replayed` : "") +
+          " (kept with warning)",
       );
     }
     // Lenient mode: thread the kept + unstable back into the original
@@ -694,8 +867,14 @@ export function createStepTracker(onChange?: (stepId: string) => void): StepTrac
 }
 
 export function parseStatusLine(text: string): ParsedStatusLine | null {
-  for (const line of text.split("\n")) {
-    const match = line.match(/^(STEP_START|STEP_DONE|ASSERTION_FAILED|STEP_SKIPPED|RUN_COMPLETED)\|([^|]*)\|(.*)$/);
+  for (const raw of text.split("\n")) {
+    // Leading whitespace and markdown emphasis around the line, and a missing
+    // trailing summary, are cosmetic — and a `RUN_COMPLETED` this refuses to
+    // read now costs a whole recording.
+    const line = raw.trim().replace(/^[*`]+/, "").replace(/[*`]+$/, "");
+    const match = line.match(
+      /^(STEP_START|STEP_DONE|ASSERTION_FAILED|STEP_SKIPPED|RUN_COMPLETED)\|([^|]*)(?:\|(.*))?$/,
+    );
     if (match) {
       return {
         type: match[1] as ParsedStatusLine["type"],
