@@ -14,19 +14,19 @@ describe("parseNotation", () => {
 
   test("reads the string out of the text forms", () => {
     for (const value of [
-      "text=Add content",
-      'text="Add content"',
-      ':has-text("Add content")',
+      "text=Add item",
+      'text="Add item"',
+      ':has-text("Add item")',
     ]) {
-      expect(parseNotation(value), value).toEqual({ by: "text", value: "Add content" });
+      expect(parseNotation(value), value).toEqual({ by: "text", value: "Add item" });
     }
   });
 
   test("reads the role and the name out of a role form", () => {
-    expect(parseNotation('role=button[name="Add content"]')).toEqual({
+    expect(parseNotation('role=button[name="Add item"]')).toEqual({
       by: "role",
       value: "button",
-      name: "Add content",
+      name: "Add item",
       exact: true,
     });
   });

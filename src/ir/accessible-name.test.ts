@@ -3,7 +3,7 @@ import { nameFromAttributeSelector, roleOfAccessibleName } from "./accessible-na
 
 describe("nameFromAttributeSelector", () => {
   test("reads the name out of an aria-label selector, in either quote style", () => {
-    expect(nameFromAttributeSelector("[aria-label='Category *']")).toBe("Category *");
+    expect(nameFromAttributeSelector("[aria-label='Priority *']")).toBe("Priority *");
     expect(nameFromAttributeSelector('[aria-label="Save"]')).toBe("Save");
   });
 
@@ -30,19 +30,19 @@ describe("roleOfAccessibleName", () => {
     "- document",
     '  - banner "Site header"',
     '    - link "Home"',
-    '  - combobox "Category *"',
+    '  - combobox "Priority *"',
     '  - button "Save"',
   ].join("\n");
 
   test("answers with the role of the node carrying that exact name", () => {
-    expect(roleOfAccessibleName(SNAPSHOT, "Category *")).toBe("combobox");
+    expect(roleOfAccessibleName(SNAPSHOT, "Priority *")).toBe("combobox");
     expect(roleOfAccessibleName(SNAPSHOT, "Save")).toBe("button");
   });
 
-  // The name asked for is the whole name: a tree holding both "Category" and
-  // "Category *" must answer for the one the locator named.
+  // The name asked for is the whole name: a tree holding both "Priority" and
+  // "Priority *" must answer for the one the locator named.
   test("does not answer for a name that is only a prefix of one", () => {
-    expect(roleOfAccessibleName(SNAPSHOT, "Category")).toBeNull();
+    expect(roleOfAccessibleName(SNAPSHOT, "Priority")).toBeNull();
     expect(roleOfAccessibleName(SNAPSHOT, "Sav")).toBeNull();
   });
 

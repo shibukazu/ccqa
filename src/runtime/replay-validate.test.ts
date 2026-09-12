@@ -475,7 +475,7 @@ describe("validateActions — an element the page has not rendered yet", () => {
       return OK;
     });
     const actions: RecordedAction[] = [
-      { action: "navigate", value: "https://example.test/policies", stepId: "step-01" },
+      { action: "navigate", value: "https://example.test/todos", stepId: "step-01" },
     ];
     const { kept, dropped } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
     expect(dropped).toEqual([]);
@@ -596,7 +596,7 @@ describe("validateActions (a css locator that is not css)", () => {
   // `role=…` and `:has-text(…)` all answered 0 — not an error, a zero, which
   // reads as absence. `wait --text` found it.
   test("a text= value is asked as a text wait, and the route keeps that form", () => {
-    process.env["WHAT"] = "content";
+    process.env["WHAT"] = "item";
     replyBy((argv) => (argv.includes("count") ? COUNT_ABSENT : OK));
     const actions = [textAssert()];
     const { kept, dropped, promoted } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
@@ -610,13 +610,13 @@ describe("validateActions (a css locator that is not css)", () => {
     expect(mockedSpawnAB.mock.calls.some((c) => c[0]!.includes("count"))).toBe(false);
     // ...and the wait it was asked with saw the resolved value.
     const waits = mockedSpawnAB.mock.calls.filter((c) => c[0]!.includes("--text"));
-    expect(waits[0]![0]).toContain("Add content");
+    expect(waits[0]![0]).toContain("Add item");
   });
 
   const roleAssert = (): RecordedAction => ({
     action: "assert",
     assert: "element_visible",
-    locator: { by: "css", value: 'role=button[name="Add content"]' },
+    locator: { by: "css", value: 'role=button[name="Add item"]' },
     stepId: "step-01",
   });
 
@@ -628,10 +628,10 @@ describe("validateActions (a css locator that is not css)", () => {
     replyBy(() => OK);
     const actions = [roleAssert()];
     validateActions(actions, { sessionName: SESSION, mode: "strict" });
-    expect(actions[0]!.locator).toEqual({ by: "css", value: 'role=button[name="Add content"]' });
+    expect(actions[0]!.locator).toEqual({ by: "css", value: 'role=button[name="Add item"]' });
     const found = mockedSpawnAB.mock.calls.find((c) => c[0]!.includes("find"))![0];
     expect(found).toEqual([
-      "--session", SESSION, "find", "role", "button", "text", "--name", "Add content", "--exact",
+      "--session", SESSION, "find", "role", "button", "text", "--name", "Add item", "--exact",
     ]);
   });
 
@@ -675,11 +675,11 @@ describe("validateActions (a css locator that is not css)", () => {
     expect(mockedSpawnAB.mock.calls.some((c) => c[0]!.includes("find"))).toBe(false);
   });
 
-  // Measured: the DOM has `combobox "Category *"` named by an associated
-  // `<label>`, so `[aria-label='Category *']` counts 0 while the element is
+  // Measured: the DOM has `combobox "Priority *"` named by an associated
+  // `<label>`, so `[aria-label='Priority *']` counts 0 while the element is
   // plainly there. The attribute being absent is not evidence the element is.
   test("an attribute selector that counts nothing is asked of the accessibility tree", () => {
-    const SNAPSHOT = { status: 0, stdout: '- combobox "Category *"\n- button "Save"', stderr: "" };
+    const SNAPSHOT = { status: 0, stdout: '- combobox "Priority *"\n- button "Save"', stderr: "" };
     replyBy((argv) => {
       if (argv.includes("count")) return COUNT_ABSENT;
       if (argv.includes("snapshot")) return SNAPSHOT;
@@ -688,13 +688,13 @@ describe("validateActions (a css locator that is not css)", () => {
     const actions: RecordedAction[] = [{
       action: "assert",
       assert: "element_visible",
-      locator: css("[aria-label='Category *']"),
+      locator: css("[aria-label='Priority *']"),
       stepId: "step-02",
     }];
     const { kept, dropped, promoted } = validateActions(actions, { sessionName: SESSION, mode: "strict" });
     expect(dropped).toEqual([]);
     expect(kept.length).toBe(1);
-    expect(actions[0]!.locator).toEqual({ by: "role", value: "combobox", name: "Category *", exact: true });
+    expect(actions[0]!.locator).toEqual({ by: "role", value: "combobox", name: "Priority *", exact: true });
     expect(promoted?.[0]).toContain("role=combobox");
   });
 

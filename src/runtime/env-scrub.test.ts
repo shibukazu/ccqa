@@ -210,8 +210,8 @@ describe("scrubEnvValues", () => {
     // A navigate target must reverse-mask like any fill value, else the
     // recording pins to the environment it was captured against (`--profile`).
     const map: Array<[string, string]> = [["https://app.example.com", "${APP_BASE_URL}"]];
-    expect(scrubEnvValues("AB_ACTION|open|https://app.example.com/policies", map))
-      .toBe("AB_ACTION|open|${APP_BASE_URL}/policies");
+    expect(scrubEnvValues("AB_ACTION|open|https://app.example.com/todos", map))
+      .toBe("AB_ACTION|open|${APP_BASE_URL}/todos");
   });
 
   test("preserves longer matches first (relies on the builder's sort guarantee)", () => {

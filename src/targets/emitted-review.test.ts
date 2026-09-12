@@ -41,8 +41,8 @@ describe("reviewEmittedFiles", () => {
   // The shape a fix pass reached for when the finding named only `getByText`:
   // the same page-wide search, now resting on DOM order.
   test("a container found by searching the page for a bare tag is the same fault", () => {
-    const page = `readonly notionCard = this.page.locator("div").filter({ hasText: "Buy milk" }).last();`;
-    expect(rules(review(`await expect(todoList.notionCard).toBeVisible();`, page)))
+    const page = `readonly itemCard = this.page.locator("div").filter({ hasText: "Buy milk" }).last();`;
+    expect(rules(review(`await expect(todoList.itemCard).toBeVisible();`, page)))
       .toEqual(["unscoped-container"]);
   });
 
@@ -71,7 +71,7 @@ describe("reviewEmittedFiles", () => {
     });
 
     test("an assertion about something the case never mentions", () => {
-      const bare = `await expect(page.getByText("Manage your integrations here.")).toBeVisible();`;
+      const bare = `await expect(page.getByText("Manage your items here.")).toBeVisible();`;
       expect(rules(review(bare))).toEqual(["unasked-assertion"]);
       expect(review(`// precondition: the banner is still the old one\n${bare}`)).toEqual([]);
     });

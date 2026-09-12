@@ -8,7 +8,7 @@ describe("locatorsIn", () => {
   test("pulls the class, id and test-id tokens a selector is written with", () => {
     const { candidates } = locatorsIn(
       [
-        `export const nav = page.locator(".site-navigationbar");`,
+        `export const nav = page.locator(".mainnavbar");`,
         `const row = page.locator("#main > .row-item");`,
         `await page.getByTestId("submit-button").click();`,
         `page.locator('[data-testid="panel"]');`,
@@ -16,7 +16,7 @@ describe("locatorsIn", () => {
       "e2e/pages/nav.ts",
     );
     expect(candidates.map((c) => `${c.kind}:${c.value}`)).toEqual([
-      "class:site-navigationbar",
+      "class:mainnavbar",
       "class:row-item",
       "id:main",
       "testid:submit-button",
@@ -121,20 +121,20 @@ describe("buildLocatorInventory", () => {
   // in the product's own template. The audit read past it twice; now the class
   // arrives named.
   test("a class the product renders nowhere comes back as a candidate to check", async () => {
-    const abs = await product({ "Nav.vue": `<template><nav class="site-navigationbar" /></template>` });
+    const abs = await product({ "Nav.vue": `<template><nav class="mainnavbar" /></template>` });
     const inventory = await buildLocatorInventory({
-      sources: new Map([["e2e/pages/nav.ts", `page.locator(".site-navigation-bar")`]]),
+      sources: new Map([["e2e/pages/nav.ts", `page.locator(".main-nav-bar")`]]),
       roots: [{ configured: "../product/src", abs }],
       cwd: "/does-not-matter",
     });
-    expect(inventory.missing.map((c) => c.value)).toEqual(["site-navigation-bar"]);
+    expect(inventory.missing.map((c) => c.value)).toEqual(["main-nav-bar"]);
     expect(inventory.found).toEqual([]);
   });
 
   test("a class the product does render is reported found, with where", async () => {
-    const abs = await product({ "Nav.vue": `<template><nav class="site-navigationbar" /></template>` });
+    const abs = await product({ "Nav.vue": `<template><nav class="mainnavbar" /></template>` });
     const inventory = await buildLocatorInventory({
-      sources: new Map([["e2e/pages/nav.ts", `page.locator(".site-navigationbar")`]]),
+      sources: new Map([["e2e/pages/nav.ts", `page.locator(".mainnavbar")`]]),
       roots: [{ configured: "../product/src", abs }],
       cwd: "/does-not-matter",
     });
@@ -155,26 +155,26 @@ describe("buildLocatorInventory", () => {
   });
 
   test("a token glued inside a longer name is not that token", async () => {
-    const abs = await product({ "Nav.vue": `<nav class="site-navigationbar-item" />` });
+    const abs = await product({ "Nav.vue": `<nav class="mainnavbar-item" />` });
     const inventory = await buildLocatorInventory({
-      sources: new Map([["e2e/pages/nav.ts", `page.locator(".site-navigationbar")`]]),
+      sources: new Map([["e2e/pages/nav.ts", `page.locator(".mainnavbar")`]]),
       roots: [{ configured: "../product/src", abs }],
       cwd: "/does-not-matter",
     });
-    expect(inventory.missing.map((c) => c.value)).toEqual(["site-navigationbar"]);
+    expect(inventory.missing.map((c) => c.value)).toEqual(["mainnavbar"]);
   });
 
   // A project whose tests and product are one checkout points the scan at the
   // working directory, which holds the test asking the question. Finding the
   // token there would answer every candidate "found" and make the scan inert.
   test("the file a locator is written in does not count as the product having it", async () => {
-    const abs = await product({ "nav.ts": `page.locator(".site-navigationbar")` });
+    const abs = await product({ "nav.ts": `page.locator(".mainnavbar")` });
     const inventory = await buildLocatorInventory({
-      sources: new Map([["nav.ts", `page.locator(".site-navigationbar")`]]),
+      sources: new Map([["nav.ts", `page.locator(".mainnavbar")`]]),
       roots: [{ configured: ".", abs }],
       cwd: abs,
     });
-    expect(inventory.missing.map((c) => c.value)).toEqual(["site-navigationbar"]);
+    expect(inventory.missing.map((c) => c.value)).toEqual(["mainnavbar"]);
   });
 
   // A story is about the product, not part of it. Counting a class it holds as
@@ -182,15 +182,15 @@ describe("buildLocatorInventory", () => {
   // and the evidence table already refuses to cite one.
   test("a class that only a story or a test holds is still missing", async () => {
     const abs = await product({
-      "Nav.stories.tsx": `<nav className="site-navigationbar" />`,
-      "Nav.spec.tsx": `expect(page.locator(".site-navigationbar"))`,
+      "Nav.stories.tsx": `<nav className="mainnavbar" />`,
+      "Nav.spec.tsx": `expect(page.locator(".mainnavbar"))`,
     });
     const inventory = await buildLocatorInventory({
-      sources: new Map([["e2e/pages/nav.ts", `page.locator(".site-navigationbar")`]]),
+      sources: new Map([["e2e/pages/nav.ts", `page.locator(".mainnavbar")`]]),
       roots: [{ configured: "../product/src", abs }],
       cwd: "/does-not-matter",
     });
-    expect(inventory.missing.map((c) => c.value)).toEqual(["site-navigationbar"]);
+    expect(inventory.missing.map((c) => c.value)).toEqual(["mainnavbar"]);
   });
 
   // A candidate that leaves the required list is one the audit is never asked
@@ -201,13 +201,13 @@ describe("buildLocatorInventory", () => {
     for (let i = 0; i < 40; i++) files[`filler-${i}.tsx`] = "<div />";
     const abs = await product(files);
     const inventory = await buildLocatorInventory({
-      sources: new Map([["e2e/pages/nav.ts", `page.locator(".site-navigationbar")`]]),
+      sources: new Map([["e2e/pages/nav.ts", `page.locator(".mainnavbar")`]]),
       roots: [{ configured: "../product/src", abs }],
       cwd: "/does-not-matter",
       maxFiles: 2,
     });
-    expect(inventory.missing.map((c) => c.value)).toEqual(["site-navigationbar"]);
-    expect(inventory.incomplete.join(" ")).toContain("site-navigationbar");
+    expect(inventory.missing.map((c) => c.value)).toEqual(["mainnavbar"]);
+    expect(inventory.incomplete.join(" ")).toContain("mainnavbar");
   });
 
   test("the same token in two files is one candidate", async () => {

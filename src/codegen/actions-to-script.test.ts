@@ -300,11 +300,11 @@ describe("actionsToScript", () => {
         {
           action: "assert",
           assert: "element_visible",
-          locator: { by: "role", value: "combobox", name: "Category *", exact: true },
+          locator: { by: "role", value: "combobox", name: "Priority *", exact: true },
         },
       ];
       const script = actionsToScript({ actions, testName: "demo" });
-      expect(script).toContain('ab("find", "role", "combobox", "text", "--name", "Category *", "--exact")');
+      expect(script).toContain('ab("find", "role", "combobox", "text", "--name", "Priority *", "--exact")');
       expect(script).not.toContain('abAssertVisible("combobox")');
     });
 

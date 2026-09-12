@@ -18,24 +18,24 @@ afterEach(() => {
 
 describe("collapseUrlPath", () => {
   test("collapses the path, and leaves the scheme, the query and an unchanged URL alone", () => {
-    expect(collapseUrlPath("https://h//policies")).toBe("https://h/policies");
+    expect(collapseUrlPath("https://h//todos")).toBe("https://h/todos");
     expect(collapseUrlPath("file:///repo/index.html")).toBe("file:///repo/index.html");
     expect(collapseUrlPath("https://h/x?next=https://y")).toBe("https://h/x?next=https://y");
     expect(collapseUrlPath("http://localhost:3000")).toBe("http://localhost:3000");
   });
 });
 
-// Measured: the model writes `open "${BASE}/policies"`, the shell expands a base
-// that already ends in one, and the browser is handed `//policies` — which the
+// Measured: the model writes `open "${BASE}/todos"`, the shell expands a base
+// that already ends in one, and the browser is handed `//todos` — which the
 // product answers differently, so the list never renders and every assertion
 // after it reads zero.
 describe("a base URL that already ends in a slash", () => {
-  test("records as ${BASE}policies, and replays against the URL the product has", () => {
-    expect(recordThenScrub("https://h//policies", "https://h/")).toBe("${BASE}policies");
+  test("records as ${BASE}todos, and replays against the URL the product has", () => {
+    expect(recordThenScrub("https://h//todos", "https://h/")).toBe("${BASE}todos");
 
     process.env["BASE"] = "https://h/";
-    expect(actionToAbArgs({ action: "navigate", value: "${BASE}policies" }, "s1")).toEqual([
-      "--session", "s1", "open", "https://h/policies",
+    expect(actionToAbArgs({ action: "navigate", value: "${BASE}todos" }, "s1")).toEqual([
+      "--session", "s1", "open", "https://h/todos",
     ]);
   });
 
@@ -43,19 +43,19 @@ describe("a base URL that already ends in a slash", () => {
   // re-recording to fix it is the expensive thing this avoids.
   test("a route recorded before this still resolves to one slash", () => {
     process.env["BASE"] = "https://h/";
-    expect(actionToAbArgs({ action: "navigate", value: "${BASE}/policies" }, "s1")).toEqual([
-      "--session", "s1", "open", "https://h/policies",
+    expect(actionToAbArgs({ action: "navigate", value: "${BASE}/todos" }, "s1")).toEqual([
+      "--session", "s1", "open", "https://h/todos",
     ]);
   });
 });
 
 describe("a base URL with no trailing slash", () => {
   test("keeps the slash the path needs, on both sides", () => {
-    expect(recordThenScrub("https://h/policies", "https://h")).toBe("${BASE}/policies");
+    expect(recordThenScrub("https://h/todos", "https://h")).toBe("${BASE}/todos");
 
     process.env["BASE"] = "https://h";
-    expect(actionToAbArgs({ action: "navigate", value: "${BASE}/policies" }, "s1")).toEqual([
-      "--session", "s1", "open", "https://h/policies",
+    expect(actionToAbArgs({ action: "navigate", value: "${BASE}/todos" }, "s1")).toEqual([
+      "--session", "s1", "open", "https://h/todos",
     ]);
   });
 });

@@ -122,23 +122,23 @@ describe("findSourceAnchors", () => {
   // error message that mentions the button instead of the button.
   it("prefers the line that renders the string over one that merely holds it", async () => {
     const root = await makeRoot({
-      "ai/tools/showCreateButton.tsx": 'throw new Error("Add content is not available here");',
-      "features/policies/PoliciesPage.tsx": "<Button>Add content</Button>",
+      "tools/createButton.tsx": 'throw new Error("Add item is not available here");',
+      "features/todos/TodoListPage.tsx": "<Button>Add item</Button>",
     });
-    const { found } = await findSourceAnchors([text("Add content")], [root]);
-    expect(found.get("Add content")?.places).toEqual(["src/features/policies/PoliciesPage.tsx:1"]);
+    const { found } = await findSourceAnchors([text("Add item")], [root]);
+    expect(found.get("Add item")?.places).toEqual(["src/features/todos/TodoListPage.tsx:1"]);
   });
 
   // A story sits beside the component it covers, so no path segment says what
   // it is — only the file name does.
   it("drops a story or a test by its file name, wherever it sits", async () => {
     const root = await makeRoot({
-      "ui/Sidebar.stories.tsx": "<button>Category</button>",
-      "ui/Sidebar.spec.tsx": "<button>Category</button>",
-      "ui/Sidebar.tsx": "<button>Category</button>",
+      "ui/Sidebar.stories.tsx": "<button>Priority</button>",
+      "ui/Sidebar.spec.tsx": "<button>Priority</button>",
+      "ui/Sidebar.tsx": "<button>Priority</button>",
     });
-    const { found } = await findSourceAnchors([text("Category")], [root]);
-    expect(found.get("Category")?.places).toEqual(["src/ui/Sidebar.tsx:1"]);
+    const { found } = await findSourceAnchors([text("Priority")], [root]);
+    expect(found.get("Priority")?.places).toEqual(["src/ui/Sidebar.tsx:1"]);
   });
 
   it("skips node_modules, .git, dist, build, coverage, .next and dotted directories", async () => {

@@ -139,8 +139,8 @@ describe("ccqa record — a text= locator is named rather than counted", () => {
   }, 120_000);
 });
 
-// A recorder reads `combobox "Category *"` off a snapshot and writes
-// `[aria-label='Category *']`, which is valid CSS but matches nothing when
+// A recorder reads `combobox "Priority *"` off a snapshot and writes
+// `[aria-label='Priority *']`, which is valid CSS but matches nothing when
 // the name actually comes from an associated `<label>`. The `get count` poll
 // this drives therefore misses, and the validator must fall back to asking
 // the accessibility tree for a node with that exact accessible name instead
@@ -162,7 +162,7 @@ function mockAttributeNameTraceMessages(): Array<Record<string, unknown>> {
     // really asking for the element's accessible name.
     bash(
       "tu_2",
-      `CCQA_STEP=step-01 CCQA_ASSERT=element_visible agent-browser --session s1 get count "[aria-label='Category *']"`,
+      `CCQA_STEP=step-01 CCQA_ASSERT=element_visible agent-browser --session s1 get count "[aria-label='Priority *']"`,
     ),
     text("RUN_COMPLETED|passed|all steps done"),
     { type: "result", subtype: "success", result: "", is_error: false },
@@ -195,7 +195,7 @@ describe("ccqa record — an [aria-label=...] assert is asked of the accessibili
         // Every `get count` poll misses (0), forcing the fallback to the
         // accessibility snapshot below.
         CCQA_FAKE_AB_COUNT: "0",
-        CCQA_FAKE_AB_SNAPSHOT: `- combobox "Category *"`,
+        CCQA_FAKE_AB_SNAPSHOT: `- combobox "Priority *"`,
       },
       timeoutMs: 90_000,
     });
@@ -220,11 +220,11 @@ describe("ccqa record — an [aria-label=...] assert is asked of the accessibili
     // form the accessibility tree confirmed, not the CSS selector that
     // counted zero.
     expect(ir[1]!.replayUnstable).toBeFalsy();
-    expect(ir[1]!.locator).toEqual({ by: "role", value: "combobox", name: "Category *", exact: true });
+    expect(ir[1]!.locator).toEqual({ by: "role", value: "combobox", name: "Priority *", exact: true });
 
     // The promotion is reported by accessible name, not silently applied.
     expect(combined).toContain(
-      "locator rewritten to the form that replays: [aria-label='Category *'] names an element rather than an attribute — confirmed as role=combobox",
+      "locator rewritten to the form that replays: [aria-label='Priority *'] names an element rather than an attribute — confirmed as role=combobox",
     );
   }, 120_000);
 });

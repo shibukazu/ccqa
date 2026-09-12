@@ -132,7 +132,7 @@ export const RunIdConfigSchema = z
   .object({
     /** Module the expression comes from, imported by the generated test. */
     import: z.string().min(1),
-    /** The expression itself, e.g. `utilsGenerateTimestampedUniqueId()`. */
+    /** The expression itself, e.g. `makeUniqueId()`. */
     expression: z.string().min(1),
   })
   .strict();

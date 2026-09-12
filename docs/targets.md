@@ -627,8 +627,8 @@ exactly as recorded, and an *interaction* written `click "text=…"` is left
 alone too, because that one does work.
 
 The same holds for an accessible name written as an attribute. A recorder
-reads `combobox "Category *"` off a snapshot and writes
-`[aria-label='Category *']`, but a name can come from an associated `<label>`
+reads `combobox "Priority *"` off a snapshot and writes
+`[aria-label='Priority *']`, but a name can come from an associated `<label>`
 or from `aria-labelledby`, in which case there is no such attribute and the
 count is zero. An attribute selector that counted nothing is therefore asked of
 the accessibility tree the name came from, and where a node carries it the

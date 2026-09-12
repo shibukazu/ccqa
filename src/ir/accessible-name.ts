@@ -23,7 +23,7 @@ export function nameFromAttributeSelector(selector: string): string | null {
  * exactly `name`, or null.
  *
  * agent-browser prints one node per line as `<role> "<name>"`. Matched on the
- * whole name, so a tree holding both "Category" and "Category *" answers for
+ * whole name, so a tree holding both "Priority" and "Priority *" answers for
  * the one that was asked, and refused when two roles carry it.
  */
 export function roleOfAccessibleName(snapshot: string, name: string): string | null {

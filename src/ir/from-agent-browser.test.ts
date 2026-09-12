@@ -23,9 +23,9 @@ describe("parseAbActionLine", () => {
   // What the normalisation is for, and every shape it must not touch, live in
   // url-path.test.ts; this pins that the parse applies it at all.
   test("normalises a doubled slash in an opened URL", () => {
-    expect(parseAbActionLine("AB_ACTION|open|https://app.example//policies")).toEqual({
+    expect(parseAbActionLine("AB_ACTION|open|https://app.example//todos")).toEqual({
       action: "navigate",
-      value: "https://app.example/policies",
+      value: "https://app.example/todos",
     });
   });
 
@@ -276,11 +276,11 @@ describe("promoteMarkedAssert", () => {
   // accessibility tree rather than the DOM. Like `get count`, it records
   // nothing by itself; the marker is what makes it an assertion.
   test("element_visible on a role probe records the role and its name", () => {
-    expect(promoteMarkedAssert("AB_ACTION|find_text|role|combobox|Category *|exact|", "element_visible")).toEqual([
+    expect(promoteMarkedAssert("AB_ACTION|find_text|role|combobox|Priority *|exact|", "element_visible")).toEqual([
       {
         action: "assert",
         assert: "element_visible",
-        locator: { by: "role", value: "combobox", name: "Category *", exact: true },
+        locator: { by: "role", value: "combobox", name: "Priority *", exact: true },
       },
     ]);
   });
