@@ -137,7 +137,7 @@ readonly unusedLabel = this.page.getByText("Title");`;
       files: new Map([[SPEC, spec], [PAGE, page]]),
       caseText: ["Open the list", "The item appears on the list"],
       testPath: SPEC,
-      usedInProject: new Set<string>(),
+      usedInProject: new Map([[PAGE, new Set<string>()]]),
     });
     expect(rules(found)).toEqual(["unreached"]);
     expect(found[0]!.message).toContain("unusedLabel");
@@ -151,7 +151,7 @@ readonly unusedLabel = this.page.getByText("Title");`;
       files: new Map([[SPEC, spec], [PAGE, page]]),
       caseText: ["Open the list", "The item appears on the list"],
       testPath: SPEC,
-      usedInProject: new Set(["unusedLabel"]),
+      usedInProject: new Map([[PAGE, new Set(["unusedLabel"])]]),
     });
     expect(rules(found)).toEqual([]);
   });
@@ -176,6 +176,29 @@ await expect(todoList.row("Buy milk")).toBeVisible();`;
     const spec = `await expect(todoList.row("Buy milk")).toBeVisible();`;
     const said = ["Open the list", "On /lists the add button is shown"];
     expect(rules(review(spec, "", said))).not.toContain("unasserted-path");
+  });
+
+  // Property names are not unique across a suite: one real project has
+  // `deleteSuccessToast` on four unrelated page objects. A flat set of every
+  // identifier in the project answers "somebody uses that word", which is not
+  // the question — so the caller scopes the set to this file.
+  test("a name another page object also uses is still unreached here", () => {
+    const page = `export class TodoList {
+  readonly heading = this.page.getByRole("heading", { name: "The item appears on the list" });
+  readonly deleteSuccessToast = this.page.getByText("Deleted");
+}`;
+    const spec = `const todoList = new TodoList(page);
+await expect(todoList.heading).toBeVisible();`;
+    const found = reviewEmittedFiles({
+      files: new Map([[SPEC, spec], [PAGE, page]]),
+      caseText: ["Open the list", "The item appears on the list"],
+      testPath: SPEC,
+      // Scoped to this file: whatever another page object calls its own toast
+      // never lands here. The class itself is reached — the spec constructs it.
+      usedInProject: new Map([[PAGE, new Set(["TodoList"])]]),
+    });
+    expect(rules(found)).toEqual(["unreached"]);
+    expect(found[0]!.message).toContain("deleteSuccessToast");
   });
 
   test("a describe repeating its only test", () => {

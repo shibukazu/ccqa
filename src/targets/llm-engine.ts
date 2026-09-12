@@ -694,7 +694,11 @@ async function reviewOfEmitted(
   writeRoots: readonly string[],
 ): Promise<{ exitCode: number; output: string; command: string } | null> {
   const findings = reviewEmittedFiles({
-    usedInProject: await identifiersInProject(ctx, writeRoots, new Set(state.keys())),
+    usedInProject: await identifiersInProject(
+      ctx,
+      writeRoots,
+      new Map([...state].map(([rel, f]) => [rel, f.contents])),
+    ),
     files: new Map([...state].map(([rel, f]) => [rel, f.contents])),
     caseText: [
       ...[...ctx.steps, ...ctx.cleanup].flatMap((s) =>
@@ -778,14 +782,23 @@ export function uncheckedSteps(
 async function identifiersInProject(
   ctx: GenerateContext,
   writeRoots: readonly string[],
-  emitted: ReadonlySet<string>,
-): Promise<Set<string>> {
+  emitted: ReadonlyMap<string, string>,
+): Promise<Map<string, Set<string>>> {
+  // What each emitted file calls itself. A property of a class is only
+  // reachable from code that names the class, so a file that never mentions it
+  // cannot be the one using the property — however common the property's name.
+  const owners = new Map<string, string[]>();
+  for (const [rel, source] of emitted) {
+    const names = [...source.matchAll(/\bexport\s+(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_]+)/g)]
+      .map((m) => m[1]!);
+    owners.set(rel, names);
+  }
   const roots = new Set(
     [...writeRoots, ...ctx.resources.map((r) => ("path" in r ? r.path : "")), dirname(ctx.testPath)]
       .filter((r) => r.length > 0)
       .map((r) => resolve(ctx.cwd, r)),
   );
-  const found = new Set<string>();
+  const found = new Map<string, Set<string>>([...emitted.keys()].map((rel) => [rel, new Set<string>()]));
   const seen = new Set<string>();
   const walk = async (dir: string): Promise<void> => {
     if (seen.has(dir)) return;
@@ -800,7 +813,14 @@ async function identifiersInProject(
       if (!/\.[cm]?tsx?$/.test(entry.name)) continue;
       if (emitted.has(relative(ctx.cwd, abs))) continue;
       const source = await readFile(abs, "utf8").catch(() => "");
-      for (const m of source.matchAll(/[A-Za-z_$][\w$]*/g)) found.add(m[0]);
+      const words = new Set([...source.matchAll(/[A-Za-z_$][\w$]*/g)].map((m) => m[0]));
+      for (const [rel, classNames] of owners) {
+        // Nameless (no exported class) falls back to every file: there is no
+        // owner to scope by, and over-counting only makes the rule quieter.
+        if (classNames.length > 0 && !classNames.some((c) => words.has(c))) continue;
+        const into = found.get(rel)!;
+        for (const w of words) into.add(w);
+      }
     }
   };
   await Promise.all([...roots].map(walk));

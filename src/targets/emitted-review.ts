@@ -45,15 +45,20 @@ export interface EmittedReviewInput {
   /** The case's own generated test, by the path the project configured for it. */
   testPath: string;
   /**
-   * Every identifier the project's own test assets mention, outside the files
-   * this generation wrote. Absent when the caller did not look.
+   * Per emitted file, the identifiers the project's own test assets mention —
+   * counting only the files that could be talking about *this* one. Absent
+   * when the caller did not look.
    *
    * It answers the one question that makes "nothing uses this" safe to say. A
    * page object exists to be shared, so a definition this generation does not
-   * reach may still be another case's — unless nobody's. Then it is dead, and
-   * it was ccqa that wrote the file it sits in.
+   * reach may still be another case's — unless nobody's.
+   *
+   * Scoped per file because property names are not unique across a suite:
+   * `deleteSuccessToast` sits on four unrelated page objects in one real
+   * project, so a flat set of every identifier answers "somebody uses that
+   * word" and never "somebody reaches this property".
    */
-  usedInProject?: ReadonlySet<string>;
+  usedInProject?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
 export function reviewEmittedFiles(input: EmittedReviewInput): EmittedFinding[] {
@@ -127,7 +132,7 @@ function unreached(
   source: string,
   input: EmittedReviewInput,
 ): EmittedFinding[] {
-  const elsewhere = input.usedInProject;
+  const elsewhere = input.usedInProject?.get(file);
   if (elsewhere === undefined) return [];
   // Its own file included: a property one method of the same page object
   // reaches is used. The declaration itself is discounted per name below.
