@@ -9,11 +9,12 @@ import {
   type ExpandedStep,
 } from "../../spec/expand.ts";
 import type { StepMarker } from "../../codegen/actions-to-script.ts";
+import { assertionsByStep } from "../../evidence/table.ts";
 import type { RecordedAction } from "../../types.ts";
 import { playwrightTaskInstructions } from "../../prompts/llm-gen.ts";
 import { buildStepMarkers, lastActionIndexPerStep } from "../agent-browser/generate.ts";
 import { exportedNames } from "../support-files.ts";
-import { finalizePreparedFiles, generateWithLlmEngine } from "../llm-engine.ts";
+import { finalizePreparedFiles, generateWithLlmEngine, type Reading } from "../llm-engine.ts";
 import {
   emitPlaywrightDraft,
   headerPreserveRule,
@@ -24,14 +25,15 @@ import {
   STEP_EVIDENCE_BEFORE,
   stepEvidenceCall,
   judgePreserveRule,
+  stepCommentPreserveRule,
   stepEvidencePreserveRule,
 } from "./emit-mechanical.ts";
 import { acquirePlaywrightBrowser } from "./browser-server.ts";
 import { runCommandRunner } from "../run-command-runner.ts";
 import type { GenerateContext, GenerateResult, TargetPlugin } from "../types.ts";
 import * as log from "../../cli/logger.ts";
-import { reviewGeneratedTest } from "../verifies-spec.ts";
 import { useJapanesePrompts } from "../../prompts/language.ts";
+import { reviewGeneratedTest } from "../verifies-spec.ts";
 
 const PLAYWRIGHT_TARGET = "playwright";
 
@@ -147,6 +149,7 @@ export async function compileRecording(
       : {}),
     ...(ctx.targetConfig.runId ? { runId: ctx.targetConfig.runId } : {}),
     stepEvidence: captures,
+    allowExpectInCleanup: ctx.targetConfig.allowExpectInCleanup,
     japanese: useJapanesePrompts(ctx.language),
   });
 
@@ -160,6 +163,7 @@ export async function compileRecording(
   // What the rewrite may not drop. Only what the draft actually carries: a
   // rule about something that is not there reads as an instruction to add it.
   const invariants = [
+    stepMarkers.length > 0 || cleanupMarkers.length > 0 ? stepCommentPreserveRule() : "",
     stepMarkers.length > 0 && captures ? stepEvidencePreserveRule() : "",
     judgements.length > 0 ? judgePreserveRule() : "",
     header || titleSuffix ? headerPreserveRule(header, titleSuffix) : "",
@@ -168,7 +172,8 @@ export async function compileRecording(
     .join("\n\n");
 
   const injected: InjectedCallSpec = {
-    markers: captures ? stepMarkers : [],
+    markers: [...stepMarkers, ...cleanupMarkers],
+    stepEvidence: captures,
     judgements,
     header,
     titleSuffix,
@@ -182,6 +187,31 @@ export async function compileRecording(
     return gaps.length === 0 ? null : gaps.join("; ");
   };
 
+  // The loop's own bar is "does it go green", and a rewrite that weakens an
+  // assertion clears it as easily as one that keeps it. This is the pass that
+  // asks the other question, and it is handed the page objects too: an
+  // assertion is only as strong as the locator it names, and the locator is
+  // not in the test file.
+  const reading: Reading = (files) =>
+    reviewGeneratedTest({
+      source: files.filter((f) => f.kind === "test").map((f) => f.contents).join("\n\n"),
+      support: files
+        .filter((f) => f.kind === "support")
+        .map((f) => ({ path: f.path, source: f.contents })),
+      steps: expanded,
+      ...(ctx.expectations.length > 0 ? { expectations: ctx.expectations } : {}),
+      // The cleanup joins the reading only when the case says what its undo
+      // must make true, and only when this project lets the undo check it. A
+      // reading asked about assertions the config forbids would demand them
+      // every round, and every round would be spent refusing.
+      ...(ctx.cleanupExpectations.length > 0 && ctx.targetConfig.allowExpectInCleanup
+        ? { cleanup }
+        : {}),
+      language: ctx.language,
+      ...(ctx.model ? { model: ctx.model } : {}),
+      cwd: ctx.cwd,
+    });
+
   const result =
     ctx.resources.length > 0
       ? await generateWithLlmEngine({
@@ -192,6 +222,7 @@ export async function compileRecording(
           draft: { path: ctx.testPath, contents: draft },
           ...(invariants ? { draftInvariant: invariants } : {}),
           validateFile,
+          reading,
         })
       : await finalizePreparedFiles({
           ctx,
@@ -200,6 +231,7 @@ export async function compileRecording(
           summary: `test compiled from ${actions.length} recorded action(s)`,
           warnings: [],
           validateFile,
+          reading,
         });
 
   const written = (await readCorpus(result, "test")).join("\n");
@@ -209,25 +241,14 @@ export async function compileRecording(
   // just written, and a page object shared with another case is not a defect
   // the report and the hub should be told about.
   for (const w of await unusedSupportExports(result, written, ctx.cwd)) log.warn(w);
-  // The loop above only ever asked "does it go green". A rewrite that weakens
-  // an assertion clears that bar too, so green is not evidence that the case
-  // was checked. This is the only pass that looks.
-  const review = await reviewGeneratedTest({
-    result,
-    steps: expanded,
-    ...(ctx.expectations.length > 0 ? { expectations: ctx.expectations } : {}),
-    // The cleanup joins the review only when the case says what its undo must
-    // make true; one that states nothing is not unchecked for saying nothing.
-    ...(ctx.cleanupExpectations.length > 0 ? { cleanup } : {}),
-    language: ctx.language,
-    ...(ctx.model ? { model: ctx.model } : {}),
-    cwd: ctx.cwd,
-  });
-  for (const w of review.warnings) log.warn(w);
-  await saveSpecReview(ctx.ref, review);
+  // Obtained inside the verification loop, where a finding can still spend a
+  // fix round instead of only reaching a human. Kept here because the record
+  // of what the case was checked against belongs to the case, not to a loop.
+  const review = result.review;
+  await saveSpecReview(ctx.ref, review ?? { findings: null, complete: false, warnings: [] });
   return {
     ...result,
-    warnings: [...result.warnings, ...judgeWarnings, ...missing, ...review.warnings],
+    warnings: [...result.warnings, ...judgeWarnings, ...missing, ...(review?.warnings ?? [])],
   };
 }
 
@@ -281,7 +302,10 @@ async function unusedSupportExports(
 
 /** What the emitter injected and the written test must still carry. */
 export interface InjectedCallSpec {
+  /** Every step the draft opened with a comment — cleanup steps included. */
   markers: StepMarker[];
+  /** False when the project turned step evidence off: then no calls were injected, only comments. */
+  stepEvidence: boolean;
   judgements: Judgement[];
   header: string;
   titleSuffix: string;
@@ -298,18 +322,39 @@ export interface InjectedCallSpec {
  */
 export function injectedCallGaps(
   corpus: string,
-  { markers, judgements, header, titleSuffix }: InjectedCallSpec,
+  { markers, stepEvidence, judgements, header, titleSuffix }: InjectedCallSpec,
 ): string[] {
   const warnings: string[] = [];
   const stamped = { header, titleSuffix };
-  for (const m of markers) {
-    const hasBefore = stepEvidenceCall(STEP_EVIDENCE_BEFORE, m).pattern.test(corpus);
-    const hasAfter = stepEvidenceCall(STEP_EVIDENCE_AFTER, m).pattern.test(corpus);
-    if (!hasBefore || !hasAfter) {
-      warnings.push(
-        `step ${m.stepId}: generated test is missing its ${STEP_EVIDENCE_BEFORE}/${STEP_EVIDENCE_AFTER} ` +
-          `call(s) — that step will have no report screenshots. A rewrite pass must not drop them.`,
-      );
+  // Asked of the function the comment exists for: `assertionsByStep` is what
+  // attributes an assertion to a step, and a step it cannot see here is a step
+  // it will report as deciding nothing. Re-deriving the answer would let the
+  // gate pass a comment the attribution does not recognise.
+  const commented = assertionsByStep(corpus);
+  // The comment is not decoration: the evidence table and the review of the
+  // generated test read it back to say which assertions belong to which step.
+  // A rewrite that reshapes it leaves both reporting every step as deciding
+  // nothing, and the real finding is then buried in the false ones. A judge
+  // step has a comment but no evidence bracket, so it is checked here too —
+  // its claim is asserted, and a table saying otherwise understates coverage.
+  for (const stepId of [...markers.map((m) => m.stepId), ...judgements.map((j) => j.step.id)]) {
+    if (commented.has(stepId)) continue;
+    warnings.push(
+      `step ${stepId}: the generated test no longer opens that step with the comment the draft ` +
+        `wrote. The evidence table and the spec review read it back to attribute assertions, so a ` +
+        `reshaped one makes both report the step as deciding nothing. Keep the line unchanged.`,
+    );
+  }
+  if (stepEvidence) {
+    for (const m of markers) {
+      const hasBefore = stepEvidenceCall(STEP_EVIDENCE_BEFORE, m).pattern.test(corpus);
+      const hasAfter = stepEvidenceCall(STEP_EVIDENCE_AFTER, m).pattern.test(corpus);
+      if (!hasBefore || !hasAfter) {
+        warnings.push(
+          `step ${m.stepId}: generated test is missing its ${STEP_EVIDENCE_BEFORE}/${STEP_EVIDENCE_AFTER} ` +
+            `call(s) — that step will have no report screenshots. A rewrite pass must not drop them.`,
+        );
+      }
     }
   }
   // Neither of these breaks a run, which is why nothing else would notice: a

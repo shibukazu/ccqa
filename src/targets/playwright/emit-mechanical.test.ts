@@ -567,6 +567,93 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
     expect(check).toBeGreaterThan(assign);
   });
 
+  // The shape that actually lost data: the step that submits also checks the
+  // result. Put the flag after that check and a run whose creation succeeded
+  // but whose check failed skips its own undo — which is the run the undo is
+  // for. The checking is not part of the act.
+  it("marks it created before the step's own checks, not after them", () => {
+    const script = emitPlaywrightDraft({
+      actions: [
+        ...recorded,
+        { action: "click", locator: { by: "role", value: "button", name: "Add" } },
+        { action: "assert", assert: "text_visible", value: "Saved" },
+        { action: "assert", assert: "text_visible", value: "item-${CCQA_RUN_ID}" },
+      ],
+      testName: "Add a todo item",
+      stepMarkers: [
+        { actionIndex: 0, stepId: "step-01", source: "spec" },
+        { actionIndex: 2, stepId: "step-02", source: "spec" },
+      ],
+      stepEvidence: false,
+      runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
+      cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
+    });
+    const body = script.split("\n").map((l) => l.trim());
+    const submit = body.findIndex((l) => l.includes(`name: "Add"`));
+    const assign = body.indexOf("createdSomething = true;");
+    const firstCheck = body.findIndex((l) => l.startsWith("await expect("));
+    expect(assign).toBe(submit + 1);
+    expect(firstCheck).toBeGreaterThan(assign);
+  });
+
+  // Both shapes exist in real suites: of 46 hand-written teardowns in one,
+  // 44 assert nothing and one checks that the undo took. Which is right is
+  // the project's call, so it states it and ccqa emits what it asked for.
+  it("emits the undo's actions only when the project forbids expect there", () => {
+    const cleanup = {
+      actions: [
+        { action: "click", locator: { by: "role", value: "button", name: "Delete" } },
+        { action: "assert", assert: "text_visible", value: "Deleted" },
+      ] as RecordedAction[],
+    };
+    const common = {
+      actions: [...recorded],
+      testName: "Add a todo item",
+      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
+      stepEvidence: false,
+      cleanup,
+    };
+    expect(emitPlaywrightDraft(common)).toContain("Deleted");
+    const without = emitPlaywrightDraft({ ...common, allowExpectInCleanup: false });
+    expect(without).not.toContain("Deleted");
+    // The undo itself still runs — only its checking is gone.
+    expect(without).toContain(`name: "Delete"`);
+  });
+
+  // The shape a recording produced: the agent typed a value, saw it was wrong,
+  // and typed again — and the first value was another case's name, which the
+  // generated test then carried. `fill` replaces, so nothing could see it.
+  it("drops a fill the next action overwrites", () => {
+    const field = { by: "label", value: "Title" } as const;
+    const script = emitPlaywrightDraft({
+      actions: [
+        { action: "fill", locator: field, value: "wrong", stepId: "step-01" },
+        { action: "fill", locator: field, value: "right", stepId: "step-01" },
+      ] as RecordedAction[],
+      testName: "Add a todo item",
+      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
+      stepEvidence: false,
+    });
+    expect(script).not.toContain("wrong");
+    expect(script).toContain("right");
+  });
+
+  it("keeps both when something between them could see the first", () => {
+    const field = { by: "label", value: "Title" } as const;
+    const script = emitPlaywrightDraft({
+      actions: [
+        { action: "fill", locator: field, value: "first", stepId: "step-01" },
+        { action: "assert", assert: "text_visible", value: "first", stepId: "step-01" },
+        { action: "fill", locator: field, value: "second", stepId: "step-01" },
+      ] as RecordedAction[],
+      testName: "Add a todo item",
+      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
+      stepEvidence: false,
+    });
+    expect(script).toContain("first");
+    expect(script).toContain("second");
+  });
+
   it("drops the capture calls when the target captures no step evidence", () => {
     const script = emitPlaywrightDraft({
       actions: [...recorded],

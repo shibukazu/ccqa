@@ -42,18 +42,190 @@ export interface EmittedReviewInput {
    * asked for.
    */
   caseText: readonly string[];
+  /** The case's own generated test, by the path the project configured for it. */
+  testPath: string;
+  /**
+   * Every identifier the project's own test assets mention, outside the files
+   * this generation wrote. Absent when the caller did not look.
+   *
+   * It answers the one question that makes "nothing uses this" safe to say. A
+   * page object exists to be shared, so a definition this generation does not
+   * reach may still be another case's — unless nobody's. Then it is dead, and
+   * it was ccqa that wrote the file it sits in.
+   */
+  usedInProject?: ReadonlySet<string>;
 }
 
 export function reviewEmittedFiles(input: EmittedReviewInput): EmittedFinding[] {
   const locators = collectLocators(input.files);
   const said = input.caseText.join("\n");
-  return [...input.files].flatMap(([file, source]) => [
-    ...toolIdentifiers(file, source),
-    ...containerOfPageText(file, source),
-    ...unjustifiedFirst(file, source),
-    ...describeEcho(file, source),
-    ...unaskedAssertions(file, source, locators, said),
-  ]);
+  return [
+    ...decidesNothing(input),
+    ...unassertedPath(input),
+    ...[...input.files].flatMap(([file, source]) => [
+      ...toolIdentifiers(file, source),
+      ...containerOfPageText(file, source),
+      ...unjustifiedFirst(file, source),
+      ...describeEcho(file, source),
+      ...unaskedAssertions(file, source, locators, said),
+      ...weakerTwin(file, source),
+      ...unreached(file, source, input),
+    ]),
+  ];
+}
+
+/**
+ * A path with a placeholder segment in it — `/orders/{orderId}`. Writing one
+ * in prose is a statement about the address, not about the page's contents:
+ * there is no other reason to name the part that changes per run.
+ */
+const PLACEHOLDER_PATH = /\/[A-Za-z0-9_\-]+(?:\/[A-Za-z0-9_\-]+)*\/\{[A-Za-z0-9_]+\}/;
+
+/**
+ * A case that says where the run must end up, and a test that never looks at
+ * the address.
+ *
+ * The row being on screen is not the same claim as being on the screen that
+ * shows it — a product that rendered the row without navigating passes, and
+ * that is the failure the expectation was written to catch. Scoped to
+ * placeholder paths because those are unambiguous; a path mentioned as scenery
+ * ("on /settings, the button is shown") is not a claim about the address.
+ *
+ * Calibrated against the 20 case definitions of a real project: three name a
+ * placeholder path in their expectations, two of those already assert on the
+ * URL, and the one that does not is the defect this was written for.
+ */
+function unassertedPath(input: EmittedReviewInput): EmittedFinding[] {
+  const source = input.files.get(input.testPath);
+  if (source === undefined) return [];
+  const stated = input.caseText.find((text) => PLACEHOLDER_PATH.test(text));
+  if (stated === undefined || /\btoHaveURL\b/.test(source)) return [];
+  return [{
+    file: input.testPath,
+    line: 1,
+    rule: "unasserted-path",
+    message:
+      `the case says where the run ends up — "${PLACEHOLDER_PATH.exec(stated)?.[0]}" — and nothing ` +
+      "here looks at the address. What the screen shows can be right while the screen is wrong. " +
+      "Assert the URL where the case says it changes",
+  }];
+}
+
+/** `readonly name =`, `name(...): Locator {`, and `export … name`. */
+const DECLARED = /(?:readonly\s+([A-Za-z0-9_]+)\s*=|\b([A-Za-z0-9_]+)\([^)]*\)\s*:\s*Locator\b|export\s+(?:async\s+)?(?:const|let|function|class)\s+([A-Za-z0-9_]+))/g;
+
+/**
+ * A definition in a file this generation wrote that nothing reaches — not the
+ * test it generated, and not the project's own test assets either.
+ *
+ * Both halves are needed. Without the first it is not this generation's
+ * business; without the second every shared definition another case uses would
+ * be reported. Together they say only what is true: nobody reaches this.
+ */
+function unreached(
+  file: string,
+  source: string,
+  input: EmittedReviewInput,
+): EmittedFinding[] {
+  const elsewhere = input.usedInProject;
+  if (elsewhere === undefined) return [];
+  // Its own file included: a property one method of the same page object
+  // reaches is used. The declaration itself is discounted per name below.
+  const corpus = [...input.files.values()].join("\n");
+  return lines(source).flatMap((text, i) => {
+    const declared = DECLARED.exec(text);
+    DECLARED.lastIndex = 0;
+    if (!declared) return [];
+    const name = named(declared);
+    if (!name || elsewhere.has(name)) return [];
+    const uses = corpus.split(new RegExp(`\\b${name}\\b`)).length - 1;
+    if (uses > 1) return [];
+    return [{
+      file,
+      line: i + 1,
+      rule: "unreached",
+      message: `\`${name}\` is defined here and nothing reaches it — not this case's test, and nothing else in the project. Remove it`,
+    }];
+  });
+}
+
+const named = (m: RegExpMatchArray): string => m[1] ?? m[2] ?? m[3] ?? "";
+
+/**
+ * Two names for one visible string, where one of them is strictly weaker: a
+ * role and its accessible name next to a bare page-wide text match that then
+ * picks a position out of the matches.
+ *
+ * The weak one adds no check — anything it could catch, the other catches
+ * first — and it is satisfied by whichever element the page happens to order
+ * first, which on a real page was the navigation entry rather than the heading
+ * the case names. Both assertions then read as two checks and are one.
+ *
+ * Calibrated against 214 hand-written page objects in a real suite: the shape
+ * appears once, in a file a generation wrote. People do not write it.
+ */
+function weakerTwin(file: string, source: string): EmittedFinding[] {
+  const byString = new Map<string, { name: string; line: number; weak: boolean }[]>();
+  lines(source).forEach((text, i) => {
+    const declared = /(?:readonly|const)\s+([A-Za-z0-9_]+)\s*=\s*(.+?);\s*$/.exec(text);
+    if (!declared) return;
+    const [, name, expression] = declared as unknown as [string, string, string];
+    const weak = /\.(?:first|last|nth)\(/.test(expression) && expression.includes("getByText(");
+    const strong = expression.includes("getByRole(") && !/\.(?:first|last|nth)\(/.test(expression);
+    if (!weak && !strong) return;
+    for (const m of expression.matchAll(VISIBLE_STRING)) {
+      const value = m[1] ?? m[2];
+      if (!value || value.includes("${")) continue;
+      const seen = byString.get(value) ?? [];
+      seen.push({ name, line: i + 1, weak });
+      byString.set(value, seen);
+    }
+  });
+  const findings: EmittedFinding[] = [];
+  for (const [value, defs] of byString) {
+    const weak = defs.filter((d) => d.weak);
+    if (weak.length === 0 || defs.every((d) => d.weak)) continue;
+    const strong = defs.find((d) => !d.weak)!;
+    for (const d of weak) {
+      findings.push({
+        file,
+        line: d.line,
+        rule: "weaker-twin",
+        message:
+          `\`${d.name}\` and \`${strong.name}\` are both "${value}", and this one searches the ` +
+          `whole page and takes a position out of the matches. It can only be satisfied by ` +
+          `something \`${strong.name}\` already covers, or by the wrong element. Assert one of them`,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * A test with no assertion anywhere in it, for a case that states something.
+ *
+ * The per-step version of this question belongs to the reading, which knows
+ * that "open the list" claims nothing and expects no assertion under it. This
+ * one needs no judgement: whatever the case says, a file that decides nothing
+ * at all does not check it. It is the floor under a case whose expectations
+ * are stated for the flow rather than per step — the shape a markdown case has
+ * — where the reading is otherwise the only thing looking.
+ *
+ * Calibrated like the rest: of 546 hand-written specs in a real suite, none
+ * has zero assertions.
+ */
+function decidesNothing(input: EmittedReviewInput): EmittedFinding[] {
+  const source = input.files.get(input.testPath);
+  if (source === undefined || input.caseText.join("").trim().length === 0) return [];
+  if (/\bexpect\(|\bjudgeByLlm\b/.test(source)) return [];
+  return [{
+    file: input.testPath,
+    line: 1,
+    rule: "decides-nothing",
+    message:
+      "this test contains no assertion at all, so it passes whatever the product does. " +
+      "Decide what the case says must be true",
+  }];
 }
 
 const lines = (source: string): string[] => source.split("\n");

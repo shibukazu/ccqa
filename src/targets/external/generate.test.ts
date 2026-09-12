@@ -209,7 +209,11 @@ test.describe("Adding an item puts it on the list", () => {
 
   test.afterEach(
     if (!createdSomething) return;
+
+    // cleanup 1: Delete the created item
+    await ccqaStepBefore(page, "cleanup-01", "cleanup");
     await page.getByRole("button", { name: "Delete" }).click();
+    await ccqaStepAfter(page, "cleanup-01", "cleanup");
   });
 });
 `;

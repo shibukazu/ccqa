@@ -150,6 +150,11 @@ export const evidenceCommand = addLanguageOption(
         screenshots: await stepScreenshots(cwd, opts.reportDir, testCase, dirname(out)),
         labels: config.evidence.labels,
         language: resolveLanguage(opts.language, config.language),
+        // Only when the project forbade them: otherwise they were asserted,
+        // and listing them as unchecked would be the table's own lie.
+        ...(resolved.targetConfig.allowExpectInCleanup
+          ? {}
+          : { cleanupUnchecked: testCase.cleanupExpectations }),
         ...(review ? { review } : {}),
         ...(anchors ? { anchors } : {}),
       });

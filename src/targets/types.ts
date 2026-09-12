@@ -9,6 +9,7 @@ import type { CaseRef, SpecRef } from "../store/index.ts";
 import type { GroupLookup } from "../run/serial-groups.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import type { ReportCoverage, ReportSpecResult } from "../report/schema.ts";
+import type { SpecCoverageReview } from "./verifies-spec.ts";
 
 /**
  * Target plugin abstraction: a target turns a spec into runnable test code
@@ -256,6 +257,11 @@ export interface GenerateResult {
    * non-zero exit. Targets without a verification step return true.
    */
   passed: boolean;
+  /**
+   * What the reading of the finished files found — whether the assertions
+   * decide what the case claims. Absent when the target never asked.
+   */
+  review?: SpecCoverageReview;
 }
 
 /** Options the run pipeline hands to a target's runner. */

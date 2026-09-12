@@ -25,6 +25,17 @@ const TEST_CASE: TestCase = {
   },
 };
 
+/**
+ * The same case with step-01 stating an outcome. A markdown case states its
+ * expectations for the flow, leaving every step's own `expected` empty; a
+ * `spec.yaml` case writes them per step, and only then is a step with no
+ * assertion under it failing to decide anything.
+ */
+const CLAIMING_CASE: TestCase = {
+  ...TEST_CASE,
+  steps: [{ ...TEST_CASE.steps[0]!, expected: "The todo list is open" }, TEST_CASE.steps[1]!],
+};
+
 const GENERATED = `import { test, expect } from "@playwright/test";
 
 test("Adding an item puts it on the list @high", async ({ page }) => {
@@ -82,8 +93,24 @@ describe("renderEvidence", () => {
   // **nothing** for step-01. It is derived from the same rows now, so the two
   // cannot disagree.
   it("summarises the table it just wrote, not a review that saw another file", () => {
-    expect(markdown).toContain("step-01: nothing in the generated test is visibly deciding");
-    expect(markdown).not.toContain("Every step's outcome is decided");
+    const claiming = renderEvidence({
+      testCase: CLAIMING_CASE,
+      recording: { actions: [] },
+      test: { path: "specs/todo/add_item.spec.ts", source: GENERATED },
+      screenshots: new Map(),
+      review: [],
+    });
+    expect(claiming).toContain("step-01: nothing in the generated test is visibly deciding");
+    expect(claiming).not.toContain("Every step's outcome is decided");
+  });
+
+  // "Open the todo list" claims nothing on its own, and a hand-written test
+  // asserts nothing after it either. The row still shows the hole; calling it
+  // a finding would report one per action step and bury the real ones.
+  it("shows a step's empty result without calling it undecided when it claims nothing", () => {
+    const row = markdown.split("\n").find((l) => l.startsWith("| step-01 |"))!;
+    expect(row).toContain("**nothing**");
+    expect(markdown).not.toContain("step-01: nothing in the generated test is visibly deciding");
   });
 
   it("says every step is decided only when the table shows one for each", () => {
@@ -279,6 +306,22 @@ describe("renderEvidence — what the table folds away", () => {
     expect(markdown).toContain("<details><summary>1 not confirmed in the product's source</summary>`Notes` — ambiguous");
   });
 
+  // The project may forbid its undo from asserting. What the case still says
+  // about that undo must not vanish with the assertions, or the table implies
+  // it was checked.
+  it("names the cleanup expectations nothing checks, when the project forbade checking them", () => {
+    const markdown = renderEvidence({
+      ...base,
+      cleanupUnchecked: ["The created item is gone from the list"],
+    });
+    expect(markdown).toContain("allowExpectInCleanup");
+    expect(markdown).toContain("The created item is gone from the list");
+  });
+
+  it("says nothing of the sort when the undo was allowed to check", () => {
+    expect(renderEvidence(base)).not.toContain("allowExpectInCleanup");
+  });
+
   it("prints the headings the project asked for", () => {
     const markdown = renderEvidence({
       ...base,
@@ -291,7 +334,7 @@ describe("renderEvidence — what the table folds away", () => {
   // What the table concludes is ccqa's to word: a project that could rewrite
   // it could make a step nothing checks read as one that passed.
   it("translates its own verdicts, which the project cannot reword", () => {
-    const markdown = renderEvidence({ ...base, language: "ja" });
+    const markdown = renderEvidence({ ...base, testCase: CLAIMING_CASE, language: "ja" });
     expect(markdown).toContain("**判定なし**");
     expect(markdown).toContain("| 手順 | テストケースの記述 |");
     expect(markdown).toContain("この手順を判定しているものが、生成されたテストに見当たりません");

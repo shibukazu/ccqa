@@ -42,6 +42,8 @@ export interface PlaywrightEmitInput {
    * that failed before it created anything cleans up nothing.
    */
   cleanup?: { actions: RecordedAction[]; stepMarkers?: StepMarker[] };
+  /** False: the undo is emitted as actions only (config `allowExpectInCleanup`). */
+  allowExpectInCleanup?: boolean;
   /**
    * How the project names the unique values a run creates. Given, the recorded
    * `${CCQA_RUN_ID}` is emitted as a call to it, evaluated once per attempt —
@@ -76,6 +78,30 @@ const RUN_ID_READ = `process.env.${RUN_ID_ENV} ?? ""`;
 /** Actions that put a value into the page, and those that submit it. */
 const TYPING_ACTIONS = new Set<RecordedAction["action"]>(["fill", "type", "select"]);
 const SUBMITTING_ACTIONS = new Set<RecordedAction["action"]>(["click", "dblclick", "press"]);
+/**
+ * A fill the very next action overwrites.
+ *
+ * `fill` replaces a field's contents, so two in a row on the same element
+ * leave only the second — the first was never on screen for anything to
+ * observe. It happens when the recording agent types a value, sees it is
+ * wrong, and types again: both keystrokes really happened, which is why the
+ * recording keeps them, but only one of them was ever state. Answered here
+ * rather than at record time so a case already recorded need not be recorded
+ * again, and so the route keeps the honest account of what was typed.
+ *
+ * Adjacent only, and never across a step boundary: anything in between makes
+ * the first value observable, and then it is part of what the case does.
+ * `type` appends rather than replaces, so it is left alone.
+ */
+function overwrittenByNext(a: RecordedAction, b: RecordedAction | undefined): boolean {
+  if (!b || a.action !== "fill" || b.action !== "fill") return false;
+  if ((a.stepId ?? "") !== (b.stepId ?? "")) return false;
+  if (a.secret || b.secret) return false;
+  return JSON.stringify([a.locator, a.index]) === JSON.stringify([b.locator, b.index]);
+}
+
+/** Observation only: these decide what happened, they do not make it happen. */
+const OBSERVING_ACTIONS = new Set<RecordedAction["action"]>(["assert", "snapshot", "wait"]);
 
 /**
  * The action after which the route has created the thing the cleanup undoes.
@@ -86,6 +112,12 @@ const SUBMITTING_ACTIONS = new Set<RecordedAction["action"]>(["click", "dblclick
  * step does is one act. A route that types the value and never submits it, or
  * never types it at all, has no such moment, so the last action stands in:
  * assigning at the end is still later than the creation, and never earlier.
+ *
+ * The step's own checks are not part of the act. The flag answers whether the
+ * route created the thing, and that is settled when the acting stops, not when
+ * the checking passes — put it after an assertion and a run whose creation
+ * succeeded but whose check failed skips its own undo, leaving what it made in
+ * the environment. That is the run the undo exists for.
  */
 export function creationActionIndex(
   actions: readonly RecordedAction[],
@@ -99,7 +131,9 @@ export function creationActionIndex(
   const submitted = actions.findIndex((a, i) => i > typed && SUBMITTING_ACTIONS.has(a.action));
   if (submitted === -1) return last;
   const next = markers.find((m) => m.actionIndex > submitted);
-  return next ? next.actionIndex - 1 : last;
+  let end = next ? next.actionIndex - 1 : last;
+  while (end > submitted && OBSERVING_ACTIONS.has(actions[end]!.action)) end -= 1;
+  return end;
 }
 
 /** A claim and the action index it is asserted after (-1: before any action). */
@@ -190,6 +224,21 @@ export function headerPreserveRule(header: string, titleSuffix: string): string 
 }
 
 /**
+ * Told to the rewrite, because the alternative failure is silent in the worst
+ * way: nothing breaks at run time, and the file's assertions simply stop
+ * belonging to any step. A rewrite that reshapes the line learns that only by
+ * rejection, which costs a whole round.
+ */
+export function stepCommentPreserveRule(): string {
+  return (
+    "**Keep each step's opening comment exactly as the draft wrote it.** Those lines are how the " +
+    "evidence table and the review of this test say which assertions belong to which step. A " +
+    "reshaped one parses as no step at all, and every step then reads as deciding nothing. Keep " +
+    "the wording, the numbering and the punctuation; add your own comments on their own lines."
+  );
+}
+
+/**
  * Told to the rewrite, because the alternative failure is silent: a claim
  * turned into a text match passes on the wording of one run, which is the
  * assertion the judge exists to replace.
@@ -240,6 +289,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   for (let i = 0; i < actions.length; i++) {
     openMarker = openStep(lines, markerByIndex.get(i), openMarker, japanese, captures);
     const action = actions[i]!;
+    if (overwrittenByNext(action, actions[i + 1])) continue;
     const line = actionToLine(action, japanese);
     if (line !== null && line !== prevLine) {
       if (action.replayUnstable) {
@@ -257,7 +307,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   // to the browser from outside (see the target's `browserCoverage`), so the
   // generated test carries no measurement code an LLM rewrite could drop.
 
-  const cleanupLines = emitCleanup(input.cleanup, captures, japanese);
+  const cleanupLines = emitCleanup(input.cleanup, captures, japanese, input.allowExpectInCleanup ?? true);
   const title = `${testName}${input.titleSuffix ?? ""}`;
   // Only when the route actually created something unique: a declared value
   // nothing reads is an unused variable, and the project's own type check or
@@ -353,6 +403,7 @@ function emitCleanup(
   cleanup: PlaywrightEmitInput["cleanup"],
   captures: boolean,
   japanese: boolean,
+  allowExpect: boolean,
 ): string[] {
   if (!cleanup || cleanup.actions.length === 0) return [];
   const lines: string[] = [];
@@ -361,6 +412,11 @@ function emitCleanup(
   for (let i = 0; i < cleanup.actions.length; i++) {
     open = openStep(lines, markerByIndex.get(i), open, japanese, captures);
     const action = cleanup.actions[i]!;
+    // A project that forbids `expect` in its teardown gets the undo's actions
+    // and nothing else. What the recorded check was for is not lost — the
+    // evidence table reports the cleanup expectation as unchecked.
+    if (!allowExpect && action.action === "assert") continue;
+    if (overwrittenByNext(action, cleanup.actions[i + 1])) continue;
     if (action.replayUnstable) {
       lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
     }

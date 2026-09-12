@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { extractJsonBlock } from "../claude/extract-json.ts";
@@ -7,7 +6,6 @@ import { verifiesSpecPrompt } from "../prompts/verifies-spec.ts";
 import { isExpandedActionStep, type ExpandedStep } from "../spec/expand.ts";
 import { assertionsByStep } from "../evidence/table.ts";
 import { evidenceLabels, type EvidenceLabels } from "../evidence/labels.ts";
-import type { GenerateResult } from "./types.ts";
 import type { InvokeFn } from "./llm-engine.ts";
 
 // `findings` は必須。既定値を与えると、キー名を間違えた返答や指摘を落とした
@@ -36,9 +34,23 @@ export function parseVerifiesSpecFindings(answer: string): SpecCoverageFinding[]
 }
 
 /**
- * What a step with no assertion under it is told. Shared with the evidence
- * table, which reaches the same verdict from the same file — a reader must not
- * meet two wordings for one fact.
+ * Whether a step claims an outcome of its own. "Open the list", "click Add",
+ * "type a title" do not: nothing follows from them that a test could check,
+ * and a hand-written test asserts nothing after them either. A markdown case
+ * states its expectations for the flow, so none of its steps claim one.
+ *
+ * One predicate, two readers — the review below and the evidence table, which
+ * reach the same verdict from the same file and must not be able to disagree
+ * about which steps were supposed to decide something.
+ */
+export function claimsAnOutcome(step: { expected?: string }): boolean {
+  return (step.expected ?? "").trim().length > 0;
+}
+
+/**
+ * What a step that states an outcome, and carries no assertion under it, is
+ * told. Shared with the evidence table, which reaches the same verdict from
+ * the same file — a reader must not meet two wordings for one fact.
  *
  * It reports what was seen, not what was concluded. An assertion a rewrite
  * moved into a page object is invisible here, and calling that "decides
@@ -83,7 +95,8 @@ export interface SpecCoverageReview {
  * also not fail the generate that produced working files.
  */
 export async function reviewGeneratedTest(input: {
-  result: GenerateResult;
+  /** The generated test files' source, as a reviewer opening them would read it. */
+  source: string;
   steps: readonly ExpandedStep[];
   /**
    * What the case states for the flow as a whole, when its steps carry no
@@ -94,19 +107,16 @@ export async function reviewGeneratedTest(input: {
   expectations?: readonly string[];
   /** Cleanup steps, when the case says what its undo must make true. */
   cleanup?: readonly ExpandedStep[];
+  /** The page objects and helpers the test leans on — see `verifiesSpecPrompt`. */
+  support?: readonly { path: string; source: string }[];
   language: string;
   model?: string;
   cwd: string;
   /** Test seam — defaults to `invokeClaudeStreaming`. */
   invoke?: InvokeFn;
 }): Promise<SpecCoverageReview> {
-  const sources = await Promise.all(
-    input.result.files
-      .filter((f) => f.kind === "test")
-      .map((f) => readFile(f.path, "utf8").catch(() => "")),
-  );
-  const source = sources.filter((s) => s.length > 0).join("\n\n");
-  if (source.length === 0) {
+  const source = input.source;
+  if (source.trim().length === 0) {
     log.warn("could not check whether the generated test decides its spec (no test file to read)");
     return { findings: null, complete: false, warnings: [] };
   }
@@ -117,6 +127,9 @@ export async function reviewGeneratedTest(input: {
   const checked = assertionsByStep(source);
   const undecided = [...input.steps, ...(input.cleanup ?? [])]
     .filter(isExpandedActionStep)
+    // A case that states its expectations for the flow rather than per step
+    // leaves this half silent by design; the reading below is what covers it.
+    .filter(claimsAnOutcome)
     .filter((step) => (checked.get(step.id) ?? []).length === 0)
     .map((step) => ({ stepId: step.id, problem: NOTHING_DECIDED }));
 
@@ -130,9 +143,14 @@ export async function reviewGeneratedTest(input: {
         ? { expectations: [...input.expectations] }
         : {}),
       ...(input.cleanup && input.cleanup.length > 0 ? { cleanup: [...input.cleanup] } : {}),
+      ...(input.support && input.support.length > 0 ? { support: input.support } : {}),
     }),
     allowedTools: [],
-    disableThinking: true,
+    // The one part of a generate that is a judgement rather than a fact, and
+    // now the part that spends a fix round. It was asked without thinking
+    // while it only ever printed advice; asked twice of the same file it gave
+    // two different answers, and the cheaper one accepted a test that checked
+    // one of three things a case asked about for each of them.
     maxTurns: 1,
     silenceBashLog: true,
     ...(input.model ? { model: input.model } : {}),

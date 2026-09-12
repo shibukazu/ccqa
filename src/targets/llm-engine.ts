@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { z } from "zod";
@@ -7,6 +7,7 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
 import { caseRunDir, clearCaseRun, loadPromptBundle } from "../store/index.ts";
 import { formatEmittedReview, reviewEmittedFiles } from "./emitted-review.ts";
+import { formatFinding, type SpecCoverageReview } from "./verifies-spec.ts";
 import { isExpandedActionStep } from "../spec/expand.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import {
@@ -45,6 +46,20 @@ export const LLM_GEN_ALLOWED_TOOLS = ["Read", "Grep", "Glob"];
 
 /** Test seam: the engine invokes Claude through this signature. */
 export type InvokeFn = typeof invokeClaudeStreaming;
+
+/**
+ * A target's reading of the files one attempt produced: whether their
+ * assertions decide what the case claims.
+ *
+ * Supplied by the target rather than built here. What counts as an assertion
+ * is the generated language's business — a target whose runbooks are YAML has
+ * none in the shape a reader of test code looks for, and would otherwise be
+ * told that every step of every case decides nothing. A target that offers no
+ * reading is simply not read.
+ */
+export type Reading = (
+  files: readonly LlmGeneratedFile[],
+) => Promise<SpecCoverageReview>;
 
 const LlmFileSchema = z.object({
   path: z.string().min(1),
@@ -195,7 +210,14 @@ export function leakMessage(path: string, names: string[]): string {
 }
 
 /** Written-files state: cwd-relative path → what's on disk. */
-type FileState = Map<string, { abs: string; kind: "test" | "support"; contents: string }>;
+type FileState = Map<
+  string,
+  {
+    abs: string;
+    kind: "test" | "support";
+    contents: string;
+  }
+>;
 
 async function writeGeneratedFiles(
   cwd: string,
@@ -283,6 +305,8 @@ export interface LlmEngineRequest {
   validateFile?: (file: LlmGeneratedFile) => string | null;
   /** Test seam — defaults to `invokeClaudeStreaming`. */
   invoke?: InvokeFn;
+  /** How this target reads back what it wrote (see `Reading`). Absent: not read. */
+  reading?: Reading;
 }
 
 /**
@@ -360,6 +384,7 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
     warnings,
     validateFile: req.validateFile,
     invoke,
+    reading: req.reading,
   });
 }
 
@@ -372,6 +397,7 @@ export interface PreparedFilesRequest {
   warnings: string[];
   validateFile?: (file: LlmGeneratedFile) => string | null;
   invoke?: InvokeFn;
+  reading?: Reading;
 }
 
 /**
@@ -394,6 +420,7 @@ export async function finalizePreparedFiles(req: PreparedFilesRequest): Promise<
     warnings: req.warnings,
     validateFile: req.validateFile,
     invoke: req.invoke ?? invokeClaudeStreaming,
+    reading: req.reading,
   });
 }
 
@@ -407,6 +434,7 @@ interface FinalizeParams {
   warnings: string[];
   validateFile?: (file: LlmGeneratedFile) => string | null;
   invoke: InvokeFn;
+  reading?: Reading;
 }
 
 /** Write the files, then run the bounded runCommand verify/fix loop. */
@@ -415,12 +443,13 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
   const state: FileState = new Map();
   await writeGeneratedFiles(ctx.cwd, p.initialFiles, state);
 
-  const passed = await runVerificationLoop(p, state);
+  const { passed, review } = await runVerificationLoop(p, state);
   return {
     files: [...state.values()].map((f) => ({ path: f.abs, kind: f.kind })),
     summary: p.summary || `${state.size} file(s) generated for the ${p.target} target`,
     warnings: p.warnings,
     passed,
+    review,
   };
 }
 
@@ -440,15 +469,22 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
  * `passed: false`. Targets without a runCommand are generate-only here and
  * pass trivially.
  */
-async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise<boolean> {
+async function runVerificationLoop(
+  p: FinalizeParams,
+  state: FileState,
+): Promise<{ passed: boolean; review?: SpecCoverageReview }> {
   const runCommand = p.ctx.targetConfig.runCommand;
   // A target with no test command of its own can still have project-wide
   // checks, and generated code that fails them is not done.
   if (!runCommand) {
     const checks = await runCheckCommands(p.ctx);
-    if (checks === null) return true;
-    log.warn(`${checks.command} failed (exit ${checks.exitCode}) — generated files kept`);
-    return false;
+    if (checks !== null) {
+      log.warn(`${checks.command} failed (exit ${checks.exitCode}) — generated files kept`);
+      return { passed: false };
+    }
+    const review = await readingOfEmitted(p, state);
+    for (const w of review?.warnings ?? []) log.warn(w);
+    return { passed: true, review };
   }
   // `--auto-fix skip` disables the fix pass entirely: run verification once and
   // report the result, never rewriting the generated files.
@@ -470,6 +506,7 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
     );
   }
 
+  let review: SpecCoverageReview | undefined;
   for (let attempt = 0; ; attempt++) {
     const testFiles = [...state.entries()]
       .filter(([, f]) => f.kind === "test")
@@ -517,20 +554,45 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
       // breaks the project's type check or lint cannot be merged, and finding
       // that out in review costs another round trip. Run those here, where the
       // fix loop can still act on the output.
-      const checks = (await runCheckCommands(p.ctx)) ?? reviewOfEmitted(p.ctx, state);
-      // What is on disk is this attempt's, and this attempt passed.
-      if (checks === null) return true;
-      result = checks;
-      // The fix pass is shown this output, so it has to be told which command
-      // produced it — otherwise it reads lint errors under the test command.
-      failing = checks.command;
+      const checks = await runCheckCommands(p.ctx);
+      if (checks !== null) {
+        result = checks;
+        // The fix pass is shown this output, so it has to be told which command
+        // produced it — otherwise it reads lint errors under the test command.
+        failing = checks.command;
+      } else {
+        // Everything the project can decide for itself is green. What is left
+        // is how the code reads, asked two ways — mechanically, and by reading
+        // it against the case. Both at once: they are the same kind of
+        // question, and answering them in turn spends a whole round on the
+        // cheaper one while the other waits for a budget that may be gone.
+        // (Observed: three rounds went to two failures and one mechanical
+        // finding, and the reading first spoke with nothing left to act on.)
+        review = await readingOfEmitted(p, state);
+        const reads = bothReadings(
+          await reviewOfEmitted(p.ctx, state, p.writeRoots),
+          uncheckedSteps(review),
+        );
+        if (reads === null || attempt >= maxRetries) {
+          for (const w of review?.warnings ?? []) log.warn(w);
+          if (reads !== null) {
+            log.warn(
+              "generated with review findings still open — the files are kept and the findings " +
+                "are recorded against the case, but nothing acted on them",
+            );
+          }
+          return { passed: true, review };
+        }
+        result = reads;
+        failing = reads.command;
+      }
     }
     if (attempt >= maxRetries) {
       log.warn(
         `verification still failing after ${maxRetries} fix attempt(s) — generated files kept`,
       );
       await clearCaseRun(p.ctx.ref);
-      return false;
+      return { passed: false, review };
     }
 
     log.fix(`verification failed (exit ${result.exitCode}) — requesting a fix (${attempt + 1}/${maxRetries})`);
@@ -590,9 +652,14 @@ async function runVerificationLoop(p: FinalizeParams, state: FileState): Promise
     if (p.ctx.fix.mode === "interactive" && !(await confirmFixWrite(output.files, p.ctx.cwd))) {
       log.info("fix not applied (declined) — keeping current files");
       await clearCaseRun(p.ctx.ref);
-      return false;
+      return { passed: false, review };
     }
     await writeGeneratedFiles(p.ctx.cwd, output.files, state);
+    // The reading described the files as they were before this write. It is
+    // saved against the case and read back by `ccqa evidence`, so carrying it
+    // past the rewrite would pair findings with a file that no longer has
+    // them — or, worse, say "checked" of one nobody read.
+    review = undefined;
   }
 }
 
@@ -621,11 +688,13 @@ async function runCheckCommands(
  * compile has a more urgent problem than how it reads, and a fix pass given
  * both at once tends to answer the smaller one.
  */
-function reviewOfEmitted(
+async function reviewOfEmitted(
   ctx: GenerateContext,
   state: FileState,
-): { exitCode: number; output: string; command: string } | null {
+  writeRoots: readonly string[],
+): Promise<{ exitCode: number; output: string; command: string } | null> {
   const findings = reviewEmittedFiles({
+    usedInProject: await identifiersInProject(ctx, writeRoots, new Set(state.keys())),
     files: new Map([...state].map(([rel, f]) => [rel, f.contents])),
     caseText: [
       ...[...ctx.steps, ...ctx.cleanup].flatMap((s) =>
@@ -634,6 +703,7 @@ function reviewOfEmitted(
       ...ctx.expectations,
       ...ctx.cleanupExpectations,
     ],
+    testPath: ctx.testPath,
   });
   if (findings.length === 0) return null;
   // Said here as well as handed to the fix pass: a run whose generation kept
@@ -643,6 +713,113 @@ function reviewOfEmitted(
     exitCode: 1,
     command: "ccqa: review of the generated code",
     output: formatEmittedReview(findings),
+  };
+}
+
+/** What this attempt wrote, as the target's reading opens it. */
+async function readingOfEmitted(
+  p: FinalizeParams,
+  state: FileState,
+): Promise<SpecCoverageReview | undefined> {
+  if (!p.reading) return undefined;
+  return p.reading(
+    [...state.entries()].map(([path, f]) => ({ path, contents: f.contents, kind: f.kind })),
+  );
+}
+
+/**
+ * The reading's findings, shaped like a failed check so the fix loop carries
+ * them the same way — or null when there is nothing to act on.
+ *
+ * It spends a fix round; it never decides the verdict. A green test says the
+ * code runs and the project's checks say it may be merged, and neither of
+ * those is a judgement — this is, and a judgement that could fail a generate
+ * would make generation only as repeatable as the model behind it. A run that
+ * exhausts its rounds still passes, with the findings reported, as it did when
+ * nothing acted on them at all.
+ *
+ * What the round asks for is verified like any other rewrite, and that can
+ * end red: an assertion strengthened to check what the case claims may simply
+ * not hold. The generate then reports failed — on the test run, not on this —
+ * and the files are kept. That is the honest outcome, and the alternative
+ * (restoring what passed weakly) would hide a case the product does not meet.
+ *
+ * A review that could not be obtained is not acted on either: spending a round
+ * answering a question nobody asked is worse than leaving it unanswered.
+ */
+export function uncheckedSteps(
+  review: SpecCoverageReview | undefined,
+): { exitCode: number; output: string; command: string } | null {
+  if (!review?.complete || review.findings === null || review.findings.length === 0) return null;
+  return {
+    exitCode: 1,
+    command: "ccqa: reading of the generated test",
+    output: [
+      "These steps pass without deciding what the case says they must:",
+      "",
+      ...review.findings.map((f) => `- ${formatFinding(f)}`),
+      "",
+      "Strengthen the assertions (and the locators they resolve through) so each",
+      "step fails when its expectation stops holding. Do not weaken or delete a",
+      "step to silence this.",
+    ].join("\n"),
+  };
+}
+
+/**
+ * Every identifier the project's own test assets mention, outside the files
+ * this generation just wrote.
+ *
+ * Only where the project said its test code lives — the roots it declared as
+ * resources or as writable. ccqa does not go looking through a repository it
+ * was not pointed at, and a definition nobody in those roots reaches is one
+ * nobody reaches.
+ */
+async function identifiersInProject(
+  ctx: GenerateContext,
+  writeRoots: readonly string[],
+  emitted: ReadonlySet<string>,
+): Promise<Set<string>> {
+  const roots = new Set(
+    [...writeRoots, ...ctx.resources.map((r) => ("path" in r ? r.path : "")), dirname(ctx.testPath)]
+      .filter((r) => r.length > 0)
+      .map((r) => resolve(ctx.cwd, r)),
+  );
+  const found = new Set<string>();
+  const seen = new Set<string>();
+  const walk = async (dir: string): Promise<void> => {
+    if (seen.has(dir)) return;
+    seen.add(dir);
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      const abs = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== "node_modules" && !entry.name.startsWith(".")) await walk(abs);
+        continue;
+      }
+      if (!/\.[cm]?tsx?$/.test(entry.name)) continue;
+      if (emitted.has(relative(ctx.cwd, abs))) continue;
+      const source = await readFile(abs, "utf8").catch(() => "");
+      for (const m of source.matchAll(/[A-Za-z_$][\w$]*/g)) found.add(m[0]);
+    }
+  };
+  await Promise.all([...roots].map(walk));
+  return found;
+}
+
+/**
+ * The two readings of the finished files as one report, since one fix pass
+ * answers both. Either may be absent; both absent is nothing to act on.
+ */
+function bothReadings(
+  ...reports: ({ exitCode: number; output: string; command: string } | null)[]
+): { exitCode: number; output: string; command: string } | null {
+  const found = reports.filter((r) => r !== null);
+  if (found.length === 0) return null;
+  return {
+    exitCode: 1,
+    command: found.map((r) => r.command).join(" + "),
+    output: found.map((r) => `${r.command}\n\n${r.output}`).join("\n\n"),
   };
 }
 

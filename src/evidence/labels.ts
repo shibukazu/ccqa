@@ -47,6 +47,9 @@ const EVIDENCE_VERDICTS = {
     reviewPartial: "The generated test was not otherwise reviewed against the case.",
     findingNothing: "nothing in the generated test is visibly deciding this step",
     findingUndecided: "the generated test passes without deciding what this step claims",
+    cleanupUnchecked:
+      "The case states these about its cleanup. This project does not allow the generated undo " +
+      "to assert (`allowExpectInCleanup: false`), so nothing checks them:",
   },
   ja: {
     nothing: "判定なし",
@@ -55,6 +58,9 @@ const EVIDENCE_VERDICTS = {
     reviewPartial: "生成されたテストは、これ以外の点ではテストケースと突き合わせて点検されていません。",
     findingNothing: "この手順を判定しているものが、生成されたテストに見当たりません",
     findingUndecided: "この手順が主張していることを判定しないまま、生成されたテストは通ります",
+    cleanupUnchecked:
+      "ケースは後処理について次を期待しています。このプロジェクトは生成された後処理に検証を書くことを" +
+      "許可していない（`allowExpectInCleanup: false`）ため、いずれも検証されていません:",
   },
 } as const;
 

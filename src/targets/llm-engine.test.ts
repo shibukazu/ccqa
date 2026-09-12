@@ -19,7 +19,9 @@ import {
   substituteRunCommandFiles,
   validateOutputPath,
   type InvokeFn,
+  type Reading,
 } from "./llm-engine.ts";
+import type { SpecCoverageReview } from "./verifies-spec.ts";
 import { TargetConfigSchema } from "../config/project-config.ts";
 import { TestSpecSchema } from "../spec/yaml-schema.ts";
 import { forgetLoadedEnv, rememberLoadedEnv } from "../runtime/profile-env.ts";
@@ -94,6 +96,27 @@ function fakeInvoke(results: string[]): { invoke: InvokeFn; prompts: string[] } 
   };
   return { invoke, prompts };
 }
+
+/**
+ * A target's reading, answering the given findings in order (last repeats).
+ * The engine only carries what a reading says; what makes a step decided is
+ * the target's business, so nothing here needs a real one.
+ */
+function fakeReading(answers: SpecCoverageReview[]): { reading: Reading; calls: number } {
+  const seen = { reading: null as unknown as Reading, calls: 0 };
+  seen.reading = async () => answers[Math.min(seen.calls++, answers.length - 1)]!;
+  return seen;
+}
+
+/** A reading that found nothing to say. */
+const clean: SpecCoverageReview = { findings: [], complete: true, warnings: [] };
+
+/** One step the reading says the test passes without deciding. */
+const undecided: SpecCoverageReview = {
+  findings: [{ stepId: "step-01", problem: "checks the link it clicked" }],
+  complete: true,
+  warnings: ["step-01: …"],
+};
 
 const okOutput = (path = "e2e/todos/add-item.spec.ts"): string =>
   JSON.stringify({
@@ -375,6 +398,84 @@ describe("generateWithLlmEngine", () => {
     expect(await readFile(resolve(cwd, "e2e/todos/add-item.spec.ts"), "utf8")).toBe(
       "// generated test\n",
     );
+  });
+
+  // A green test says the code runs and the project's checks say it may be
+  // merged; neither asks whether the assertions decide what the case claims.
+  // That question is worth a fix round — it is the only one a reviewer asks.
+  it("spends a fix round on a step the reading says nothing decides", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput(), okOutput()]);
+    // Found on the first reading, gone on the second: the fix pass worked.
+    const { reading } = fakeReading([undecided, clean]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("step-01");
+    expect(prompts[1]).toContain("Do not weaken or delete a");
+    expect(result.review).toEqual(clean);
+  });
+
+  // runn's runbooks are YAML: they hold no assertion in the shape a reader of
+  // test code looks for, so a reading built here would report every step of
+  // every case. A target that offers none is simply not read.
+  it("does not read a target that offers no reading", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput()]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(1);
+    expect(result.review).toBeUndefined();
+  });
+
+  // It is a model's judgement. One that could fail a generate whose test and
+  // checks are green would make generation only as repeatable as the model.
+  it("still passes when the reading's findings outlive the fix budget", async () => {
+    await makeProject();
+    const { invoke } = fakeInvoke([okOutput()]);
+    const { reading } = fakeReading([undecided]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(result.review).toEqual(undecided);
+  });
+
+  // Spending a round answering a question nobody answered is worse than
+  // leaving it unanswered, and the record must not read as a clean review.
+  it("does not act on a reading it could not obtain", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput()]);
+    const { reading } = fakeReading([{ findings: null, complete: false, warnings: [] }]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(1);
+    expect(result.review?.complete).toBe(false);
   });
 
   it("--auto-fix skip (non-interactive) runs verification once and never requests a fix", async () => {

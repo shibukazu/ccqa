@@ -4,6 +4,7 @@ import type { TestCase } from "../intent/case.ts";
 import { describeAction } from "../ir/route-diff.ts";
 import { parseStepComment } from "../codegen/step-comment.ts";
 import {
+  claimsAnOutcome,
   formatFinding,
   mergeFindings,
   NOTHING_DECIDED,
@@ -32,6 +33,8 @@ export interface EvidenceStep {
   id: string;
   /** The step as the case's author wrote it. */
   instruction: string;
+  /** What the case says this step must make true. Empty when it says nothing. */
+  expected: string;
   /** What the recording did for this step. */
   actions: string[];
   /** Lines of the generated test that decide something, for this step. */
@@ -47,6 +50,11 @@ export interface EvidenceInput {
   recording: Recording;
   /** The generated test, and where it lives (project-root-relative). */
   test: { path: string; source: string };
+  /**
+   * What the case states about its cleanup when the project does not let the
+   * generated undo assert. Empty or absent otherwise.
+   */
+  cleanupUnchecked?: readonly string[];
   /** Screenshot files by step id, already relative to the evidence file. */
   screenshots: Map<string, string[]>;
   /**
@@ -156,6 +164,7 @@ export function buildEvidenceSteps(input: EvidenceInput): EvidenceStep[] {
     return {
       id: step.id,
       instruction: "instruction" in step ? step.instruction : step.judgeByLlm,
+      expected: "expected" in step ? step.expected : "",
       actions: actions.map(describeAction),
       assertions: assertions.get(step.id) ?? [],
       screenshots: input.screenshots.get(step.id) ?? [],
@@ -214,11 +223,20 @@ export function renderEvidence(input: EvidenceInput): string {
     for (const expectation of input.testCase.expectations) lines.push(`- ${expectation}`);
     lines.push("");
   }
+  // Said, not dropped. The project chose that its undo may not assert (see
+  // `allowExpectInCleanup`), which is a trade it is entitled to make — but the
+  // case still states what the undo must achieve, and a table that simply
+  // omitted it would let a reader believe it was checked.
+  if (input.cleanupUnchecked && input.cleanupUnchecked.length > 0) {
+    lines.push(labels.cleanupUnchecked, "");
+    for (const expectation of input.cleanupUnchecked) lines.push(`- ${expectation}`);
+    lines.push("");
+  }
   // The rows above are read again rather than the review file trusted: the
   // review saw the file at generation time and this table sees it now, and a
   // summary that could contradict its own table is worse than no summary.
   const undecided = steps
-    .filter((step) => step.assertions.length === 0)
+    .filter((step) => claimsAnOutcome(step) && step.assertions.length === 0)
     .map((step) => ({ stepId: step.id, problem: NOTHING_DECIDED }));
   const findings = mergeFindings(undecided, input.review ?? []);
   lines.push(`## ${labels.review}`, "");

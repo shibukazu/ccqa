@@ -95,6 +95,9 @@ describe("parseProjectConfig", () => {
       writeRoots: [],
       checkCommands: [],
       hooks: { stepEvidence: true },
+      // Today's shape stays the default: a project that never said otherwise
+      // keeps the generated file it already reviewed.
+      allowExpectInCleanup: true,
     });
   });
 

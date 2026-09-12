@@ -211,6 +211,22 @@ export const TargetConfigSchema = z
       .object({ stepEvidence: z.boolean().default(true) })
       .strict()
       .prefault({}),
+    /**
+     * Whether the generated undo may contain `expect`.
+     *
+     * A case can state what its cleanup must make true, and ccqa asserts it
+     * where the undo runs — inside the emitted `test.afterEach`. Some suites
+     * forbid that: an assertion there turns a slow or partial teardown into a
+     * failed test, which says the feature broke when it did not. Others want
+     * the undo checked like anything else. Both are coherent, and ccqa is not
+     * the one to decide — so a project that forbids it says so here, and the
+     * undo is emitted as actions only.
+     *
+     * The case's stated expectations do not disappear when this is off: the
+     * evidence table says which of them nothing checks, so a reader can see
+     * what was traded away.
+     */
+    allowExpectInCleanup: z.boolean().default(true),
     /** Comment block the generated test opens with; intent fields fill it in. */
     header: z.string().optional(),
     titleTags: TitleTagsSchema.optional(),
