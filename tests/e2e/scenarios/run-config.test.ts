@@ -11,6 +11,10 @@ import { noColorEnv, stripAnsi } from "../_helpers/env.ts";
 //   2. a project's .ccqa/vitest.config.ts DOES take priority over the bundled
 //      config. Both require the real subprocess config-resolution, so they
 //      can't be unit-tested.
+//
+// Each spawns a `ccqa run` that spawns vitest again, so both carry the same
+// budget the other subprocess-driving e2e scenarios use: the suite's 60s
+// default is not enough for two nested runs once the workers are contended.
 describe("ccqa run — vitest config resolution", () => {
   let project: FakeProject | null = null;
 
@@ -28,11 +32,12 @@ describe("ccqa run — vitest config resolution", () => {
     const result = await runCcqa(["run", "demo/smoke"], {
       cwd: project.cwd,
       env: noColorEnv(),
+      timeoutMs: 90_000,
     });
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(0);
     expect(combined).not.toMatch(/host config leaked/);
-  });
+  }, 120_000);
 
   test(".ccqa/vitest.config.ts overrides the bundled config", async () => {
     // The fixture's config wires up a globalSetup that touches a sentinel file;
@@ -42,8 +47,9 @@ describe("ccqa run — vitest config resolution", () => {
     const result = await runCcqa(["run", "demo/smoke"], {
       cwd: project.cwd,
       env: { ...noColorEnv(), CCQA_TEST_SENTINEL: sentinel },
+      timeoutMs: 90_000,
     });
     expect(result.exitCode, result.stdout + result.stderr).toBe(0);
     await expect(access(sentinel)).resolves.toBeUndefined();
-  });
+  }, 120_000);
 });
