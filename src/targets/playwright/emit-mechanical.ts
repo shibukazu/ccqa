@@ -240,7 +240,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   for (let i = 0; i < actions.length; i++) {
     openMarker = openStep(lines, markerByIndex.get(i), openMarker, japanese, captures);
     const action = actions[i]!;
-    const line = actionToLine(action);
+    const line = actionToLine(action, japanese);
     if (line !== null && line !== prevLine) {
       if (action.replayUnstable) {
         lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
@@ -364,7 +364,7 @@ function emitCleanup(
     if (action.replayUnstable) {
       lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
     }
-    const line = actionToLine(action);
+    const line = actionToLine(action, japanese);
     if (line !== null) lines.push(line);
   }
   closeStep(lines, open, captures);
@@ -452,7 +452,7 @@ function exactArg(exact: boolean | undefined): string {
 /** Default wheel delta for scrolls recorded without an explicit pixel count. */
 const DEFAULT_SCROLL_PIXELS = 400;
 
-function actionToLine(action: RecordedAction): string | null {
+function actionToLine(action: RecordedAction, japanese = false): string | null {
   // Same rule as the agent-browser emitter: an element assert whose selector
   // the post-trace validator could not even find (`get count` returned 0)
   // fails on every run — emit a breadcrumb comment instead of a runnable line.
@@ -529,7 +529,7 @@ function actionToLine(action: RecordedAction): string | null {
     case "wait":
       return waitToLine(action, locator);
     case "assert":
-      return assertToLine(action, locator);
+      return assertToLine(action, locator, japanese);
     case "snapshot":
       return action.observation ? `// ${action.observation}` : null;
     case "cookies_clear":
@@ -582,11 +582,19 @@ function cleanupTitle(cleanup: readonly StepMarker[] | undefined, japanese: bool
   return japanese ? "後処理" : "clean up what the test created";
 }
 
-function assertToLine(action: RecordedAction, locator: string | null): string | null {
+function assertToLine(
+  action: RecordedAction,
+  locator: string | null,
+  japanese: boolean,
+): string | null {
   // Like the agent-browser emitter: the LLM may put the expectation text in
   // `observation` instead of `value`.
   const value = action.value ?? action.observation;
-  const comment = action.observation ? `// Assert: ${action.observation}` : null;
+  // The label as well as the note: a file whose steps read in one language
+  // and whose assertions are introduced in another is one nobody skims.
+  const comment = action.observation
+    ? `// ${japanese ? "期待値" : "Assert"}: ${action.observation}`
+    : null;
   // No `.first()` here, unlike the actions above.
   //
   // The probe these come from answers "at least one such element", and

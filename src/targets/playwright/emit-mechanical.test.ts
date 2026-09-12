@@ -186,6 +186,21 @@ describe("emitPlaywrightDraft — actions", () => {
     expect(bodyLines([{ action: "wait", locator: { by: "css", value: "--load" } }])).toEqual([]);
   });
 
+  // A file whose steps read in one language and whose assertions are
+  // introduced in another is one nobody skims.
+  it("the assertion's label follows the language the steps are written in", () => {
+    const action = {
+      action: "assert",
+      assert: "text_visible",
+      value: "Done",
+      observation: "保存された",
+    } as const;
+    const en = emitPlaywrightDraft({ actions: [action], testName: "sample" });
+    const ja = emitPlaywrightDraft({ actions: [action], testName: "sample", japanese: true });
+    expect(en).toContain("// Assert: 保存された");
+    expect(ja).toContain("// 期待値: 保存された");
+  });
+
   it("maps every AssertType to its expect form", () => {
     expect(line({ action: "assert", assert: "text_visible", value: "Saved" })).toBe(
       `await expect(page.getByText("Saved")).toBeVisible();`,
