@@ -44,6 +44,32 @@ On startup the hub logs its port, data directory, whether encryption is
 enabled, the run-retention cap in effect, the allowed CORS origins (if any),
 and the URL it's listening at.
 
+## Naming the hub once, in the project's config
+
+Every command that talks to a hub takes `--hub-url`, `--hub-token`,
+`--hub-header` and `--project`. A project that always talks to the same hub can
+state that once instead, in `.ccqa/config.yaml`:
+
+```yaml
+hub:
+  url: https://ccqa-hub.internal.example
+  project: my-app
+  headers:
+    x-gateway: ${HUB_GATEWAY_SECRET}
+```
+
+**The token is not in there, and cannot be**: it is a credential, and it stays
+in `CCQA_HUB_TOKEN`. A header value may name an environment variable with
+`${VAR}` for the same reason — the config says which variable holds the secret,
+never the secret. A named variable that is not set is an error saying which one,
+rather than a header sent reading `${VAR}` and an opaque rejection from whatever
+was meant to let the request through.
+
+A flag beats an environment variable, which beats the config: an invocation
+says more about what one run wants than a file everyone shares. Nothing about
+the existing environment-variable route changes, so a CI job that sets
+`CCQA_HUB_URL` keeps working whether or not the config names a hub.
+
 ## How runs, sessions, and variables flow through the hub
 
 Runs and secrets take two independent, one-directional paths:
@@ -485,9 +511,10 @@ the next `ccqa run`, so it picks it up automatically.
 
 Alongside the learned note, the human-maintained `triage.user` prompt holds
 standing, project-specific classification guidance (e.g. "a stale seed-data
-fixture on staging always counts as ENVIRONMENT"). Write it in the UI's
-Prompts tab, or locally in `.ccqa/prompts/triage.user.md` and upload it with
-`ccqa hub prompt push triage.user`. `ccqa run` fetches it with the learned
+fixture on staging always counts as ENVIRONMENT"). Keep it in the project at
+`.ccqa/prompts/triage.user.md`, or on the hub (the UI's Prompts tab, or
+`ccqa hub prompt push triage.user`) — the project's own copy wins where both
+exist. `ccqa run` reads it with the learned
 note and injects it into the failure-analysis prompt ahead of the learned
 calibration — human standing guidance first, learned calibration second.
 

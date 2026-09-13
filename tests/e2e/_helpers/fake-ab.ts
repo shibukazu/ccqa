@@ -64,6 +64,14 @@ if (screenshotIdx !== -1) {
     } catch {}
   }
 }
+// Fail only the invocations whose argv carries this token, so a test can make
+// one addressing strategy miss while another hits — which is what the replay
+// validation's locator fallback is about.
+const failArg = process.env.CCQA_FAKE_AB_FAIL_ARG;
+if (failArg && argv.includes(failArg)) {
+  process.stderr.write("No element found\\n");
+  process.exit(1);
+}
 const exitStr = process.env.CCQA_FAKE_AB_EXIT ?? "0";
 // \`get count <selector>\` must print a number (assert/wait helpers parse it);
 // CCQA_FAKE_AB_COUNT overrides the generic stdout for those invocations so a
@@ -71,7 +79,12 @@ const exitStr = process.env.CCQA_FAKE_AB_EXIT ?? "0";
 const getIdx = argv.indexOf("get");
 const countLine =
   getIdx !== -1 && argv[getIdx + 1] === "count" ? process.env.CCQA_FAKE_AB_COUNT : undefined;
-const stdoutLine = countLine ?? process.env.CCQA_FAKE_AB_STDOUT;
+// \`snapshot\` has no argument to key off the way \`get count\` does; CCQA_FAKE_AB_SNAPSHOT
+// answers it specifically, so a test can hand back an accessibility tree without touching
+// what CCQA_FAKE_AB_STDOUT answers for every other command.
+const snapshotLine =
+  argv[argv.length - 1] === "snapshot" ? process.env.CCQA_FAKE_AB_SNAPSHOT : undefined;
+const stdoutLine = countLine ?? snapshotLine ?? process.env.CCQA_FAKE_AB_STDOUT;
 if (stdoutLine) process.stdout.write(stdoutLine + "\\n");
 process.exit(Number(exitStr));
 `;

@@ -14,32 +14,58 @@ import { defineConfig } from "tsdown";
 // - Explicit ESM marker independent of any package.json "type" field
 // - Avoids the tsdown shebang/banner double-emit that happens with .js
 // - Matches how most modern Node CLIs (biome, tsdown itself, ...) ship
-export default defineConfig({
-  entry: {
-    "bin/ccqa": "./bin/ccqa.ts",
-    "runtime/test-helpers": "./src/runtime/test-helpers.ts",
-    "runtime/step-evidence": "./src/runtime/step-evidence.ts",
-    "runtime/vitest.config": "./src/runtime/vitest.config.ts",
-    "hub-client/index": "./src/hub-client/index.ts",
-    "runtime/judge": "./src/runtime/judge.ts",
-  },
-  format: "esm",
+/**
+ * The subpaths a consumer's own test file imports. Emitted as CJS as well as
+ * ESM, because most Playwright suites are CommonJS: without a `require`
+ * condition the import fails at resolution, the run reports that it found no
+ * tests, and the generation's fix pass helpfully deletes the import — taking
+ * the step screenshots with it. Node 22 can `require()` an ESM file, but only
+ * experimentally and with a warning on every run, which is not a contract to
+ * ship on.
+ */
+const CONSUMER_ENTRY = {
+  "runtime/test-helpers": "./src/runtime/test-helpers.ts",
+  "runtime/step-evidence": "./src/runtime/step-evidence.ts",
+  "runtime/judge": "./src/runtime/judge.ts",
+  "hub-client/index": "./src/hub-client/index.ts",
+};
+
+// Everything runtime (peer + real deps) stays external. The CLI binary
+// imports these at runtime from the consumer's node_modules.
+const EXTERNAL = [
+  "commander",
+  "gray-matter",
+  "zod",
+  "@anthropic-ai/claude-agent-sdk",
+  "vitest",
+  "vitest/config",
+  "agent-browser",
+];
+
+const SHARED = {
   platform: "node",
   target: "node20",
   dts: true,
-  clean: true,
   outDir: "dist",
-  // Everything runtime (peer + real deps) stays external. The CLI binary
-  // imports these at runtime from the consumer's node_modules.
-  external: [
-    "commander",
-    "gray-matter",
-    "zod",
-    "@anthropic-ai/claude-agent-sdk",
-    "vitest",
-    "vitest/config",
-    "agent-browser",
-  ],
+  external: EXTERNAL,
+} as const;
+
+export default [
+  defineConfig({
+    ...SHARED,
+    entry: CONSUMER_ENTRY,
+    format: ["esm", "cjs"],
+    // Only the first build may clean, or it deletes its sibling's output.
+    clean: true,
+  }),
+  defineConfig({
+  ...SHARED,
+  entry: {
+    "bin/ccqa": "./bin/ccqa.ts",
+    "runtime/vitest.config": "./src/runtime/vitest.config.ts",
+  },
+  format: "esm",
+  clean: false,
   // tsdown injects #!/usr/bin/env node into .mjs outputs that come from
   // source files starting with a shebang. Our bin/ccqa.ts already has one,
   // so no banner option is needed here.
@@ -65,4 +91,5 @@ export default defineConfig({
       chmodSync(resolve(root, "dist/bin/ccqa.mjs"), 0o755);
     },
   },
-});
+  }),
+];

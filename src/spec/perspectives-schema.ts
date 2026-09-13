@@ -46,13 +46,13 @@ import { SpecModeSchema } from "./yaml-schema.ts";
  *
  *  - agent-browser (the default; `target` omitted for byte-compatible docs):
  *    `traced` = an `ir.json` recording exists, `generated` = a `test.spec.ts`
- *    exists.
+ *    exists in the spec directory.
  *  - a recording-input external target (e.g. `playwright`): same `traced`
- *    (record still produces `ir.json`), but `generated` = the target's
- *    `generated.json` manifest exists.
+ *    (record still produces `ir.json`), and `generated` = a test exists at the
+ *    target's `testPath`.
  *  - a spec-input external target (e.g. `runn`): there is no record phase, so
  *    `traced` is always true (nothing to trace is not a coverage gap), and
- *    `generated` again means the `generated.json` manifest exists.
+ *    `generated` again means a test exists at the target's `testPath`.
  *
  * `target` is set only for non-agent-browser specs, so an all-default project
  * produces exactly the pre-existing document shape.

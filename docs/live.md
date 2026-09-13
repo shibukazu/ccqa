@@ -22,6 +22,30 @@ ccqa run
 ccqa run --live-step-retry 2 tasks/create-and-complete
 ```
 
+## Live cases from a project's own markdown
+
+A project that writes its test cases as markdown declares the same thing
+through whichever heading it maps to `intent.fields.mode` (see [Generation
+targets](./targets.md#intent--reading-test-cases-from-markdown)). A case whose
+section reads `live` is driven exactly as a `mode: live` spec is:
+
+```markdown
+## How to run
+
+live
+```
+
+Two differences follow from the document, not from the mode. A markdown case
+lists what must be true for the flow as a whole rather than per step, so those
+expectations are judged at its last step — which is when they are meant to
+hold. And its `cleanup` steps run after the case, in the same browser session,
+whatever the outcome.
+
+Everything else is the same: the same judge, the same per-step screenshots,
+the same `live.user` / `live.agent` guidance below. A markdown case that does
+not say `live` is recorded and generated, and its test is run by the project's
+own test runner.
+
 Constraints on selectors / `agent-browser` subcommands that apply during `ccqa record` (no `eval`, no `@ref`, no bare-tag positional `find`, no chained agent-browser calls) are **relaxed** for live specs — Claude can use any subcommand and any selector style because there is no replay contract to honour.
 
 The judge decides each step from its `expected` text alone, so a step whose outcome the product does not produce on every run has to say so in that text: see [when part of the outcome is optional](./spec.md#when-part-of-the-outcome-is-optional).
@@ -30,10 +54,10 @@ The judge decides each step from its `expected` text alone, so a step whose outc
 
 ccqa's live-mode system prompt is deliberately product-agnostic. Anything specific to **your** project — staging URLs, login flow quirks, rich-editor types, common access-denied wording — belongs in a pair of prompts stored on the [hub](./hub.md), per project:
 
-- `live.user` — human-maintained stable guidance. Edit it in the hub UI's Prompts tab, or locally in `.ccqa/prompts/live.user.md` and upload with `ccqa hub prompt push live.user`.
-- `live.agent` — auto-updated on the hub by `ccqa run --learn-hub-live-prompt` from each run's summary. You can push a hand-edited version, but the next `--learn-hub-live-prompt` run may rewrite it; durable rules should live in `live.user`.
+- `live.user` — human-maintained stable guidance. **Keep it in the project at `.ccqa/prompts/live.user.md`, or on the hub** (the UI's Prompts tab, or `ccqa hub prompt push live.user`). The file in the project wins where both exist, and the run says so: these are prose, and reading both would put contradicting instructions in one prompt with nothing to say which is meant. A project keeping it in its own tree needs no hub for it at all — it is a file in that repository, so it is as visible as the rest of it: name the account a case uses, never its password, and keep addresses out of it that the repository should not carry.
+- `live.agent` — auto-updated on the hub by `ccqa run --learn-hub-live-prompt` from each run's summary. Hub only: ccqa writes it at run time and it has to outlive a checkout. You can push a hand-edited version, but the next `--learn-hub-live-prompt` run may rewrite it; durable rules should live in `live.user`.
 
-When hub credentials are configured, `ccqa run` fetches both prompts once per invocation and appends them to the system prompt (missing or unreachable prompts never stop a run — you just run without guidance). The `ccqa record` (trace) side has the same split: `record.user` + `record.agent`, refreshed by `ccqa record --learn-hub-trace-prompt`.
+Both are fetched once per invocation and appended to the system prompt (missing or unreachable prompts never stop a run — you just run without guidance). The `ccqa record` (trace) side has the same split: `record.user` + `record.agent`, refreshed by `ccqa record --learn-hub-trace-prompt`.
 
 Keep them short. A page or two of focused notes beats a long handbook — Claude has the spec's `expected` text to work from, these files are for the *non-obvious* product knowledge that isn't in any single spec. Examples of what's useful here:
 

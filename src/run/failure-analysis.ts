@@ -1,6 +1,4 @@
-import { readFile } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
-
+import { isAbsolute, relative, sep } from "node:path";
 import { analyzeFailure } from "../report/analyze.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 import { type AnalysisCustomPrompt, resolveCustomPromptForTarget } from "../prompts/custom-prompt.ts";
@@ -10,7 +8,11 @@ import { tryParseTestSpec } from "../spec/parser.ts";
 import { AGENT_BROWSER_TARGET, type BlockSpec, type TestSpec } from "../spec/yaml-schema.ts";
 import type { AvailableBlock, SpecRef } from "../store/index.ts";
 import { specArtifactsDir } from "../targets/run-artifacts.ts";
-import { loadGeneratedManifest } from "../targets/llm-engine.ts";
+import {
+  collectSpecGenerated,
+  loadSpecArtifactsContext,
+  type SpecArtifactsContext,
+} from "../drift/artifacts.ts";
 import { C } from "../cli/colors.ts";
 import * as log from "../cli/logger.ts";
 import type { DiffProvider } from "./diff-provider.ts";
@@ -215,13 +217,13 @@ function specEnvScrubMap(
   spec: TestSpec | null,
   blocks: Map<string, BlockSpec>,
 ): Array<[string, string]> {
-  if (spec === null) return [];
+  if (spec === null) return buildProseEnvScrubMap([], []);
   try {
-    return buildProseEnvScrubMap(spec, expandSpec(spec, { blocks }));
+    return buildProseEnvScrubMap(spec.steps, expandSpec(spec, { blocks }));
   } catch {
     // An include that no longer resolves costs the refs inside that block's
     // steps; the spec's own, include params included, still scrub.
-    return buildProseEnvScrubMap(spec, []);
+    return buildProseEnvScrubMap(spec.steps, []);
   }
 }
 
@@ -284,6 +286,9 @@ export async function analyzeExternalRows(
   run: FailureAnalysisRun,
 ): Promise<ReportSpecResult[]> {
   const { deps, pass } = run;
+  // Read once for the whole batch: every row resolves its test through the same
+  // config and import aliases, which cannot change while the run is analysed.
+  const context = await loadSpecArtifactsContext(deps.cwd);
   const out: ReportSpecResult[] = [];
   for (const row of rows) {
     if (!needsAnalysis(row)) {
@@ -293,7 +298,7 @@ export async function analyzeExternalRows(
     const ref: SpecRef = { featureName: row.feature, specName: row.spec };
     const fields = await pass.analyze({
       ...ref,
-      readScript: () => readGeneratedTestSources(ref, deps.cwd),
+      readScript: () => readGeneratedTestSources(ref, row.specYaml, deps.cwd, context),
       failureLog: row.failureLogExcerpt ?? "",
       specYaml: row.specYaml,
       parsedSpec: tryParseTestSpec(row.specYaml),
@@ -320,40 +325,29 @@ function readableArtifactsDir(ref: SpecRef, deps: FailureAnalysisDeps): string |
 }
 
 /**
- * Budget for the generated test sources inlined into one external-target
- * spec's prompt. A target may generate several test files; the classifier only
- * needs to see how the spec was compiled, and its read-only tools can open the
- * rest on demand.
+ * The code this spec runs — its generated test plus the project files it
+ * imports — concatenated and each preceded by its path so the model can tell
+ * them apart. The audit's collector is the one that knows how to find them, so
+ * both surfaces read the same set. Best-effort: an ungenerated or unreadable
+ * spec just means less context, never a failed analysis.
  */
-const GENERATED_SOURCE_CAP = 32 * 1024;
-
-/**
- * The spec's generated test files (the manifest's `kind: "test"` entries),
- * concatenated and each preceded by its path so the model can tell them apart.
- * Best-effort: a missing manifest or an unreadable file just means less
- * context, never a failed analysis — the empty string simply omits the script
- * section from the prompt.
- */
-async function readGeneratedTestSources(ref: SpecRef, cwd: string): Promise<string> {
-  const manifest = await loadGeneratedManifest(ref, cwd);
-  if (manifest === null) return "";
-
-  const parts: string[] = [];
-  let budget = GENERATED_SOURCE_CAP;
-  for (const file of manifest.files) {
-    if (file.kind !== "test") continue;
-    if (budget <= 0) {
-      parts.push(`// [truncated: further generated files omitted — Read them for their full state]`);
-      break;
-    }
-    const body = await readFile(resolve(cwd, file.path), "utf8").catch(() => null);
-    if (body === null) continue;
-    const kept =
-      body.length > budget
-        ? `${body.slice(0, budget)}\n// [truncated — Read this file for its full state]`
-        : body;
-    budget -= Math.min(body.length, budget);
-    parts.push(`// ${file.path}\n${kept}`);
+async function readGeneratedTestSources(
+  ref: SpecRef,
+  specYaml: string | null,
+  cwd: string,
+  context: SpecArtifactsContext,
+): Promise<string> {
+  if (specYaml === null) return "";
+  const { generated, unaudited } = await collectSpecGenerated(
+    ref.featureName,
+    ref.specName,
+    specYaml,
+    cwd,
+    context,
+  );
+  const parts = generated.map((f: { path: string; content: string }) => `// ${f.path}\n${f.content}`);
+  if (unaudited.length > 0) {
+    parts.push(`// [not shown: ${unaudited.join(", ")} — Read them for their full state]`);
   }
   return parts.join("\n\n");
 }

@@ -11,6 +11,12 @@ import { errMessage } from "./errors.ts";
  */
 export interface CatalogEntry {
   spec: TestSpec | null;
+  /**
+   * The file verbatim, null when there is none. Kept beside the parse because
+   * the report row and the failure classifier want what was written, and
+   * re-reading it later would show a mid-run edit rather than what ran.
+   */
+  yaml: string | null;
   error: string | null;
 }
 
@@ -21,11 +27,11 @@ export async function readSpecs(refs: readonly SpecRef[], cwd: string): Promise<
   const entries = await Promise.all(
     refs.map(async (ref): Promise<readonly [string, CatalogEntry]> => {
       const yaml = await tryReadSpecFile(ref.featureName, ref.specName, cwd);
-      if (yaml === null) return [specKey(ref), { spec: null, error: null }];
+      if (yaml === null) return [specKey(ref), { spec: null, yaml: null, error: null }];
       try {
-        return [specKey(ref), { spec: parseTestSpec(yaml), error: null }];
+        return [specKey(ref), { spec: parseTestSpec(yaml), yaml, error: null }];
       } catch (err) {
-        return [specKey(ref), { spec: null, error: errMessage(err) }];
+        return [specKey(ref), { spec: null, yaml, error: errMessage(err) }];
       }
     }),
   );

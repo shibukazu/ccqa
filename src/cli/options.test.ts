@@ -66,11 +66,14 @@ describe("useJapanesePrompts", () => {
 });
 
 describe("addLanguageOption", () => {
-  test("adds a --language flag defaulting to auto", () => {
+  // Absent, not `auto`: a default here is indistinguishable from the flag
+  // being passed, and the project's own `language` could then never be
+  // reached. `resolveLanguage` owns the order.
+  test("adds a --language flag that is absent until passed", () => {
     const cmd = addLanguageOption(new Command("demo").exitOverride());
     cmd.action(() => {});
     cmd.parse([], { from: "user" });
-    expect(cmd.opts().language).toBe(DEFAULT_LANGUAGE);
+    expect(cmd.opts().language).toBeUndefined();
   });
 
   test("parses an explicit --language value", () => {

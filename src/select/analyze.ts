@@ -1,10 +1,11 @@
 import { relative, resolve } from "node:path";
 import * as log from "../cli/logger.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
+import { makeCoverageExcluder, type CoverageExcluder } from "../coverage/exclude.ts";
 import { resolveRoot } from "../coverage/session.ts";
 import { execFileP, type ChangedFile } from "../drift/affected.ts";
 import { parseBlockPath, specKey } from "../store/index.ts";
-import type { CoverageEdgesReadout } from "./coverage-edges.ts";
+import type { CoverageEdges, CoverageEdgesReadout } from "./coverage-edges.ts";
 import type { SpecDescription } from "./inventory.ts";
 import type { SelectReport, SpecSelection } from "./types.ts";
 
@@ -12,6 +13,14 @@ export interface SelectSpecsInput {
   changed: readonly ChangedFile[];
   specs: readonly SpecDescription[];
   cwd: string;
+  /**
+   * Git repository `changed`'s paths are relative to (`--repo`). Defaults to
+   * `cwd` — the common case where the `.ccqa` root and the diffed checkout
+   * are the same directory. Kept apart from `cwd` because when they differ,
+   * the measured-change re-root must anchor `changed` on the repo that
+   * actually produced it, not on where `.ccqa/config.yaml` lives.
+   */
+  repo?: string;
   base: string;
   head: string;
   /**
@@ -40,6 +49,7 @@ export interface SelectSpecsInput {
  */
 export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport> {
   const { changed, specs, cwd, base, head, edges } = input;
+  const repo = input.repo ?? cwd;
 
   const { productChanges, mechanicallyNeeded } = partitionChanges(changed, specs);
   const byInventoryKey = new Map(specs.map((s) => [specKey(s), s]));
@@ -55,10 +65,13 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
       source: "mechanical",
       reason: "the spec's own definition changed, or a block it includes did",
       touchedBy,
+      testPath: spec.testPath,
     });
   }
 
   const undecided = specs.filter((s) => !byKey.has(specKey(s)));
+  let uncoveredFiles: string[] = [];
+  let excludedFiles = 0;
 
   if (productChanges.length === 0) {
     // Nothing outside `.ccqa/` moved, so no product behaviour can have
@@ -71,12 +84,17 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
         verdict: "notNeeded",
         source: "mechanical",
         reason: "no file outside .ccqa/ changed in this range",
+        testPath: spec.testPath,
       });
     }
-  } else if (undecided.length > 0) {
-    for (const selection of await judgeWithCoverage({ pending: undecided, productChanges, cwd, edges })) {
-      byKey.set(specKey(selection), selection);
-    }
+  } else {
+    // Run even when every spec was already decided mechanically: a product
+    // change that no spec's measured reach touches is still worth reporting
+    // as uncovered, independent of whether it moved any verdict.
+    const judged = await judgeWithCoverage({ pending: undecided, productChanges, cwd, repo, edges });
+    for (const selection of judged.selections) byKey.set(specKey(selection), selection);
+    uncoveredFiles = judged.uncoveredFiles;
+    excludedFiles = judged.excludedFiles;
   }
 
   return {
@@ -87,6 +105,8 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
     // output. Every spec is decided by one of the three passes above, but
     // flatMap over a possible miss is cheaper to reason about than asserting it.
     specs: specs.flatMap((s) => byKey.get(specKey(s)) ?? []),
+    uncoveredFiles,
+    excludedFiles,
   };
 }
 
@@ -95,8 +115,11 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
  * that decides itself.
  *
  * `.ccqa/` paths are ccqa's own: a spec directory names the spec it belongs
- * to, a block names the specs that include it. Product paths carry no such
- * mapping — those are what the coverage intersection exists to answer.
+ * to, a block names the specs that include it. A markdown case's own document
+ * is matched the same way but by exact path (`sourcePath`) rather than a
+ * directory prefix — it lives in the project's own tree, not under `.ccqa/`,
+ * so there is no directory to claim on its behalf. Product paths carry no
+ * such mapping — those are what the coverage intersection exists to answer.
  */
 function partitionChanges(
   changed: readonly ChangedFile[],
@@ -121,6 +144,12 @@ function partitionChanges(
     }
   }
 
+  // Reverse index for `sourcePath`, an exact match rather than a prefix — a
+  // spec's own directory is already caught above, so in practice this is what
+  // catches a markdown case's document.
+  const specsBySourcePath = new Map<string, SpecDescription>();
+  for (const spec of specs) specsBySourcePath.set(spec.sourcePath, spec);
+
   for (const file of changed) {
     // A sibling package's `.ccqa/` is not ours: its spec and block names live
     // in a different tree and must not invalidate specs here.
@@ -138,6 +167,12 @@ function partitionChanges(
     const blockName = parseBlockPath(file.path);
     if (blockName) {
       for (const spec of specsByBlock.get(blockName) ?? []) addTouch(specKey(spec), file.path);
+      continue;
+    }
+
+    const bySourcePath = specsBySourcePath.get(file.path);
+    if (bySourcePath) {
+      addTouch(specKey(bySourcePath), file.path);
       continue;
     }
 
@@ -164,16 +199,25 @@ interface JudgeInput {
   pending: SpecDescription[];
   productChanges: ChangedFile[];
   cwd: string;
+  repo: string;
   edges: CoverageEdgesReadout;
 }
 
+interface JudgeResult {
+  selections: SpecSelection[];
+  uncoveredFiles: string[];
+  /** Changed files `coverage.exclude` kept out of the comparison. */
+  excludedFiles: number;
+}
+
 /**
- * Hold each undecided spec's last measured reach against the diff.
+ * Hold each undecided spec's last measured reach against the diff, and name
+ * the product changes no spec's reach touched at all.
  *
- * Three outcomes, and only one is a positive claim: a non-empty intersection
- * means `needed`, with the intersecting paths as the reason; an empty one
- * means `notNeeded` — the measurement accounts for everything the spec
- * reached, and the diff missed all of it; no measurement at all is also
+ * Three verdict outcomes, and only one is a positive claim: a non-empty
+ * intersection means `needed`, with the intersecting paths as the reason; an
+ * empty one means `notNeeded` — the measurement accounts for everything the
+ * spec reached, and the diff missed all of it; no measurement at all is also
  * `needed` — the spec runs until a measurement records its reach (ADR-0026)
  * — unless the read was degraded, in which case absence proves nothing and
  * the spec is left `unknown`. Changes outside the measured root fall out
@@ -181,28 +225,46 @@ interface JudgeInput {
  * measurement governs, so what lies beyond it clears specs quietly — one
  * warning names the dropped paths, because a root configured too narrow
  * looks exactly like this and hides real reach (see docs/coverage.md).
+ *
+ * That "clears quietly" only holds when something is still left to compare.
+ * When the re-root drops every product change — `--repo` naming a checkout
+ * disjoint from `coverage.projectRoot` does this to all of them at once —
+ * a spec that does have a measurement was never actually held against the
+ * diff, so `notNeeded` there would report a comparison that never happened;
+ * it is left `unknown` instead. A spec with no measurement at all is
+ * unaffected — "never measured" is already true independent of the diff.
  */
-async function judgeWithCoverage(input: JudgeInput): Promise<SpecSelection[]> {
-  const { pending, productChanges, cwd } = input;
+async function judgeWithCoverage(input: JudgeInput): Promise<JudgeResult> {
+  const { pending, productChanges, cwd, repo } = input;
   const { edges, degraded } = input.edges;
 
   const unreadable = "the hub's measured reach could not be read; not guessing";
-  const roots = await resolveCoverageRoots(productChanges, cwd);
-  const measuredChanges = rerootChangesForCoverage(productChanges, roots);
+  const { roots, excluded } = await resolveCoverageSettings(productChanges, cwd, repo);
+  const inRoot = rerootChangesForCoverage(productChanges, roots);
+  // A file `coverage.exclude` names is reached by every spec and so tells
+  // selection nothing; the root checks below still answer for all of them.
+  const compared = inRoot.filter((c) => !excluded(c.measured));
+  const excludedFiles = inRoot.length - compared.length;
 
   // Not a verdict changer, deliberately: the measured root is the declared
   // boundary of what measurement governs, and changes beyond it clear specs
   // the same way any unreached file does. Loud in the log rather than the
   // verdicts — a root configured too narrow produces exactly this shape.
-  const dropped = productChanges.length - measuredChanges.length;
+  const dropped = productChanges.length - inRoot.length;
   if (dropped > 0) {
     log.warn(
       `select-specs: ${dropped} of ${productChanges.length} changed files fall outside ` +
         "coverage.projectRoot and cannot be compared against measured reach",
     );
   }
+  // A total drop means the intersection below would run against nothing, so
+  // a spec with a measured edge would clear vacuously — "reached none of the
+  // changed files" when no file could actually be checked against it.
+  const totalDrop = productChanges.length > 0 && inRoot.length === 0;
+  const rootMismatch =
+    "every changed file fell outside coverage.projectRoot; the comparison could not be made, not guessing";
 
-  return pending.map((spec) => {
+  const selections = pending.map((spec): SpecSelection => {
     const edge = edges.get(specKey(spec));
     // No measurement is not "unreached": the spec is selected, and running it
     // is exactly what records its first edge (ADR-0026). Only a degraded
@@ -215,9 +277,11 @@ async function judgeWithCoverage(input: JudgeInput): Promise<SpecSelection[]> {
         verdict: "needed" as const,
         source: "coverage" as const,
         reason: "never measured: the spec runs until a measurement records its reach",
+        testPath: spec.testPath,
       };
     }
-    const touchedBy = measuredChanges.filter((c) => edge.files.has(c.measured)).map((c) => c.original);
+    if (totalDrop) return unknownSelection(spec, rootMismatch);
+    const touchedBy = compared.filter((c) => edge.files.has(c.measured)).map((c) => c.original);
     if (touchedBy.length > 0) {
       return {
         featureName: spec.featureName,
@@ -226,6 +290,7 @@ async function judgeWithCoverage(input: JudgeInput): Promise<SpecSelection[]> {
         source: "coverage" as const,
         reason: "the change touches files this spec's last measured run reached",
         touchedBy,
+        testPath: spec.testPath,
       };
     }
     return {
@@ -234,8 +299,25 @@ async function judgeWithCoverage(input: JudgeInput): Promise<SpecSelection[]> {
       verdict: "notNeeded" as const,
       source: "coverage" as const,
       reason: "the spec's last measured run reached none of the changed files",
+      testPath: spec.testPath,
     };
   });
+
+  // Degraded reach can't tell "no spec reached this" from "we couldn't read
+  // any spec's reach" — reporting it as uncovered here would be exactly the
+  // false positive the verdict side already refuses to guess at above.
+  const uncoveredFiles = degraded ? [] : uncoveredProductFiles(compared, edges);
+
+  return { selections, uncoveredFiles, excludedFiles };
+}
+
+/** Compared changes (inside the coverage root, not excluded) touched by no spec's edge, by original path. */
+function uncoveredProductFiles(compared: MeasuredChange[], edges: CoverageEdges): string[] {
+  const reached = new Set<string>();
+  for (const edge of edges.values()) {
+    for (const file of edge.files) reached.add(file);
+  }
+  return compared.filter((c) => !reached.has(c.measured)).map((c) => c.original);
 }
 
 function unknownSelection(spec: SpecDescription, reason: string): SpecSelection {
@@ -245,12 +327,13 @@ function unknownSelection(spec: SpecDescription, reason: string): SpecSelection 
     verdict: "unknown",
     source: "coverage",
     reason,
+    testPath: spec.testPath,
   };
 }
 
 /** A product change addressed both ways: as the diff names it, and as a measurement would. */
 export interface MeasuredChange {
-  /** The diff's own path: cwd-relative, or repo-root relative when `outsideCwd`. */
+  /** The diff's own path: relative to `repo` (or `cwd` when no `--repo`), or repo-root relative when `outsideCwd`. */
   original: string;
   /** The same file relative to `coverage.projectRoot`, the base measured files are stored under. */
   measured: string;
@@ -264,9 +347,15 @@ export interface MeasuredChange {
  * outside the coverage root is dropped — the measurement drops those files
  * too, so it could never intersect an edge.
  */
+export interface CoverageRoots {
+  cwd: string;
+  repoRoot: string | null;
+  coverageRoot: string;
+}
+
 export function rerootChangesForCoverage(
   changed: readonly ChangedFile[],
-  roots: { cwd: string; repoRoot: string | null; coverageRoot: string },
+  roots: CoverageRoots,
 ): MeasuredChange[] {
   const out: MeasuredChange[] = [];
   for (const file of changed) {
@@ -284,29 +373,39 @@ export function rerootChangesForCoverage(
 
 /**
  * The roots `rerootChangesForCoverage` needs: `coverage.projectRoot` from
- * `.ccqa/config.yaml` (defaults to cwd), and the git repo root — resolved
- * only when an `outsideCwd` entry exists to anchor.
+ * `.ccqa/config.yaml` (defaults to `cwd` — config always lives at the `.ccqa`
+ * root, even when `--repo` names a different checkout), and the git repo
+ * root — resolved from `repo`, only when an `outsideCwd` entry exists to
+ * anchor.
+ *
+ * The returned `cwd` is `repo`, not the `.ccqa` root: `changed`'s paths came
+ * from a diff run in `repo` (`getChangedFilesBetween(..., repo, ...)`), so
+ * that is what a non-`outsideCwd` entry is relative to.
  *
  * The projectRoot goes through the measurement's own `resolveRoot` — env refs
  * expanded, the directory verified to exist and contain cwd — and a config it
  * rejects fails here too. Resolving it any other way would silently re-root
  * every path somewhere the measurement never stored files under.
  */
-async function resolveCoverageRoots(
+async function resolveCoverageSettings(
   changed: readonly ChangedFile[],
   cwd: string,
-): Promise<{ cwd: string; repoRoot: string | null; coverageRoot: string }> {
+  repo: string,
+): Promise<{ roots: CoverageRoots; excluded: CoverageExcluder }> {
   const config = await loadProjectConfig(cwd);
   const coverageRoot = (await resolveRoot(cwd, config.coverage?.projectRoot)) ?? resolve(cwd);
   let repoRoot: string | null = null;
   if (changed.some((f) => f.outsideCwd)) {
     try {
-      const { stdout } = await execFileP("git", ["rev-parse", "--show-toplevel"], { cwd });
+      const { stdout } = await execFileP("git", ["rev-parse", "--show-toplevel"], { cwd: repo });
       repoRoot = stdout.trim();
     } catch {
       // Not a git repo: outsideCwd entries cannot be anchored, so the
       // re-root skips them.
     }
   }
-  return { cwd: resolve(cwd), repoRoot, coverageRoot };
+  return {
+    roots: { cwd: resolve(repo), repoRoot, coverageRoot },
+    excluded: makeCoverageExcluder(config.coverage?.exclude),
+  };
 }

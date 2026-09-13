@@ -1,4 +1,9 @@
+import { relative } from "node:path";
 import * as log from "../cli/logger.ts";
+import { runsLive } from "../cli/live-case.ts";
+import { intentTargetFor, type IntentTarget } from "../cli/resolve-case.ts";
+import { loadProjectConfig, targetConfigFor, type ProjectConfig } from "../config/project-config.ts";
+import { listMarkdownCases, loadMarkdownCase, type TestCase } from "../intent/case.ts";
 import {
   collectIncludedBlockNames,
   expandSpec,
@@ -12,7 +17,9 @@ import {
   type Step,
   type TestSpec,
 } from "../spec/yaml-schema.ts";
-import { listAllSpecsWithSpecFile, loadAllBlocks, tryReadSpecFile } from "../store/index.ts";
+import { registryFor, resolveTarget } from "../targets/registry.ts";
+import { resolveCaseTestPath, resolveTestPath } from "../targets/test-path.ts";
+import { listAllSpecsWithSpecFile, loadAllBlocks, splitCaseId, tryReadSpecFile } from "../store/index.ts";
 
 /**
  * What the model is told about one spec: enough to judge whether a change
@@ -35,18 +42,47 @@ export interface SpecDescription {
   steps: string[];
   /** Blocks this spec includes, so a change to one can be matched mechanically. */
   includedBlocks: string[];
+  /**
+   * Project-root-relative path of this spec's generated test file, resolved
+   * the same way `ccqa run` finds it (target + testPath template). Empty
+   * when the spec's target itself can't be resolved — `--format paths`
+   * drops those rather than emitting a path that names nothing.
+   */
+  testPath: string;
+  /**
+   * Project-root-relative path of the document that states this case: a
+   * spec's `spec.yaml`, or a markdown case's own file. `partitionChanges`
+   * matches a changed file against this to select a case whose own document
+   * changed — the one identity that works for both document kinds, since a
+   * markdown case's file isn't under `.ccqa/` for the directory-prefix match
+   * spec cases get.
+   */
+  sourcePath: string;
 }
 
 /**
- * Read every drafted spec under `.ccqa/features/` into the shape the selection
- * prompt consumes. Specs without a spec file are skipped: there is nothing to
- * judge and nothing to run.
+ * Read every test case the project states into the shape the selection
+ * prompt consumes: ccqa's own specs under `.ccqa/features/`, or — for a
+ * project whose target reads an intent source — its own markdown cases.
+ * Which one a project has is a property of its target, never both at once
+ * (see `intentTargetFor`), so this reads one enumeration or the other.
+ */
+export async function loadSpecInventory(cwd: string): Promise<SpecDescription[]> {
+  const config = await loadProjectConfig(cwd);
+  const intentTarget = intentTargetFor(config);
+  if (intentTarget) return loadMarkdownInventory(intentTarget, config, cwd);
+  return loadSpecFileInventory(config, cwd);
+}
+
+/**
+ * Specs without a spec file are skipped: there is nothing to judge and
+ * nothing to run.
  *
  * Enumeration (`listAllSpecsWithSpecFile`, a directory walk) is kept separate
  * from reading and parsing each spec's own content, so every spec.yaml is
  * read and parsed exactly once — and the reads run in parallel.
  */
-export async function loadSpecInventory(cwd: string): Promise<SpecDescription[]> {
+async function loadSpecFileInventory(config: ProjectConfig, cwd: string): Promise<SpecDescription[]> {
   // Blocks are shared across specs, so loaded once here rather than per spec.
   const [refs, blocks] = await Promise.all([listAllSpecsWithSpecFile(cwd), loadAllBlocks(cwd)]);
   const specs = await Promise.all(
@@ -72,10 +108,70 @@ export async function loadSpecInventory(cwd: string): Promise<SpecDescription[]>
         title: spec.title,
         steps: describeSteps(spec, blocks, `${featureName}/${specName}`),
         includedBlocks: collectIncludedBlockNames(spec),
+        testPath: resolveSpecTestPath(spec, config, featureName, specName),
+        sourcePath: `.ccqa/features/${featureName}/test-cases/${specName}/spec.yaml`,
       };
     }),
   );
   return specs.filter((s): s is SpecDescription => s !== null);
+}
+
+/**
+ * Same shape, for a project whose cases are its own markdown documents. No
+ * `disabled` flag to drop here — that concept belongs to `spec.yaml`, and an
+ * intent source has nothing that plays the same role.
+ */
+async function loadMarkdownInventory(
+  intentTarget: IntentTarget,
+  config: ProjectConfig,
+  cwd: string,
+): Promise<SpecDescription[]> {
+  const { id: targetId, targetConfig, intent } = intentTarget;
+  const target = registryFor(config).get(targetId)!;
+  const ids = await listMarkdownCases(intent, cwd);
+  return Promise.all(
+    ids.map(async (caseId): Promise<SpecDescription> => {
+      const testCase = await loadMarkdownCase(caseId, intent, cwd);
+      const { featureName, specName } = splitCaseId(testCase.ref.id);
+      return {
+        featureName,
+        specName,
+        title: testCase.title,
+        steps: describeMarkdownSteps(testCase),
+        includedBlocks: [],
+        testPath: runsLive(testCase) ? "" : resolveCaseTestPath(target, targetConfig, testCase.ref.id),
+        sourcePath: markdownSourcePath(testCase, caseId, cwd),
+      };
+    }),
+  );
+}
+
+/** The case's own file, project-root-relative, or its id when the source somehow isn't markdown. */
+function markdownSourcePath(testCase: TestCase, id: string, cwd: string): string {
+  return testCase.source.kind === "markdown" ? relative(cwd, testCase.source.path) : id;
+}
+
+/**
+ * `--format paths` needs a real file to hand a test runner, so a target that
+ * can't be resolved (bad `target:`/`defaultTarget`) degrades this one spec's
+ * path to "" instead of failing the whole inventory — the other formats don't
+ * depend on it. A live spec resolves to "" for the same reason: it is driven
+ * from the spec every run and has compiled nothing a runner could take.
+ */
+function resolveSpecTestPath(
+  spec: TestSpec,
+  config: ProjectConfig,
+  featureName: string,
+  specName: string,
+): string {
+  if (spec.mode === "live") return "";
+  try {
+    const target = resolveTarget(spec, config);
+    return resolveTestPath(target, targetConfigFor(config, target.id), { featureName, specName });
+  } catch (e) {
+    log.warn(`${featureName}/${specName}: could not resolve test path (${(e as Error).message})`);
+    return "";
+  }
 }
 
 /**
@@ -105,6 +201,18 @@ function describeStep(step: Step): string {
 function describeStepBody(step: AnyStepBody): string {
   if (isJudgeBody(step)) return `judge: ${oneLine(step.judgeByLlm)}`;
   return `${oneLine(step.instruction)} → ${oneLine(step.expected)}`;
+}
+
+/**
+ * One line per step, in order — no `include:` to expand, since a markdown
+ * case's steps are never block references. Unlike a spec step, a markdown
+ * step carries no per-step `expected` (the case lists its expectations once,
+ * for the whole flow), so only the instruction goes on the line.
+ */
+function describeMarkdownSteps(testCase: TestCase): string[] {
+  return testCase.steps.map((step) =>
+    isJudgeBody(step) ? `judge: ${oneLine(step.judgeByLlm)}` : oneLine(step.instruction),
+  );
 }
 
 function oneLine(text: string): string {

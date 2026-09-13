@@ -538,7 +538,7 @@ describe("hub API server", () => {
       expect(res.status).toBe(201);
       const run = await json(res);
       expect(run.kind).toBe("drift");
-      expect(run.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, unknown: 1 });
+      expect(run.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, productBug: 0, environment: 0, unknown: 1 });
     });
 
     test("POST with no ?kind (and explicit ?kind=run) defaults to a kind:\"run\" Run with drift:null", async () => {
@@ -630,7 +630,7 @@ describe("hub API server", () => {
       const run = await json(res);
       expect(run.drift).toBeNull();
 
-      const diagnosis = (label: "TEST_DRIFT" | "SPEC_CHANGE" | "UNKNOWN") => ({
+      const diagnosis = (label: "TEST_DRIFT" | "SPEC_CHANGE" | "PRODUCT_BUG" | "ENVIRONMENT" | "UNKNOWN") => ({
         label,
         confidence: 0.9,
         headline: "h",
@@ -643,12 +643,16 @@ describe("hub API server", () => {
           rows: [
             makeRow({ spec: "a", status: "failed", analysis: diagnosis("TEST_DRIFT") }),
             makeRow({ spec: "b", status: "passed", analysis: diagnosis("UNKNOWN") }),
+            // The two labels ADR-0030 added: the audit read the product's
+            // source and named a cause other than the test case.
+            makeRow({ spec: "d", status: "failed", analysis: diagnosis("PRODUCT_BUG") }),
+            makeRow({ spec: "e", status: "failed", analysis: diagnosis("ENVIRONMENT") }),
             makeRow({ spec: "c", status: "passed" }),
           ],
           done: true,
         }),
       );
-      expect(sealed.drift).toEqual({ specs: 3, testDrift: 1, specChange: 0, unknown: 1 });
+      expect(sealed.drift).toEqual({ specs: 5, testDrift: 1, specChange: 0, productBug: 1, environment: 1, unknown: 1 });
     });
 
     test("a drift row reaches the ledger without waiting for the seal", async () => {
@@ -684,7 +688,7 @@ describe("hub API server", () => {
       // Still running: nothing sealed it.
       const midRun = await json(await fetch(`${baseUrl}/api/v1/runs/${run.id}`, authed()));
       expect(midRun.status).toBe("running");
-      expect(midRun.drift).toEqual({ specs: 1, testDrift: 1, specChange: 0, unknown: 0 });
+      expect(midRun.drift).toEqual({ specs: 1, testDrift: 1, specChange: 0, productBug: 0, environment: 0, unknown: 0 });
 
       // subDiagnosis round-trips into the ledger row, so a CI reader can
       // branch on which repair the drifted spec needs.
@@ -694,6 +698,38 @@ describe("hub API server", () => {
         subDiagnosis: "OVER_ASSERTION",
         gitHead: sha,
       });
+    });
+
+    test("a label outside the vocabulary is rejected, never stored in the ledger", async () => {
+      // updateDriftLedger narrows `label` the same way it already narrows
+      // `subDiagnosis` — this proves the value never reaches that code at
+      // all: the report schema is the first line of defense, and rejects the
+      // whole patch rather than the ledger having to drop just this field.
+      const run = await json(
+        await fetch(`${baseUrl}/api/v1/runs/open?project=demo&kind=drift&branch=main`, authed({ method: "POST" })),
+      );
+      const res = await patch(run.id as string, {
+        rows: [
+          makeRow({
+            spec: "bogus-label",
+            status: "failed",
+            // Cast because the point of the row is a value the type forbids:
+            // what is under test is the runtime schema, not the compiler.
+            analysis: {
+              label: "NOT_A_REAL_LABEL",
+              confidence: 0.9,
+              headline: "h",
+              recommendation: "r",
+              evidence: [],
+              reasoning: "",
+            } as unknown as ReportSpecResult["analysis"],
+          }),
+        ],
+      });
+      expect(res.status).toBe(400);
+
+      const ledger = await json(await fetch(`${baseUrl}/api/v1/projects/demo/drift`, authed()));
+      expect(ledger.specs["demo/bogus-label"]).toBeUndefined();
     });
 
     test("grading a drift row is joined on as gradedDrift, leaving the audit's own counts alone", async () => {
@@ -725,8 +761,17 @@ describe("hub API server", () => {
       expect(graded.status).toBe(200);
 
       const after = await json(await fetch(`${baseUrl}/api/v1/runs/${run.id}`, authed()));
-      expect(after.drift).toEqual({ specs: 2, testDrift: 2, specChange: 0, unknown: 0 });
-      expect(after.gradedDrift).toEqual({ specs: 2, testDrift: 1, specChange: 0, unknown: 0, noDrift: 1, graded: 1 });
+      expect(after.drift).toEqual({ specs: 2, testDrift: 2, specChange: 0, productBug: 0, environment: 0, unknown: 0 });
+      expect(after.gradedDrift).toEqual({
+        specs: 2,
+        testDrift: 1,
+        specChange: 0,
+        productBug: 0,
+        environment: 0,
+        unknown: 0,
+        noDrift: 1,
+        graded: 1,
+      });
     });
 
     test("PATCH with one row (no done) updates the report and specs, and stays running", async () => {

@@ -186,9 +186,24 @@ describe("emitPlaywrightDraft — actions", () => {
     expect(bodyLines([{ action: "wait", locator: { by: "css", value: "--load" } }])).toEqual([]);
   });
 
+  // A file whose steps read in one language and whose assertions are
+  // introduced in another is one nobody skims.
+  it("the assertion's label follows the language the steps are written in", () => {
+    const action = {
+      action: "assert",
+      assert: "text_visible",
+      value: "Done",
+      observation: "保存された",
+    } as const;
+    const en = emitPlaywrightDraft({ actions: [action], testName: "sample" });
+    const ja = emitPlaywrightDraft({ actions: [action], testName: "sample", japanese: true });
+    expect(en).toContain("// Assert: 保存された");
+    expect(ja).toContain("// 期待値: 保存された");
+  });
+
   it("maps every AssertType to its expect form", () => {
     expect(line({ action: "assert", assert: "text_visible", value: "Saved" })).toBe(
-      `await expect(page.getByText("Saved").first()).toBeVisible();`,
+      `await expect(page.getByText("Saved")).toBeVisible();`,
     );
     expect(line({ action: "assert", assert: "text_not_visible", value: "Error" })).toBe(
       `await expect(page.getByText("Error")).toHaveCount(0);`,
@@ -196,7 +211,7 @@ describe("emitPlaywrightDraft — actions", () => {
     // element_visible carries `get count >= 1` semantics — `.first()` keeps it
     // strict-mode safe when the locator matches several elements.
     expect(line({ action: "assert", assert: "element_visible", locator: btn })).toBe(
-      `await expect(page.getByRole("button", { name: "Submit" }).first()).toBeVisible();`,
+      `await expect(page.getByRole("button", { name: "Submit" })).toBeVisible();`,
     );
     expect(line({ action: "assert", assert: "element_visible", locator: btn, index: "last" })).toBe(
       `await expect(page.getByRole("button", { name: "Submit" }).last()).toBeVisible();`,
@@ -379,7 +394,20 @@ describe("emitPlaywrightDraft — judgements", () => {
     });
     expect(script).toContain(`import { judgeByLlm } from "ccqa/judge";`);
     expect(script).toContain(`// step: step-02 [spec]`);
-    expect(script).toContain(`await judgeByLlm(page, "the answer lists steps", ".out");`);
+    expect(script).toContain(
+      `await judgeByLlm(page, "the answer lists steps", { from: ".out", testInfo });`,
+    );
+  });
+
+  it("adds a testInfo parameter to the test callback so a judge call can attach its verdict", () => {
+    const script = emitPlaywrightDraft({
+      actions: [],
+      testName: "sample",
+      judgements: [
+        { step: { id: "step-01", source: "spec", judgeByLlm: "c" }, afterActionIndex: -1 },
+      ],
+    });
+    expect(script).toContain(`test("sample", async ({ page }, testInfo) => {`);
   });
 
   it("omits the selector when the claim reads the whole page", () => {
@@ -393,7 +421,7 @@ describe("emitPlaywrightDraft — judgements", () => {
         },
       ],
     });
-    expect(script).toContain(`await judgeByLlm(page, "the page apologises");`);
+    expect(script).toContain(`await judgeByLlm(page, "the page apologises", { testInfo });`);
   });
 
   it("emits a claim before the actions of the step that follows it", () => {
@@ -427,7 +455,8 @@ describe("emitPlaywrightDraft — judgements", () => {
       ],
     });
     expect(script).toContain(
-      'await judgeByLlm(page, `the reply names ${process.env.TENANT ?? ""}`, `#${process.env.SLOT ?? ""}`);',
+      'await judgeByLlm(page, `the reply names ${process.env.TENANT ?? ""}`, ' +
+        '{ from: `#${process.env.SLOT ?? ""}`, testInfo });',
     );
   });
 
@@ -442,7 +471,7 @@ describe("emitPlaywrightDraft — judgements", () => {
         },
       ],
     });
-    expect(script).toContain('await judgeByLlm(page, "the answer mentions $USD");');
+    expect(script).toContain('await judgeByLlm(page, "the answer mentions $USD", { testInfo });');
   });
 
   it("raises the test's own timeout, which a model round trip was not sized for", () => {
@@ -459,6 +488,182 @@ describe("emitPlaywrightDraft — judgements", () => {
 
   it("leaves the import out when there is nothing to judge", () => {
     expect(emit([{ action: "navigate", value: "/" }])).not.toContain("ccqa/judge");
+  });
+});
+
+describe("emitPlaywrightDraft — a project's own conventions", () => {
+  const recorded = [
+    { action: "navigate", value: "https://example.test/todos" },
+    { action: "fill", locator: { by: "label", value: "Title" }, value: "item-${CCQA_RUN_ID}" },
+  ] as const;
+
+  it("opens with the project's header and tags the test's name", () => {
+    const script = emitPlaywrightDraft({
+      actions: [...recorded],
+      testName: "Add a todo item",
+      header: "// sheet: https://example.test/sheet row 1030",
+      titleSuffix: " @high",
+    });
+    expect(script.startsWith("// sheet: https://example.test/sheet row 1030\n\nimport")).toBe(true);
+    expect(script).toContain(`test("Add a todo item @high", async ({ page }) => {`);
+  });
+
+  it("names the unique value the project's way, evaluated once per attempt", () => {
+    const script = emitPlaywrightDraft({
+      actions: [...recorded],
+      testName: "Add a todo item",
+      runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
+    });
+    expect(script).toContain(`import { uniqueId } from "./utils";`);
+    // Nothing undoes anything here, so there is no guard to keep — only the
+    // value the steps read.
+    expect(script).toContain("uniqueValue = uniqueId();");
+    expect(script).not.toContain("createdSomething");
+    // The recorded `${CCQA_RUN_ID}` now reads the project's value, and no
+    // environment read is left in the test.
+    expect(script).toContain("`item-${uniqueValue}`");
+    expect(script).not.toContain("process.env.CCQA_RUN_ID");
+  });
+
+  it("undoes what it created in afterEach, and nothing when it created nothing", () => {
+    const script = emitPlaywrightDraft({
+      actions: [...recorded],
+      testName: "Add a todo item",
+      runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
+      cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
+    });
+    expect(script).toContain("test.afterEach(");
+    expect(script).toContain("if (!createdSomething) return;");
+    expect(script).toContain(`await page.getByRole("button", { name: "Delete" }).first().click();`);
+  });
+
+  // The guard is only worth anything if it is still undefined while the route
+  // is on its way to creating something: assigning at the top of the test made
+  // every failed attempt run the cleanup.
+  it("marks the value created only once the route has submitted it", () => {
+    const script = emitPlaywrightDraft({
+      actions: [
+        ...recorded,
+        { action: "click", locator: { by: "role", value: "button", name: "Add" } },
+        { action: "assert", assert: "text_visible", value: "item-${CCQA_RUN_ID}" },
+      ],
+      testName: "Add a todo item",
+      stepMarkers: [
+        { actionIndex: 0, stepId: "step-01", source: "spec" },
+        { actionIndex: 2, stepId: "step-02", source: "spec" },
+        { actionIndex: 3, stepId: "step-03", source: "spec" },
+      ],
+      stepEvidence: false,
+      runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
+      cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
+    });
+    const body = script.split("\n").map((l) => l.trim());
+    const submit = body.findIndex((l) => l.includes(`name: "Add"`));
+    const assign = body.indexOf("createdSomething = true;");
+    const check = body.findIndex((l) => l.startsWith("await expect("));
+    // After the click that created it, and before the step that reads it back.
+    expect(submit).toBeGreaterThan(-1);
+    expect(assign).toBe(submit + 1);
+    expect(check).toBeGreaterThan(assign);
+  });
+
+  // The shape that actually lost data: the step that submits also checks the
+  // result. Put the flag after that check and a run whose creation succeeded
+  // but whose check failed skips its own undo — which is the run the undo is
+  // for. The checking is not part of the act.
+  it("marks it created before the step's own checks, not after them", () => {
+    const script = emitPlaywrightDraft({
+      actions: [
+        ...recorded,
+        { action: "click", locator: { by: "role", value: "button", name: "Add" } },
+        { action: "assert", assert: "text_visible", value: "Saved" },
+        { action: "assert", assert: "text_visible", value: "item-${CCQA_RUN_ID}" },
+      ],
+      testName: "Add a todo item",
+      stepMarkers: [
+        { actionIndex: 0, stepId: "step-01", source: "spec" },
+        { actionIndex: 2, stepId: "step-02", source: "spec" },
+      ],
+      stepEvidence: false,
+      runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
+      cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
+    });
+    const body = script.split("\n").map((l) => l.trim());
+    const submit = body.findIndex((l) => l.includes(`name: "Add"`));
+    const assign = body.indexOf("createdSomething = true;");
+    const firstCheck = body.findIndex((l) => l.startsWith("await expect("));
+    expect(assign).toBe(submit + 1);
+    expect(firstCheck).toBeGreaterThan(assign);
+  });
+
+  // Both shapes exist in real suites: of 46 hand-written teardowns in one,
+  // 44 assert nothing and one checks that the undo took. Which is right is
+  // the project's call, so it states it and ccqa emits what it asked for.
+  it("emits the undo's actions only when the project forbids expect there", () => {
+    const cleanup = {
+      actions: [
+        { action: "click", locator: { by: "role", value: "button", name: "Delete" } },
+        { action: "assert", assert: "text_visible", value: "Deleted" },
+      ] as RecordedAction[],
+    };
+    const common = {
+      actions: [...recorded],
+      testName: "Add a todo item",
+      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
+      stepEvidence: false,
+      cleanup,
+    };
+    expect(emitPlaywrightDraft(common)).toContain("Deleted");
+    const without = emitPlaywrightDraft({ ...common, allowExpectInCleanup: false });
+    expect(without).not.toContain("Deleted");
+    // The undo itself still runs — only its checking is gone.
+    expect(without).toContain(`name: "Delete"`);
+  });
+
+  // The shape a recording produced: the agent typed a value, saw it was wrong,
+  // and typed again — and the first value was another case's name, which the
+  // generated test then carried. `fill` replaces, so nothing could see it.
+  it("drops a fill the next action overwrites", () => {
+    const field = { by: "label", value: "Title" } as const;
+    const script = emitPlaywrightDraft({
+      actions: [
+        { action: "fill", locator: field, value: "wrong", stepId: "step-01" },
+        { action: "fill", locator: field, value: "right", stepId: "step-01" },
+      ] as RecordedAction[],
+      testName: "Add a todo item",
+      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
+      stepEvidence: false,
+    });
+    expect(script).not.toContain("wrong");
+    expect(script).toContain("right");
+  });
+
+  it("keeps both when something between them could see the first", () => {
+    const field = { by: "label", value: "Title" } as const;
+    const script = emitPlaywrightDraft({
+      actions: [
+        { action: "fill", locator: field, value: "first", stepId: "step-01" },
+        { action: "assert", assert: "text_visible", value: "first", stepId: "step-01" },
+        { action: "fill", locator: field, value: "second", stepId: "step-01" },
+      ] as RecordedAction[],
+      testName: "Add a todo item",
+      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
+      stepEvidence: false,
+    });
+    expect(script).toContain("first");
+    expect(script).toContain("second");
+  });
+
+  it("drops the capture calls when the target captures no step evidence", () => {
+    const script = emitPlaywrightDraft({
+      actions: [...recorded],
+      testName: "Add a todo item",
+      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
+      stepEvidence: false,
+    });
+    expect(script).toContain("// step: step-01 [spec]");
+    expect(script).not.toContain("ccqaStepBefore");
+    expect(script).not.toContain("ccqa/step-evidence");
   });
 });
 
@@ -483,7 +688,9 @@ describe("an injected call's pattern", () => {
 
   it("holds the claim text but not the page it is judged on", () => {
     const claim = judgeCall({ id: "s", source: "spec", judgeByLlm: "the reply is concrete (enough)" }).pattern;
-    expect(claim.test(`await judgeByLlm(tab, "the reply is concrete (enough)");`)).toBe(true);
-    expect(claim.test(`await judgeByLlm(page, "the reply is vague");`)).toBe(false);
+    expect(claim.test(`await judgeByLlm(tab, "the reply is concrete (enough)", { testInfo });`)).toBe(
+      true,
+    );
+    expect(claim.test(`await judgeByLlm(page, "the reply is vague", { testInfo });`)).toBe(false);
   });
 });

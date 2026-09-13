@@ -13,6 +13,7 @@ authoritative for flags.
 | `ccqa record <feature/spec>` | Drive the browser once and compile the recording into test code. Use `--auto-fix auto` in CI, where nobody can answer a prompt. See [Auto-fix](./auto-fix.md). |
 | `ccqa record <feature/spec> --report-to-hub` | Leave a `kind: record` run on the hub saying the spec was recorded and what that spent, so a budget summed over the hub's runs counts it. It advances no ledger. See [What leaves a run on the hub](./running.md#what-leaves-a-run-on-the-hub). |
 | `ccqa generate <feature/spec>` | Re-emit test code from an existing recording, or straight from the spec for spec-input targets like `runn`. See [Generation targets](./targets.md). |
+| `ccqa evidence <case>` | Write the review table for one case: what it says, what was recorded, what the test decides, and the screenshots. See [`ccqa evidence`](./targets.md#ccqa-evidence--the-table-a-reviewer-reads-instead-of-the-test). |
 | `ccqa perspectives` | Rebuild the project's coverage inventory on the hub. See [spec.yaml reference](./spec.md#inventory-coverage-with-perspectives). |
 
 ## Running
@@ -23,10 +24,11 @@ authoritative for flags.
 | `ccqa run --only-affected-by <ref>` | Replay only the specs the diff against `<ref>` reaches. See [Scoping with `--only-affected-by`](./running.md#scoping-with---only-affected-by). |
 | `ccqa run --only-hub-rerun-needed` | Replay only the specs the hub answers `rerunNeeded` for: cleared by the audit, and out of date. A spec the audit rejected, or whose last run failed, answers `needsRepair` and is never taken. See [Running only what needs a re-run](./running.md#running-only-what-needs-a-re-run). |
 | `ccqa run --on-fail-explain` | Give every failing spec a root-cause label across all four causes, in one call. See [Failure triage](./running.md#failure-triage). |
+| `ccqa run --report-junit <file>` | Also write the run's results as JUnit XML, for a CI or test-management tool that reads that format. |
 | `ccqa run --on-fail-explain-rerun auto` | Run a failure the classifier could not pin down a second time, and label it from whether it reproduces. Costs a full spec execution each; the spec stays failed either way. See [Rerunning a failure](./running.md#rerunning-a-failure). |
-| `ccqa audit [feature/spec]` | Audit specs against the codebase without running a browser. See [Drift detection](./running.md#drift-detection). |
+| `ccqa audit [case]` | Audit test cases against the codebase without running a browser. Reads the product's own source when [`sourceRoots`](./running.md#sourceroots--where-the-product-actually-lives) names it. `--brief <dir>` also writes one JSON file per finding. See [Drift detection](./running.md#drift-detection). |
 | `ccqa audit --only-hub-audit-needed` | Audit only the specs a deploy has reached since the audit last read them, plus every spec never audited and every spec whose drift entry is still open. See [Auditing only what the deploy reached](./running.md#auditing-only-what-the-deploy-reached). |
-| `ccqa select-specs --base <ref>` | Answer which specs a range reaches, and nothing else — the machinery behind `--only-affected-by`, usable on its own. Intersects the diff with measured coverage from the hub, so it needs a hub connection. See [Asking the question on its own](./running.md#asking-the-question-on-its-own). |
+| `ccqa select-specs --base <ref>` | Answer which cases a range reaches, and nothing else — the machinery behind `--only-affected-by`, usable on its own. Intersects the diff with measured coverage from the hub, or from the last local run report when there is no hub. `--against <base>..<head>` writes the range as one flag, `--repo` reads it from another checkout, `--format paths` prints the selected tests' paths for a test runner. See [Asking the question on its own](./running.md#asking-the-question-on-its-own). |
 
 Both `run` and `audit` accept `--report-format github` to annotate a pull request.
 `run` also takes `--dry-run`, which prints the selection and stops — worth a

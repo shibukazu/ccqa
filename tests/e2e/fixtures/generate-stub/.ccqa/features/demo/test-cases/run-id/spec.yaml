@@ -1,0 +1,6 @@
+title: Create a run-scoped note
+steps:
+  - instruction: open the app and fill a title unique to this run
+    expected: the title field holds the run-scoped value
+  - instruction: confirm the note appears
+    expected: the run-scoped title is visible

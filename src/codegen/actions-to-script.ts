@@ -1,6 +1,7 @@
 import { envRefsToJsExpression } from "../runtime/env-vars.ts";
-import { locatorToSelector, toAgentBrowserArgs, type AbToken } from "../ir/to-agent-browser.ts";
+import { describeLocator, locatorToSelector, roleProbeTokens, toAgentBrowserArgs, type AbToken } from "../ir/to-agent-browser.ts";
 import type { RecordedAction } from "../ir/types.ts";
+import { renderStepComment } from "./step-comment.ts";
 
 /**
  * Convert a recording (IR) into a vitest-compatible test.spec.ts.
@@ -29,6 +30,12 @@ export interface StepMarker {
   stepId: string;
   /** "spec" or block name — included in the comment for traceability. */
   source: string;
+  /**
+   * The step as its own document states it. Present for a case the project
+   * wrote; the comment then cites it, so a reviewer reads the generated code
+   * against the case without opening both.
+   */
+  text?: string;
 }
 
 export interface EmptyStepNotice {
@@ -150,7 +157,7 @@ function actionsToLines(
     if (marker) {
       if (openMarker) lines.push(`abStepEvidence(${j(openMarker.stepId)}, ${j(openMarker.source)});`);
       if (lines.length > 0) lines.push("");
-      lines.push(`// step: ${marker.stepId} [${marker.source}]`);
+      lines.push(renderStepComment(marker));
       // Tell the runtime which step we're inside so fail() can attribute
       // failures back to it. abStepEvidence at the end of the step clears it.
       lines.push(`__setCurrentStep(${j(marker.stepId)}, ${j(marker.source)});`);
@@ -213,7 +220,7 @@ function fillValueOf(action: RecordedAction): string | null {
 
 function appendEmptyStepNotice(lines: string[], notice: EmptyStepNotice): void {
   if (lines.length > 0) lines.push("");
-  lines.push(`// step: ${notice.stepId} [${notice.source}]`);
+  lines.push(renderStepComment(notice));
   lines.push(`// [warn] all actions for this step were dropped during post-trace validation.`);
   lines.push(`// [warn] the generated test does NOT exercise step ${notice.stepId}. Re-run`);
   lines.push(`// [warn] \`ccqa trace\` or add manual assertions if this step is load-bearing.`);
@@ -255,10 +262,18 @@ function isStateSelector(selector: string | undefined): boolean {
 }
 
 /** The raw selector-string form of an action's locator, when it has one. */
+/**
+ * The selector an `ab(...)` line can carry, or nothing.
+ *
+ * Only `css` and `text` have one. `locatorToSelector` falls back to the raw
+ * value for the rest, which renders a role locator as the bare word `button` —
+ * an assertion every page with a button passes. Nothing here is better than
+ * that: the caller then leaves a breadcrumb instead of a tautology.
+ */
 function plainSelectorOf(action: RecordedAction): string | undefined {
-  return action.locator && action.index === undefined
-    ? locatorToSelector(action.locator)
-    : undefined;
+  const loc = action.locator;
+  if (!loc || action.index !== undefined) return undefined;
+  return loc.by === "css" || loc.by === "text" ? locatorToSelector(loc) : undefined;
 }
 
 /**
@@ -339,7 +354,10 @@ function actionToLine(action: RecordedAction): string | null {
       // LLM may omit locator/value fields and put the text in observation instead
       // Fall back to observation when the specific field is missing
       const val = action.value ?? action.observation;
-      const sel = plainSelectorOf(action) ?? action.observation;
+      // `observation` stands in only when there was no locator at all: prose
+      // handed to `get count` parses as nothing and passes a "not visible"
+      // assertion for ever.
+      const sel = plainSelectorOf(action) ?? (action.locator ? undefined : action.observation);
       const comment = action.observation ? `// Assert: ${action.observation}` : null;
       let assertLine: string | null = null;
       switch (action.assert) {
@@ -349,9 +367,18 @@ function actionToLine(action: RecordedAction): string | null {
         case "text_not_visible":
           if (val) assertLine = `abAssertNotVisible(${jExpr("text=" + val)}, 180_000);`;
           break;
-        case "element_visible":
-          if (sel) assertLine = `abAssertVisible(${jExpr(sel)});`;
+        case "element_visible": {
+          // The one branch that knows what to emit for a role locator; every
+          // other gets `undefined` from `plainSelectorOf` and says so.
+          const role = action.locator?.by === "role" ? action.locator : null;
+          if (role?.name) {
+            const tokens = roleProbeTokens(role.value, role.name, role.exact === true);
+            assertLine = `ab(${tokens.map(renderToken).join(", ")});`;
+          } else if (sel) {
+            assertLine = `abAssertVisible(${jExpr(sel)});`;
+          }
           break;
+        }
         case "element_not_visible":
           if (sel) assertLine = `abAssertNotVisible(${jExpr(sel)});`;
           break;
@@ -378,7 +405,11 @@ function actionToLine(action: RecordedAction): string | null {
           break;
       }
       if (comment && assertLine) return `${comment}\n  ${assertLine}`;
-      return assertLine ?? comment;
+      if (assertLine) return assertLine;
+      // An assert `ir.json` holds that this target cannot express. Said out
+      // loud: silence reads as a case that never made the check.
+      const breadcrumb = unemittableAssertMarker(action);
+      return comment ? `${comment}\n  ${breadcrumb}` : breadcrumb;
     }
 
     default: {
@@ -411,6 +442,14 @@ function renderToken(token: AbToken): string {
  * spec author cared about. The marker is a TS comment so the file still
  * parses, but `grep -n "action dropped"` surfaces the issue in CI logs.
  */
+/** Breadcrumb for a recorded assert with no form this target can run. */
+function unemittableAssertMarker(action: RecordedAction): string {
+  const ctx = action.stepId ? ` (stepId=${action.stepId})` : "";
+  const how = action.locator ? describeLocator(action.locator) : "no locator";
+  return `// [warn] assert not emitted: ${action.assert ?? "?"} by ${how}${ctx} — ` +
+    `this target has no runnable form for it. Re-record the step addressing the element another way.`;
+}
+
 function droppedActionMarker(action: RecordedAction): string {
   const ctx = action.stepId ? ` (stepId=${action.stepId})` : "";
   return `// [warn] action dropped: ${action.action}${ctx} — ir.json is missing its locator. Re-run \`ccqa record\` to regenerate.`;

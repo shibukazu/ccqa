@@ -25,6 +25,19 @@ describe("compileGlob", () => {
     expect(matches("src/features", "src/features/**")).toBe(true);
   });
 
+  // Without the boundary, `src/features/**` also claims `src/features-old/x`:
+  // an over-selection for a drift root, and a silent clearance for a coverage
+  // exclusion, which is what decides whether a spec runs at all.
+  test("** ends on a path separator, not mid-segment", () => {
+    expect(matches("src/features-old/x.tsx", "src/features/**")).toBe(false);
+    expect(matches("src/featuresX", "src/features/**")).toBe(false);
+    expect(matches("src/a/index.ts", "src/**/index.ts")).toBe(true);
+    expect(matches("src/index.ts", "src/**/index.ts")).toBe(true);
+    expect(matches("src/myindex.ts", "src/**/index.ts")).toBe(false);
+    expect(matches("a/x.ts", "**/x.ts")).toBe(true);
+    expect(matches("ax.ts", "**/x.ts")).toBe(false);
+  });
+
   test("* does not cross path separators", () => {
     expect(matches("src/a.ts", "src/*.ts")).toBe(true);
     expect(matches("src/nested/a.ts", "src/*.ts")).toBe(false);

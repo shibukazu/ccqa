@@ -75,8 +75,11 @@ what it compiles into:
 each step's `expected` — for UIs a fixed recording would break on.
 
 vitest and agent-browser are peer dependencies of the default target; a
-project on an external target alone needs just `ccqa` and that tool.
-`runCommand` and reusing your existing page objects:
+project on an external target alone needs just `ccqa` and that tool. A
+target can also be defined entirely in config, with no code of its own, to
+match a framework your repo already uses — and read its cases from
+markdown you already write instead of `spec.yaml`. `runCommand`, reusing
+your existing page objects, and `kind: external`:
 [Generation targets](./docs/targets.md).
 
 ## Audit, then run
@@ -107,11 +110,15 @@ So ccqa asks the cheap question before the expensive one:
                                   unverified until then
 ```
 
-`ccqa audit` reads each spec against the source — cents per spec, no
+`ccqa audit` reads each test case against the source — cents per case, no
 browser — and records every verdict on the **hub**, the small server
 that holds what the team and CI share. Stale generated code is
-re-recorded; a stale spec goes to a human and stays **unverified** —
+re-recorded; a stale case goes to a human and stays **unverified** —
 neither passing nor failing — until repaired.
+
+When the application lives in a different checkout from the tests, name it
+with `sourceRoots` in `.ccqa/config.yaml` and the audit reads it there. See
+[Drift detection](./docs/running.md#drift-detection).
 
 `ccqa run --only-hub-rerun-needed` asks the hub which specs are worth
 running: cleared by the audit *and* invalidated by a deploy. A drifted spec —

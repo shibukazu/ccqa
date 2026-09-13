@@ -33,6 +33,12 @@ export interface AbActionEvent {
   stepId?: string;
   /** Raw value of the command's `CCQA_ASSERT=<marker>` env prefix, if any. */
   assertMarker?: string;
+  /**
+   * The command's `CCQA_SECRET=1` env prefix: what it typed is a secret. The
+   * value is dropped unless it resolved to a `${VAR}` — see
+   * `detectUnstableLiterals`.
+   */
+  secret?: boolean;
 }
 
 export interface ClaudeInvokeOptions {
@@ -76,6 +82,12 @@ export interface ClaudeInvokeOptions {
    * point Claude at a specific package inside a monorepo.
    */
   cwd?: string;
+  /**
+   * Directories the SDK's tools may read besides `cwd`, as absolute paths.
+   * The product an audit checks a test against is often a sibling checkout,
+   * and a read outside the working directory is refused without this.
+   */
+  additionalDirectories?: string[];
   /** Called when an agent-browser command is intercepted. */
   onAbAction?: (event: AbActionEvent) => void;
   /** Called when an agent-browser command fails (exit non-zero); allows rolling back the last AB_ACTION. */
@@ -251,6 +263,7 @@ export async function invokeClaudeStreaming(
     silenceBashLog = false,
     envScrubMap = [],
     relaxAbConstraints = false,
+    additionalDirectories,
   } = options;
 
   const resolvedModel = resolveModel(model);
@@ -264,9 +277,14 @@ export async function invokeClaudeStreaming(
   // so PostToolUse and PostToolUseFailure can't both fire `onAbActionFailed`
   // for the same tool call (SDK order between the two channels is unspecified).
   let lastAbToolUseId: string | null = null;
+  // What the probe has to have printed for the marker on it to be true. A
+  // marked probe exits 0 whatever it answers, so without this the record would
+  // hold an assertion the page contradicted at the moment it was made.
+  let lastAbAnswerHolds: ((stdout: string) => boolean) | null = null;
   const claimAbToolUse = (toolUseId: string): boolean => {
     if (toolUseId !== lastAbToolUseId) return false;
     lastAbToolUseId = null;
+    lastAbAnswerHolds = null;
     return true;
   };
 
@@ -286,6 +304,7 @@ export async function invokeClaudeStreaming(
     abortController,
     ...(resolvedModel ? { model: resolvedModel } : {}),
     ...(cwd ? { cwd } : {}),
+    ...(additionalDirectories?.length ? { additionalDirectories } : {}),
     env: mergedEnv,
     ...(mcpServers ? { mcpServers } : {}),
     ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
@@ -368,11 +387,14 @@ export async function invokeClaudeStreaming(
                         (assertMarker !== null ? extractObservationAbAction(cmd) : null);
                     if ((ab !== null || assertMarker !== null) && onAbAction) {
                       lastAbToolUseId = input.tool_use_id;
+                      lastAbAnswerHolds =
+                        assertMarker === null ? null : markerHolds(assertMarker, ab);
                       const stepId = extractCcqaStepFromBashCommand(cmd);
                       onAbAction({
                         ...(ab !== null ? { abAction: ab } : {}),
                         ...(stepId ? { stepId } : {}),
                         ...(assertMarker !== null ? { assertMarker } : {}),
+                        ...(hasCcqaSecretPrefix(cmd) ? { secret: true } : {}),
                       });
                     } else {
                       lastAbToolUseId = null;
@@ -399,7 +421,14 @@ export async function invokeClaudeStreaming(
                   async (input: HookInput) => {
                     if (input.hook_event_name !== "PostToolUse") return {};
                     if (input.tool_name !== "Bash") return {};
-                    if (!isBashToolResponseError(input.tool_response)) return {};
+                    const holds = lastAbAnswerHolds;
+                    const output = bashToolOutput(input.tool_response);
+                    // A probe that ran and answered against its marker is a
+                    // failed check, not a failed command: the assertion it
+                    // would have recorded was false when it was made.
+                    const contradicted =
+                      holds !== null && output !== null && !holds(output);
+                    if (!isBashToolResponseError(input.tool_response) && !contradicted) return {};
                     if (claimAbToolUse(input.tool_use_id) && onAbActionFailed) {
                       onAbActionFailed();
                     }
@@ -613,6 +642,46 @@ export function isBashToolResponseError(tool_response: unknown): boolean {
   return false;
 }
 
+/** The Bash tool's own output, when the response carries one. */
+export function bashToolOutput(tool_response: unknown): string | null {
+  if (tool_response === null || typeof tool_response !== "object") return null;
+  const output = (tool_response as Record<string, unknown>)["output"];
+  return typeof output === "string" ? output : null;
+}
+
+/**
+ * Whether a marked probe's printed answer bears its marker out.
+ *
+ * `get count`, `get url` and `is` all exit 0 whatever they answer, so the
+ * exit code says only that the probe ran. The marker says what the step
+ * expected; this reads the answer and says whether it agreed. An unknown
+ * marker, or a probe with nothing to compare, answers null — nothing to
+ * check is not the same as a check that failed.
+ */
+export function markerHolds(
+  marker: string,
+  abAction: string | null,
+): ((stdout: string) => boolean) | null {
+  if (marker.startsWith("url_contains:")) {
+    const substring = marker.slice("url_contains:".length);
+    return substring ? (out) => out.includes(substring) : null;
+  }
+  const parts = abAction === null ? [] : abAction.split("|");
+  if (parts[1] === "get_count") {
+    const present = (out: string): number => Number.parseInt(out.trim(), 10);
+    if (marker === "element_visible") return (out) => present(out) > 0;
+    if (marker === "element_not_visible") return (out) => present(out) === 0;
+    return null;
+  }
+  if (parts[1] === "is") {
+    const yes = marker === "element_enabled" || marker === "element_checked";
+    const no = marker === "element_disabled" || marker === "element_unchecked";
+    if (!yes && !no) return null;
+    return (out) => out.trim() === String(yes);
+  }
+  return null;
+}
+
 /**
  * Detect `agent-browser ... find first|last|nth <bare-tag> <action>`. A bare
  * tag inside a *positional* finder matches every element of that tag on the
@@ -757,11 +826,23 @@ const STEP_SLUG_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
  * to the STEP_START text protocol.
  */
 export function extractCcqaStepFromBashCommand(cmd: string): string | null {
+  const value = ccqaEnvPrefix(cmd, "CCQA_STEP");
+  return value !== null && STEP_SLUG_RE.test(value) ? value : null;
+}
+
+/**
+ * The value of a `CCQA_*` env prefix on the agent-browser invocation in `cmd`.
+ *
+ * The three markers the trace protocol carries this way — the step, the assert,
+ * the secret — differ only in what they do with the value, so how a prefix is
+ * found is written once: changing what counts as an invocation (a compound
+ * command, another leading assignment) must not reach two of them and miss one.
+ */
+function ccqaEnvPrefix(cmd: string, name: string): string | null {
   for (const statement of splitShellStatements(cmd)) {
     const { env, command } = splitLeadingEnvAssignments(statement);
     if (!isAgentBrowserHead(command)) continue;
-    const value = env.get("CCQA_STEP");
-    return value !== undefined && STEP_SLUG_RE.test(value) ? value : null;
+    return env.get(name) ?? null;
   }
   return null;
 }
@@ -778,13 +859,19 @@ export function extractCcqaStepFromBashCommand(cmd: string): string | null {
  * absent or empty.
  */
 export function extractCcqaAssertFromBashCommand(cmd: string): string | null {
-  for (const statement of splitShellStatements(cmd)) {
-    const { env, command } = splitLeadingEnvAssignments(statement);
-    if (!isAgentBrowserHead(command)) continue;
-    const value = env.get("CCQA_ASSERT");
-    return value !== undefined && value.length > 0 ? value : null;
-  }
-  return null;
+  const value = ccqaEnvPrefix(cmd, "CCQA_ASSERT");
+  return value !== null && value.length > 0 ? value : null;
+}
+
+/**
+ * Whether the agent-browser invocation in `cmd` carries `CCQA_SECRET=1`,
+ * which the trace prompt asks for on a command that types into a password
+ * field. The same channel as `CCQA_STEP` and `CCQA_ASSERT`, for the same
+ * reason: the command line is the one place the fact is observable.
+ */
+export function hasCcqaSecretPrefix(cmd: string): boolean {
+  const value = ccqaEnvPrefix(cmd, "CCQA_SECRET");
+  return value !== null && value !== "" && value !== "0";
 }
 
 /**
@@ -896,7 +983,8 @@ export function extractAbActionFromBashCommand(cmd: string): string | null {
 }
 
 /**
- * Wire lines for the observation-only probes `get count <sel>` / `get url`.
+ * Wire lines for the observation-only probes `get count <sel>`, `get url` and
+ * `is <state> <sel>`.
  * These commands read state without mutating it, so they have no place in
  * the replay sequence and `extractAbActionFromBashCommand` ignores them.
  * They matter only when a `CCQA_ASSERT=<marker>` env prefix declares the
@@ -906,13 +994,19 @@ export function extractAbActionFromBashCommand(cmd: string): string | null {
  * unobserved as before.
  */
 export function extractObservationAbAction(cmd: string): string | null {
-  if (extractAbSubcommand(cmd) !== "get") return null;
+  const sub = extractAbSubcommand(cmd);
+  if (sub !== "get" && sub !== "is") return null;
   const abIdx = cmd.indexOf("agent-browser");
   const rest = cmd.slice(abIdx + "agent-browser".length).trim();
   const parts = shellTokenize(rest).filter(t => !/^(2?>|[|&>])/.test(t));
   let i = 0;
   while (i < parts.length && parts[i]!.startsWith("-")) { i += 2; }
   const args = parts.slice(i + 1);
+  if (sub === "is") {
+    // `is enabled|checked|visible <sel>` answers on stdout and exits 0 either
+    // way, so only a marker makes it an assertion — the same shape as `get`.
+    return args[0] && args[1] ? `AB_ACTION|is|${args[0]}|${args[1]}` : null;
+  }
   if (args[0] === "count" && args[1]) return `AB_ACTION|get_count|${args[1]}`;
   if (args[0] === "url") return "AB_ACTION|get_url";
   return null;
@@ -968,6 +1062,12 @@ export function extractFindAbAction(args: string[]): string | null {
     } else if (tok === "--exact") {
       exact = "exact";
     } else if (FIND_ACTION_SET.has(tok)) {
+      action = tok;
+    } else if (tok === "text" && action === "" && locator === "role") {
+      // `find role <role> text` reads an element without touching it, so it is
+      // no recordable action — but a `CCQA_ASSERT` marker turns it into a
+      // presence assertion, and the wire line has to carry it. Only before an
+      // action and only for a role, so `fill "text"` keeps its value.
       action = tok;
     } else if (action) {
       // After the action token, the remaining positional is fill text.

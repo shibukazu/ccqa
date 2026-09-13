@@ -37,7 +37,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0013](0013-one-verification-environment.md) | One verification environment; a profile is a value set, not an environment | accepted |
 | [0014](0014-two-axes-one-verdict.md) | Two axes, one verdict; work in flight is a claim, not a state | accepted (execution axis amended by 0020) |
 | [0015](0015-serial-groups-in-one-place.md) | Serial groups live in one place: `.ccqa/config.yaml`, not each spec | accepted |
-| [0016](0016-one-vocabulary-two-answerable-subsets.md) | One vocabulary, two answerable subsets: the run answers all four causes, the audit only two | accepted |
+| [0016](0016-one-vocabulary-two-answerable-subsets.md) | One vocabulary, two answerable subsets: the run answers all four causes, the audit only two | accepted (the audit's subset widened by 0030) |
 | [0017](0017-records-the-hub-does-not-judge.md) | Records the hub stores but does not judge: a run kind that advances no ledger, and an opaque key set | accepted |
 | [0018](0018-the-bump-answers-the-hub.md) | The bump answers the hub, and the diff checks the answer | accepted |
 | [0019](0019-what-a-person-may-overrule.md) | A person may overrule a judgement, never a result | accepted (lapse behaviour settled by 0020) |
@@ -49,6 +49,11 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0025](0025-source-maps-for-a-deployed-commit.md) | Source maps for a deployed commit live on the hub | accepted |
 | [0026](0026-measured-edges-are-a-ledger.md) | Measured edges are a ledger, and an unmeasured spec runs | accepted |
 | [0027](0027-a-row-is-placed-by-its-own-window.md) | A row is placed against the deploy log by its own window | accepted |
+| [0028](0028-a-derived-test-path-and-a-recorded-route.md) | The test path is derived; the recording is the route | accepted |
+| [0029](0029-ccqa-ships-mechanism-the-project-supplies-the-facts.md) | ccqa ships mechanism; the project supplies the facts | accepted |
+| [0030](0030-the-audit-reads-the-product.md) | The audit reads the product, and may name it | accepted |
+| [0031](0031-a-recording-carries-references-not-values.md) | A recording carries references, never resolved values | accepted |
+| [0032](0032-ccqa-runs-a-generated-case-only-to-measure-it.md) | ccqa runs a generated case only to measure it | accepted |
 
 ## Template
 
