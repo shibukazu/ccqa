@@ -730,6 +730,10 @@ function splitByMode(
  *     predictable.
  *   - Steps without a stepId (`NO_STEP_ID`) are skipped — they share the
  *     v0.4 "rest of trace" semantics and rescuing them would over-fire.
+ *   - A step comes back only when everything in it that ran, ran clean. Its
+ *     unverifiable actions ride along on that; while one of its operations
+ *     still fails they stay dropped, because the state they observe is state
+ *     the failing operation never produced.
  */
 interface RescuePassResult {
   kept: RecordedAction[];
@@ -764,18 +768,37 @@ function rescueLostSteps(
   const promoted: string[] = [];
   const rescuedIndices = new Set<number>();
   const rescuedSteps: string[] = [];
+  // Strict mode only. Lenient threads these reasons on to codegen, which reads
+  // the cascade wording as "never attempted, keep the line" — rewriting it
+  // there would drop lines over a failure that only the end-of-route state the
+  // rescue re-runs against produces.
+  const strict = (opts.mode ?? "lenient") === "strict";
   for (const [stepId, drops] of lostStepDrops.entries()) {
-    let anyForThisStep = false;
+    const replayed: number[] = [];
+    const unverifiable: number[] = [];
+    let stillFailing = false;
     for (const d of drops) {
       const outcome = runValidationAction(d.action, opts.sessionName, opts.envOverrides, patience);
       if (outcome.promoted) promoted.push(outcome.promoted);
-      if (outcome.skipped) continue;
-      if (outcome.ok) {
-        rescuedIndices.add(d.index);
-        anyForThisStep = true;
+      if (outcome.skipped) {
+        unverifiable.push(d.index);
+        continue;
       }
+      if (outcome.ok) {
+        replayed.push(d.index);
+        continue;
+      }
+      stillFailing = true;
+      // It ran alone and failed alone, so "skipped after a preceding action
+      // failed" is no longer what happened to it. A reason the main loop
+      // observed in sequence is left as it is: that one is still true, and it
+      // describes the run the route actually took.
+      if (strict && isCascadeReason(d.reason)) d.reason = outcome.reason;
     }
-    if (anyForThisStep) rescuedSteps.push(stepId);
+    if (replayed.length === 0) continue;
+    for (const i of replayed) rescuedIndices.add(i);
+    if (!stillFailing) for (const i of unverifiable) rescuedIndices.add(i);
+    rescuedSteps.push(stepId);
   }
   if (rescuedIndices.size === 0) return { kept, dropped, promoted };
 

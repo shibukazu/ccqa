@@ -116,9 +116,11 @@ export async function checkRecordedRouteReplays(
       `replaying ${input.recording.length} recorded action(s) against the application ` +
         `to check the route still holds...`,
     );
-    const route = replay(input.recording);
-    dropped = route.dropped;
-    promoted = route.promoted ?? [];
+    // Every recorded action, unstable-marked ones included — discounted at
+    // judgment (see `realFailures`' docstring below), not skipped here.
+    const replayed = replay(input.recording);
+    dropped = replayed.dropped;
+    promoted = replayed.promoted ?? [];
     // Only after a route that replayed whole. A cleanup locator is rarely
     // scoped to the run id, so undoing a route that created nothing removes
     // whatever was already there.
@@ -126,16 +128,8 @@ export async function checkRecordedRouteReplays(
       log.info(`replaying the ${cleanup.length} recorded cleanup action(s)...`);
       const undone = replay(cleanup);
       cleanupPromoted = undone.promoted ?? [];
-      if (undone.dropped.length > 0) {
-        // Cascade victims were never attempted, so naming one as left behind
-        // points at an action that changed nothing.
-        const failed = undone.dropped.filter((d) => !isCascadeReason(d.reason));
-        log.warn(
-          `the recorded cleanup did not fully replay (${failed.length || undone.dropped.length} ` +
-            `action(s)) — this check may have left ` +
-            `${describeStepAction((failed[0] ?? undone.dropped[0]!).action)} behind`,
-        );
-      }
+      const warning = cleanupReplayWarning(undone.dropped);
+      if (warning !== null) log.warn(warning);
     }
   } finally {
     log.progressEnd();
@@ -153,34 +147,128 @@ export async function checkRecordedRouteReplays(
       cleanupPromoted.length > 0 ? cleanup : undefined,
     );
   }
-  if (dropped.length === 0) {
-    if (makesSomething && cleanup.length === 0) {
-      log.warn(
-        "this case records no cleanup, so what the check just created is still in the application",
-      );
-    }
-    log.meta("replay", "route still holds");
-    return null;
+  const verdict = judgeReplayedRoute(dropped, {
+    caseId: input.ref.id,
+    makesSomething,
+    hasCleanup: cleanup.length > 0,
+  });
+  if (verdict.refusal !== null) return verdict.refusal;
+  for (const warning of verdict.warnings) log.warn(warning);
+  log.meta("replay", "route still holds");
+  return null;
+}
+
+/**
+ * The drops that are evidence the route has moved.
+ *
+ * Two kinds are not. An action skipped in the wake of one that failed was
+ * never attempted, so it says nothing. An action the recording already marked
+ * `replayUnstable` failed its own post-trace validation too — codegen keeps it
+ * for the warning it emits, not as a check, and a route is not dead because a
+ * part already known to be unreliable still is. Discounted here, at judgment,
+ * rather than dropped from the replay: the mark says the action is unreliable,
+ * never that it has no effect, and the actions after it were recorded against
+ * a page it may well have changed.
+ */
+const ALREADY_UNSTABLE_REASON = "the recording already marked them unstable, or they follow one it did";
+
+function realFailures(dropped: readonly ValidationDrop[]): ValidationDrop[] {
+  return dropped.filter(
+    (d) => !isCascadeReason(d.reason) && d.action.replayUnstable !== true,
+  );
+}
+
+/**
+ * What the gate does with a replay's drops, decided apart from the browser.
+ *
+ * The two arms are exclusive by construction: a refused route has a reason and
+ * nothing else to say, and only a route that passes carries notes.
+ */
+export type RouteReplayVerdict =
+  | { refusal: string }
+  | { refusal: null; warnings: string[] };
+
+export interface RouteReplayContext {
+  /** The case to name in the re-record instruction. */
+  caseId: string;
+  /** Whether the route names what it creates after this run, and so just created one. */
+  makesSomething: boolean;
+  /** Whether the case records an undo. */
+  hasCleanup: boolean;
+}
+
+/** Read a strict replay's drops as a verdict on the route. */
+export function judgeReplayedRoute(
+  dropped: readonly ValidationDrop[],
+  ctx: RouteReplayContext,
+): RouteReplayVerdict {
+  const failed = realFailures(dropped);
+  if (failed.length > 0) {
+    // One action failing takes the rest of its step with it, so the count
+    // alone reads as a route that broke everywhere. What a reader needs first
+    // is the action that actually failed; the rest is the size of its wake.
+    // Discounted drops are left out of both: the recording already reports
+    // them, and repeating that here buries the failure being refused over.
+    const notReplayed = dropped.filter((d) => isCascadeReason(d.reason)).length;
+    return {
+      refusal:
+        `the recorded route no longer replays. The first action that failed is ` +
+        `${describeStepAction(failed[0]!.action)}` +
+        (notReplayed > 0 ? `, and ${notReplayed} later action(s) were not replayed at all` : "") +
+        `:\n${dropList(failed)}\n` +
+        (ctx.makesSomething && ctx.hasCleanup
+          ? `The recorded cleanup was not attempted — check the application for anything this left behind.\n`
+          : "") +
+        `Re-record with 'ccqa record ${ctx.caseId}'. Pass --no-replay to regenerate from the ` +
+        `saved route anyway (e.g. with no browser or no variables in this environment).`,
+    };
   }
-  // One action failing takes the rest of its step with it, so the count alone
-  // reads as a route that broke everywhere. What a reader needs first is the
-  // action that actually failed; the rest is the size of its wake.
-  const failed = dropped.filter((d) => !isCascadeReason(d.reason));
-  const cascaded = dropped.length - failed.length;
-  const first = failed[0] ?? dropped[0]!;
-  const failures = (failed.length > 0 ? failed : dropped)
+  const warnings: string[] = [];
+  if (ctx.makesSomething && !ctx.hasCleanup) {
+    warnings.push(
+      "this case records no cleanup, so what the check just created is still in the application",
+    );
+  } else if (ctx.makesSomething && dropped.length > 0) {
+    // The undo is attempted only after a route that replayed whole, so a route
+    // held up by the discount never reaches it. The verdict passes and the
+    // data stays — which reads as a clean run unless this says otherwise.
+    warnings.push(
+      "the recorded cleanup was not attempted — the route did not replay whole, so what the " +
+        "check just created is still in the application",
+    );
+  }
+  // Said rather than passed over in silence: a route held up entirely by the
+  // discount is one where nothing was checked, and that reads as a pass.
+  if (dropped.length > 0) {
+    warnings.push(
+      `${dropped.length} action(s) did not replay and none is counted against the route — ` +
+        `${ALREADY_UNSTABLE_REASON}:\n${dropList(dropped)}`,
+    );
+  }
+  return { refusal: null, warnings };
+}
+
+/**
+ * What to say about a cleanup that did not fully replay. A skipped or
+ * already-unstable action is not evidence the undo broke, so only one the
+ * replay ran and that failed can name what the check may not have undone.
+ */
+export function cleanupReplayWarning(dropped: readonly ValidationDrop[]): string | null {
+  if (dropped.length === 0) return null;
+  const failed = realFailures(dropped);
+  if (failed.length === 0) {
+    return `${dropped.length} recorded cleanup action(s) did not replay — ${ALREADY_UNSTABLE_REASON}`;
+  }
+  return (
+    `the recorded cleanup did not fully replay (${failed.length} action(s)) — this check may ` +
+    `have left ${describeStepAction(failed[0]!.action)} behind`
+  );
+}
+
+/** One drop per line, capped so a long list stays readable. */
+function dropList(drops: readonly ValidationDrop[]): string {
+  return drops
     .slice(0, 5)
     .map((d) => `  - ${describeStepAction(d.action)} — ${d.reason}`)
     .join("\n");
-  return (
-    `the recorded route no longer replays. The first action that failed is ` +
-    `${describeStepAction(first.action)}` +
-    (cascaded > 0 ? `, and ${cascaded} later action(s) were not replayed at all` : "") +
-    `:\n${failures}\n` +
-    (makesSomething && cleanup.length > 0
-      ? `The recorded cleanup was not attempted — check the application for anything this left behind.\n`
-      : "") +
-    `Re-record with 'ccqa record ${input.ref.id}'. Pass --no-replay to regenerate from the ` +
-    `saved route anyway (e.g. with no browser or no variables in this environment).`
-  );
 }

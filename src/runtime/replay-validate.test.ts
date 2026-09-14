@@ -1,6 +1,7 @@
 import { describe, expect, test, afterEach, beforeEach, vi } from "vitest";
 import { actionToAbArgs, isCascadeReason, validateActions } from "./replay-validate.ts";
 import { spawnAB, type Result } from "./spawn-ab.ts";
+import { judgeReplayedRoute } from "../cli/replay-gate.ts";
 import type { RecordedAction } from "../types.ts";
 
 vi.mock("./spawn-ab.ts", () => ({
@@ -365,6 +366,23 @@ describe("validateActions", () => {
     expect(dropped[0]!.reason).toMatch(/killed after hard timeout/);
   });
 
+  /** A step closing a modal: an interaction, a passive assertion, and a snapshot. */
+  const modalCloseSteps = (): RecordedAction[] => [
+    { action: "click", locator: css("[aria-label='Cancel']"), stepId: "step-04" },
+    { action: "assert", assert: "element_not_visible", locator: css(".dialog-title"), stepId: "step-04" },
+    { action: "snapshot", stepId: "step-04" },
+  ];
+
+  /** Arm the mock so the first `click` fails and every later call, click or not, succeeds. */
+  const clickFailsOnce = (fallback: Result): void => {
+    let clicks = 0;
+    replyBy((argv) => {
+      if (!argv.includes("click")) return fallback;
+      clicks += 1;
+      return clicks === 1 ? { status: 1, stdout: "", stderr: "element is not stable" } : OK;
+    });
+  };
+
   test("rescue: a step that lost everything has its surviving-on-retry actions promoted back", () => {
     // step-08 click fails (cascade armed) → wait dropped as collateral →
     // step-08 has zero kept actions → rescue replays both, second one passes.
@@ -415,6 +433,77 @@ describe("validateActions", () => {
     expect(kept.map((a) => a.action)).toEqual(["navigate"]);
     expect(dropped.map((d) => d.action.action)).toEqual(["click", "wait"]);
     expect(rescuedSteps ?? []).toEqual([]);
+  });
+
+  /**
+   * The drop the rescue cannot answer by replaying: an action with no side
+   * effect comes back unverifiable, which is what the main loop keeps. Left in
+   * `dropped`, a step's passive tail is marked unstable for the rest of its
+   * life over a failure that did not survive a second look.
+   */
+  test("rescue: an unverifiable victim of a rescued offender comes back kept, not unstable", () => {
+    const closing = modalCloseSteps();
+    // Not a "no element" failure, so the interaction does not retry in place:
+    // the click fails in sequence and passes when the rescue runs it alone.
+    clickFailsOnce(OK);
+    const { kept, unstable, dropped, rescuedSteps } = validateActions(closing, { sessionName: "s" });
+    expect(kept.map((a) => a.action)).toEqual(["click", "assert", "snapshot"]);
+    expect(unstable).toEqual([]);
+    expect(dropped).toEqual([]);
+    expect(rescuedSteps).toEqual(["step-04"]);
+    expect(closing[1]!.replayUnstable).toBeUndefined();
+  });
+
+  /**
+   * The observations stay dropped while the operation they observe still
+   * fails: the state they were recorded against is state it never produced.
+   */
+  test("rescue: unverifiable victims stay dropped while the step's operation still fails", () => {
+    const stuck = modalCloseSteps();
+    replyBy(() => ({ status: 1, stdout: "", stderr: "element is not stable" }));
+    const { kept, unstable, rescuedSteps } = validateActions(stuck, { sessionName: "s" });
+    expect(kept).toEqual([]);
+    expect(unstable.map((a) => a.action)).toEqual(["click", "assert", "snapshot"]);
+    expect(rescuedSteps ?? []).toEqual([]);
+  });
+
+  /**
+   * Codegen reads the cascade wording as "never attempted, keep the line", so
+   * only the gate's strict replay is told what the isolated re-run found.
+   */
+  test("rescue: a victim that fails on its own carries that failure in strict mode, the cascade reason in lenient", () => {
+    const moved = (): RecordedAction[] => [
+      { action: "click", locator: css("[aria-label='Cancel']"), stepId: "step-04" },
+      { action: "assert", assert: "element_visible", locator: css(".banner"), stepId: "step-04" },
+    ];
+    clickFailsOnce(COUNT_ABSENT);
+    const { unstable } = validateActions(moved(), { sessionName: "s" });
+    expect(unstable.map((a) => a.action)).toEqual(["assert"]);
+    expect(isCascadeReason(unstable[0]!.replayReason)).toBe(true);
+
+    clickFailsOnce(COUNT_ABSENT);
+    const { dropped } = validateActions(moved(), { sessionName: "s", mode: "strict" });
+    expect(dropped.map((d) => d.action.action)).toEqual(["assert"]);
+    expect(isCascadeReason(dropped[0]!.reason)).toBe(false);
+    expect(dropped[0]!.reason).toMatch(/selector not present/);
+    // And so the gate names it, rather than a route that only looks dead.
+    const { refusal } = judgeReplayedRoute(dropped, {
+      caseId: "todo/add_item",
+      makesSomething: false,
+      hasCleanup: false,
+    });
+    expect(refusal).toContain("The first action that failed is step-04 assert element_visible .banner");
+  });
+
+  /** The field failure this gate was reported for, end to end. */
+  test("rescue: a transient failure with an unverifiable tail leaves the gate nothing to refuse over", () => {
+    const closing = modalCloseSteps();
+    clickFailsOnce(OK);
+    const { dropped } = validateActions(closing, { sessionName: "s", mode: "strict" });
+    expect(dropped).toEqual([]);
+    expect(
+      judgeReplayedRoute(dropped, { caseId: "todo/add_item", makesSomething: false, hasCleanup: false }),
+    ).toEqual({ refusal: null, warnings: [] });
   });
 });
 
