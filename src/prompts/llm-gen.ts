@@ -74,7 +74,11 @@ export function reuseFirstContract(hasDraft: boolean, draftInvariant?: string): 
       `if a package lacks something, create the missing piece as a new support file in the ` +
       `repo and mention it in \`summary\`.`,
     `3. **Match the examples.** Write in the same style as the conventions examples: ` +
-      `naming, structure, assertion phrasing, import layout.`,
+      `naming, structure, assertion phrasing, import layout. Where you follow an existing ` +
+      `file rather than the plain reading of a guideline — a waiting pattern, a locator ` +
+      `shape, a teardown structure — say which file, by path, in the comment. "Following ` +
+      `the existing implementation" without naming it cannot be checked by the next reader, ` +
+      `and it is how a pattern that was right once outlives the reason for it.`,
   ];
   if (hasDraft) {
     rules.push(
@@ -106,6 +110,11 @@ When you are done exploring, reply with ONLY a JSON object (no explanation, no m
 - \`kind\` MUST be exactly \`"test"\` or \`"support"\` (no other value): \`"test"\` marks an executable test; \`"support"\` marks a companion file (page object, helper, ...).
 - The \`"kind": "test"\` file goes to exactly \`${testPath}\`. That path is the project's, not yours: never move, rename, or split the test.
 - Every \`"kind": "support"\` file must stay under one of: ${roots}.
+- Those roots are also yours to **correct**, not only to add to. A page object
+  there that this case uses, and whose locator or waiting is wrong for what
+  this case needs, is output again with the fix — as \`"kind": "support"\`, whole.
+  Reusing something is not the same as leaving it as it is; anywhere else, and
+  anything you only read, stays untouched.
 - Absolute paths, \`..\` segments, and anything under \`node_modules/\` are rejected.
 - Emit the complete contents of every file you output — no placeholders or elisions.`;
 }
