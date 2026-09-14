@@ -87,26 +87,36 @@ export function expandSpec(spec: TestSpec, options: ExpandOptions): ExpandedStep
 }
 
 /**
- * `expandSpec` for a target that emits no judge call. A claim is refused by
- * name rather than dropped: one that goes unjudged is a test that passes
- * without testing. Blocks carry steps the spec does not name, which is why
- * this runs after expansion rather than in the schema.
+ * Steps for a target that emits no judge call. A claim is refused by name
+ * rather than dropped: one that goes unjudged is a test that passes without
+ * testing. Takes expanded steps, so it guards a case from any document kind —
+ * and so a spec's blocks, which carry steps the spec does not name, are
+ * already inlined when it runs.
  */
+export function requireActionSteps(
+  steps: readonly ExpandedStep[],
+  caseKey: string,
+  target: { id: string; reason: string },
+): ExpandedActionStep[] {
+  return steps.map((step) => {
+    if (isExpandedJudgeByLlmStep(step)) {
+      const from = step.source === "spec" ? "" : ` (from block \`${step.source}\`)`;
+      throw new Error(
+        `${caseKey}: step ${step.id}${from} uses \`judgeByLlm\`, but the "${target.id}" target cannot honour it — ${target.reason}`,
+      );
+    }
+    return step;
+  });
+}
+
+/** `expandSpec` for such a target: expand, then refuse what it cannot honour. */
 export function expandActionSteps(
   spec: TestSpec,
   options: ExpandOptions,
   specKey: string,
   target: { id: string; reason: string },
 ): ExpandedActionStep[] {
-  return expandSpec(spec, options).map((step) => {
-    if (isExpandedJudgeByLlmStep(step)) {
-      const from = step.source === "spec" ? "" : ` (from block \`${step.source}\`)`;
-      throw new Error(
-        `${specKey}: step ${step.id}${from} uses \`judgeByLlm\`, but the "${target.id}" target cannot honour it — ${target.reason}`,
-      );
-    }
-    return step;
-  });
+  return requireActionSteps(expandSpec(spec, options), specKey, target);
 }
 
 /** `substitute` resolves a block's `$param` refs; a spec's own steps have none, so it passes text through. */

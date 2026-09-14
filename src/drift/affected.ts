@@ -179,15 +179,24 @@ function globToRegExp(pattern: string): RegExp {
       i++;
       continue;
     }
-    // `**`: match any number of segments (including zero). When flanked by
-    // `/`, pull the surrounding slashes into an optional group so e.g.
-    // `src/features/**` matches both `src/features` and `src/features/x/y`.
+    // `**`: any number of whole segments, including zero. The boundary is a
+    // `/` or the end of the path — without that, `src/generated/**` also
+    // matches `src/generated-helpers.ts`, which over-selects for a drift root
+    // and silently clears a spec for a coverage exclusion.
     const hasLeadingSlash = re.endsWith("/");
     const hasTrailingSlash = pattern[i + 2] === "/";
-    if (hasLeadingSlash) re = re.slice(0, -1);
-    if (hasLeadingSlash || hasTrailingSlash) re += "(?:/?.*)?";
-    else re += ".*";
-    i += hasTrailingSlash ? 3 : 2;
+    if (hasTrailingSlash) {
+      // `a/**/b` and `**/b`: whole segments in between, or none at all.
+      re = hasLeadingSlash ? `${re.slice(0, -1)}(?:/.*)?/` : `${re}(?:.*/)?`;
+      i += 3;
+    } else if (hasLeadingSlash) {
+      // `a/**`: the directory itself, or anything under it.
+      re = `${re.slice(0, -1)}(?:/.*)?`;
+      i += 2;
+    } else {
+      re += ".*";
+      i += 2;
+    }
   }
   return new RegExp(re + "$");
 }

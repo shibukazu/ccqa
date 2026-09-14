@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { AGENT_BROWSER_TARGET } from "../../spec/yaml-schema.ts";
 import { AGENT_BROWSER_JUDGE_STEPS } from "./judge-steps.ts";
 import { loadAllBlocks, saveTestScript } from "../../store/index.ts";
-import { actionsToScript, type EmptyStepNotice } from "../../codegen/actions-to-script.ts";
+import { actionsToScript, type EmptyStepNotice, type StepMarker } from "../../codegen/actions-to-script.ts";
 import { cleanupActions as runActionCleanup } from "../../codegen/cleanup.ts";
 import { expandActionSteps, type ExpandedActionStep } from "../../spec/expand.ts";
 import { bundledVitestConfigPath } from "../../runtime/bundled-config.ts";
@@ -123,16 +123,16 @@ export async function generateAgentBrowserTest(ctx: GenerateContext): Promise<Ge
 export function buildStepMarkers(
   steps: ExpandedActionStep[],
   actions: RecordedAction[],
-): Array<{ actionIndex: number; stepId: string; source: string }> {
+): StepMarker[] {
   const stepById = new Map(steps.map((s) => [s.id, s]));
-  const markers: Array<{ actionIndex: number; stepId: string; source: string }> = [];
+  const markers: StepMarker[] = [];
   let lastEmittedStepId: string | null = null;
   for (let i = 0; i < actions.length; i++) {
     const id = actions[i]!.stepId;
     if (!id || id === lastEmittedStepId) continue;
     const step = stepById.get(id);
     if (!step) continue;
-    markers.push({ actionIndex: i, stepId: step.id, source: step.source });
+    markers.push({ actionIndex: i, stepId: step.id, source: step.source, text: step.instruction });
     lastEmittedStepId = id;
   }
   return markers;

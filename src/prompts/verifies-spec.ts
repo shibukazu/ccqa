@@ -20,6 +20,20 @@ export function verifiesSpecPrompt(input: {
   steps: readonly ExpandedStep[];
   source: string;
   language: string;
+  /**
+   * What the case states for the flow rather than per step. A markdown case
+   * writes them this way, which leaves every step's `expected` empty — so
+   * without them there is nothing here to check the test against.
+   */
+  expectations?: string[];
+  /** Cleanup steps, when the case says what its undo must make true. */
+  cleanup?: readonly ExpandedStep[];
+  /**
+   * The page objects and helpers the test leans on. An assertion is only as
+   * strong as the locator it names, and the locator is usually not in the test
+   * file — a reviewer opens both, so this review reads both.
+   */
+  support?: readonly { path: string; source: string }[];
 }): string {
   return [
     "You are reviewing whether a generated end-to-end test decides what its spec says.",
@@ -28,29 +42,93 @@ export function verifiesSpecPrompt(input: {
     "step's `expected` stopped holding. Report a step when:",
     "",
     "- its assertions cannot fail while the product is broken in the way the",
-    "  expectation describes (e.g. the expectation says a page opens, and the",
-    "  code only re-checks the element it clicked);",
+    "  expectation describes — because they check something weaker than it",
+    "  states (the expectation says a page opens and the code re-checks the",
+    "  element it clicked; the expectation names a path with an id in it and the",
+    "  pattern also matches the path without one);",
     "- what it asserts on is unrelated to what the step did (e.g. a navigation",
     "  element that is present on every page);",
     "- it depends on something that varies between runs and is not part of the",
     "  expectation (a count, an index, a position, wording that changes);",
+    "- the expectation names WHICH screen the run arrives at, and the code",
+    "  checks only the address's shape. A pattern matches every screen shaped",
+    "  like that one — and screens that are made per category, per folder, per",
+    "  account are shaped alike by design, so arriving at the wrong one passes.",
+    "  Something the named screen shows has to be checked too;",
+    "- it checks that something is ABSENT, and nothing in the test has waited",
+    "  for the screen that would show it to finish drawing. Absence is true of",
+    "  a page that has not rendered yet, so the check passes on an empty screen",
+    "  and passes again when the thing is really there but slow. Something the",
+    "  screen shows when it is ready has to be established first;",
+    "- the expectation ties two things together — this row AND the count beside",
+    "  it, this screen AND what it shows — and the assertions check them apart.",
+    "  Read the expectation's own grammar: \"the row, with its count\" is one",
+    "  claim about one row, and two assertions that each search the whole page",
+    "  hold just as well when the count belongs to a different row. Two things",
+    "  the expectation merely lists (\"the heading and the description are",
+    "  shown\") are two claims, and checking them apart is right;",
+    "- the expectation is about EACH of several things the case names, and the",
+    "  assertions reach only one of them. The others are not checked at all, and",
+    "  a comment saying they look alike is the fault being written down, not a",
+    "  reason — the case asked for each because any one of them can be the one",
+    "  that breaks;",
     "- it has no assertion at all.",
     "",
     "Do NOT report: style, naming, structure, missing coverage the spec never",
     "asked for, or an expectation you merely disagree with. A step that checks",
     "less than you would have written, but still fails when the expectation",
-    "breaks, is fine.",
+    "breaks, is fine — unless the expectation covers several things and the",
+    "code can only break on one of them, which is the bullet above.",
     "",
     "## Steps",
     "",
     ...input.steps.map(stepLine),
     "",
+    ...(input.expectations && input.expectations.length > 0
+      ? [
+          "## What the case expects",
+          "",
+          "Stated for the flow, not per step. Each belongs to the step that first",
+          "makes it true; a step is unchecked when nothing decides the one that",
+          "belongs to it.",
+          "",
+          ...input.expectations.map((e) => `- ${e}`),
+          "",
+        ]
+      : []),
+    ...(input.cleanup && input.cleanup.length > 0
+      ? ["## Cleanup steps", "", ...input.cleanup.map(stepLine), ""]
+      : []),
     "## Generated test",
     "",
     "```",
     input.source,
     "```",
     "",
+    ...(input.support && input.support.length > 0
+      ? [
+          "## What it leans on",
+          "",
+          "The locators the assertions above resolve through. An assertion is",
+          "only as strong as its locator, so read them, and report the step when",
+          "its locator makes the assertion unable to fail the way the",
+          "expectation describes. Two shapes to look for:",
+          "",
+          "- it takes the first (or last) of several matching elements, and the",
+          "  step claims something about each of them — the others go unchecked;",
+          "- it matches by a string that also appears elsewhere on the page (a",
+          "  nav item, a breadcrumb, a menu), so it is satisfied by that element",
+          "  even when the one the step names is absent;",
+          "- it matches only the words, where the step is about a control — a",
+          "  button, a link, a field. Text with that wording is not the control,",
+          "  so the assertion holds on a page where the control is gone.",
+          "",
+          "Judge these only through the steps — a definition no step depends on",
+          "is not a finding.",
+          "",
+          ...input.support.flatMap((f) => [`### ${f.path}`, "", "```", f.source, "```", ""]),
+        ]
+      : []),
     "Answer with one json block and nothing else:",
     "",
     "```json",

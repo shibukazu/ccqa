@@ -20,10 +20,10 @@ entirely.
 
 ## Rules that hold throughout
 
-- **Never edit a generated artefact** — `test.spec.ts`, `ir.json`,
-  `generated.json`, anything a target emits. The next `ccqa record` overwrites
-  it, so the edit is lost work that also hides the real defect. The only file
-  you edit is the spec's `spec.yaml`; everything else changes by re-recording.
+- **Never edit a generated artefact** — `test.spec.ts`, `ir.json`, anything a
+  target emits. The next `ccqa record` overwrites it, so the edit is lost work
+  that also hides the real defect. The only file you edit is the spec's
+  `spec.yaml`; everything else changes by re-recording.
 - **Never weaken an assertion to make a run pass.** An assertion that matches
   nothing, and therefore always holds, is a defect — usually the very one you
   were sent to fix.
@@ -138,12 +138,10 @@ Three things to settle before acting on any row:
 ## 4. Re-record
 
 ```sh
-ccqa record <feature>/<spec> --hub-profile <profile> --overwrite --auto-fix auto \
+ccqa record <feature>/<spec> --hub-profile <profile> --auto-fix auto \
   --instruction "<what the finding said to fix, in a sentence or two>"
 ```
 
-- `--overwrite` — an existing test otherwise raises a `y/N` prompt you cannot
-  answer.
 - `--auto-fix auto` — the default mode prompts, and declines without a
   terminal, so a fixable script failure would end the recording instead.
 - `--instruction` — without it the recorder has no reason to do anything

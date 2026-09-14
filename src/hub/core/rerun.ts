@@ -277,7 +277,7 @@ function auditState(
   range: RangeLookup,
 ): {
   audit: AuditState;
-  driftLabel?: Exclude<DriftLabel, "UNKNOWN">;
+  driftLabel?: Extract<DriftLabel, "TEST_DRIFT" | "SPEC_CHANGE">;
   auditAssumedReached?: RerunUnknownReason;
 } {
   const need = auditNeed(drift, key, range);
@@ -291,6 +291,11 @@ function auditState(
       const label = drift.specs[key]!.label;
       if (label === null) return { audit: "clean" };
       if (label === "UNKNOWN") return { audit: "undecided" };
+      // A finding about the product or the environment is not a finding about
+      // the test case — the audit read it and found it faithful, then named
+      // something else. Running is what settles those, so they must not hold
+      // the spec back; only the two labels that say the case is stale do.
+      if (label === "PRODUCT_BUG" || label === "ENVIRONMENT") return { audit: "clean" };
       return { audit: "drifted", driftLabel: label };
     }
     default: {

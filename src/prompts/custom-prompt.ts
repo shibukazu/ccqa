@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { HubContext } from "../cli/hub-conn.ts";
 import type { ActualCause } from "../report/schema.ts";
 import * as log from "../cli/logger.ts";
+import { readUserPrompt } from "./user-prompt.ts";
 
 /** The two learned (Claude-written) calibration prompts; see prompt-names.ts. */
 export type LearnedPromptName = "triage.agent" | "audit.agent";
@@ -216,13 +217,10 @@ ${trimmed}
  */
 export async function fetchTriageUserPrompt(
   ctx: HubContext | null,
+  cwd: string,
   name: UserPromptName = "triage.user",
 ): Promise<string | null> {
-  if (!ctx) return null;
-  const raw = await ctx.hub.getPrompt(ctx.project, name);
-  const trimmed = raw?.trim();
-  if (!trimmed) return null;
-  return trimmed;
+  return (await readUserPrompt(ctx, name, cwd)).text;
 }
 
 /**

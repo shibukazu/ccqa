@@ -8,13 +8,14 @@
  * they reached here. They meet on the spec id the cookie carried between them.
  */
 
-import { access, readFile, stat } from "node:fs/promises";
+import { access, readFile, realpath, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 import { ACTOR_DRAIN_MS, NO_ACTORS, type ActorPlan } from "./actors.ts";
 import type { CoverageConfig } from "../config/project-config.ts";
 import type { ReportCoverage } from "../report/schema.ts";
 import type { CdpAddress, CoverageCollector } from "../targets/types.ts";
+import { resolveConfiguredDir } from "../config/source-roots.ts";
 import { resolveEnvRefs } from "../runtime/env-vars.ts";
 import { specKey, type SpecRef } from "../store/index.ts";
 import { specIdFor } from "./spec-id.ts";
@@ -23,8 +24,9 @@ import * as log from "../cli/logger.ts";
 import { CoverageSink } from "./sink.ts";
 import type { RunEventInbox } from "./inbox.ts";
 import { startBrowserCoverage, type StoredSourceMapReader, type BrowserCoverageHandle } from "./browser/engine.ts";
+import { makeCoverageExcluder, type CoverageExcluder } from "./exclude.ts";
 import { enumerateUniverse, type CoverageUniverse } from "./universe.ts";
-import { FRONTEND_COVERAGE_FILE, type FrontendCoverage } from "./contract.ts";
+import { FRONTEND_COVERAGE_FILE, GAP_SAMPLES, type FrontendCoverage } from "./contract.ts";
 
 /**
  * The application pushes on a timer, so the last second of a spec is still in
@@ -75,6 +77,8 @@ function resolveAbsoluteOrigins(origins: readonly string[], label: string): stri
 export class CoverageSession {
   private readonly existing = new Map<string, boolean>();
   private readonly fetchStoredSourceMap: StoredSourceMapReader | undefined;
+  /** `coverage.exclude`: files left out of the answer, both halves of it. */
+  private readonly excluded: CoverageExcluder;
 
   /**
    * Undefined in hub mode: nothing binds on the runner, and every read-side
@@ -92,8 +96,13 @@ export class CoverageSession {
   private readonly runId: string;
   /** What reported paths are relative to, and what they are checked against. */
   private readonly root: string;
-  /** Where ccqa runs — the engine's base for resolving bundler-relative paths. */
-  private readonly cwd: string;
+  /**
+   * What a source map's relative `sources` are resolved against:
+   * `coverage.sourceBase` when the project set one, and where ccqa runs
+   * otherwise. A bundler writes those paths relative to wherever the build
+   * ran, which is not always here.
+   */
+  private readonly sourceBase: string;
   private readonly actors: ActorPlan;
   readonly origins: readonly string[];
   /** Where this project's assets come from — the cookie never goes here. */
@@ -112,23 +121,25 @@ export class CoverageSession {
     inbox: RunEventInbox | undefined,
     runId: string,
     root: string,
-    cwd: string,
+    sourceBase: string,
     actors: ActorPlan,
     origins: readonly string[],
     assetOrigins: readonly string[],
     universe: CoverageUniverse | undefined,
     fetchStoredSourceMap: StoredSourceMapReader | undefined,
+    excluded: CoverageExcluder,
   ) {
     this.sink = sink;
     this.inbox = inbox;
     this.runId = runId;
     this.root = root;
-    this.cwd = cwd;
+    this.sourceBase = sourceBase;
     this.actors = actors;
     this.origins = origins;
     this.assetOrigins = assetOrigins;
     this.universe = universe;
     this.fetchStoredSourceMap = fetchStoredSourceMap;
+    this.excluded = excluded;
   }
 
   static async start(options: CoverageSessionOptions): Promise<CoverageSession> {
@@ -147,13 +158,16 @@ export class CoverageSession {
     }
     const declaredRoot = await resolveRoot(options.cwd, options.config.projectRoot);
     const root = declaredRoot ?? options.cwd;
+    const sourceBase =
+      (await resolveSourceBase(options.cwd, options.config.sourceBase)) ?? options.cwd;
     // Enumerated at start, not at close: the envelope that carries it is built
     // before the first spec runs (the incremental report), and the tree cannot
     // change mid-run — the run owns this checkout for its duration.
+    const excluded = makeCoverageExcluder(options.config.exclude);
     const universe =
       options.config.include === undefined
         ? undefined
-        : await enumerateUniverse(root, options.config.include, (text) => log.warn(text));
+        : await enumerateUniverse(root, options.config.include, (text) => log.warn(text), excluded);
     if (options.inbox !== undefined && universe !== undefined) {
       await options.inbox.append({
         kind: "universe",
@@ -167,7 +181,7 @@ export class CoverageSession {
       options.inbox,
       options.runId,
       root,
-      options.cwd,
+      sourceBase,
       actors,
       origins,
       resolveAbsoluteOrigins(options.config.assetOrigins ?? [], "coverage.assetOrigins"),
@@ -175,6 +189,7 @@ export class CoverageSession {
       // carry it — the stream is the record.
       options.inbox === undefined ? universe : undefined,
       options.fetchStoredSourceMap,
+      excluded,
     );
   }
 
@@ -186,6 +201,15 @@ export class CoverageSession {
   async linkHubRun(hubRunId: string): Promise<void> {
     if (this.inbox === undefined) return;
     await this.inbox.append({ kind: "run-link", runId: this.runId, hubRunId });
+  }
+
+  /**
+   * `coverage.exclude` applied. Public because hub mode's application pushes
+   * go straight to the stream, so the hub's resolve comes back holding files
+   * this run alone knows the project excluded.
+   */
+  measurable(files: readonly string[]): string[] {
+    return files.filter((file) => !this.excluded(file));
   }
 
   /** Where the local sink listens. Hub mode binds nothing, so there is no URL. */
@@ -261,7 +285,7 @@ export class CoverageSession {
       origins: this.origins,
       assetOrigins: this.assetOrigins,
       coverageDir,
-      roots: { base: this.cwd, root: this.root },
+      roots: { base: this.sourceBase, root: this.root },
       warn: (text) => log.warn(`coverage: ${text}`),
       fetchStoredSourceMap: this.fetchStoredSourceMap,
     });
@@ -296,9 +320,14 @@ export class CoverageSession {
     // the server half is already confined to the directories the application
     // was told to instrument.
     const inProject = await this.keepExisting(frontend?.files ?? []);
-    const files = new Set<string>([...(backend ?? []), ...inProject]);
+    const kept = new Set(inProject);
+    const outsideProject = (frontend?.files ?? []).filter((f) => !kept.has(f));
+    // The file set only. The counts and gaps around it answer "did this half
+    // report anything", which an exclusion must not be able to turn into a no:
+    // the files were reached and placed, they just carry no selection signal.
+    const files = this.measurable([...(backend ?? []), ...inProject]);
     return {
-      files: [...files].sort(),
+      files: [...new Set(files)].sort(),
       frontendFiles: inProject.length,
       backendFiles: backend?.size ?? 0,
       backendReported: sink.heardFromApplication(),
@@ -315,8 +344,10 @@ export class CoverageSession {
         unattributed: sink.unattributedFor(specId),
         unmappedScripts: frontend?.unmappedScripts ?? 0,
         unmappedRanges: frontend?.unmappedRanges ?? 0,
-        outsideProject: (frontend?.files.length ?? 0) - inProject.length,
+        outsideProject: outsideProject.length,
         unresolvedSources: frontend?.unresolvedSources ?? 0,
+        outsideProjectSamples: outsideProject.slice(0, GAP_SAMPLES),
+        unresolvedSamples: frontend?.unresolvedSamples ?? [],
         uninstrumentedFiles: sink.uninstrumentedFiles(),
         uninstrumentedProcesses: sink.uninstrumentedProcesses(),
         droppedPushes: sink.droppedPushes(),
@@ -402,7 +433,8 @@ export class CoverageSession {
     if (frontend !== undefined) {
       // The existence check is part of resolving the browser half, and only
       // the run holds the checkout to resolve against.
-      const files = [...new Set(await this.keepExisting(frontend.files))].sort();
+      const reached = this.measurable(await this.keepExisting(frontend.files));
+      const files = [...new Set(reached)].sort();
       await inbox.append({ kind: "browser", runId: this.runId, specId, files });
     }
     await inbox.append({ kind: "spec-close", runId: this.runId, specId });
@@ -476,24 +508,28 @@ export async function closeMeasurement(
  * both sides of an intersection agree on what the root means.
  */
 export async function resolveRoot(cwd: string, declared: string | undefined): Promise<string | undefined> {
-  if (declared === undefined) return undefined;
-  // A `${VAR}` nobody set substitutes to "", and `resolve(cwd, "")` is `cwd` —
-  // indistinguishable from never having configured a root.
-  const substituted = resolveEnvRefs(declared).trim();
-  if (substituted === "") {
-    throw new Error(`coverage.projectRoot "${declared}" resolved to nothing — is the variable set?`);
-  }
-  const root = resolve(cwd, substituted);
-  const stats = await stat(root).catch(() => undefined);
-  if (stats?.isDirectory() !== true) {
-    throw new Error(`coverage.projectRoot must name an existing directory; "${declared}" resolved to ${root}`);
-  }
-  if (relative(root, cwd).startsWith("..")) {
-    throw new Error(
-      `coverage.projectRoot must contain the directory ccqa runs in; ${root} does not contain ${cwd}`,
-    );
-  }
-  return root;
+  return declared === undefined
+    ? undefined
+    : resolveConfiguredDir(cwd, declared, `coverage.projectRoot "${declared}"`);
+}
+
+/**
+ * Where a source map's relative `sources` are resolved from
+ * (`coverage.sourceBase`), or undefined when the project configured none.
+ *
+ * A bundler writes those paths relative to wherever it ran, which is the
+ * build's own directory and not always ccqa's. Resolving them against the
+ * working directory then lands every one of them outside the project and the
+ * run reports nothing reached — with no error, because a path that resolves
+ * above the root is dropped by design.
+ */
+export async function resolveSourceBase(
+  cwd: string,
+  declared: string | undefined,
+): Promise<string | undefined> {
+  return declared === undefined
+    ? undefined
+    : resolveConfiguredDir(cwd, declared, `coverage.sourceBase "${declared}"`);
 }
 
 /**

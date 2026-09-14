@@ -1,6 +1,11 @@
-import { describe, test, expect } from "vitest";
-import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundleFromHub, listActiveSpecs, resolveSpecTargets } from "./index.ts";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, test, expect } from "vitest";
+import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundle, listActiveSpecs, resolveSpecTargets } from "./index.ts";
 import type { HubClient } from "../hub-client/index.ts";
+import type { CaseRef } from "./index.ts";
+import type { RecordedAction } from "../types.ts";
 
 /** Minimal fake — only `getPrompt` is exercised by these tests. */
 function fakeHubClient(getPrompt: HubClient["getPrompt"]): HubClient {
@@ -107,32 +112,65 @@ describe("parseBlockPath", () => {
   });
 });
 
-describe("loadPromptBundleFromHub", () => {
-  test("returns null when there's no hub client", async () => {
-    expect(await loadPromptBundleFromHub(null, "live")).toBeNull();
+describe("loadPromptBundle", () => {
+  let cwd: string;
+  beforeEach(async () => {
+    cwd = await mkdtemp(join(tmpdir(), "ccqa-prompts-"));
+  });
+  afterEach(async () => {
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  async function writeLocal(name: string, text: string): Promise<void> {
+    await mkdir(join(cwd, ".ccqa/prompts"), { recursive: true });
+    await writeFile(join(cwd, ".ccqa/prompts", `${name}.md`), text, "utf8");
+  }
+
+  test("returns null when there's no hub client and nothing local", async () => {
+    expect(await loadPromptBundle(null, "live", cwd)).toBeNull();
   });
 
   test("returns null when the hub has neither prompt stored", async () => {
     const hub = fakeHubClient(async () => null);
-    expect(await loadPromptBundleFromHub({ hub, project: "demo" }, "record")).toBeNull();
+    expect(await loadPromptBundle({ hub, project: "demo" }, "record", cwd)).toBeNull();
   });
 
   test("assembles a combined bundle with hub prompt names as `loaded` labels", async () => {
     const hub = fakeHubClient(async (_project, name) =>
       name === "live.user" ? "Stable rule." : name === "live.agent" ? "Learned hint." : null,
     );
-    const out = await loadPromptBundleFromHub({ hub, project: "demo" }, "live");
+    const out = await loadPromptBundle({ hub, project: "demo" }, "live", cwd);
     expect(out).not.toBeNull();
     expect(out!.loaded).toEqual(["live.user", "live.agent"]);
     expect(out!.text).toContain("Stable rule.");
     expect(out!.text).toContain("Learned hint.");
   });
 
+  // The project's own copy is the one a reviewer sees beside the tests it
+  // governs; the two are prose and concatenating them would contradict.
+  test("the project's own `.user` answers instead of the hub's, and says so", async () => {
+    await writeLocal("live.user", "What this project does.");
+    const hub = fakeHubClient(async (_project, name) =>
+      name === "live.user" ? "What the hub says." : name === "live.agent" ? "Learned hint." : null,
+    );
+    const out = await loadPromptBundle({ hub, project: "demo" }, "live", cwd);
+    expect(out!.text).toContain("What this project does.");
+    expect(out!.text).not.toContain("What the hub says.");
+    expect(out!.loaded).toEqual(["live.user (local)", "live.agent"]);
+  });
+
+  test("a project with no hub still gets its own `.user`", async () => {
+    await writeLocal("record.user", "What this project does.");
+    const out = await loadPromptBundle(null, "record", cwd);
+    expect(out!.text).toContain("What this project does.");
+    expect(out!.loaded).toEqual(["record.user (local)"]);
+  });
+
   test("propagates a hub failure rather than running without the stored guidance", async () => {
     const hub = fakeHubClient(async () => {
       throw new Error("network error");
     });
-    await expect(loadPromptBundleFromHub({ hub, project: "demo" }, "record")).rejects.toThrow("network error");
+    await expect(loadPromptBundle({ hub, project: "demo" }, "record", cwd)).rejects.toThrow("network error");
   });
 });
 
@@ -184,11 +222,11 @@ describe("listActiveSpecs", () => {
 });
 
 describe("saveRecording", () => {
-  test("writes ir.json and removes legacy actions.json / route.md", async () => {
+  test("writes ir.json (with provenance) and removes legacy actions.json / route.md", async () => {
     const { mkdtemp, mkdir, writeFile, readFile, stat } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { saveRecording } = await import("./index.ts");
+    const { saveRecording, specCase } = await import("./index.ts");
 
     const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-recording-"));
     const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
@@ -196,9 +234,11 @@ describe("saveRecording", () => {
     await writeFile(join(specDir, "actions.json"), "[]", "utf8");
     await writeFile(join(specDir, "route.md"), "# legacy", "utf8");
 
-    const path = await saveRecording("demo", "x", [{ action: "navigate", value: "https://example.test" }], cwd);
+    const { path, recording } = await saveRecording(specCase("demo", "x", cwd), [{ action: "navigate", value: "https://example.test" }]);
 
-    expect(JSON.parse(await readFile(path, "utf8"))).toHaveLength(1);
+    expect(recording.actions).toHaveLength(1);
+    expect(recording.origin).toBe("https://example.test");
+    expect(JSON.parse(await readFile(path, "utf8")).actions).toHaveLength(1);
     await expect(stat(join(specDir, "actions.json"))).rejects.toThrow();
     await expect(stat(join(specDir, "route.md"))).rejects.toThrow();
   });
@@ -207,16 +247,71 @@ describe("saveRecording", () => {
     const { mkdtemp, mkdir, writeFile, stat } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { saveRecording } = await import("./index.ts");
+    const { saveRecording, specCase } = await import("./index.ts");
 
     const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-recording-"));
     const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
     await mkdir(specDir, { recursive: true });
     await writeFile(join(specDir, "ir.failed.json"), "[]", "utf8");
 
-    await saveRecording("demo", "x", [{ action: "navigate", value: "https://example.test" }], cwd);
+    await saveRecording(specCase("demo", "x", cwd), [{ action: "navigate", value: "https://example.test" }]);
 
     await expect(stat(join(specDir, "ir.failed.json"))).rejects.toThrow();
+  });
+});
+
+describe("stampGeneratedTest", () => {
+  test("records what the generation wrote, and leaves the route untouched", async () => {
+    const { mkdtemp, mkdir, writeFile, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { saveRecording, specCase, stampGeneratedTest, fileSha256 } = await import("./index.ts");
+
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-stamp-"));
+    const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
+    await mkdir(specDir, { recursive: true });
+    const { path } = await saveRecording(specCase("demo", "x", cwd), [{ action: "navigate", value: "https://example.test" }]);
+    const testFile = join(specDir, "test.spec.ts");
+    await writeFile(testFile, "test('flow', () => {});\n", "utf8");
+
+    await stampGeneratedTest(specCase("demo", "x", cwd), testFile);
+
+    const recording = JSON.parse(await readFile(path, "utf8"));
+    expect(recording.generated.testSha256).toBe(await fileSha256(testFile));
+    expect(Date.parse(recording.generated.at)).not.toBeNaN();
+    // The route itself is what the trace wrote; a stamp must not disturb it.
+    expect(recording.actions).toEqual([{ action: "navigate", value: "https://example.test" }]);
+  });
+
+  test("stamps nothing when the generation produced no test", async () => {
+    const { mkdtemp, mkdir, readFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { saveRecording, specCase, stampGeneratedTest } = await import("./index.ts");
+
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-stamp-"));
+    await mkdir(join(cwd, ".ccqa", "features", "demo", "test-cases", "x"), { recursive: true });
+    const { path } = await saveRecording(specCase("demo", "x", cwd), [{ action: "click" }]);
+
+    await stampGeneratedTest(specCase("demo", "x", cwd), join(cwd, "nope.spec.ts"));
+
+    expect(JSON.parse(await readFile(path, "utf8")).generated).toBeUndefined();
+  });
+});
+
+describe("parseRecording", () => {
+  test("reads a bare action array as a route with no provenance", async () => {
+    const { parseRecording } = await import("./index.ts");
+    const recording = parseRecording(`[{"action":"navigate","value":"https://example.test"}]`);
+    expect(recording.actions).toHaveLength(1);
+    expect(recording.recordedAt).toBeUndefined();
+  });
+
+  test("rejects a file holding no action list, naming what to do", async () => {
+    const { parseRecording } = await import("./index.ts");
+    expect(() => parseRecording(`{"recordedAt":"2026-01-01T00:00:00.000Z"}`)).toThrow(
+      /no `actions` array/,
+    );
   });
 });
 
@@ -225,18 +320,139 @@ describe("saveFailedRecording", () => {
     const { mkdtemp, mkdir, writeFile, readFile } = await import("node:fs/promises");
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
-    const { saveFailedRecording } = await import("./index.ts");
+    const { saveFailedRecording, specCase } = await import("./index.ts");
 
     const cwd = await mkdtemp(join(tmpdir(), "ccqa-save-failed-"));
     const specDir = join(cwd, ".ccqa", "features", "demo", "test-cases", "x");
     await mkdir(specDir, { recursive: true });
     await writeFile(join(specDir, "ir.json"), '[{"action":"navigate","value":"https://good.test"}]', "utf8");
 
-    const path = await saveFailedRecording("demo", "x", [], cwd);
+    const path = await saveFailedRecording(specCase("demo", "x", cwd), []);
 
     expect(path).toBe(join(specDir, "ir.failed.json"));
-    expect(JSON.parse(await readFile(path, "utf8"))).toHaveLength(0);
+    expect(JSON.parse(await readFile(path, "utf8")).actions).toHaveLength(0);
     // The good recording survives the failed trace.
     expect(JSON.parse(await readFile(join(specDir, "ir.json"), "utf8"))).toHaveLength(1);
+  });
+});
+
+describe("where a recording lives", () => {
+  const ROUTE: RecordedAction[] = [{ action: "navigate", value: "https://example.test" }];
+  const TEST_PATH = "specs/todo/add_item.spec.ts";
+  const RECORDING = "specs/todo/add_item.spec.ccqa.ir.json";
+
+
+  /** A case compiled into `specs/todo/add_item.spec.ts`, and one compiled into nothing. */
+  async function cases(): Promise<{ cwd: string; withTest: CaseRef; withoutTest: CaseRef }> {
+    const { caseRefFor } = await import("./index.ts");
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-recording-home-"));
+    return {
+      cwd,
+      withTest: caseRefFor("todo/add_item", cwd, RECORDING),
+      withoutTest: caseRefFor("todo/add_item", cwd, undefined),
+    };
+  }
+
+  /** A recording in the location a ccqa before this layout wrote to. */
+  async function writeLegacy(ref: CaseRef, actions: unknown[]): Promise<string> {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(ref.dir, { recursive: true });
+    const path = join(ref.dir, "ir.json");
+    await writeFile(path, JSON.stringify({ actions }), "utf8");
+    return path;
+  }
+
+  test("saves beside the test it compiles into, named after it", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { saveRecording } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+
+    const { path } = await saveRecording(withTest, ROUTE);
+
+    expect(path).toBe(join(cwd, RECORDING));
+    expect(JSON.parse(await readFile(path, "utf8")).actions).toHaveLength(1);
+  });
+
+  test("keeps it in the case's own directory when the case compiles into no test", async () => {
+    const { saveRecording } = await import("./index.ts");
+    const { withoutTest } = await cases();
+
+    const { path } = await saveRecording(withoutTest, ROUTE);
+
+    expect(path).toBe(join(withoutTest.dir, "ir.json"));
+  });
+
+  test("names both places it looked when the case has no recording at all", async () => {
+    const { getRecording } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+
+    await expect(getRecording(withTest)).rejects.toThrow(
+      new RegExp(`${join(cwd, RECORDING)}.*${join(withTest.dir, "ir.json")}`, "s"),
+    );
+  });
+
+  test("reads the one in the case's directory when there is none beside the test", async () => {
+    const { getRecording } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+    const legacy = await writeLegacy(withTest, [{ action: "click" }]);
+
+    const loaded = await getRecording(withTest);
+
+    expect(loaded.path).toBe(legacy);
+    expect(loaded.movesTo).toBe(join(cwd, RECORDING));
+  });
+
+  test("prefers the one beside the test when both are there, and says nothing moves", async () => {
+    const { getRecording, saveRecording } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+    await saveRecording(withTest, ROUTE);
+    await writeLegacy(withTest, [{ action: "click" }, { action: "click" }]);
+
+    const loaded = await getRecording(withTest);
+
+    expect(loaded.path).toBe(join(cwd, RECORDING));
+    expect(loaded.actions).toHaveLength(1);
+    expect(loaded.movesTo).toBeUndefined();
+  });
+
+  test("a save writes beside the test and removes the one left in the case's directory", async () => {
+    const { stat } = await import("node:fs/promises");
+    const { saveRecording } = await import("./index.ts");
+    const { withTest } = await cases();
+    const legacy = await writeLegacy(withTest, []);
+
+    await saveRecording(withTest, ROUTE);
+
+    await expect(stat(legacy)).rejects.toThrow();
+  });
+
+  test("a stamp moves a recording read from the case's directory beside the test", async () => {
+    const { mkdir, readFile, stat, writeFile } = await import("node:fs/promises");
+    const { fileSha256, stampGeneratedTest } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+    const legacy = await writeLegacy(withTest, ROUTE);
+    const testAbs = join(cwd, TEST_PATH);
+    await mkdir(join(cwd, "specs/todo"), { recursive: true });
+    await writeFile(testAbs, "test('flow', () => {});\n", "utf8");
+
+    await stampGeneratedTest(withTest, testAbs);
+
+    const stamped = JSON.parse(await readFile(join(cwd, RECORDING), "utf8"));
+    expect(stamped.generated.testSha256).toBe(await fileSha256(testAbs));
+    // The route itself is what the trace wrote; a stamp must not disturb it.
+    expect(stamped.actions).toEqual(ROUTE);
+    await expect(stat(legacy)).rejects.toThrow();
+  });
+
+  test("a rewritten route moves beside the test too", async () => {
+    const { readFile, stat } = await import("node:fs/promises");
+    const { rewriteRecordingActions } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+    const legacy = await writeLegacy(withTest, [{ action: "click" }]);
+
+    await rewriteRecordingActions(withTest, ROUTE);
+
+    expect(JSON.parse(await readFile(join(cwd, RECORDING), "utf8")).actions).toEqual(ROUTE);
+    await expect(stat(legacy)).rejects.toThrow();
   });
 });

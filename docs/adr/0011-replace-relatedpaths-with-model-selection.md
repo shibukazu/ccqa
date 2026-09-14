@@ -13,8 +13,9 @@ a git diff against the declared globs, and the hub matched a deploy's
 `changedPaths` against the same field (ADR-0010) to answer
 `ccqa run --changed=last-run`.
 
-Measured against a real downstream project, this collapsed almost all
-discrimination: 24 specs resolved to only 5 distinct `relatedPaths` sets.
+Measured against a hand-written suite, this collapsed almost all
+discrimination: dozens of specs resolved to only a handful of distinct
+`relatedPaths` sets.
 The root cause is structural, not an authoring-quality problem. An E2E spec
 has no static dependency edge to product code — it verifies user-observable
 behavior reached through runtime-determined code paths (imports, shared
@@ -97,19 +98,20 @@ set-arithmetic posture ADR-0010 established.
 Typecheck and the full unit suite pass with `relatedPaths` removed from the
 schema, prompts, every hub-contract consumer, and the docs.
 
-The decision was measured before it was made, against a real downstream
-project's history. On a commit that suspended one feature, `relatedPaths`
-selected 23 specs and `select-specs` selected 3 — the three the diff was read
-by hand to confirm. Two of those three are not tests of that feature: they
-reach it through a cleanup step, a link no path glob can express. On three
-other commits `relatedPaths` selected 7, 7 and 15 specs where the correct
-answer was 0, and on a commit that edited 15 spec files it selected none.
+The decision was measured before it was made, against a downstream commit
+history. On a commit that suspended one feature, `relatedPaths` selected
+several times as many specs as `select-specs`, whose picks the diff was read
+by hand to confirm. Some of those picks are not tests of that feature: they
+reach it through a cleanup step, a link no path glob can express. On other
+commits `relatedPaths` selected a handful of specs where the correct answer
+was none, and on a commit that edited over a dozen spec files it selected
+none.
 
 The full path — `select-specs` → `hub deploy record --select` → `GET /rerun`
 — was then exercised against a local hub with that project's spec tree: a
 deploy recorded without a selection leaves every spec `unknown`, and the same
-deploy recorded with one yields the three `needed` verdicts with their
-`touchedBy` evidence.
+deploy recorded with one yields the hand-confirmed `needed` verdicts with
+their `touchedBy` evidence.
 
 ## More information
 

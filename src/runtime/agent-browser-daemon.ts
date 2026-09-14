@@ -70,7 +70,19 @@ function childPids(parent: number): number[] {
 /** Ramped so the common case — a daemon that exits at once — is not taxed. */
 const TERM_POLL_MS = [25, 50, 100, 250, 250, 250, 500, 500, 1000, 1000, 1000];
 
-export type DaemonKill = { killed: true; pid: number } | { killed: false; reason: string };
+export type DaemonKill =
+  | { killed: true; pid: number }
+  | {
+      killed: false;
+      reason: string;
+      /**
+       * A process is still there and still owns the session. The other way to
+       * not kill anything is that there was nothing to kill — a daemon that
+       * crashed leaves its socket behind — and a caller that wants the session
+       * working again should boot a fresh one rather than give up.
+       */
+      stillRunning?: true;
+    };
 
 /** One phrase covering both outcomes, so callers log a single line. */
 export function describeKill(kill: DaemonKill): string {
@@ -90,13 +102,13 @@ export async function killSessionDaemon(sessionName: string): Promise<DaemonKill
   if (pid === null) return { killed: false, reason: "no pid file for this session" };
   if (!isAlive(pid)) return { killed: false, reason: `pid ${pid} is not running` };
   if (!looksLikeAgentBrowser(pid)) {
-    return { killed: false, reason: `pid ${pid} is not an agent-browser process` };
+    return { killed: false, reason: `pid ${pid} is not an agent-browser process`, stillRunning: true };
   }
 
   try {
     process.kill(pid, "SIGTERM");
   } catch {
-    return { killed: false, reason: `pid ${pid} could not be signalled` };
+    return { killed: false, reason: `pid ${pid} could not be signalled`, stillRunning: true };
   }
   for (const wait of TERM_POLL_MS) {
     if (!isAlive(pid)) return { killed: true, pid };
@@ -120,7 +132,7 @@ export async function killSessionDaemon(sessionName: string): Promise<DaemonKill
     if (!isAlive(pid)) break;
     await delay(wait);
   }
-  if (isAlive(pid)) return { killed: false, reason: `pid ${pid} survived SIGKILL` };
+  if (isAlive(pid)) return { killed: false, reason: `pid ${pid} survived SIGKILL`, stillRunning: true };
   for (const child of owned) {
     if (isAlive(child)) {
       try {

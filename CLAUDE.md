@@ -54,6 +54,24 @@ test fixtures **must stay neutral and generic**.
 - If you find such a string already in the tree, redact it and call it out rather than
   silently leaving it.
 
+### Grep finds what you already suspect
+
+A grep for terms you know are product-specific catches only those. The strings
+that actually get through are the ones nobody thought to look for: a required
+field's accessible name, two near-identical class names from an application's
+markup, a route, a helper from the repository the tests live in. Each reads as
+ordinary English until you ask where it came from.
+
+So for a periodic audit, read the diff instead, and for each concrete string ask
+one question: **does this have precedent in the repository from before this
+change?** A term that appears for the first time in a diff, and that the author
+could only have got from an application they were working against, is the
+candidate — whatever it looks like. `git log -S'<string>'` answers the precedent
+question; zero hits before the introducing commit is the signal.
+
+Worth handing to a second reader with no memory of writing the code. Someone who
+knows why a string is there will read past it.
+
 ## Project layout
 
 - `bin/ccqa.ts` — CLI entry point.

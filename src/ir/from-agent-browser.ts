@@ -1,4 +1,6 @@
 import type { AssertType, Locator, LocatorIndex, RecordedAction } from "./types.ts";
+import { collapseUrlPath } from "./url-path.ts";
+import { OPAQUE, parseNotation } from "./playwright-notation.ts";
 
 /**
  * Normalization from the agent-browser side of the recorder into the IR.
@@ -41,6 +43,20 @@ export type FindAction = (typeof FIND_ACTIONS)[number];
 
 const css = (value: string): Locator => ({ by: "css", value });
 
+/**
+ * An assertion's locator, named for how it addresses the element.
+ *
+ * `text=<string>` recorded as a CSS selector is checked with `get count`, which
+ * takes plain CSS and answers 0 for anything else — not an error, a zero, which
+ * reads as an element that is not there. Only asserts: an interaction recorded
+ * this way replays through `click "text=…"`, which does work, and `find text`
+ * measurably does not.
+ */
+function assertLocator(value: string): Locator {
+  const named = parseNotation(value);
+  return named !== null && named !== OPAQUE && named.by === "text" ? named : css(value);
+}
+
 export function parseAbActionLine(line: string): RecordedAction | null {
   if (!line.startsWith("AB_ACTION|")) return null;
   const parts = line.split("|");
@@ -53,7 +69,7 @@ export function parseAbActionLine(line: string): RecordedAction | null {
       // Strip stray surrounding quotes that can appear when agent-browser is
       // called with a quoted URL.
       const url = (parts[2] ?? "").replace(/^["']|["']$/g, "");
-      return { action: "navigate", value: url };
+      return { action: "navigate", value: collapseUrlPath(url) };
     }
     case "press":
       return { action: "press", ...opt("value", parts[2]) };
@@ -61,14 +77,6 @@ export function parseAbActionLine(line: string): RecordedAction | null {
       return { action: "scroll", ...opt("direction", parts[2]), ...opt("pixels", parts[3]) };
     case "snapshot":
       return { action: "snapshot", ...opt("observation", parts[2]) };
-    case "assert":
-      return {
-        action: "assert",
-        assert: parts[2] as AssertType,
-        ...(parts[3] ? { locator: css(parts[3]) } : {}),
-        ...(parts[4] ? { value: parts[4] } : {}),
-        ...(parts[5] ? { observation: parts[5] } : {}),
-      };
     case "click":
     case "dblclick":
     case "check":
@@ -148,9 +156,24 @@ export function parseAbActionLine(line: string): RecordedAction | null {
  *   keeping both would wait twice.
  * - `get count "<sel>"` + `element_visible` / `element_not_visible`
  *   → `assert <marker> <sel>` (the probe records nothing by itself).
+ * - `is enabled|checked "<sel>"` + `element_enabled` / `element_disabled` /
+ *   `element_checked` / `element_unchecked` → `assert <marker> <sel>`.
  * - any command + `url_contains:<substring>` → the command's own action (if
  *   it records one) followed by `assert url_contains <substring>`.
  */
+/**
+ * The state `is` is asked for, per marker. A marker naming a different state
+ * than the command asked is refused rather than recorded: `is checked` cannot
+ * answer whether something is enabled.
+ */
+const IS_STATE_OF: Record<string, string> = {
+  element_enabled: "enabled",
+  element_disabled: "enabled",
+  element_checked: "checked",
+  element_unchecked: "checked",
+};
+const IS_MARKERS = new Set(Object.keys(IS_STATE_OF));
+
 export function promoteMarkedAssert(
   abAction: string | null,
   marker: string,
@@ -169,9 +192,32 @@ export function promoteMarkedAssert(
     }
     return null;
   }
+  // `is <state> <sel>` answers `true` / `false` on stdout and exits 0 either
+  // way, so the marker declares which answer the step expected.
+  if (IS_MARKERS.has(marker)) {
+    const parts2 = abAction === null ? [] : abAction.split("|");
+    if (parts2[1] !== "is" || !parts2[3]) return null;
+    if (IS_STATE_OF[marker] !== parts2[2]) return null;
+    return [{ action: "assert", assert: marker as AssertType, locator: assertLocator(parts2[3]) }];
+  }
   if (marker === "element_visible" || marker === "element_not_visible") {
     if (parts[1] === "get_count" && parts[2]) {
-      return [{ action: "assert", assert: marker, locator: css(parts[2]) }];
+      return [{ action: "assert", assert: marker, locator: assertLocator(parts[2]) }];
+    }
+    // `find role <role> text --name <name>` — the probe that asks the
+    // accessibility tree rather than the DOM. Like `get count`, it records
+    // nothing by itself; the marker is what makes it an assertion.
+    if (parts[1] === "find_text" && parts[2] === "role" && parts[3]) {
+      return [{
+        action: "assert",
+        assert: marker,
+        locator: {
+          by: "role",
+          value: parts[3],
+          ...(parts[4] ? { name: parts[4] } : {}),
+          ...((parts[5] ?? "") === "exact" ? { exact: true } : {}),
+        },
+      }];
     }
     return null;
   }

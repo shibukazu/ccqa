@@ -75,3 +75,63 @@ steps:
     expect(spec.steps).toEqual(["include block: missing-block", "click buy → order confirmed"]);
   });
 });
+
+describe("loadSpecInventory — markdown cases", () => {
+  /** External target reading its cases from markdown, one heading mapped to mode. */
+  const CONFIG = `defaultTarget: todo-e2e
+targets:
+  todo-e2e:
+    kind: external
+    framework: playwright
+    testPath: specs/{case}.spec.ts
+    intent:
+      kind: markdown
+      root: docs/testcase
+      fields:
+        mode: Mode
+`;
+  const CASE_MD = `## Title
+
+Adding an item puts it on the list
+
+## Steps
+
+1. Open the todo list
+2. Add "Buy milk"
+
+## Expected
+
+- The item appears on the list
+`;
+
+  it("reads the project's own markdown cases instead of .ccqa/features/, with testPath through the intent target", async () => {
+    const cwd = await makeProject({
+      ".ccqa/config.yaml": CONFIG,
+      "docs/testcase/todo/add-item.md": CASE_MD,
+    });
+
+    const specs = await loadSpecInventory(cwd);
+
+    expect(specs).toHaveLength(1);
+    expect(specs[0]).toMatchObject({
+      featureName: "todo",
+      specName: "add-item",
+      title: "Adding an item puts it on the list",
+      steps: ["Open the todo list", 'Add "Buy milk"'],
+      includedBlocks: [],
+      testPath: "specs/todo/add-item.spec.ts",
+      sourcePath: "docs/testcase/todo/add-item.md",
+    });
+  });
+
+  it("resolves a live case's testPath to empty, same as a live spec.yaml", async () => {
+    const cwd = await makeProject({
+      ".ccqa/config.yaml": CONFIG,
+      "docs/testcase/todo/add-item.md": `${CASE_MD}\n## Mode\n\nlive\n`,
+    });
+
+    const specs = await loadSpecInventory(cwd);
+
+    expect(specs[0]!.testPath).toBe("");
+  });
+});

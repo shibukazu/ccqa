@@ -1,6 +1,7 @@
 # 0016. One vocabulary, two answerable subsets
 
-- Status: accepted
+- Status: accepted (the audit's answerable subset widened by
+  [ADR-0030](0030-the-audit-reads-the-product.md))
 - Date: 2026-07-31
 
 ## Context and problem statement
@@ -96,6 +97,13 @@ runs nothing — a static read cannot tell a dropped side effect from a
 working one. Three possible causes, two available answers, so a product
 bug is forced into a drift label. Sound when nothing ran; wrong once a
 test has actually failed.
+
+> Amended by [ADR-0030](0030-the-audit-reads-the-product.md). `sourceRoots`
+> gives the audit the product's own source to read, which is what the
+> exclusion rested on it not having, so `PRODUCT_BUG` and `ENVIRONMENT` are
+> available to it. What replaces the exclusion is severity: only the two
+> causes the audit can act on hold the gate shut, and the other two are
+> reported while the case still runs.
 
 ### The resolution
 

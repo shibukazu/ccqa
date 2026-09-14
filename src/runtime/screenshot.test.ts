@@ -28,7 +28,7 @@ describe("takeScreenshot", () => {
       SESSION,
       "screenshot",
       OUT_PATH,
-    ]);
+    ], expect.anything());
   });
 
   it("inserts --full before the output path when fullPage is set", () => {
@@ -44,7 +44,7 @@ describe("takeScreenshot", () => {
       "screenshot",
       "--full",
       OUT_PATH,
-    ]);
+    ], expect.anything());
   });
 
   it("omits --full when fullPage is explicitly false", () => {
@@ -57,7 +57,7 @@ describe("takeScreenshot", () => {
       SESSION,
       "screenshot",
       OUT_PATH,
-    ]);
+    ], expect.anything());
   });
 
   it("surfaces non-zero exit as ok:false without throwing", () => {
@@ -72,5 +72,41 @@ describe("takeScreenshot", () => {
     expect(res.ok).toBe(false);
     expect(res.path).toBe(OUT_PATH);
     expect(res.error).toBe("no session");
+  });
+});
+
+describe("takeScreenshot — a page that cannot be captured whole", () => {
+  const failFull = (argv: string[]) =>
+    argv.includes("--full")
+      ? { status: 1, stdout: "", stderr: "timeout capturing full page" }
+      : { status: 0, stdout: "", stderr: "" };
+
+  it("falls back to the viewport, and stops asking for the full page on that session", () => {
+    mockedSpawnAB.mockImplementation(failFull);
+
+    const first = takeScreenshot("heavy-app", OUT_PATH, { fullPage: true });
+    expect(first).toEqual({ ok: true, path: OUT_PATH, degraded: true });
+
+    // The second step pays no failing full-page attempt: whether a page can be
+    // captured whole belongs to the application, not to the step.
+    mockedSpawnAB.mockClear();
+    const second = takeScreenshot("heavy-app", OUT_PATH, { fullPage: true });
+    expect(second).toEqual({ ok: true, path: OUT_PATH, degraded: true });
+    expect(mockedSpawnAB).toHaveBeenCalledTimes(1);
+    expect(mockedSpawnAB.mock.calls[0]![0]).not.toContain("--full");
+  });
+
+  // A daemon that is restarting fails both shots. Reading that as "this page
+  // cannot be captured whole" would cost every later step its full-page frame.
+  it("reports the failure when the viewport shot fails too, and does not give up on the session", () => {
+    mockedSpawnAB.mockReturnValue({ status: 1, stdout: "", stderr: "no session" });
+    const res = takeScreenshot("restarting", OUT_PATH, { fullPage: true });
+    expect(res.ok).toBe(false);
+    expect(res.error).toBe("no session");
+
+    mockedSpawnAB.mockClear();
+    mockedSpawnAB.mockReturnValue({ status: 0, stdout: "", stderr: "" });
+    expect(takeScreenshot("restarting", OUT_PATH, { fullPage: true })).toEqual({ ok: true, path: OUT_PATH });
+    expect(mockedSpawnAB.mock.calls[0]![0]).toContain("--full");
   });
 });

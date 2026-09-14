@@ -2,8 +2,9 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { GENERATED_MANIFEST_FILE, runCommandRunner } from "./run-command-runner.ts";
+import { runCommandRunner } from "./run-command-runner.ts";
 import { TargetConfigSchema } from "../config/project-config.ts";
+import { SPEC_DIR_TEMPLATE } from "../store/index.ts";
 import type { RunnerOptions } from "./types.ts";
 import type { SpecRef } from "../store/index.ts";
 
@@ -19,7 +20,11 @@ afterEach(async () => {
 
 const REF: SpecRef = { featureName: "demo", specName: "x" };
 
-async function writeSpecFiles(opts: { manifest?: unknown; manifestRaw?: string } = {}): Promise<void> {
+// Beside the spec by default, same as every built-in target's own default —
+// the resolved absolute path is `.ccqa/features/demo/test-cases/x/test.spec.ts`.
+const DEFAULT_TEST_PATH = `${SPEC_DIR_TEMPLATE}/test.spec.ts`;
+
+async function writeSpecFiles(opts: { withTestFile?: boolean } = {}): Promise<void> {
   const dir = join(cwd, ".ccqa/features/demo/test-cases/x");
   await mkdir(dir, { recursive: true });
   await writeFile(
@@ -27,17 +32,9 @@ async function writeSpecFiles(opts: { manifest?: unknown; manifestRaw?: string }
     "title: Sample flow\nsteps:\n  - instruction: open the page\n    expected: the form is shown\n",
     "utf8",
   );
-  const raw =
-    opts.manifestRaw ?? (opts.manifest !== undefined ? JSON.stringify(opts.manifest) : null);
-  if (raw !== null) await writeFile(join(dir, GENERATED_MANIFEST_FILE), raw, "utf8");
-}
-
-function manifest(files: Array<{ path: string; kind: "test" | "support" }>): unknown {
-  return {
-    target: "ext-run",
-    generatedAt: "2026-01-01T00:00:00.000Z",
-    files: files.map((f) => ({ ...f, sha256: "0".repeat(64) })),
-  };
+  if (opts.withTestFile ?? true) {
+    await writeFile(join(dir, "test.spec.ts"), "// generated test\n", "utf8");
+  }
 }
 
 function runnerOpts(
@@ -51,6 +48,7 @@ function runnerOpts(
     resources: () => [],
     targetId: "ext-run",
     targetConfig: TargetConfigSchema.parse(runCommand !== undefined ? { runCommand } : {}),
+    defaultTestPath: DEFAULT_TEST_PATH,
     stepEvidence: { supported: false, reason: "test target" },
     browserCoverage: { browser: "none", reason: "test target" },
     onSpecComplete: async () => {},
@@ -59,12 +57,12 @@ function runnerOpts(
 }
 
 describe("runCommandRunner", () => {
-  it("fails with 'ccqa generate' guidance when the manifest is missing", async () => {
-    await writeSpecFiles();
+  it("fails with 'ccqa generate' guidance when no generated test exists at the resolved testPath", async () => {
+    await writeSpecFiles({ withTestFile: false });
     const [row] = await runCommandRunner.run([REF], runnerOpts("echo {files}"));
     expect(row!.status).toBe("failed");
     expect(row!.title).toBe("Sample flow");
-    expect(row!.failureLogExcerpt).toContain("no generated tests");
+    expect(row!.failureLogExcerpt).toContain("no generated test at");
     expect(row!.failureLogExcerpt).toContain("ccqa generate demo/x");
     // A pre-execution failure is marked "did not execute" so the classifier
     // skips it — an empty script + "run ccqa generate" log is not a real
@@ -73,26 +71,22 @@ describe("runCommandRunner", () => {
     expect(row!.analysisSkipped).toContain("no generated tests");
   });
 
-  it("expands {files} to the test files (support files excluded) and passes on exit 0", async () => {
-    await writeSpecFiles({
-      manifest: manifest([
-        { path: "e2e/a.spec.ts", kind: "test" },
-        { path: "e2e/pages/helper.ts", kind: "support" },
-        { path: "e2e/b.spec.ts", kind: "test" },
-      ]),
-    });
+  it("expands {files} to the resolved testPath and passes on exit 0", async () => {
+    await writeSpecFiles();
     const capture =
       `node -e "require('fs').writeFileSync('args.txt', process.argv.slice(1).join(' '))" {files}`;
     const [row] = await runCommandRunner.run([REF], runnerOpts(capture));
     expect(row!.status).toBe("passed");
     expect(row!.durationMs).toBeGreaterThanOrEqual(0);
     expect(row!.failureLogExcerpt).toBeNull();
-    // The command ran in `cwd` with {files} expanded to the test paths only.
-    expect(await readFile(join(cwd, "args.txt"), "utf8")).toBe("e2e/a.spec.ts e2e/b.spec.ts");
+    // The command ran in `cwd` with {files} expanded to the spec's testPath.
+    expect(await readFile(join(cwd, "args.txt"), "utf8")).toBe(
+      ".ccqa/features/demo/test-cases/x/test.spec.ts",
+    );
   });
 
   it("reports a failing command with its exit code and output tail", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    await writeSpecFiles();
     const failing = `node -e "console.error('boom detail'); process.exit(3)"`;
     const [row] = await runCommandRunner.run([REF], runnerOpts(failing));
     expect(row!.status).toBe("failed");
@@ -108,7 +102,7 @@ describe("runCommandRunner", () => {
   });
 
   it("expands {artifactsDir}, injects CCQA_ARTIFACTS_DIR, and collects artifacts + output.log", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    await writeSpecFiles();
     const artifactsDir = join(cwd, "report", "artifacts", "demo__x");
     // A stale file from a previous run must not leak into this row.
     await mkdir(artifactsDir, { recursive: true });
@@ -139,7 +133,7 @@ describe("runCommandRunner", () => {
   });
 
   it("keeps output.log even when the command wipes the artifacts dir (playwright --output style)", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    await writeSpecFiles();
     // Simulate `playwright test --output <dir>`: delete + recreate the dir at
     // startup, then write an artifact into it.
     const script =
@@ -159,23 +153,8 @@ describe("runCommandRunner", () => {
     expect(outputLog).toContain("wiped and wrote");
   });
 
-  it("fails on a malformed manifest with regenerate guidance", async () => {
-    await writeSpecFiles({ manifestRaw: "{ not json" });
-    const [row] = await runCommandRunner.run([REF], runnerOpts("echo {files}"));
-    expect(row!.status).toBe("failed");
-    expect(row!.failureLogExcerpt).toContain("not a valid generated-files manifest");
-    expect(row!.failureLogExcerpt).toContain("ccqa generate demo/x");
-  });
-
-  it("fails when the manifest lists no test files", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/pages/helper.ts", kind: "support" }]) });
-    const [row] = await runCommandRunner.run([REF], runnerOpts("echo {files}"));
-    expect(row!.status).toBe("failed");
-    expect(row!.failureLogExcerpt).toContain("lists no test files");
-  });
-
   it("reports each spec through onSpecComplete as it finishes", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    await writeSpecFiles();
     const streamed: string[] = [];
     const [row] = await runCommandRunner.run(
       [REF],
@@ -190,7 +169,7 @@ describe("runCommandRunner", () => {
   });
 
   it("never rejects the pool when onSpecComplete throws (would race the final report write)", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    await writeSpecFiles();
     // A throwing incremental push (e.g. a hub PATCH failure) must not escape the
     // worker — otherwise runPool rejects and sibling workers keep running
     // detached, clobbering the authoritative final report.
@@ -204,7 +183,7 @@ describe("runCommandRunner", () => {
   });
 
   it("loads step evidence + injects CCQA_EVIDENCE_DIR when the target supports it", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    await writeSpecFiles();
     // Simulate a generated test's ccqa/step-evidence calls: write the <id>.png
     // + <id>.json pair into CCQA_EVIDENCE_DIR the runner points us at.
     const script =
@@ -221,7 +200,7 @@ describe("runCommandRunner", () => {
   });
 
   it("records evidenceUnavailable when a supported target captured nothing", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    await writeSpecFiles();
     const [row] = await runCommandRunner.run(
       [REF],
       runnerOpts(`node -e "process.exit(0)"`, { stepEvidence: { supported: true } }),
@@ -231,7 +210,7 @@ describe("runCommandRunner", () => {
   });
 
   it("records the target's reason as evidenceUnavailable when it can't capture", async () => {
-    await writeSpecFiles({ manifest: manifest([{ path: "e2e/a.spec.ts", kind: "test" }]) });
+    await writeSpecFiles();
     const [row] = await runCommandRunner.run(
       [REF],
       runnerOpts(`node -e "process.exit(0)"`, {

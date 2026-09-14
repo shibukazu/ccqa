@@ -83,6 +83,7 @@ describe("killSessionDaemon", () => {
     await expect(killSessionDaemon("sess")).resolves.toEqual({
       killed: false,
       reason: `pid ${process.pid} is not an agent-browser process`,
+      stillRunning: true,
     });
     expect(kill).not.toHaveBeenCalledWith(process.pid, "SIGTERM");
     kill.mockRestore();

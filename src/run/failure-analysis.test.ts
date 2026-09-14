@@ -43,26 +43,24 @@ afterEach(async () => {
   await rm(cwd, { recursive: true, force: true });
 });
 
-const GENERATED_TEST = "test('flow', async () => { await page.click('Submit'); });\n";
+const GENERATED_TEST =
+  'import { helper } from "./helper.ts";\n' +
+  "test('flow', async () => { await page.click('Submit'); helper(); });\n";
+const HELPER_SOURCE = "export function helper() {}\n";
+const DEFAULT_SPEC_YAML =
+  "title: Sample flow\nsteps:\n  - instruction: open the page\n    expected: the form is shown\n";
 
-/** A generated.json manifest plus the test file it points at. */
+/**
+ * The generated test at the (agent-browser default) target path, plus the
+ * support file it imports — and one unrelated file that is neither, to check
+ * only what the test actually reaches feeds the classifier.
+ */
 async function writeGeneratedTest(): Promise<void> {
   const specDir = join(cwd, ".ccqa/features/demo/test-cases/x");
   await mkdir(specDir, { recursive: true });
-  await mkdir(join(cwd, "e2e"), { recursive: true });
-  await writeFile(join(cwd, "e2e/x.spec.ts"), GENERATED_TEST, "utf8");
-  await writeFile(
-    join(specDir, "generated.json"),
-    JSON.stringify({
-      target: "ext-run",
-      generatedAt: "2026-01-01T00:00:00.000Z",
-      files: [
-        { path: "e2e/x.spec.ts", kind: "test", sha256: "0".repeat(64) },
-        { path: "e2e/pages/helper.ts", kind: "support", sha256: "0".repeat(64) },
-      ],
-    }),
-    "utf8",
-  );
+  await writeFile(join(specDir, "test.spec.ts"), GENERATED_TEST, "utf8");
+  await writeFile(join(specDir, "helper.ts"), HELPER_SOURCE, "utf8");
+  await writeFile(join(specDir, "unrelated.ts"), "export const unrelated = 1;\n", "utf8");
 }
 
 function failedRow(spec: string, extra: Partial<ReportSpecResult> = {}): ReportSpecResult {
@@ -70,7 +68,7 @@ function failedRow(spec: string, extra: Partial<ReportSpecResult> = {}): ReportS
     ...emptySpecRow({ feature: "demo", spec, title: "Sample flow", status: "failed" }),
     target: "ext-run",
     failureLogExcerpt: "command failed (exit 1)",
-    specYaml: "title: Sample flow\n",
+    specYaml: DEFAULT_SPEC_YAML,
     ...extra,
   };
 }
@@ -132,13 +130,15 @@ describe("analyzeExternalRows", () => {
     // A pre-execution failure keeps its recorded reason and is never classified.
     expect(rows.find((r) => r.spec === "crashed")).toBe(crashed);
 
-    // Only the manifest's `kind: "test"` files feed the prompt's script block,
-    // and the spec's artifacts dir is named so the model can read run context.
+    // The generated test plus what it imports feed the prompt's script block —
+    // an unrelated file the test never reaches does not — and the spec's
+    // artifacts dir is named so the model can read run context.
     expect(vi.mocked(analyzeFailure)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeDrift)).not.toHaveBeenCalled();
     const promptInput = vi.mocked(analyzeFailure).mock.calls[0]![0];
     expect(promptInput.script).toContain(GENERATED_TEST);
-    expect(promptInput.script).not.toContain("helper.ts");
+    expect(promptInput.script).toContain(HELPER_SOURCE);
+    expect(promptInput.script).not.toContain("unrelated");
     expect(promptInput.failureLog).toBe("command failed (exit 1)");
     expect(promptInput.artifactsDir).toBe("report/artifacts/demo__x");
     // An external-target row always ran generated code, whether or not that

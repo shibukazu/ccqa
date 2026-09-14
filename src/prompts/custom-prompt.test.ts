@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { describe, expect, test, vi } from "vitest";
 import * as log from "../cli/logger.ts";
 import type { HubClient } from "../hub-client/index.ts";
@@ -172,21 +173,25 @@ describe("buildTriageUserPromptBlock", () => {
 });
 
 describe("fetchTriageUserPrompt", () => {
+  // A directory with no `.ccqa/prompts` in it: these tests are about the hub
+  // half, and the project's own copy is covered in the store's tests.
+  const NO_LOCAL = tmpdir();
+
   test("returns null without a hub context or a stored prompt, but not on a hub failure", async () => {
     // "nothing stored" and "cannot reach the hub" have to stay distinguishable:
     // the first is normal, the second means the run would use other guidance.
-    expect(await fetchTriageUserPrompt(null)).toBeNull();
-    expect(await fetchTriageUserPrompt({ hub: fakeHubClient(async () => null), project: "demo" })).toBeNull();
-    expect(await fetchTriageUserPrompt({ hub: fakeHubClient(async () => "  \n"), project: "demo" })).toBeNull();
+    expect(await fetchTriageUserPrompt(null, NO_LOCAL)).toBeNull();
+    expect(await fetchTriageUserPrompt({ hub: fakeHubClient(async () => null), project: "demo" }, NO_LOCAL)).toBeNull();
+    expect(await fetchTriageUserPrompt({ hub: fakeHubClient(async () => "  \n"), project: "demo" }, NO_LOCAL)).toBeNull();
     const throwing = fakeHubClient(async () => {
       throw new Error("network error");
     });
-    await expect(fetchTriageUserPrompt({ hub: throwing, project: "demo" })).rejects.toThrow("network error");
+    await expect(fetchTriageUserPrompt({ hub: throwing, project: "demo" }, NO_LOCAL)).rejects.toThrow("network error");
   });
 
   test("returns the trimmed stored markdown", async () => {
     const hub = fakeHubClient(async () => "  Prefer PRODUCT_BUG when the DOM is intact.\n");
-    expect(await fetchTriageUserPrompt({ hub, project: "demo" })).toBe(
+    expect(await fetchTriageUserPrompt({ hub, project: "demo" }, NO_LOCAL)).toBe(
       "Prefer PRODUCT_BUG when the DOM is intact.",
     );
   });
@@ -194,10 +199,10 @@ describe("fetchTriageUserPrompt", () => {
   test("guidance naming TEST_DRIFT/SPEC_CHANGE passes through unwarned — the run answers those again", async () => {
     const warnSpy = vi.spyOn(log, "warn").mockImplementation(() => {});
     const hub = fakeHubClient(async () => "Prefer TEST_DRIFT for selector-only changes.");
-    expect(await fetchTriageUserPrompt({ hub, project: "demo" })).toBe(
+    expect(await fetchTriageUserPrompt({ hub, project: "demo" }, NO_LOCAL)).toBe(
       "Prefer TEST_DRIFT for selector-only changes.",
     );
-    expect(await fetchTriageUserPrompt({ hub, project: "demo" }, "audit.user")).toBe(
+    expect(await fetchTriageUserPrompt({ hub, project: "demo" }, NO_LOCAL, "audit.user")).toBe(
       "Prefer TEST_DRIFT for selector-only changes.",
     );
     expect(warnSpy).not.toHaveBeenCalled();

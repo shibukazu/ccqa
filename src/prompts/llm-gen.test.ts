@@ -12,8 +12,8 @@ describe("buildLlmGenPrompt", () => {
       ],
       resources: [],
       conventionSections: [],
-      outDir: "tests",
-      extraWriteRoots: [],
+      testPath: "tests/demo.spec.ts",
+      writeRoots: [],
     });
     expect(prompt).toContain(
       "- step-01: judge by LLM (read from `.out`)\n  claim: the answer explains why\n    and names a next action\n- step-02:",

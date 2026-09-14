@@ -5,7 +5,8 @@ vi.mock("../hub-client/index.ts", async (importOriginal) => {
   return { ...actual, createHubClient: vi.fn(actual.createHubClient) };
 });
 const { createHubClient } = await import("../hub-client/index.ts");
-const { parseHubHeaders, resolveHubClient } = await import("./hub-conn.ts");
+const { parseHubHeaders, resolveHubClient, resolveHubTransport } = await import("./hub-conn.ts");
+const { rememberHubConfig } = await import("../config/hub-config.ts");
 
 describe("parseHubHeaders", () => {
   test("parses a single 'key:value' entry", () => {
@@ -64,5 +65,55 @@ describe("resolveHubClient custom headers", () => {
 
     const call = vi.mocked(createHubClient).mock.calls[0]![0];
     expect(call.headers).toBeUndefined();
+  });
+});
+
+describe("resolveHubTransport — the project's own `hub:` block", () => {
+  const ORIGINAL = { ...process.env };
+
+  afterEach(() => {
+    rememberHubConfig(undefined);
+    for (const k of Object.keys(process.env)) if (!(k in ORIGINAL)) delete process.env[k];
+    for (const [k, v] of Object.entries(ORIGINAL)) process.env[k] = v;
+  });
+
+  test("supplies the URL, with the token still coming from the environment", () => {
+    delete process.env["CCQA_HUB_URL"];
+    process.env["CCQA_HUB_TOKEN"] = "t";
+    rememberHubConfig({ url: "https://hub.example.test", headers: {} });
+    expect(resolveHubTransport({})?.baseUrl).toBe("https://hub.example.test");
+  });
+
+  // A credential named in a checked-in file is a credential leaked.
+  test("no token in the environment means no connection, whatever the config says", () => {
+    delete process.env["CCQA_HUB_TOKEN"];
+    rememberHubConfig({ url: "https://hub.example.test", headers: {} });
+    expect(resolveHubTransport({})).toBeNull();
+  });
+
+  test("an invocation outranks the file", () => {
+    process.env["CCQA_HUB_TOKEN"] = "t";
+    process.env["CCQA_HUB_URL"] = "https://from-env.example.test";
+    rememberHubConfig({ url: "https://from-config.example.test", headers: {} });
+    expect(resolveHubTransport({})?.baseUrl).toBe("https://from-env.example.test");
+    expect(resolveHubTransport({ hubUrl: "https://from-flag.example.test" })?.baseUrl).toBe(
+      "https://from-flag.example.test",
+    );
+  });
+
+  // Sending `${VAR}` to a gateway earns an opaque 403; saying which variable
+  // is missing earns a fix.
+  test("an unset variable in a header is an error, not a header reading ${VAR}", () => {
+    process.env["CCQA_HUB_TOKEN"] = "t";
+    delete process.env["GATEWAY_SECRET"];
+    rememberHubConfig({ url: "https://hub.example.test", headers: { "x-gate": "${GATEWAY_SECRET}" } });
+    expect(() => resolveHubTransport({})).toThrow(/GATEWAY_SECRET/);
+  });
+
+  test("a header value names the variable that holds it, and is resolved when the connection is made", () => {
+    process.env["CCQA_HUB_TOKEN"] = "t";
+    process.env["GATEWAY_SECRET"] = "opened";
+    rememberHubConfig({ url: "https://hub.example.test", headers: { "x-gate": "${GATEWAY_SECRET}" } });
+    expect(resolveHubTransport({})?.headers).toEqual({ "x-gate": "opened" });
   });
 });

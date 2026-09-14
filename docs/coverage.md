@@ -60,6 +60,35 @@ coverage:
 The application's own `CCQA_COVERAGE_ROOT` has to name the same directory. Root
 the two halves differently and one file arrives under two names.
 
+**It may sit outside the directory ccqa runs in.** A project whose tests are
+one checkout and whose application is another names the application here,
+absolute or relative, and the path is resolved through any symlinks before it
+is compared against anything — a checkout reached one way and the same
+checkout reached another otherwise agree about nothing:
+
+```yaml
+coverage:
+  projectRoot: ../product-app    # or an absolute path
+```
+
+A directory that is not there is a config error, said once, rather than a run
+that measures nothing and reports it as a clean sweep.
+
+**Say where the build ran, when it was not here.** A bundler writes a source
+map's `sources` relative to its own output directory. Resolving them against
+the directory ccqa runs in then lands every one of them outside the project,
+and the run reports nothing reached — with no error, because a path above the
+root is dropped by design. `sourceBase` is that directory:
+
+```yaml
+coverage:
+  sourceBase: ../product-app/.output/client
+```
+
+It need not sit inside `projectRoot`, and it defaults to the directory ccqa
+runs in, which is the case where the two are the same. `include` stays
+relative to `projectRoot` either way.
+
 A package is imported through its build output, so that is what the bundler
 names. Where the output has a map beside it naming a single source — what an
 unbundled compile produces — the source is reported instead; a bundle's map
@@ -87,6 +116,35 @@ Vendored and generated directories (`node_modules`, `dist`, `build`, `out`,
 `coverage`, dot-directories) are skipped. An `include` that matches nothing,
 or more than 20,000 files, drops the whole list with a warning rather than
 shipping a denominator that would misreport "uncovered".
+
+**Exclude the files every screen imports.** `exclude` is `include`'s
+counterpart — globs, relative to `projectRoot`, empty by default — and it
+takes its files out of the answer entirely: not recorded as reached, not part
+of the denominator, and never held against a diff by `ccqa select-specs`:
+
+```yaml
+coverage:
+  exclude:
+    - src/generated/**            # a generated client every screen imports
+```
+
+Name aggregates here and nothing else — a generated client bundle is the
+shape. Every spec genuinely reaches such a file, so the measurement is right
+about it and useless because of that: a change to any part of it makes the
+whole suite `needed`, and selection stops selecting. That is the whole
+argument, and it does not extend to a file that merely looks central. **A
+file excluded is a file whose changes will never select a spec**, so a
+hand-written module that happens to be imported everywhere does not belong
+in the list.
+
+The list governs what is measured, so it takes effect as specs run: a file
+taken back out of `exclude` counts as reached again only once the specs that
+reach it have run measured. Selection applies the list to the diff as well,
+so an entry starts working against already-stored measurements immediately.
+One exception, in the hub-inbox mode below: the application pushes its own
+file lists straight to the hub, which holds no project config, so the stream
+keeps them and the hub's Coverage page still draws them. What selection reads
+has them removed.
 
 **The server side needs the application instrumented** with
 [`ccqa-tools`](../packages/tools/README.md) and pointed at the sink
@@ -168,12 +226,14 @@ the cheap `notNeeded` skips a measurement buys. Two read-outs close that gap:
 Every measured run that delivers to the hub — `--coverage-inbox hub`, or
 local mode under `--report-to-hub` — ends by merging what it measured into
 the hub's coverage-edge ledger: one document per project, one entry per
-spec, replaced whenever that spec runs measured and never expiring
-(ADR-0026). A run whose application half never reported merges nothing:
-recording only the browser's reach would shadow a fuller earlier
-measurement for good. Selection reads the ledger in one request; the stream
-and pushed report rows still answer for hubs or data that predate it,
-newest measurement winning.
+spec, replaced whenever that spec **passes** measured and never expiring
+(ADR-0026). A spec that failed stopped part-way and reached a prefix of its
+route, so its measurement is not recorded: the last passing one stands, and
+a spec with no passing measurement selects as `needed`. A run whose
+application half never reported merges nothing either: recording only the
+browser's reach would shadow a fuller earlier measurement for good.
+Selection reads the ledger in one request; the stream and pushed report rows
+still answer for hubs or data that predate it, newest measurement winning.
 
 There is no re-measurement schedule because none is needed. A spec with no
 entry selects as `needed` — it runs until a measurement records its reach,
@@ -304,6 +364,16 @@ Two things have to line up for the read side to find them:
   `instrumentedOrigins`.
 
 `ccqa hub sourcemap ls --sha <sha>` shows what a push landed.
+
+If the deploy already happened without this step — the assets are live, the
+`.map` files that built them are gone, and no job is left to rerun — check out
+the same commit, build it again, and push from that build. It only names what
+is deployed if the rebuild repeats the deploy job's conditions: the same Node
+version, the same package manager version, and the same build-time public
+environment variables, since a value baked into the bundle changes the chunk's
+contents and with it its name. Compare `ls` against what the browser requests
+before trusting it — a chunk name that does not match is stored without error
+and simply never asked for.
 
 When neither lines up, a run that resolved no frontend files at all says so
 and names the commit it asked under:

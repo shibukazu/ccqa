@@ -21,9 +21,9 @@ answers now, not from the message.
 
 - **Never weaken a test to clear a row.** Loosening an assertion or dropping a
   step turns a row green by destroying what made it worth reading.
-- **Never edit a generated artefact** — `test.spec.ts`, `ir.json`,
-  `generated.json`, anything a target emits. A test that no longer fits the
-  product is repaired by re-recording it, never by hand.
+- **Never edit a generated artefact** — `test.spec.ts`, `ir.json`, anything a
+  target emits. A test that no longer fits the product is repaired by
+  re-recording it, never by hand.
 - **Attesting and dismissing are a person's word, and each answers one thing.**
   `ccqa hub attest <feature>/<spec> --profile <profile> --by <name>` answers an
   `ENVIRONMENT` failure: somebody fixed the environment and checked the

@@ -2,12 +2,8 @@ import { specKey, type SpecRef } from "../store/index.ts";
 import { AGENT_BROWSER_TARGET, type TestSpec } from "../spec/yaml-schema.ts";
 import type { SpecCatalog } from "./spec-catalog.ts";
 import type { GroupLookup } from "./serial-groups.ts";
-import {
-  TargetConfigSchema,
-  type ProjectConfig,
-  type TargetConfig,
-} from "../config/project-config.ts";
-import { resolveTarget } from "../targets/registry.ts";
+import { targetConfigFor, type ProjectConfig, type TargetConfig } from "../config/project-config.ts";
+import { registryFor, resolveTargetFrom } from "../targets/registry.ts";
 import type {
   BrowserCoverageDecl,
   StepEvidenceSupport,
@@ -39,6 +35,8 @@ export interface ExternalTargetGroup {
   targetId: string;
   runner: TestRunner;
   targetConfig: TargetConfig;
+  /** The plugin's `defaultTestPath`; see `RunnerOptions.defaultTestPath`. */
+  defaultTestPath: string;
   /** Resolved from the plugin — absent on the plugin means "no step screenshots". */
   stepEvidence: StepEvidenceSupport;
   /** The target's required declaration, passed through verbatim. */
@@ -71,11 +69,21 @@ export interface TargetDispatch {
  * per-spec instead of stopping the run. `resolve` is injectable so tests can
  * supply a registry of fake targets.
  */
+/**
+ * Resolve against a registry built once for the whole dispatch. A project that
+ * declares targets in its config has them constructed from that config, and
+ * doing that per spec would rebuild the same objects for every row of a run.
+ */
+function resolveTargetFor(config: ProjectConfig): (spec: TestSpec, c: ProjectConfig) => TargetPlugin {
+  const registry = registryFor(config);
+  return (spec, c) => resolveTargetFrom(spec, c, registry);
+}
+
 export function groupSpecsByTarget(
   specs: readonly SpecRef[],
   catalog: SpecCatalog,
   config: ProjectConfig,
-  resolve: (spec: TestSpec, config: ProjectConfig) => TargetPlugin = resolveTarget,
+  resolve: (spec: TestSpec, config: ProjectConfig) => TargetPlugin = resolveTargetFor(config),
 ): TargetDispatch {
   const agentBrowser: SpecRef[] = [];
   const externalById = new Map<string, ExternalTargetGroup>();
@@ -118,39 +126,94 @@ export function groupSpecsByTarget(
     }
 
     const entry: DispatchedSpec = { ...ref, title: spec.title ?? null };
-    const targetConfig = config.targets[plugin.id] ?? TargetConfigSchema.parse({});
-    if (plugin.runner === undefined) {
-      skipped.push({
-        ...entry,
-        reason: `target "${plugin.id}" is generate-only (it has no runner)`,
-        targetId: plugin.id,
-      });
-    } else if (targetConfig.runCommand === undefined) {
-      skipped.push({
-        ...entry,
-        reason:
-          `target "${plugin.id}" has no \`runCommand\` in .ccqa/config.yaml, ` +
-          `so its generated tests cannot be executed by ccqa run`,
-        targetId: plugin.id,
-      });
+    const targetConfig = targetConfigFor(config, plugin.id);
+    const routed = externalRunnability(plugin, plugin.id, targetConfig);
+    if ("reason" in routed) {
+      skipped.push({ ...entry, reason: routed.reason, targetId: plugin.id });
     } else {
-      const group = externalById.get(plugin.id) ?? {
-        targetId: plugin.id,
-        runner: plugin.runner,
-        targetConfig,
-        stepEvidence: plugin.stepEvidence ?? {
-          supported: false,
-          reason: `the "${plugin.id}" target does not capture step screenshots`,
-        },
-        browserCoverage: plugin.browserCoverage,
-        specs: [],
-      };
+      const group = externalById.get(plugin.id) ?? { ...externalGroupFor(routed.plugin, targetConfig), specs: [] };
       group.specs.push(entry);
       externalById.set(plugin.id, group);
     }
   }
 
   return { agentBrowser, external: [...externalById.values()], skipped, unresolved };
+}
+
+/**
+ * Whether ccqa can execute this target's generated tests, and the group to put
+ * them in when it can.
+ *
+ * Both routes ask it — a `spec.yaml` case reaching a target through its own
+ * `target:`, and every case of a project that writes its own documents — and
+ * the answer includes text that lands in a report row. Two copies would drift,
+ * and a project's rows would read differently depending on which kind of
+ * document states the case.
+ */
+export function externalRunnability(
+  plugin: TargetPlugin | undefined,
+  targetId: string,
+  targetConfig: TargetConfig,
+): { reason: string } | { plugin: TargetPlugin } {
+  if (plugin === undefined) return { reason: `target "${targetId}" is not a target ccqa knows` };
+  if (plugin.runner === undefined) {
+    return { reason: `target "${targetId}" is generate-only (it has no runner)` };
+  }
+  if (targetConfig.runCommand === undefined) {
+    return {
+      reason:
+        `target "${targetId}" has no \`runCommand\` in .ccqa/config.yaml, ` +
+        `so its generated tests cannot be executed by ccqa run`,
+    };
+  }
+  return { plugin };
+}
+
+/** The group a runnable target's specs go in. Callers add the specs. */
+function externalGroupFor(
+  plugin: TargetPlugin,
+  targetConfig: TargetConfig,
+): Omit<ExternalTargetGroup, "specs"> {
+  return {
+    targetId: plugin.id,
+    runner: plugin.runner!,
+    targetConfig,
+    defaultTestPath: plugin.defaultTestPath,
+    stepEvidence: plugin.stepEvidence ?? {
+      supported: false,
+      reason: `the "${plugin.id}" target does not capture step screenshots`,
+    },
+    browserCoverage: plugin.browserCoverage,
+  };
+}
+
+/**
+ * The external group for a project whose cases are its own documents.
+ *
+ * Such a case is not dispatched by reading a `spec.yaml` `target:` — the
+ * target that declares the intent source already owns every case under it — so
+ * the routing is one lookup rather than a walk. What it shares with
+ * {@link groupSpecsByTarget} is the two conditions that decide whether ccqa
+ * can execute a generated test at all: the plugin has a runner, and the
+ * project configured the command to run it with.
+ */
+export function groupIntentCases(
+  cases: readonly DispatchedSpec[],
+  targetId: string,
+  config: ProjectConfig,
+): Pick<TargetDispatch, "external" | "skipped"> {
+  // An empty group would still be logged as a target with a runner and run a
+  // command with no files, so the boundary answers before it resolves anything.
+  if (cases.length === 0) return { external: [], skipped: [] };
+  const targetConfig = targetConfigFor(config, targetId);
+  const routed = externalRunnability(registryFor(config).get(targetId), targetId, targetConfig);
+  if ("reason" in routed) {
+    return { external: [], skipped: cases.map((c) => ({ ...c, reason: routed.reason, targetId })) };
+  }
+  return {
+    external: [{ ...externalGroupFor(routed.plugin, targetConfig), specs: [...cases] }],
+    skipped: [],
+  };
 }
 
 export interface ExternalRunContext {
@@ -231,6 +294,7 @@ export async function runExternalSpecs(
         ...(ctx.language ? { language: ctx.language } : {}),
         targetId: group.targetId,
         targetConfig: group.targetConfig,
+        defaultTestPath: group.defaultTestPath,
         stepEvidence: group.stepEvidence,
         browserCoverage: group.browserCoverage,
         ...(ctx.coverage ? { coverage: ctx.coverage } : {}),

@@ -18,10 +18,11 @@ export type SelectVerdict = z.infer<typeof SelectVerdictSchema>;
 
 /**
  * How the verdict was reached. Kept because the two sources have different
- * trust: `mechanical` is set arithmetic on paths and cannot be wrong;
- * `coverage` intersects the diff with the spec's last measured reach
- * (ADR-0024), which can only be wrong through staleness — and staleness
- * degrades to `unknown`, never to a guess.
+ * trust: `mechanical` is set arithmetic on paths and cannot be wrong — a
+ * spec's own files, and the files its test imports, are both membership
+ * questions with an answer in the tree; `coverage` intersects the diff with
+ * the spec's last measured reach (ADR-0024), which can only be wrong through
+ * staleness — and staleness degrades to `unknown`, never to a guess.
  */
 export const SelectSourceSchema = z.enum(["mechanical", "coverage"]);
 export type SelectSource = z.infer<typeof SelectSourceSchema>;
@@ -35,6 +36,12 @@ export const SpecSelectionSchema = z.object({
   reason: z.string(),
   /** Changed paths tied to this spec. Set only for `needed`. */
   touchedBy: z.array(z.string()).optional(),
+  /**
+   * Project-root-relative generated test path (see `SpecDescription.testPath`).
+   * `.default("")` both covers a target that couldn't be resolved and keeps
+   * report.json written before this field existed valid.
+   */
+  testPath: z.string().default(""),
 });
 export type SpecSelection = z.infer<typeof SpecSelectionSchema>;
 
@@ -45,6 +52,19 @@ export const SelectReportSchema = z.object({
   changedFiles: z.number().int().nonnegative(),
   /** Every spec in the tree, always — a spec absent from the diff is `notNeeded`, not omitted. */
   specs: z.array(SpecSelectionSchema),
+  /**
+   * Product-changed files (original repo-relative path) no measured coverage
+   * edge reached. Empty whenever "uncovered" can't be told apart from "not
+   * comparable" — a degraded read, or the file re-rooted out of the coverage
+   * root — so this never reports a false positive.
+   */
+  uncoveredFiles: z.array(z.string()).default([]),
+  /**
+   * How many changed files `coverage.exclude` kept out of the comparison. A
+   * count, not a list: the patterns are in the config, and what matters here
+   * is that a range whose only changes were excluded cleared every spec.
+   */
+  excludedFiles: z.number().int().nonnegative().default(0),
 });
 export type SelectReport = z.infer<typeof SelectReportSchema>;
 

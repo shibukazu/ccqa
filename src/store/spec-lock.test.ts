@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { specCase } from "./index.ts";
 import { acquireSpecLock, SPEC_LOCK_FILE, SpecLockedError } from "./spec-lock.ts";
 
 let cwd: string;
@@ -19,7 +20,7 @@ afterEach(async () => {
 
 describe("acquireSpecLock", () => {
   it("creates the lock, records the holder, and release removes it", async () => {
-    const release = await acquireSpecLock("demo", "x", "generate", cwd);
+    const release = await acquireSpecLock(specCase("demo", "x", cwd), "generate");
     const body = JSON.parse(await readFile(lockPath(), "utf8"));
     expect(body.pid).toBe(process.pid);
     expect(body.command).toBe("generate");
@@ -34,12 +35,12 @@ describe("acquireSpecLock", () => {
       JSON.stringify({ pid: 1, command: "record", startedAt: "2026-01-01T00:00:00Z" }),
       "utf8",
     );
-    await expect(acquireSpecLock("demo", "x", "generate", cwd)).rejects.toThrow(SpecLockedError);
+    await expect(acquireSpecLock(specCase("demo", "x", cwd), "generate")).rejects.toThrow(SpecLockedError);
   });
 
   it("is re-entrant within the same process (record wrapping generate)", async () => {
-    const outer = await acquireSpecLock("demo", "x", "record", cwd);
-    const inner = await acquireSpecLock("demo", "x", "generate", cwd);
+    const outer = await acquireSpecLock(specCase("demo", "x", cwd), "record");
+    const inner = await acquireSpecLock(specCase("demo", "x", cwd), "generate");
     await inner(); // inner release is a no-op — the outer still holds
     expect(JSON.parse(await readFile(lockPath(), "utf8")).command).toBe("record");
     await outer();
@@ -53,12 +54,12 @@ describe("acquireSpecLock", () => {
       JSON.stringify({ pid: 999999999, command: "generate", startedAt: "old" }),
       "utf8",
     );
-    const release = await acquireSpecLock("demo", "x", "generate", cwd);
+    const release = await acquireSpecLock(specCase("demo", "x", cwd), "generate");
     expect(JSON.parse(await readFile(lockPath(), "utf8")).pid).toBe(process.pid);
     await release();
 
     await writeFile(lockPath(), "{ not json", "utf8");
-    const release2 = await acquireSpecLock("demo", "x", "generate", cwd);
+    const release2 = await acquireSpecLock(specCase("demo", "x", cwd), "generate");
     expect(JSON.parse(await readFile(lockPath(), "utf8")).pid).toBe(process.pid);
     await release2();
   });

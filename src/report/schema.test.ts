@@ -160,6 +160,16 @@ describe("normalizeDiagnosis", () => {
     expect(stray).not.toHaveProperty("specChangeKind");
     expect(stray.label).toBe("TEST_DRIFT");
   });
+
+  test("a SELECTOR_DRIFT diagnosis can never carry SPEC_CHANGE: the label yields to TEST_DRIFT", () => {
+    const normalized = normalizeDiagnosis({
+      label: "SPEC_CHANGE",
+      subDiagnosis: "SELECTOR_DRIFT" as const,
+      specChangeKind: "FEATURE_REMOVED" as const,
+    });
+    expect(normalized.label).toBe("TEST_DRIFT");
+    expect(normalized).not.toHaveProperty("specChangeKind");
+  });
 });
 
 describe("LabelsExportSchema", () => {

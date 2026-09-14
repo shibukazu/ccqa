@@ -20,6 +20,24 @@ export interface UnstableLiteralHit {
   match: string;
 }
 
+/**
+ * A locator that addresses a password input by construction. The other half
+ * of the answer is the `CCQA_SECRET=1` prefix the recorder puts on such a
+ * command — a semantic locator (`find label "Password" fill …`) says nothing
+ * about the element's type, so the command channel has to.
+ */
+const PASSWORD_INPUT_SELECTOR = /type\s*=\s*["']?password/i;
+
+/** Whether this action types into a password field, by either signal. */
+export function isSecretInput(action: RecordedAction): boolean {
+  if (action.action !== "fill" && action.action !== "type") return false;
+  if (action.secret === true) return true;
+  return action.locator?.by === "css" && PASSWORD_INPUT_SELECTOR.test(action.locator.value);
+}
+
+/** What replaces a secret's value once `env-scrub` has symbolised it. */
+const SYMBOLISED = /\$\{?[A-Za-z_][A-Za-z0-9_]*\}?/;
+
 export interface UnstableLiteralDrop {
   index: number;
   action: RecordedAction;
@@ -138,7 +156,18 @@ export function findOpaqueIdSegment(text: string): { patternId: string; match: s
  * Inspect a single action and return every (field, pattern) pair that
  * fired. An empty array means the action is safe to keep.
  */
-export function detectUnstableLiterals(action: RecordedAction): UnstableLiteralHit[] {
+/**
+ * Every string an action carries that a value could have been baked into,
+ * paired with the field it came from.
+ *
+ * The one enumeration, because two of them drift: this list is what the
+ * unstable-literal scrub reads, and it is also what `env-scrub` asks a saved
+ * recording about — a field added to the IR and missed by one of them is a
+ * credential nothing looks for.
+ */
+export function actionLiteralFields(
+  action: RecordedAction,
+): Array<[UnstableLiteralHit["field"], string]> {
   const fields: Array<[UnstableLiteralHit["field"], string | undefined]> = [
     ["locator.value", action.locator?.value],
     ["locator.name", action.locator?.by === "role" ? action.locator.name : undefined],
@@ -146,7 +175,20 @@ export function detectUnstableLiterals(action: RecordedAction): UnstableLiteralH
     ["value", action.value],
     ["label", action.label],
     ["observation", action.observation],
+    ...(action.files ?? []).map((f): [UnstableLiteralHit["field"], string] => ["value", f]),
   ];
+  return fields.filter((entry): entry is [UnstableLiteralHit["field"], string] =>
+    typeof entry[1] === "string" && entry[1].length > 0,
+  );
+}
+
+export function detectUnstableLiterals(action: RecordedAction): UnstableLiteralHit[] {
+  // A credential still in its own form was never routed through a variable, so
+  // there is nothing to symbolise it into and keeping the action would write a
+  // password to a file the consumer commits.
+  if (isSecretInput(action) && typeof action.value === "string" && !SYMBOLISED.test(action.value)) {
+    return [{ field: "value", patternId: "unrouted-secret", match: "(not shown)" }];
+  }
   const hits: UnstableLiteralHit[] = [];
   // A navigate to an address carrying an opaque machine-generated id was
   // produced by the run itself; replaying it opens a record later runs do
@@ -156,8 +198,7 @@ export function detectUnstableLiterals(action: RecordedAction): UnstableLiteralH
     const opaque = findOpaqueIdSegment(action.value);
     if (opaque) hits.push({ field: "value", ...opaque });
   }
-  for (const [field, raw] of fields) {
-    if (typeof raw !== "string" || raw.length === 0) continue;
+  for (const [field, raw] of actionLiteralFields(action)) {
     for (const p of UNSTABLE_PATTERNS) {
       const m = raw.match(p.pattern);
       if (m) hits.push({ field, patternId: p.id, match: m[0] });
@@ -204,6 +245,12 @@ export function scrubUnstableActions(actions: RecordedAction[]): UnstableScrubRe
  */
 export function formatUnstableDrop(drop: UnstableLiteralDrop): string {
   const { action, hits } = drop;
+  if (hits.some((h) => h.patternId === "unrouted-secret")) {
+    return (
+      "fill into a password field: the value was typed literally, not read from a variable — " +
+      "put it in a file named by `envFiles` (or a hub profile) and record again"
+    );
+  }
   const ids = [...new Set(hits.map((h) => h.patternId))].join(", ");
   const samples = hits.map((h) => `${h.field}="${h.match}"`).join(", ");
   const tag = `${action.action}${action.assert ? " " + action.assert : ""}`;
