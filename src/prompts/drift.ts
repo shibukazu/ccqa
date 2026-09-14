@@ -21,7 +21,7 @@ import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "9";
+export const DRIFT_PROMPT_VERSION = "10";
 
 /**
  * Project guidance injected into the audit, in the same order the run's
@@ -79,9 +79,9 @@ Ask whether the **intent** the step describes still exists in the product:
 - The intent exists, but the string or selector the case names is gone or renamed → **TEST_DRIFT**. Cite where the replacement lives.
 - The intent itself is gone, or deliberately different → **SPEC_CHANGE**. Cite the source that shows the new shape.
 
-A renamed button is TEST_DRIFT. A button that no longer exists because the flow was replaced is SPEC_CHANGE. If the source shows a rename you can point at, prefer TEST_DRIFT.
+A renamed button is TEST_DRIFT. A button that no longer exists because the flow was replaced is SPEC_CHANGE. If the source shows a rename you can point at, prefer TEST_DRIFT — whether the stale string sits in generated code or is quoted in the case's own document; which one has to change is the \`surface\` axis's answer, not the label's.
 
-SPEC_CHANGE is the more expensive answer — it sends a human to rewrite or retire the case — so it takes the *stronger* evidence, not the weaker. Failing to find where the intent went is not a finding; that is UNKNOWN. Claim SPEC_CHANGE only when you can point at the source that shows the new shape, or at where the implementation would sit if it still existed.
+SPEC_CHANGE is the more expensive answer — it sends a human to rewrite or retire the case — so it takes the *stronger* evidence, not the weaker. Failing to find where the intent went is not a finding; that is UNKNOWN. Claim SPEC_CHANGE only when you can point at the source that shows the new shape, or at where the implementation would sit if it still existed. When the evidence honestly supports either label, take the one execution can check: a wrong TEST_DRIFT fails loudly at the next regeneration, while a wrong SPEC_CHANGE fails silently, sending someone to rewrite a document that was already correct — this never turns "I did not look" into TEST_DRIFT, which is still UNKNOWN.
 
 ## Which surface drifted
 

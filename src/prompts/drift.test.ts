@@ -17,6 +17,14 @@ describe("buildDriftSystemPrompt", () => {
     expect(out).toMatch(/TEST_DRIFT gets the test re-recorded, SPEC_CHANGE gets a human to rewrite the spec/);
   });
 
+  test("breaks a TEST_DRIFT / SPEC_CHANGE tie toward the label a repair can check", () => {
+    const out = buildDriftSystemPrompt(NO_BLOCKS);
+    expect(out).toMatch(/whether the stale string sits in generated code or is quoted in the case's own document/);
+    expect(out).toMatch(/take the one execution can check/);
+    // The tie-break must not become a licence to skip looking.
+    expect(out).toMatch(/never turns "I did not look" into TEST_DRIFT/);
+  });
+
   test("requires a citation before a TEST_DRIFT/SPEC_CHANGE finding is earned", () => {
     const out = buildDriftSystemPrompt(NO_BLOCKS);
     expect(out).toMatch(/A finding needs a citation/);

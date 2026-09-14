@@ -260,11 +260,17 @@ export type DriftDiagnosis = z.infer<typeof DriftDiagnosisSchema>;
  * stray field. That is why the UI re-checks the label before rendering the
  * chip rather than trusting the stored row.
  */
-export function normalizeDiagnosis<T extends { label: string; specChangeKind?: SpecChangeKind }>(
-  diagnosis: T,
-): T {
-  if (diagnosis.label === "SPEC_CHANGE" || diagnosis.specChangeKind === undefined) return diagnosis;
-  const { specChangeKind: _dropped, ...rest } = diagnosis;
+export function normalizeDiagnosis<
+  T extends { label: string; subDiagnosis?: string; specChangeKind?: SpecChangeKind },
+>(diagnosis: T): T {
+  // SELECTOR_DRIFT names a rename; a rename is TEST_DRIFT by definition, so
+  // the label yields.
+  const renamed =
+    diagnosis.subDiagnosis === "SELECTOR_DRIFT" && diagnosis.label === "SPEC_CHANGE"
+      ? ({ ...diagnosis, label: "TEST_DRIFT" } as T)
+      : diagnosis;
+  if (renamed.label === "SPEC_CHANGE" || renamed.specChangeKind === undefined) return renamed;
+  const { specChangeKind: _dropped, ...rest } = renamed;
   return rest as T;
 }
 
