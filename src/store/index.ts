@@ -1,7 +1,7 @@
 import { RunUsageError } from "../run/errors.ts";
-import { createHash } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import { collectIncludedBlockNames } from "../spec/expand.ts";
 import { parseBlockSpec, parseTestSpec, tryParseTestSpec } from "../spec/parser.ts";
 import { isParamRequired } from "../spec/yaml-schema.ts";
@@ -44,6 +44,10 @@ const PERSPECTIVES_MD_FILE = "perspectives.md";
 
 export function getCcqaDir(cwd: string = process.cwd()): string {
   return join(cwd, CCQA_DIR);
+}
+
+function pathExists(path: string): Promise<boolean> {
+  return stat(path).then(() => true, () => false);
 }
 
 /**
@@ -99,8 +103,9 @@ export function getSpecDir(featureName: string, specName: string, cwd?: string):
 }
 
 /**
- * One test case's own working directory — where its recording, its route diff
- * and its lock live.
+ * One test case's own working directory — where its route diff, its evidence
+ * and its lock live. Not its recording: that sits beside the test it compiles
+ * into (see {@link getRecordingPath}).
  *
  * A case's intent comes from one of two places: ccqa's own `spec.yaml`, whose
  * directory is also the case's, or a file in the consumer's repository (a
@@ -114,6 +119,13 @@ export interface CaseRef {
   id: string;
   /** Absolute working directory. */
   dir: string;
+  /**
+   * Where this case's recording belongs, absolute — beside the test it
+   * compiles into, named by the same template (see `resolveRecordingPath`).
+   * Absent for a case that compiles into no test, which leaves the recording
+   * nothing to sit beside.
+   */
+  recordingPathAbs?: string;
 }
 
 export function specCase(featureName: string, specName: string, cwd?: string): CaseRef {
@@ -134,6 +146,29 @@ export function splitCaseId(id: string): { featureName: string; specName: string
 /** The case an intent source names, by its root-relative id (no extension). */
 export function intentCase(id: string, cwd?: string): CaseRef {
   return { id, dir: join(getCcqaDir(cwd), CASES_DIR, ...id.split("/")) };
+}
+
+/**
+ * A case's ref, complete with the test it compiles into — the one place a
+ * CaseRef is built with one.
+ *
+ * Which target owns a case is a question about the project's config and the
+ * command's flags, so the caller answers it and hands the path over; the store
+ * never looks a target up, and never derives a name from one. A caller that
+ * cannot resolve a path passes none, and gets a case whose recording stays in
+ * its own directory: a target that will not resolve must not stop a command
+ * that was not asking about the test.
+ */
+export function caseRefFor(
+  id: SpecRef | string,
+  cwd: string,
+  recordingPath: string | undefined,
+): CaseRef {
+  const base =
+    typeof id === "string" ? intentCase(id, cwd) : specCase(id.featureName, id.specName, cwd);
+  return recordingPath === undefined
+    ? base
+    : { ...base, recordingPathAbs: resolve(cwd, recordingPath) };
 }
 
 
@@ -268,18 +303,19 @@ export async function fileSha256(pathAbs: string): Promise<string | null> {
  * Record what this generation wrote, leaving the route itself untouched. A
  * recording with no test to stamp keeps whatever stamp it had: the generation
  * produced nothing to attribute.
+ *
+ * Returns the file written, so a caller can say the recording moved without
+ * having to guess whether this call was the write that moved it.
  */
 export async function stampGeneratedTest(
   ref: CaseRef,
   testPathAbs: string,
-): Promise<void> {
-  const path = getRecordingPath(ref);
-  const content = await readFile(path, "utf-8").catch(() => null);
+): Promise<string | null> {
+  const found = await loadRecording(ref);
   const testSha256 = await fileSha256(testPathAbs);
-  if (content === null || testSha256 === null) return;
-  const recording = parseRecording(content);
-  recording.generated = { testSha256, at: new Date().toISOString() };
-  await writeFile(path, JSON.stringify(recording, null, 2), "utf-8");
+  if (found === null || testSha256 === null) return null;
+  found.recording.generated = { testSha256, at: new Date().toISOString() };
+  return writeRecording(ref, found.recording);
 }
 
 function buildRecording(actions: RecordedAction[], cleanup: RecordedAction[] = []): Recording {
@@ -297,14 +333,14 @@ function buildRecording(actions: RecordedAction[], cleanup: RecordedAction[] = [
  * bare action array; it still describes a route, so it is read as one with the
  * provenance simply absent rather than rejected.
  */
-export function parseRecording(content: string): Recording {
+export function parseRecording(content: string, path?: string): Recording {
   const parsed: unknown = JSON.parse(content);
   if (Array.isArray(parsed)) return { actions: parsed as RecordedAction[] };
   const recording = parsed as Partial<Recording>;
   if (!Array.isArray(recording.actions)) {
     // Truncated or hand-mangled: say so here, where the file is named, rather
     // than downstream where a missing action list reads as a code bug.
-    throw new Error("ir.json holds no `actions` array — re-run `ccqa record`");
+    throw new Error(`${path ?? "the recording"} holds no \`actions\` array — re-run \`ccqa record\``);
   }
   return recording as Recording;
 }
@@ -318,14 +354,16 @@ export async function saveRecording(
   actions: RecordedAction[],
   cleanup: RecordedAction[] = [],
 ): Promise<{ path: string; recording: Recording }> {
+  // The case's own directory holds the route diff and the evidence this
+  // recording is about to be described by, whether or not the recording
+  // itself lands there.
   await mkdir(ref.dir, { recursive: true });
-  const recordingPath = join(ref.dir, RECORDING_FILE);
   const recording = buildRecording(actions, cleanup);
-  await writeFile(recordingPath, JSON.stringify(recording, null, 2), "utf-8");
+  const recordingPath = await writeRecording(ref, recording);
   await Promise.all(
     // A successful save also removes a leftover failed-trace file: it
-    // described an older attempt, and keeping it beside a good ir.json
-    // reads as an open problem.
+    // described an older attempt, and keeping it beside a case that has since
+    // recorded cleanly reads as an open problem.
     [...LEGACY_RECORDING_FILES, FAILED_RECORDING_FILE].map((f) =>
       unlink(join(ref.dir, f)).catch(() => {}),
     ),
@@ -375,13 +413,11 @@ export async function rewriteRecordingActions(
   actions: RecordedAction[],
   cleanup?: RecordedAction[],
 ): Promise<void> {
-  const path = getRecordingPath(ref);
-  const content = await readFile(path, "utf-8").catch(() => null);
-  if (content === null) return;
-  const recording = parseRecording(content);
-  recording.actions = actions;
-  if (cleanup) recording.cleanup = cleanup;
-  await writeFile(path, JSON.stringify(recording, null, 2), "utf-8");
+  const found = await loadRecording(ref);
+  if (found === null) return;
+  found.recording.actions = actions;
+  if (cleanup) found.recording.cleanup = cleanup;
+  await writeRecording(ref, found.recording);
 }
 
 /** Where `ccqa record` leaves the route diff against the previous recording. */
@@ -588,8 +624,7 @@ export async function findStaleBlockArtifacts(cwd?: string): Promise<string[]> {
     names.flatMap((name) =>
       ["test.spec.ts", "actions.json"].map(async (f) => {
         const path = join(dir, name, f);
-        const exists = await stat(path).then(() => true).catch(() => false);
-        return exists ? path : null;
+        return (await pathExists(path)) ? path : null;
       }),
     ),
   );
@@ -598,22 +633,115 @@ export async function findStaleBlockArtifacts(cwd?: string): Promise<string[]> {
 
 // --- Recordings (IR) ---
 
-export function getRecordingPath(ref: CaseRef): string {
+/**
+ * Where this case's recording belongs: beside the test it compiles into,
+ * carried on the ref because naming it is the target's business, not storage's
+ * (see `recordingPathTemplate`).
+ *
+ * The recording and the generated test are the two committed halves of one
+ * recorded case, and a reader who opens either finds the other in the same
+ * directory instead of holding a mapping to a second tree in their head. A
+ * case that compiles into no test keeps its recording in its own directory —
+ * there is nothing for it to sit beside.
+ *
+ * The one spelling of that rule: every reader and writer of a recording goes
+ * through here, so the file a save writes is the file a load looks for.
+ */
+function getRecordingPath(ref: CaseRef): string {
+  return ref.recordingPathAbs ?? legacyRecordingPath(ref);
+}
+
+/** Where recordings lived before they moved beside their tests. */
+function legacyRecordingPath(ref: CaseRef): string {
   return join(ref.dir, RECORDING_FILE);
 }
 
-export async function getRecording(ref: CaseRef): Promise<Recording & { path: string }> {
+/**
+ * Write a recording where recordings belong, dropping the one an earlier
+ * layout left behind. The only way a recording is written: every write lands
+ * beside the test, so the older location is read from and never added to.
+ *
+ * Temp file then rename, as everything that rewrites a file in place here
+ * does. A crash partway through a truncate-in-place would leave a corrupt file
+ * at the location reads prefer, permanently shadowing the intact one this call
+ * is about to remove.
+ */
+async function writeRecording(ref: CaseRef, recording: Recording): Promise<string> {
   const path = getRecordingPath(ref);
-  const content = await readFile(path, "utf-8").catch(() => {
-    throw new Error(`No recording found for: ${ref.id}. Run \`ccqa record\` first.`);
-  });
-  return { path, ...parseRecording(content) };
+  await mkdir(dirname(path), { recursive: true });
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  await writeFile(tmp, JSON.stringify(recording, null, 2), "utf-8");
+  await rename(tmp, path);
+  const legacy = legacyRecordingPath(ref);
+  if (legacy !== path) await unlink(legacy).catch(() => {});
+  return path;
+}
+
+/**
+ * Every file this case's recording could be in, the one a write lands on
+ * first. A case recorded before recordings moved beside their tests still
+ * keeps one in the case's own directory, and it describes the same route.
+ */
+function recordingCandidates(ref: CaseRef): string[] {
+  const beside = getRecordingPath(ref);
+  const legacy = legacyRecordingPath(ref);
+  return legacy === beside ? [beside] : [beside, legacy];
+}
+
+/** The first candidate that is there, or null when the case has no recording. */
+export async function findRecordingPath(ref: CaseRef): Promise<string | null> {
+  for (const path of recordingCandidates(ref)) {
+    if (await pathExists(path)) return path;
+  }
+  return null;
+}
+
+async function loadRecording(ref: CaseRef): Promise<LoadedRecording | null> {
+  const path = await findRecordingPath(ref);
+  if (path === null) return null;
+  const content = await readFile(path, "utf-8").catch(() => null);
+  if (content === null) return null;
+  const home = getRecordingPath(ref);
+  return {
+    path,
+    recording: parseRecording(content, path),
+    ...(path === home ? {} : { movesTo: home }),
+  };
+}
+
+interface LoadedRecording {
+  /** Where it was read from. */
+  path: string;
+  recording: Recording;
+  /**
+   * Where writing it back will put it, when it was read from the location an
+   * earlier layout used. Absent when it is already where it belongs. Returned
+   * rather than logged: which reads are worth narrating is the command's
+   * judgement, and a sweep that reads one per finding should stay quiet.
+   */
+  movesTo?: string;
+}
+
+export async function getRecording(
+  ref: CaseRef,
+): Promise<Recording & { path: string; movesTo?: string }> {
+  const found = await loadRecording(ref);
+  if (found === null) {
+    // Both paths named: a recording that was migrated and then looked for
+    // under a different target's test path is not missing, it is elsewhere,
+    // and "run `ccqa record`" alone would send the reader in a circle.
+    throw new Error(
+      `No recording found for: ${ref.id} — looked in ${recordingCandidates(ref).join(" and ")}. ` +
+        "Run `ccqa record` first.",
+    );
+  }
+  const { path, movesTo, recording } = found;
+  return { path, ...(movesTo ? { movesTo } : {}), ...recording };
 }
 
 /** The saved recording, or null when the spec has none. */
 export async function tryGetRecording(ref: CaseRef): Promise<Recording | null> {
-  const content = await readFile(getRecordingPath(ref), "utf-8").catch(() => null);
-  return content === null ? null : parseRecording(content);
+  return (await loadRecording(ref))?.recording ?? null;
 }
 
 export async function saveTestScript(
@@ -682,8 +810,7 @@ async function listAllSpecsFilteredBy(
       const entries = await Promise.all(
         specDirs.map(async (specName) => {
           const required = join(testCasesDir, specName, requiredFilename);
-          const exists = await stat(required).then(() => true).catch(() => false);
-          return exists ? { featureName, specName } : null;
+          return (await pathExists(required)) ? { featureName, specName } : null;
         }),
       );
       return entries.filter((e): e is { featureName: string; specName: string } => e !== null);

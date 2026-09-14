@@ -1,18 +1,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { caseRefFor, getRecording, matchesGenerationStamp } from "../store/index.ts";
 import {
-  getRecording,
-  intentCase,
-  matchesGenerationStamp,
-  specCase,
-  type CaseRef,
-} from "../store/index.ts";
-import {
+  caseRecordingPath,
   caseTestPath,
   loadSpecArtifactsContext,
   type SpecArtifactsContext,
 } from "./artifacts.ts";
-import { caseIdOf, type SpecResult, type SpecTarget } from "./types.ts";
+import { caseIdOf, type SpecResult } from "./types.ts";
 
 /**
  * One finding, in the shape something other than a human reads it.
@@ -124,20 +119,15 @@ async function buildBrief(
     reasoning: drift.reasoning,
     evidence: drift.evidence,
     test,
-    repair: await repairRoute(result, test, cwd),
+    repair: await repairRoute(result, test, cwd, ctx),
   };
-}
-
-function refOf(target: SpecTarget, cwd: string): CaseRef {
-  return target.caseId !== undefined
-    ? intentCase(target.caseId, cwd)
-    : specCase(target.featureName, target.specName, cwd);
 }
 
 async function repairRoute(
   result: SpecResult,
   test: string | null,
   cwd: string,
+  ctx: SpecArtifactsContext,
 ): Promise<Repair> {
   const drift = result.drift!;
   if (result.live || test === null) {
@@ -157,7 +147,14 @@ async function repairRoute(
         "a regeneration only reads. Either way, regenerating rewrites neither",
     };
   }
-  const recording = await getRecording(refOf(result.target, cwd)).catch(() => null);
+  const testAbs = resolve(cwd, test);
+  const ref = caseRefFor(
+    result.target.caseId ??
+      { featureName: result.target.featureName, specName: result.target.specName },
+    cwd,
+    (await caseRecordingPath(result.target, cwd, ctx)) ?? undefined,
+  );
+  const recording = await getRecording(ref).catch(() => null);
   const stamp = recording?.generated;
   if (!stamp) {
     return {
@@ -165,7 +162,7 @@ async function repairRoute(
       reason: "no generation stamp: ccqa did not write this test, or it predates the stamp",
     };
   }
-  if (!(await matchesGenerationStamp(stamp, resolve(cwd, test)))) {
+  if (!(await matchesGenerationStamp(stamp, testAbs))) {
     return { route: "external", reason: "the test has been edited since it was generated" };
   }
   return {

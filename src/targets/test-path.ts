@@ -74,20 +74,71 @@ export function validateTestPathTemplate(template: string): string | null {
   return null;
 }
 
+/** What a recording beside its test is called: whose file it is, and what it is. */
+const RECORDING_EXTENSION = ".ccqa.ir.json";
+
+/**
+ * The template a case's recording is named by, from the template its test is
+ * named by.
+ *
+ * Stated on the template rather than on the path it expands to, because only
+ * the template knows which trailing dot-segment is an extension: in
+ * `{case}.spec.ts` the `.ts` is one, and in `e2e/{case}` a case id of
+ * `run.alpha` ends in a segment that merely looks like one. So the literal
+ * tail after the last placeholder decides — its final extension is replaced,
+ * and a tail with none gets `.ccqa.ir.json` appended, which keeps the case's
+ * whole id in the name and makes two cases' recordings distinct by
+ * construction.
+ */
+export function recordingPathTemplate(template: string): string {
+  const slash = Math.max(template.lastIndexOf("/"), template.lastIndexOf("\\"));
+  const name = template.slice(slash + 1);
+  const literalTail = name.lastIndexOf("}") + 1;
+  const dot = name.slice(literalTail).lastIndexOf(".");
+  const stem = dot === -1 ? name : name.slice(0, literalTail + dot);
+  return `${template.slice(0, slash + 1)}${stem}${RECORDING_EXTENSION}`;
+}
+
+/** The target's `testPath` when configured, else the target's own default. */
+function templateFor(
+  target: { defaultTestPath: string },
+  targetConfig: TestPathConfig,
+): string {
+  return targetConfig.testPath ?? target.defaultTestPath;
+}
+
 /** The target's `testPath` when configured, else the target's own default. */
 export function resolveTestPath(
   target: { defaultTestPath: string },
   targetConfig: TestPathConfig,
   ref: SpecRef,
 ): string {
-  return expandPathTemplate(targetConfig.testPath ?? target.defaultTestPath, {
+  return expandPathTemplate(templateFor(target, targetConfig), specValues(ref));
+}
+
+/**
+ * A `spec.yaml` case's id is its two coordinates joined, so `{case}` resolves
+ * for it too. Every placeholder always has a value: a template one command
+ * accepts must not throw in another.
+ */
+function specValues(ref: SpecRef): Record<string, string> {
+  return {
     feature: ref.featureName,
     spec: ref.specName,
-    // A `spec.yaml` case's id is its two coordinates joined, so `{case}`
-    // resolves for it too. Every placeholder always has a value: a template
-    // one command accepts must not throw in another.
     case: `${ref.featureName}/${ref.specName}`,
-  });
+  };
+}
+
+/** Where the recording that {@link resolveTestPath}'s test compiles from lives. */
+export function resolveRecordingPath(
+  target: { defaultTestPath: string },
+  targetConfig: TestPathConfig,
+  ref: SpecRef,
+): string {
+  return expandPathTemplate(
+    recordingPathTemplate(templateFor(target, targetConfig)),
+    specValues(ref),
+  );
 }
 
 /** Where a case read from the project's own test cases generates to. */
@@ -96,13 +147,25 @@ export function resolveCaseTestPath(
   targetConfig: TestPathConfig,
   caseId: string,
 ): string {
+  return expandPathTemplate(templateFor(target, targetConfig), caseValues(caseId));
+}
+
+function caseValues(caseId: string): Record<string, string> {
   const parts = caseId.split("/");
   const spec = parts.pop()!;
-  return expandPathTemplate(targetConfig.testPath ?? target.defaultTestPath, {
-    case: caseId,
-    feature: parts.join("/") || spec,
-    spec,
-  });
+  return { case: caseId, feature: parts.join("/") || spec, spec };
+}
+
+/** {@link resolveRecordingPath} for a case read from the project's own test cases. */
+export function resolveCaseRecordingPath(
+  target: { defaultTestPath: string },
+  targetConfig: TestPathConfig,
+  caseId: string,
+): string {
+  return expandPathTemplate(
+    recordingPathTemplate(templateFor(target, targetConfig)),
+    caseValues(caseId),
+  );
 }
 
 /** {@link resolveTestPath}, resolved against the project root. */

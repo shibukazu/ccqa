@@ -10,8 +10,8 @@ import {
   type PerspectiveSpecForPrompt,
 } from "../prompts/perspectives.ts";
 import {
-  getRecordingPath,
-  specCase,
+  caseRefFor,
+  findRecordingPath,
   listFeatureTree,
   removeLegacyPerspectivesFiles,
   tryReadSpecFile,
@@ -23,7 +23,7 @@ import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import { loadProjectConfig, targetConfigFor, type ProjectConfig } from "../config/project-config.ts";
 import { resolveTarget } from "../targets/registry.ts";
 import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
-import { resolveTestPathAbs } from "../targets/test-path.ts";
+import { resolveRecordingPath, resolveTestPathAbs } from "../targets/test-path.ts";
 import type { TargetPlugin } from "../targets/types.ts";
 import {
   PerspectivesSchema,
@@ -525,13 +525,15 @@ export async function deriveStatus(
 ): Promise<PerspectiveStatus> {
   const cwd = process.cwd();
   const ref = { featureName, specName };
-  const hasRecording = await exists(getRecordingPath(specCase(featureName, specName, cwd)));
   // Both halves of "generated" are the same question — is there a test file at
   // the path this spec's target puts it? — so agent-browser and the external
   // targets differ only in which target answers it.
   const target = plugin ?? agentBrowserTarget;
   const targetConfig = targetConfigFor(config, target.id);
-  const generated = await exists(resolveTestPathAbs(target, targetConfig, ref, cwd));
+  const testPathAbs = resolveTestPathAbs(target, targetConfig, ref, cwd);
+  const generated = await exists(testPathAbs);
+  const recordingPath = resolveRecordingPath(target, targetConfig, ref);
+  const hasRecording = (await findRecordingPath(caseRefFor(ref, cwd, recordingPath))) !== null;
   // A spec-input target (runn) has no record phase, so tracing is not a gap.
   const traced = target.input === "recording" ? hasRecording : true;
   return {

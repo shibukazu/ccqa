@@ -6,7 +6,12 @@ import { intentTargetFor, type IntentTarget } from "../cli/resolve-case.ts";
 import { loadMarkdownCase, type TestCase } from "../intent/case.ts";
 import { readSpecFile } from "../store/index.ts";
 import { registryFor, resolveTarget } from "../targets/registry.ts";
-import { resolveCaseTestPath, resolveTestPathAbs } from "../targets/test-path.ts";
+import {
+  resolveCaseRecordingPath,
+  resolveCaseTestPath,
+  resolveRecordingPath,
+  resolveTestPathAbs,
+} from "../targets/test-path.ts";
 import {
   collectSupportFiles,
   loadTsconfigPaths,
@@ -177,6 +182,26 @@ export async function caseTestPath(
 }
 
 /**
+ * Where this case's recording lives, project-relative, resolved through the
+ * same target as its test — null on the same terms as {@link caseTestPath}.
+ */
+export async function caseRecordingPath(
+  target: SpecTarget,
+  cwd: string,
+  ctx: SpecArtifactsContext,
+): Promise<string | null> {
+  if (target.caseId !== undefined) {
+    if (!ctx.intentTarget) return null;
+    const plugin = registryFor(ctx.config).get(ctx.intentTarget.id)!;
+    return resolveCaseRecordingPath(plugin, ctx.intentTarget.targetConfig, target.caseId);
+  }
+  const specYaml = await readSpecFile(target.featureName, target.specName, cwd).catch(() => null);
+  if (specYaml === null) return null;
+  return specTargetPaths(target.featureName, target.specName, specYaml, cwd, ctx.config)
+    ?.recordingPath ?? null;
+}
+
+/**
  * Where this case's test lands, and where its target lets ccqa write.
  *
  * Together because they answer one question — which files a finding about this
@@ -258,10 +283,36 @@ async function readGenerated(
 }
 
 /**
- * Where this spec's test lives, resolved through its target. A spec that will
- * not parse, or whose target cannot be resolved, has no test path to derive —
- * the audit then reads the spec alone rather than guessing at a file.
+ * Where this spec's two files live, resolved through its target: the test, and
+ * the recording it compiles from. A spec that will not parse, whose target
+ * cannot be resolved, or whose `testPath` will not expand has neither to
+ * derive — the audit then reads the spec alone rather than guessing at a file.
+ *
+ * Both together because one target resolution answers both, and a spec that
+ * has one must not be reported as missing the other.
  */
+function specTargetPaths(
+  featureName: string,
+  specName: string,
+  specYaml: string,
+  cwd: string,
+  config: ProjectConfig,
+): { testAbs: string; recordingPath: string } | null {
+  try {
+    const spec = parseTestSpec(specYaml);
+    const target = resolveTarget(spec, config);
+    const targetConfig = targetConfigFor(config, target.id);
+    const ref = { featureName, specName };
+    return {
+      testAbs: resolveTestPathAbs(target, targetConfig, ref, cwd),
+      recordingPath: resolveRecordingPath(target, targetConfig, ref),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Where this spec's test lives, resolved through its target. */
 function specTestFile(
   featureName: string,
   specName: string,
@@ -269,12 +320,5 @@ function specTestFile(
   cwd: string,
   config: ProjectConfig,
 ): string | null {
-  try {
-    const spec = parseTestSpec(specYaml);
-    const target = resolveTarget(spec, config);
-    const targetConfig = targetConfigFor(config, target.id);
-    return resolveTestPathAbs(target, targetConfig, { featureName, specName }, cwd);
-  } catch {
-    return null;
-  }
+  return specTargetPaths(featureName, specName, specYaml, cwd, config)?.testAbs ?? null;
 }

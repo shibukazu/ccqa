@@ -103,7 +103,7 @@ describe("ccqa record — a text= locator is named rather than counted", () => {
     expect(result.exitCode, combined).toBe(0);
 
     const caseDir = join(project.cwd, ".ccqa/features/demo/test-cases/x");
-    const recording = JSON.parse(await readFile(join(caseDir, "ir.json"), "utf8")) as {
+    const recording = JSON.parse(await readFile(join(caseDir, "test.spec.ccqa.ir.json"), "utf8")) as {
       actions: Array<{
         action: string;
         assert?: string;
@@ -203,7 +203,7 @@ describe("ccqa record — an [aria-label=...] assert is asked of the accessibili
     expect(result.exitCode, combined).toBe(0);
 
     const caseDir = join(project.cwd, ".ccqa/features/demo/test-cases/x");
-    const recording = JSON.parse(await readFile(join(caseDir, "ir.json"), "utf8")) as {
+    const recording = JSON.parse(await readFile(join(caseDir, "test.spec.ccqa.ir.json"), "utf8")) as {
       actions: Array<{
         action: string;
         assert?: string;
@@ -266,7 +266,7 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     expect(result.exitCode, combined).toBe(0);
 
     const caseDir = join(project.cwd, ".ccqa/features/demo/test-cases/x");
-    const recording = JSON.parse(await readFile(join(caseDir, "ir.json"), "utf8")) as {
+    const recording = JSON.parse(await readFile(join(caseDir, "test.spec.ccqa.ir.json"), "utf8")) as {
       recordedAt: string;
       origin?: string;
       actions: Array<{
@@ -340,7 +340,7 @@ describe("ccqa record — CCQA_STEP prefix step attribution (mocked Claude)", ()
     expect(combined).toContain("url_contains");
     expect(combined).not.toContain("still there");
     await expect(
-      readFile(join(project.cwd, ".ccqa/features/demo/test-cases/x/ir.json"), "utf8"),
+      readFile(join(project.cwd, ".ccqa/features/demo/test-cases/x/test.spec.ccqa.ir.json"), "utf8"),
     ).rejects.toThrow();
   });
 

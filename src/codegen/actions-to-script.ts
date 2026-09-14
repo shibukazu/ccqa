@@ -452,7 +452,7 @@ function unemittableAssertMarker(action: RecordedAction): string {
 
 function droppedActionMarker(action: RecordedAction): string {
   const ctx = action.stepId ? ` (stepId=${action.stepId})` : "";
-  return `// [warn] action dropped: ${action.action}${ctx} — ir.json is missing its locator. Re-run \`ccqa record\` to regenerate.`;
+  return `// [warn] action dropped: ${action.action}${ctx} — the recording is missing its locator. Re-run \`ccqa record\` to regenerate.`;
 }
 
 /**

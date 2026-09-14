@@ -165,6 +165,8 @@ async function runGenerateLocked(
   let recording: RecordedAction[] | undefined;
   let cleanupRecording: RecordedAction[] | undefined;
   let stamp: GenerationStamp | undefined;
+  /** Set when the route was read from the location an earlier layout used. */
+  let movedRecording: string | undefined;
   if (target.input === "recording") {
     const saved = await getRecording(testCase.ref);
     log.meta("recording", `${saved.path}${saved.recordedAt ? ` (recorded ${saved.recordedAt})` : ""}`);
@@ -173,6 +175,7 @@ async function runGenerateLocked(
     recording = saved.actions;
     cleanupRecording = saved.cleanup;
     stamp = saved.generated;
+    movedRecording = saved.movesTo;
     // A route recorded before the project pointed ccqa at its variables kept
     // their values as literals, and nothing since would have noticed. Refused
     // here rather than warned about: compiling it produces a test holding the
@@ -259,7 +262,13 @@ async function runGenerateLocked(
   // Stamped after the write, from the file on disk: what the fix loop left is
   // what this generation produced, and it is that file the next one compares.
   if (target.input === "recording") {
-    await stampGeneratedTest(testCase.ref, testPathAbs);
+    const written = await stampGeneratedTest(testCase.ref, testPathAbs);
+    // Said after the write that moved it, not when it was read: four refusals
+    // between the two exit without writing anything. Said here rather than
+    // from the store, so a sweep reading one recording per finding stays quiet.
+    if (written !== null && movedRecording !== undefined) {
+      log.info(`recording moved beside its test: ${written}`);
+    }
   }
 
   // The case asked to be told where its test ended up, so tell it — and
@@ -447,8 +456,8 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
     )
     .description(
       "Generate test code from a case via its target. Recording-backed targets compile the " +
-        "existing ir.json (run `ccqa record` first); spec-input targets generate directly " +
-        "from the spec.",
+        "case's existing recording (run `ccqa record` first); spec-input targets generate " +
+        "directly from the spec.",
     )
     .optionsGroup("How to generate:")
     .option(

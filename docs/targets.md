@@ -30,8 +30,10 @@ Recording-backed targets (`agent-browser`, `playwright`) need `ccqa record`
 once: Claude drives the browser to discover the route, and the actions are
 traced into `ir.json` — a tool-neutral intermediate representation shared by
 every recording-backed target — which is then handed to the target's
-generate step. Spec-input targets (`runn`) have no recording step; `ccqa
-generate` is where generation starts.
+generate step. The recording is committed beside the test it compiles into —
+see [The recorded route](#the-recorded-route-and-what-a-re-record-changed).
+Spec-input targets (`runn`) have no recording step; `ccqa generate` is where
+generation starts.
 
 ```bash
 ccqa record tasks/create-and-complete     # recording targets: trace + generate
@@ -41,8 +43,8 @@ ccqa generate tasks/create-and-complete   # recording targets: re-run generate
 ```
 
 - Running `ccqa record` on a spec-input target exits 2 with a pointer to
-  `ccqa generate`. Running `ccqa generate` on a recording target with no
-  `ir.json` errors with "Run `ccqa record` first".
+  `ccqa generate`. Running `ccqa generate` on a recording target that has no
+  recording errors with "No recording found", naming the files it looked in.
 - Both commands share the codegen flags: `--auto-fix
   <interactive|auto|skip>` (default `interactive`) and `--auto-fix-max-retries
   <n>` (default 3) — see [Auto-fix](./auto-fix.md) — plus `-m/--model`,
@@ -374,8 +376,10 @@ with an empty body as above, for there to be a section to write into.
 A case's **id** is its path below `root`, without the extension —
 `docs/manual-tests/todo/mark-complete.md` under `root: docs/manual-tests`
 has id `todo/mark-complete`. That id is what `{case}` expands to in
-`testPath` (above), and the case's working files live under
-`.ccqa/cases/<id>/`.
+`testPath` (above), and the case's working files — its evidence, its route
+diff, its lock — live under `.ccqa/cases/<id>/`. Not its recording: that is
+committed beside the test, at the `testPath`
+([The recorded route](#the-recorded-route-and-what-a-re-record-changed)).
 
 `mode` has no default either, and for the same reason: without a heading
 named, no case in the project is claiming to declare one. Where it is set and
@@ -674,6 +678,15 @@ operations, locators, values and checks — plus when it was recorded, which
 entry point it started from (`${VAR}` references left unexpanded), and what the
 last `ccqa generate` wrote from it. It is what makes browser-free regeneration
 possible, and it dates the test's origin.
+
+It lives beside the test it compiles into, named by replacing that test's
+final extension with `.ccqa.ir.json`: a case emitted to
+`specs/todo/add.spec.ts` keeps its route in `specs/todo/add.spec.ccqa.ir.json`,
+and the two halves of a recorded case — the route and the code — are committed
+together in one directory. A recording an earlier ccqa left in the case's own
+directory under `.ccqa/` is still read, and whatever writes it next — a
+`record`, a `generate`, a repaired locator — puts it beside the test and
+removes the old file.
 
 Re-recording replaces the route wholesale, so `ccqa record` writes a
 `route-diff.md` beside the spec whenever it replaced an existing recording:

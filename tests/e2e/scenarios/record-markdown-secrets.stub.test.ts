@@ -93,8 +93,9 @@ describe("ccqa record — a markdown case whose credentials come from envFiles",
     const combined = stripAnsi(result.stdout + result.stderr);
     expect(result.exitCode, combined).toBe(0);
 
-    const caseDir = join(project.cwd, ".ccqa/cases/account/sign_in");
-    const ir = JSON.parse(await readFile(join(caseDir, "ir.json"), "utf8")) as Ir;
+    const ir = JSON.parse(
+      await readFile(join(project.cwd, "specs/account/sign_in.spec.ccqa.ir.json"), "utf8"),
+    ) as Ir;
 
     // 1. The route carries the references, never what they resolved to.
     const irText = JSON.stringify(ir);
@@ -103,8 +104,11 @@ describe("ccqa record — a markdown case whose credentials come from envFiles",
     expect(irText).toContain("${TEST_EMAIL}");
     expect(irText).toContain("${TEST_PASSWORD}");
 
-    // 2. A password typed literally is not written anywhere under .ccqa.
-    expect(await grepUnder(join(project.cwd, ".ccqa"), HAND_TYPED)).toEqual([]);
+    // 2. A password typed literally is not written to anything ccqa keeps —
+    // the case's own files, nor the recording beside its test.
+    for (const dir of [".ccqa", "specs"]) {
+      expect(await grepUnder(join(project.cwd, dir), HAND_TYPED), dir).toEqual([]);
+    }
     expect(combined).toContain("password field");
 
     // 3. The label the form never associated is replaced by the form that
@@ -185,7 +189,7 @@ describe("ccqa record — a markdown case whose credentials come from envFiles",
     });
 
     // A route from before the scrub existed: the value, not the reference.
-    const irPath = join(project.cwd, ".ccqa/cases/account/sign_in/ir.json");
+    const irPath = join(project.cwd, "specs/account/sign_in.spec.ccqa.ir.json");
     const ir = (await readFile(irPath, "utf8")).replaceAll("${TEST_EMAIL}", EMAIL);
     await writeFile(irPath, ir, "utf8");
 

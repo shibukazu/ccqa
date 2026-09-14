@@ -169,7 +169,7 @@ export async function runTrace(
       `spec references env var(s) that are unset at record time: ${envScrub.unresolved.join(", ")}`,
     );
     log.warn(
-      "their concrete trace-time values (e.g. navigate URLs) will be baked into ir.json instead of kept as ${VAR}, so the recording won't switch across environments.",
+      "their concrete trace-time values (e.g. navigate URLs) will be baked into the recording instead of kept as ${VAR}, so it won't switch across environments.",
     );
     log.hint(
       "load these vars before recording — pass --profile <name> (hub) or define them in .env — then re-record.",

@@ -26,13 +26,18 @@ spec directory accumulates these files as you work:
     tasks/
       test-cases/
         create-and-complete/
-          spec.yaml              # this document's subject
-          ir.json                # (recording targets) the recorded route + what was generated from it
-          ir.failed.json         # last FAILED trace, kept for diagnosis only
-          route-diff.md          # what the last re-record changed, if anything
-          test.spec.ts           # generated test, when `testPath` is the default
-          runs/<timestamp>/      # (live) one run's step screenshots + summary
+          spec.yaml               # this document's subject
+          ir.failed.json          # last FAILED trace, kept for diagnosis only
+          route-diff.md           # what the last re-record changed, if anything
+          test.spec.ts            # generated test, when `testPath` is the default
+          test.spec.ccqa.ir.json  # (recording targets) the route that test came from
+          runs/<timestamp>/       # (live) one run's step screenshots + summary
 ```
+
+A recording sits beside the test it compiles into, named after it — see
+[The recorded route](./targets.md#the-recorded-route-and-what-a-re-record-changed)
+for how the name is derived and what happens to one an earlier ccqa left in
+the case's own directory.
 
 Gitignore the per-run artefacts: `.ccqa/features/*/test-cases/*/runs/`,
 `.ccqa/cases/*/runs/` and `ccqa-report*/`. Not `evidence/` beside them: those
@@ -390,7 +395,7 @@ How each case is assembled:
 
 - `title` is transcribed verbatim from `spec.yaml`.
 - `status` is mechanically derived by the CLI, never written by Claude:
-  `traced` = `ir.json` exists, `generated` = `test.spec.ts` exists. For
+  `traced` = the case has a recording, `generated` = its test exists. For
   `mode: live` specs these carry no completeness meaning (live skips
   codegen).
 - `summary` / `startScreen` / `testCondition` / `preconditions` are written

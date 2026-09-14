@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, test, expect } from "vitest";
 import { parseBlockPath, parseSpecPath, getCcqaDir, getFeatureDir, getSpecDir, loadPromptBundle, listActiveSpecs, resolveSpecTargets } from "./index.ts";
 import type { HubClient } from "../hub-client/index.ts";
+import type { CaseRef } from "./index.ts";
+import type { RecordedAction } from "../types.ts";
 
 /** Minimal fake — only `getPrompt` is exercised by these tests. */
 function fakeHubClient(getPrompt: HubClient["getPrompt"]): HubClient {
@@ -331,5 +333,126 @@ describe("saveFailedRecording", () => {
     expect(JSON.parse(await readFile(path, "utf8")).actions).toHaveLength(0);
     // The good recording survives the failed trace.
     expect(JSON.parse(await readFile(join(specDir, "ir.json"), "utf8"))).toHaveLength(1);
+  });
+});
+
+describe("where a recording lives", () => {
+  const ROUTE: RecordedAction[] = [{ action: "navigate", value: "https://example.test" }];
+  const TEST_PATH = "specs/todo/add_item.spec.ts";
+  const RECORDING = "specs/todo/add_item.spec.ccqa.ir.json";
+
+
+  /** A case compiled into `specs/todo/add_item.spec.ts`, and one compiled into nothing. */
+  async function cases(): Promise<{ cwd: string; withTest: CaseRef; withoutTest: CaseRef }> {
+    const { caseRefFor } = await import("./index.ts");
+    const cwd = await mkdtemp(join(tmpdir(), "ccqa-recording-home-"));
+    return {
+      cwd,
+      withTest: caseRefFor("todo/add_item", cwd, RECORDING),
+      withoutTest: caseRefFor("todo/add_item", cwd, undefined),
+    };
+  }
+
+  /** A recording in the location a ccqa before this layout wrote to. */
+  async function writeLegacy(ref: CaseRef, actions: unknown[]): Promise<string> {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(ref.dir, { recursive: true });
+    const path = join(ref.dir, "ir.json");
+    await writeFile(path, JSON.stringify({ actions }), "utf8");
+    return path;
+  }
+
+  test("saves beside the test it compiles into, named after it", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const { saveRecording } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+
+    const { path } = await saveRecording(withTest, ROUTE);
+
+    expect(path).toBe(join(cwd, RECORDING));
+    expect(JSON.parse(await readFile(path, "utf8")).actions).toHaveLength(1);
+  });
+
+  test("keeps it in the case's own directory when the case compiles into no test", async () => {
+    const { saveRecording } = await import("./index.ts");
+    const { withoutTest } = await cases();
+
+    const { path } = await saveRecording(withoutTest, ROUTE);
+
+    expect(path).toBe(join(withoutTest.dir, "ir.json"));
+  });
+
+  test("names both places it looked when the case has no recording at all", async () => {
+    const { getRecording } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+
+    await expect(getRecording(withTest)).rejects.toThrow(
+      new RegExp(`${join(cwd, RECORDING)}.*${join(withTest.dir, "ir.json")}`, "s"),
+    );
+  });
+
+  test("reads the one in the case's directory when there is none beside the test", async () => {
+    const { getRecording } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+    const legacy = await writeLegacy(withTest, [{ action: "click" }]);
+
+    const loaded = await getRecording(withTest);
+
+    expect(loaded.path).toBe(legacy);
+    expect(loaded.movesTo).toBe(join(cwd, RECORDING));
+  });
+
+  test("prefers the one beside the test when both are there, and says nothing moves", async () => {
+    const { getRecording, saveRecording } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+    await saveRecording(withTest, ROUTE);
+    await writeLegacy(withTest, [{ action: "click" }, { action: "click" }]);
+
+    const loaded = await getRecording(withTest);
+
+    expect(loaded.path).toBe(join(cwd, RECORDING));
+    expect(loaded.actions).toHaveLength(1);
+    expect(loaded.movesTo).toBeUndefined();
+  });
+
+  test("a save writes beside the test and removes the one left in the case's directory", async () => {
+    const { stat } = await import("node:fs/promises");
+    const { saveRecording } = await import("./index.ts");
+    const { withTest } = await cases();
+    const legacy = await writeLegacy(withTest, []);
+
+    await saveRecording(withTest, ROUTE);
+
+    await expect(stat(legacy)).rejects.toThrow();
+  });
+
+  test("a stamp moves a recording read from the case's directory beside the test", async () => {
+    const { mkdir, readFile, stat, writeFile } = await import("node:fs/promises");
+    const { fileSha256, stampGeneratedTest } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+    const legacy = await writeLegacy(withTest, ROUTE);
+    const testAbs = join(cwd, TEST_PATH);
+    await mkdir(join(cwd, "specs/todo"), { recursive: true });
+    await writeFile(testAbs, "test('flow', () => {});\n", "utf8");
+
+    await stampGeneratedTest(withTest, testAbs);
+
+    const stamped = JSON.parse(await readFile(join(cwd, RECORDING), "utf8"));
+    expect(stamped.generated.testSha256).toBe(await fileSha256(testAbs));
+    // The route itself is what the trace wrote; a stamp must not disturb it.
+    expect(stamped.actions).toEqual(ROUTE);
+    await expect(stat(legacy)).rejects.toThrow();
+  });
+
+  test("a rewritten route moves beside the test too", async () => {
+    const { readFile, stat } = await import("node:fs/promises");
+    const { rewriteRecordingActions } = await import("./index.ts");
+    const { cwd, withTest } = await cases();
+    const legacy = await writeLegacy(withTest, [{ action: "click" }]);
+
+    await rewriteRecordingActions(withTest, ROUTE);
+
+    expect(JSON.parse(await readFile(join(cwd, RECORDING), "utf8")).actions).toEqual(ROUTE);
+    await expect(stat(legacy)).rejects.toThrow();
   });
 });

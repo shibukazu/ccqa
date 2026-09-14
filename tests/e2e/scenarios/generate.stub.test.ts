@@ -105,12 +105,17 @@ describe("ccqa generate — mocked Claude (codegen-only flow)", () => {
     );
     expect(cleaned, JSON.stringify(gateCalls)).toBeDefined();
 
-    const irPath = join(project.cwd, ".ccqa/features/demo/test-cases/run-id/ir.json");
-    const irAfter = JSON.parse(await readFile(irPath, "utf8"));
+    // The fixture's recording is in the directory an earlier layout used, so a
+    // generate that writes it back also moves it beside the test.
+    const caseDir = join(project.cwd, ".ccqa/features/demo/test-cases/run-id");
+    const irAfter = JSON.parse(
+      await readFile(join(caseDir, "test.spec.ccqa.ir.json"), "utf8"),
+    );
     expect(irAfter.actions.map((a: { value?: string }) => a.value)).toContain(
       "ccqa-${CCQA_RUN_ID}",
     );
     expect(irAfter.cleanup[0].value).toBe("ccqa-${CCQA_RUN_ID}");
+    await expect(readFile(join(caseDir, "ir.json"), "utf8")).rejects.toThrow();
   }, 120_000);
 
   // A cleanup locator is rarely scoped to the run id, so replaying the undo of

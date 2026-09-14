@@ -1,13 +1,19 @@
-import { loadAllBlocks, parseSpecPath, readSpecFile } from "../store/index.ts";
+import { caseRefFor, loadAllBlocks, parseSpecPath, readSpecFile, type SpecRef } from "../store/index.ts";
 import { caseFromSpec, loadMarkdownCase, type TestCase } from "../intent/case.ts";
 import { registryFor, resolveTarget, resolveTargetOverride } from "../targets/registry.ts";
-import { resolveCaseTestPath, resolveTestPath } from "../targets/test-path.ts";
+import {
+  resolveCaseRecordingPath,
+  resolveCaseTestPath,
+  resolveRecordingPath,
+  resolveTestPath,
+} from "../targets/test-path.ts";
 import {
   targetConfigFor,
   type IntentSource,
   type ProjectConfig,
   type TargetConfig,
 } from "../config/project-config.ts";
+import type { TestSpec } from "../spec/yaml-schema.ts";
 import type { TargetPlugin } from "../targets/types.ts";
 
 /**
@@ -49,12 +55,16 @@ export async function resolveCase(
     const { id, targetConfig, intent } = intentTarget;
     const target = registryFor(config).get(id)!;
     const testCase = await loadMarkdownCase(argument, intent, cwd);
-    return {
-      testCase,
-      target,
-      targetConfig,
-      testPath: resolveCaseTestPath(target, targetConfig, testCase.ref.id),
-    };
+    const testPath = resolveCaseTestPath(target, targetConfig, testCase.ref.id);
+    // As in the spec branch below: `--target` redirects what this invocation
+    // writes, and the recording stays where the case's own target puts it.
+    const recordingPath =
+      (opts.targetOverride === undefined
+        ? undefined
+        : ownIntentRecordingPath(config, intent, testCase.ref.id)) ??
+      resolveCaseRecordingPath(target, targetConfig, testCase.ref.id);
+    const ref = caseRefFor(testCase.ref.id, cwd, recordingPath);
+    return { testCase: { ...testCase, ref }, target, targetConfig, testPath };
   }
 
   const { featureName, specName } = parseSpecPath(argument);
@@ -67,12 +77,63 @@ export async function resolveCase(
       ? resolveTargetOverride(spec!, opts.targetOverride, config)
       : resolveTarget(spec!, config);
   const targetConfig = targetConfigFor(config, target.id);
-  return {
-    testCase,
-    target,
-    targetConfig,
-    testPath: resolveTestPath(target, targetConfig, { featureName, specName }),
-  };
+  const specRef = { featureName, specName };
+  const testPath = resolveTestPath(target, targetConfig, specRef);
+  // The recording belongs to the case, so it stays where the spec's own target
+  // puts the test: `--target` redirects what this invocation writes, not where
+  // the route was recorded.
+  const ref = caseRefFor(
+    specRef,
+    cwd,
+    opts.targetOverride === undefined
+      ? resolveRecordingPath(target, targetConfig, specRef)
+      : ownRecordingPath(spec!, config, specRef),
+  );
+  return { testCase: { ...testCase, ref }, target, targetConfig, testPath };
+}
+
+/**
+ * Where the spec's own target keeps this case's recording, ignoring any
+ * `--target`. Undefined when that target no longer resolves: overriding the
+ * target is how a spec with an unusable one is generated at all, so it must
+ * not be what stops the command.
+ *
+ * Only the resolution is guarded. A target that resolved and then could not
+ * expand its own `testPath` is a broken config, and swallowing that would put
+ * the recording somewhere else without a word.
+ */
+function ownRecordingPath(
+  spec: TestSpec,
+  config: ProjectConfig,
+  ref: SpecRef,
+): string | undefined {
+  let target: TargetPlugin;
+  try {
+    target = resolveTarget(spec, config);
+  } catch {
+    return undefined;
+  }
+  return resolveRecordingPath(target, targetConfigFor(config, target.id), ref);
+}
+
+/**
+ * The intent branch's half of the same rule: where the project's own default
+ * target keeps this case's recording.
+ *
+ * Undefined when that target reads a different set of cases than the one this
+ * invocation resolved through — a target pointed at another directory is
+ * describing a different case that happens to share an id, and its route is
+ * not this case's.
+ */
+function ownIntentRecordingPath(
+  config: ProjectConfig,
+  reading: IntentSource,
+  caseId: string,
+): string | undefined {
+  const own = intentTargetFor(config);
+  if (own === null || own.intent.root !== reading.root) return undefined;
+  const plugin = registryFor(config).get(own.id);
+  return plugin ? resolveCaseRecordingPath(plugin, own.targetConfig, caseId) : undefined;
 }
 
 /** A target that reads its cases from the project's own documents. */
