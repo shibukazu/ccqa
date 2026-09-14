@@ -62,9 +62,9 @@ describe("reviewEmittedFiles", () => {
       expect(review(`// the newest row is the top one\n${bare}`)).toEqual([]);
     });
 
-    // Following `.first()` into the page object fired on thirty hand-written
-    // assertions: resolving a repeated element once, for every caller, is how
-    // that is normally written.
+    // Following `.first()` into the page object fired throughout the
+    // hand-written corpus: resolving a repeated element once, for every
+    // caller, is how that is normally written.
     test("`.first()` where the page object defined it is not the assertion's doing", () => {
       const page = `readonly rows = this.page.getByRole("row").first();`;
       expect(review(`await expect(todoList.rows).toBeVisible();`, page)).toEqual([]);
@@ -90,8 +90,8 @@ describe("reviewEmittedFiles", () => {
 
   // The floor under a case whose expectations are stated for the flow: the
   // reading is the only thing that looks at those, and a reading is a model's.
-  // That a file decides nothing at all needs no reading. Of 546 hand-written
-  // specs in a real suite, none has zero assertions.
+  // That a file decides nothing at all needs no reading. In the corpus this
+  // was calibrated on, no hand-written spec had zero assertions.
   test("a test that decides nothing at all", () => {
     const spec = `test("Adding an item puts it on the list @high", async ({ page }) => {
   await todoList.load();
@@ -105,9 +105,9 @@ describe("reviewEmittedFiles", () => {
     expect(review(spec, "", [])).toEqual([]);
   });
 
-  // Two names for one string, one of them strictly weaker. Of 214 hand-written
-  // page objects in a real suite the shape appears once, in a file a
-  // generation wrote — people do not write it.
+  // Two names for one string, one of them strictly weaker. Across the
+  // hand-written corpus the shape appears only in a file a generation
+  // wrote — people do not write it.
   test("a weaker twin of a locator the file already has", () => {
     const page = `readonly heading = this.page.getByRole("heading", { name: "Settings" });
 readonly headingText = this.page.getByText("Settings").first();`;
@@ -178,14 +178,14 @@ await expect(todoList.row("Buy milk")).toBeVisible();`;
     expect(rules(review(spec, "", said))).not.toContain("unasserted-path");
   });
 
-  // Property names are not unique across a suite: one real project has
-  // `deleteSuccessToast` on four unrelated page objects. A flat set of every
-  // identifier in the project answers "somebody uses that word", which is not
-  // the question — so the caller scopes the set to this file.
+  // Property names are not unique across a suite: unrelated page objects can
+  // both declare an `archiveSuccessBanner`. A flat set of every identifier in
+  // the project answers "somebody uses that word", which is not the
+  // question — so the caller scopes the set to this file.
   test("a name another page object also uses is still unreached here", () => {
     const page = `export class TodoList {
   readonly heading = this.page.getByRole("heading", { name: "The item appears on the list" });
-  readonly deleteSuccessToast = this.page.getByText("Deleted");
+  readonly archiveSuccessBanner = this.page.getByText("Archived");
 }`;
     const spec = `const todoList = new TodoList(page);
 await expect(todoList.heading).toBeVisible();`;
@@ -193,12 +193,12 @@ await expect(todoList.heading).toBeVisible();`;
       files: new Map([[SPEC, spec], [PAGE, page]]),
       caseText: ["Open the list", "The item appears on the list"],
       testPath: SPEC,
-      // Scoped to this file: whatever another page object calls its own toast
+      // Scoped to this file: whatever another page object calls its own banner
       // never lands here. The class itself is reached — the spec constructs it.
       usedInProject: new Map([[PAGE, new Set(["TodoList"])]]),
     });
     expect(rules(found)).toEqual(["unreached"]);
-    expect(found[0]!.message).toContain("deleteSuccessToast");
+    expect(found[0]!.message).toContain("archiveSuccessBanner");
   });
 
   test("a describe repeating its only test", () => {

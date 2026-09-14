@@ -10,17 +10,18 @@
  * Those are what this reads for, and its findings go back through the same
  * fix loop rather than to a human.
  *
- * Every rule here was calibrated against a real project's hand-written
- * suite: a rule that fires on code people wrote and reviewed is a rule that
- * is wrong, however reasonable it sounds. Two candidates died that way —
- * "a locator named `…Row` must use `getByRole("row")`" fired on a third of
- * the hand-written page objects, because that project names elements for what
- * they look like rather than for their ARIA role, and "never `.first()` in an
- * assertion" fired on three deliberate uses that each carried the comment
- * their own guidelines ask for. A third died against ccqa's own output: the
- * step comment a generated test opens each step with looked like narration,
- * and is what the evidence table reads back to say which assertion belongs to
- * which step. Keep that bar for anything added here.
+ * Every rule here was calibrated against a large hand-written suite: a rule
+ * that fires on code people wrote and reviewed is a rule that is wrong,
+ * however reasonable it sounds. Two candidates died that way —
+ * "a locator named `…Row` must use `getByRole("row")`" fired across a
+ * sizable share of the hand-written page objects, because that suite names
+ * elements for what they look like rather than for their ARIA role, and
+ * "never `.first()` in an assertion" fired on deliberate uses that each
+ * carried the comment their own guidelines ask for. A third died against
+ * ccqa's own output: the step comment a generated test opens each step with
+ * looked like narration, and is what the evidence table reads back to say
+ * which assertion belongs to which step. Keep that bar for anything added
+ * here.
  */
 
 export interface EmittedFinding {
@@ -54,9 +55,9 @@ export interface EmittedReviewInput {
    * reach may still be another case's — unless nobody's.
    *
    * Scoped per file because property names are not unique across a suite:
-   * `deleteSuccessToast` sits on four unrelated page objects in one real
-   * project, so a flat set of every identifier answers "somebody uses that
-   * word" and never "somebody reaches this property".
+   * `archiveSuccessBanner` can sit on several unrelated page objects, so a
+   * flat set of every identifier answers "somebody uses that word" and
+   * never "somebody reaches this property".
    */
   usedInProject?: ReadonlyMap<string, ReadonlySet<string>>;
 }
@@ -96,9 +97,10 @@ const PLACEHOLDER_PATH = /\/[A-Za-z0-9_\-]+(?:\/[A-Za-z0-9_\-]+)*\/\{[A-Za-z0-9_
  * placeholder paths because those are unambiguous; a path mentioned as scenery
  * ("on /settings, the button is shown") is not a claim about the address.
  *
- * Calibrated against the 20 case definitions of a real project: three name a
- * placeholder path in their expectations, two of those already assert on the
- * URL, and the one that does not is the defect this was written for.
+ * Calibrated against a small set of hand-written case definitions: a few
+ * name a placeholder path in their expectations, most of those already
+ * assert on the URL, and the one that does not is the defect this was
+ * written for.
  */
 function unassertedPath(input: EmittedReviewInput): EmittedFinding[] {
   const source = input.files.get(input.testPath);
@@ -166,8 +168,8 @@ const named = (m: RegExpMatchArray): string => m[1] ?? m[2] ?? m[3] ?? "";
  * first, which on a real page was the navigation entry rather than the heading
  * the case names. Both assertions then read as two checks and are one.
  *
- * Calibrated against 214 hand-written page objects in a real suite: the shape
- * appears once, in a file a generation wrote. People do not write it.
+ * Calibrated against a hand-written corpus: the shape appears only in a file
+ * a generation wrote. People do not write it.
  */
 function weakerTwin(file: string, source: string): EmittedFinding[] {
   const byString = new Map<string, { name: string; line: number; weak: boolean }[]>();
@@ -216,8 +218,8 @@ function weakerTwin(file: string, source: string): EmittedFinding[] {
  * are stated for the flow rather than per step — the shape a markdown case has
  * — where the reading is otherwise the only thing looking.
  *
- * Calibrated like the rest: of 546 hand-written specs in a real suite, none
- * has zero assertions.
+ * Calibrated like the rest: in the corpus this was calibrated on, not one
+ * hand-written spec had zero assertions.
  */
 function decidesNothing(input: EmittedReviewInput): EmittedFinding[] {
   const source = input.files.get(input.testPath);
@@ -319,7 +321,7 @@ function explained(all: readonly string[], i: number): boolean {
  * the point — "the newest row is at the top" — and then it is written down.
  *
  * Only where the assertion itself narrows. Following it into the definitions
- * fired on thirty hand-written assertions: a page object that resolves a
+ * fired throughout the hand-written corpus: a page object that resolves a
  * repeated element once, for every caller, is how that is normally written.
  */
 function unjustifiedFirst(file: string, source: string): EmittedFinding[] {

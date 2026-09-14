@@ -596,9 +596,9 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
     expect(firstCheck).toBeGreaterThan(assign);
   });
 
-  // Both shapes exist in real suites: of 46 hand-written teardowns in one,
-  // 44 assert nothing and one checks that the undo took. Which is right is
-  // the project's call, so it states it and ccqa emits what it asked for.
+  // Both shapes exist in hand-written suites: most teardowns assert nothing,
+  // and a few check that the undo took. Which is right is the project's
+  // call, so it states it and ccqa emits what it asked for.
   it("emits the undo's actions only when the project forbids expect there", () => {
     const cleanup = {
       actions: [
