@@ -457,6 +457,15 @@ means only the generated code drifted, so a regeneration alone is enough. No
 finding at all means the case still matches the code (`drift: null`), not a
 passing "check" to enumerate.
 
+A renamed string is `TEST_DRIFT` wherever it is written — including when the
+case's own document quotes it. The label says which kind of repair is needed;
+`surface` says which file that repair lands in. `SPEC_CHANGE` is kept for a
+flow the product no longer implements, or behaviour that changed beyond a
+rename. Where the evidence genuinely fits either, the audit prefers
+`TEST_DRIFT`: the regeneration that follows it runs the test, so a wrong
+`TEST_DRIFT` fails loudly, while a wrong `SPEC_CHANGE` quietly sends someone
+to rewrite a document that was fine.
+
 Standing guidance for the audit lives in the `audit.user` / `audit.agent`
 prompts, the audit's counterpart to `triage.user` / `triage.agent` above
 (see [Fetching sessions, variables, and prompts at run
@@ -634,16 +643,34 @@ When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
    resolved base commit. The ref is always the flag's own value — nothing is
    read from the environment, and an unresolvable ref is a usage error rather
    than an empty diff.
-2. `ccqa select-specs` decides which specs the diff reaches, in two passes.
-   Mechanical first: a change to a spec's own `spec.yaml`/recording, or to a
-   block it includes, marks that spec `needed` — set membership, no
-   measurement consulted. Everything left undecided is intersected with the
-   files its last measured run actually reached — the coverage each spec's
-   most recent `ccqa run --coverage` left on the hub (ADR-0024) — and
-   answers `needed` / `notNeeded` / `unknown` (the selector's own
-   vocabulary, not the re-run verdict's). The intersection is skipped
-   entirely, and every remaining spec clears as `notNeeded`, when nothing
-   outside `.ccqa/` changed.
+2. `ccqa select-specs` decides which specs the diff reaches, in three passes,
+   each narrowing what the next has to judge.
+
+   **The case's own files.** A change to a spec's own `spec.yaml`, to a
+   markdown case's own document, to the recording it compiles from, or to a
+   block it includes marks that spec `needed` — set membership, no
+   measurement consulted. When nothing outside those files changed, every
+   remaining spec clears as `notNeeded` and the other two passes are skipped.
+
+   **Imports.** Each still-undecided spec's generated test is walked out to
+   the project files it imports, and a change to one of them — a page object,
+   a shared helper, or the test itself — marks that spec `needed`. The browser
+   never loads those files, so no measured edge can ever name one, and holding
+   them against coverage alone would clear exactly the specs that use them.
+   This pass only adds specs, so it is always on and takes no flag; a walk
+   that hits its size limit before the graph runs out marks the spec `needed`
+   too, rather than clearing it on a set known to be incomplete.
+
+   **Measured reach.** What is still undecided is intersected with the files
+   each spec's last measured run actually reached — the coverage its most
+   recent `ccqa run --coverage` left on the hub (ADR-0024) — answering
+   `needed` / `notNeeded` / `unknown` (the selector's own vocabulary, not the
+   re-run verdict's).
+
+   One limit worth knowing: the import pass resolves files that exist, so
+   *deleting* one a test imports is not an import edge it can see. The
+   consumer's own type check is the deterministic net there, and selection
+   only ever adds specs, so nothing is cleared on the strength of it.
 3. A spec with no measurement to consult — never measured, measured longer
    ago than the hub retains, or no hub connection at all — comes back
    `unknown` and stays in scope: an unmeasured edge is not an unreached

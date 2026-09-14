@@ -6,6 +6,7 @@ import { resolveRoot } from "../coverage/session.ts";
 import { execFileP, type ChangedFile } from "../drift/affected.ts";
 import { parseBlockPath, specKey } from "../store/index.ts";
 import type { CoverageEdges, CoverageEdgesReadout } from "./coverage-edges.ts";
+import { selectByImports } from "./imports.ts";
 import type { SpecDescription } from "./inventory.ts";
 import type { SelectReport, SpecSelection } from "./types.ts";
 
@@ -37,15 +38,20 @@ export interface SelectSpecsInput {
 /**
  * Decide which specs a change set reaches.
  *
- * Two passes, in this order and for this reason: what a change to ccqa's own
- * tree settles is settled first, and only the remainder is held against
- * measured reach. A change to a spec's own file, or to a block it includes,
- * means that spec must re-run — reach cannot see the test's own definition,
- * so no measurement is consulted for it. Everything else intersects the diff
- * with the files the spec's last measured run actually reached (ADR-0024);
- * a spec with no measurement is `needed` — it runs until a measurement
- * lands, which is also what records its first edge (ADR-0026). Only when
- * the measurements could not be read does absence degrade to `unknown`.
+ * Three passes, in this order and for this reason: what a change to ccqa's own
+ * tree settles is settled first, and only the remainder is held against the
+ * two kinds of reach. A change to a spec's own file, or to a block it
+ * includes, means that spec must re-run — reach cannot see the test's own
+ * definition, so no measurement is consulted for it. Static reach runs next
+ * and answers the half a browser measurement structurally cannot
+ * (`./imports.ts`): the files a spec's test imports are in the test tree,
+ * never loaded by the product, so the measurement is silent about them
+ * rather than clearing them; what it selects shrinks what the last pass has
+ * to judge. That last pass intersects the diff with the files each remaining
+ * spec's last measured run actually reached (ADR-0024); a spec with no
+ * measurement is `needed` — it runs until a measurement lands, which is also
+ * what records its first edge (ADR-0026). Only when the measurements could
+ * not be read does absence degrade to `unknown`.
  */
 export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport> {
   const { changed, specs, cwd, base, head, edges } = input;
@@ -63,7 +69,10 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
       specName: spec.specName,
       verdict: "needed",
       source: "mechanical",
-      reason: "the spec's own definition changed, or a block it includes did",
+      reason:
+        spec.recordingPath !== "" && touchedBy.includes(spec.recordingPath)
+          ? `the case's recording changed: ${spec.recordingPath}`
+          : "the spec's own definition changed, or a block it includes did",
       touchedBy,
       testPath: spec.testPath,
     });
@@ -91,7 +100,10 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
     // Run even when every spec was already decided mechanically: a product
     // change that no spec's measured reach touches is still worth reporting
     // as uncovered, independent of whether it moved any verdict.
-    const judged = await judgeWithCoverage({ pending: undecided, productChanges, cwd, repo, edges });
+    const byImport = await selectByImports(undecided, productChanges, cwd, repo);
+    for (const [key, selection] of byImport) byKey.set(key, selection);
+    const stillUndecided = undecided.filter((s) => !byImport.has(specKey(s)));
+    const judged = await judgeWithCoverage({ pending: stillUndecided, productChanges, cwd, repo, edges });
     for (const selection of judged.selections) byKey.set(specKey(selection), selection);
     uncoveredFiles = judged.uncoveredFiles;
     excludedFiles = judged.excludedFiles;
@@ -115,11 +127,13 @@ export async function selectSpecs(input: SelectSpecsInput): Promise<SelectReport
  * that decides itself.
  *
  * `.ccqa/` paths are ccqa's own: a spec directory names the spec it belongs
- * to, a block names the specs that include it. A markdown case's own document
- * is matched the same way but by exact path (`sourcePath`) rather than a
- * directory prefix — it lives in the project's own tree, not under `.ccqa/`,
- * so there is no directory to claim on its behalf. Product paths carry no
- * such mapping — those are what the coverage intersection exists to answer.
+ * to, a block names the specs that include it. Two of a case's files live in
+ * the project's own tree instead, and are matched by exact path rather than a
+ * directory prefix: the document that states it (`sourcePath`) and the
+ * recording it compiles from (`recordingPath`). Both say what the case does,
+ * which no measured reach can see — a browser loads neither. Product paths
+ * carry no such mapping, and are what the coverage intersection exists to
+ * answer.
  */
 function partitionChanges(
   changed: readonly ChangedFile[],
@@ -144,11 +158,15 @@ function partitionChanges(
     }
   }
 
-  // Reverse index for `sourcePath`, an exact match rather than a prefix — a
-  // spec's own directory is already caught above, so in practice this is what
-  // catches a markdown case's document.
-  const specsBySourcePath = new Map<string, SpecDescription>();
-  for (const spec of specs) specsBySourcePath.set(spec.sourcePath, spec);
+  // Reverse index for the case's own files outside `.ccqa/`, matched exactly
+  // rather than by prefix — a spec's own directory is already caught above, so
+  // in practice this is what catches a markdown case's document and a
+  // recording that sits beside the test it compiles into.
+  const specsByOwnFile = new Map<string, SpecDescription>();
+  for (const spec of specs) {
+    specsByOwnFile.set(spec.sourcePath, spec);
+    if (spec.recordingPath !== "") specsByOwnFile.set(spec.recordingPath, spec);
+  }
 
   for (const file of changed) {
     // A sibling package's `.ccqa/` is not ours: its spec and block names live
@@ -170,9 +188,9 @@ function partitionChanges(
       continue;
     }
 
-    const bySourcePath = specsBySourcePath.get(file.path);
-    if (bySourcePath) {
-      addTouch(specKey(bySourcePath), file.path);
+    const byOwnFile = specsByOwnFile.get(file.path);
+    if (byOwnFile) {
+      addTouch(specKey(byOwnFile), file.path);
       continue;
     }
 

@@ -18,10 +18,11 @@ export type SelectVerdict = z.infer<typeof SelectVerdictSchema>;
 
 /**
  * How the verdict was reached. Kept because the two sources have different
- * trust: `mechanical` is set arithmetic on paths and cannot be wrong;
- * `coverage` intersects the diff with the spec's last measured reach
- * (ADR-0024), which can only be wrong through staleness — and staleness
- * degrades to `unknown`, never to a guess.
+ * trust: `mechanical` is set arithmetic on paths and cannot be wrong — a
+ * spec's own files, and the files its test imports, are both membership
+ * questions with an answer in the tree; `coverage` intersects the diff with
+ * the spec's last measured reach (ADR-0024), which can only be wrong through
+ * staleness — and staleness degrades to `unknown`, never to a guess.
  */
 export const SelectSourceSchema = z.enum(["mechanical", "coverage"]);
 export type SelectSource = z.infer<typeof SelectSourceSchema>;

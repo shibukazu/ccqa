@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ChangedFile } from "../drift/affected.ts";
 import { parseSpecDirPath, rerootChangesForCoverage, selectSpecs } from "./analyze.ts";
@@ -19,6 +19,7 @@ function spec(featureName: string, specName: string, includedBlocks: string[] = 
     steps: ["open the page", "do a thing"],
     includedBlocks,
     testPath: `${featureName}/${specName}/test.spec.ts`,
+    recordingPath: `${featureName}/${specName}/test.spec.ccqa.ir.json`,
     sourcePath: `.ccqa/features/${featureName}/test-cases/${specName}/spec.yaml`,
   };
 }
@@ -386,6 +387,150 @@ describe("rerootChangesForCoverage", () => {
       },
     );
     expect(out).toEqual([{ original: "src/a.ts", measured: "src/a.ts" }]);
+  });
+});
+
+describe("selectSpecs: import edges", () => {
+  let dir: string;
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  /** A project whose test reaches a shared label file through a page object. */
+  async function project(): Promise<string> {
+    dir = await mkdtemp(join(tmpdir(), "ccqa-select-imports-"));
+    const write = async (rel: string, body: string) => {
+      await mkdir(dirname(join(dir, rel)), { recursive: true });
+      await writeFile(join(dir, rel), body, "utf8");
+    };
+    await write("e2e/specs/purchase.spec.ts", `import { CheckoutPage } from "../pages/checkout.ts";\n`);
+    await write("e2e/pages/checkout.ts", `import { LABELS } from "../shared/labels.ts";\nexport class CheckoutPage {}\n`);
+    await write("e2e/shared/labels.ts", `export const LABELS = { submit: "Submit" };`);
+    return dir;
+  }
+
+  const specs = [
+    { ...spec("checkout", "purchase-with-card"), testPath: "e2e/specs/purchase.spec.ts" },
+    { ...spec("checkout", "apply-coupon"), testPath: "e2e/specs/coupon.spec.ts" },
+  ];
+
+  it("selects a case whose test imports the changed file, over a measurement that would clear it", async () => {
+    const cwd = await project();
+    // The browser never loads a page object, so no measured edge can name one:
+    // held against coverage alone, every case here clears.
+    const edges = edgesOf({
+      "checkout/purchase-with-card": ["src/product/checkout.ts"],
+      "checkout/apply-coupon": ["src/product/checkout.ts"],
+    });
+
+    const report = await selectSpecs({
+      changed: [file("e2e/shared/labels.ts")],
+      specs,
+      cwd,
+      base: "main",
+      head: "HEAD",
+      edges,
+    });
+
+    const purchase = report.specs.find((s) => s.specName === "purchase-with-card")!;
+    expect(purchase.verdict).toBe("needed");
+    expect(purchase.source).toBe("mechanical");
+    expect(purchase.reason).toContain("e2e/shared/labels.ts");
+    expect(purchase.touchedBy).toEqual(["e2e/shared/labels.ts"]);
+    // The other case's test does not exist, so nothing imports the file for it.
+    expect(report.specs.find((s) => s.specName === "apply-coupon")!.verdict).toBe("notNeeded");
+  });
+
+  it("selects a case whose only changed file is its own recording, over a clearing measurement", async () => {
+    const cwd = await project();
+    // A recording is neither product code nor anything a browser loads, so
+    // measured reach clears every case here.
+    const edges = edgesOf({
+      "checkout/purchase-with-card": ["src/product/checkout.ts"],
+      "checkout/apply-coupon": ["src/product/checkout.ts"],
+    });
+
+    const report = await selectSpecs({
+      changed: [file("e2e/specs/purchase.spec.ccqa.ir.json")],
+      specs: [
+        { ...specs[0]!, recordingPath: "e2e/specs/purchase.spec.ccqa.ir.json" },
+        specs[1]!,
+      ],
+      cwd,
+      base: "main",
+      head: "HEAD",
+      edges,
+    });
+
+    const purchase = report.specs.find((s) => s.specName === "purchase-with-card")!;
+    expect(purchase.verdict).toBe("needed");
+    expect(purchase.source).toBe("mechanical");
+    expect(purchase.reason).toContain("e2e/specs/purchase.spec.ccqa.ir.json");
+  });
+
+  it("selects a case whose import chain runs deeper than the audit's walk", async () => {
+    const cwd = await project();
+    const write = async (rel: string, body: string) => {
+      await mkdir(dirname(join(cwd, rel)), { recursive: true });
+      await writeFile(join(cwd, rel), body, "utf8");
+    };
+    // Five hops from the test: past the audit's depth of 3, inside selection's.
+    await write("e2e/shared/labels.ts", `import { A } from "./a.ts";\nexport const LABELS = { A };`);
+    await write("e2e/shared/a.ts", `import { B } from "./b.ts";\nexport const A = B;`);
+    await write("e2e/shared/b.ts", `export const B = 1;`);
+    const edges = edgesOf({
+      "checkout/purchase-with-card": ["src/product/checkout.ts"],
+      "checkout/apply-coupon": ["src/product/checkout.ts"],
+    });
+
+    const report = await selectSpecs({
+      changed: [file("e2e/shared/b.ts")],
+      specs,
+      cwd,
+      base: "main",
+      head: "HEAD",
+      edges,
+    });
+
+    expect(report.specs.find((s) => s.specName === "purchase-with-card")!.verdict).toBe("needed");
+  });
+
+  it("leaves the coverage verdict alone when the change is imported by nothing", async () => {
+    const cwd = await project();
+    const edges = edgesOf({
+      "checkout/purchase-with-card": ["src/product/checkout.ts"],
+      "checkout/apply-coupon": ["src/product/checkout.ts"],
+    });
+
+    const report = await selectSpecs({
+      changed: [file("src/product/unrelated.ts")],
+      specs,
+      cwd,
+      base: "main",
+      head: "HEAD",
+      edges,
+    });
+
+    for (const s of report.specs) {
+      expect(s.verdict).toBe("notNeeded");
+      expect(s.source).toBe("coverage");
+    }
+  });
+
+  it("promotes an unknown the same way — an import edge is evidence a degraded read is not", async () => {
+    const cwd = await project();
+
+    const report = await selectSpecs({
+      changed: [file("e2e/shared/labels.ts")],
+      specs,
+      cwd,
+      base: "main",
+      head: "HEAD",
+      edges: { edges: new Map(), degraded: true },
+    });
+
+    expect(report.specs.find((s) => s.specName === "purchase-with-card")!.verdict).toBe("needed");
+    expect(report.specs.find((s) => s.specName === "apply-coupon")!.verdict).toBe("unknown");
   });
 });
 

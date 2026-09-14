@@ -18,7 +18,12 @@ import {
   type TestSpec,
 } from "../spec/yaml-schema.ts";
 import { registryFor, resolveTarget } from "../targets/registry.ts";
-import { resolveCaseTestPath, resolveTestPath } from "../targets/test-path.ts";
+import {
+  resolveCaseRecordingPath,
+  resolveCaseTestPath,
+  resolveRecordingPath,
+  resolveTestPath,
+} from "../targets/test-path.ts";
 import { listAllSpecsWithSpecFile, loadAllBlocks, splitCaseId, tryReadSpecFile } from "../store/index.ts";
 
 /**
@@ -58,6 +63,13 @@ export interface SpecDescription {
    * spec cases get.
    */
   sourcePath: string;
+  /**
+   * Project-root-relative path of this case's recording, resolved through the
+   * same target as `testPath`. Empty on the same terms. Editing it is a change
+   * to what the case does, which no measured reach can see — `partitionChanges`
+   * matches a changed file against this the way it matches `sourcePath`.
+   */
+  recordingPath: string;
 }
 
 /**
@@ -108,7 +120,7 @@ async function loadSpecFileInventory(config: ProjectConfig, cwd: string): Promis
         title: spec.title,
         steps: describeSteps(spec, blocks, `${featureName}/${specName}`),
         includedBlocks: collectIncludedBlockNames(spec),
-        testPath: resolveSpecTestPath(spec, config, featureName, specName),
+        ...resolveSpecPaths(spec, config, featureName, specName),
         sourcePath: `.ccqa/features/${featureName}/test-cases/${specName}/spec.yaml`,
       };
     }),
@@ -140,6 +152,9 @@ async function loadMarkdownInventory(
         steps: describeMarkdownSteps(testCase),
         includedBlocks: [],
         testPath: runsLive(testCase) ? "" : resolveCaseTestPath(target, targetConfig, testCase.ref.id),
+        recordingPath: runsLive(testCase)
+          ? ""
+          : resolveCaseRecordingPath(target, targetConfig, testCase.ref.id),
         sourcePath: markdownSourcePath(testCase, caseId, cwd),
       };
     }),
@@ -158,19 +173,25 @@ function markdownSourcePath(testCase: TestCase, id: string, cwd: string): string
  * depend on it. A live spec resolves to "" for the same reason: it is driven
  * from the spec every run and has compiled nothing a runner could take.
  */
-function resolveSpecTestPath(
+function resolveSpecPaths(
   spec: TestSpec,
   config: ProjectConfig,
   featureName: string,
   specName: string,
-): string {
-  if (spec.mode === "live") return "";
+): { testPath: string; recordingPath: string } {
+  const none = { testPath: "", recordingPath: "" };
+  if (spec.mode === "live") return none;
   try {
     const target = resolveTarget(spec, config);
-    return resolveTestPath(target, targetConfigFor(config, target.id), { featureName, specName });
+    const targetConfig = targetConfigFor(config, target.id);
+    const ref = { featureName, specName };
+    return {
+      testPath: resolveTestPath(target, targetConfig, ref),
+      recordingPath: resolveRecordingPath(target, targetConfig, ref),
+    };
   } catch (e) {
     log.warn(`${featureName}/${specName}: could not resolve test path (${(e as Error).message})`);
-    return "";
+    return none;
   }
 }
 

@@ -17,6 +17,13 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 
 /** How many import hops out from the test file are followed. */
 export const DEFAULT_IMPORT_DEPTH = 3;
+/**
+ * The same walk for selection, which must not miss a file: the audit reads as
+ * far as it can afford to and names what it did not reach, while a selection
+ * that stops early would clear a case whose helper the diff touched. Deeper,
+ * and truncation is reported rather than absorbed.
+ */
+export const SELECTION_IMPORT_DEPTH = 10;
 
 /**
  * How many files the walk may collect. Depth alone does not bound it: one
@@ -119,6 +126,26 @@ export async function collectSupportFiles(
   cwd: string,
   opts: { maxDepth?: number; tsconfig?: TsconfigPaths | null } = {},
 ): Promise<SupportFile[]> {
+  return (await walkSupportFiles(entryAbs, cwd, opts)).files;
+}
+
+/** What a walk found, and whether a cap stopped it before the graph ran out. */
+export interface SupportWalk {
+  files: SupportFile[];
+  /**
+   * The walk hit the depth or file cap, so `files` is a prefix of the import
+   * graph rather than the whole of it. A caller that clears work on the
+   * strength of what is *not* in the set has to know the difference.
+   */
+  truncated: boolean;
+}
+
+/** {@link collectSupportFiles}, saying whether a cap cut the walk short. */
+export async function walkSupportFiles(
+  entryAbs: string,
+  cwd: string,
+  opts: { maxDepth?: number; tsconfig?: TsconfigPaths | null } = {},
+): Promise<SupportWalk> {
   const maxDepth = opts.maxDepth ?? DEFAULT_IMPORT_DEPTH;
   const tsconfig = opts.tsconfig !== undefined ? opts.tsconfig : await loadTsconfigPaths(cwd);
   const seen = new Set([entryAbs]);
@@ -140,11 +167,12 @@ export async function collectSupportFiles(
       seen.add(entry.abs);
       found.push(entry);
       next.push(entry.abs);
-      if (found.length >= MAX_SUPPORT_FILES) return found;
+      if (found.length >= MAX_SUPPORT_FILES) return { files: found, truncated: true };
     }
     frontier = next;
   }
-  return found;
+  // A frontier left standing is a level the depth cap stopped us walking.
+  return { files: found, truncated: frontier.length > 0 };
 }
 
 /** Every project file one file imports, in source order. */
