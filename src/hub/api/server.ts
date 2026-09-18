@@ -259,8 +259,9 @@ function registerRoutes(router: Router, config: HubServerConfig, queue: Learning
   router.post("/api/v1/projects/:project/locks", createAcquireLocksHandler(storage));
   router.delete("/api/v1/projects/:project/locks", createReleaseLocksHandler(storage));
 
-  // A person's word that they checked a spec by hand — overrides the verdict,
-  // never the ledgers, and lapses on its own (see `AttestationSchema`).
+  // A person's judgement that a spec's environment failure is resolved —
+  // overrides the verdict, never the ledgers, and lapses on its own (see
+  // `AttestationSchema`).
   router.get("/api/v1/projects/:project/attestations", createGetAttestationsHandler(storage));
   router.put("/api/v1/projects/:project/attestations", createPutAttestationHandler(storage));
   router.delete("/api/v1/projects/:project/attestations", createDeleteAttestationHandler(storage));

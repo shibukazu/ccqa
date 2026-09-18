@@ -35,11 +35,11 @@ export function createGetAttestationsHandler(storage: HubStorage) {
 }
 
 /**
- * PUT /api/v1/projects/:project/attestations?profile= — record that a person
- * checked a spec by hand. The hub stamps the time and the profile's deploy
- * head: the anchor must be what the hub knows was deployed at this moment,
- * not what the caller believes. Replaces any previous attestation for the
- * spec.
+ * PUT /api/v1/projects/:project/attestations?profile= — record a person's
+ * judgement that a spec's environment failure is resolved. The hub stamps the
+ * time and the profile's deploy head: the anchor must be what the hub knows
+ * was deployed at this moment, not what the caller believes. Replaces any
+ * previous attestation for the spec.
  */
 export function createPutAttestationHandler(storage: HubStorage) {
   return async (ctx: RouteContext): Promise<void> => {

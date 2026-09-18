@@ -229,7 +229,7 @@ export interface HubClient {
   releaseLocks(project: string, q: { profile: string }, holder: string): Promise<void>;
   /** Every attestation for the profile, standing and lapsed alike. */
   getAttestations(project: string, q: { profile: string }): Promise<AttestationsResponse>;
-  /** Record that a person checked `spec` by hand. The hub stamps the time and deploy head. */
+  /** Record a person's judgement that `spec`'s environment failure is resolved. The hub stamps the time and deploy head. */
   putAttestation(
     project: string,
     q: { profile: string },
