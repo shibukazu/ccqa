@@ -88,7 +88,7 @@ person:
 | `inProgress` | nobody — an audit or a run is in flight, or the audit has not caught up with the last deploy |
 | `rerunNeeded` | the next run that takes `--only-hub-rerun-needed` |
 | `verified` | nobody |
-| `manuallyVerified` | nobody — a person's attestation stands until it lapses, and the row comes back as `rerunNeeded` when it does |
+| `manuallyVerified` | nobody — a person's attestation stands until it lapses; a deploy or a spec edit then hands the row back to the cycle, a later red hands it back to you |
 
 Your work list is the `needsRepair` rows. Nothing else on the list is yours to
 touch, however red it looks.
@@ -135,11 +135,12 @@ observation (step 5). Where the log shows the run never reached the product —
 a network error, a dead runner, a service that was down — the row is an
 environment failure whatever the label says.
 
-Two rows skip the run for step 7's attestation: one whose cause is already
-named and already repaired, where no run you can start here would observe it
-(a CI runner's network, a service off this machine), and one where a person
-has asked for the resolution to be recorded rather than tested. Everywhere
-else, run the spec once and let it decide:
+Two rows skip the run for step 7's attestation, and a person's word makes
+both: one whose cause that person says is gone, where no run you could start
+here would have observed it anyway (a CI runner's network, a service off this
+machine), and one where they have asked for the resolution to be recorded
+rather than tested. A cause nobody has told you is gone is neither of them.
+Everywhere else, run the spec once and let it decide:
 
 ```sh
 ccqa run <feature>/<spec> --hub-profile <profile>
@@ -235,9 +236,9 @@ Then close the row. Two things close it, and nothing else does:
   ccqa hub push --project <project> --profile <profile>
   ```
 
-- **The cause is gone and no run here can speak to it** — it lived outside
-  this machine — or a person has asked for the resolution to be recorded.
-  Record their judgement:
+- **A person says the cause is gone**, and either no run here can speak to it
+  — it lived outside this machine — or they asked for the resolution to be
+  recorded rather than tested. Record their judgement:
 
   ```sh
   ccqa hub attest <feature>/<spec> --profile <profile> --by <person> \
