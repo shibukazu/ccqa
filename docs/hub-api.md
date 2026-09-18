@@ -530,13 +530,13 @@ PUT    /api/v1/projects/:project/attestations?profile=     { "spec": "feature/sp
 DELETE /api/v1/projects/:project/attestations?profile=     { "spec": "feature/spec" }
 ```
 
-An attestation is a person's word that they checked a spec's behaviour by
-hand against the deployed environment. It overrides the **verdict**, never
-the ledgers: the drift entry that parked the spec stays open, so the repair
-loop keeps its reason to fix the test, while `/rerun` answers
-`manuallyVerified` instead of asking a person for what a person already did.
-The run side never selects a `manuallyVerified` spec — the test is still the
-broken one the attestation stands in for.
+An attestation is a person's judgement that an `ENVIRONMENT` failure's cause
+is gone, not a hand re-test of the behaviour. It overrides the **verdict**,
+never the ledgers: the drift entry that parked the spec stays open, so the
+repair loop keeps its reason to fix the test, while `/rerun` answers
+`manuallyVerified` instead of asking a person for what a person already
+answered. The run side never selects a `manuallyVerified` spec — the test is
+still the broken one the attestation stands in for.
 
 The hub stamps the time and the profile's current deploy head; the caller
 sends only `spec`, `by` and an optional `note`. One attestation per spec — a

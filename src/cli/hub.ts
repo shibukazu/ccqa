@@ -788,14 +788,15 @@ interface AttestOptions extends HubConnOptions {
 const attestCommand = new Command("attest")
   .argument("<feature/spec>", "Spec id, e.g. checkout/happy-path")
   .description(
-    "Record that a person checked a spec's behaviour by hand against the deployed environment. " +
+    "Record a person's judgement that an ENVIRONMENT failure's cause is gone. " +
       "The verdict answers manuallyVerified instead of asking a person for what a person already " +
-      "did — the drift ledger is untouched, so the repair loop keeps its reason to fix the test. " +
-      "The attestation lapses on its own when a deploy reaches the spec or the spec is edited.",
+      "answered — the drift ledger is untouched, so the repair loop keeps its reason to fix the test. " +
+      "The attestation lapses on its own when a deploy reaches the spec or the spec is edited, and " +
+      "the spec rejoins the run cycle for the next run to settle.",
   )
-  .requiredOption("--profile <name>", "Environment that was checked (e.g. 'stg'). The attestation is anchored to its current deploy head.")
-  .option("--by <name>", "Who checked. Required unless --revoke.")
-  .option("--note <text>", "What was checked and how — the reader deciding whether to trust it sees this.")
+  .requiredOption("--profile <name>", "Environment the attestation covers (e.g. 'stg'). It is anchored to that environment's current deploy head.")
+  .option("--by <name>", "Whose judgement this is. Required unless --revoke.")
+  .option("--note <text>", "What was broken, and what resolved it — the reader deciding whether to trust it sees this.")
   .option("--revoke", "Withdraw the spec's attestation instead of recording one.")
   .option(...hubUrlOption)
   .option(...hubTokenOption)

@@ -523,8 +523,8 @@ export const SpecVerdictSchema = z.enum([
   /** Cleared by the audit, and the last run passed against what is deployed. */
   "verified",
   /**
-   * A person checked the behaviour by hand and their attestation still covers
-   * what is deployed. Overrides what the axes would have said — they are
+   * A person answered the failure and their attestation still covers what is
+   * deployed. Overrides what the axes would have said — they are
    * shipped unchanged beside it — and lapses on its own when a deploy reaches
    * the spec or the spec itself is edited (`manual` names the attestation).
    * Kept apart from `verified`: one is the machine's answer, one is a
@@ -633,11 +633,11 @@ export const ReleaseLocksRequestSchema = z.object({
 export type ReleaseLocksRequest = z.infer<typeof ReleaseLocksRequestSchema>;
 
 /**
- * A person's word that they checked a spec's behaviour by hand against the
- * deployed environment. It overrides the verdict, never the ledgers: the
- * drift entry that parked the spec stays open, so the repair loop keeps its
- * reason to fix the test, while the verdict stops asking a person for what a
- * person already did.
+ * A person's judgement that an `ENVIRONMENT` failure's cause is gone, not a
+ * hand re-test of the behaviour. It overrides the verdict, never the ledgers:
+ * the drift entry that parked the spec stays open, so the repair loop keeps
+ * its reason to fix the test, while the verdict stops asking a person for
+ * what a person already answered.
  *
  * Anchored to the deploy head at the moment it was recorded, so it lapses on
  * its own — a deploy reaching the spec, or the spec being edited, ends its
@@ -645,7 +645,7 @@ export type ReleaseLocksRequest = z.infer<typeof ReleaseLocksRequestSchema>;
  * attestation replaces the previous one.
  */
 export const AttestationSchema = z.object({
-  /** Who checked. Free text — the hub has no accounts to resolve it against. */
+  /** Whose judgement this is. Free text — the hub has no accounts to resolve it against. */
   by: z.string().min(1),
   /** When the hub recorded it (stamped server-side). */
   at: z.string(),

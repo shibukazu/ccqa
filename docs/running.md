@@ -848,7 +848,7 @@ collapsing them would lose exactly the case that matters.
 | `needsRepair` | Drift, an audit that could not decide, or a failed run | **A person** |
 | `inProgress` | A job holds it, or the audit has not caught up with the deploy | Wait |
 | `verified` | Cleared by the audit, last run passed against this deploy | Nobody |
-| `manuallyVerified` | A person checked it by hand (`ccqa hub attest`) and that still covers this deploy | Nobody; on lapse it rejoins the cycle |
+| `manuallyVerified` | A person answered the failure (`ccqa hub attest`) and that still covers this deploy | Nobody; on lapse it rejoins the cycle |
 
 Only `rerunNeeded` runs; nothing opts into the other four.
 
@@ -902,13 +902,15 @@ beside the new finding so the reader knows the argument has been had before.
 **An environment failure can be declared resolved.** A run that failed for an
 environment reason (`ENVIRONMENT`) says nothing about the product, and whether
 the environment has since been fixed is not something the hub can observe. Once
-a person has fixed it and confirmed the behaviour by hand, `ccqa hub attest
-<feature/spec> --profile <p> --by <name>` (or the hub UI's button) answers
-`manuallyVerified` without waiting for another run. The failed run itself is
-not erased, and the attestation lapses on its own — a deploy reaching the spec,
-the spec being edited, or a later failed run each end it — with the reason it
-lapsed kept visible, so the person deciding whether to attest again knows what
-changed since they last looked.
+a person judges that the cause is gone, `ccqa hub attest <feature/spec>
+--profile <p> --by <name>` (or the hub UI's button) records that judgement and
+answers `manuallyVerified` without waiting for another run — re-testing the
+behaviour by hand is not what it stands on, since the run after the lapse is
+what settles it. The failed run itself is not erased, and the attestation
+lapses on its own — a deploy reaching the spec, the spec being edited, or a
+later failed run each end it — with the reason it lapsed kept visible, so the
+person deciding whether to attest again knows what changed since they last
+looked.
 
 **A test that failed on its own terms cannot be talked out of.** A
 `TEST_DRIFT`, `PRODUCT_BUG` or unclassified failure is an observed fact: the

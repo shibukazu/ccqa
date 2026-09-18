@@ -25,22 +25,28 @@ answers now, not from the message.
   target emits. A test that no longer fits the product is repaired by
   re-recording it, never by hand.
 - **Attesting and dismissing are a person's word, and each answers one thing.**
-  `ccqa hub attest <feature>/<spec> --profile <profile> --by <name>` answers an
-  `ENVIRONMENT` failure: somebody fixed the environment and checked the
-  behaviour by hand. `ccqa hub dismiss <feature>/<spec> --by <name> --reason
-  <text>` answers an audit finding that is wrong. Nothing answers a
-  `TEST_DRIFT` or `PRODUCT_BUG` row — those are repaired, not overruled, and
-  the CLI will not stop you getting that wrong. Hand a person the command with
-  your reasoning; do not run it yourself, and never offer an attestation for a
-  row your own run cleared, which would put a person's word behind a machine
-  result.
+  `ccqa hub attest <feature>/<spec> --profile <profile> --by <name> --note
+  <text>` answers an `ENVIRONMENT` failure: it records a person's judgement
+  that the cause is gone. Re-testing the behaviour by hand is no part of it —
+  the failure stays in the ledger, the verdict alone reads `manuallyVerified`,
+  and a deploy or a spec edit lapses it back to `rerunNeeded` for the next run
+  to settle. `ccqa hub dismiss <feature>/<spec> --by <name> --reason <text>`
+  answers an audit finding that is wrong. Nothing answers a `TEST_DRIFT` or
+  `PRODUCT_BUG` row — those are repaired, not overruled, and the CLI will not
+  stop you getting that wrong.
+- **Attest on a person's word, never your own.** Somebody in the conversation
+  has to have said the cause is gone and asked for it on the record, or agreed
+  to it: `--by` is their name, `--note` is what was broken and what resolved
+  it. Your own reasoning is not a person's word, and never attest a row your
+  own run cleared — pushing that run is the honest record. With nobody to ask,
+  report the command and the reasoning and stop.
 - **A run reaches the ledger only if it observed, not repaired.** The ledger
   merges every branch, newest wins, so a push speaks for the whole project:
   push only when the spec that ran is the one that is merged. Confirm that —
   `git diff <base> -- <the spec's directory>` comes back empty — because a
   pass recorded for code nobody shipped overwrites the verdict everyone reads.
   Repairing an environment changes no files, so its confirming run qualifies,
-  and pushing it is what clears the row: nothing else does.
+  and pushing it is what clears the row.
 - **Run every `ccqa run` in the foreground and wait.** It drives a real browser
   and takes minutes. If your environment caps how long one command may run, do
   not background it and move on; start it, then keep issuing bounded foreground
@@ -82,7 +88,7 @@ person:
 | `inProgress` | nobody — an audit or a run is in flight, or the audit has not caught up with the last deploy |
 | `rerunNeeded` | the next run that takes `--only-hub-rerun-needed` |
 | `verified` | nobody |
-| `manuallyVerified` | nobody — a person's attestation stands until it lapses |
+| `manuallyVerified` | nobody — a person's attestation stands until it lapses, and the row comes back as `rerunNeeded` when it does |
 
 Your work list is the `needsRepair` rows. Nothing else on the list is yours to
 touch, however red it looks.
@@ -121,8 +127,19 @@ whatever the counts look like.
 
 Neither label claims anything is still broken: one says the classifier could
 not tie the failure to a change, the other that the test never got to run. It
-is the same line `ccqa run --on-fail-explain-rerun auto` draws. Run the spec
-once and let it decide:
+is the same line `ccqa run --on-fail-explain-rerun auto` draws, and re-running
+first is what keeps you from repairing a spec that was never broken.
+
+The label is the classifier's guess; the log in the run report is the
+observation (step 5). Where the log shows the run never reached the product —
+a network error, a dead runner, a service that was down — the row is an
+environment failure whatever the label says.
+
+Two rows skip the run for step 7's attestation: one whose cause is already
+named and already repaired, where no run you can start here would observe it
+(a CI runner's network, a service off this machine), and one where a person
+has asked for the resolution to be recorded rather than tested. Everywhere
+else, run the spec once and let it decide:
 
 ```sh
 ccqa run <feature>/<spec> --hub-profile <profile>
@@ -140,9 +157,6 @@ ccqa run <feature>/<spec> --hub-profile <profile>
   push` (step 7) and the row clears without waiting for CI.
 - **It fails again.** Now you have a reproduction: take `ENVIRONMENT` to step
   7, and `UNKNOWN` to step 6 once you have read the run report.
-
-Repairing either without re-running first means repairing a spec that was
-never broken.
 
 ## 5. A defect in the product
 
@@ -195,10 +209,11 @@ dismissal; there the report is the whole correction.
 
 ## 7. The environment, not the test
 
-You arrive here having seen it for yourself: step 4's re-run either failed
-again, or passed only by working around something. Name the blocker from the
-run report before touching anything — `ENVIRONMENT` is a category, not a
-cause.
+You arrive here from step 4: the re-run failed again, passed only by working
+around something, or never ran because the cause was already named. Name the
+blocker before touching anything — `ENVIRONMENT` is a category, not a cause.
+The run report names it where a run happened; where none did, the person who
+told you the cause is gone already has.
 
 Repair what is yours:
 
@@ -211,13 +226,27 @@ Repair what is yours:
   confirm the new value against the environment before writing, and name the
   change in your report.
 
-Then let a run answer: `ccqa run <feature>/<spec> --hub-profile <profile>`. An
-environment repair is claimed only when a run passes — and once it does, push
-that run, because the row moves on the result and nothing else:
+Then close the row. Two things close it, and nothing else does:
 
-```sh
-ccqa hub push --project <project> --profile <profile>
-```
+- **A run passes here.** `ccqa run <feature>/<spec> --hub-profile <profile>`,
+  then push it, because the row moves on the result:
+
+  ```sh
+  ccqa hub push --project <project> --profile <profile>
+  ```
+
+- **The cause is gone and no run here can speak to it** — it lived outside
+  this machine — or a person has asked for the resolution to be recorded.
+  Record their judgement:
+
+  ```sh
+  ccqa hub attest <feature>/<spec> --profile <profile> --by <person> \
+    --note "<what was broken, and what resolved it>"
+  ```
+
+  The red stays in the ledger and only the verdict moves; it lapses like any
+  attestation, and the next run settles it. One cause holding several rows red
+  is attested a row at a time, same note.
 
 Stop — with the command a person needs — for anything that needs a human at
 a keyboard:
@@ -232,17 +261,18 @@ a keyboard:
 - A service that is down, an account that does not exist, a permission that was
   never granted. Name it and stop.
 
-Whatever the person fixes, their fix is not the outcome. A captured session
-says the login worked; it says nothing about whether the spec runs. When the
-fix lands, come back and take the run above — the row closes on a spec that
-passes against the repaired environment and gets pushed, and on nothing else.
+A fix you can exercise here is not itself the outcome. A captured session says
+the login worked; it says nothing about whether the spec runs. When that kind
+of fix lands, come back and take the run above; the attestation covers the
+other kind.
 
 ## 8. Report
 
 One line per row: what you judged it to be and which axes decided that, what
-you did, and how it ended. Then, separately, what is left for a person — a
-pull request to review, a session to capture, a dismissal for a finding you
-showed to be wrong — each with the command and the reasoning you would give
-for it.
+you did, and how it ended. Name every attestation you recorded — the row,
+whose word it stands on, and the note you wrote. Then, separately, what is
+left for a person — a pull request to review, a session to capture, a
+dismissal for a finding you showed to be wrong — each with the command and the
+reasoning you would give for it.
 
 A row you stopped at is a complete outcome; the reason **is** the answer.
