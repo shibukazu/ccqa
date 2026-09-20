@@ -345,6 +345,11 @@ describe("hub API server", () => {
       const res = await fetch(`${baseUrl}/api/v1/runs?token=${TOKEN}`);
       expect(res.status).toBe(200);
     });
+
+    test("?token= is not accepted on a non-GET request", async () => {
+      const res = await fetch(`${baseUrl}/api/v1/runs?token=${TOKEN}`, { method: "POST" });
+      expect(res.status).toBe(401);
+    });
   });
 
   describe("404 and CORS", () => {

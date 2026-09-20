@@ -21,9 +21,10 @@ token, set on the hub via the `CCQA_HUB_TOKEN` environment variable:
 Authorization: Bearer <token>
 ```
 
-Read-only `GET` endpoints (`artifacts/*`) additionally accept the token as a
-`?token=` query parameter, since a browser `<a>` tag (the artifacts download)
-can't set headers. This risks the token leaking via `Referer`, browser
+`GET` requests additionally accept the token as a `?token=` query parameter,
+since a browser `<a>` tag (the artifacts download and the per-artifact open
+link) can't set headers. Every other method ignores `?token=` and answers
+`401` without the header. This risks the token leaking via `Referer`, browser
 history, or proxy logs — see [Security notes](#security-notes) for the full
 tradeoff.
 
@@ -1010,10 +1011,12 @@ so it works unmodified in a browser bundle or a Node script alike.
 - Run it behind a reverse proxy with TLS and, for anything beyond a trusted
   LAN, an additional auth layer (SSO, VPN) — the bearer token alone is not
   meant to be internet-facing.
-- A token embedded in a `?token=` URL (browser `<img>`/`<a>` tags) can leak
-  through browser history or proxy access logs. Keep the hub's audience
-  small and rotate `CCQA_HUB_TOKEN` periodically, and immediately if you
-  suspect exposure.
+- A token embedded in a `?token=` URL (browser `<a>` tags) can leak through
+  `Referer`, browser history, or proxy access logs. The hub accepts it on
+  `GET` only, so a leaked URL is never a write request by itself — but the
+  token in it is still the full shared secret. Keep the hub's audience small
+  and rotate `CCQA_HUB_TOKEN` periodically, and immediately if you suspect
+  exposure.
 - The bundled UI's Secrets tab sends plaintext values over this same API —
   it's a management surface for a trusted, TLS-protected environment, not
   for the open internet. The UI persists the bearer token in the browser's
