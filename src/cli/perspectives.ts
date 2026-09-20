@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import { Command } from "commander";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { stringify as stringifyYaml } from "yaml";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import { extractJsonBlock } from "../claude/extract-json.ts";
@@ -12,18 +13,23 @@ import {
 import {
   caseRefFor,
   findRecordingPath,
-  listFeatureTree,
   removeLegacyPerspectivesFiles,
-  tryReadSpecFile,
-  type FeatureTreeEntry,
+  splitCaseId,
 } from "../store/index.ts";
-import { tryParseTestSpec } from "../spec/parser.ts";
-import { readSpecChangedAt } from "../spec/spec-changed-at.ts";
-import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
-import { loadProjectConfig, targetConfigFor, type ProjectConfig } from "../config/project-config.ts";
-import { resolveTarget } from "../targets/registry.ts";
+import type { TestCase } from "../cases/case.ts";
+import { openCaseReader, type CaseReader } from "../cases/reader.ts";
+import type { CaseRead } from "../cases/source.ts";
+import { readCaseChangedAt } from "../spec/spec-changed-at.ts";
+import { AGENT_BROWSER_TARGET, DEFAULT_SPEC_MODE } from "../spec/yaml-schema.ts";
+import {
+  loadProjectConfig,
+  ProjectConfigSchema,
+  targetConfigFor,
+  type ProjectConfig,
+} from "../config/project-config.ts";
+import { registryFor, resolveTarget } from "../targets/registry.ts";
 import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
-import { resolveRecordingPath, resolveTestPathAbs } from "../targets/test-path.ts";
+import { resolveCaseRecordingPath, resolveCaseTestPath } from "../targets/test-path.ts";
 import type { TargetPlugin } from "../targets/types.ts";
 import {
   PerspectivesSchema,
@@ -33,7 +39,6 @@ import {
   type PerspectiveStatus,
   type PerspectiveStep,
 } from "../types.ts";
-import { DEFAULT_SPEC_MODE, SpecModeSchema, type SpecMode } from "../spec/yaml-schema.ts";
 import type { HubClient } from "../hub-client/index.ts";
 import { HubConnectionError, requireHubClient, withHubErrors, type HubConnOptions } from "./hub-conn.ts";
 import { resolveProject } from "./resolve-project.ts";
@@ -82,8 +87,7 @@ async function runPerspectivesCheck(opts: PerspectivesOptions): Promise<void> {
   const project = resolveProject(opts);
   log.header("perspectives", `check (project: ${project})`);
 
-  const tree = await listFeatureTree();
-  const skeleton = await buildSkeleton(tree);
+  const skeleton = await buildSkeleton(await openLocalCases());
   const localCount = skeleton.reduce((n, f) => n + f.specs.length, 0);
 
   const existingDoc = await hub.getPerspectives(project);
@@ -196,13 +200,13 @@ async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
   const project = resolveProject(opts);
   log.header("perspectives", `project: ${project}`);
 
-  // 1. Mechanical skeleton: every feature/spec with title + status.
-  const tree = await listFeatureTree();
-  const skeleton = await buildSkeleton(tree);
+  // 1. Mechanical skeleton: every case with title + status.
+  const local = await openLocalCases();
+  const skeleton = await buildSkeleton(local);
   const allSpecs = skeleton.flatMap((f) => f.specs);
 
   if (allSpecs.length === 0) {
-    log.info("no test cases found under .ccqa/features — nothing to inventory.");
+    log.info(`no test cases found under ${local.where} — nothing to inventory.`);
     return;
   }
 
@@ -211,7 +215,7 @@ async function runPerspectives(opts: PerspectivesOptions): Promise<void> {
   const noteMap = extractNotes(existingDoc);
 
   // 3. Ask Claude for summaries only. The structure is already fixed above.
-  const specBodies = await loadSpecBodies(skeleton);
+  const specBodies = loadSpecBodies(skeleton, local);
   log.meta("language", opts.language ?? "auto");
   log.info(`Summarising ${allSpecs.length} test case(s) across ${skeleton.length} feature(s)...`);
   const summaries = await requestSummaries(specBodies, opts);
@@ -280,55 +284,87 @@ async function cleanupLegacyLocalFiles(): Promise<void> {
 // --- Pure, testable building blocks ---
 
 /**
- * Turn the feature tree into the skeleton perspectives features: title
- * transcribed from each spec, status derived mechanically from on-disk
- * artifacts. `summary` is left empty here; Claude fills it later. Specs whose
- * spec.yaml is missing or unparsable are skipped.
+ * Turn the project's cases into the skeleton perspectives features: title
+ * transcribed from each case, status derived mechanically from on-disk
+ * artifacts, grouped by the feature half of the case's id. `summary` is left
+ * empty here; Claude fills it later.
  */
-export async function buildSkeleton(tree: FeatureTreeEntry[]): Promise<PerspectiveFeature[]> {
-  // Config resolves each spec's target once for the whole sweep; a broken
-  // config is not a reason to fail the inventory, so fall back to the schema
-  // default (agent-browser) if it can't be loaded.
-  const config = await loadProjectConfig(process.cwd()).catch(() => null);
-  // One git walk for the whole tree; each spec picks its own entry out of it.
-  const changedAt = await readSpecChangedAt(process.cwd());
-  const features = await Promise.all(
-    tree.map(async (feature): Promise<PerspectiveFeature> => {
-      const built = await Promise.all(
-        feature.specs
-          .filter((s) => s.hasSpecFile)
-          .map(async (s): Promise<PerspectiveSpec> => {
-            // One read of spec.yaml feeds both the meta and the target.
-            const specYaml = await tryReadSpecFile(feature.featureName, s.specName);
-            const meta = readSpecMeta(s.specName, specYaml);
-            const plugin = resolveSpecTarget(specYaml, config);
-            const status = await deriveStatus(feature.featureName, s.specName, meta.mode, plugin, config);
-            const lastEdit = changedAt.get(`${feature.featureName}/${s.specName}`);
-            return {
-              specName: s.specName,
-              title: meta.title,
-              summary: "",
-              ...(meta.steps.length > 0 ? { steps: meta.steps } : {}),
-              status,
-              ...(lastEdit ? { changedAt: lastEdit } : {}),
-              // Listed but flagged: the hub skips it when deciding what an
-              // audit owes an answer for, and the `note` a person wrote on it
-              // survives being turned off.
-              ...(meta.disabled ? { disabled: true } : {}),
-            };
-          }),
-      );
-      return { featureName: feature.featureName, specs: built };
-    }),
+export async function buildSkeleton(local: LocalCases): Promise<PerspectiveFeature[]> {
+  // One git walk for the whole tree; each case picks its own entry out of it.
+  const changedAt = await readCaseChangedAt(
+    process.cwd(),
+    local.cases.map((c) => c.document!.path),
   );
-  // Drop features that ended up with no usable specs; sort for stable output.
-  return features
-    .filter((f) => f.specs.length > 0)
-    .map((f) => ({
-      featureName: f.featureName,
-      specs: [...f.specs].sort((a, b) => a.specName.localeCompare(b.specName)),
+  const byFeature = new Map<string, PerspectiveSpec[]>();
+  for (const read of local.cases) {
+    const { featureName, specName } = splitCaseId(read.id);
+    const testCase = read.case;
+    // A case that will not read is still listed, with what its id says and
+    // nothing invented. Dropping it would take it out of every answer the hub
+    // gives — attestation, re-run, audit-need — on no evidence at all, and the
+    // document it could not read is exactly what a person has to go look at.
+    if (testCase === null) log.warn(`${read.id}: ${read.error ?? "could not be read"}`);
+    const steps = testCase ? transcribeSteps(testCase.spec?.steps ?? testCase.steps) : [];
+    const lastEdit = changedAt.get(read.document!.path);
+    const built: PerspectiveSpec = {
+      specName,
+      title: testCase?.title ?? specName,
+      summary: "",
+      ...(steps.length > 0 ? { steps } : {}),
+      status: await deriveStatus(read.id, testCase, local),
+      ...(lastEdit ? { changedAt: lastEdit } : {}),
+      // Listed but flagged: the hub skips it when deciding what an audit owes
+      // an answer for, and the `note` a person wrote on it survives being
+      // turned off.
+      ...(testCase?.disabled ? { disabled: true } : {}),
+    };
+    const specs = byFeature.get(featureName);
+    if (specs) specs.push(built);
+    else byFeature.set(featureName, [built]);
+  }
+  // Sort for stable output.
+  return [...byFeature.entries()]
+    .map(([featureName, specs]) => ({
+      featureName,
+      specs: [...specs].sort((a, b) => a.specName.localeCompare(b.specName)),
     }))
     .sort((a, b) => a.featureName.localeCompare(b.featureName));
+}
+
+/**
+ * Every case this checkout states, read once, plus what the whole sweep needs
+ * to say where each case's files live.
+ *
+ * Read through the one reader, so the inventory covers a project whose cases
+ * are its own documents exactly as it covers ccqa's own specs — the hub's
+ * attestation, re-run and audit-need answers all start from this document, and
+ * a project with no document at all is a project the hub cannot answer for.
+ */
+export interface LocalCases {
+  /** Every case the source holds, read. A case that would not read is kept. */
+  cases: CaseRead[];
+  config: ProjectConfig;
+  reader: CaseReader;
+  /** Where the cases were looked for, for the "nothing to inventory" line. */
+  where: string;
+}
+
+async function openLocalCases(): Promise<LocalCases> {
+  const cwd = process.cwd();
+  // A broken config is not a reason to fail the inventory, so fall back to the
+  // schema default (agent-browser) if it cannot be loaded.
+  const config = await loadProjectConfig(cwd).catch(() => ProjectConfigSchema.parse({}));
+  const reader = openCaseReader(config, cwd);
+  const ids = await reader.list();
+  const read = await Promise.all(ids.map((id) => reader.read(id)));
+  return {
+    // A case with no document at all is not in the inventory; one whose
+    // document will not read is (see `buildSkeleton`).
+    cases: read.filter((r) => r.document !== null),
+    config,
+    reader,
+    where: reader.target ? reader.target.module : ".ccqa/features",
+  };
 }
 
 /**
@@ -420,51 +456,18 @@ export function noteKey(featureName: string, specName: string): string {
 // --- I/O helpers (kept thin so the pure functions above stay testable) ---
 
 /**
- * Lenient read of an already-loaded spec.yaml. A file that is missing or will
- * not parse falls back to `defaults`, which reports the spec as enabled: a
- * spec nobody could read has not asked to be skipped.
+ * The case's procedure, copied verbatim for the inventory: an include step
+ * keeps only the block name (its params are wiring, not procedure), an action
+ * step keeps its instruction/expected text, a judge step its claim.
+ *
+ * Read off the document rather than off the expanded steps, so a `spec.yaml`
+ * case still shows the block it includes rather than that block's contents —
+ * the inventory is a stock-take of what each case says, and inlining a shared
+ * login into forty cases says the same thing forty times.
+ *
+ * Anything malformed is skipped: the inventory never fails over one bad step.
  */
-export function readSpecMeta(
-  specName: string,
-  specYaml: string | null,
-): { title: string; mode: SpecMode; steps: PerspectiveStep[]; disabled: boolean } {
-  const defaults = { title: specName, mode: DEFAULT_SPEC_MODE, steps: [], disabled: false };
-  if (specYaml === null) return defaults;
-  try {
-    const parsed = parseYaml(specYaml) as {
-      title?: unknown;
-      mode?: unknown;
-      steps?: unknown;
-      disabled?: unknown;
-    };
-    const title = typeof parsed.title === "string" && parsed.title.length > 0
-      ? parsed.title
-      : specName;
-    const modeResult = SpecModeSchema.safeParse(parsed.mode);
-    const mode = modeResult.success ? modeResult.data : DEFAULT_SPEC_MODE;
-    return {
-      title,
-      mode,
-      steps: transcribeSteps(parsed.steps),
-      // Read through the schema, so this agrees with the run and the audit.
-      // The rest stays lenient on purpose: a spec too broken to validate
-      // should still show its title in the inventory.
-      disabled: tryParseTestSpec(specYaml)?.disabled === true,
-    };
-  } catch {
-    return defaults;
-  }
-}
-
-/**
- * The spec's procedure, copied verbatim for the inventory: an include step
- * keeps only the block name (its params are wiring, not procedure), an
- * action step keeps its instruction/expected text, a judge step its claim.
- * Anything malformed is
- * skipped — the inventory never fails over one bad step, matching how the
- * rest of this sweep treats a broken spec.
- */
-function transcribeSteps(raw: unknown): PerspectiveStep[] {
+export function transcribeSteps(raw: unknown): PerspectiveStep[] {
   if (!Array.isArray(raw)) return [];
   const steps: PerspectiveStep[] = [];
   for (const step of raw) {
@@ -490,54 +493,46 @@ function transcribeSteps(raw: unknown): PerspectiveStep[] {
 }
 
 /**
- * Resolve a spec's generation target for coverage derivation, from its
- * already-read spec.yaml. Best-effort: an unparseable spec or a target that
- * can't be resolved (unknown id, agent-browser-only field misuse) falls back
- * to agent-browser (null), so the inventory never fails over one bad spec.
+ * The target that owns this case's generated files.
+ *
+ * A case the project states itself belongs to the target that declared the
+ * source; a `spec.yaml` case names its own. Best-effort: an unresolvable
+ * target falls back to agent-browser, so the inventory never fails over one
+ * bad case.
  */
-export function resolveSpecTarget(
-  specYaml: string | null,
-  config: ProjectConfig | null,
-): TargetPlugin | null {
-  if (config === null || specYaml === null) return null;
-  const spec = tryParseTestSpec(specYaml);
-  if (!spec) return null;
+function targetOf(testCase: TestCase | null, local: LocalCases): TargetPlugin | null {
+  if (local.reader.target) return registryFor(local.config).get(local.reader.target.id) ?? null;
+  if (testCase?.spec == null) return null;
   try {
-    return resolveTarget(spec, config);
+    return resolveTarget(testCase.spec, local.config);
   } catch {
     return null;
   }
 }
 
 /**
- * Coverage facts for one spec, interpreted through its target (see
- * `PerspectiveStatusSchema`). `plugin` null means the default agent-browser
- * target (also the fallback for a spec whose target couldn't be resolved) —
- * every caller must resolve it (via `resolveSpecTarget`) and pass it, so the
- * write path and the `--check` comparison agree on the target dimension.
+ * Coverage facts for one case, interpreted through its target (see
+ * `PerspectiveStatusSchema`).
  */
 export async function deriveStatus(
-  featureName: string,
-  specName: string,
-  mode: SpecMode,
-  plugin: TargetPlugin | null,
-  config: ProjectConfig | null,
+  id: string,
+  testCase: TestCase | null,
+  local: LocalCases,
 ): Promise<PerspectiveStatus> {
   const cwd = process.cwd();
-  const ref = { featureName, specName };
+  const plugin = targetOf(testCase, local);
   // Both halves of "generated" are the same question — is there a test file at
-  // the path this spec's target puts it? — so agent-browser and the external
+  // the path this case's target puts it? — so agent-browser and the external
   // targets differ only in which target answers it.
   const target = plugin ?? agentBrowserTarget;
-  const targetConfig = targetConfigFor(config, target.id);
-  const testPathAbs = resolveTestPathAbs(target, targetConfig, ref, cwd);
-  const generated = await exists(testPathAbs);
-  const recordingPath = resolveRecordingPath(target, targetConfig, ref);
-  const hasRecording = (await findRecordingPath(caseRefFor(ref, cwd, recordingPath))) !== null;
+  const targetConfig = local.reader.target?.targetConfig ?? targetConfigFor(local.config, target.id);
+  const generated = await exists(resolve(cwd, resolveCaseTestPath(target, targetConfig, id)));
+  const recordingPath = resolveCaseRecordingPath(target, targetConfig, id);
+  const hasRecording = (await findRecordingPath(caseRefFor(id, cwd, recordingPath))) !== null;
   // A spec-input target (runn) has no record phase, so tracing is not a gap.
   const traced = target.input === "recording" ? hasRecording : true;
   return {
-    mode,
+    mode: testCase?.mode ?? DEFAULT_SPEC_MODE,
     traced,
     generated,
     ...(plugin && plugin.id !== AGENT_BROWSER_TARGET ? { target: plugin.id } : {}),
@@ -551,21 +546,31 @@ function exists(path: string): Promise<boolean> {
   );
 }
 
-async function loadSpecBodies(skeleton: PerspectiveFeature[]): Promise<PerspectiveSpecForPrompt[]> {
-  const entries = await Promise.all(
-    skeleton.flatMap((feature) =>
-      feature.specs.map(async (spec): Promise<PerspectiveSpecForPrompt> => {
-        const specYaml = (await tryReadSpecFile(feature.featureName, spec.specName)) ?? "";
-        return {
-          featureName: feature.featureName,
-          specName: spec.specName,
-          title: spec.title,
-          specYaml,
-        };
-      }),
-    ),
+/** `splitCaseId` as the two positional arguments `noteKey` takes. */
+function splitPair(id: string): [string, string] {
+  const { featureName, specName } = splitCaseId(id);
+  return [featureName, specName];
+}
+
+function loadSpecBodies(
+  skeleton: PerspectiveFeature[],
+  local: LocalCases,
+): PerspectiveSpecForPrompt[] {
+  // Keyed the way the skeleton spells a case — the feature/spec pair — because
+  // that is what the lookup below has. A single-segment id does not survive
+  // the split-and-rejoin, and keying by the raw id silently fed the summariser
+  // an empty document.
+  const byKey = new Map(
+    local.cases.map((c) => [noteKey(...splitPair(c.id)), c.document?.text ?? ""]),
   );
-  return entries;
+  return skeleton.flatMap((feature) =>
+    feature.specs.map((spec) => ({
+      featureName: feature.featureName,
+      specName: spec.specName,
+      title: spec.title,
+      specYaml: byKey.get(noteKey(feature.featureName, spec.specName)) ?? "",
+    })),
+  );
 }
 
 export interface SummaryRequestOptions {

@@ -71,6 +71,13 @@ export interface SpecResult {
    */
   live?: boolean;
   title?: string | null;
+  /**
+   * The document this case is stated in, relative to the project root. Carried
+   * rather than derived: where a case is filed is the project's business, and
+   * a GitHub annotation pointing at a `spec.yaml` that does not exist annotates
+   * nothing. Absent when the case could not be read at all.
+   */
+  documentPath?: string;
 }
 
 /**

@@ -24,11 +24,11 @@ One run mixes every kind of spec; each group is dispatched by the spec's
 3. **Live** agent-browser specs — Claude drives the browser per step and
    judges each step's `expected`. See [Live specs](./live.md).
 
-A project whose cases are its own markdown is dispatched by `mode` alone:
-`ccqa run` executes the cases that say `live` and reports the rest as the
-project's own test command's to run — that command is what
+A project whose cases come from a source of its own is dispatched by `mode`
+alone: `ccqa run` executes the cases that say `live` and reports the rest as
+the project's own test command's to run — that command is what
 [`select-specs --format paths`](#asking-the-question-on-its-own) feeds. See
-[`intent`](./targets.md#intent--reading-test-cases-from-markdown).
+[`cases`](./targets.md#cases--a-reader-you-own).
 
 Key flags (see `ccqa run --help` for the rest):
 
@@ -423,12 +423,12 @@ selectors and strings the generated code holds, not only the prose that
 describes them. A case that runs live has no generated code — the document
 itself is what runs — so only the document is audited there.
 
-The document is whichever kind the project writes. A target that declares an
-[`intent` source](./targets.md#intent--reading-test-cases-from-markdown) has
-its cases read from the project's own markdown, headings and all; one that
-does not has them read from `.ccqa/features/**/spec.yaml`. The audit
-enumerates whichever of the two the project uses, by the same rule `ccqa
-generate` resolves a `<case>` argument with.
+The document is whichever kind the project writes. A target that declares a
+[`cases` module](./targets.md#cases--a-reader-you-own) has its cases read
+through it, verbatim, whatever format they are in; one that does not has them
+read from `.ccqa/features/**/spec.yaml`. The audit enumerates whichever of the
+two the project uses, by the same rule `ccqa generate` resolves a `<case>`
+argument with.
 
 Each audited case gets **at most one diagnosis**, in the same vocabulary a
 failed run is triaged with (see [Failure triage](#failure-triage)):
@@ -646,8 +646,8 @@ When `--only-affected-by` is set (on `ccqa audit` or `ccqa run`):
 2. `ccqa select-specs` decides which specs the diff reaches, in three passes,
    each narrowing what the next has to judge.
 
-   **The case's own files.** A change to a spec's own `spec.yaml`, to a
-   markdown case's own document, to the recording it compiles from, or to a
+   **The case's own files.** A change to a spec's own `spec.yaml`, to the
+   document a case source reads, to the recording it compiles from, or to a
    block it includes marks that spec `needed` — set membership, no
    measurement consulted. When nothing outside those files changed, every
    remaining spec clears as `notNeeded` and the other two passes are skipped.
@@ -756,11 +756,10 @@ ccqa select-specs --base origin/main --cwd packages/web
 
 Every case appears in the output, each with its verdict, a one-sentence
 reason, and — for `needed` — the changed paths the decision rests on. Which
-cases those are follows the same rule the rest of ccqa uses: a target with an
-[`intent` source](./targets.md#intent--reading-test-cases-from-markdown) has
-them read from the project's own markdown, one without from
-`.ccqa/features/`. A `spec.yaml` that cannot be parsed is a hard error rather
-than a spec judged without reading it.
+cases those are follows the same rule the rest of ccqa uses: a target with a
+[`cases` module](./targets.md#cases--a-reader-you-own) has them read through
+it, one without from `.ccqa/features/`. A case that cannot be read is a hard
+error rather than a case judged without reading it.
 
 A case is also selected when its **own document** changed — editing what a
 case says must re-run it, and no measurement would ever say so.

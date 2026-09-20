@@ -40,8 +40,8 @@ async function project(config: string, specYaml = SPEC): Promise<string> {
   return dir;
 }
 
-/** A project whose cases are markdown, read by its default target. */
-async function intentProject(config: string, cases: Record<string, string>): Promise<string> {
+/** A project whose cases come from a source it owns, read by its default target. */
+async function ownCasesProject(config: string, cases: Record<string, string>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "ccqa-resolve-case-"));
   await mkdir(join(dir, ".ccqa"), { recursive: true });
   await writeFile(join(dir, ".ccqa/config.yaml"), config, "utf8");
@@ -52,20 +52,20 @@ async function intentProject(config: string, cases: Record<string, string>): Pro
   return dir;
 }
 
-const MARKDOWN_CASE = `## Title
-
-Add an item
-
-## Steps
-
-1. Open the list and add an item.
-
-## Expected
-
-- The item is on the list.
+const READER = `export default ({ cwd }) => ({
+  list: () => ["todo/add_item"],
+  load: (id) => ({
+    id,
+    path: \`\${cwd}/docs/cases/\${id}.md\`,
+    text: "Add an item",
+    title: "Add an item",
+    mode: "deterministic",
+    steps: [{ instruction: "Open the list and add an item." }],
+  }),
+});
 `;
 
-/** Two targets reading the same cases and emitting to different places. */
+/** Two targets reading the same case source and emitting to different places. */
 const TWO_EMITTERS = `defaultTarget: primary
 
 targets:
@@ -73,23 +73,13 @@ targets:
     kind: external
     framework: playwright
     testPath: specs/{case}.spec.ts
-    intent:
-      kind: markdown
-      root: docs/cases
-      fields:
-        steps: Steps
-        expected: Expected
+    cases: ./ccqa/cases.mjs
     runCommand: "true {files}"
   secondary:
     kind: external
     framework: playwright
     testPath: legacy/{case}.spec.ts
-    intent:
-      kind: markdown
-      root: docs/cases
-      fields:
-        steps: Steps
-        expected: Expected
+    cases: ./ccqa/cases.mjs
     runCommand: "true {files}"
 `;
 
@@ -110,8 +100,8 @@ describe("resolveCase — where the case's recording lives", () => {
     );
   });
 
-  test("anchors a markdown case's recording on its own target, not on --target", async () => {
-    cwd = await intentProject(TWO_EMITTERS, { "docs/cases/todo/add_item.md": MARKDOWN_CASE });
+  test("anchors an own-source case's recording on its own target, not on --target", async () => {
+    cwd = await ownCasesProject(TWO_EMITTERS, { "ccqa/cases.mjs": READER });
     const config = await loadProjectConfig(cwd);
 
     const resolved = await resolveCase("todo/add_item", config, cwd, {

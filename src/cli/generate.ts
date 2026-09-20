@@ -19,7 +19,6 @@ type GenerationStamp = NonNullable<Recording["generated"]>;
 import { resolveTestPath } from "../targets/test-path.ts";
 import { checkRecordedRouteReplays } from "./replay-gate.ts";
 import { resolveCase, type ResolvedCase } from "./resolve-case.ts";
-import { replaceSectionBody } from "../intent/markdown.ts";
 import { loadEnvFiles } from "./env-files.ts";
 import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { warnStaleBlockArtifacts } from "./stale-blocks.ts";
@@ -148,7 +147,7 @@ async function runGenerateLocked(
   // The project's saved browser state, for the replay gate below: a case whose
   // precondition is "signed in" replays against a sign-in wall without it.
   const { sessionState } = await loadProjectConfig(cwd);
-  const spec = testCase.source.kind === "spec" ? testCase.source.spec : null;
+  const spec = testCase.spec;
   // Same gate as `ccqa record`: a live spec has no recording to compile, and
   // `ccqa run` ignores generated code for it — a spec switched to live after
   // it was once recorded would otherwise still compile a test nothing runs.
@@ -235,7 +234,7 @@ async function runGenerateLocked(
     // target actually reads off it is the title, and its steps come already
     // expanded on the context.
     spec: spec ?? { title: testCase.title, steps: [] },
-    specYaml: testCase.source.kind === "spec" ? testCase.source.yaml : "",
+    specYaml: spec ? testCase.document.text : "",
     featureName,
     specName,
     ref: testCase.ref,
@@ -270,11 +269,6 @@ async function runGenerateLocked(
       log.info(`recording moved beside its test: ${written}`);
     }
   }
-
-  // The case asked to be told where its test ended up, so tell it — and
-  // nothing else: the file is the project's, and exactly one section of it was
-  // offered to ccqa.
-  if (result.passed) await writeBackOutputPath(testCase, targetConfig, testPath);
 
   // Learn from a failed generation too: the fix it couldn't land is a signal.
   if (opts.updateAgentPrompt) {
@@ -319,36 +313,6 @@ async function runGenerateAgentPromptUpdate(
     ...(opts.model ? { model: opts.model } : {}),
     ...(opts.language ? { language: opts.language } : {}),
   });
-}
-
-/**
- * Write the generated test's path into the case's own `outputPath` section.
- *
- * Only when the project named that section and the case actually has it: a
- * case file belongs to the project, and ccqa rewrites the one heading it was
- * given permission to rewrite, leaving every other byte alone.
- */
-async function writeBackOutputPath(
-  testCase: ResolvedCase["testCase"],
-  targetConfig: TargetConfig,
-  testPath: string,
-): Promise<void> {
-  const heading = targetConfig.intent?.fields.outputPath;
-  if (!heading || testCase.source.kind !== "markdown") return;
-  // Read again rather than reusing the copy the case was parsed from: a
-  // generation with auto-fix runs for minutes, and writing back a stale copy
-  // would silently undo whatever was edited in that window.
-  const { path } = testCase.source;
-  const before = await readFile(path, "utf8").catch(() => null);
-  if (before === null) return;
-  const after = replaceSectionBody(before, heading, testPath);
-  if (after === null) {
-    log.warn(`the case has no "${heading}" section, so the generated test's path was not written back`);
-    return;
-  }
-  if (after === before) return;
-  await writeFile(path, after, "utf8");
-  log.meta("wrote back", `${heading} in ${relative(process.cwd(), path) || path}`);
 }
 
 /**
@@ -438,12 +402,10 @@ export function staleRecordingWarning(
 }
 
 async function warnIfCaseOutranRecording(
-  testCase: { source: { kind: string; path?: string }; ref: { id: string } },
+  testCase: { document: { path: string }; ref: { id: string } },
   recordedAt: string | undefined,
 ): Promise<void> {
-  const path = testCase.source.path;
-  if (path === undefined) return;
-  const editedAt = await stat(path).then((st) => st.mtime, () => null);
+  const editedAt = await stat(testCase.document.path).then((st) => st.mtime, () => null);
   const warning = staleRecordingWarning(testCase.ref.id, editedAt, recordedAt);
   if (warning !== null) log.warn(warning);
 }
@@ -452,7 +414,7 @@ export const generateCommand = addHubOptions(addProfileOption(addLanguageOption(
   new Command("generate")
     .argument(
       "<case>",
-      "The case to generate from: a spec id ('<feature>/<spec>'), or — for a target that reads an intent source — a case id or the path of its source file",
+      "The case to generate from: a spec id ('<feature>/<spec>'), or — for a target with a `cases` module — a case id or the path of its source file",
     )
     .description(
       "Generate test code from a case via its target. Recording-backed targets compile the " +

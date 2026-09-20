@@ -38,7 +38,7 @@ import { parseAbActionLine, promoteMarkedAssert } from "../ir/from-agent-browser
 import { describeLocator, locatorToSelector } from "../ir/to-agent-browser.ts";
 import type { Locator, RecordedAction } from "../ir/types.ts";
 import type { CaseRef, Recording } from "../store/index.ts";
-import type { TestCase } from "../intent/case.ts";
+import type { TestCase } from "../cases/case.ts";
 import type { ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
 
@@ -140,7 +140,7 @@ export async function runTrace(
 
   // Include steps are a `spec.yaml` feature; a case from another document has
   // none, and its own steps are already the flat list.
-  const specSteps = testCase.source.kind === "spec" ? testCase.source.spec.steps : [];
+  const specSteps = testCase.spec?.steps ?? [];
   // A judge step records nothing: it states a claim about the page rather than
   // an action to replay, and the generator places the call from the step list.
   // Refusing one here would make a case that carries a claim unrecordable.
@@ -179,8 +179,7 @@ export async function runTrace(
   log.meta("case", testCase.title);
   log.meta("steps", steps.length);
   if (testCase.cleanup.length > 0) log.meta("cleanup steps", testCase.cleanup.length);
-  const includes =
-    testCase.source.kind === "spec" ? collectIncludedBlockNames(testCase.source.spec) : [];
+  const includes = testCase.spec ? collectIncludedBlockNames(testCase.spec) : [];
   if (includes.length > 0) log.meta("blocks", includes.join(", "));
   log.blank();
 

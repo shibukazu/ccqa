@@ -1,11 +1,17 @@
-import { describe, expect, test } from "vitest";
-import { stringify as stringifyYaml } from "yaml";
+import { describe, expect, test, vi } from "vitest";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import * as log from "./logger.ts";
+import { caseFromDocument, type TestCase } from "../cases/case.ts";
+import { openCaseReader } from "../cases/reader.ts";
+import type { CaseRead } from "../cases/source.ts";
+import { ProjectConfigSchema } from "../config/project-config.ts";
 import {
+  buildSkeleton,
   comparePerspectivesSkeleton,
   extractNotes,
   mergePerspectives,
   parseSummaries,
-  readSpecMeta,
+  transcribeSteps,
   withoutGeneratedAt,
   type SummaryEntry,
 } from "./perspectives.ts";
@@ -417,42 +423,78 @@ describe("comparePerspectivesSkeleton (--check)", () => {
   });
 });
 
-describe("readSpecMeta: disabled", () => {
-  const spec = (extra: string) => `title: A case\n${extra}steps:\n  - instruction: go\n    expected: there\n`;
+describe("buildSkeleton", () => {
+  /** A source where one case reads and one refuses to. */
+  function localCases(): Parameters<typeof buildSkeleton>[0] {
+    const read = (id: string, testCase: TestCase | null): CaseRead => ({
+      id,
+      case: testCase,
+      document: { path: `/repo/docs/testcase/${id}.md`, text: "the document" },
+      error: testCase === null ? "line 3: could not be read" : null,
+    });
+    const ok = caseFromDocument(
+      {
+        id: "todo/add_item",
+        path: "/repo/docs/testcase/todo/add_item.md",
+        text: "the document",
+        title: "Adding an item puts it on the list",
+        mode: "deterministic",
+        steps: [{ instruction: "Open the todo list" }],
+      },
+      "/repo",
+    );
+    return {
+      cases: [read("todo/add_item", ok), read("todo/broken", null)],
+      config: ProjectConfigSchema.parse({}),
+      reader: openCaseReader(ProjectConfigSchema.parse({}), "/repo"),
+      where: ".ccqa/features",
+    };
+  }
 
-  test("reads the flag that keeps a spec out of runs and audits", () => {
-    expect(readSpecMeta("a-case", spec("disabled: true\n")).disabled).toBe(true);
+  // Dropping it would take the case out of every answer the hub gives —
+  // attestation, re-run, audit-need — on no evidence at all.
+  test("keeps a case whose document will not read, named by its own id", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    const skeleton = await buildSkeleton(localCases());
+    warn.mockRestore();
+
+    const specs = skeleton.flatMap((f) => f.specs);
+    expect(specs.map((s) => s.specName).sort()).toEqual(["add_item", "broken"]);
+    const broken = specs.find((s) => s.specName === "broken")!;
+    expect(broken.title).toBe("broken");
+    expect(broken.steps).toBeUndefined();
   });
 
-  // Absent, `false`, and a file that never parsed all mean the same thing:
-  // a spec is skipped only when it says so.
-  test("treats anything but true as enabled", () => {
-    expect(readSpecMeta("a-case", spec("")).disabled).toBe(false);
-    expect(readSpecMeta("a-case", spec("disabled: false\n")).disabled).toBe(false);
-    expect(readSpecMeta("a-case", null).disabled).toBe(false);
-    expect(readSpecMeta("a-case", "not: [valid").disabled).toBe(false);
+  test("says out loud which case it could not read", async () => {
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+    await buildSkeleton(localCases());
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("todo/broken"));
+    warn.mockRestore();
   });
 });
 
-describe("readSpecMeta (verbatim step transcription)", () => {
+describe("transcribeSteps", () => {
   test("action steps keep instruction/expected, include steps keep only the block name", () => {
-    const yaml = stringifyYaml({
-      title: "a case",
-      steps: [
-        { include: "login", params: { email: "${A_VAR}" } },
-        { instruction: "open the list", expected: "the list shows" },
-        { instruction: "press submit" },
-        "not-a-step",
-      ],
-    });
-    expect(readSpecMeta("a-case", yaml).steps).toEqual([
+    const yaml = parseYaml(
+      stringifyYaml({
+        title: "a case",
+        steps: [
+          { include: "login", params: { email: "${A_VAR}" } },
+          { instruction: "open the list", expected: "the list shows" },
+          { instruction: "press submit" },
+          "not-a-step",
+        ],
+      }),
+    ) as { steps: unknown };
+    expect(transcribeSteps(yaml.steps)).toEqual([
       { include: "login" },
       { instruction: "open the list", expected: "the list shows" },
       { instruction: "press submit" },
     ]);
   });
 
-  test("a spec with no steps transcribes none", () => {
-    expect(readSpecMeta("a-case", stringifyYaml({ title: "t" })).steps).toEqual([]);
+  test("a case with no steps transcribes none", () => {
+    expect(transcribeSteps(undefined)).toEqual([]);
+    expect(transcribeSteps([])).toEqual([]);
   });
 });

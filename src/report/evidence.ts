@@ -2,10 +2,9 @@ import { readdir, readFile } from "node:fs/promises";
 import { join, posix as posixPath, resolve } from "node:path";
 
 import { FAILURE_STEP_ID } from "../runtime/evidence-constants.ts";
-import { expandSpec, isExpandedJudgeByLlmStep } from "../spec/expand.ts";
-import type { TestSpec } from "../spec/yaml-schema.ts";
+import { isExpandedJudgeByLlmStep } from "../spec/expand.ts";
+import type { TestCase } from "../cases/case.ts";
 import { EVIDENCE_SUBDIR } from "../run/report-constants.ts";
-import type { BlockSpec } from "../types.ts";
 import { ReportEvidenceSchema, type ReportEvidence } from "./schema.ts";
 
 /**
@@ -53,13 +52,18 @@ export async function loadEvidenceForSpec(
       ),
     )
   ).filter((m): m is ReportEvidence => m !== null);
-  metas.sort((a, b) => {
-    // Failure capture sinks to the end so per-step screenshots stay chronological.
-    if (a.stepId === FAILURE_STEP_ID) return 1;
-    if (b.stepId === FAILURE_STEP_ID) return -1;
-    return a.stepId.localeCompare(b.stepId);
-  });
+  // The order a case runs in: its steps, then its undo, then the capture taken
+  // where it failed. Ids alone do not say that — `cleanup-01` sorts before
+  // `step-01` — and a filmstrip that opens with the teardown reads as a case
+  // that undid something before it did it.
+  metas.sort((a, b) => phase(a.stepId) - phase(b.stepId) || a.stepId.localeCompare(b.stepId));
   return metas.length > 0 ? metas : null;
+}
+
+/** Steps, then cleanup, then the failure capture. */
+function phase(stepId: string): number {
+  if (stepId === FAILURE_STEP_ID) return 2;
+  return stepId.startsWith("cleanup-") ? 1 : 0;
 }
 
 async function readEvidenceMeta(
@@ -115,24 +119,28 @@ async function readEvidenceMeta(
 }
 
 /**
- * Build `step id → expected` so the report can caption each evidence
- * screenshot. Returns an empty map on expansion failure (evidence still
- * surfaces, just without captions).
+ * Build `step id → caption` so the report can label each evidence screenshot.
+ * Empty when the case could not be read — evidence still surfaces, just
+ * without captions.
+ *
+ * What the step must make true, falling back to what it does. A case that
+ * states its expectations once for the whole flow leaves every step's own
+ * `expected` empty, and a filmstrip captioned with blanks says less than the
+ * instructions the case's author wrote.
+ *
+ * Cleanup steps are captioned too: they have step ids of their own and leave
+ * screenshots of their own, and an uncaptioned row reads as a step nobody
+ * described rather than as the undo it is.
  */
-export function buildStepDescriptions(
-  spec: TestSpec | null,
-  blocks: Map<string, BlockSpec>,
-): Map<string, string> {
-  if (!spec) return new Map();
-  try {
-    const expanded = expandSpec(spec, { blocks });
-    // A judge step's claim is what it asserts, so it is the evidence line too.
-    return new Map(
-      expanded.map((s) => [s.id, (isExpandedJudgeByLlmStep(s) ? s.judgeByLlm : s.expected).trim()]),
-    );
-  } catch {
-    return new Map();
-  }
+export function stepCaptions(testCase: TestCase | null): Map<string, string> {
+  if (!testCase) return new Map();
+  return new Map(
+    [...testCase.steps, ...testCase.cleanup].map((s) => {
+      // A judge step's claim is what it asserts, so it is the evidence line too.
+      if (isExpandedJudgeByLlmStep(s)) return [s.id, s.judgeByLlm.trim()];
+      return [s.id, (s.expected.trim() || s.instruction).trim()];
+    }),
+  );
 }
 
 export function toPosix(p: string): string {

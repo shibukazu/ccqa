@@ -21,7 +21,7 @@ spec directory accumulates these files as you work:
   blocks/
     login/spec.yaml              # reusable block (params + steps)
   cases/
-    <id>/                        # (markdown intent source) one case's working files
+    <id>/                        # (project's own case source) one case's working files
   features/
     tasks/
       test-cases/
@@ -49,29 +49,16 @@ small, and they are the only part of the table a reader cannot reconstruct.
 ## Where a case comes from
 
 Everything below describes `spec.yaml`, ccqa's own format — the default for
-every target. A target that declares
-[an `intent` source](./targets.md#intent--reading-test-cases-from-markdown)
-reads its cases from markdown instead, in whatever headings the project
-already writes them with:
+every target, and the only format ccqa itself reads.
 
-```markdown
-## Title
+A project that already writes its test cases some other way keeps writing
+them that way and hands them over instead: the target points
+[`cases`](./targets.md#cases--a-reader-you-own) at a module in that
+repository, the module reads whatever format the project uses, and it
+answers ccqa with the case contract. Nothing about that format reaches ccqa.
 
-Mark a task complete
-
-## Steps
-
-1. Open the task list.
-2. Click the checkbox next to "Buy milk".
-
-## Expected
-
-- The task's checkbox is checked.
-```
-
-A target either declares `intent` or it doesn't: with none, it reads
-`spec.yaml`; with one, it reads markdown, and `spec.yaml` plays no part for
-that target.
+A target either declares `cases` or it doesn't: with none, it reads
+`spec.yaml`; with one, `spec.yaml` plays no part for that target.
 
 ## Top-level fields
 

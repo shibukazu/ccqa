@@ -3,10 +3,7 @@ import { Command } from "commander";
 import { randomUUID } from "node:crypto";
 import {
   ensureCcqaDir,
-  listFeatureTree,
   loadAvailableBlocks,
-  parseSpecPath,
-  listActiveSpecs,
   specKey,
   splitCaseId,
 } from "../store/index.ts";
@@ -28,9 +25,8 @@ import {
 } from "../prompts/custom-prompt.ts";
 import { collectChangedSpecs } from "./changed-specs.ts";
 import { resolveSourceRoots } from "../config/source-roots.ts";
-import type { IntentTarget } from "./resolve-case.ts";
 import { loadSpecArtifactsContext } from "../drift/artifacts.ts";
-import { intentCaseIds } from "../intent/case.ts";
+import type { CaseReader } from "../cases/reader.ts";
 import { writeAuditBriefs } from "../drift/brief.ts";
 import type { HubClient } from "../hub-client/index.ts";
 import { addLanguageOption, addProfileOption } from "./options.ts";
@@ -188,13 +184,13 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   // enumeration all ask the same two questions of the same files.
   const artifactsContext = await loadSpecArtifactsContext(cwd);
   const config = artifactsContext.config;
-  const intent = artifactsContext.intentTarget;
+  const intent = artifactsContext.reader.target;
   // Throws a RunUsageError, which the command wrapper turns into exit 2.
   const sourceRoots = await resolveSourceRoots(cwd, config.sourceRoots);
 
-  let targets = await collectTargets(specPath, cwd, intent);
+  let targets = await collectTargets(specPath, cwd, artifactsContext.reader);
   if (targets.length === 0) {
-    const where = intent ? intent.intent.root : ".ccqa/features/";
+    const where = intent ? intent.module : ".ccqa/features/";
     exitWithNoSpecs(format, "noSpecsFound", `no test cases found under ${where}`);
   }
 
@@ -536,45 +532,40 @@ function exitWithNoSpecs(format: Format, reason: NoSpecsReason, message: string)
  * The cases this sweep audits.
  *
  * Which of the two places a project keeps them in is settled by its target,
- * not guessed at: one that declares an `intent` source has its cases read from
- * the project's own directory, one that does not from `.ccqa/features/`. A
- * case named on the command line is resolved the same way, which is exactly
- * how `ccqa generate` reads the same argument.
+ * not guessed at, and the reader already answers that — so this asks the same
+ * question of both kinds. A case named on the command line is resolved the
+ * same way, which is exactly how `ccqa generate` reads the same argument.
  */
-async function collectTargets(
+export async function collectTargets(
   specPath: string | undefined,
   cwd: string,
-  intent: IntentTarget | null,
+  reader: CaseReader,
 ): Promise<SpecTarget[]> {
-  if (intent) {
-    const ids = await intentCaseIds(specPath ? [specPath] : [], intent.intent, cwd);
-    return ids.map((id) => ({ ...splitCaseId(id), caseId: id }));
-  }
+  // `caseId` is what a project's own source calls the case; a `spec.yaml`
+  // case has only its two coordinates, and claiming an id for it would send
+  // every path derived from it to `.ccqa/cases/` instead of the spec tree.
+  const asTarget = (id: string): SpecTarget =>
+    reader.target === null ? splitCaseId(id) : { ...splitCaseId(id), caseId: id };
 
-  const tree = await listFeatureTree(cwd);
   if (specPath) {
-    const { featureName, specName } = parseSpecPath(specPath);
-    const spec = tree.find((f) => f.featureName === featureName)?.specs.find((s) => s.specName === specName);
-    if (!spec?.hasSpecFile) {
-      log.error(`spec not found: ${featureName}/${specName} (under ${cwd})`);
+    // Named, so it must exist: auditing a case nobody can read would report a
+    // model error where the operator wants a mistyped argument.
+    const read = await reader.read(specPath);
+    if (read.document === null) {
+      log.error(read.error ?? `test case not found: ${specPath} (under ${cwd})`);
       process.exit(1);
     }
-    return [{ featureName, specName }];
+    return [asTarget(read.id)];
   }
 
-  // Only the sweep is filtered. Naming a spec above still audits it, the same
-  // escape hatch the run has — and a sweep that kept them would both spend a
-  // model call each and fail the gate on findings nobody is acting on.
-  const active = new Set((await listActiveSpecs(cwd)).map(specKey));
-  const out: SpecTarget[] = [];
-  for (const feature of tree) {
-    for (const spec of feature.specs) {
-      if (!spec.hasSpecFile) continue;
-      const target = { featureName: feature.featureName, specName: spec.specName };
-      if (active.has(specKey(target))) out.push(target);
-    }
-  }
-  return out;
+  // Read, not just listed: the sweep addresses a case by the id its source
+  // answers with, the same one the named branch above uses, and the read is
+  // needed anyway to see whether the case opted out. Only the sweep is
+  // filtered — naming a case still audits it, the same escape hatch the run
+  // has, and a sweep that kept disabled cases would spend a model call each
+  // and fail the gate on findings nobody is acting on.
+  const reads = await Promise.all((await reader.list()).map((id) => reader.read(id)));
+  return reads.filter((read) => read.case?.disabled !== true).map((read) => asTarget(read.id));
 }
 
 function parseFormat(raw: string | undefined): Format {

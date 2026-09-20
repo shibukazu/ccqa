@@ -1,6 +1,6 @@
 # 0030. The audit reads the product, and may name it
 
-- Status: accepted
+- Status: accepted ("The intent is whichever document the project writes" amended by ADR-0034)
 - Date: 2026-09-11
 
 ## Context and problem statement

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { assertionsByStep, buildEvidenceSteps, renderEvidence, sourceNeedles } from "./table.ts";
 import type { EvidenceInput } from "./table.ts";
 import type { SourceAnchors } from "./source-anchors.ts";
-import type { TestCase } from "../intent/case.ts";
+import type { TestCase } from "../cases/case.ts";
 
 const TEST_CASE: TestCase = {
   ref: { id: "todo/add_item", dir: "/repo/.ccqa/cases/todo/add_item" },
@@ -17,12 +17,10 @@ const TEST_CASE: TestCase = {
   cleanupExpectations: [],
   context: [],
   fields: {},
-  source: {
-    kind: "markdown",
-    path: "/repo/docs/testcase/todo/add_item.md",
-    text: "",
-    parsed: {} as never,
-  },
+  disabled: false,
+  blocked: null,
+  document: { path: "/repo/docs/testcase/todo/add_item.md", text: "" },
+  spec: null,
 };
 
 /**

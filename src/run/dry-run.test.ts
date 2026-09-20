@@ -19,7 +19,7 @@ describe("formatDryRunLines", () => {
       external: [
         {
           targetId: "playwright",
-          specs: [{ featureName: "api", specName: "health", title: null }],
+          specs: [{ featureName: "api", specName: "health" }],
         } as TargetDispatch["external"][number],
       ],
     };
@@ -36,8 +36,8 @@ describe("formatDryRunLines", () => {
   test("lists rows that would not execute with their reason, so the list matches the report", () => {
     const routed: Routed = {
       ...nothingRouted,
-      skipped: [{ featureName: "f", specName: "s", title: null, reason: "no runCommand", targetId: "runn" }],
-      unresolved: [{ featureName: "f", specName: "u", title: null, reason: "unknown target", targetId: null }],
+      skipped: [{ featureName: "f", specName: "s", caseId: "f/s", testCase: null, reason: "no runCommand", targetId: "runn" }],
+      unresolved: [{ featureName: "f", specName: "u", caseId: "f/u", testCase: null, reason: "unknown target", targetId: null }],
     };
     expect(formatDryRunLines([], routed, noResources)).toEqual([
       "  f/s  skipped — no runCommand",

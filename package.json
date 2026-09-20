@@ -54,6 +54,16 @@
         "types": "./dist/runtime/judge.d.cts",
         "default": "./dist/runtime/judge.cjs"
       }
+    },
+    "./case-source": {
+      "import": {
+        "types": "./dist/cases/contract.d.mts",
+        "default": "./dist/cases/contract.mjs"
+      },
+      "require": {
+        "types": "./dist/cases/contract.d.cts",
+        "default": "./dist/cases/contract.cjs"
+      }
     }
   },
   "typesVersions": {
@@ -69,6 +79,9 @@
       ],
       "judge": [
         "dist/runtime/judge.d.mts"
+      ],
+      "case-source": [
+        "dist/cases/contract.d.mts"
       ]
     }
   },

@@ -105,7 +105,7 @@ async function runSelectSpecs(opts: SelectSpecsOptions): Promise<void> {
   }
   const specs: SpecDescription[] = specsResult.specs;
   if (specs.length === 0) {
-    log.error("no test specs found under .ccqa/features/");
+    log.error("this project states no test cases");
     process.exit(1);
   }
 

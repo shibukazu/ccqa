@@ -1,6 +1,6 @@
 # 0029. ccqa ships mechanism; the project supplies the facts
 
-- Status: accepted
+- Status: accepted (the `intent:` markdown source is superseded by ADR-0034)
 - Date: 2026-09-11
 
 ## Context and problem statement

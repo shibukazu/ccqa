@@ -94,6 +94,14 @@ export async function collectSpecArtifacts(args: {
   reportDir: string;
   feature: string;
   spec: string;
+  /**
+   * Whether the spec passed. A trace archive is tens of megabytes and is only
+   * ever opened to replay a failure — the step screenshots were already read
+   * out of it — so a passed spec does not list one. It stays on disk for
+   * anyone who wants it; what it stops doing is filling the report and the
+   * hub push with archives nobody opens.
+   */
+  passed: boolean;
   warn: (message: string) => void;
   /** Test seam — production callers use the module defaults. */
   caps?: { maxFiles: number; maxTotalBytes: number };
@@ -105,7 +113,7 @@ export async function collectSpecArtifacts(args: {
   const dir = specArtifactsDir(args.reportDir, args.feature, args.spec);
   const relPrefix = posixPath.join(ARTIFACTS_SUBDIR, `${args.feature}__${args.spec}`);
 
-  const relFiles = await walkFiles(dir);
+  const relFiles = (await walkFiles(dir)).filter((rel) => !args.passed || !isTraceArchive(rel));
   // output.log first (the "what ran" anchor), traces last, then lexicographic
   // for stable rows.
   relFiles.sort((a, b) => rowRank(a) - rowRank(b) || a.localeCompare(b));

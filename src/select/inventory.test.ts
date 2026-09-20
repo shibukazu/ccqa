@@ -76,43 +76,46 @@ steps:
   });
 });
 
-describe("loadSpecInventory — markdown cases", () => {
-  /** External target reading its cases from markdown, one heading mapped to mode. */
+describe("loadSpecInventory — a project's own case source", () => {
   const CONFIG = `defaultTarget: todo-e2e
 targets:
   todo-e2e:
     kind: external
     framework: playwright
     testPath: specs/{case}.spec.ts
-    intent:
-      kind: markdown
-      root: docs/testcase
-      fields:
-        mode: Mode
-`;
-  const CASE_MD = `## Title
-
-Adding an item puts it on the list
-
-## Steps
-
-1. Open the todo list
-2. Add "Buy milk"
-
-## Expected
-
-- The item appears on the list
+    cases: ./ccqa/cases.mjs
 `;
 
-  it("reads the project's own markdown cases instead of .ccqa/features/, with testPath through the intent target", async () => {
-    const cwd = await makeProject({
-      ".ccqa/config.yaml": CONFIG,
-      "docs/testcase/todo/add-item.md": CASE_MD,
-    });
+/**
+ * A case source as a project writes one. The format is that project's
+ * business, so a test picks whatever is simplest to state — here a table.
+ */
+const READER = `const CASES = {
+  "todo/add-item": { title: "Adding an item puts it on the list", mode: "deterministic" },
+  "todo/see-list": { title: "The list shows every item", mode: "live" },
+};
+
+export default ({ cwd }) => ({
+  list: () => Object.keys(CASES).sort(),
+  load: (ref) => {
+    const id = ref.replace(/^docs\\/testcase\\//, "").replace(/\\.md$/, "");
+    return {
+      ...CASES[id],
+      id,
+      path: \`\${cwd}/docs/testcase/\${id}.md\`,
+      text: "the case, as its author wrote it",
+      steps: [{ instruction: "Open the todo list" }, { instruction: 'Add "Buy milk"' }],
+    };
+  },
+});
+`;
+
+  it("reads the project's own cases instead of .ccqa/features/, with testPath through its target", async () => {
+    const cwd = await makeProject({ ".ccqa/config.yaml": CONFIG, "ccqa/cases.mjs": READER });
 
     const specs = await loadSpecInventory(cwd);
 
-    expect(specs).toHaveLength(1);
+    expect(specs.map((s) => s.specName)).toEqual(["add-item", "see-list"]);
     expect(specs[0]).toMatchObject({
       featureName: "todo",
       specName: "add-item",
@@ -125,13 +128,10 @@ Adding an item puts it on the list
   });
 
   it("resolves a live case's testPath to empty, same as a live spec.yaml", async () => {
-    const cwd = await makeProject({
-      ".ccqa/config.yaml": CONFIG,
-      "docs/testcase/todo/add-item.md": `${CASE_MD}\n## Mode\n\nlive\n`,
-    });
+    const cwd = await makeProject({ ".ccqa/config.yaml": CONFIG, "ccqa/cases.mjs": READER });
 
     const specs = await loadSpecInventory(cwd);
 
-    expect(specs[0]!.testPath).toBe("");
+    expect(specs.find((s) => s.specName === "see-list")!.testPath).toBe("");
   });
 });

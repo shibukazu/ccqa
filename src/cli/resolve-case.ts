@@ -1,5 +1,6 @@
-import { caseRefFor, loadAllBlocks, parseSpecPath, readSpecFile, type SpecRef } from "../store/index.ts";
-import { caseFromSpec, loadMarkdownCase, type TestCase } from "../intent/case.ts";
+import { caseRefFor, type SpecRef } from "../store/index.ts";
+import type { TestCase } from "../cases/case.ts";
+import { caseTargetFor, openCaseReader } from "../cases/reader.ts";
 import { registryFor, resolveTarget, resolveTargetOverride } from "../targets/registry.ts";
 import {
   resolveCaseRecordingPath,
@@ -7,12 +8,7 @@ import {
   resolveRecordingPath,
   resolveTestPath,
 } from "../targets/test-path.ts";
-import {
-  targetConfigFor,
-  type IntentSource,
-  type ProjectConfig,
-  type TargetConfig,
-} from "../config/project-config.ts";
+import { targetConfigFor, type ProjectConfig, type TargetConfig } from "../config/project-config.ts";
 import type { TestSpec } from "../spec/yaml-schema.ts";
 import type { TargetPlugin } from "../targets/types.ts";
 
@@ -21,15 +17,15 @@ import type { TargetPlugin } from "../targets/types.ts";
  *
  * Two kinds of document state a test case, and which one a project writes is
  * settled by its target, not by guessing at the argument's shape: a target
- * that declares an `intent` source reads its cases from the project's own
- * files, and one that does not reads ccqa's `spec.yaml`. So the target is
- * resolved first — from `--target`, else the project's `defaultTarget` — and
- * the argument is then read the way that target's cases are written.
+ * that declares a case source reads its cases from the project's own files,
+ * and one that does not reads ccqa's `spec.yaml`. So the target is resolved
+ * first — from `--target`, else the project's `defaultTarget` — and the
+ * argument is then read the way that target's cases are written.
  *
- * The consequence worth knowing: in a project whose `defaultTarget` reads
- * markdown, reaching a `spec.yaml` case means naming the target that owns it
- * (`--target playwright`). That is one flag in the uncommon direction, against
- * a rule with no ambiguity in it.
+ * The consequence worth knowing: in a project whose `defaultTarget` reads its
+ * own documents, reaching a `spec.yaml` case means naming the target that owns
+ * it (`--target playwright`). That is one flag in the uncommon direction,
+ * against a rule with no ambiguity in it.
  */
 export interface ResolvedCase {
   testCase: TestCase;
@@ -50,34 +46,31 @@ export async function resolveCase(
   cwd: string,
   opts: ResolveCaseOptions = {},
 ): Promise<ResolvedCase> {
-  const intentTarget = intentTargetFor(config, opts.targetOverride);
-  if (intentTarget) {
-    const { id, targetConfig, intent } = intentTarget;
+  const reader = openCaseReader(config, cwd, opts);
+  const testCase = await reader.load(argument);
+
+  if (reader.target) {
+    const { id, targetConfig, modulePath } = reader.target;
     const target = registryFor(config).get(id)!;
-    const testCase = await loadMarkdownCase(argument, intent, cwd);
     const testPath = resolveCaseTestPath(target, targetConfig, testCase.ref.id);
     // As in the spec branch below: `--target` redirects what this invocation
     // writes, and the recording stays where the case's own target puts it.
     const recordingPath =
       (opts.targetOverride === undefined
         ? undefined
-        : ownIntentRecordingPath(config, intent, testCase.ref.id)) ??
+        : ownCaseRecordingPath(config, cwd, modulePath, testCase.ref.id)) ??
       resolveCaseRecordingPath(target, targetConfig, testCase.ref.id);
     const ref = caseRefFor(testCase.ref.id, cwd, recordingPath);
     return { testCase: { ...testCase, ref }, target, targetConfig, testPath };
   }
 
-  const { featureName, specName } = parseSpecPath(argument);
-  const yaml = await readSpecFile(featureName, specName, cwd);
-  const blocks = await loadAllBlocks(cwd);
-  const testCase = caseFromSpec(featureName, specName, yaml, blocks, cwd);
-  const spec = testCase.source.kind === "spec" ? testCase.source.spec : null;
+  const spec = testCase.spec!;
+  const specRef = splitSpecRef(testCase.ref.id);
   const target =
     opts.targetOverride !== undefined
-      ? resolveTargetOverride(spec!, opts.targetOverride, config)
-      : resolveTarget(spec!, config);
+      ? resolveTargetOverride(spec, opts.targetOverride, config)
+      : resolveTarget(spec, config);
   const targetConfig = targetConfigFor(config, target.id);
-  const specRef = { featureName, specName };
   const testPath = resolveTestPath(target, targetConfig, specRef);
   // The recording belongs to the case, so it stays where the spec's own target
   // puts the test: `--target` redirects what this invocation writes, not where
@@ -87,9 +80,15 @@ export async function resolveCase(
     cwd,
     opts.targetOverride === undefined
       ? resolveRecordingPath(target, targetConfig, specRef)
-      : ownRecordingPath(spec!, config, specRef),
+      : ownRecordingPath(spec, config, specRef),
   );
   return { testCase: { ...testCase, ref }, target, targetConfig, testPath };
+}
+
+/** A spec case's id is its two coordinates joined, and only ever those two. */
+function splitSpecRef(id: string): SpecRef {
+  const [featureName, specName] = id.split("/");
+  return { featureName: featureName!, specName: specName! };
 }
 
 /**
@@ -117,38 +116,22 @@ function ownRecordingPath(
 }
 
 /**
- * The intent branch's half of the same rule: where the project's own default
- * target keeps this case's recording.
+ * The case-source branch's half of the same rule: where the project's own
+ * default target keeps this case's recording.
  *
- * Undefined when that target reads a different set of cases than the one this
- * invocation resolved through — a target pointed at another directory is
- * describing a different case that happens to share an id, and its route is
- * not this case's.
+ * Undefined when that target reads its cases through a different module than
+ * the one this invocation resolved through — another module is describing a
+ * different case that happens to share an id, and its route is not this
+ * case's.
  */
-function ownIntentRecordingPath(
+function ownCaseRecordingPath(
   config: ProjectConfig,
-  reading: IntentSource,
+  cwd: string,
+  readingModule: string,
   caseId: string,
 ): string | undefined {
-  const own = intentTargetFor(config);
-  if (own === null || own.intent.root !== reading.root) return undefined;
+  const own = caseTargetFor(config, cwd);
+  if (own === null || own.modulePath !== readingModule) return undefined;
   const plugin = registryFor(config).get(own.id);
   return plugin ? resolveCaseRecordingPath(plugin, own.targetConfig, caseId) : undefined;
-}
-
-/** A target that reads its cases from the project's own documents. */
-export interface IntentTarget {
-  id: string;
-  targetConfig: TargetConfig;
-  intent: IntentSource;
-}
-
-/** The target whose cases live in the project, when that is what we resolve to. */
-export function intentTargetFor(
-  config: ProjectConfig,
-  targetOverride?: string,
-): IntentTarget | null {
-  const id = targetOverride ?? config.defaultTarget;
-  const targetConfig = config.targets[id];
-  return targetConfig?.intent ? { id, targetConfig, intent: targetConfig.intent } : null;
 }

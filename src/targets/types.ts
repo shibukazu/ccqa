@@ -1,4 +1,5 @@
 import type { TestSpec } from "../spec/yaml-schema.ts";
+import type { TestCase } from "../cases/case.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
 import type { RecordedAction } from "../ir/types.ts";
 import type { Conventions, ResourceRef, TargetConfig } from "../config/project-config.ts";
@@ -344,13 +345,29 @@ export interface RunnerOptions {
 }
 
 /**
- * Executes previously generated tests for a set of specs. Rows use the report
+ * One case handed to a runner: which case it is, and what its document says.
+ *
+ * The case arrives read. A runner that re-read it would have to know where
+ * that kind of case is kept, and the one that did read `spec.yaml` itself
+ * reported every case a project states its own way with no title and no step
+ * captions — silently, because an unreadable file and a case that says nothing
+ * look the same from there.
+ */
+export interface RunnableCase extends SpecRef {
+  /** How everything spells this case: its source id. Fills `{case}`. */
+  caseId: string;
+  /** Null when the case's document could not be read. */
+  testCase: TestCase | null;
+}
+
+/**
+ * Executes previously generated tests for a set of cases. Rows use the report
  * schema's per-spec shape (`ReportSpecResult`) — the currency
  * `src/run/pipeline.ts` merges into report.json and pushes to the hub — so a
  * runner's results plug into the pipeline without translation.
  */
 export interface TestRunner {
-  run(specs: readonly SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]>;
+  run(cases: readonly RunnableCase[], opts: RunnerOptions): Promise<ReportSpecResult[]>;
 }
 
 /**

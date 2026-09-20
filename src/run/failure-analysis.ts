@@ -6,10 +6,11 @@ import { buildProseEnvScrubMap } from "../runtime/env-scrub.ts";
 import { expandSpec } from "../spec/expand.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
 import { AGENT_BROWSER_TARGET, type BlockSpec, type TestSpec } from "../spec/yaml-schema.ts";
-import type { AvailableBlock, SpecRef } from "../store/index.ts";
+import { specKey, type AvailableBlock, type SpecRef } from "../store/index.ts";
+import type { CaseReader } from "../cases/reader.ts";
 import { specArtifactsDir } from "../targets/run-artifacts.ts";
 import {
-  collectSpecGenerated,
+  collectGeneratedFor,
   loadSpecArtifactsContext,
   type SpecArtifactsContext,
 } from "../drift/artifacts.ts";
@@ -55,6 +56,8 @@ export interface FailureAnalysisDeps {
   cwd: string;
   /** Absolute report directory — locates a spec's run artifacts for the prompt. */
   reportDir: string;
+  /** The reader the run resolved its cases through; see `SpecArtifactsContext`. */
+  reader: CaseReader;
   /** Blocks under `.ccqa/blocks/`, so the prompt can check an `include:` step's target still exists. */
   blocks: AvailableBlock[];
   /**
@@ -152,7 +155,7 @@ export function createFailureAnalysisPass(deps: FailureAnalysisDeps): FailureAna
       if (!specDiffResult) return { ...fields, analysisSkipped: ANALYSIS_DISABLED };
       if (!deps.auth.ok) return { ...fields, analysisSkipped: deps.auth.reason };
       if (input.specYaml === null) {
-        return { ...fields, analysisSkipped: "no spec.yaml found for this spec" };
+        return { ...fields, analysisSkipped: "the case's own document could not be read" };
       }
       // No usable baseline for THIS spec (last-green: never green yet, or its
       // commit isn't fetched) — still classify, from the failure evidence plus
@@ -284,11 +287,13 @@ export function needsAnalysis(row: ReportSpecResult): boolean {
 export async function analyzeExternalRows(
   rows: readonly ReportSpecResult[],
   run: FailureAnalysisRun,
+  /** `feature/spec` → the id that case's source calls it. */
+  caseIds: ReadonlyMap<string, string> = new Map(),
 ): Promise<ReportSpecResult[]> {
   const { deps, pass } = run;
   // Read once for the whole batch: every row resolves its test through the same
   // config and import aliases, which cannot change while the run is analysed.
-  const context = await loadSpecArtifactsContext(deps.cwd);
+  const context = await loadSpecArtifactsContext(deps.cwd, deps.reader);
   const out: ReportSpecResult[] = [];
   for (const row of rows) {
     if (!needsAnalysis(row)) {
@@ -296,9 +301,13 @@ export async function analyzeExternalRows(
       continue;
     }
     const ref: SpecRef = { featureName: row.feature, specName: row.spec };
+    // The id its source calls it, not the split pair rejoined: a single-segment
+    // case id does not survive that round trip, and the classifier would read
+    // no generated code at all for one.
+    const caseId = caseIds.get(specKey(ref)) ?? specKey(ref);
     const fields = await pass.analyze({
       ...ref,
-      readScript: () => readGeneratedTestSources(ref, row.specYaml, deps.cwd, context),
+      readScript: () => readGeneratedTestSources(caseId, deps.cwd, context),
       failureLog: row.failureLogExcerpt ?? "",
       specYaml: row.specYaml,
       parsedSpec: tryParseTestSpec(row.specYaml),
@@ -332,19 +341,11 @@ function readableArtifactsDir(ref: SpecRef, deps: FailureAnalysisDeps): string |
  * spec just means less context, never a failed analysis.
  */
 async function readGeneratedTestSources(
-  ref: SpecRef,
-  specYaml: string | null,
+  caseId: string,
   cwd: string,
   context: SpecArtifactsContext,
 ): Promise<string> {
-  if (specYaml === null) return "";
-  const { generated, unaudited } = await collectSpecGenerated(
-    ref.featureName,
-    ref.specName,
-    specYaml,
-    cwd,
-    context,
-  );
+  const { generated, unaudited } = await collectGeneratedFor(caseId, cwd, context);
   const parts = generated.map((f: { path: string; content: string }) => `// ${f.path}\n${f.content}`);
   if (unaudited.length > 0) {
     parts.push(`// [not shown: ${unaudited.join(", ")} — Read them for their full state]`);

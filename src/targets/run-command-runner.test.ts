@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runCommandRunner } from "./run-command-runner.ts";
-import { TargetConfigSchema } from "../config/project-config.ts";
+import { ProjectConfigSchema, TargetConfigSchema } from "../config/project-config.ts";
+import { openCaseReader } from "../cases/reader.ts";
 import { SPEC_DIR_TEMPLATE } from "../store/index.ts";
-import type { RunnerOptions } from "./types.ts";
-import type { SpecRef } from "../store/index.ts";
+import type { RunnableCase, RunnerOptions } from "./types.ts";
 
 let cwd: string;
 
@@ -18,7 +18,15 @@ afterEach(async () => {
   await rm(cwd, { recursive: true, force: true });
 });
 
-const REF: SpecRef = { featureName: "demo", specName: "x" };
+/**
+ * The case as the pipeline hands it over: read once, through the reader. The
+ * runner never opens a case document itself — which is why a project whose
+ * cases are its own documents used to get a null title and no step captions.
+ */
+async function theCase(): Promise<RunnableCase> {
+  const read = await openCaseReader(ProjectConfigSchema.parse({}), cwd).read("demo/x");
+  return { featureName: "demo", specName: "x", caseId: "demo/x", testCase: read.case };
+}
 
 // Beside the spec by default, same as every built-in target's own default —
 // the resolved absolute path is `.ccqa/features/demo/test-cases/x/test.spec.ts`.
@@ -59,7 +67,7 @@ function runnerOpts(
 describe("runCommandRunner", () => {
   it("fails with 'ccqa generate' guidance when no generated test exists at the resolved testPath", async () => {
     await writeSpecFiles({ withTestFile: false });
-    const [row] = await runCommandRunner.run([REF], runnerOpts("echo {files}"));
+    const [row] = await runCommandRunner.run([await theCase()], runnerOpts("echo {files}"));
     expect(row!.status).toBe("failed");
     expect(row!.title).toBe("Sample flow");
     expect(row!.failureLogExcerpt).toContain("no generated test at");
@@ -75,7 +83,7 @@ describe("runCommandRunner", () => {
     await writeSpecFiles();
     const capture =
       `node -e "require('fs').writeFileSync('args.txt', process.argv.slice(1).join(' '))" {files}`;
-    const [row] = await runCommandRunner.run([REF], runnerOpts(capture));
+    const [row] = await runCommandRunner.run([await theCase()], runnerOpts(capture));
     expect(row!.status).toBe("passed");
     expect(row!.durationMs).toBeGreaterThanOrEqual(0);
     expect(row!.failureLogExcerpt).toBeNull();
@@ -88,7 +96,7 @@ describe("runCommandRunner", () => {
   it("reports a failing command with its exit code and output tail", async () => {
     await writeSpecFiles();
     const failing = `node -e "console.error('boom detail'); process.exit(3)"`;
-    const [row] = await runCommandRunner.run([REF], runnerOpts(failing));
+    const [row] = await runCommandRunner.run([await theCase()], runnerOpts(failing));
     expect(row!.status).toBe("failed");
     expect(row!.failureLogExcerpt).toContain("exit 3");
     expect(row!.failureLogExcerpt).toContain("boom detail");
@@ -115,7 +123,7 @@ describe("runCommandRunner", () => {
       "fs.writeFileSync(process.env.CCQA_ARTIFACTS_DIR+'/env.txt','from-env');" +
       "console.log('hello artifacts')";
     const [row] = await runCommandRunner.run(
-      [REF],
+      [await theCase()],
       runnerOpts(`node -e "${script}" {artifactsDir}`),
     );
     expect(row!.status).toBe("passed");
@@ -140,7 +148,7 @@ describe("runCommandRunner", () => {
       "const fs=require('fs');const dir=process.env.CCQA_ARTIFACTS_DIR;" +
       "fs.rmSync(dir,{recursive:true,force:true});fs.mkdirSync(dir,{recursive:true});" +
       "fs.writeFileSync(dir+'/trace.txt','t');console.log('wiped and wrote')";
-    const [row] = await runCommandRunner.run([REF], runnerOpts(`node -e "${script}"`));
+    const [row] = await runCommandRunner.run([await theCase()], runnerOpts(`node -e "${script}"`));
     expect(row!.status).toBe("passed");
     expect(row!.artifacts).toEqual([
       expect.objectContaining({ name: "output.log", kind: "text" }),
@@ -157,7 +165,7 @@ describe("runCommandRunner", () => {
     await writeSpecFiles();
     const streamed: string[] = [];
     const [row] = await runCommandRunner.run(
-      [REF],
+      [await theCase()],
       runnerOpts(`node -e "process.exit(0)"`, {
         onSpecComplete: async (r) => {
           streamed.push(`${r.feature}/${r.spec}`);
@@ -174,7 +182,7 @@ describe("runCommandRunner", () => {
     // worker — otherwise runPool rejects and sibling workers keep running
     // detached, clobbering the authoritative final report.
     const rows = await runCommandRunner.run(
-      [REF],
+      [await theCase()],
       runnerOpts(`node -e "process.exit(0)"`, {
         onSpecComplete: () => Promise.reject(new Error("hub push exploded")),
       }),
@@ -191,7 +199,7 @@ describe("runCommandRunner", () => {
       "fs.writeFileSync(dir+'/step-01.png','png');" +
       "fs.writeFileSync(dir+'/step-01.json',JSON.stringify({stepId:'step-01',source:'spec',pngFile:'step-01.png',url:null,title:null,capturedAt:null}));";
     const [row] = await runCommandRunner.run(
-      [REF],
+      [await theCase()],
       runnerOpts(`node -e "${script}"`, { stepEvidence: { supported: true } }),
     );
     expect(row!.status).toBe("passed");
@@ -202,7 +210,7 @@ describe("runCommandRunner", () => {
   it("records evidenceUnavailable when a supported target captured nothing", async () => {
     await writeSpecFiles();
     const [row] = await runCommandRunner.run(
-      [REF],
+      [await theCase()],
       runnerOpts(`node -e "process.exit(0)"`, { stepEvidence: { supported: true } }),
     );
     expect(row!.evidence).toBeNull();
@@ -212,7 +220,7 @@ describe("runCommandRunner", () => {
   it("records the target's reason as evidenceUnavailable when it can't capture", async () => {
     await writeSpecFiles();
     const [row] = await runCommandRunner.run(
-      [REF],
+      [await theCase()],
       runnerOpts(`node -e "process.exit(0)"`, {
         stepEvidence: { supported: false, reason: "no screen to capture" },
       }),

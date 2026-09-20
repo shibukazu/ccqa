@@ -122,22 +122,25 @@ describe("parseProjectConfig", () => {
         "    testPath: specs/{case}.spec.ts",
         "    writeRoots: [pages]",
         "    checkCommands: [\"pnpm tsc --noEmit\"]",
-        "    intent:",
-        "      kind: markdown",
-        "      root: docs/testcase",
-        "      fields:",
-        "        steps: 手順",
+        "    cases: ./ccqa/cases.mjs",
         "    titleTags:",
         "      field: priority",
-        "      map: { 高: high }",
+        "      map: { critical: smoke }",
       ].join("\n"),
     );
     const target = config.targets["scenario"]!;
     expect(target.kind).toBe("external");
-    expect(target.intent?.fields.steps).toBe("手順");
-    // Unnamed fields keep ccqa's own defaults, so a project maps only what it renames.
-    expect(target.intent?.fields.expected).toBe("Expected");
+    expect(target.cases).toBe("./ccqa/cases.mjs");
     expect(target.writeRoots).toEqual(["pages"]);
+  });
+
+  it("names the replacement when a config still declares the old `intent` block", () => {
+    expect(() =>
+      parseProjectConfig(
+        "targets:\n  scenario:\n    kind: external\n    framework: playwright\n" +
+          "    testPath: specs/{case}.spec.ts\n    intent:\n      kind: markdown\n      root: docs\n",
+      ),
+    ).toThrow(/`intent` is gone.*cases: \.\/ccqa\/cases\.mjs/s);
   });
 
   it.each([
@@ -147,7 +150,7 @@ describe("parseProjectConfig", () => {
     ],
     ["kind: external\n    framework: playwright", /must say where its generated tests go/],
     [
-      "kind: external\n    framework: playwright\n    testPath: specs/{spec}.spec.ts\n    intent:\n      kind: markdown\n      root: docs",
+      "kind: external\n    framework: playwright\n    testPath: specs/{spec}.spec.ts\n    cases: ./ccqa/cases.mjs",
       /must use \{case\}/,
     ],
   ])("refuses an incomplete external target (%#)", (body, message) => {

@@ -1,5 +1,5 @@
 import type { StepMarker } from "./actions-to-script.ts";
-import { cleanupId, stepId } from "../intent/case.ts";
+import { cleanupId, stepId } from "../cases/case.ts";
 
 /**
  * The comment that opens a step in generated code, and the reader that finds

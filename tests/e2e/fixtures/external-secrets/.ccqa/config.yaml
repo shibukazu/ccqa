@@ -8,13 +8,7 @@ targets:
     kind: external
     framework: playwright
     testPath: specs/{case}.spec.ts
-    intent:
-      kind: markdown
-      root: docs/testcase
-      fields:
-        steps: Steps
-        expected: Expected
-        cleanup: Cleanup
+    cases: ./ccqa/cases.mjs
     runId:
       import: 'import { runId } from "../../support/run-id";'
       expression: "runId()"
