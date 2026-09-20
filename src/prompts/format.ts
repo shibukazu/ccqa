@@ -4,6 +4,18 @@
  * must stay consistent across commands.
  */
 
+/**
+ * `body` inside a fence the body itself cannot close. What prompts embed this
+ * way — the project's guides, a markdown draft — carries fences of its own, and
+ * a three-backtick wrapper around one ends at the first of them: everything
+ * after it then reads as the prompt's own words.
+ */
+export function fencedBlock(body: string): string {
+  const longest = Math.max(0, ...[...body.matchAll(/`+/g)].map((m) => m[0].length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}\n${body}\n${fence}`;
+}
+
 /** Prefix every line with its 1-based number, the form fix suggestions cite. */
 export function numberLines(script: string): string {
   return script

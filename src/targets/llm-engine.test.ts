@@ -102,9 +102,20 @@ function fakeInvoke(results: string[]): { invoke: InvokeFn; prompts: string[] } 
  * The engine only carries what a reading says; what makes a step decided is
  * the target's business, so nothing here needs a real one.
  */
-function fakeReading(answers: SpecCoverageReview[]): { reading: Reading; calls: number } {
-  const seen = { reading: null as unknown as Reading, calls: 0 };
-  seen.reading = async () => answers[Math.min(seen.calls++, answers.length - 1)]!;
+function fakeReading(
+  answers: SpecCoverageReview[],
+): { reading: Reading; calls: number; guides: { path: string; body: string }[]; askedModel: boolean[] } {
+  const seen = {
+    reading: null as unknown as Reading,
+    calls: 0,
+    guides: [] as { path: string; body: string }[],
+    askedModel: [] as boolean[],
+  };
+  seen.reading = async (_files, guides, askModel) => {
+    seen.guides = [...guides];
+    seen.askedModel.push(askModel);
+    return answers[Math.min(seen.calls++, answers.length - 1)]!;
+  };
   return seen;
 }
 
@@ -116,6 +127,38 @@ const undecided: SpecCoverageReview = {
   findings: [{ stepId: "step-01", problem: "checks the link it clicked" }],
   complete: true,
   warnings: ["step-01: …"],
+};
+
+/** One file the reading says breaks a rule the project wrote down. */
+const breaksARule: SpecCoverageReview = {
+  findings: [],
+  complete: true,
+  warnings: ["e2e/pages/list.ts: Locators are declared before methods. (docs/e2e-guide.md)"],
+  ruleViolations: [
+    {
+      file: "e2e/pages/list.ts",
+      guide: "docs/e2e-guide.md",
+      rule: "Locators are declared before methods.",
+      code: "async open() {}",
+      severity: "blocking",
+    },
+  ],
+};
+
+/** One the reviewer would mention and approve anyway. */
+const worthSaying: SpecCoverageReview = {
+  findings: [],
+  complete: true,
+  warnings: ["e2e/pages/list.ts: 12 of 14 page objects take the fixture (e2e/pages/todo_list.ts, advisory)"],
+  ruleViolations: [
+    {
+      file: "e2e/pages/list.ts",
+      guide: "e2e/pages/todo_list.ts",
+      rule: "12 of 14 page objects take the fixture",
+      code: "async open() {}",
+      severity: "advisory",
+    },
+  ],
 };
 
 const okOutput = (path = "e2e/todos/add-item.spec.ts"): string =>
@@ -421,6 +464,260 @@ describe("generateWithLlmEngine", () => {
     expect(prompts[1]).toContain("step-01");
     expect(prompts[1]).toContain("Do not weaken or delete a");
     expect(result.review).toEqual(clean);
+  });
+
+  // A rule the project wrote is enforced by nothing else in the loop: it is
+  // not a type error, not a lint rule, and the test is green either way. The
+  // file it names may be one this generation reused rather than wrote, which
+  // is why the round has to be told the path and the rule, not just the code.
+  it("spends a fix round on a file the reading says breaks the project's rules", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput(), okOutput()]);
+    const { reading } = fakeReading([breaksARule, clean]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("e2e/pages/list.ts");
+    expect(prompts[1]).toContain("docs/e2e-guide.md");
+    expect(prompts[1]).toContain("Locators are declared before methods.");
+    expect(result.review).toEqual(clean);
+  });
+
+  // The run is the expensive half of a round — a browser against a live
+  // product — and code the reviewer would send back is not worth running.
+  it("does not run the verification in a round the review would block", async () => {
+    await makeProject();
+    const { invoke } = fakeInvoke([okOutput(), okOutput()]);
+    const { reading } = fakeReading([breaksARule, clean]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({
+        targetConfig: TargetConfigSchema.parse({ runCommand: "printf x >> ran.log" }),
+      }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    // Once, in the round whose review came back clean.
+    expect(await readFile(resolve(cwd, "ran.log"), "utf8")).toBe("x");
+  });
+
+  // A line the reviewer would raise and approve anyway. Spending a round on
+  // it takes the round from the finding that would have been rejected.
+  it("does not spend a round on a violation the review marked advisory", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput()]);
+    const { reading } = fakeReading([worthSaying]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(1);
+    // Reported all the same: the record and the log carry it either way.
+    expect(result.review).toEqual(worthSaying);
+  });
+
+  // The fix pass may decline a file it is not allowed to write, and the next
+  // reading reports the same line again. Asking a second time can only be
+  // declined a second time, so the round is kept for something else.
+  it("does not spend a second round on a violation that came back unchanged", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput(), okOutput(), okOutput()]);
+    const { reading } = fakeReading([breaksARule]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({
+        fix: { maxRetries: 2, mode: "auto", useSnapshot: false },
+        targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }),
+      }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    // Generation plus the one round the violation was worth.
+    expect(prompts).toHaveLength(2);
+  });
+
+  // The same for a step the fix pass could not strengthen: it reports the same
+  // line every round, and left alone it takes the whole budget — the run, the
+  // only thing that decides the verdict, then happens with none of it.
+  it("does not spend a second round on a step finding that came back unchanged", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput(), okOutput(), okOutput()]);
+    const { reading } = fakeReading([undecided]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({
+        fix: { maxRetries: 2, mode: "auto", useSnapshot: false },
+        targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }),
+      }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(2);
+  });
+
+  // A line the reviewer mentioned in passing, and then — reading the rewrite —
+  // held the change for. A round that never put it to the model must not be
+  // the reason it is never asked.
+  it("spends a round on a violation an earlier round only passed over as advisory", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput(), okOutput(), okOutput(), okOutput()]);
+    const line = (severity: "blocking" | "advisory") => ({
+      file: "e2e/pages/list.ts",
+      guide: "docs/e2e-guide.md",
+      rule: "Locators are declared before methods.",
+      code: "async open() {}",
+      severity,
+    });
+    const { reading } = fakeReading([
+      // The round goes to the step finding; the advisory line rides along
+      // without ever reaching the fix prompt.
+      { ...undecided, ruleViolations: [line("advisory")] },
+      { findings: [], complete: true, warnings: [], ruleViolations: [line("blocking")] },
+      clean,
+    ]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({
+        fix: { maxRetries: 3, mode: "auto", useSnapshot: false },
+        targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }),
+      }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(3);
+    expect(prompts[2]).toContain("Locators are declared before methods.");
+  });
+
+  // One answer carries two reviews. A steps half that came back unreadable
+  // says nothing about the rules half beside it, and dropping that half would
+  // clear a file nobody read.
+  it("acts on the rule violations when the findings half of the answer was unusable", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput(), okOutput()]);
+    const { reading } = fakeReading([{ ...breaksARule, findings: null, complete: false }, clean]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("Locators are declared before methods.");
+  });
+
+  // The reviewer is a model call of its own, minutes long. Asking it where no
+  // round could act on the answer buys a bill and a log line.
+  it("does not ask the reviewer when no fix round could act on what it finds", async () => {
+    await makeProject();
+    const { invoke } = fakeInvoke([okOutput()]);
+    const seen = fakeReading([clean]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({
+        fix: { maxRetries: 3, mode: "non-interactive", useSnapshot: false },
+        targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }),
+      }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading: seen.reading,
+    });
+    expect(result.passed).toBe(true);
+    // Read all the same: what the reading decides without a model costs
+    // nothing, and it is what the evidence table shows.
+    expect(seen.askedModel).toEqual([false]);
+  });
+
+  // A wedged reviewer waits out its whole timeout and answers nothing. Once is
+  // what finding out costs; twice is the round a finding would have bought.
+  it("stops asking a reviewer whose call failed", async () => {
+    await makeProject();
+    const { invoke } = fakeInvoke([okOutput(), okOutput()]);
+    const seen = fakeReading([
+      { findings: [], complete: false, reviewerFailed: true, warnings: [] },
+      clean,
+    ]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "false" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading: seen.reading,
+    });
+    expect(result.passed).toBe(false);
+    expect(seen.askedModel).toEqual([true, false]);
+  });
+
+  // A check command may rewrite what it checks — a formatter does. From there
+  // the review opens the disk while the fix prompt is handed what the engine
+  // holds, and the two must not be told different things about one file.
+  it("re-reads what the project's own checks rewrote", async () => {
+    await makeProject();
+    const { invoke, prompts } = fakeInvoke([okOutput(), okOutput()]);
+    await generateWithLlmEngine({
+      ctx: makeContext({
+        targetConfig: TargetConfigSchema.parse({
+          runCommand: "false",
+          checkCommands: ["printf '// formatted\\n' >> e2e/todos/add-item.spec.ts"],
+        }),
+      }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+    });
+    expect(prompts[1]).toContain("// formatted");
+  });
+
+  // The same sections the generation prompt carried. Read a second time they
+  // could differ — a budget drop, an edit mid-run — and the code would then
+  // be judged against rules it was never shown.
+  it("reads the generated code against the guides the generation prompt carried", async () => {
+    await makeProject({ "docs/e2e-guide.md": "Locators are declared before methods." });
+    const { invoke } = fakeInvoke([okOutput()]);
+    const seen = fakeReading([clean]);
+    await generateWithLlmEngine({
+      ctx: makeContext({
+        conventions: { guides: ["docs/e2e-guide.md"], examples: [], operate: [] },
+        targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }),
+      }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading: seen.reading,
+    });
+    expect(seen.guides).toEqual([
+      { path: "docs/e2e-guide.md", body: "Locators are declared before methods.", kind: "guide" },
+    ]);
   });
 
   // runn's runbooks are YAML: they hold no assertion in the shape a reader of

@@ -141,9 +141,9 @@ describe("ccqa record — a markdown case whose credentials come from envFiles",
       join(project.cwd, "specs/account/sign_in.spec.ts"),
       "utf8",
     );
-    // The comment a reviewer reads against the case's own numbered list.
-    expect(generated).toContain("// step 1: Open the sign-in page");
-    expect(generated).toContain("// cleanup 1: Delete the created note");
+    // The test.step title a reviewer reads against the case's own numbered list.
+    expect(generated).toContain('await test.step("step 1: Open the sign-in page"');
+    expect(generated).toContain('await test.step("cleanup 1: Delete the created note"');
     // The project's own helper, and the guard assigned where the note was made.
     expect(generated).toContain("uniqueValue = runId();");
     expect(generated).toContain("if (!createdSomething) return;");

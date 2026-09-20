@@ -25,6 +25,14 @@ export const ARTIFACTS_DIR_ENV = "CCQA_ARTIFACTS_DIR";
 /** The runner's full stdout+stderr capture, always written into the artifacts dir. */
 export const OUTPUT_LOG_FILE = "output.log";
 
+/** What Playwright names the trace it writes under the output dir, one per test. */
+const TRACE_ARCHIVE_FILE = "trace.zip";
+
+/** Whether a path under the artifacts dir names one of those traces. */
+export function isTraceArchive(rel: string): boolean {
+  return rel === TRACE_ARCHIVE_FILE || rel.endsWith(`/${TRACE_ARCHIVE_FILE}`);
+}
+
 /**
  * Caps on what one spec's artifacts dir may contribute to the report. The
  * byte cap matches the hub's default push cap (`serve --max-push-mb`, 32 MB)
@@ -48,7 +56,8 @@ export function substituteArtifactsDir(command: string, artifactsDir: string): s
   return command.replaceAll(ARTIFACTS_DIR_VAR, quoteForShell(artifactsDir));
 }
 
-function quoteForShell(s: string): string {
+/** Single quotes survive every shell metacharacter except themselves. */
+export function quoteForShell(s: string): string {
   return /^[A-Za-z0-9_./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`;
 }
 
@@ -96,11 +105,10 @@ export async function collectSpecArtifacts(args: {
   const dir = specArtifactsDir(args.reportDir, args.feature, args.spec);
   const relPrefix = posixPath.join(ARTIFACTS_SUBDIR, `${args.feature}__${args.spec}`);
 
-  const relFiles = await walkFiles(dir, "");
-  // output.log first (the "what ran" anchor), then lexicographic for stable rows.
-  relFiles.sort((a, b) =>
-    a === OUTPUT_LOG_FILE ? -1 : b === OUTPUT_LOG_FILE ? 1 : a.localeCompare(b),
-  );
+  const relFiles = await walkFiles(dir);
+  // output.log first (the "what ran" anchor), traces last, then lexicographic
+  // for stable rows.
+  relFiles.sort((a, b) => rowRank(a) - rowRank(b) || a.localeCompare(b));
 
   const kept: ReportArtifact[] = [];
   const dropped: string[] = [];
@@ -133,8 +141,22 @@ export async function collectSpecArtifacts(args: {
   return kept;
 }
 
+/**
+ * Where a file sits in the row order, and so which files the caps cut first.
+ *
+ * A Playwright trace is tens of megabytes and ccqa asks for one on every run
+ * it can — taken before the rest of the budget it would be the whole of it,
+ * and the screenshots and reports a reader actually opens would be the files
+ * dropped. Ranked last it takes only what is left, and it is still on disk and
+ * in the pushed bundle either way.
+ */
+function rowRank(rel: string): number {
+  if (rel === OUTPUT_LOG_FILE) return 0;
+  return isTraceArchive(rel) ? 2 : 1;
+}
+
 /** All files under `dir` as posix paths relative to it; missing dir → []. */
-async function walkFiles(dir: string, relBase: string): Promise<string[]> {
+export async function walkFiles(dir: string, relBase = ""): Promise<string[]> {
   let entries;
   try {
     entries = await readdir(dir, { withFileTypes: true });

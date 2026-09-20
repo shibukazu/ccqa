@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { relative } from "node:path";
+import { relative, resolve } from "node:path";
 import { saveSpecReview, SPEC_DIR_TEMPLATE, TEST_SCRIPT_FILE } from "../../store/index.ts";
 import { renderHeader, renderTitleTag } from "../external/header.ts";
 import {
@@ -9,28 +9,36 @@ import {
   type ExpandedStep,
 } from "../../spec/expand.ts";
 import type { StepMarker } from "../../codegen/actions-to-script.ts";
-import { assertionsByStep } from "../../evidence/table.ts";
+import { parseStepBlock, stepLines } from "../../codegen/step-comment.ts";
 import type { RecordedAction } from "../../types.ts";
 import { playwrightTaskInstructions } from "../../prompts/llm-gen.ts";
 import { buildStepMarkers, lastActionIndexPerStep } from "../agent-browser/generate.ts";
-import { exportedNames } from "../support-files.ts";
-import { finalizePreparedFiles, generateWithLlmEngine, type Reading } from "../llm-engine.ts";
+import { collectSupportFiles, exportedNames, importedSpecifiers } from "../support-files.ts";
+import {
+  finalizePreparedFiles,
+  generateWithLlmEngine,
+  type LlmGeneratedFile,
+  type Reading,
+} from "../llm-engine.ts";
 import {
   emitPlaywrightDraft,
   headerPreserveRule,
   judgeCall,
   JUDGE_CALL,
+  JUDGE_MODULE,
   type Judgement,
-  STEP_EVIDENCE_AFTER,
-  STEP_EVIDENCE_BEFORE,
-  stepEvidenceCall,
   judgePreserveRule,
   stepCommentPreserveRule,
-  stepEvidencePreserveRule,
 } from "./emit-mechanical.ts";
 import { acquirePlaywrightBrowser } from "./browser-server.ts";
 import { runCommandRunner } from "../run-command-runner.ts";
-import type { GenerateContext, GenerateResult, TargetPlugin } from "../types.ts";
+import {
+  resolveStepEvidence,
+  type GenerateContext,
+  type GenerateResult,
+  type StepEvidenceSupport,
+  type TargetPlugin,
+} from "../types.ts";
 import * as log from "../../cli/logger.ts";
 import { useJapanesePrompts } from "../../prompts/language.ts";
 import { reviewGeneratedTest } from "../verifies-spec.ts";
@@ -58,9 +66,10 @@ export const playwrightTarget: TargetPlugin = {
   // with its own layout sets `targets.playwright.testPath`.
   defaultTestPath: `${SPEC_DIR_TEMPLATE}/${TEST_SCRIPT_FILE}`,
   runner: runCommandRunner,
-  // The emitter injects `ccqa/step-evidence` calls at every step boundary, so
-  // a run produces the same per-step before/after screenshots agent-browser
-  // does — `ccqa run` sets CCQA_EVIDENCE_DIR for these specs.
+  // The generated test carries no capture code. `ccqa run` asks Playwright for
+  // a trace instead and recovers the same per-step before/after screenshots
+  // agent-browser produces from it — see `trace-evidence.ts`. Whether a run
+  // takes them is the project's setting, ANDed in by `resolveStepEvidence`.
   stepEvidence: { supported: true },
   judgeSteps: { supported: true },
   // `playwright test` launches its browser inside a process ccqa does not own,
@@ -88,7 +97,11 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
         `.ccqa/config.yaml (e.g. \`e2e/specs/{feature}/{spec}.spec.ts\`) to keep them apart.`,
     );
   }
-  return compileRecording(ctx, PLAYWRIGHT_TARGET);
+  return compileRecording(
+    ctx,
+    PLAYWRIGHT_TARGET,
+    resolveStepEvidence(playwrightTarget, ctx.targetConfig),
+  );
 }
 
 /**
@@ -100,10 +113,15 @@ async function generatePlaywrightTest(ctx: GenerateContext): Promise<GenerateRes
  * the same gates over what the rewrite may drop. Sharing the pipeline is what
  * keeps those gates from applying to one target and not the other — the way a
  * second copy always eventually does.
+ *
+ * `stepEvidence` comes from the target that entered the pipeline, already
+ * resolved against the project's config: the two targets differ in which
+ * plugin answers, and only they know which one it is.
  */
 export async function compileRecording(
   ctx: GenerateContext,
   guidanceKind: "playwright",
+  stepEvidence: StepEvidenceSupport,
 ): Promise<GenerateResult> {
   const actions = ctx.recording!;
   // Steps arrive expanded: whichever document stated the case, resolving it
@@ -111,15 +129,14 @@ export async function compileRecording(
   // same file with a chance of disagreeing.
   const expanded = ctx.steps;
   const cleanup = ctx.cleanup.filter(isExpandedActionStep);
-  const captures = ctx.targetConfig.hooks.stepEvidence;
   // A judge step records no actions, so it has no marker to place. Its call is
   // emitted into the draft instead, which is what keeps a claim from depending
   // on a rewrite choosing to keep it.
   const stepMarkers = buildStepMarkers(expanded.filter(isExpandedActionStep), actions);
   const cleanupMarkers = buildStepMarkers(cleanup, ctx.cleanupRecording ?? []);
   // A step with no marker recorded no action under its own id, so the emitter
-  // writes no boundary for it: no step comment, no screenshots, and nothing
-  // for the injected-call gate to check. Named here because everything
+  // writes no boundary for it: no `test.step` block, no screenshots, and
+  // nothing for the injected-call gate to check. Named here because everything
   // downstream then looks like a case that simply had fewer steps.
   const unattributed = expanded
     .filter(isExpandedActionStep)
@@ -148,7 +165,6 @@ export async function compileRecording(
       ? { cleanup: { actions: ctx.cleanupRecording, stepMarkers: cleanupMarkers } }
       : {}),
     ...(ctx.targetConfig.runId ? { runId: ctx.targetConfig.runId } : {}),
-    stepEvidence: captures,
     allowExpectInCleanup: ctx.targetConfig.allowExpectInCleanup,
     japanese: useJapanesePrompts(ctx.language),
   });
@@ -164,7 +180,6 @@ export async function compileRecording(
   // rule about something that is not there reads as an instruction to add it.
   const invariants = [
     stepMarkers.length > 0 || cleanupMarkers.length > 0 ? stepCommentPreserveRule() : "",
-    stepMarkers.length > 0 && captures ? stepEvidencePreserveRule() : "",
     judgements.length > 0 ? judgePreserveRule() : "",
     header || titleSuffix ? headerPreserveRule(header, titleSuffix) : "",
   ]
@@ -173,31 +188,34 @@ export async function compileRecording(
 
   const injected: InjectedCallSpec = {
     markers: [...stepMarkers, ...cleanupMarkers],
-    stepEvidence: captures,
     judgements,
     header,
     titleSuffix,
   };
   // The same gate the written file is checked against, applied to the reply
-  // before it is written — so a rewrite that dropped a step's capture is asked
-  // again instead of shipping a spec with no screenshots for that step.
+  // before it is written — so a rewrite that dissolved a step's block is asked
+  // again instead of shipping a spec whose steps nothing can attribute. A
+  // support file is held to the import rule as well: a page object that loads
+  // ccqa breaks the project's build exactly as the test would.
   const validateFile = (file: { contents: string; kind: "test" | "support" }): string | null => {
-    if (file.kind !== "test") return null;
-    const gaps = injectedCallGaps(file.contents, injected);
+    const gaps =
+      file.kind === "test"
+        ? injectedCallGaps(file.contents, injected)
+        : runtimeImportGaps(file.contents);
     return gaps.length === 0 ? null : gaps.join("; ");
   };
 
   // The loop's own bar is "does it go green", and a rewrite that weakens an
   // assertion clears it as easily as one that keeps it. This is the pass that
-  // asks the other question, and it is handed the page objects too: an
-  // assertion is only as strong as the locator it names, and the locator is
-  // not in the test file.
-  const reading: Reading = (files) =>
+  // asks the other questions, and it is told what the test leans on — written
+  // this run or reused — because an assertion is only as strong as the locator
+  // it names, and the locator is not in the test file.
+  const reading: Reading = async (files, guides, askModel) =>
     reviewGeneratedTest({
-      source: files.filter((f) => f.kind === "test").map((f) => f.contents).join("\n\n"),
-      support: files
-        .filter((f) => f.kind === "support")
-        .map((f) => ({ path: f.path, source: f.contents })),
+      files,
+      askModel,
+      leansOn: await leanedOn(files, ctx.cwd, ctx.testPath),
+      guides,
       steps: expanded,
       ...(ctx.expectations.length > 0 ? { expectations: ctx.expectations } : {}),
       // The cleanup joins the reading only when the case says what its undo
@@ -221,6 +239,7 @@ export async function compileRecording(
           taskInstructions: playwrightTaskInstructions(ctx.testPath),
           draft: { path: ctx.testPath, contents: draft },
           ...(invariants ? { draftInvariant: invariants } : {}),
+          stepEvidence,
           validateFile,
           reading,
         })
@@ -230,6 +249,7 @@ export async function compileRecording(
           files: [{ path: ctx.testPath, contents: draft, kind: "test" }],
           summary: `test compiled from ${actions.length} recorded action(s)`,
           warnings: [],
+          stepEvidence,
           validateFile,
           reading,
         });
@@ -300,12 +320,33 @@ async function unusedSupportExports(
   return warnings;
 }
 
+/**
+ * What the written test reaches by importing it, and this generation did not
+ * write — the half nobody re-reads. A page object this case reuses was written
+ * under whatever the project's rules were at the time, it is imported
+ * verbatim, and the locators in it decide as much of this case as the ones in
+ * the test file do. Followed from the imports, because that is how the code
+ * itself finds them.
+ *
+ * Paths only: the review opens what it decides to open, so listing a file
+ * costs nothing and there is no budget to spend.
+ */
+export async function leanedOn(
+  files: readonly LlmGeneratedFile[],
+  cwd: string,
+  testPath: string,
+): Promise<string[]> {
+  const written = new Set(files.map((f) => resolve(cwd, f.path)));
+  return (await collectSupportFiles(resolve(cwd, testPath), cwd))
+    // An unreadable file is a path the review can only waste a turn on.
+    .filter((file) => !written.has(file.abs) && file.source !== "")
+    .map((file) => relative(cwd, file.abs));
+}
+
 /** What the emitter injected and the written test must still carry. */
 export interface InjectedCallSpec {
-  /** Every step the draft opened with a comment — cleanup steps included. */
+  /** Every step the draft opened with a `test.step` block — cleanup steps included. */
   markers: StepMarker[];
-  /** False when the project turned step evidence off: then no calls were injected, only comments. */
-  stepEvidence: boolean;
   judgements: Judgement[];
   header: string;
   titleSuffix: string;
@@ -322,40 +363,33 @@ export interface InjectedCallSpec {
  */
 export function injectedCallGaps(
   corpus: string,
-  { markers, stepEvidence, judgements, header, titleSuffix }: InjectedCallSpec,
+  { markers, judgements, header, titleSuffix }: InjectedCallSpec,
 ): string[] {
-  const warnings: string[] = [];
+  const warnings: string[] = [...runtimeImportGaps(corpus)];
   const stamped = { header, titleSuffix };
-  // Asked of the function the comment exists for: `assertionsByStep` is what
-  // attributes an assertion to a step, and a step it cannot see here is a step
-  // it will report as deciding nothing. Re-deriving the answer would let the
-  // gate pass a comment the attribution does not recognise.
-  const commented = assertionsByStep(corpus);
-  // The comment is not decoration: the evidence table and the review of the
-  // generated test read it back to say which assertions belong to which step.
-  // A rewrite that reshapes it leaves both reporting every step as deciding
-  // nothing, and the real finding is then buried in the false ones. A judge
-  // step has a comment but no evidence bracket, so it is checked here too —
-  // its claim is asserted, and a table saying otherwise understates coverage.
+  // Only the block form counts here, though attribution reads the older
+  // comment form too. The rewrite pass has the repository open and imitates
+  // what it finds at the test's own path — so a spec generated by an earlier
+  // ccqa is a live template for the shape this gate exists to stop, and a gate
+  // that accepted both would never say so.
+  const titled = new Set(
+    stepLines(corpus).map(parseStepBlock).filter((id): id is string => id !== null),
+  );
+  // The title is not decoration: the evidence table, the review of the
+  // generated test and the run's per-step screenshots all read it back to say
+  // which assertions belong to which step. A rewrite that reshapes it leaves
+  // every step reporting as deciding nothing, and the real finding is then
+  // buried in the false ones. A judge step is titled the same way, so it is
+  // checked here too — its claim is asserted, and a table saying otherwise
+  // understates coverage.
   for (const stepId of [...markers.map((m) => m.stepId), ...judgements.map((j) => j.step.id)]) {
-    if (commented.has(stepId)) continue;
+    if (titled.has(stepId)) continue;
     warnings.push(
-      `step ${stepId}: the generated test no longer opens that step with the comment the draft ` +
-        `wrote. The evidence table and the spec review read it back to attribute assertions, so a ` +
-        `reshaped one makes both report the step as deciding nothing. Keep the line unchanged.`,
+      `step ${stepId}: the generated test no longer opens that step with the \`test.step\` title the ` +
+        `draft wrote. The evidence table, the run's screenshots and the spec review read it back to ` +
+        `attribute assertions, so a reshaped one makes all three report the step as deciding ` +
+        `nothing. Keep the title unchanged.`,
     );
-  }
-  if (stepEvidence) {
-    for (const m of markers) {
-      const hasBefore = stepEvidenceCall(STEP_EVIDENCE_BEFORE, m).pattern.test(corpus);
-      const hasAfter = stepEvidenceCall(STEP_EVIDENCE_AFTER, m).pattern.test(corpus);
-      if (!hasBefore || !hasAfter) {
-        warnings.push(
-          `step ${m.stepId}: generated test is missing its ${STEP_EVIDENCE_BEFORE}/${STEP_EVIDENCE_AFTER} ` +
-            `call(s) — that step will have no report screenshots. A rewrite pass must not drop them.`,
-        );
-      }
-    }
   }
   // Neither of these breaks a run, which is why nothing else would notice: a
   // test that lost its tag drops out of whatever selection runs it, and one
@@ -383,6 +417,37 @@ export function injectedCallGaps(
     );
   }
   return warnings;
+}
+
+/**
+ * Anything of ccqa's the written test loads.
+ *
+ * A committed spec is the project's, and their CI type-checks it in a checkout
+ * where ccqa is not installed — so an import of it is not a style question but
+ * a broken build. The one exception is the judge: a claim is decided at run
+ * time by a model, so a case that states one genuinely depends on it.
+ *
+ * Mechanical because nothing else catches it. The rewrite pass reads the
+ * repository, and where an earlier ccqa already wrote a spec at this path it
+ * imitates that spec's shape — which type-checks, runs, and passes every other
+ * gate here.
+ */
+function runtimeImportGaps(corpus: string): string[] {
+  const loaded = new Set<string>();
+  for (const specifier of importedSpecifiers(corpus)) {
+    if (specifier !== "ccqa" && !specifier.startsWith("ccqa/")) continue;
+    if (specifier === JUDGE_MODULE) continue;
+    loaded.add(specifier);
+  }
+  if (loaded.size === 0) return [];
+  return [
+    `the generated test imports ${[...loaded].sort().join(", ")} — a spec ccqa writes is plain ` +
+      `@playwright/test and must not load ccqa at run time, because the project type-checks and ` +
+      `runs it where ccqa is not installed. Remove the import and every call into it, and write ` +
+      `each of the case's steps as \`await test.step("<the draft's title>", async () => { ... })\` ` +
+      `around that step's own actions. \`${JUDGE_MODULE}\` is the only ccqa import a spec may ` +
+      `carry, and only a case with a \`judgeByLlm\` claim carries it.`,
+  ];
 }
 
 /**

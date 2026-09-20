@@ -49,10 +49,14 @@ export class TodoPage {}
     );
     const labels = await write("e2e/shared/labels.ts", `export const LABELS = { submit: "Submit" };`);
 
-    expect(await collectSupportFiles(test, cwd)).toEqual([
+    const support = await collectSupportFiles(test, cwd);
+    expect(support.map((f) => ({ abs: f.abs, from: f.from }))).toEqual([
       { abs: page, from: test },
       { abs: labels, from: page },
     ]);
+    // The walk read each file to follow its imports; it hands the source back
+    // so a caller that wants the text does not read the same files again.
+    expect(support[0]!.source).toContain("export class TodoPage");
   });
 
   it("finds aliases declared in a config the project extends", async () => {
@@ -67,7 +71,7 @@ export class TodoPage {}
     const test = await write("e2e/specs/todo.spec.ts", `import { LABELS } from "@shared/labels";`);
     const labels = await write("e2e/shared/labels.ts", `export const LABELS = {};`);
 
-    expect(await collectSupportFiles(test, cwd)).toEqual([{ abs: labels, from: test }]);
+    expect((await collectSupportFiles(test, cwd)).map((f) => f.abs)).toEqual([labels]);
   });
 
   it("stops at the depth limit", async () => {
@@ -75,7 +79,7 @@ export class TodoPage {}
     const page = await write("e2e/pages/todo.ts", `import "./deep.ts";`);
     await write("e2e/pages/deep.ts", `export const x = 1;`);
 
-    expect(await collectSupportFiles(test, cwd, { maxDepth: 1 })).toEqual([{ abs: page, from: test }]);
+    expect((await collectSupportFiles(test, cwd, { maxDepth: 1 })).map((f) => f.abs)).toEqual([page]);
   });
 
   it("names `from` as the importer that reached each file, not the entry", async () => {
@@ -83,7 +87,7 @@ export class TodoPage {}
     const a = await write("e2e/a.ts", `import "./b.ts";\n`);
     const b = await write("e2e/b.ts", `export const b = 1;\n`);
 
-    expect(await collectSupportFiles(entry, cwd)).toEqual([
+    expect((await collectSupportFiles(entry, cwd)).map((f) => ({ abs: f.abs, from: f.from }))).toEqual([
       { abs: a, from: entry },
       { abs: b, from: a },
     ]);

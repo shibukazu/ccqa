@@ -206,6 +206,19 @@ describe("groupIntentCases", () => {
     expect(group.browserCoverage).toEqual(playwrightTarget.browserCoverage);
   });
 
+  // The target can produce screenshots and the project turned them off. Both
+  // answers are "no evidence", and the row has to say which of the two it was.
+  it("resolves the target's step evidence against the project's config", () => {
+    const config = ProjectConfigSchema.parse({
+      targets: { playwright: { runCommand: "echo {files}", hooks: { stepEvidence: false } } },
+    });
+    const { external } = groupIntentCases(CASES, "playwright", config);
+    expect(external[0]!.stepEvidence).toEqual({
+      supported: false,
+      reason: expect.stringContaining(".ccqa/config.yaml"),
+    });
+  });
+
   it("skips every case, naming runCommand, when the target's config has none", () => {
     const config = ProjectConfigSchema.parse({});
     const { external, skipped } = groupIntentCases(CASES, "playwright", config);

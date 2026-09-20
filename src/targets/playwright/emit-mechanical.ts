@@ -2,7 +2,7 @@ import type { ExpandedJudgeByLlmStep } from "../../spec/expand.ts";
 import { bracedRefsToJsExpression, envRefsToJsExpression } from "../../runtime/env-vars.ts";
 import type { Locator, LocatorIndex, RecordedAction } from "../../ir/types.ts";
 import type { StepMarker } from "../../codegen/actions-to-script.ts";
-import { renderStepComment } from "../../codegen/step-comment.ts";
+import { renderStepLabel } from "../../codegen/step-comment.ts";
 
 /**
  * Deterministic IR → plain `@playwright/test` emitter — no LLM involved.
@@ -10,13 +10,14 @@ import { renderStepComment } from "../../codegen/step-comment.ts";
  * that the library-reuse LLM pass treats as ground truth (or that ships
  * as-is when no resources are configured).
  *
- * Follows the agent-browser emitter's conventions: `// step: <id> [<source>]`
- * comments at step boundaries, a screenshot capture call on each side of a
- * step (the Playwright counterpart of `abStepEvidence`, see
- * `ccqa/step-evidence`), `// [warn] replay-unstable: ...` breadcrumbs,
- * observation-only snapshots as comments, and env refs (`$VAR` / `${VAR}`)
- * in user-supplied values emitted as `process.env.VAR ?? ""` template
- * literals so secrets never bake into the script.
+ * Each of the case's steps is emitted as a native `test.step(...)` block
+ * titled with the same label the agent-browser emitter writes as a comment,
+ * so the file a project commits is plain `@playwright/test` with nothing of
+ * ccqa's in it. The rest follows that emitter too: `// [warn]
+ * replay-unstable: ...` breadcrumbs, observation-only snapshots as comments,
+ * and env refs (`$VAR` / `${VAR}`) in user-supplied values emitted as
+ * `process.env.VAR ?? ""` template literals so secrets never bake into the
+ * script.
  */
 
 export interface PlaywrightEmitInput {
@@ -51,8 +52,6 @@ export interface PlaywrightEmitInput {
    * environment variable ccqa happens to set.
    */
   runId?: { import: string; expression: string };
-  /** False drops the per-step capture calls (config `hooks.stepEvidence`). */
-  stepEvidence?: boolean;
   /** Write the step comments in Japanese (the CLI's `--language`). */
   japanese?: boolean;
 }
@@ -142,72 +141,9 @@ export interface Judgement {
   afterActionIndex: number;
 }
 
-/** Module the emitted step-boundary capture calls import from. */
-export const STEP_EVIDENCE_MODULE = "ccqa/step-evidence";
-
 /** Module the emitted judge calls import from, and the call they make. */
 export const JUDGE_MODULE = "ccqa/judge";
 export const JUDGE_CALL = "judgeByLlm";
-
-/** Capture call emitted when a step is entered / closed. Exported for the generation gate. */
-export const STEP_EVIDENCE_BEFORE = "ccqaStepBefore";
-export const STEP_EVIDENCE_AFTER = "ccqaStepAfter";
-
-/** The exact boundary call for one step, as emitted and as the gate greps for it. */
-export function stepEvidenceCall(
-  fn: typeof STEP_EVIDENCE_BEFORE | typeof STEP_EVIDENCE_AFTER,
-  marker: Pick<StepMarker, "stepId" | "source">,
-): InjectedCall {
-  return injectedCall(fn, [j(marker.stepId), j(marker.source)]);
-}
-
-/** An emitted call, and how the generation gate recognises it in the written test. */
-export interface InjectedCall {
-  code: string;
-  pattern: RegExp;
-}
-
-/**
- * A receiver expression: anything up to the argument's comma, allowing one
- * level of parentheses so `await ctx.newPage()` and `page.context().pages()[1]`
- * — how a rewrite names a tab a click opened — count as receivers.
- */
-const RECEIVER = String.raw`(?:[^,()]|\([^()]*\))+`;
-
-/**
- * The call as emitted, plus the pattern that accepts it back on any page. The
- * receiver is the one part a rewrite is right to change: a click that opens a
- * new tab has to act on that tab. Everything else is required verbatim, the
- * `await` and `;` included — an unawaited capture races the end of the test,
- * and a mention in a comment is not a call.
- */
-function injectedCall(name: string, args: string[]): InjectedCall {
-  const tail = args.map(escapeRegExp).join(String.raw`\s*,\s*`);
-  return {
-    code: `await ${name}(page, ${args.join(", ")});`,
-    pattern: new RegExp(String.raw`await\s+${name}\s*\(\s*${RECEIVER}\s*,\s*${tail}\s*,?\s*\)\s*;`),
-  };
-}
-
-/**
- * The "preserve the step-evidence calls" rule the library-rewrite prompt must
- * carry, built from the same symbol/module constants the emitter injects and
- * the coverage gate greps for — so prompt, emitter, and gate share one truth.
- * A target that captures no step evidence simply doesn't pass this to the
- * engine, and the prompt then omits the rule entirely.
- */
-export function stepEvidencePreserveRule(): string {
-  return (
-    `**Keep the \`${STEP_EVIDENCE_MODULE}\` calls.** The draft's ` +
-    `\`await ${STEP_EVIDENCE_BEFORE}(page, ...)\` / \`await ${STEP_EVIDENCE_AFTER}(page, ...)\` lines are ` +
-    `load-bearing: ccqa run reads the per-step screenshots they capture. Keep both calls for every ` +
-    `step, in place around that step's actions, with their exact \`"<stepId>", "<source>"\` arguments ` +
-    `— and keep the import. Pass a different page only when the step genuinely acts on one (a click ` +
-    `that opens a new tab). If you move a step's actions into a page-object method, leave ` +
-    `these two calls in the test body around the call to that method; do NOT move them inside the ` +
-    `page object. Never wrap a step in a closure to hold them.`
-  );
-}
 
 /**
  * Told to the rewrite because both are conventions the project greps: a
@@ -231,10 +167,14 @@ export function headerPreserveRule(header: string, titleSuffix: string): string 
  */
 export function stepCommentPreserveRule(): string {
   return (
-    "**Keep each step's opening comment exactly as the draft wrote it.** Those lines are how the " +
-    "evidence table and the review of this test say which assertions belong to which step. A " +
-    "reshaped one parses as no step at all, and every step then reads as deciding nothing. Keep " +
-    "the wording, the numbering and the punctuation; add your own comments on their own lines."
+    "**Keep every `test.step(...)` block, with its title exactly as the draft wrote it.** Those " +
+    "titles are how the evidence table, the run's per-step screenshots and the review of this test " +
+    "say which assertions belong to which step. A reshaped one parses as no step at all, and every " +
+    "step then reads as deciding nothing. Keep the wording, the numbering and the punctuation, and " +
+    "keep each step's actions inside its own block — a step's call to a page-object method belongs " +
+    "in the block, not outside it. Do not merge, split or reorder the blocks. A test already at " +
+    "this path may have been written by an older ccqa in a different shape: the draft is what this " +
+    "file must look like, not that one."
   );
 }
 
@@ -255,81 +195,82 @@ export function judgePreserveRule(): string {
 
 export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   const { actions, testName, judgements = [], japanese = false } = input;
-  // A target that captures no evidence emits no boundary calls, but the step
-  // comments stay: they are how a reviewer reads which step a line belongs to.
-  const captures = input.stepEvidence !== false;
   const stepMarkers = input.stepMarkers ?? [];
   const markerByIndex = new Map(stepMarkers.map((m) => [m.actionIndex, m]));
 
-  const lines: string[] = [];
+  const body: Body = [];
   let prevLine: string | null = null;
-  // Mirrors the agent-browser emitter: the open step's closing capture is
-  // flushed just before the next step's comment, and once more after the loop.
-  let openMarker: StepMarker | null = null;
+  // The block a line lands in. Pushed into `body` when the step opens and
+  // filled afterwards, so the array that holds a step's lines stays reachable
+  // until the whole test is rendered — which is what lets the creation flag be
+  // spliced into the middle of a step once the loop knows it is needed.
+  let open: Body | null = null;
+  const target = (): Body => open ?? body;
+  const openStep = (marker: StepMarker | undefined): void => {
+    if (!marker) return;
+    open = openBlock(body, marker, japanese);
+  };
 
   // A claim asserts what the steps before it produced, so it is emitted where
   // it sits in the spec: after them, and before whatever the next step does to
   // the page it reads.
   const flushJudgements = (afterActionIndex: number): void => {
     for (const { step } of judgements.filter((j) => j.afterActionIndex === afterActionIndex)) {
-      if (openMarker) {
-        if (captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, openMarker).code);
-        openMarker = null;
-      }
-      if (lines.length > 0) lines.push("");
-      lines.push(renderStepComment({ stepId: step.id, source: step.source }, japanese));
-      lines.push(judgeCall(step).code);
+      const block = openBlock(body, { stepId: step.id, source: step.source }, japanese);
+      block.push(judgeCall(step).code);
+      // The claim closes whatever step was open: what follows it belongs to
+      // the next step of the case, not to the one this claim reads.
+      open = null;
     }
   };
 
-  const createdAt = creationActionIndex(actions, stepMarkers);
-  let createdLine = lines.length;
+  const creationIndex = creationActionIndex(actions, stepMarkers);
+  let createdAt: { block: Body; index: number } = { block: body, index: 0 };
 
   flushJudgements(-1);
   for (let i = 0; i < actions.length; i++) {
-    openMarker = openStep(lines, markerByIndex.get(i), openMarker, japanese, captures);
+    openStep(markerByIndex.get(i));
     const action = actions[i]!;
     if (overwrittenByNext(action, actions[i + 1])) continue;
     const line = actionToLine(action, japanese);
     if (line !== null && line !== prevLine) {
       if (action.replayUnstable) {
-        lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
+        target().push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
       }
-      lines.push(line);
+      target().push(...line.split("\n"));
       prevLine = line;
     }
-    if (i === createdAt) createdLine = lines.length;
+    if (i === creationIndex) createdAt = { block: target(), index: target().length };
     flushJudgements(i);
   }
-  closeStep(lines, openMarker, captures);
 
   // Nothing coverage-related is emitted: under `--coverage` the run attaches
   // to the browser from outside (see the target's `browserCoverage`), so the
   // generated test carries no measurement code an LLM rewrite could drop.
 
-  const cleanupLines = emitCleanup(input.cleanup, captures, japanese, input.allowExpectInCleanup ?? true);
+  const cleanupBody = emitCleanup(input.cleanup, japanese, input.allowExpectInCleanup ?? true);
   const title = `${testName}${input.titleSuffix ?? ""}`;
   // Only when the route actually created something unique: a declared value
   // nothing reads is an unused variable, and the project's own type check or
   // lint — which this generation is checked against — is right to reject it.
   const usesRunId =
     input.runId !== undefined &&
-    [...lines, ...cleanupLines].some((line) => line.includes(RUN_ID_READ));
+    [...codeLines(body), ...codeLines(cleanupBody)].some((line) => line.includes(RUN_ID_READ));
   const runId = usesRunId ? input.runId : undefined;
-  const guarded = runId !== undefined && cleanupLines.length > 0;
+  const guarded = runId !== undefined && cleanupBody.length > 0;
   // Spliced before anything is prepended: an index taken during the action
   // loop counts from the loop's own first line, and a later `unshift` would
   // slide the marker above the action that created the thing it marks.
-  if (guarded) lines.splice(createdLine, 0, `${CREATED_VAR} = true;`);
+  if (guarded) createdAt.block.splice(createdAt.index, 0, `${CREATED_VAR} = true;`);
   // A claim costs a model round trip, which the default per-test budget was
   // not sized for. Relative to the project's own timeout rather than absolute,
   // so a consumer that already raised it keeps the raise.
-  if (judgements.length > 0) lines.unshift("test.slow();", "");
-  const testLines = [
+  if (judgements.length > 0) body.unshift("test.slow();", "");
+  const testLines: Body = [
     ...(runId ? [`${RUN_ID_VAR} = ${runId.expression};`, ""] : []),
-    ...lines,
+    ...body,
   ];
-  const scoped = cleanupLines.length > 0 || runId !== undefined;
+  const scoped = cleanupBody.length > 0 || runId !== undefined;
   // A judge call needs Playwright's `testInfo` to attach its verdict to the
   // report; a case with no judgement keeps the plain signature so no unused
   // parameter lands in the generated file.
@@ -353,14 +294,14 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
         ]
       : []),
     `test(${j(title)}, async (${testParams}) => {`,
-    indent(testLines, 2),
+    ...renderBody(testLines, 2),
     "});",
-    ...(cleanupLines.length > 0
+    ...(cleanupBody.length > 0
       ? [
           "",
           `test.afterEach(${j(cleanupTitle(input.cleanup?.stepMarkers, japanese))}, async ({ page }) => {`,
           ...(guarded ? [`  if (!${CREATED_VAR}) return;`] : []),
-          indent(cleanupLines, 2),
+          ...renderBody(cleanupBody, 2),
           "});",
         ]
       : []),
@@ -370,13 +311,6 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     ...(input.header ? [input.header.trimEnd(), ""] : []),
     `import { test, expect } from "@playwright/test";`,
     ...(judgements.length > 0 ? [`import { ${JUDGE_CALL} } from ${j(JUDGE_MODULE)};`] : []),
-    // Only imported when there are boundaries to capture, so a marker-less
-    // draft doesn't ship an unused import into the consumer's lint run.
-    ...(stepMarkers.length > 0 && captures
-      ? [
-          `import { ${STEP_EVIDENCE_BEFORE}, ${STEP_EVIDENCE_AFTER} } from ${j(STEP_EVIDENCE_MODULE)};`,
-        ]
-      : []),
     ...(runId ? [runId.import] : []),
     "",
     ...declaration,
@@ -389,9 +323,53 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   return runId ? source.replaceAll(RUN_ID_READ, RUN_ID_VAR) : source;
 }
 
-function indent(lines: string[], by: number): string {
+/**
+ * The test's body as a tree: plain lines, and the `test.step` blocks that hold
+ * a step's own. A tree rather than a flat list of pre-indented strings because
+ * the emitter has to reach back into a step after it has closed — the creation
+ * flag is placed mid-step by a decision only the end of the walk can make.
+ */
+type Body = (string | StepBlock)[];
+interface StepBlock {
+  title: string;
+  body: Body;
+}
+
+/**
+ * Open a step's block at the end of `body` and return the array its lines go
+ * in. Shared by the two places that walk an action list against markers, so a
+ * change to how a boundary is written cannot apply to the steps and miss the
+ * cleanup.
+ */
+function openBlock(
+  body: Body,
+  marker: Pick<StepMarker, "stepId" | "source" | "text">,
+  japanese: boolean,
+): Body {
+  if (body.length > 0) body.push("");
+  const block: StepBlock = { title: renderStepLabel(marker, japanese), body: [] };
+  body.push(block);
+  return block.body;
+}
+
+function renderBody(body: Body, by: number): string[] {
   const pad = " ".repeat(by);
-  return lines.map((l) => (l === "" ? "" : `${pad}${l}`)).join("\n");
+  const out: string[] = [];
+  for (const node of body) {
+    if (typeof node === "string") {
+      out.push(node === "" ? "" : `${pad}${node}`);
+      continue;
+    }
+    out.push(`${pad}await test.step(${j(node.title)}, async () => {`);
+    out.push(...renderBody(node.body, by + 2));
+    out.push(`${pad}});`);
+  }
+  return out;
+}
+
+/** Every code line the body holds, step blocks included. */
+function codeLines(body: Body): string[] {
+  return body.flatMap((node) => (typeof node === "string" ? [node] : codeLines(node.body)));
 }
 
 /**
@@ -401,16 +379,17 @@ function indent(lines: string[], by: number): string {
  */
 function emitCleanup(
   cleanup: PlaywrightEmitInput["cleanup"],
-  captures: boolean,
   japanese: boolean,
   allowExpect: boolean,
-): string[] {
+): Body {
   if (!cleanup || cleanup.actions.length === 0) return [];
-  const lines: string[] = [];
+  const body: Body = [];
   const markerByIndex = new Map((cleanup.stepMarkers ?? []).map((m) => [m.actionIndex, m]));
-  let open: StepMarker | null = null;
+  let open: Body | null = null;
+  const target = (): Body => open ?? body;
   for (let i = 0; i < cleanup.actions.length; i++) {
-    open = openStep(lines, markerByIndex.get(i), open, japanese, captures);
+    const marker = markerByIndex.get(i);
+    if (marker) open = openBlock(body, marker, japanese);
     const action = cleanup.actions[i]!;
     // A project that forbids `expect` in its teardown gets the undo's actions
     // and nothing else. What the recorded check was for is not lost — the
@@ -418,39 +397,12 @@ function emitCleanup(
     if (!allowExpect && action.action === "assert") continue;
     if (overwrittenByNext(action, cleanup.actions[i + 1])) continue;
     if (action.replayUnstable) {
-      lines.push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
+      target().push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
     }
     const line = actionToLine(action, japanese);
-    if (line !== null) lines.push(line);
+    if (line !== null) target().push(...line.split("\n"));
   }
-  closeStep(lines, open, captures);
-  return lines;
-}
-
-/**
- * Enter the step a marker starts: close the one before it, comment the
- * boundary, and open the capture. Shared by the two places that walk an action
- * list against markers, so a change to how a boundary is written cannot apply
- * to the steps and miss the cleanup.
- */
-function openStep(
-  lines: string[],
-  marker: StepMarker | undefined,
-  open: StepMarker | null,
-  japanese: boolean,
-  captures: boolean,
-): StepMarker | null {
-  if (!marker) return open;
-  if (open && captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, open).code);
-  if (lines.length > 0) lines.push("");
-  lines.push(renderStepComment(marker, japanese));
-  if (captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_BEFORE, marker).code);
-  return marker;
-}
-
-/** Close the step still open at the end of an action list. */
-function closeStep(lines: string[], open: StepMarker | null, captures: boolean): void {
-  if (open && captures) lines.push(stepEvidenceCall(STEP_EVIDENCE_AFTER, open).code);
+  return body;
 }
 
 /**
@@ -695,7 +647,7 @@ function assertToLine(
     case undefined:
       break;
   }
-  if (comment && assertLine) return `${comment}\n  ${assertLine}`;
+  if (comment && assertLine) return `${comment}\n${assertLine}`;
   return assertLine ?? comment;
 }
 
@@ -737,17 +689,38 @@ const j = (s: string): string => JSON.stringify(s);
  */
 const jExpr = (s: string): string => envRefsToJsExpression(s);
 
+/** The emitted judge call, and how the generation gate recognises it back. */
+export interface JudgeCall {
+  code: string;
+  pattern: RegExp;
+}
+
 /**
  * One claim, asserted through the judge. Exported so the generation gate can
  * require it back. `testInfo` is always passed — the case's `test(...)`
  * callback is emitted with that second parameter whenever it has a judgement
  * — so the verdict lands on the report whether the claim held or not.
+ *
+ * The pattern accepts the call on any page: the receiver is the one part a
+ * rewrite is right to change, because a click that opens a new tab has to be
+ * judged on that tab. It allows one level of parentheses so `await
+ * ctx.newPage()` and `page.context().pages()[1]` count as receivers.
+ * Everything else is required verbatim, the `await` and `;` included — an
+ * unawaited claim races the end of the test, and a mention in a comment is not
+ * a call.
  */
-export function judgeCall(step: ExpandedJudgeByLlmStep): InjectedCall {
+export function judgeCall(step: ExpandedJudgeByLlmStep): JudgeCall {
   // A claim is prose, so only the braced form is a reference here — a bare
   // `$WORD` is a word, and expanding it would quietly rewrite the claim.
   const args = [bracedRefsToJsExpression(step.judgeByLlm.trim())];
   const optionsFields = step.from !== undefined ? [`from: ${jExpr(step.from)}`, "testInfo"] : ["testInfo"];
   args.push(`{ ${optionsFields.join(", ")} }`);
-  return injectedCall(JUDGE_CALL, args);
+  const receiver = String.raw`(?:[^,()]|\([^()]*\))+`;
+  const tail = args.map(escapeRegExp).join(String.raw`\s*,\s*`);
+  return {
+    code: `await ${JUDGE_CALL}(page, ${args.join(", ")});`,
+    pattern: new RegExp(
+      String.raw`await\s+${JUDGE_CALL}\s*\(\s*${receiver}\s*,\s*${tail}\s*,?\s*\)\s*;`,
+    ),
+  };
 }

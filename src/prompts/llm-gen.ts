@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { isExpandedActionStep, type ExpandedStep } from "../spec/expand.ts";
+import { fencedBlock } from "./format.ts";
 import { languageDirective } from "./language.ts";
 
 /**
@@ -37,9 +38,9 @@ export interface LlmGenPromptInput {
   draft?: { path: string; contents: string };
   /**
    * An extra "do not remove this from the draft" rule the target contributes
-   * (e.g. Playwright's step-evidence calls). Only added when the target
-   * supplies it, so non-draft / non-capturing targets get no bogus rule. The
-   * target owns the exact call/symbol text so prompt, emitter, and gate agree.
+   * (e.g. Playwright's `test.step` blocks). Only added when the target
+   * supplies it, so a target with no draft gets no bogus rule. The target owns
+   * the exact text so prompt, emitter, and gate agree.
    */
   draftInvariant?: string;
   resources: PromptResource[];
@@ -58,7 +59,7 @@ export interface LlmGenPromptInput {
  * consumer repo's existing assets instead of re-implementing them. `draft*`
  * rules apply only when a mechanical draft is present; `draftInvariant`, when
  * supplied by the target, adds one more "do not drop this from the draft" rule
- * (e.g. Playwright's step-evidence calls).
+ * (e.g. Playwright's `test.step` blocks).
  */
 export function reuseFirstContract(hasDraft: boolean, draftInvariant?: string): string {
   const rules = [
@@ -171,9 +172,13 @@ export function buildLlmGenPrompt(input: LlmGenPromptInput): string {
 
   if (input.conventionSections.length > 0) {
     const bodies = input.conventionSections
-      .map((c) => `### ${c.path}\n\n\`\`\`\n${c.body}\n\`\`\``)
+      .map((c) => `### ${c.path}\n\n${fencedBlock(c.body)}`)
       .join("\n\n");
-    sections.push(`## Conventions\n\nHow generated code should be written:\n\n${bodies}`);
+    sections.push(
+      `## Conventions\n\nThese are the project's rules for the code you write, not background ` +
+        `reading. Code that breaks one of them is defective: the review that follows this pass ` +
+        `quotes the rule back at it and sends it here again to be fixed.\n\n${bodies}`,
+    );
   }
 
   if (input.promptBundle) {

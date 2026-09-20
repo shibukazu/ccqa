@@ -38,11 +38,22 @@ const EXTENSIONS = [".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"
 
 /**
  * Module specifiers, in the forms generated tests use: `from "x"`, a
- * side-effect `import "x"`, `import("x")`, and `require("x")`. A string this
- * over-matches (prose after the word "from" in a comment) resolves to no file
- * and drops out.
+ * side-effect `import "x"`, `import("x")`, and `require("x")`. Anchored on the
+ * import syntax rather than on the string alone, so a specifier-looking string
+ * in a locator or an asserted text is not one. A string this over-matches
+ * (prose after the word "from" in a comment) resolves to no file and drops out.
  */
-const IMPORT_SPECIFIER = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)["']([^"']+)["']/g;
+const IMPORT_SPECIFIER = /(?:\bfrom|\bimport\s*\(|\brequire\s*\(|\bimport)\s*(["'`])([^"'`]+)\1/g;
+
+/**
+ * Every module specifier `source` loads, in source order. Shared with the gate
+ * over what a generated test may import: which strings count as imports must
+ * not differ between the walk that follows them and the check that refuses
+ * some of them.
+ */
+export function importedSpecifiers(source: string): string[] {
+  return [...source.matchAll(IMPORT_SPECIFIER)].map((m) => m[2]!);
+}
 
 export interface TsconfigPaths {
   /** Absolute directory `paths` patterns resolve against. */
@@ -113,6 +124,12 @@ export interface SupportFile {
   abs: string;
   /** Absolute path of the importer — how this file came to be part of the case. */
   from: string;
+  /**
+   * The file's source, as the walk read it to follow its imports. Carried
+   * rather than discarded: every caller that wants the text would otherwise
+   * read the same files a second time.
+   */
+  source: string;
 }
 
 /**
@@ -150,42 +167,54 @@ export async function walkSupportFiles(
   const tsconfig = opts.tsconfig !== undefined ? opts.tsconfig : await loadTsconfigPaths(cwd);
   const seen = new Set([entryAbs]);
   const found: SupportFile[] = [];
-  let frontier = [entryAbs];
+  let frontier = [{ abs: entryAbs, source: await readSource(entryAbs) }];
 
   for (let depth = 0; depth < maxDepth && frontier.length > 0; depth++) {
     // One level at a time, resolved together: the files in a level are
     // independent, but the order they are recorded in must stay the walk's,
     // not whichever `stat` answered first.
     const levels = await Promise.all(
-      frontier.map(async (fileAbs) =>
-        (await resolveImportsOf(fileAbs, cwd, tsconfig)).map((abs) => ({ abs, from: fileAbs })),
+      frontier.map(async (file) =>
+        (await resolveImportsOf(file, cwd, tsconfig)).map((abs) => ({ abs, from: file.abs })),
       ),
     );
-    const next: string[] = [];
+    const next: { abs: string; from: string }[] = [];
+    let capped = false;
     for (const entry of levels.flat()) {
       if (seen.has(entry.abs)) continue;
       seen.add(entry.abs);
-      found.push(entry);
-      next.push(entry.abs);
-      if (found.length >= MAX_SUPPORT_FILES) return { files: found, truncated: true };
+      next.push(entry);
+      if (found.length + next.length >= MAX_SUPPORT_FILES) {
+        capped = true;
+        break;
+      }
     }
-    frontier = next;
+    // Read once each, after the level is deduplicated: the source is what the
+    // next level follows, and what the callers read the files for.
+    const sources = await Promise.all(next.map((entry) => readSource(entry.abs)));
+    found.push(...next.map((entry, i) => ({ ...entry, source: sources[i]! })));
+    if (capped) return { files: found, truncated: true };
+    frontier = next.map((entry, i) => ({ abs: entry.abs, source: sources[i]! }));
   }
   // A frontier left standing is a level the depth cap stopped us walking.
   return { files: found, truncated: frontier.length > 0 };
 }
 
+/** A file that cannot be read is empty here: it imports nothing and shows nothing. */
+function readSource(fileAbs: string): Promise<string> {
+  return readFile(fileAbs, "utf8").catch(() => "");
+}
+
 /** Every project file one file imports, in source order. */
 async function resolveImportsOf(
-  fileAbs: string,
+  file: { abs: string; source: string },
   cwd: string,
   tsconfig: TsconfigPaths | null,
 ): Promise<string[]> {
-  const source = await readFile(fileAbs, "utf8").catch(() => null);
-  if (source === null) return [];
-  const specifiers = [...source.matchAll(IMPORT_SPECIFIER)].map((m) => m[1]!);
   const resolved = await Promise.all(
-    specifiers.map((s) => resolveSpecifier(s, dirname(fileAbs), cwd, tsconfig)),
+    importedSpecifiers(file.source).map((s) =>
+      resolveSpecifier(s, dirname(file.abs), cwd, tsconfig),
+    ),
   );
   return resolved.filter((p): p is string => p !== null);
 }

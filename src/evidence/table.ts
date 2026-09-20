@@ -2,7 +2,7 @@ import { SETUP_STEP_ID, type RecordedAction } from "../ir/types.ts";
 import type { Recording } from "../store/index.ts";
 import type { TestCase } from "../intent/case.ts";
 import { describeAction } from "../ir/route-diff.ts";
-import { parseStepComment } from "../codegen/step-comment.ts";
+import { parseStepComment, stepLines } from "../codegen/step-comment.ts";
 import {
   claimsAnOutcome,
   formatFinding,
@@ -81,15 +81,16 @@ export interface EvidenceInput {
 const ASSERTION = /^\s*(?:await\s+)?(?:expect|judgeByLlm)\b.*$/;
 
 /**
- * Assertions grouped by the step they sit under, read from the step comments
- * the emitter leaves. A rewrite that moved an assertion into a page object
+ * Assertions grouped by the step they sit under, read from the boundary the
+ * emitter leaves — a `test.step` title for a Playwright test, a comment for an
+ * agent-browser one. A rewrite that moved an assertion into a page object
  * leaves nothing here, which is the honest answer: the reviewer cannot see it
  * either, and the row says so rather than implying coverage.
  */
 export function assertionsByStep(source: string): Map<string, string[]> {
   const byStep = new Map<string, string[]>();
   let current: string | null = null;
-  for (const line of source.split("\n")) {
+  for (const line of stepLines(source)) {
     const boundary = parseStepComment(line);
     if (boundary) {
       current = boundary;

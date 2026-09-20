@@ -149,13 +149,13 @@ describe("external target — generation from a project's own config (mocked Cla
       body.findIndex((l) => l.includes(`name: "Add"`)) + 1,
     );
 
-    // 6. Step comments cite the markdown's own numbering and its own words, so
+    // 6. Step titles cite the markdown's own numbering and its own words, so
     // a reviewer reads the code against the case without opening both.
-    expect(generated).toContain("// step 1: Open the todo list page");
-    expect(generated).toContain("// step 2: Fill in the new item field with a unique title");
-    expect(generated).toContain("// step 3: Click the add button");
-    expect(generated).toContain("// step 4: Confirm the new item appears in the list");
-    expect(generated).toContain("// cleanup 1: Delete the created item");
+    expect(generated).toContain('await test.step("step 1: Open the todo list page"');
+    expect(generated).toContain('await test.step("step 2: Fill in the new item field with a unique title"');
+    expect(generated).toContain('await test.step("step 3: Click the add button"');
+    expect(generated).toContain('await test.step("step 4: Confirm the new item appears in the list"');
+    expect(generated).toContain('await test.step("cleanup 1: Delete the created item"');
   });
 
   it("routes through the reuse-first rewrite when the target's resources are configured", async () => {
@@ -167,53 +167,45 @@ describe("external target — generation from a project's own config (mocked Cla
     // What the mocked Claude "generates": the draft rewritten to reuse the
     // project's own page object, exactly as the built-in playwright target's
     // reuse-first pass does (see reuse-first.test.ts).
-    // The header, the title tag and every step-boundary capture survive the
-    // rewrite: dropping one is what the generation gate rejects.
+    // The header, the title tag and every step's `test.step` title survive
+    // the rewrite: dropping one is what the generation gate rejects.
     const rewritten = `// case: todo/add_item
 // source: https://example.test/sheet
 
 import { test, expect } from "@playwright/test";
-import { ccqaStepBefore, ccqaStepAfter } from "ccqa/step-evidence";
 import { generateRunId } from "../../utils/run-id";
 import { TodoListPage } from "../../pages/todo_list";
 
-test.describe("Adding an item puts it on the list", () => {
-  let uniqueValue: string | undefined;
-  let createdSomething = false;
+let uniqueValue: string | undefined;
+let createdSomething = false;
 
-  test("Adding an item puts it on the list @smoke", async ({ page }) => {
-    uniqueValue = generateRunId();
-    const list = new TodoListPage(page);
+test("Adding an item puts it on the list @smoke", async ({ page }) => {
+  uniqueValue = generateRunId();
+  const list = new TodoListPage(page);
 
-    // step: step-01 [case]
-    await ccqaStepBefore(page, "step-01", "case");
+  await test.step("step 1: Open the todo list page", async () => {
     await list.open("https://example.test/todo");
-    await ccqaStepAfter(page, "step-01", "case");
-
-    // step: step-02 [case]
-    await ccqaStepBefore(page, "step-02", "case");
-    await list.addItem(\`buy milk \${uniqueValue}\`);
-    await ccqaStepAfter(page, "step-02", "case");
-
-    // step: step-03 [case]
-    await ccqaStepBefore(page, "step-03", "case");
-    await page.getByRole("button", { name: "Add" }).click();
-    createdSomething = true;
-    await ccqaStepAfter(page, "step-03", "case");
-
-    // step: step-04 [case]
-    await ccqaStepBefore(page, "step-04", "case");
-    await expect(page.getByText(\`buy milk \${uniqueValue}\`).first()).toBeVisible();
-    await ccqaStepAfter(page, "step-04", "case");
   });
 
-  test.afterEach(
-    if (!createdSomething) return;
+  await test.step("step 2: Fill in the new item field with a unique title", async () => {
+    await list.addItem(\`buy milk \${uniqueValue}\`);
+  });
 
-    // cleanup 1: Delete the created item
-    await ccqaStepBefore(page, "cleanup-01", "cleanup");
+  await test.step("step 3: Click the add button", async () => {
+    await page.getByRole("button", { name: "Add" }).click();
+    createdSomething = true;
+  });
+
+  await test.step("step 4: Confirm the new item appears in the list", async () => {
+    await expect(page.getByText(\`buy milk \${uniqueValue}\`).first()).toBeVisible();
+  });
+});
+
+test.afterEach("Delete the created item", async ({ page }) => {
+  if (!createdSomething) return;
+
+  await test.step("cleanup 1: Delete the created item", async () => {
     await page.getByRole("button", { name: "Delete" }).click();
-    await ccqaStepAfter(page, "cleanup-01", "cleanup");
   });
 });
 `;

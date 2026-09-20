@@ -206,7 +206,7 @@ describe("runCommandRunner", () => {
       runnerOpts(`node -e "process.exit(0)"`, { stepEvidence: { supported: true } }),
     );
     expect(row!.evidence).toBeNull();
-    expect(row!.evidenceUnavailable).toContain("ccqa/step-evidence");
+    expect(row!.evidenceUnavailable).toContain("Playwright trace");
   });
 
   it("records the target's reason as evidenceUnavailable when it can't capture", async () => {

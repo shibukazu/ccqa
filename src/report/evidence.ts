@@ -12,11 +12,12 @@ import { ReportEvidenceSchema, type ReportEvidence } from "./schema.ts";
  * Step-boundary screenshot evidence: where it lives on disk and how a
  * directory of `<id>.png` + `<id>.json` pairs becomes report rows.
  *
- * Producer-agnostic on purpose. Two very different writers fill these
- * directories — `abStepEvidence()` for agent-browser replays and
- * `ccqa/step-evidence` for external targets' generated tests — and both only
- * have to agree on the file-pair convention documented here, not on how the
- * screenshot was taken.
+ * Producer-agnostic on purpose. Very different writers fill these directories
+ * — `abStepEvidence()` during an agent-browser replay, and, for a Playwright
+ * target, frames read back out of the run's trace once the command has exited
+ * — and they only have to agree on the file-pair convention documented here,
+ * not on how or when the screenshot was taken. `pngFile` names the image
+ * whatever its format: a trace's screencast frames are JPEG.
  */
 
 /** `<reportDir>/evidence/<feature>/<spec>` — one directory per spec. */
@@ -85,8 +86,8 @@ async function readEvidenceMeta(
   const relToReport = (file: string): string =>
     posixPath.relative(toPosix(reportRoot), toPosix(join(evidenceDir, file)));
   const pngPath = relToReport(pngFile);
-  // Producers that shoot both step boundaries (ccqa/step-evidence) name the
-  // entry shot here; the single-shot producers omit it.
+  // Producers that have both step boundaries name the entry shot here; the
+  // single-shot producers omit it.
   const beforePngFile = (parsed as { beforePngFile?: unknown }).beforePngFile;
   const beforePngPath = typeof beforePngFile === "string" ? relToReport(beforePngFile) : null;
   const stepId = (parsed as { stepId?: unknown }).stepId;

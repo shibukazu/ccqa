@@ -58,11 +58,11 @@ export interface TargetPlugin {
    */
   runner?: TestRunner;
   /**
-   * Whether this target's generated tests capture per-step screenshots (the
-   * `ccqa/step-evidence` calls its emitter injects). Absent means they don't:
-   * `ccqa run` then leaves `CCQA_EVIDENCE_DIR` unset for the target and puts
-   * `reason` on every row, so the report can say why there are no screenshots
-   * instead of rendering an empty section.
+   * Whether a run of this target's tests can yield per-step screenshots.
+   * Absent means it cannot: `ccqa run` then leaves `CCQA_EVIDENCE_DIR` unset
+   * for the target, asks for no trace, and puts `reason` on every row, so the
+   * report can say why there are no screenshots instead of rendering an empty
+   * section.
    *
    * Only consulted for external (runner-driven) targets — the built-in
    * agent-browser paths capture their evidence themselves.
@@ -97,6 +97,30 @@ export interface TargetPlugin {
 export type CapabilitySupport = { supported: true } | { supported: false; reason: string };
 
 export type StepEvidenceSupport = CapabilitySupport;
+
+/**
+ * Whether a run of this target's tests yields per-step screenshots: the target
+ * has to be able to produce them, and the project has to want them — asking
+ * Playwright for a trace on every run is what producing them costs.
+ *
+ * Both halves are ANDed here, once, wherever a plugin and its config first
+ * meet. A runner then reads a capability instead of deciding one again, and
+ * the "no" a report row shows is written in a single place.
+ */
+export function resolveStepEvidence(
+  plugin: Pick<TargetPlugin, "id" | "stepEvidence">,
+  config: TargetConfig,
+): StepEvidenceSupport {
+  const declared = plugin.stepEvidence ?? {
+    supported: false,
+    reason: `the "${plugin.id}" target does not capture step screenshots`,
+  };
+  if (!declared.supported || config.hooks.stepEvidence) return declared;
+  return {
+    supported: false,
+    reason: `the "${plugin.id}" target has step evidence turned off in .ccqa/config.yaml`,
+  };
+}
 
 /**
  * A target's answer to "where is your browser?".

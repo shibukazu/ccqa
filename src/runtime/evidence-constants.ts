@@ -2,14 +2,16 @@
  * Shared constants + helpers for step-boundary evidence: the env var that
  * enables capture, the file-name sanitizer, and the reserved failure ids.
  *
- * Three producers write the `<id>.png` + `<id>.json` pairs — `abStepEvidence()`
- * / `captureFailureEvidence()` in `test-helpers.ts` (agent-browser replays) and
- * `ccqaStepBefore`/`ccqaStepAfter` in `step-evidence.ts` (external targets) —
- * and one consumer reads them back (`loadEvidenceForSpec` in
- * `report/evidence.ts`). All four agree only on the contract here, so it is
- * kept under `runtime/` (free of CLI-side imports) so the generated-test
- * modules — imported via `ccqa/test-helpers` and `ccqa/step-evidence` — can
- * share it without dragging the CLI in.
+ * Several producers write the `<id>.png` + `<id>.json` pairs —
+ * `abStepEvidence()` / `captureFailureEvidence()` in `test-helpers.ts`
+ * (agent-browser replays), `targets/playwright/trace-capture.ts` (frames read
+ * out of a run's Playwright trace), and `ccqaStepBefore`/`ccqaStepAfter` in
+ * `step-evidence.ts` for tests generated before the capture calls left the
+ * committed file — and one consumer reads them back (`loadEvidenceForSpec` in
+ * `report/evidence.ts`). They agree only on the contract here, so it is kept
+ * under `runtime/` (free of CLI-side imports) so the generated-test modules —
+ * imported via `ccqa/test-helpers` and `ccqa/step-evidence` — can share it
+ * without dragging the CLI in.
  */
 
 /**
