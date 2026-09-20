@@ -24,9 +24,11 @@ import {
   ARTIFACTS_DIR_ENV,
   collectSpecArtifacts,
   OUTPUT_LOG_FILE,
+  quoteForShell,
   specArtifactsDir,
   substituteArtifactsDir,
 } from "./run-artifacts.ts";
+import { amendForTrace, captureStepEvidence } from "./playwright/trace-capture.ts";
 import type { CdpBrowserHandle, RunnerOptions, TestRunner } from "./types.ts";
 import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
@@ -40,12 +42,8 @@ import * as log from "../cli/logger.ts";
  */
 export function substituteRunCommandFiles(runCommand: string, testFiles: string[]): string {
   if (!runCommand.includes("{files}")) return runCommand;
-  const joined = testFiles.map(shellQuote).join(" ");
+  const joined = testFiles.map(quoteForShell).join(" ");
   return runCommand.replaceAll("{files}", joined);
-}
-
-function shellQuote(s: string): string {
-  return /^[A-Za-z0-9_./-]+$/.test(s) ? s : `'${s.replaceAll("'", `'\\''`)}'`;
 }
 
 /**
@@ -166,15 +164,16 @@ async function runOneSpec(
   await mkdir(artifactsDir, { recursive: true });
 
   // Step screenshots go to the same per-spec directory the deterministic path
-  // uses, so one loader serves both. Only targets whose generated tests call
-  // `ccqa/step-evidence` get it — for the rest the var stays unset and the
-  // capture helper (or its absence) is a no-op.
-  const evidenceDir = opts.stepEvidence.supported
-    ? specEvidenceDir(opts.reportDir, featureName, specName)
-    : null;
-  if (evidenceDir) {
-    await rm(evidenceDir, { recursive: true, force: true });
-    await mkdir(evidenceDir, { recursive: true });
+  // uses, so one loader serves both. Two producers fill it: a test generated
+  // before the capture calls left the committed file writes into it directly
+  // through `CCQA_EVIDENCE_DIR`, and everything else has its frames read out
+  // of the run's Playwright trace once the command has exited.
+  const evidence: StepEvidenceTarget = opts.stepEvidence.supported
+    ? { dir: specEvidenceDir(opts.reportDir, featureName, specName) }
+    : { reason: opts.stepEvidence.reason };
+  if ("dir" in evidence) {
+    await rm(evidence.dir, { recursive: true, force: true });
+    await mkdir(evidence.dir, { recursive: true });
   }
 
   // A target that declared no browser is not measured at all: measuring only
@@ -196,13 +195,23 @@ async function runOneSpec(
     // that embed `${CCQA_RUN_ID}` in created-content names must not collide
     // across specs or with a prior run.
     CCQA_RUN_ID: buildRunId(),
-    ...(evidenceDir ? { [EVIDENCE_DIR_ENV]: evidenceDir } : {}),
+    ...("dir" in evidence ? { [EVIDENCE_DIR_ENV]: evidence.dir } : {}),
   };
 
   let command = substituteArtifactsDir(
     substituteRunCommandFiles(runCommand, testFiles),
     artifactsDir,
   );
+
+  // Asked for before the command runs, read back after it: a trace is the only
+  // thing a test with no ccqa code in it leaves behind that says where each of
+  // its steps began and ended.
+  let traceUnavailable: string | undefined;
+  if ("dir" in evidence) {
+    const amended = amendForTrace(command, artifactsDir);
+    command = amended.command;
+    traceUnavailable = amended.skip;
+  }
 
   // The browser is stood up and the engine attached before the command is
   // spawned: the ordering is the whole guarantee that no script runs before
@@ -291,7 +300,14 @@ async function runOneSpec(
     );
   }
   const artifactFields = artifacts && artifacts.length > 0 ? { artifacts } : {};
-  const evidenceFields = await loadStepEvidence(opts, evidenceDir, parsedSpec, blocks);
+  const evidenceFields = await loadStepEvidence({
+    opts,
+    evidence,
+    artifactsDir,
+    spec: parsedSpec,
+    blocks,
+    ...(traceUnavailable !== undefined ? { traceUnavailable } : {}),
+  });
 
   if (outcome.exitCode === 0) {
     return {
@@ -343,29 +359,40 @@ function coverageRowFields(
 }
 
 /**
- * The row's step screenshots, or — when there are none — the reason, so the
- * report never shows an empty evidence section without explanation. A
- * supported target that produced nothing almost always means the generated
- * test lost its capture calls (a library-rewrite pass dropping them is the
- * known hazard), which is worth saying out loud.
+ * Where this spec's step screenshots go, or why there are none. One value, off
+ * the one resolved capability, so a row without screenshots always says why.
  */
-async function loadStepEvidence(
-  opts: RunnerOptions,
-  evidenceDir: string | null,
-  spec: TestSpec | null,
-  blocks: Map<string, BlockSpec>,
-): Promise<Pick<ReportSpecResult, "evidence" | "evidenceUnavailable">> {
-  if (!opts.stepEvidence.supported) {
-    return { evidence: null, evidenceUnavailable: opts.stepEvidence.reason };
+type StepEvidenceTarget = { dir: string } | { reason: string };
+
+/**
+ * The row's step screenshots, or — when there are none — the reason, so the
+ * report never shows an empty evidence section without explanation.
+ *
+ * A command ccqa could not amend left no trace to read, and its reason is the
+ * more useful one — so the capture is not attempted at all in that case.
+ */
+async function loadStepEvidence(args: {
+  opts: RunnerOptions;
+  evidence: StepEvidenceTarget;
+  artifactsDir: string;
+  spec: TestSpec | null;
+  blocks: Map<string, BlockSpec>;
+  traceUnavailable?: string;
+}): Promise<Pick<ReportSpecResult, "evidence" | "evidenceUnavailable">> {
+  const { opts } = args;
+  if (!("dir" in args.evidence)) {
+    return { evidence: null, evidenceUnavailable: args.evidence.reason };
   }
-  const descriptions = buildStepDescriptions(spec, blocks);
+  const evidenceDir = args.evidence.dir;
+  const reason =
+    args.traceUnavailable ??
+    (await captureStepEvidence({ artifactsDir: args.artifactsDir, evidenceDir }));
+  const descriptions = buildStepDescriptions(args.spec, args.blocks);
   const evidence = await loadEvidenceForSpec(evidenceDir, opts.reportDir, descriptions);
   if (evidence) return { evidence };
   return {
     evidence: null,
-    evidenceUnavailable:
-      "no step screenshots were captured — the generated test may be missing its " +
-      "ccqa/step-evidence calls; re-run `ccqa generate` for this spec",
+    evidenceUnavailable: reason ?? "no step screenshots were captured for this spec",
   };
 }
 

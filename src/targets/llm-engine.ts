@@ -7,7 +7,13 @@ import { invokeClaudeStreaming } from "../claude/invoke.ts";
 import type { ExpandedStep } from "../spec/expand.ts";
 import { caseRunDir, clearCaseRun, loadPromptBundle } from "../store/index.ts";
 import { formatEmittedReview, reviewEmittedFiles } from "./emitted-review.ts";
-import { formatFinding, type SpecCoverageReview } from "./verifies-spec.ts";
+import {
+  formatFinding,
+  formatViolation,
+  type GuideViolation,
+  type SpecCoverageFinding,
+  type SpecCoverageReview,
+} from "./verifies-spec.ts";
 import { isExpandedActionStep } from "../spec/expand.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import {
@@ -16,13 +22,20 @@ import {
   retryNote,
   type PromptResource,
 } from "../prompts/llm-gen.ts";
-import { isWithin, loadConventions, resolveResources, type ResolvedResource } from "./resources.ts";
+import {
+  isWithin,
+  loadConventions,
+  resolveResources,
+  type ConventionSection,
+  type ResolvedResource,
+} from "./resources.ts";
 import { printUnifiedDiff, prompt } from "../cli/draft.ts";
 import { substituteRunCommandFiles } from "./run-command-runner.ts";
+import { amendForTrace, captureStepEvidence } from "./playwright/trace-capture.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { ARTIFACTS_DIR_ENV, substituteArtifactsDir } from "./run-artifacts.ts";
 import { buildProseEnvScrubMap, findLoadedValueLiterals, scrubEnvValues } from "../runtime/env-scrub.ts";
-import type { GenerateContext, GenerateResult } from "./types.ts";
+import type { GenerateContext, GenerateResult, StepEvidenceSupport } from "./types.ts";
 import type { GuidanceKind } from "../prompts/prompt-names.ts";
 import * as log from "../cli/logger.ts";
 
@@ -49,16 +62,27 @@ export type InvokeFn = typeof invokeClaudeStreaming;
 
 /**
  * A target's reading of the files one attempt produced: whether their
- * assertions decide what the case claims.
+ * assertions decide what the case claims, and whether the code follows the
+ * rule documents the project wrote.
  *
  * Supplied by the target rather than built here. What counts as an assertion
  * is the generated language's business — a target whose runbooks are YAML has
  * none in the shape a reader of test code looks for, and would otherwise be
  * told that every step of every case decides nothing. A target that offers no
  * reading is simply not read.
+ *
+ * The guides arrive from the engine, already loaded for the generation
+ * prompt: the code was written with them in hand, and reading it against a
+ * second, separately loaded copy would let the two disagree.
+ *
+ * `askModel` is false where nothing in this generation could act on a model's
+ * judgement, or where the reviewer has already failed once. Whatever the
+ * reading can decide on its own still runs; what costs a model call does not.
  */
 export type Reading = (
   files: readonly LlmGeneratedFile[],
+  guides: readonly ConventionSection[],
+  askModel: boolean,
 ) => Promise<SpecCoverageReview>;
 
 const LlmFileSchema = z.object({
@@ -303,6 +327,12 @@ export interface LlmEngineRequest {
   draftInvariant?: string;
   /** Per-file validation before writing (e.g. YAML parse for runn); returns an error message to reject. */
   validateFile?: (file: LlmGeneratedFile) => string | null;
+  /**
+   * The target's `stepEvidence`, resolved against the project's config: a
+   * verification run that passes leaves the case's screenshots behind. Absent
+   * means the target captures none.
+   */
+  stepEvidence?: StepEvidenceSupport;
   /** Test seam — defaults to `invokeClaudeStreaming`. */
   invoke?: InvokeFn;
   /** How this target reads back what it wrote (see `Reading`). Absent: not read. */
@@ -329,7 +359,10 @@ function configuredWriteRoots(ctx: GenerateContext, resources: ResolvedResource[
 export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<GenerateResult> {
   const { ctx } = req;
   const resources = await resolveResources(ctx.cwd, ctx.resources);
-  const conventions = await loadConventions(ctx.cwd, [...ctx.conventions.guides, ...ctx.conventions.examples]);
+  const conventions = await loadConventions(ctx.cwd, {
+    guides: ctx.conventions.guides,
+    examples: ctx.conventions.examples,
+  });
   const warnings = [...conventions.warnings];
   for (const w of conventions.warnings) log.warn(w);
   log.meta("resources", resources.length);
@@ -382,6 +415,8 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
     initialFiles: output.files,
     summary: output.summary,
     warnings,
+    guides: conventions.sections.filter((s) => s.kind === "guide"),
+    ...(req.stepEvidence ? { stepEvidence: req.stepEvidence } : {}),
     validateFile: req.validateFile,
     invoke,
     reading: req.reading,
@@ -396,6 +431,8 @@ export interface PreparedFilesRequest {
   summary: string;
   warnings: string[];
   validateFile?: (file: LlmGeneratedFile) => string | null;
+  /** See {@link LlmEngineRequest.stepEvidence}. */
+  stepEvidence?: StepEvidenceSupport;
   invoke?: InvokeFn;
   reading?: Reading;
 }
@@ -418,6 +455,12 @@ export async function finalizePreparedFiles(req: PreparedFilesRequest): Promise<
     initialFiles: req.files,
     summary: req.summary,
     warnings: req.warnings,
+    // A deterministic compile of a recording, written against no guide: this
+    // path runs when a project declared no resources, so nothing here was
+    // asked to follow a rule and reporting one broken would ask for the
+    // rewrite this path exists to skip.
+    guides: [],
+    ...(req.stepEvidence ? { stepEvidence: req.stepEvidence } : {}),
     validateFile: req.validateFile,
     invoke: req.invoke ?? invokeClaudeStreaming,
     reading: req.reading,
@@ -429,6 +472,10 @@ interface FinalizeParams {
   target: GuidanceKind;
   policy: OutputPathPolicy;
   writeRoots: string[];
+  /** The project's rule documents, as the generation prompt carried them. */
+  guides: ConventionSection[];
+  /** See {@link LlmEngineRequest.stepEvidence}. */
+  stepEvidence?: StepEvidenceSupport;
   initialFiles: LlmGeneratedFile[];
   summary: string;
   warnings: string[];
@@ -454,10 +501,14 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
 }
 
 /**
- * The runCommand verification loop: run, and on failure hand the output tail
- * plus the current files to Claude for a corrected set. `fix.mode` mirrors the
- * agent-browser target's fix UX (which only ever prompts inside its own fix
- * loop, never for the first write):
+ * The runCommand verification loop. One round asks the project's own commands,
+ * then the review, then the run — and a round is over when all three are
+ * clean. On anything else the output goes to Claude for a corrected set and
+ * the next round asks all three again: a fix written for a failing run can
+ * break a rule the round before it cleared.
+ *
+ * `fix.mode` mirrors the agent-browser target's fix UX (which only ever
+ * prompts inside its own fix loop, never for the first write):
  *
  *   - `auto` — apply every fix rewrite automatically, up to `fix.maxRetries`.
  *   - `interactive` (default) — show each fix pass's per-file diff and ask
@@ -474,6 +525,14 @@ async function runVerificationLoop(
   state: FileState,
 ): Promise<{ passed: boolean; review?: SpecCoverageReview }> {
   const runCommand = p.ctx.targetConfig.runCommand;
+  let review: SpecCoverageReview | undefined;
+  // Said once at each way out, not where the review is obtained: a round that
+  // acts on a finding reads the files again next round, and the same lines
+  // twice read as two findings.
+  const finish = (passed: boolean): { passed: boolean; review?: SpecCoverageReview } => {
+    for (const w of review?.warnings ?? []) log.warn(w);
+    return { passed, review };
+  };
   // A target with no test command of its own can still have project-wide
   // checks, and generated code that fails them is not done.
   if (!runCommand) {
@@ -482,16 +541,14 @@ async function runVerificationLoop(
       log.warn(`${checks.command} failed (exit ${checks.exitCode}) — generated files kept`);
       return { passed: false };
     }
-    const review = await readingOfEmitted(p, state);
-    for (const w of review?.warnings ?? []) log.warn(w);
-    return { passed: true, review };
+    await refreshFromDisk(state);
+    review = await readingOfEmitted(p, state, true);
+    return finish(true);
   }
   // `--auto-fix skip` disables the fix pass entirely: run verification once and
   // report the result, never rewriting the generated files.
   const maxRetries = p.ctx.fix.mode === "non-interactive" ? 0 : p.ctx.fix.maxRetries;
-  // Only a target whose generated tests call `ccqa/step-evidence` captures
-  // anything; for the rest the variable stays unset and the helper is a no-op.
-  const captures = p.ctx.targetConfig.hooks.stepEvidence;
+  const captures = p.stepEvidence?.supported === true;
   // Loop-invariant: it reads the process env, which no attempt changes.
   const outputScrub = buildProseEnvScrubMap([], []);
 
@@ -506,85 +563,67 @@ async function runVerificationLoop(
     );
   }
 
-  let review: SpecCoverageReview | undefined;
+  // What a fix prompt has already carried. A line the model was shown and did
+  // not fix it reports again, and spending the next round on it buys nothing —
+  // the prompt already lets it decline what it may not write.
+  const spent = new Set<string>();
+  // Asked only where a round could act on what it says: the reading's model
+  // half is a call of its own, minutes long, and its findings with no budget
+  // left to answer them are a bill. A reviewer that failed once is not asked
+  // again either — the round it answers nothing for is the round a finding it
+  // did answer would have bought.
+  const askReviewer = maxRetries > 0;
+  let reviewerGone = false;
+  if (!askReviewer && p.reading) {
+    log.info("no fix round could act on a review — the reviewer is not asked; the mechanical read still runs");
+  }
   for (let attempt = 0; ; attempt++) {
-    const testFiles = [...state.entries()]
-      .filter(([, f]) => f.kind === "test")
-      .map(([rel]) => rel);
-    // `{artifactsDir}` targets `ccqa run`'s per-spec artifacts collection; a
-    // verification run has no report dir, so it (and CCQA_ARTIFACTS_DIR)
-    // points at a throwaway temp dir instead, discarded after the attempt.
-    const artifactsDir = await mkdtemp(join(tmpdir(), "ccqa-verify-artifacts-"));
-    // The step screenshots this attempt takes, kept when it passes. A project
-    // whose tests belong to its own runner never calls `ccqa run`, so this is
-    // the only time ccqa sees the case executed — and `ccqa evidence` has no
-    // pictures at all without it. Cleared first: what is here is one attempt's.
-    const evidenceDir = captures ? caseRunDir(p.ctx.ref) : null;
-    if (evidenceDir) {
-      await clearCaseRun(p.ctx.ref);
-      await mkdir(evidenceDir, { recursive: true });
-    }
-    const command = substituteArtifactsDir(
-      substituteRunCommandFiles(runCommand, testFiles),
-      artifactsDir,
-    );
-    log.run(command);
-    let result: { exitCode: number; output: string };
-    try {
-      result = await log.timedPhase(
-        `verification run #${attempt + 1}`,
-        () =>
-          // Fresh CCQA_RUN_ID per verification attempt, mirroring the vitest
-          // runner: specs that embed `${CCQA_RUN_ID}` in created-content names
-          // must not collide with leftovers from earlier runs.
-          runShellCommand(command, p.ctx.cwd, {
-            ...process.env,
-            [ARTIFACTS_DIR_ENV]: artifactsDir,
-            CCQA_RUN_ID: buildRunId(),
-            ...(evidenceDir ? { [EVIDENCE_DIR_ENV]: evidenceDir } : {}),
-          }),
-        "run",
-      );
-    } finally {
-      await rm(artifactsDir, { recursive: true, force: true });
-    }
-    let failing = command;
-    if (result.exitCode === 0) {
-      // The spec's own test passing is not the whole bar: generated code that
-      // breaks the project's type check or lint cannot be merged, and finding
-      // that out in review costs another round trip. Run those here, where the
-      // fix loop can still act on the output.
-      const checks = await runCheckCommands(p.ctx);
-      if (checks !== null) {
-        result = checks;
-        // The fix pass is shown this output, so it has to be told which command
-        // produced it — otherwise it reads lint errors under the test command.
-        failing = checks.command;
+    // Cheapest question first, most expensive last. The project's own commands
+    // decide for themselves and cost nothing; the review is one model call;
+    // the run is a browser against a live product. Code a reviewer would send
+    // back is not worth running, and code that does not compile is not worth
+    // reviewing.
+    let failing = await runCheckCommands(p.ctx);
+    // What this round's fix prompt asks for, registered only once the model
+    // has answered it: a round that never reached one asked for nothing.
+    let asked: readonly string[] = [];
+    if (failing === null) {
+      // The checks may have rewritten what they checked. From here the files
+      // are read three ways, and they must all read the same file.
+      await refreshFromDisk(state);
+      // How the code reads, asked three ways — mechanically, against the case,
+      // and against the project's own rules. All at once: they are the same
+      // kind of question, and answering them in turn spends a whole round on
+      // the cheaper one while the others wait for a budget that may be gone.
+      // (Observed: three rounds went to two failures and one mechanical
+      // finding, and the reading first spoke with nothing left to act on.)
+      // Issued together as well: one is a model call and the other walks the
+      // project's test roots, and neither reads what the other writes.
+      const [reading, mechanical] = await Promise.all([
+        readingOfEmitted(p, state, askReviewer && !reviewerGone),
+        reviewOfEmitted(p.ctx, state, p.writeRoots),
+      ]);
+      review = reading;
+      if (review?.reviewerFailed) reviewerGone = true;
+      const unchecked = uncheckedSteps(review, spent);
+      const violations = guideViolations(review, spent);
+      const reads = allReadings(mechanical, unchecked, violations);
+      if (reads !== null && attempt < maxRetries) {
+        asked = [...(unchecked?.asked ?? []), ...(violations?.asked ?? [])];
+        failing = reads;
       } else {
-        // Everything the project can decide for itself is green. What is left
-        // is how the code reads, asked two ways — mechanically, and by reading
-        // it against the case. Both at once: they are the same kind of
-        // question, and answering them in turn spends a whole round on the
-        // cheaper one while the other waits for a budget that may be gone.
-        // (Observed: three rounds went to two failures and one mechanical
-        // finding, and the reading first spoke with nothing left to act on.)
-        review = await readingOfEmitted(p, state);
-        const reads = bothReadings(
-          await reviewOfEmitted(p.ctx, state, p.writeRoots),
-          uncheckedSteps(review),
-        );
-        if (reads === null || attempt >= maxRetries) {
-          for (const w of review?.warnings ?? []) log.warn(w);
-          if (reads !== null) {
-            log.warn(
-              "generated with review findings still open — the files are kept and the findings " +
-                "are recorded against the case, but nothing acted on them",
-            );
-          }
-          return { passed: true, review };
+        if (reads !== null) {
+          // Run all the same: the review is a judgement, and a generate that
+          // reported failed without ever running the test would let one
+          // decide the verdict.
+          log.warn(
+            "generated with review findings still open — the files are kept and the findings " +
+              "are recorded against the case, but nothing acted on them",
+          );
         }
-        result = reads;
-        failing = reads.command;
+        const run = await verifyRun(p, state, runCommand, attempt, captures);
+        if (run.exitCode === 0) return finish(true);
+        failing = run;
       }
     }
     if (attempt >= maxRetries) {
@@ -592,17 +631,17 @@ async function runVerificationLoop(
         `verification still failing after ${maxRetries} fix attempt(s) — generated files kept`,
       );
       await clearCaseRun(p.ctx.ref);
-      return { passed: false, review };
+      return finish(false);
     }
 
-    log.fix(`verification failed (exit ${result.exitCode}) — requesting a fix (${attempt + 1}/${maxRetries})`);
+    log.fix(`verification failed (exit ${failing.exitCode}) — requesting a fix (${attempt + 1}/${maxRetries})`);
     const fixPrompt = buildLlmFixPrompt({
       targetId: p.target,
-      command: failing,
+      command: failing.command,
       // The command's own output can echo a value the test resolved (a URL,
       // an account). It reaches the model as prose, which is how the leak
       // above happened, so it is symbolised before it goes.
-      outputTail: scrubEnvValues(tail(result.output), outputScrub),
+      outputTail: scrubEnvValues(tail(failing.output), outputScrub),
       files: [...state.entries()].map(([path, f]) => ({
         path,
         contents: f.contents,
@@ -642,6 +681,11 @@ async function runVerificationLoop(
       );
       continue;
     }
+    // Only now, and only what the prompt above actually carried: a line the
+    // model never saw must not buy the silence of a round that never asked it,
+    // and one it saw and declined is not worth asking twice. A reply of "no
+    // change needed" below is an answer — the model read the line and left it.
+    for (const key of asked) spent.add(key);
     if (output.files.length === 0) {
       log.info(`fix pass reported no file changes — re-running verification (${output.summary || "no reason given"})`);
       continue;
@@ -652,7 +696,7 @@ async function runVerificationLoop(
     if (p.ctx.fix.mode === "interactive" && !(await confirmFixWrite(output.files, p.ctx.cwd))) {
       log.info("fix not applied (declined) — keeping current files");
       await clearCaseRun(p.ctx.ref);
-      return { passed: false, review };
+      return finish(false);
     }
     await writeGeneratedFiles(p.ctx.cwd, output.files, state);
     // The reading described the files as they were before this write. It is
@@ -664,10 +708,84 @@ async function runVerificationLoop(
 }
 
 /**
- * The project's own checks over the whole repository (type check, lint), run
- * after the spec's test passes. Answers null when they all pass — or when the
- * project configured none — and the failing one's output otherwise, in the
- * shape the fix loop already consumes.
+ * One verification run of the files as they are now, in the shape the fix loop
+ * consumes. The round's last question and its most expensive: it is asked only
+ * of files the project's own commands and the review have already cleared.
+ */
+async function verifyRun(
+  p: FinalizeParams,
+  state: FileState,
+  runCommand: string,
+  attempt: number,
+  captures: boolean,
+): Promise<{ exitCode: number; output: string; command: string }> {
+  const testFiles = [...state.entries()]
+    .filter(([, f]) => f.kind === "test")
+    .map(([rel]) => rel);
+  // `{artifactsDir}` targets `ccqa run`'s per-spec artifacts collection; a
+  // verification run has no report dir, so it (and CCQA_ARTIFACTS_DIR)
+  // points at a throwaway temp dir instead, discarded after the attempt.
+  const artifactsDir = await mkdtemp(join(tmpdir(), "ccqa-verify-artifacts-"));
+  // The step screenshots this run takes, kept when it passes. A project whose
+  // tests belong to its own runner never calls `ccqa run`, so this is the only
+  // time ccqa sees the case executed — and `ccqa evidence` has no pictures at
+  // all without it. Cleared first: what is here is one run's.
+  const evidenceDir = captures ? caseRunDir(p.ctx.ref) : null;
+  if (evidenceDir) {
+    await clearCaseRun(p.ctx.ref);
+    await mkdir(evidenceDir, { recursive: true });
+  }
+  let command = substituteArtifactsDir(
+    substituteRunCommandFiles(runCommand, testFiles),
+    artifactsDir,
+  );
+  // The generated test carries no capture calls, so the evidence this run
+  // leaves behind is whatever the trace holds. A command ccqa cannot amend
+  // leaves none, and generation does not hang on that — it says so once the
+  // run is otherwise done rather than failing here.
+  let traceUnavailable: string | undefined;
+  if (evidenceDir) {
+    const amended = amendForTrace(command, artifactsDir);
+    command = amended.command;
+    traceUnavailable = amended.skip;
+  }
+  log.run(command);
+  try {
+    const result = await log.timedPhase(
+      `verification run #${attempt + 1}`,
+      () =>
+        // Fresh CCQA_RUN_ID per verification run, mirroring the vitest runner:
+        // specs that embed `${CCQA_RUN_ID}` in created-content names must not
+        // collide with leftovers from earlier runs.
+        runShellCommand(command, p.ctx.cwd, {
+          ...process.env,
+          [ARTIFACTS_DIR_ENV]: artifactsDir,
+          CCQA_RUN_ID: buildRunId(),
+          ...(evidenceDir ? { [EVIDENCE_DIR_ENV]: evidenceDir } : {}),
+        }),
+      "run",
+    );
+    // Read before the artifacts dir goes: the trace lives in it, and the
+    // `finally` below removes it. Only a green run's is read — every other
+    // outcome ends in a fix round or a give-up, both of which clear the case's
+    // evidence again, so reading it would be work nobody keeps.
+    if (evidenceDir && result.exitCode === 0) {
+      const unavailable =
+        traceUnavailable ?? (await captureStepEvidence({ artifactsDir, evidenceDir }));
+      if (unavailable) log.warn(unavailable);
+    }
+    return { ...result, command };
+  } finally {
+    await rm(artifactsDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * The project's own checks over the whole repository (type check, lint), asked
+ * first in a round: they cost nothing and code that does not compile has a
+ * more urgent problem than how it reads. Answers null when they all pass — or
+ * when the project configured none — and the failing one's output otherwise,
+ * in the shape the fix loop already consumes.
  */
 async function runCheckCommands(
   ctx: GenerateContext,
@@ -720,15 +838,37 @@ async function reviewOfEmitted(
   };
 }
 
-/** What this attempt wrote, as the target's reading opens it. */
+/**
+ * What this attempt wrote, as the target's reading opens it.
+ *
+ * Timed like the loop's other phases: the reading opens the repository and
+ * reads it, which is minutes, and a wedged one waits out its whole timeout
+ * with nothing on the terminal to say what is happening.
+ */
 async function readingOfEmitted(
   p: FinalizeParams,
   state: FileState,
+  askModel: boolean,
 ): Promise<SpecCoverageReview | undefined> {
-  if (!p.reading) return undefined;
-  return p.reading(
-    [...state.entries()].map(([path, f]) => ({ path, contents: f.contents, kind: f.kind })),
-  );
+  const { reading } = p;
+  if (!reading) return undefined;
+  const files = [...state.entries()].map(([path, f]) => ({ path, contents: f.contents, kind: f.kind }));
+  return log.timedPhase("review of the generated files", () => reading(files, p.guides, askModel), "fix");
+}
+
+/**
+ * Re-read what is on disk into the engine's copy of it.
+ *
+ * A check command may rewrite what it checks — a formatter is the ordinary
+ * case — and from here the files are read three ways: the review opens the
+ * disk, while the fix prompt and the mechanical read are given what the engine
+ * holds. They must not be told different things about one file.
+ */
+async function refreshFromDisk(state: FileState): Promise<void> {
+  for (const [rel, f] of state) {
+    const contents = await readFile(f.abs, "utf8").catch(() => null);
+    if (contents !== null) state.set(rel, { ...f, contents });
+  }
 }
 
 /**
@@ -749,25 +889,103 @@ async function readingOfEmitted(
  * (restoring what passed weakly) would hide a case the product does not meet.
  *
  * A review that could not be obtained is not acted on either: spending a round
- * answering a question nobody asked is worse than leaving it unanswered.
+ * answering a question nobody asked is worse than leaving it unanswered. Nor
+ * is a finding a round has already asked for and got back unchanged: a step
+ * the fix pass could not strengthen reports the same line every round, and
+ * left alone it takes the whole budget and the run happens with none of it.
  */
 export function uncheckedSteps(
   review: SpecCoverageReview | undefined,
-): { exitCode: number; output: string; command: string } | null {
-  if (!review?.complete || review.findings === null || review.findings.length === 0) return null;
+  alreadyAsked: ReadonlySet<string> = new Set(),
+): { exitCode: number; output: string; command: string; asked: string[] } | null {
+  if (!review?.complete || review.findings === null) return null;
+  const findings = review.findings.filter((f) => !alreadyAsked.has(findingKey(f)));
+  if (findings.length === 0) return null;
   return {
     exitCode: 1,
     command: "ccqa: reading of the generated test",
+    asked: findings.map(findingKey),
     output: [
       "These steps pass without deciding what the case says they must:",
       "",
-      ...review.findings.map((f) => `- ${formatFinding(f)}`),
+      ...findings.map((f) => `- ${formatFinding(f)}`),
       "",
       "Strengthen the assertions (and the locators they resolve through) so each",
       "step fails when its expectation stops holding. Do not weaken or delete a",
       "step to silence this.",
     ].join("\n"),
   };
+}
+
+/**
+ * The rule violations the reading found, shaped like a failed check so the fix
+ * loop carries them the same way — or null when there is nothing to act on.
+ *
+ * Every rule the loop could already decide is followed by the code it
+ * produces: a type error fails the check command, a lint rule fails the lint,
+ * a convention ccqa itself knows fails the review above. A rule that lives
+ * only in the project's prose is followed by nothing, because until here
+ * nothing in the loop had read it. Reused code is the older half of the same
+ * gap — a helper this generation imported rather than wrote was written under
+ * whatever rules existed then, and no rule added since has been applied to it.
+ *
+ * Like the reading it rides with, it spends a fix round and never decides the
+ * verdict: it is a model's judgement, and a judgement that could fail a
+ * generate would make generation only as repeatable as the model behind it.
+ * And like the reading, a violation a round has already asked for and got back
+ * unchanged is not asked again — the model may decline a file it is not
+ * allowed to write, and asking again spends a round that can only be declined
+ * again.
+ *
+ * Read apart from the step findings, as it comes back: one answer carries two
+ * reviews, and a half that arrived unreadable must not discard the half that
+ * arrived. Absent violations are absent either way — there is nothing here to
+ * act on when that half never came.
+ *
+ * Only what the reviewer would hold the change for. It is asked to sort its
+ * own violations, because the alternative is a round spent on a line it would
+ * have approved anyway. Every violation is still reported: `warnings` carries
+ * the advisory ones too, marked as such.
+ */
+export function guideViolations(
+  review: SpecCoverageReview | undefined,
+  alreadyAsked: ReadonlySet<string> = new Set(),
+): { exitCode: number; output: string; command: string; asked: string[] } | null {
+  const violations = (review?.ruleViolations ?? []).filter(
+    (v) => v.severity === "blocking" && !alreadyAsked.has(violationKey(v)),
+  );
+  if (violations.length === 0) return null;
+  return {
+    exitCode: 1,
+    command: "ccqa: the project's own conventions",
+    asked: violations.map(violationKey),
+    output: [
+      "These files break a rule this project's conventions state:",
+      "",
+      // The same line the log and the report show — a reader must not meet two
+      // wordings for one finding — with the code it is about under it.
+      ...violations.flatMap((v) => [
+        `- ${formatViolation(v)}`,
+        ...v.code.trim().split("\n").map((line) => `      ${line}`),
+        "",
+      ]),
+      "Rewrite each file so it follows the rule it breaks. A support file this",
+      "generation did not write is still yours to correct while it is under a",
+      "root you may write to; one outside them is not — say so in `summary`",
+      "rather than rewriting it. Never weaken what the test checks to make a",
+      "rule fit.",
+    ].join("\n"),
+  };
+}
+
+/** One finding, as the loop recognises the same one coming back. */
+function findingKey(finding: SpecCoverageFinding): string {
+  return [finding.stepId, finding.problem].join("\u0000");
+}
+
+/** One violation, as the loop recognises the same one coming back. */
+function violationKey(violation: GuideViolation): string {
+  return [violation.file, violation.guide, violation.rule, violation.code.trim()].join("\u0000");
 }
 
 /**
@@ -828,10 +1046,10 @@ async function identifiersInProject(
 }
 
 /**
- * The two readings of the finished files as one report, since one fix pass
- * answers both. Either may be absent; both absent is nothing to act on.
+ * The readings of the finished files as one report, since one fix pass
+ * answers all of them. Any may be absent; all absent is nothing to act on.
  */
-function bothReadings(
+function allReadings(
   ...reports: ({ exitCode: number; output: string; command: string } | null)[]
 ): { exitCode: number; output: string; command: string } | null {
   const found = reports.filter((r) => r !== null);

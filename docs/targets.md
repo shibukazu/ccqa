@@ -153,7 +153,7 @@ targets:
       expression: generateRunId()
 
     hooks:
-      stepEvidence: true   # default; false drops the per-step capture calls
+      stepEvidence: true   # default; false stops ccqa capturing step screenshots
 
     # may the generated teardown contain `expect`? default true
     allowExpectInCleanup: false
@@ -195,10 +195,10 @@ The keys not already covered elsewhere in this document:
 - **`runId`** — `import` and `expression` for a repo's own helper that
   names the unique values a generated test creates, called instead of
   leaving `${CCQA_RUN_ID}` in the test.
-- **`hooks.stepEvidence`** — on by default; off drops the per-step capture
-  calls described in
+- **`hooks.stepEvidence`** — on by default; off stops ccqa capturing the
+  per-step screenshots described in
   [Step screenshots for external targets](#step-screenshots-for-external-targets)
-  below.
+  below. It changes nothing in the generated file.
 - **`allowExpectInCleanup`** — whether the generated undo may assert. On by
   default. A case can state what its teardown must make true, and ccqa checks
   it where the teardown runs — inside the emitted `test.afterEach`. Some suites
@@ -237,6 +237,20 @@ the draft ships as-is — no LLM involved for the playwright target.
 
 - `guides` — convention documents, and `examples` — existing tests whose
   style the generated code should imitate. Both are read when generating.
+  A `guide` states rules in prose, so it is also read back. Once the
+  project's own checks pass — and before the test is run, because code a
+  reviewer would send back is not worth running — the emitted files go to a
+  reader that knows nothing about where they came from. It opens them
+  itself, along with the support files the test imports, whether this run
+  wrote them or reused them, and whatever else in the repository it needs.
+  A rule one of the guides states in its own words is quoted back; so is a
+  convention no document states but the suite follows everywhere, reported
+  with the count that shows it. What that reader would hold the change for
+  spends a fix round, and what it would mention and approve anyway is only
+  reported. A generation with no fix round to spend (`--auto-fix skip`) does
+  not ask that reader at all; what ccqa reads out of the file itself still is.
+  `examples` are not read this way, because a file that shows a shape states
+  no rule to quote.
 - `operate` — documents read by both `ccqa record` and a live `ccqa run`: how
   this project is signed into, which account a case's precondition names,
   anything that has to be true before the first step. The same guidance serves
@@ -777,39 +791,44 @@ failure) in the artifacts dir, the classifier reads it for extra context.
 
 ## Step screenshots for external targets
 
-Playwright specs capture the same per-step **before/after screenshots** an
+Playwright specs carry the same per-step **before/after screenshots** an
 agent-browser run produces, rendered identically in the hub. You configure
-nothing: ccqa's emitter injects `ccqa/step-evidence` calls at each spec-step
-boundary of the generated test, and `ccqa run` points the test at the
-report's evidence directory through `CCQA_EVIDENCE_DIR`. The calls no-op when
-that variable is unset, so running the generated test yourself writes no stray
-files.
+nothing, and the generated test contains nothing of ccqa's: each of the case's
+steps is a native `test.step("step 1: ...", ...)` block, and the screenshots
+come from the run's Playwright **trace**, which ccqa asks for and reads back
+after the command has exited. Nothing runs inside your test that could fail it,
+and the committed file typechecks in a repository where ccqa is not installed.
 
-`ccqa/step-evidence` ships with ccqa — the consumer installs nothing, and ccqa
-gains no Playwright dependency (the page is typed structurally). It is
-published as both ESM and CommonJS, so a suite with no `type: "module"` — most
-Playwright suites — can `require()` it: without that the import fails at
-resolution, the run reports that it found no tests, and a fix pass removes the
-import to make the failure go away, leaving a spec with no screenshots at all.
+For ccqa to get a trace, the target's `runCommand` has to invoke `playwright
+test` itself — `pnpm exec playwright test {files}`, not a package script that
+wraps it. ccqa appends `--trace=on` and `--output=<its own artifacts dir>`, and
+refuses to amend a command that uses shell operators or already directs
+`--output` somewhere else. When it cannot, the row says so instead of showing an
+empty section.
 
-Your `tsconfig.json` has to resolve subpath exports, which means
-`"moduleResolution"` of `bundler`, `node16` or `nodenext`. The older `node`
-setting predates the `exports` field and reports `ccqa/step-evidence` as having
-no type declarations (TS2307), whichever build it would have loaded at run
-time.
+The frames are the trace's screencast — the filmstrip the trace viewer
+shows — so they are downscaled JPEGs rather than full-page captures. That is
+the price of keeping the capture code out of the file you commit.
 
-Capture is best-effort: a failed screenshot is logged and skipped, never a test
-failure. A rewrite pass that dropped a step's two capture calls is rejected and
-asked again, and a second failure fails the generation — the report would
-otherwise silently miss that step's screenshots. A step no recorded action
-belongs to gets no boundary at all, and is named at generation time: re-record
-the case.
+A step's screenshots are matched to the case by the `test.step` title, which is
+the same label the draft writes. A rewrite pass that reshapes a title is
+rejected and asked again, and a second failure fails the generation — the
+evidence table and the run's screenshots both read it back, and a reshaped one
+makes every step report as deciding nothing. A step no recorded action belongs
+to gets no block at all, and is named at generation time: re-record the case.
 
-This is orthogonal to `--trace`: keep `trace` in your `playwright.config.ts`
-(or the `runCommand`, e.g. `--trace retain-on-failure --output {artifactsDir}`)
-for the full time-travel trace, which rides along as a run **artifact**. ccqa
-handles the step screenshots; Playwright still owns the trace. Targets with no
-browser (`runn`) capture no screenshots and say so in the report.
+Set `hooks.stepEvidence: false` on the target to opt out. The generated file is
+unchanged either way; what stops is ccqa asking for a trace and reading it.
+
+A spec generated by an earlier ccqa imports `ccqa/step-evidence` and captures
+its own, higher-fidelity, screenshots. That subpath still ships and `ccqa run`
+still points `CCQA_EVIDENCE_DIR` at the report directory for it, so such a spec
+keeps working until it is regenerated; the export is removed in a later
+release. Targets with no browser (`runn`) capture no screenshots and say so in
+the report.
+
+The full time-travel trace rides along as a run **artifact** either way, so
+`--trace` in your own `playwright.config.ts` still does what it always did.
 
 A spec with a `judgeByLlm` claim also runs standalone under your own
 `runCommand` (plain `playwright test`) — see its runtime contract in

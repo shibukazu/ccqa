@@ -29,29 +29,25 @@ const FIXTURE_DIR = fileURLToPath(
 // step helper (path resources) plus the shared kit (package resource), and
 // one new support page object under the writable e2e/pages root.
 const GENERATED_SPEC = `import { test, expect } from "@playwright/test";
-import { ccqaStepBefore, ccqaStepAfter } from "ccqa/step-evidence";
 import { TodoListPage, TODO_ITEM_TESTID } from "../pages/todo_list";
 import { TodoHeader } from "../pages/todo_header";
 import { login } from "../steps/login";
 import { withSignedInUser, RUN_LABEL_PATTERN } from "@example/e2e-kit";
 
 test("add a todo item", async ({ page }) => {
-  // step: step-01 [spec]
-  await ccqaStepBefore(page, "step-01", "spec");
-  await page.goto(process.env.APP_URL ?? "");
-  await login(page, process.env.TEST_EMAIL ?? "", process.env.TEST_PASSWORD ?? "");
-  await ccqaStepAfter(page, "step-01", "spec");
+  await test.step("step: step-01 [spec]", async () => {
+    await page.goto(process.env.APP_URL ?? "");
+    await login(page, process.env.TEST_EMAIL ?? "", process.env.TEST_PASSWORD ?? "");
+  });
 
-  // step: step-02 [spec]
-  await ccqaStepBefore(page, "step-02", "spec");
-  const list = new TodoListPage(page);
-  await list.addItem("buy milk");
-  await ccqaStepAfter(page, "step-02", "spec");
+  await test.step("step: step-02 [spec]", async () => {
+    const list = new TodoListPage(page);
+    await list.addItem("buy milk");
+  });
 
-  // step: step-03 [spec]
-  await ccqaStepBefore(page, "step-03", "spec");
-  await expect(page.getByTestId(TODO_ITEM_TESTID).first()).toBeVisible();
-  await ccqaStepAfter(page, "step-03", "spec");
+  await test.step("step: step-03 [spec]", async () => {
+    await expect(page.getByTestId(TODO_ITEM_TESTID).first()).toBeVisible();
+  });
 });
 `;
 

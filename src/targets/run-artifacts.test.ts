@@ -69,6 +69,28 @@ describe("collectSpecArtifacts", () => {
     expect(warnings).toEqual([]);
   });
 
+  // ccqa asks for a trace on every Playwright run it can amend, and one is
+  // worth more than the whole byte budget — taken first it would leave the
+  // reports and screenshots a reader opens as the files dropped.
+  it("ranks a trace behind the rest, so it takes only the budget they leave", async () => {
+    const dir = specArtifactsDir(reportDir, "f", "s");
+    await mkdir(join(dir, "todos-add"), { recursive: true });
+    await writeFile(join(dir, "output.log"), "$ cmd\n");
+    await writeFile(join(dir, "todos-add", "trace.zip"), "zip-bytes-zip-bytes");
+    await writeFile(join(dir, "z-report.json"), "{}");
+    const rows = await collectSpecArtifacts({
+      reportDir,
+      feature: "f",
+      spec: "s",
+      warn: () => {},
+    });
+    expect(rows.map((r) => r.name)).toEqual([
+      "output.log",
+      "z-report.json",
+      "todos-add/trace.zip",
+    ]);
+  });
+
   it("caps files and bytes with an explicit warning, never dropping output.log", async () => {
     const dir = specArtifactsDir(reportDir, "f", "s");
     await mkdir(dir, { recursive: true });

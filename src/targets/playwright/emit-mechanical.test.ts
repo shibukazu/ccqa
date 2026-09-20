@@ -3,7 +3,6 @@ import {
   emitPlaywrightDraft,
   judgeCall,
   locatorToPlaywright,
-  stepEvidenceCall,
 } from "./emit-mechanical.ts";
 import type { RecordedAction } from "../../ir/types.ts";
 
@@ -266,12 +265,12 @@ describe("emitPlaywrightDraft — actions", () => {
         { actionIndex: 1, stepId: "step-02", source: "login" },
       ],
     });
-    expect(script).toContain("// step: step-01 [spec]");
-    expect(script).toContain("// step: step-02 [login]");
+    expect(script).toContain(`await test.step("step: step-01 [spec]", async () => {`);
+    expect(script).toContain(`await test.step("step: step-02 [login]", async () => {`);
     expect(script).toContain("// the list shows one item");
   });
 
-  it("wraps each step in before/after step-evidence calls, flat (no closure)", () => {
+  it("wraps each step in its own test.step block, titled with the step's own label", () => {
     const script = emitPlaywrightDraft({
       actions: [
         { action: "navigate", value: "https://example.test/", stepId: "step-01" },
@@ -283,24 +282,25 @@ describe("emitPlaywrightDraft — actions", () => {
         { actionIndex: 1, stepId: "step-02", source: "spec" },
       ],
     });
-    // The module is imported and both boundaries fire per step.
-    expect(script).toContain(`import { ccqaStepBefore, ccqaStepAfter } from "ccqa/step-evidence";`);
-    expect(script).toContain(`await ccqaStepBefore(page, "step-01", "spec");`);
-    // step-01 closes just before step-02 opens, and step-02 closes at the end.
-    expect(script).toContain(`await ccqaStepAfter(page, "step-01", "spec");`);
-    expect(script).toContain(`await ccqaStepBefore(page, "step-02", "spec");`);
-    expect(script).toContain(`await ccqaStepAfter(page, "step-02", "spec");`);
-    // Flat calls, never a wrapper closure a page-object rewrite would fight.
-    expect(script).not.toContain("ccqaStep(");
-    expect(script).not.toContain("async () =>");
-    // Exactly one after-call per step (open→next-open flush + end flush, deduped).
-    expect(script.match(/ccqaStepAfter\(page, "step-01"/g)).toHaveLength(1);
-  });
-
-  it("omits the step-evidence import when there are no step markers", () => {
-    const script = emit([{ action: "navigate", value: "https://example.test/" }]);
+    // Nothing of ccqa's runtime ships in the file the project commits.
     expect(script).not.toContain("ccqa/step-evidence");
     expect(script).not.toContain("ccqaStep");
+    // Each step opens its own block, titled with its own label, and that
+    // block holds exactly that step's action.
+    expect(script).toContain(
+      'await test.step("step: step-01 [spec]", async () => {\n    await page.goto("https://example.test/");\n  });',
+    );
+    expect(script).toContain(
+      'await test.step("step: step-02 [spec]", async () => {\n    await page.getByText("Submit").first().click();\n  });',
+    );
+    // Exactly one block per step — a rewrite that merged or split them would
+    // change this count.
+    expect(script.match(/test\.step\(/g)).toHaveLength(2);
+  });
+
+  it("emits no test.step block for a marker-less draft", () => {
+    const script = emit([{ action: "navigate", value: "https://example.test/" }]);
+    expect(script).not.toContain("test.step(");
   });
 
   it("emits replay-unstable warnings and dropped-action markers", () => {
@@ -393,7 +393,7 @@ describe("emitPlaywrightDraft — judgements", () => {
       ],
     });
     expect(script).toContain(`import { judgeByLlm } from "ccqa/judge";`);
-    expect(script).toContain(`// step: step-02 [spec]`);
+    expect(script).toContain(`await test.step("step: step-02 [spec]", async () => {`);
     expect(script).toContain(
       `await judgeByLlm(page, "the answer lists steps", { from: ".out", testInfo });`,
     );
@@ -553,7 +553,6 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
         { actionIndex: 2, stepId: "step-02", source: "spec" },
         { actionIndex: 3, stepId: "step-03", source: "spec" },
       ],
-      stepEvidence: false,
       runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
       cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
     });
@@ -584,7 +583,6 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
         { actionIndex: 0, stepId: "step-01", source: "spec" },
         { actionIndex: 2, stepId: "step-02", source: "spec" },
       ],
-      stepEvidence: false,
       runId: { import: `import { uniqueId } from "./utils";`, expression: "uniqueId()" },
       cleanup: { actions: [{ action: "click", locator: { by: "role", value: "button", name: "Delete" } }] },
     });
@@ -610,7 +608,6 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
       actions: [...recorded],
       testName: "Add a todo item",
       stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
-      stepEvidence: false,
       cleanup,
     };
     expect(emitPlaywrightDraft(common)).toContain("Deleted");
@@ -632,7 +629,6 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
       ] as RecordedAction[],
       testName: "Add a todo item",
       stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
-      stepEvidence: false,
     });
     expect(script).not.toContain("wrong");
     expect(script).toContain("right");
@@ -648,44 +644,13 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
       ] as RecordedAction[],
       testName: "Add a todo item",
       stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
-      stepEvidence: false,
     });
     expect(script).toContain("first");
     expect(script).toContain("second");
   });
-
-  it("drops the capture calls when the target captures no step evidence", () => {
-    const script = emitPlaywrightDraft({
-      actions: [...recorded],
-      testName: "Add a todo item",
-      stepMarkers: [{ actionIndex: 0, stepId: "step-01", source: "spec" }],
-      stepEvidence: false,
-    });
-    expect(script).toContain("// step: step-01 [spec]");
-    expect(script).not.toContain("ccqaStepBefore");
-    expect(script).not.toContain("ccqa/step-evidence");
-  });
 });
 
 describe("an injected call's pattern", () => {
-  const evidence = stepEvidenceCall("ccqaStepAfter", { stepId: "step-05", source: "spec" }).pattern;
-
-  // A click that opens a new tab has to capture evidence on that tab.
-  it.each([
-    [`await ccqaStepAfter(page, "step-05", "spec");`, true],
-    [`await ccqaStepAfter(contentPage, "step-05", "spec");`, true],
-    [`await ccqaStepAfter(await ctx.newPage(), "step-05", "spec");`, true],
-    [`await ccqaStepAfter(page.context().pages()[1], "step-05", "spec");`, true],
-    [`await ccqaStepAfter(\n  contentPage,\n  "step-05",\n  "spec",\n);`, true],
-    // Unawaited, the closing capture races the end of the test and the step
-    // reports as unfinished; a mention in a comment is not a call at all.
-    [`ccqaStepAfter(page, "step-05", "spec");`, false],
-    [`// ccqaStepAfter(page, "step-05", "spec")`, false],
-    [`await ccqaStepAfter(page, "step-04", "spec");`, false],
-  ])("%s → %s", (source, expected) => {
-    expect(evidence.test(source)).toBe(expected);
-  });
-
   it("holds the claim text but not the page it is judged on", () => {
     const claim = judgeCall({ id: "s", source: "spec", judgeByLlm: "the reply is concrete (enough)" }).pattern;
     expect(claim.test(`await judgeByLlm(tab, "the reply is concrete (enough)", { testInfo });`)).toBe(

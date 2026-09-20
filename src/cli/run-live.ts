@@ -151,7 +151,7 @@ export async function runLiveSpecs(
   if (userPromptBundle !== null) {
     log.meta("prompt", userPromptBundle.loaded.join(" + "));
   }
-  const conventions = await loadConventions(cwd, opts.conventions ?? []);
+  const conventions = await loadConventions(cwd, { guides: opts.conventions ?? [] });
   for (const w of conventions.warnings) log.warn(w);
   const userPromptSuffix =
     [

@@ -180,6 +180,21 @@ export const CONVENTIONS_MAX_BYTES = 64 * 1024;
 export interface ConventionSection {
   path: string;
   body: string;
+  /**
+   * `guide`: a document that states rules, so a rule can be quoted back at
+   * code that breaks it. `example`: a file whose shape generated code should
+   * imitate — it states nothing, so the review against the project's own rules
+   * reads only the guides.
+   */
+  kind: "guide" | "example";
+}
+
+/** The conventions a generation reads, as the config declares them. */
+export interface ConventionInputs {
+  /** Documents that state rules in prose. */
+  guides: readonly string[];
+  /** Files whose shape generated code should imitate. */
+  examples?: readonly string[];
 }
 
 export interface LoadedConventions {
@@ -189,39 +204,49 @@ export interface LoadedConventions {
 
 /**
  * Expand and read the conventions guides + examples, in declared order, into
- * prompt sections. Files are kept whole while they fit the byte budget; a
- * file that does not fit is dropped with a warning naming it (never a silent
- * truncation). Only when the very first file alone exceeds the budget is it
- * truncated instead — an empty conventions injection would be worse.
+ * prompt sections, each saying which of the two it came from. Files are kept
+ * whole while they fit the byte budget; a file that does not fit is dropped
+ * with a warning naming it (never a silent truncation). Only when the very
+ * first file alone exceeds the budget is it truncated instead — an empty
+ * conventions injection would be worse.
  */
 export async function loadConventions(
   cwd: string,
-  patterns: readonly string[],
+  conventions: ConventionInputs,
   maxBytes: number = CONVENTIONS_MAX_BYTES,
 ): Promise<LoadedConventions> {
-  const files: string[] = [];
-  for (const pattern of patterns) {
-    const matched = await expandPatternToFiles(cwd, pattern).catch((e) => {
-      throw new Error(`conventions entry ${(e as Error).message}`);
-    });
-    for (const f of matched) {
-      if (!files.includes(f)) files.push(f);
+  const expand = async (patterns: readonly string[]): Promise<string[]> => {
+    const out: string[] = [];
+    for (const pattern of patterns) {
+      const matched = await expandPatternToFiles(cwd, pattern).catch((e) => {
+        throw new Error(`conventions entry ${(e as Error).message}`);
+      });
+      for (const f of matched) {
+        if (!out.includes(f)) out.push(f);
+      }
     }
+    return out;
+  };
+  const files: { path: string; kind: ConventionSection["kind"] }[] = (
+    await expand(conventions.guides)
+  ).map((path) => ({ path, kind: "guide" }));
+  for (const path of await expand(conventions.examples ?? [])) {
+    if (!files.some((f) => f.path === path)) files.push({ path, kind: "example" });
   }
 
   const sections: ConventionSection[] = [];
   const warnings: string[] = [];
   const dropped: string[] = [];
   let used = 0;
-  for (const file of files) {
+  for (const { path: file, kind } of files) {
     const body = await readFile(resolve(cwd, file), "utf8");
     const size = Buffer.byteLength(body, "utf8");
     if (used + size <= maxBytes) {
-      sections.push({ path: file, body });
+      sections.push({ path: file, body, kind });
       used += size;
     } else if (sections.length === 0) {
       const truncated = Buffer.from(body, "utf8").subarray(0, maxBytes).toString("utf8");
-      sections.push({ path: file, body: truncated });
+      sections.push({ path: file, body: truncated, kind });
       used = maxBytes;
       warnings.push(
         `conventions file ${file} exceeds the ${maxBytes}-byte prompt budget alone — injected truncated`,

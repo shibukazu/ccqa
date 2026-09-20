@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildEvidenceSteps, renderEvidence, sourceNeedles } from "./table.ts";
+import { assertionsByStep, buildEvidenceSteps, renderEvidence, sourceNeedles } from "./table.ts";
 import type { EvidenceInput } from "./table.ts";
 import type { SourceAnchors } from "./source-anchors.ts";
 import type { TestCase } from "../intent/case.ts";
@@ -47,6 +47,28 @@ test("Adding an item puts it on the list @high", async ({ page }) => {
   await expect(page.getByText("Buy milk")).toBeVisible();
 });
 `;
+
+describe("assertionsByStep", () => {
+  // A formatter is free to wrap `test.step`. Read a line at a time, the
+  // wrapped form holds no boundary at all, and every step of the file then
+  // reports as deciding nothing.
+  it("attributes the assertions under a test.step header a formatter wrapped", () => {
+    const source = [
+      `test("Adding an item puts it on the list", async ({ page }) => {`,
+      "  await test.step(",
+      `    "step 2: Add the item",`,
+      "    async () => {",
+      `      await expect(page.getByText("Buy milk")).toBeVisible();`,
+      "    },",
+      "  );",
+      "});",
+    ].join("\n");
+
+    expect(assertionsByStep(source).get("step-02")).toEqual([
+      `await expect(page.getByText("Buy milk")).toBeVisible();`,
+    ]);
+  });
+});
 
 describe("renderEvidence", () => {
   const markdown = renderEvidence({

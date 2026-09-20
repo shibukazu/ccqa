@@ -4,12 +4,17 @@ import { join } from "node:path";
 import { EVIDENCE_DIR_ENV, sanitizeStepId } from "./evidence-constants.ts";
 
 /**
- * Step-boundary screenshot capture for tests ccqa generates for external
- * targets (Playwright today). Generated tests import this through the
- * `ccqa/step-evidence` subpath and call it at each spec-step boundary; the
- * `<id>.png` + `<id>.json` pairs it writes are exactly what `ccqa run`'s
- * report loader consumes, so an external target's rows carry the same
- * per-step evidence the built-in agent-browser path produces.
+ * Step-boundary screenshot capture for a generated Playwright test, kept for
+ * the tests that already import it.
+ *
+ * ccqa no longer emits these calls: a committed spec is plain
+ * `@playwright/test`, its steps are `test.step` blocks, and the screenshots
+ * are read back out of the run's trace afterwards
+ * (`targets/playwright/trace-capture.ts`). The `ccqa/step-evidence` subpath
+ * still ships, and `ccqa run` still points `CCQA_EVIDENCE_DIR` at the report,
+ * so a spec generated before that change keeps producing its own — higher
+ * fidelity — pairs until it is regenerated. Nothing writes new calls to it,
+ * and the export goes in a later release.
  *
  * Two constraints shape the whole module:
  *

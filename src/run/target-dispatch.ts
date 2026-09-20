@@ -4,11 +4,12 @@ import type { SpecCatalog } from "./spec-catalog.ts";
 import type { GroupLookup } from "./serial-groups.ts";
 import { targetConfigFor, type ProjectConfig, type TargetConfig } from "../config/project-config.ts";
 import { registryFor, resolveTargetFrom } from "../targets/registry.ts";
-import type {
-  BrowserCoverageDecl,
-  StepEvidenceSupport,
-  TargetPlugin,
-  TestRunner,
+import {
+  resolveStepEvidence,
+  type BrowserCoverageDecl,
+  type StepEvidenceSupport,
+  type TargetPlugin,
+  type TestRunner,
 } from "../targets/types.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
@@ -37,7 +38,7 @@ export interface ExternalTargetGroup {
   targetConfig: TargetConfig;
   /** The plugin's `defaultTestPath`; see `RunnerOptions.defaultTestPath`. */
   defaultTestPath: string;
-  /** Resolved from the plugin — absent on the plugin means "no step screenshots". */
+  /** The plugin's capability, resolved against this project's config. */
   stepEvidence: StepEvidenceSupport;
   /** The target's required declaration, passed through verbatim. */
   browserCoverage: BrowserCoverageDecl;
@@ -179,10 +180,7 @@ function externalGroupFor(
     runner: plugin.runner!,
     targetConfig,
     defaultTestPath: plugin.defaultTestPath,
-    stepEvidence: plugin.stepEvidence ?? {
-      supported: false,
-      reason: `the "${plugin.id}" target does not capture step screenshots`,
-    },
+    stepEvidence: resolveStepEvidence(plugin, targetConfig),
     browserCoverage: plugin.browserCoverage,
   };
 }

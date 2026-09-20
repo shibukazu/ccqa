@@ -206,9 +206,9 @@ export async function runTrace(
 
   // The project's own recording guidance, read the same way generation reads
   // its convention documents — same globs, same size cap.
-  const conventions = opts.conventions
-    ? await loadConventions(opts.cwd ?? process.cwd(), opts.conventions)
-    : { sections: [], warnings: [] };
+  const conventions = await loadConventions(opts.cwd ?? process.cwd(), {
+    guides: opts.conventions ?? [],
+  });
   for (const w of conventions.warnings) log.warn(w);
 
   const baseSystemPrompt = buildTraceSystemPrompt({

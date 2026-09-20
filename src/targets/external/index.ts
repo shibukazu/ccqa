@@ -2,7 +2,7 @@ import { compileRecording } from "../playwright/index.ts";
 import { acquirePlaywrightBrowser } from "../playwright/browser-server.ts";
 import { runCommandRunner } from "../run-command-runner.ts";
 import type { TargetConfig } from "../../config/project-config.ts";
-import type { TargetPlugin } from "../types.ts";
+import { resolveStepEvidence, type TargetPlugin } from "../types.ts";
 
 /**
  * A target the project defines, not one ccqa ships.
@@ -21,20 +21,19 @@ import type { TargetPlugin } from "../types.ts";
  * the config accepts, and any other is refused when the config loads.
  */
 export function createExternalTarget(id: string, config: TargetConfig): TargetPlugin {
-  return {
+  const plugin: TargetPlugin = {
     id,
     input: "recording",
-    generate: (ctx) => compileRecording(ctx, "playwright"),
+    generate: (ctx) => compileRecording(ctx, "playwright", resolveStepEvidence(plugin, ctx.targetConfig)),
     // No default: a target with no code of its own has no opinion about where
     // the project keeps its tests, so `testPath` is required in its config.
     defaultTestPath: config.testPath ?? "",
     runner: runCommandRunner,
-    stepEvidence: config.hooks.stepEvidence
-      ? { supported: true }
-      : {
-          supported: false,
-          reason: `the "${id}" target has step evidence turned off in .ccqa/config.yaml`,
-        },
+    // Same as the built-in playwright target: the screenshots come out of the
+    // trace `ccqa run` asks for, not out of anything in the generated file.
+    // Whether a run takes them is the project's setting, ANDed in by
+    // `resolveStepEvidence`.
+    stepEvidence: { supported: true },
     judgeSteps: { supported: true },
     browserCoverage: { browser: "cdp", cdpEndpoint: acquirePlaywrightBrowser },
     // Learned generation guidance is keyed by the prompt kind, and this
@@ -42,4 +41,5 @@ export function createExternalTarget(id: string, config: TargetConfig): TargetPl
     // playbook refines it for both.
     guidanceKind: "playwright",
   };
+  return plugin;
 }

@@ -206,7 +206,13 @@ export const TargetConfigSchema = z
     resources: z.array(ResourceRefSchema).default([]),
     conventions: ConventionsSchema.prefault({}),
     runId: RunIdConfigSchema.optional(),
-    /** Emitter switches. `stepEvidence` off drops the per-step capture calls. */
+    /**
+     * Run switches. `stepEvidence` off stops ccqa capturing per-step
+     * screenshots when it runs this target's tests — which is what asking
+     * Playwright for a trace on every run costs. It does not change a
+     * generated file: the emitted `test.step` blocks are how the test reads,
+     * not how it is captured.
+     */
     hooks: z
       .object({ stepEvidence: z.boolean().default(true) })
       .strict()
