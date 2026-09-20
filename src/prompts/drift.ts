@@ -1,4 +1,5 @@
-import type { IntentKind, SpecArtifacts } from "../drift/artifacts.ts";
+import { extname } from "node:path";
+import type { CaseDocumentKind, SpecArtifacts } from "../drift/artifacts.ts";
 import type { SourceRoot } from "../config/source-roots.ts";
 import type { LocatorInventory } from "../drift/locator-candidates.ts";
 import { formatBlockList, type AvailableBlock } from "./draft.ts";
@@ -21,7 +22,7 @@ import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "10";
+export const DRIFT_PROMPT_VERSION = "11";
 
 /**
  * Project guidance injected into the audit, in the same order the run's
@@ -37,7 +38,7 @@ export interface DriftGuidance {
 export function buildDriftSystemPrompt(
   blocks: AvailableBlock[],
   guidance: DriftGuidance = {},
-  intentKind: IntentKind = "spec",
+  intentKind: CaseDocumentKind = "spec",
 ): string {
   return `You audit whether a test case still describes the product's code correctly.
 
@@ -189,9 +190,12 @@ export function buildDriftUserPrompt(
 ): string {
   const { kind, path, body } = artifacts.intent;
   const heading = kind === "spec" ? "spec.yaml" : `Test case document — ${path}`;
+  // Fenced by the file's own extension, not by a format ccqa claims to know:
+  // the document is the project's, and mislabelling it would tell the model
+  // to read a shape that is not there.
   return `## ${heading}
 
-\`\`\`${kind === "spec" ? "yaml" : "markdown"}
+\`\`\`${kind === "spec" ? "yaml" : extname(path).replace(/^\./, "")}
 ${body}
 \`\`\`
 
@@ -266,10 +270,10 @@ What renders a screen is often a template rather than a script — a \`.vue\`, \
 `;
 }
 
-/** What states the case, in the vocabulary of the document the project writes. */
-function intentSurfaceBlock(kind: IntentKind): string {
-  if (kind === "markdown") {
-    return `- **the test case document** — always present. Markdown the project's own authors wrote and own: a heading for what to do, a heading for what must then be true, and whatever else their format carries. Read it as prose stating intent — the headings are theirs, not ccqa's.`;
+/** What states the case: ccqa's own format, or one it does not know. */
+function intentSurfaceBlock(kind: CaseDocumentKind): string {
+  if (kind === "project") {
+    return `- **the test case document** — always present. Written and owned by the project's own authors, in whatever format they keep their test cases in; ccqa does not parse it and neither should you assume a shape. Read it as a statement of intent: what the case does, and what must then be true. Its structure and vocabulary are theirs, not ccqa's.`;
   }
   return `- **spec.yaml** — always present. Pure YAML: \`title\`, then \`steps\`, each either an action (\`instruction\` + \`expected\`) or \`include: <block-name>\` with \`params\`. \`expected\` names something observable — visible text, an aria-label, a URL, an element state.`;
 }

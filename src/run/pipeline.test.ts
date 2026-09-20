@@ -273,25 +273,31 @@ describe("a dry run plans without claiming", () => {
  * every other case's test is the project's own file to execute.
  */
 describe("a project whose cases live in its own documents", () => {
-  const CASE = (mode: string | null) =>
-    [
-      "## Title",
-      "",
-      "Adding an item puts it on the list",
-      ...(mode === null ? [] : ["", "## Mode", "", mode]),
-      "",
-      "## Steps",
-      "",
-      "1. Open the todo list",
-      "",
-      "## Expected",
-      "",
-      "- The item appears on the list",
-      "",
-    ].join("\n");
+  /** The project's own source: a table of case id → how it runs. */
+  const READER = (cases: Record<string, string>, disabled: Record<string, boolean>) =>
+    `const MODES = ${JSON.stringify(cases)};
+const DISABLED = ${JSON.stringify(disabled)};
 
-  async function project(cases: Record<string, string | null>): Promise<string> {
-    const root = await mkdtemp(join(tmpdir(), "ccqa-intent-"));
+export default ({ cwd }) => ({
+  list: () => Object.keys(MODES).sort(),
+  load: (id) => ({
+    id,
+    path: \`\${cwd}/docs/testcase/\${id}.md\`,
+    text: "the case, as its author wrote it",
+    title: "Adding an item puts it on the list",
+    mode: MODES[id],
+    steps: [{ instruction: "Open the todo list" }],
+    expectations: ["The item appears on the list"],
+    disabled: DISABLED[id] === true,
+  }),
+});
+`;
+
+  async function project(
+    cases: Record<string, string>,
+    disabled: Record<string, boolean> = {},
+  ): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "ccqa-own-cases-"));
     await mkdir(join(root, ".ccqa"), { recursive: true });
     await writeFile(
       join(root, ".ccqa/config.yaml"),
@@ -303,23 +309,17 @@ describe("a project whose cases live in its own documents", () => {
         "    framework: playwright",
         "    testPath: tests/{case}.spec.ts",
         "    runCommand: npx playwright test {files}",
-        "    intent:",
-        "      kind: markdown",
-        "      root: docs/testcase",
-        "      fields:",
-        "        mode: Mode",
+        "    cases: ./ccqa/cases.mjs",
         "",
       ].join("\n"),
     );
-    await mkdir(join(root, "docs/testcase/todo"), { recursive: true });
-    for (const [name, mode] of Object.entries(cases)) {
-      await writeFile(join(root, `docs/testcase/todo/${name}.md`), CASE(mode));
-    }
+    await mkdir(join(root, "ccqa"), { recursive: true });
+    await writeFile(join(root, "ccqa/cases.mjs"), READER(cases, disabled));
     return root;
   }
 
   test("a dry run lists the live case as ours and the rest as the project's", async () => {
-    const root = await project({ add_item: "live", remove_item: null });
+    const root = await project({ "todo/add_item": "live", "todo/remove_item": "deterministic" });
     const lines: string[] = [];
     const result = await withSink({ write: (t) => lines.push(t) }, () =>
       executeRun([], { dryRun: true, cwd: root }),
@@ -330,14 +330,35 @@ describe("a project whose cases live in its own documents", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  test("a sweep leaves a disabled case alone, and naming it still runs it", async () => {
+    const root = await project({
+      "todo/add_item": "live",
+      "todo/retired": "live",
+    }, { "todo/retired": true });
+    const swept: string[] = [];
+    await withSink({ write: (t) => swept.push(t) }, () =>
+      executeRun([], { dryRun: true, cwd: root }),
+    );
+    expect(swept.join("")).toMatch(/todo\/add_item/);
+    expect(swept.join("")).not.toMatch(/todo\/retired/);
+
+    // Naming it is the escape hatch, the same one the spec tree has.
+    const named: string[] = [];
+    await withSink({ write: (t) => named.push(t) }, () =>
+      executeRun(["todo/retired"], { dryRun: true, cwd: root }),
+    );
+    expect(named.join("")).toMatch(/todo\/retired/);
+    await rm(root, { recursive: true, force: true });
+  });
+
   test("no live case is not a failure, and says who runs them instead", async () => {
-    const root = await project({ add_item: null });
+    const root = await project({ "todo/add_item": "deterministic" });
     const lines: string[] = [];
     const result = await withSink({ write: (t) => lines.push(t) }, () =>
       executeRun([], { cwd: root }),
     );
     expect(result).toEqual({ exitCode: 0, report: null, reportDir: null });
-    expect(lines.join("")).toContain("1 test case(s) under docs/testcase, none of them live");
+    expect(lines.join("")).toContain("./ccqa/cases.mjs lists 1 test case(s), none of them live");
     expect(lines.join("")).toContain("the project's own test command");
     await rm(root, { recursive: true, force: true });
   });

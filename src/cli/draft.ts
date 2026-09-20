@@ -17,12 +17,13 @@ import { addLanguageOption } from "./options.ts";
 import { resolveCwd } from "./resolve-cwd.ts";
 import {
   ensureCcqaDir,
-  listFeatureTree,
   loadAvailableBlocks,
   parseSpecPath,
   saveSpecFile,
-  tryReadSpecFile,
 } from "../store/index.ts";
+// `ccqa draft` authors ccqa's own format, so it is the one command whose
+// subject is the spec tree rather than the cases in it.
+import { listFeatureTree, tryReadSpecFile } from "../cases/spec-source.ts";
 import {
   DRAFT_CATEGORY_LABEL,
   DraftNamingSchema,

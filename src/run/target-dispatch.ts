@@ -7,6 +7,7 @@ import { registryFor, resolveTargetFrom } from "../targets/registry.ts";
 import {
   resolveStepEvidence,
   type BrowserCoverageDecl,
+  type RunnableCase,
   type StepEvidenceSupport,
   type TargetPlugin,
   type TestRunner,
@@ -26,10 +27,12 @@ import * as log from "../cli/logger.ts";
  * of silently dropping out of the run.
  */
 
-/** A spec routed away from the det/live paths, with what its report row needs. */
-export interface DispatchedSpec extends SpecRef {
-  /** spec.yaml `title:`, carried into the report row. */
-  title: string | null;
+/** A case routed away from the det/live paths, with what its report row needs. */
+export type DispatchedSpec = RunnableCase;
+
+/** The title a report row carries for a case, or null when it could not be read. */
+function titleOf(spec: DispatchedSpec): string | null {
+  return spec.testCase?.title ?? null;
 }
 
 export interface ExternalTargetGroup {
@@ -96,11 +99,17 @@ export function groupSpecsByTarget(
     // A present-but-unparseable spec.yaml is reported, not routed: everything
     // read off it falls back to a default, so the det path would run it as a
     // spec that declares nothing and drop it with no report row.
+    const dispatched = (): DispatchedSpec => ({
+      ...ref,
+      caseId: specKey(ref),
+      testCase: read?.case ?? null,
+    });
     if (read?.error) {
-      unresolved.push({ ...ref, title: null, reason: read.error, targetId: null });
+      unresolved.push({ ...dispatched(), reason: read.error, targetId: null });
       continue;
     }
-    const spec = read?.spec ?? null;
+    const testCase = read?.case ?? null;
+    const spec = testCase?.spec ?? null;
     if (spec === null) {
       agentBrowser.push(ref);
       continue;
@@ -111,8 +120,7 @@ export function groupSpecsByTarget(
       plugin = resolve(spec, config);
     } catch (err) {
       unresolved.push({
-        ...ref,
-        title: spec.title ?? null,
+        ...dispatched(),
         reason: err instanceof Error ? err.message : String(err),
         // Resolution failed, so report the *declared* id (spec.yaml `target:`
         // falling back to the config default) rather than a resolved one.
@@ -126,7 +134,7 @@ export function groupSpecsByTarget(
       continue;
     }
 
-    const entry: DispatchedSpec = { ...ref, title: spec.title ?? null };
+    const entry = dispatched();
     const targetConfig = targetConfigFor(config, plugin.id);
     const routed = externalRunnability(plugin, plugin.id, targetConfig);
     if ("reason" in routed) {
@@ -186,16 +194,16 @@ function externalGroupFor(
 }
 
 /**
- * The external group for a project whose cases are its own documents.
+ * The external group for a project whose cases come from its own source.
  *
  * Such a case is not dispatched by reading a `spec.yaml` `target:` — the
- * target that declares the intent source already owns every case under it — so
+ * target that declares the case source already owns every case under it — so
  * the routing is one lookup rather than a walk. What it shares with
  * {@link groupSpecsByTarget} is the two conditions that decide whether ccqa
  * can execute a generated test at all: the plugin has a runner, and the
  * project configured the command to run it with.
  */
-export function groupIntentCases(
+export function groupOwnCases(
   cases: readonly DispatchedSpec[],
   targetId: string,
   config: ProjectConfig,
@@ -249,7 +257,7 @@ export async function runExternalSpecs(
   for (const u of dispatch.unresolved) {
     log.error(`${u.featureName}/${u.specName}: ${u.reason}`);
     rows.push({
-      ...emptySpecRow({ feature: u.featureName, spec: u.specName, title: u.title, status: "failed" }),
+      ...emptySpecRow({ feature: u.featureName, spec: u.specName, title: titleOf(u), status: "failed" }),
       ...(u.targetId ? { target: u.targetId } : {}),
       analysisSkipped: "spec did not execute (target could not be resolved)",
       failureLogExcerpt: u.reason,
@@ -258,7 +266,7 @@ export async function runExternalSpecs(
   for (const s of dispatch.skipped) {
     log.warn(`${s.featureName}/${s.specName}: skipped — ${s.reason}`);
     rows.push({
-      ...emptySpecRow({ feature: s.featureName, spec: s.specName, title: s.title, status: "skipped" }),
+      ...emptySpecRow({ feature: s.featureName, spec: s.specName, title: titleOf(s), status: "skipped" }),
       ...(s.targetId ? { target: s.targetId } : {}),
       skipReason: s.reason,
     });
@@ -309,7 +317,7 @@ export async function runExternalSpecs(
       const crashRows = group.specs
         .filter((s) => !done.has(`${s.featureName}/${s.specName}`))
         .map((s) => ({
-          ...emptySpecRow({ feature: s.featureName, spec: s.specName, title: s.title, status: "failed" }),
+          ...emptySpecRow({ feature: s.featureName, spec: s.specName, title: titleOf(s), status: "failed" }),
           target: group.targetId,
           analysisSkipped: "spec did not execute (runner crashed)",
           failureLogExcerpt: `runner for target "${group.targetId}" crashed: ${message}`,

@@ -13,7 +13,6 @@ import {
   resolveSpecTargets,
   specKey,
   splitCaseId,
-  tryReadSpecFile,
   type SpecRef,
 } from "../store/index.ts";
 import { tryParseTestSpec } from "../spec/parser.ts";
@@ -50,7 +49,7 @@ import {
 import { emitGithubAnnotations } from "../report/github-format.ts";
 import { ANALYSIS_PROMPT_VERSION } from "../report/prompt.ts";
 import { fetchCustomPrompt, fetchTriageUserPrompt, hashTriageUserPrompt } from "../prompts/custom-prompt.ts";
-import { buildStepDescriptions, loadEvidenceForSpec, specEvidenceDir } from "../report/evidence.ts";
+import { loadEvidenceForSpec, specEvidenceDir, stepCaptions } from "../report/evidence.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import type { LiveReportStep, ReportSpecResult, RunReportData } from "../report/schema.ts";
 import { renderJunitXml } from "../report/junit.ts";
@@ -72,24 +71,18 @@ import {
 } from "./spec-catalog.ts";
 import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
 import { liveCaseFrom, runsLive, type LiveCase, type LiveCaseOptions } from "../cli/live-case.ts";
-import { intentTargetFor } from "../cli/resolve-case.ts";
-import {
-  caseFromSpec,
-  intentCaseIds,
-  loadMarkdownCase,
-  type TestCase,
-} from "../intent/case.ts";
+import type { TestCase } from "../cases/case.ts";
+import { openCaseReader, type CaseReader } from "../cases/reader.ts";
 import {
   loadProjectConfig,
   targetConfigFor,
   type CoverageConfig,
-  type IntentSource,
 } from "../config/project-config.ts";
 import { CoverageSession } from "../coverage/session.ts";
 import { CoverageInbox, type CoverageInboxMode } from "../coverage/inbox.ts";
 import { formatResolvedSpec } from "../coverage/resolve-stream.ts";
 import {
-  groupIntentCases,
+  groupOwnCases,
   groupSpecsByTarget,
   runExternalSpecs,
   type TargetDispatch,
@@ -249,24 +242,21 @@ function asHubReadError(err: unknown): never {
 }
 
 /**
- * The cases a project's own documents hold, as this invocation named them:
- * every one under the intent root, or exactly the ones the arguments name.
- * An argument is read both ways a person writes it — the path they see in
- * their editor, or the id everything else cites (see `caseIdFor`).
+ * The cases a project's own source holds, as this invocation named them:
+ * every one the source holds, or exactly the ones the arguments name. An
+ * argument is read both ways a person writes it — the path they see in their
+ * editor, or the id everything else cites.
  */
-async function readIntentCases(
+async function readOwnCases(
   targets: readonly string[],
-  intent: IntentSource,
-  cwd: string,
+  reader: CaseReader,
 ): Promise<TestCase[]> {
-  const ids = await intentCaseIds(targets, intent, cwd);
-  try {
-    return await Promise.all(ids.map((id) => loadMarkdownCase(id, intent, cwd)));
-  } catch (err) {
-    // An argument naming no case is the operator mistyping it, the same way a
-    // spec path that does not resolve is — a usage error, not a stack trace.
-    throw new RunUsageError(errMessage(err));
-  }
+  const named = targets.length > 0;
+  const refs = named ? [...new Set(targets)] : await reader.list();
+  const cases = await Promise.all(refs.map((ref) => reader.load(ref)));
+  // Only the sweep is filtered, matching the spec tree's own rule: `disabled`
+  // opts a case out of "all cases", and naming one still runs it.
+  return named ? cases : cases.filter((c) => !c.disabled);
 }
 
 /** De-dupe by `featureName/specName`, keeping first-seen order. */
@@ -587,11 +577,21 @@ export async function executeRun(
   // Blocks are read once for the whole run: the analysis pass, its prompt
   // projection and the deterministic evidence captions all consume this map.
   const parsedBlocks = await loadAllBlocks(cwd);
+  const projectConfig = await loadProjectConfig(cwd);
+  // A project that writes its cases as its own documents keeps none of them
+  // under `.ccqa/features/`, so the arguments (or the sweep) are read against
+  // its own source instead. `ownRun` non-null is that project, and it is
+  // the only thing below that has to know: a case id splits into the same
+  // `feature/spec` pair everything downstream addresses a case by.
+  const reader = openCaseReader(projectConfig, cwd);
   const analysisDeps: FailureAnalysisDeps = {
     diffProvider,
     auth: diffProvider ? driftAuthAvailable() : { ok: false, reason: "skipped by flags" },
     cwd,
     reportDir,
+    // The run's own reader: the classification must read the case the run
+    // executed, not the file as it stands once the run has finished.
+    reader,
     // So the prompt can check an `include:` step's target still exists —
     // mirrors what the audit is given (src/prompts/drift.ts).
     blocks: projectAvailableBlocks(parsedBlocks),
@@ -602,45 +602,33 @@ export async function executeRun(
     triageUserPrompt,
   };
 
-  const projectConfig = await loadProjectConfig(cwd);
   // The project's own variables, for the same two reasons `ccqa record` loads
   // them: a live case's prose resolves `${VAR}` against them, and the scrub
   // that keeps their values out of what is pushed to the hub is built from
   // the names loaded here.
   await loadEnvFiles(projectConfig.envFiles, cwd);
-  // A project that writes its cases as its own documents keeps none of them
-  // under `.ccqa/features/`, so the arguments (or the sweep) are read against
-  // the intent source instead. `intentRun` non-null is that project, and it is
-  // the only thing below that has to know: a case id splits into the same
-  // `feature/spec` pair everything downstream addresses a case by.
-  const intentTarget = intentTargetFor(projectConfig);
-  const intentRun =
-    intentTarget === null
+  const ownRun =
+    reader.target === null
       ? null
       : {
-          id: intentTarget.id,
-          root: intentTarget.intent.root,
-          cases: await readIntentCases(targets, intentTarget.intent, cwd),
+          id: reader.target.id,
+          /** `targets.<id>.cases` as written, for the messages below. */
+          module: reader.target.module,
+          cases: await readOwnCases(targets, reader),
         };
-  if (intentRun !== null && opts.onlyHubRerunNeeded) {
-    throw new RunUsageError(
-      "--only-hub-rerun-needed reads the hub's per-spec rerun verdicts, which a project whose " +
-        "cases are its own documents has none of — name the cases to run instead",
-    );
-  }
 
   // No targets means "all specs"; resolveSpecTargets(undefined) enumerates them.
   // Multiple targets may overlap (e.g. a feature plus one of its specs), so dedupe.
   // Only the "all specs" expansion is filtered: a named target never reaches
   // this enumerator, so `disabled` opts a spec out rather than locking it.
   const enumerateAll = () => listActiveSpecs(cwd);
-  const resolved = intentRun
+  const resolved = ownRun
     ? []
     : await Promise.all(
         (targets.length ? targets : [undefined]).map((t) => resolveSpecTargets(t, enumerateAll, cwd)),
       );
-  let specs = intentRun
-    ? intentRun.cases.map((c) => splitCaseId(c.ref.id))
+  let specs = ownRun
+    ? ownRun.cases.map((c) => splitCaseId(c.ref.id))
     : dedupeSpecs(resolved.flat());
 
   if (filtering) {
@@ -724,7 +712,7 @@ export async function executeRun(
   // and then executes twelve is worse than one that never filtered.
   const selectedKeys = new Set(specs.map(specKey));
   const selectedCases =
-    intentRun?.cases.filter((c) => selectedKeys.has(specKey(splitCaseId(c.ref.id)))) ?? [];
+    ownRun?.cases.filter((c) => selectedKeys.has(specKey(splitCaseId(c.ref.id)))) ?? [];
   const liveCaseCount = selectedCases.filter(runsLive).length;
   // A generated case's test belongs to the project's own runner, so an ordinary
   // `ccqa run` leaves it alone. Two things ask ccqa to run it anyway: a
@@ -737,24 +725,24 @@ export async function executeRun(
   // documents that is not the same fact as "no cases": a case ccqa does not
   // run is one the project's own test command runs, and calling that "nothing
   // found" sends the reader looking for a file that is exactly where it should be.
-  if (specs.length === 0 || (intentRun !== null && liveCaseCount + generatedCases.length === 0)) {
-    if (intentRun === null) {
+  if (specs.length === 0 || (ownRun !== null && liveCaseCount + generatedCases.length === 0)) {
+    if (ownRun === null) {
       log.warn("no specs to run");
       // A target whose cases come from the project's own files is reached
       // through that target; this run enumerated `.ccqa/features/` because it
       // is not the default one.
-      if (Object.values(projectConfig.targets).some((t) => t.intent)) {
+      if (Object.values(projectConfig.targets).some((t) => t.cases)) {
         log.hint(
           `this project has a target whose cases come from its own files, but its defaultTarget ` +
             `(${projectConfig.defaultTarget}) is not that target, so this run enumerated ` +
             `.ccqa/features/ instead`,
         );
       }
-    } else if (intentRun.cases.length === 0) {
-      log.warn(`no test cases under ${intentRun.root}`);
+    } else if (ownRun.cases.length === 0) {
+      log.warn(`${ownRun.module} lists no test cases`);
     } else {
       log.warn(
-        `nothing to run: ${intentRun.cases.length} test case(s) under ${intentRun.root}, none of them live`,
+        `nothing to run: ${ownRun.module} lists ${ownRun.cases.length} test case(s), none of them live`,
       );
       log.hint(
         "ccqa runs a case itself only when its mode says `live`; every other case's test is " +
@@ -770,7 +758,7 @@ export async function executeRun(
 
   // Skipped for a markdown case: there is no `.ccqa/features/<feature>/…/spec.yaml`
   // to read, and every consumer of the catalog below is asking about one.
-  const catalog = await readSpecs(intentRun ? [] : specs, cwd);
+  const catalog = await readSpecs(ownRun ? [] : specs, reader);
   // Only under --coverage: an identity's turn has to be exclusive for the
   // attribution to mean anything, but that is a cost the measurement asks for
   // and an ordinary run must not pay.
@@ -833,11 +821,11 @@ export async function executeRun(
     // A markdown case is not dispatched by reading a `target:` — the target
     // that declares the intent source already owns every case under it — so
     // the two routes are built apart and merged.
-    dispatch = groupSpecsByTarget(intentRun ? [] : specs, catalog, projectConfig);
-    if (intentRun !== null && generatedCases.length > 0) {
-      const routed = groupIntentCases(
-        generatedCases.map((c) => ({ ...splitCaseId(c.ref.id), title: c.title })),
-        intentRun.id,
+    dispatch = groupSpecsByTarget(ownRun ? [] : specs, catalog, projectConfig);
+    if (ownRun !== null && generatedCases.length > 0) {
+      const routed = groupOwnCases(
+        generatedCases.map((c) => ({ ...splitCaseId(c.ref.id), caseId: c.ref.id, testCase: c })),
+        ownRun.id,
         projectConfig,
       );
       dispatch.external.push(...routed.external);
@@ -846,7 +834,8 @@ export async function executeRun(
     for (const { spec, groups } of waitingOnGroup) {
       dispatch.skipped.push({
         ...spec,
-        title: catalog.get(specKey(spec))?.spec?.title ?? null,
+        caseId: specKey(spec),
+        testCase: catalog.get(specKey(spec))?.case ?? null,
         reason: `waiting on ${groups.join(", ")}, held by another job`,
         targetId: null,
       });
@@ -858,7 +847,7 @@ export async function executeRun(
 
   // Agent-browser det specs run first under vitest, then external targets,
   // then live ones via Claude; results merge into a single report.json.
-  const withMode = intentRun
+  const withMode = ownRun
     ? selectedCases.map((c) => ({ ...splitCaseId(c.ref.id), mode: c.mode }))
     : resolveSpecsModes(dispatch.agentBrowser, catalog);
   // `mode:` decides who executes a case, and the two document kinds answer
@@ -866,11 +855,11 @@ export async function executeRun(
   // under vitest, while a markdown case's test is the project's own file, run
   // by the project's own command. So a markdown case reaches ccqa's runner
   // only by saying `live`.
-  const detSpecs = intentRun ? [] : withMode.filter((s) => s.mode === "deterministic");
+  const detSpecs = ownRun ? [] : withMode.filter((s) => s.mode === "deterministic");
   const liveSpecs = withMode.filter((s) => s.mode === "live");
   log.meta(
     "modes",
-    intentRun
+    ownRun
       ? `${selectedCases.length} case(s) / ${liveSpecs.length} live / ` +
         `${generatedCases.length} generated, run here / ` +
         `${selectedCases.length - liveSpecs.length - generatedCases.length} for the project's own test command`
@@ -942,17 +931,18 @@ export async function executeRun(
     // the ones this run *is* about to execute are already routed, so listing
     // them here too would give one case two rows saying opposite things.
     const runningHere = new Set(generatedCases.map((c) => specKey(splitCaseId(c.ref.id))));
-    const theirs = intentRun
+    const theirs = ownRun
       ? withMode.filter((s) => s.mode !== "live" && !runningHere.has(specKey(s)))
       : [];
     const notOurs = theirs.map((s) => ({
       ...s,
-      title: null,
+      caseId: specKey(s),
+      testCase: null,
       reason: "run by the project's own test command",
-      targetId: intentRun?.id ?? null,
+      targetId: ownRun?.id ?? null,
     }));
     const routed = { ...dispatch, skipped: [...dispatch.skipped, ...notOurs] };
-    const ours = intentRun ? liveSpecs : withMode;
+    const ours = ownRun ? liveSpecs : withMode;
     for (const line of formatDryRunLines(ours, routed, resources)) log.emitRaw(line + "\n");
     log.blank();
     log.info("dry run: nothing was executed and no report was written");
@@ -1126,16 +1116,13 @@ export async function executeRun(
   // Built here rather than at selection: a `spec.yaml` case the agent-browser
   // target cannot honour (a `judgeByLlm` step) throws while being read, and
   // doing that up front would cost this run the phases it could have finished.
-  const liveCases = intentRun
+  const liveCases = ownRun
     ? selectedCases.filter(runsLive).map((c) => liveCaseFrom(c, liveCaseOpts))
     : liveSpecs.map((ref) => {
-        const yaml = catalog.get(specKey(ref))?.yaml;
-        // Unreachable: `mode: live` was read off this very file a moment ago.
-        if (yaml == null) throw new Error(`${specKey(ref)}: spec.yaml is no longer readable`);
-        return liveCaseFrom(
-          caseFromSpec(ref.featureName, ref.specName, yaml, parsedBlocks, cwd),
-          liveCaseOpts,
-        );
+        const testCase = catalog.get(specKey(ref))?.case;
+        // Unreachable: `mode: live` was read off this very case a moment ago.
+        if (testCase == null) throw new Error(`${specKey(ref)}: spec.yaml is no longer readable`);
+        return liveCaseFrom(testCase, liveCaseOpts);
       });
   const live = await runLiveSpecs(liveCases, liveOpts);
 
@@ -1183,11 +1170,17 @@ export async function executeRun(
     );
     const detResults = await analyzeDeterministicSummaries(
       det.summaries,
-      cwd,
+      catalog,
       reportDir,
       analysisRun,
     );
-    const analyzedExternalRows = await analyzeExternalRows(externalRows, analysisRun);
+    const analyzedExternalRows = await analyzeExternalRows(
+      externalRows,
+      analysisRun,
+      // How each row's case is spelled by its own source, so the classifier
+      // can find its generated code without re-deriving an id from the pair.
+      new Map(dispatch.external.flatMap((g) => g.specs.map((c) => [specKey(c), c.caseId]))),
+    );
     // Second attempts, after the classification they revise. `overallExitCode`
     // is already fixed above and the rows keep their status, so a spec whose
     // rerun passed stays a failure — the rerun explains it, it does not undo it.
@@ -1865,23 +1858,23 @@ export function failedSpec(s: SpecRunSummary): boolean {
  */
 async function analyzeDeterministicSummaries(
   summaries: readonly SpecRunSummary[],
-  cwd: string,
+  catalog: SpecCatalog,
   reportDir: string,
   { pass, deps }: FailureAnalysisRun,
 ): Promise<ReportSpecResult[]> {
   const results: ReportSpecResult[] = [];
   for (const s of summaries) {
     const assertions = collectAssertions(s);
-    // Read spec.yaml once and reuse for both evidence captions and the
-    // failure-analysis prompt.
-    const specYaml = await tryReadSpecFile(s.featureName, s.specName, cwd);
-    const parsedSpec = tryParseTestSpec(specYaml);
-    const stepDescriptions = buildStepDescriptions(parsedSpec, deps.parsedBlocks);
-    const evidence = await loadEvidenceForSpec(s.evidenceDir, reportDir, stepDescriptions);
+    // The case as the run already read it — one read feeds both the evidence
+    // captions and the failure-analysis prompt.
+    const testCase = catalog.get(specKey(s))?.case ?? null;
+    const specYaml = testCase?.document.text ?? null;
+    const parsedSpec = testCase?.spec ?? null;
+    const evidence = await loadEvidenceForSpec(s.evidenceDir, reportDir, stepCaptions(testCase));
     const base = {
       feature: s.featureName,
       spec: s.specName,
-      title: parsedSpec?.title ?? null,
+      title: testCase?.title ?? null,
       target: AGENT_BROWSER_TARGET,
       startedAt: s.startedAt,
       finishedAt: s.finishedAt,
@@ -2003,7 +1996,7 @@ function createRerunExecutor(ctx: {
       }
       const group = ctx.dispatch.external.find((g) => g.specs.some((s) => specKey(s) === key));
       if (group === undefined) throw new Error(`${key} has no execution path to re-run`);
-      const [row] = await group.runner.run([ref], {
+      const [row] = await group.runner.run([group.specs.find((c) => specKey(c) === key)!], {
         cwd: ctx.cwd,
         reportDir: scratch,
         concurrency: 1,

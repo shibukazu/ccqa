@@ -10,6 +10,7 @@ function results(): SpecResult[] {
     {
       target,
       ok: true,
+      documentPath: ".ccqa/features/tasks/test-cases/create/spec.yaml",
       drift: {
         label: "TEST_DRIFT",
         confidence: 0.85,
@@ -61,6 +62,13 @@ describe("renderDrift", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatch(/^::error file=.*\.ccqa\/features\/tasks\/test-cases\/create\/spec\.yaml/);
     expect(lines[0]).toContain("TEST_DRIFT");
+  });
+
+  test("github annotates the document the case is stated in, not a spec.yaml it never had", () => {
+    const own = results().map((r) => ({ ...r, documentPath: "docs/testcase/todo/add_item.md" }));
+    const line = renderDrift(own, "github", cwd).trim();
+    expect(line).toContain("/tmp/proj/docs/testcase/todo/add_item.md");
+    expect(line).not.toContain(".ccqa");
   });
 
   test("github format emits a warning annotation for UNKNOWN", () => {

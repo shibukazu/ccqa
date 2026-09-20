@@ -5,8 +5,9 @@ import { defineConfig } from "tsdown";
 // ccqa has two public surfaces:
 //   1. the `ccqa` CLI binary (bin/ccqa.ts)   → dist/bin/ccqa.mjs
 //   2. the `ccqa/test-helpers` subpath export → dist/runtime/test-helpers.mjs + .d.mts
-//      and its sibling `ccqa/step-evidence`, which generated tests for
-//      external targets import for step-boundary screenshots
+//      and its siblings `ccqa/step-evidence`, which generated tests for
+//      external targets import for step-boundary screenshots, and
+//      `ccqa/case-source`, the contract a project's own case reader answers
 // plus the vitest config used at runtime by `ccqa run --config <this>`
 // emitted as dist/runtime/vitest.config.mjs (not bundled in).
 //
@@ -28,6 +29,10 @@ const CONSUMER_ENTRY = {
   "runtime/step-evidence": "./src/runtime/step-evidence.ts",
   "runtime/judge": "./src/runtime/judge.ts",
   "hub-client/index": "./src/hub-client/index.ts",
+  // `ccqa/case-source`: the contract a project's own case reader answers.
+  // A reader needs only the types, but the schema ships too so one can
+  // validate itself before ccqa does.
+  "cases/contract": "./src/cases/contract.ts",
 };
 
 // Everything runtime (peer + real deps) stays external. The CLI binary

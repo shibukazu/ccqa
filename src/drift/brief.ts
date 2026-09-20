@@ -108,7 +108,7 @@ async function buildBrief(
 ): Promise<AuditBrief> {
   const drift = result.drift!;
   const id = caseIdOf(result.target);
-  const test = result.live ? null : await caseTestPath(result.target, cwd, ctx);
+  const test = result.live ? null : await caseTestPath(result.target, ctx);
   return {
     case: id,
     kind: drift.label,
@@ -152,7 +152,7 @@ async function repairRoute(
     result.target.caseId ??
       { featureName: result.target.featureName, specName: result.target.specName },
     cwd,
-    (await caseRecordingPath(result.target, cwd, ctx)) ?? undefined,
+    (await caseRecordingPath(result.target, ctx)) ?? undefined,
   );
   const recording = await getRecording(ref).catch(() => null);
   const stamp = recording?.generated;

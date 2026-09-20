@@ -12,12 +12,7 @@ targets:
     conventions:
       guides:
         - docs/e2e-guidelines.md
-    intent:
-      kind: markdown
-      root: docs/testcase
-      fields:
-        steps: 手順
-        expected: 期待結果
+    cases: ./ccqa/cases.mjs
     header: |
       // case: {case}
       // source: {link.url}

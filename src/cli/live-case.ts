@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-import type { TestCase } from "../intent/case.ts";
+import type { TestCase } from "../cases/case.ts";
 import {
   collectIncludedBlockNames,
   requireActionSteps,
@@ -83,7 +83,7 @@ export function runsLive(testCase: TestCase): boolean {
 }
 
 export function liveCaseFrom(testCase: TestCase, opts: LiveCaseOptions = {}): LiveCase {
-  const spec = testCase.source.kind === "spec" ? testCase.source.spec : null;
+  const spec = testCase.spec;
   // Cleanup runs in the same session, right after the steps, and stays a step
   // of its own: a cleanup that fails has to show up as a failed step rather
   // than as work nobody recorded.
@@ -101,7 +101,7 @@ export function liveCaseFrom(testCase: TestCase, opts: LiveCaseOptions = {}): Li
     title: testCase.title,
     steps,
     cleanupFrom: own.length,
-    document: testCase.source.kind === "spec" ? testCase.source.yaml : testCase.source.text,
+    document: testCase.document.text,
     blocks: spec ? collectIncludedBlockNames(spec) : [],
     session: {
       names: spec?.session ?? [],

@@ -3,22 +3,15 @@ import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Readable } from "node:stream";
-import { loadAllBlocks, tryReadSpecFile, type SpecRef } from "../store/index.ts";
-import { resolveTestPath } from "./test-path.ts";
+import { resolveCaseTestPath } from "./test-path.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
-import { tryParseTestSpec } from "../spec/parser.ts";
-import type { TestSpec } from "../spec/yaml-schema.ts";
-import type { BlockSpec } from "../types.ts";
+import type { TestCase } from "../cases/case.ts";
 import { runPool } from "../runtime/pool.ts";
 import { OUTPUT_TAIL_CAP, TailBuffer } from "../run/output-tail.ts";
 import { closeMeasurement, specCoverageDir } from "../coverage/session.ts";
 import { emptySpecRow } from "../report/spec-row.ts";
-import {
-  buildStepDescriptions,
-  loadEvidenceForSpec,
-  specEvidenceDir,
-} from "../report/evidence.ts";
+import { loadEvidenceForSpec, specEvidenceDir, stepCaptions } from "../report/evidence.ts";
 import type { ReportArtifact, ReportCoverage, ReportSpecResult } from "../report/schema.ts";
 import {
   ARTIFACTS_DIR_ENV,
@@ -29,7 +22,7 @@ import {
   substituteArtifactsDir,
 } from "./run-artifacts.ts";
 import { amendForTrace, captureStepEvidence } from "./playwright/trace-capture.ts";
-import type { CdpBrowserHandle, RunnerOptions, TestRunner } from "./types.ts";
+import type { CdpBrowserHandle, RunnableCase, RunnerOptions, TestRunner } from "./types.ts";
 import { errMessage } from "../run/errors.ts";
 import * as log from "../cli/logger.ts";
 
@@ -55,14 +48,8 @@ export function substituteRunCommandFiles(runCommand: string, testFiles: string[
  * this as their `runner`.
  */
 export const runCommandRunner: TestRunner = {
-  async run(specs: readonly SpecRef[], opts: RunnerOptions): Promise<ReportSpecResult[]> {
+  async run(specs: readonly RunnableCase[], opts: RunnerOptions): Promise<ReportSpecResult[]> {
     const concurrency = Math.max(1, opts.concurrency);
-    // Blocks are only needed for step-evidence captions, and only when the
-    // target captures evidence — load them once for the whole group, not once
-    // per spec.
-    const blocks: Map<string, BlockSpec> = opts.stepEvidence.supported
-      ? await loadAllBlocks(opts.cwd)
-      : new Map();
     // Mirrors the deterministic path: above 1 worker each spec buffers its
     // output (log.withBuffer) and flushes one labelled block on completion.
     // runPool preserves input order, so the returned rows drive report.json's
@@ -79,7 +66,7 @@ export const runCommandRunner: TestRunner = {
       const key = `${spec.featureName}/${spec.specName}`;
       let row: ReportSpecResult;
       try {
-        row = await log.withBuffer(key, concurrency > 1, () => runOneSpec(spec, opts, blocks));
+        row = await log.withBuffer(key, concurrency > 1, () => runOneSpec(spec, opts));
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.error(`${key}: runner error: ${message}`);
@@ -105,15 +92,12 @@ export const runCommandRunner: TestRunner = {
   },
 };
 
-async function runOneSpec(
-  ref: SpecRef,
-  opts: RunnerOptions,
-  blocks: Map<string, BlockSpec>,
-): Promise<ReportSpecResult> {
-  const { featureName, specName } = ref;
-  const specYaml = await tryReadSpecFile(featureName, specName, opts.cwd);
-  const parsedSpec = tryParseTestSpec(specYaml);
-  const title = parsedSpec?.title ?? null;
+async function runOneSpec(ref: RunnableCase, opts: RunnerOptions): Promise<ReportSpecResult> {
+  const { featureName, specName, testCase } = ref;
+  // The document verbatim, whichever kind states the case: the report row and
+  // the failure classifier want what a person wrote, not a re-serialization.
+  const specYaml = testCase?.document.text ?? null;
+  const title = testCase?.title ?? null;
   const failedRow = (detail: string): ReportSpecResult => ({
     ...emptySpecRow({ feature: featureName, spec: specName, title, status: "failed" }),
     target: opts.targetId,
@@ -144,13 +128,13 @@ async function runOneSpec(
 
   log.run(`${featureName}/${specName}`);
 
-  const testFile = resolveTestPath(opts, opts.targetConfig, ref);
+  const testFile = resolveCaseTestPath(opts, opts.targetConfig, ref.caseId);
   const generated = await stat(resolve(opts.cwd, testFile)).then(
     () => true,
     () => false,
   );
   if (!generated) {
-    const detail = `no generated test at ${testFile} — run 'ccqa generate ${featureName}/${specName}' first`;
+    const detail = `no generated test at ${testFile} — run 'ccqa generate ${ref.caseId}' first`;
     log.error(detail);
     return didNotExecute(detail, "no generated tests");
   }
@@ -292,6 +276,7 @@ async function runOneSpec(
       reportDir: opts.reportDir,
       feature: featureName,
       spec: specName,
+      passed: outcome.exitCode === 0,
       warn: log.warn,
     });
   } catch (err) {
@@ -304,8 +289,7 @@ async function runOneSpec(
     opts,
     evidence,
     artifactsDir,
-    spec: parsedSpec,
-    blocks,
+    testCase,
     ...(traceUnavailable !== undefined ? { traceUnavailable } : {}),
   });
 
@@ -375,8 +359,7 @@ async function loadStepEvidence(args: {
   opts: RunnerOptions;
   evidence: StepEvidenceTarget;
   artifactsDir: string;
-  spec: TestSpec | null;
-  blocks: Map<string, BlockSpec>;
+  testCase: TestCase | null;
   traceUnavailable?: string;
 }): Promise<Pick<ReportSpecResult, "evidence" | "evidenceUnavailable">> {
   const { opts } = args;
@@ -387,7 +370,7 @@ async function loadStepEvidence(args: {
   const reason =
     args.traceUnavailable ??
     (await captureStepEvidence({ artifactsDir: args.artifactsDir, evidenceDir }));
-  const descriptions = buildStepDescriptions(args.spec, args.blocks);
+  const descriptions = stepCaptions(args.testCase);
   const evidence = await loadEvidenceForSpec(evidenceDir, opts.reportDir, descriptions);
   if (evidence) return { evidence };
   return {

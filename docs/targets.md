@@ -124,7 +124,7 @@ targets:
     kind: external
     framework: playwright       # the only value accepted today
 
-    # {case} is the case id an intent source assigns — see `intent` below
+    # {case} is the case id your own case source assigns — see `cases` below
     testPath: e2e/{case}.spec.ts
 
     # directories generated support files may be created under; new files
@@ -168,19 +168,9 @@ targets:
         P2: normal
       format: "[{value}]"
 
-    # this target's cases are markdown, not spec.yaml — see `intent` below
-    intent:
-      kind: markdown
-      root: docs/manual-tests
-      fields:
-        title: Title
-        precondition: Preconditions
-        steps: Test steps
-        expected: Expected results
-        cleanup: Teardown
-        priority: Priority
-        link: Ticket
-        outputPath: Generated test   # omit to keep the case read-only
+    # this target's cases come from a module of yours, not from spec.yaml
+    # — see `cases` below
+    cases: ./ccqa/cases.mjs
 ```
 
 The keys not already covered elsewhere in this document:
@@ -209,13 +199,14 @@ The keys not already covered elsewhere in this document:
   and `ccqa evidence` then names the cleanup expectations that nothing checks,
   so the trade is visible to whoever reads the table.
 - **`header`** — the comment block the generated test opens with, as a
-  template. `{case}`, `{title}`, `{priority}`, `{link.url}` and `{link.ref}`
-  are filled in from the case; a line whose placeholders are all empty is
-  dropped, so a case with no sheet link ships no empty `// sheet:` comment.
-- **`titleTags`** — a tag the test's title ends with, taken from an intent
-  field. `field` names which one; `map` says which field values become
-  which tags — a value the map does not name emits no tag; `format` is the
-  tag's shape, with `{value}` filled in.
+  template. `{case}` and `{title}` are always available, and every name your
+  case source puts in `fields` besides; a line whose placeholders are all
+  empty is dropped, so a case with no sheet link ships no empty `// sheet:`
+  comment.
+- **`titleTags`** — a tag the test's title ends with, taken from one of the
+  case's `fields`. `field` names which one; `map` says which field values
+  become which tags — a value the map does not name emits no tag; `format`
+  is the tag's shape, with `{value}` filled in.
 
 ### `resources` — code the generated test reuses
 
@@ -267,7 +258,7 @@ the draft ships as-is — no LLM involved for the playwright target.
 |---|---|
 | `{feature}` | the feature directory name |
 | `{spec}` | the test-case directory name |
-| `{case}` | the case id an intent source assigns (below); only available when the target declares `intent:` |
+| `{case}` | the case id your own case source assigns (below); required when the target declares `cases:` |
 
 Omit it and the test lands in the spec's own directory
 (`.ccqa/features/<feature>/test-cases/<spec>/test.spec.ts`, or `runbook.yaml`
@@ -284,7 +275,9 @@ test, but it cannot decide where the test lives. Support files it creates
 test; those belong to your repo's layout, not to ccqa.
 
 The template must be relative to the project root, must not contain `..`, and
-must contain `{spec}` — without it every spec would generate onto one file.
+must contain `{spec}` or `{case}` — without one of them every case would
+generate onto the same file. A target with a `cases` module needs `{case}`
+specifically (see below).
 `testPath` is not configurable for the `agent-browser` target: `ccqa run`
 enumerates its vitest tests in the spec directory, so a configurable path there
 would be read by the audit and ignored by the runner.
@@ -301,107 +294,178 @@ page object is audited alongside the one in the test.
 > `generated.json` left in your spec directories — see
 > [ADR-0028](./adr/0028-a-derived-test-path-and-a-recorded-route.md).
 
-### `intent` — reading test cases from markdown
+### `cases` — a reader you own
 
-Omit `intent` and a target's cases are ccqa's own `spec.yaml` files. Set
-`intent: { kind: markdown, root, fields }` and they are markdown files
-under `root` instead, written in whatever headings the project already
-uses — a team that keeps manual test cases as markdown keeps writing them
-the way it does.
+Omit `cases` and a target's cases are ccqa's own `spec.yaml` files. Set
+`cases` to a module in your repository and ccqa asks that module instead:
 
-`fields` maps ccqa's own vocabulary onto the project's headings. Every key
-is optional; an omitted one falls back to its English default:
-
-| Field | Default heading | Holds |
-|---|---|---|
-| `title` | `Title` | the case's title |
-| `precondition` | `Precondition` | context true before the case starts; handed to the recorder as prose, never parsed |
-| `steps` | `Steps` | a numbered list of what to do (required) |
-| `expected` | `Expected` | what must hold, for the case: a bullet list, or prose |
-| `cleanup` | `Cleanup` | a numbered list run after the case, any outcome, plus what the undo must make true |
-| `priority` | `Priority` | free text, kept as written |
-| `link` | `Link` | a bullet list, `URL: ...` / `No: ...` items |
-| `mode` | *(none)* | `live` runs the case through the browser agent; anything else records and generates |
-| `outputPath` | *(none)* | heading ccqa writes the generated test's path into |
-
-A case is one file. Level-2 (`##`) headings divide it into sections; a
-deeper heading belongs to the section it sits in, so a case that structures
-its steps with `###` is still one case. `steps` is the only section a case
-cannot do without — without it there is nothing to record. `steps` and
-`cleanup` are numbered lists (`1.`, `1)`, `1．`); the number is kept, not
-renumbered, because it is how a step gets cited later. `expected` is a
-bullet list (`-`, `*`, `+`, `・`) stated for the case as a whole, not tied
-to one step — which step delivers which expectation is read off the
-recording, not the markdown. A section written as a paragraph instead is
-kept whole rather than dropped, so a case is never quietly weakened by its
-punctuation; `cleanup` reads the same way. A heading the map does not name is carried
-through unchanged, as context for whoever records the case.
-
-A `cleanup` section that numbers its steps **and** lists bullets is stating
-two things: the numbered items are the undo, and the bullets are what the
-undo has to make true. Those are recorded and asserted inside the generated
-`afterEach`, where they are true — asserting "the item is gone" among the
-case's own steps would check it while the item still exists.
-
-Using the field map above, a case file looks like:
-
-```markdown
-## Title
-
-Mark a task complete
-
-## Preconditions
-
-A task named "Buy milk" already exists in the list.
-
-## Test steps
-
-1. Open the task list.
-2. Click the checkbox next to "Buy milk".
-
-## Expected results
-
-- The task's checkbox is checked.
-- The task's text is shown with strikethrough.
-
-## Teardown
-
-1. Uncheck the checkbox to restore the task.
-
-- The task's checkbox is unchecked again.
-
-## Priority
-
-P1
-
-## Ticket
-
-- URL: https://example.com/tickets/123
-
-## Generated test
+```yaml
+targets:
+  e2e:
+    kind: external
+    framework: playwright
+    testPath: "specs/{case}.spec.ts"
+    cases: ./ccqa/cases.mjs
 ```
 
-`outputPath` is the one section of your file ccqa writes to, and it has no
-default: name a heading and ccqa replaces that heading's body with the
-generated test's path, leaving every other byte alone; name none and ccqa
-only ever reads your cases. The heading has to already be in the file, even
-with an empty body as above, for there to be a section to write into.
+ccqa reads one format — its own. Everything else is your format, and it
+stays yours: the module knows your headings, your columns, your tracker's
+API, and ccqa never learns any of it. What crosses the line is the contract
+below, and nothing else.
 
-A case's **id** is its path below `root`, without the extension —
-`docs/manual-tests/todo/mark-complete.md` under `root: docs/manual-tests`
-has id `todo/mark-complete`. That id is what `{case}` expands to in
-`testPath` (above), and the case's working files — its evidence, its route
-diff, its lock — live under `.ccqa/cases/<id>/`. Not its recording: that is
-committed beside the test, at the `testPath`
-([The recorded route](#the-recorded-route-and-what-a-re-record-changed)).
+**The contract.** The module default-exports a function of the project root
+and returns two methods:
 
-`mode` has no default either, and for the same reason: without a heading
-named, no case in the project is claiming to declare one. Where it is set and
-a case's section reads `live`, `ccqa run` executes that case through the
-browser agent — the case's steps and its expectations, judged as it goes,
-with its `cleanup` steps run afterwards — instead of expecting a compiled
-test. Every other case is recorded and generated, and its test is run by your
-own test runner (see [`ccqa select-specs --format
+```ts
+type CaseSourceFactory =
+  (ctx: { cwd: string }) => CaseSource | Promise<CaseSource>;
+
+interface CaseSource {
+  /** Every case id this source holds, sorted. */
+  list(): Promise<string[]> | string[];
+  /** One case, by its id or by the path a CLI argument named. */
+  load(ref: string): Promise<Case> | Case;
+}
+```
+
+A `Case` is a plain object:
+
+| Field | Required | Holds |
+|---|---|---|
+| `id` | yes | `/`-separated path, no extension — `todo/mark-complete` |
+| `path` | yes | absolute path of the file that states the case |
+| `text` | yes | that file verbatim; the audit and the failure classifier read it as written |
+| `title` | yes | the case's title |
+| `mode` | yes | `"deterministic"` (record and compile) or `"live"` (drive it every run) |
+| `steps` | yes | `{ instruction, expected? }`, at least one |
+| `cleanup` | no | the same, run after the case whatever its outcome |
+| `expectations` | no | what must hold for the case as a whole, unattached to a step |
+| `cleanupExpectations` | no | what the undo must make true; asserted inside `afterEach` |
+| `context` | no | `{ heading, body }` sections ccqa does not act on, handed to the recorder |
+| `fields` | no | values `header` and `titleTags.field` refer to, by your own names |
+| `disabled` | no | in the source, but out of runs and audits |
+
+`cases` is a `kind: external` setting — a target ccqa ships brings its own
+cases, so declaring it on one is refused.
+
+`list()` defines the sweep — what `ccqa audit` checks and what `ccqa run`
+expands "all cases" to — so return only what you can load: a README sitting
+beside your cases is not a case. ccqa sorts and de-duplicates what you return.
+A `load()` that throws stops whatever was asked to act on that case, reported
+in your own words; ccqa never reads a failure as an empty answer.
+
+The case is read **strictly**: an unknown key is refused rather than ignored,
+so a typo is reported where it was made instead of quietly costing a field.
+An `id` is `/`-separated with no leading `/`, no `..` and no backslashes —
+normalise Windows separators before returning one.
+
+Step numbering, where the case's working files live and where its recording
+goes are ccqa's, decided by ccqa. A reader that assigned them would be
+answering for a directory it cannot see.
+
+**Getting the types.** Install nothing: the contract ships as the
+`ccqa/case-source` subpath, and it is types only — the module imports nothing
+from ccqa at runtime, so ccqa's own dependencies never reach your build. The
+`@type` on the default export is what binds the reader to the contract; a
+project that runs `checkJs` annotates its own helpers as it would in any
+JavaScript file.
+
+```js
+// ccqa/cases.mjs
+// @ts-check
+import { readdir, readFile } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
+
+const ROOT = "docs/testcase";
+
+/** @type {import("ccqa/case-source").CaseSourceFactory} */
+export default function cases({ cwd }) {
+  const root = resolve(cwd, ROOT);
+
+  return {
+    async list() {
+      const names = await readdir(root, { recursive: true });
+      return names.filter((name) => name.endsWith(".md")).map(toId);
+    },
+
+    async load(ref) {
+      // Both spellings reach the same case: the path you see in your editor,
+      // and the id everything else cites.
+      const id = toId(ref.startsWith(ROOT) ? relative(ROOT, ref) : ref);
+      const path = join(root, `${id}.md`);
+      const text = await readFile(path, "utf8");
+      const section = (heading) => sectionOf(text, heading);
+      return {
+        id,
+        path,
+        text,
+        // `|| id` because a case with no title still has to have one.
+        title: firstLine(section("Title")) || id,
+        mode: firstLine(section("Mode")).toLowerCase() === "live" ? "live" : "deterministic",
+        steps: listItems(section("Steps"), /^\s*\d+[.)]\s*/).map((instruction) => ({ instruction })),
+        cleanup: listItems(section("Cleanup"), /^\s*\d+[.)]\s*/).map((instruction) => ({ instruction })),
+        expectations: listItems(section("Expected"), /^\s*[-*]\s*/),
+      };
+    },
+  };
+}
+
+/** A path below the root, or an id already in that form, as an id. */
+function toId(name) {
+  return name.replace(/\.md$/, "").split(/[\\/]+/).join("/");
+}
+
+/** One `## Heading` section's body; deeper headings stay inside it. */
+function sectionOf(text, heading) {
+  const lines = text.split(/\r?\n/);
+  const start = lines.findIndex((line) => line.trim() === `## ${heading}`);
+  if (start === -1) return "";
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => /^##\s/.test(line));
+  return (end === -1 ? rest : rest.slice(0, end)).join("\n").trim();
+}
+
+/** Every line of `body` that starts with `marker`, with the marker removed. */
+function listItems(body, marker) {
+  return body
+    .split("\n")
+    .filter((line) => marker.test(line))
+    .map((line) => line.replace(marker, "").trim())
+    .filter(Boolean);
+}
+
+function firstLine(body) {
+  return body.split("\n")[0]?.trim() ?? "";
+}
+```
+
+**Plain JavaScript.** ccqa imports the module with no loader, so it must be
+`.mjs`, `.js` or `.cjs` — a `.ts` file cannot be read, and ccqa says so
+rather than failing obscurely. `// @ts-check` checks it in your own `tsc` run
+without a build step; point `cases` at compiled output if you would rather
+write TypeScript. (The rule
+that a generated test may not import `ccqa/*` applies to emitted tests only
+— a reader module is not a test, and it imports the subpath as a type
+anyway, which erases.)
+
+**`{case}` is required.** A case is addressed by its whole id, so a target
+with a `cases` module must use `{case}` in its `testPath`: `{spec}` is only
+the last segment, and two cases filed under the same name in different
+directories would generate onto one file. The id is also where the case's
+working files live — `.ccqa/cases/<id>/` holds its evidence, its route diff
+and its lock. Not its recording: that is committed beside the test, at the
+`testPath` ([The recorded
+route](#the-recorded-route-and-what-a-re-record-changed)).
+
+**`titleTags.field` names one of your `fields`.** ccqa has no list of valid
+names to check it against, so a name your reader never sets simply emits no
+tag rather than an error. Grep your own reader if a tag goes missing.
+
+**`mode` decides who runs the case.** `live` has `ccqa run` drive it through
+the browser agent — the case's steps and its expectations, judged as it
+goes, with its `cleanup` afterwards — instead of expecting a compiled test.
+Every other case is recorded and generated, and its test is run by your own
+runner (see [`ccqa select-specs --format
 paths`](./running.md#asking-the-question-on-its-own)).
 
 Two things ask ccqa to run a generated case anyway, through the target's own
@@ -410,13 +474,20 @@ execute to record what it reached, and naming the case, because that is
 someone asking for this one. A plain `ccqa run` still leaves them alone — the
 line is "who owns running this suite", and by default that is your runner.
 
+> **Breaking change:** `intent: { kind: markdown, root, fields }` is gone,
+> and so is its `outputPath` write-back — ccqa no longer edits your case
+> files. Move the reading into a module of your own and point `cases` at it;
+> a config that still declares `intent` is refused with that instruction.
+> See [ADR-0034](./adr/0034-ccqa-reads-one-format-and-is-handed-the-rest.md).
+
 ### What the generated test looks like
 
 Two things in the emitted file are written for the reviewer rather than for
 the runner, and both are mechanical.
 
-**Each step opens with the case's own words.** A step recorded from a markdown
-case is commented `// step 3: <the step's sentence>`, and a cleanup step
+**Each step opens with the case's own words.** A step recorded from a case
+your own source stated is commented `// step 3: <the step's sentence>`, and a
+cleanup step
 `// cleanup 1: <…>` — so a reviewer reads the code against the case without
 opening both. Under `--language ja` the same comments read `// 3. <文>` and
 `// 後処理 1. <文>`. A `spec.yaml` step keeps the identifier form
@@ -765,11 +836,15 @@ agent-browser specs. Without `runCommand`, the target is generate-only:
 - `{files}` — the spec's generated test files (shell-quoted, cwd-relative).
 - `{artifactsDir}` — a per-spec directory
   (`<report-dir>/artifacts/<feature>__<spec>/`) created before the command
-  runs. Everything the command leaves there (screenshots, traces, result
-  JSON) is recorded as the spec's **artifacts** in the run report, next to
-  an always-captured `output.log` of the command's stdout+stderr — so even a
-  passed run shows what ran. The directory is also exported to the command
-  as `CCQA_ARTIFACTS_DIR`, for tools that can't take it as a flag.
+  runs. Everything the command leaves there (screenshots, result JSON) is
+  recorded as the spec's **artifacts** in the run report, next to an
+  always-captured `output.log` of the command's stdout+stderr — so even a
+  passed run shows what ran. The one exception is a Playwright `trace.zip`:
+  it is listed only for a spec that failed, because the step screenshots
+  have already been read out of it and the archive is worth opening only to
+  replay a failure. It stays in the directory either way. The directory is
+  also exported to the command as `CCQA_ARTIFACTS_DIR`, for tools that can't
+  take it as a flag.
 
 The command also runs with a fresh per-spec `CCQA_RUN_ID` in its
 environment — the same contract as the vitest runner, so specs that embed
@@ -827,8 +902,10 @@ keeps working until it is regenerated; the export is removed in a later
 release. Targets with no browser (`runn`) capture no screenshots and say so in
 the report.
 
-The full time-travel trace rides along as a run **artifact** either way, so
-`--trace` in your own `playwright.config.ts` still does what it always did.
+The full time-travel trace is written either way, so `--trace` in your own
+`playwright.config.ts` still does what it always did. A failed spec lists it
+as a run **artifact**; a passed one leaves it in the artifacts directory
+without listing it.
 
 A spec with a `judgeByLlm` claim also runs standalone under your own
 `runCommand` (plain `playwright test`) — see its runtime contract in

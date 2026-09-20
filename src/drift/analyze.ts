@@ -232,10 +232,17 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
         correctSurface(drift, {
           cwd: opts.cwd,
           sourceRoots: opts.sourceRoots.map((r) => r.abs),
-          ...(await caseWriteArea(target, opts.cwd, opts.context)),
+          ...(await caseWriteArea(target, opts.context)),
         });
       }
-      return { target, ok: true, drift, live: artifacts.live, title: artifacts.title };
+      return {
+        target,
+        ok: true,
+        drift,
+        live: artifacts.live,
+        title: artifacts.title,
+        documentPath: artifacts.intent.path,
+      };
     } catch (e) {
       lastError = `failed to parse drift reply: ${(e as Error).message}`;
     }

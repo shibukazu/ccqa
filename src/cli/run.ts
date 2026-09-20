@@ -31,7 +31,7 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
   new Command("run")
     .argument(
       "[targets...]",
-      "Specs to run, space-separated: each '<feature>/<spec>', '<feature>', or omit for all. For a target that reads an intent source, each is a case id or the path of its source file. Duplicates are de-duped.",
+      "Specs to run, space-separated: each '<feature>/<spec>', '<feature>', or omit for all. For a target with a `cases` module, each is a case id or the path of its source file. Duplicates are de-duped.",
     )
     .description(
       "Run specs, on any target. Agent-browser specs replay the recorded test.spec.ts under vitest " +

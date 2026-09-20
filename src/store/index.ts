@@ -115,7 +115,7 @@ export function getSpecDir(featureName: string, specName: string, cwd?: string):
  * case, and the consumer's own tree stays theirs.
  */
 export interface CaseRef {
-  /** `<feature>/<spec>`, or the intent source's path-shaped id. */
+  /** `<feature>/<spec>`, or the path-shaped id a case source gives it. */
   id: string;
   /** Absolute working directory. */
   dir: string;
@@ -143,8 +143,8 @@ export function splitCaseId(id: string): { featureName: string; specName: string
   return { featureName: parts.join("/") || specName, specName };
 }
 
-/** The case an intent source names, by its root-relative id (no extension). */
-export function intentCase(id: string, cwd?: string): CaseRef {
+/** A case a project's own source names, by the path-shaped id it gives it. */
+export function sourcedCase(id: string, cwd?: string): CaseRef {
   return { id, dir: join(getCcqaDir(cwd), CASES_DIR, ...id.split("/")) };
 }
 
@@ -165,7 +165,7 @@ export function caseRefFor(
   recordingPath: string | undefined,
 ): CaseRef {
   const base =
-    typeof id === "string" ? intentCase(id, cwd) : specCase(id.featureName, id.specName, cwd);
+    typeof id === "string" ? sourcedCase(id, cwd) : specCase(id.featureName, id.specName, cwd);
   return recordingPath === undefined
     ? base
     : { ...base, recordingPathAbs: resolve(cwd, recordingPath) };
@@ -178,20 +178,25 @@ export async function ensureCcqaDir(cwd?: string): Promise<void> {
 }
 
 
-export async function readSpecFile(featureName: string, specName: string, cwd?: string): Promise<string> {
-  const specPath = join(getSpecDir(featureName, specName, cwd), SPEC_FILE);
-  return readFile(specPath, "utf-8").catch(() => {
-    throw new Error(`Spec file not found: ${specPath}`);
-  });
+/**
+ * Where one case's `spec.yaml` is.
+ *
+ * Reading it is not here: a case document is read through `src/cases/`, so
+ * that no feature can reach one kind of case behind the reader's back. This
+ * says where the file is, which the store owns because the `.ccqa` layout is
+ * the store's.
+ */
+export function specFilePath(featureName: string, specName: string, cwd?: string): string {
+  return join(getSpecDir(featureName, specName, cwd), SPEC_FILE);
 }
 
-export async function tryReadSpecFile(
+/** For the enumerations below only — see `src/cases/spec-source.ts` for the public read. */
+async function readSpecYaml(
   featureName: string,
   specName: string,
   cwd?: string,
 ): Promise<string | null> {
-  const specPath = join(getSpecDir(featureName, specName, cwd), SPEC_FILE);
-  return readFile(specPath, "utf-8").catch(() => null);
+  return readFile(specFilePath(featureName, specName, cwd), "utf-8").catch(() => null);
 }
 
 export async function saveSpecFile(
@@ -789,7 +794,7 @@ export async function listActiveSpecs(cwd?: string): Promise<SpecRef[]> {
   const all = await listAllSpecsWithSpecFile(cwd);
   const kept = await Promise.all(
     all.map(async (ref) => {
-      const spec = tryParseTestSpec(await tryReadSpecFile(ref.featureName, ref.specName, cwd));
+      const spec = tryParseTestSpec(await readSpecYaml(ref.featureName, ref.specName, cwd));
       return spec?.disabled === true ? null : ref;
     }),
   );
@@ -848,48 +853,3 @@ export async function listSpecsForFeature(featureName: string, cwd?: string): Pr
   return readdir(testCasesDir).catch(() => []);
 }
 
-export interface FeatureTreeSpec {
-  specName: string;
-  hasSpecFile: boolean;
-  /** Names of blocks this spec includes. Empty array when none. */
-  includedBlocks?: string[];
-}
-
-export interface FeatureTreeEntry {
-  featureName: string;
-  specs: FeatureTreeSpec[];
-}
-
-/**
- * Lists every feature/spec dir under .ccqa/features/, regardless of whether
- * the spec is fully drafted yet. Each spec file is read at most once.
- */
-export async function listFeatureTree(cwd?: string): Promise<FeatureTreeEntry[]> {
-  const featuresDir = join(getCcqaDir(cwd), "features");
-  const featureDirs = await readdir(featuresDir).catch(() => []);
-
-  return Promise.all(
-    featureDirs.map(async (featureName): Promise<FeatureTreeEntry> => {
-      const testCasesDir = join(featuresDir, featureName, "test-cases");
-      const specDirs = await readdir(testCasesDir).catch(() => []);
-      const specs = await Promise.all(
-        specDirs.map(async (specName): Promise<FeatureTreeSpec> => {
-          const specFile = join(testCasesDir, specName, SPEC_FILE);
-          const content = await readFile(specFile, "utf-8").catch(() => null);
-          if (content === null) return { specName, hasSpecFile: false };
-          try {
-            const spec = parseTestSpec(content, specFile);
-            return {
-              specName,
-              hasSpecFile: true,
-              includedBlocks: collectIncludedBlockNames(spec),
-            };
-          } catch {
-            return { specName, hasSpecFile: true };
-          }
-        }),
-      );
-      return { featureName, specs };
-    }),
-  );
-}

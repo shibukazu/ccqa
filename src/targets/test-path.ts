@@ -19,7 +19,7 @@ interface TestPathConfig {
  *
  * The template language is deliberately tiny: `{placeholder}` segments filled
  * from a substitution table the caller owns. Today the table is the spec's own
- * coordinates (`{feature}` / `{spec}`); an intent source that names its cases
+ * coordinates (`{feature}` / `{spec}`); a case source that names its cases
  * differently adds keys to the table without touching this module.
  */
 

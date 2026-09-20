@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emptySpecRow } from "../report/spec-row.ts";
+import { openCaseReader } from "../cases/reader.ts";
+import { ProjectConfigSchema } from "../config/project-config.ts";
 import type { ReportSpecResult } from "../report/schema.ts";
 import type { DiffProvider, SpecDiffResult } from "./diff-provider.ts";
 import type { FailureAnalysisDeps } from "./failure-analysis.ts";
@@ -54,10 +56,14 @@ const DEFAULT_SPEC_YAML =
  * The generated test at the (agent-browser default) target path, plus the
  * support file it imports — and one unrelated file that is neither, to check
  * only what the test actually reaches feeds the classifier.
+ *
+ * The case itself is written too: the classifier finds the generated test by
+ * reading the case and resolving its target, the same way the audit does.
  */
 async function writeGeneratedTest(): Promise<void> {
   const specDir = join(cwd, ".ccqa/features/demo/test-cases/x");
   await mkdir(specDir, { recursive: true });
+  await writeFile(join(specDir, "spec.yaml"), DEFAULT_SPEC_YAML, "utf8");
   await writeFile(join(specDir, "test.spec.ts"), GENERATED_TEST, "utf8");
   await writeFile(join(specDir, "helper.ts"), HELPER_SOURCE, "utf8");
   await writeFile(join(specDir, "unrelated.ts"), "export const unrelated = 1;\n", "utf8");
@@ -93,6 +99,7 @@ function deps(overrides: Partial<FailureAnalysisDeps> = {}): FailureAnalysisDeps
     auth: { ok: true },
     cwd,
     reportDir: join(cwd, "report"),
+    reader: openCaseReader(ProjectConfigSchema.parse({}), cwd),
     blocks: [],
     parsedBlocks: new Map(),
     customPrompt: null,

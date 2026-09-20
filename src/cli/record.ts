@@ -2,7 +2,6 @@ import { expandActionSteps } from "../spec/expand.ts";
 import { loadAllBlocks } from "../store/index.ts";
 import { withUsageErrors } from "./usage-errors.ts";
 import { Command } from "commander";
-import { readSpecFile } from "../store/index.ts";
 import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
 import { parseTestSpec } from "../spec/parser.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
@@ -59,7 +58,7 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
   new Command("record")
     .argument(
       "<case>",
-      "The case to record: a spec id ('<feature>/<spec>'), or — for a target that reads an intent source — a case id or the path of its source file",
+      "The case to record: a spec id ('<feature>/<spec>'), or — for a target with a `cases` module — a case id or the path of its source file",
     )
     .description(
       "Record a test from a case: run agent-browser to collect actions (trace), then compile them " +
@@ -145,7 +144,7 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
   const resolved = await resolveCase(caseArgument, config, cwdForProfile);
   const { testCase, target } = resolved;
   const caseId = testCase.ref.id;
-  const spec = testCase.source.kind === "spec" ? testCase.source.spec : null;
+  const spec = testCase.spec;
   if (target.input === "spec") {
     log.error(
       `target "${target.id}" does not use a browser recording — run 'ccqa generate ${caseId}' instead`,

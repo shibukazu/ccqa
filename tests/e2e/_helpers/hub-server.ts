@@ -20,10 +20,19 @@ export interface TestHub {
  * hub-facing e2e scenarios drive the CLI against. Port 0 so parallel test files
  * never collide.
  */
-export async function startTestHub(opts: { token: string }): Promise<TestHub> {
+export async function startTestHub(opts: {
+  token: string;
+  /** Set for scenarios that read a profile's variables; omitted, those 503. */
+  encrypted?: boolean;
+}): Promise<TestHub> {
   const dataDir = await mkdtemp(join(tmpdir(), "ccqa-e2e-hub-"));
   const storage = createFileHubStorage(dataDir);
-  const server = createHubServer({ storage, token: opts.token, encryptionKey: null, allowedOrigins: [] });
+  const server = createHubServer({
+    storage,
+    token: opts.token,
+    encryptionKey: opts.encrypted === true ? Buffer.alloc(32, 7) : null,
+    allowedOrigins: [],
+  });
 
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const address = server.address();

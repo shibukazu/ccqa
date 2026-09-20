@@ -42,7 +42,7 @@ const { analyzeDrift } = await import("../drift/analyze.ts");
 const { analyzeFailure } = await import("../report/analyze.ts");
 const { buildLiveTranscriptExcerpt } = await import("../report/live-transcript-excerpt.ts");
 const { runLiveExecutor } = await import("../runtime/live-executor.ts");
-const { caseFromSpec } = await import("../intent/case.ts");
+const { caseFromSpec } = await import("../cases/case.ts");
 const { liveCaseFrom } = await import("./live-case.ts");
 const { resolveSessionState, runLiveSpecs } = await import("./run-live.ts");
 

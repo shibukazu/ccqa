@@ -1,38 +1,45 @@
-import { specKey, tryReadSpecFile, type SpecRef } from "../store/index.ts";
-import { parseTestSpec } from "../spec/parser.ts";
-import { DEFAULT_SPEC_MODE, type SpecMode, type TestSpec } from "../spec/yaml-schema.ts";
-import { errMessage } from "./errors.ts";
+import { specKey, type SpecRef } from "../store/index.ts";
+import type { TestCase } from "../cases/case.ts";
+import type { CaseReader } from "../cases/reader.ts";
+import { DEFAULT_SPEC_MODE, type SpecMode } from "../spec/yaml-schema.ts";
 
 /**
- * One spec.yaml as read. `spec` is null both when the file is absent and when
+ * One case as read. `case` is null both when its document is absent and when
  * it would not parse; `error` separates the two, because everything read off
- * the file (`mode:`) silently falls back to its default when
- * parsing fails, which must not look like a spec that declares nothing.
+ * the document (`mode:`) silently falls back to its default when parsing
+ * fails, which must not look like a case that declares nothing.
  */
 export interface CatalogEntry {
-  spec: TestSpec | null;
+  case: TestCase | null;
   /**
-   * The file verbatim, null when there is none. Kept beside the parse because
-   * the report row and the failure classifier want what was written, and
-   * re-reading it later would show a mid-run edit rather than what ran.
+   * The document verbatim, null when there is none. Kept beside the parse
+   * because the report row and the failure classifier want what was written,
+   * and re-reading it later would show a mid-run edit rather than what ran.
    */
   yaml: string | null;
   error: string | null;
 }
 
-/** Every selected spec.yaml, read and parsed once for the whole run. */
+/** Every selected case, read once for the whole run. */
 export type SpecCatalog = ReadonlyMap<string, CatalogEntry>;
 
-export async function readSpecs(refs: readonly SpecRef[], cwd: string): Promise<SpecCatalog> {
+export async function readSpecs(
+  refs: readonly SpecRef[],
+  reader: CaseReader,
+): Promise<SpecCatalog> {
   const entries = await Promise.all(
     refs.map(async (ref): Promise<readonly [string, CatalogEntry]> => {
-      const yaml = await tryReadSpecFile(ref.featureName, ref.specName, cwd);
-      if (yaml === null) return [specKey(ref), { spec: null, yaml: null, error: null }];
-      try {
-        return [specKey(ref), { spec: parseTestSpec(yaml), yaml, error: null }];
-      } catch (err) {
-        return [specKey(ref), { spec: null, yaml, error: errMessage(err) }];
-      }
+      const read = await reader.read(specKey(ref));
+      return [
+        specKey(ref),
+        {
+          case: read.case,
+          yaml: read.document?.text ?? null,
+          // An absent document is not an error here: the run surfaces that
+          // itself, with the command that would create one.
+          error: read.document === null ? null : read.error,
+        },
+      ];
     }),
   );
   return new Map(entries);
@@ -40,10 +47,10 @@ export async function readSpecs(refs: readonly SpecRef[], cwd: string): Promise<
 
 export type SpecWithMode = SpecRef & { mode: SpecMode };
 
-/** Spec-declared `mode:` wins; otherwise `DEFAULT_SPEC_MODE`. */
+/** Case-declared `mode:` wins; otherwise `DEFAULT_SPEC_MODE`. */
 export function resolveSpecsModes(specs: readonly SpecRef[], catalog: SpecCatalog): SpecWithMode[] {
   return specs.map((s) => ({
     ...s,
-    mode: catalog.get(specKey(s))?.spec?.mode ?? DEFAULT_SPEC_MODE,
+    mode: catalog.get(specKey(s))?.case?.mode ?? DEFAULT_SPEC_MODE,
   }));
 }

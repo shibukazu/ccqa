@@ -22,29 +22,23 @@ ccqa run
 ccqa run --live-step-retry 2 tasks/create-and-complete
 ```
 
-## Live cases from a project's own markdown
+## Live cases from a project's own case source
 
-A project that writes its test cases as markdown declares the same thing
-through whichever heading it maps to `intent.fields.mode` (see [Generation
-targets](./targets.md#intent--reading-test-cases-from-markdown)). A case whose
-section reads `live` is driven exactly as a `mode: live` spec is:
+A project that reads its cases through [a module of its
+own](./targets.md#cases--a-reader-you-own) says the same thing by answering
+`mode: "live"` for that case, however its own documents spell it. Such a case
+is driven exactly as a `mode: live` spec is.
 
-```markdown
-## How to run
-
-live
-```
-
-Two differences follow from the document, not from the mode. A markdown case
-lists what must be true for the flow as a whole rather than per step, so those
-expectations are judged at its last step — which is when they are meant to
-hold. And its `cleanup` steps run after the case, in the same browser session,
-whatever the outcome.
+Two differences follow from where the case came from, not from the mode. A
+case that states its expectations for the flow as a whole rather than per step
+has those judged at its last step — which is when they are meant to hold. And
+its `cleanup` steps run after the case, in the same browser session, whatever
+the outcome.
 
 Everything else is the same: the same judge, the same per-step screenshots,
-the same `live.user` / `live.agent` guidance below. A markdown case that does
-not say `live` is recorded and generated, and its test is run by the project's
-own test runner.
+the same `live.user` / `live.agent` guidance below. A case that does not say
+`live` is recorded and generated, and its test is run by the project's own
+test runner.
 
 Constraints on selectors / `agent-browser` subcommands that apply during `ccqa record` (no `eval`, no `@ref`, no bare-tag positional `find`, no chained agent-browser calls) are **relaxed** for live specs — Claude can use any subcommand and any selector style because there is no replay contract to honour.
 

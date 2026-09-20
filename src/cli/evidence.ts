@@ -6,7 +6,7 @@ import { RunUsageError } from "../run/errors.ts";
 import { loadProjectConfig } from "../config/project-config.ts";
 import { resolveLanguage } from "../prompts/language.ts";
 import { getRecording, keptCaseRun, readSpecReview, splitCaseId } from "../store/index.ts";
-import type { TestCase } from "../intent/case.ts";
+import type { TestCase } from "../cases/case.ts";
 import { resolveCase } from "./resolve-case.ts";
 import { renderEvidence, sourceNeedles } from "../evidence/table.ts";
 import { findSourceAnchors, type SourceAnchors } from "../evidence/source-anchors.ts";

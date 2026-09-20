@@ -1,6 +1,6 @@
 import { SETUP_STEP_ID, type RecordedAction } from "../ir/types.ts";
 import type { Recording } from "../store/index.ts";
-import type { TestCase } from "../intent/case.ts";
+import type { TestCase } from "../cases/case.ts";
 import { describeAction } from "../ir/route-diff.ts";
 import { parseStepComment, stepLines } from "../codegen/step-comment.ts";
 import {

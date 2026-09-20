@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -44,7 +44,7 @@ describe("collectSpecArtifacts", () => {
   });
 
   it("returns [] for a missing artifacts dir", async () => {
-    const rows = await collectSpecArtifacts({ reportDir, feature: "f", spec: "s", warn: () => {} });
+    const rows = await collectSpecArtifacts({ reportDir, feature: "f", spec: "s", passed: false, warn: () => {} });
     expect(rows).toEqual([]);
   });
 
@@ -59,6 +59,7 @@ describe("collectSpecArtifacts", () => {
       reportDir,
       feature: "f",
       spec: "s",
+      passed: false,
       warn: (m) => warnings.push(m),
     });
     expect(rows).toEqual([
@@ -82,6 +83,7 @@ describe("collectSpecArtifacts", () => {
       reportDir,
       feature: "f",
       spec: "s",
+      passed: false,
       warn: () => {},
     });
     expect(rows.map((r) => r.name)).toEqual([
@@ -89,6 +91,27 @@ describe("collectSpecArtifacts", () => {
       "z-report.json",
       "todos-add/trace.zip",
     ]);
+  });
+
+  // The step screenshots were already read out of the trace, so what is left
+  // is a time-travel archive of a spec that passed — tens of megabytes nobody
+  // opens, in the report and in every hub push.
+  it("does not list a trace archive for a spec that passed", async () => {
+    const dir = specArtifactsDir(reportDir, "f", "s");
+    await mkdir(join(dir, "todos-add"), { recursive: true });
+    await writeFile(join(dir, "output.log"), "$ cmd\n");
+    await writeFile(join(dir, "todos-add", "trace.zip"), "zip-bytes-zip-bytes");
+    await writeFile(join(dir, "z-report.json"), "{}");
+    const rows = await collectSpecArtifacts({
+      reportDir,
+      feature: "f",
+      spec: "s",
+      passed: true,
+      warn: () => {},
+    });
+    expect(rows.map((r) => r.name)).toEqual(["output.log", "z-report.json"]);
+    // Still on disk for anyone who wants it; only the row is gone.
+    expect(await stat(join(dir, "todos-add", "trace.zip"))).toBeTruthy();
   });
 
   it("caps files and bytes with an explicit warning, never dropping output.log", async () => {
@@ -104,6 +127,7 @@ describe("collectSpecArtifacts", () => {
       reportDir,
       feature: "f",
       spec: "s",
+      passed: false,
       warn: (m) => warnings.push(m),
       caps: { maxFiles: 3, maxTotalBytes: 16 },
     });

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  groupIntentCases,
+  groupOwnCases,
   groupSpecsByTarget,
   runExternalSpecs,
   type DispatchedSpec,
@@ -11,6 +11,7 @@ import {
   type TargetDispatch,
 } from "./target-dispatch.ts";
 import { readSpecs } from "./spec-catalog.ts";
+import { openCaseReader } from "../cases/reader.ts";
 import { createIncrementalReport, type ReportEnvelope } from "./incremental-report.ts";
 import { resolveTargetFrom } from "../targets/registry.ts";
 import { agentBrowserTarget } from "../targets/agent-browser/index.ts";
@@ -92,7 +93,7 @@ async function dispatchOf(
   config: ProjectConfig,
   resolve?: (spec: TestSpec, config: ProjectConfig) => TargetPlugin,
 ) {
-  const catalog = await readSpecs(specs, cwd);
+  const catalog = await readSpecs(specs, openCaseReader(config, cwd));
   return resolve
     ? groupSpecsByTarget(specs, catalog, config, resolve)
     : groupSpecsByTarget(specs, catalog, config);
@@ -127,7 +128,7 @@ describe("groupSpecsByTarget", () => {
     expect(group.targetId).toBe("ext-run");
     expect(group.targetConfig.runCommand).toBe("echo {files}");
     expect(group.specs.map((s) => s.specName)).toEqual(["x", "y"]);
-    expect(group.specs[0]!.title).toBe("Sample flow");
+    expect(group.specs[0]!.testCase?.title).toBe("Sample flow");
   });
 
   it("skips generate-only targets (no runner)", async () => {
@@ -174,10 +175,10 @@ describe("groupSpecsByTarget", () => {
   });
 });
 
-describe("groupIntentCases", () => {
+describe("groupOwnCases", () => {
   const CASES: DispatchedSpec[] = [
-    { featureName: "demo", specName: "a", title: "Case A" },
-    { featureName: "demo", specName: "b", title: "Case B" },
+    { featureName: "demo", specName: "a", caseId: "demo/a", testCase: null },
+    { featureName: "demo", specName: "b", caseId: "demo/b", testCase: null },
   ];
 
   it("returns empty groups for an empty case list without touching the registry", () => {
@@ -188,14 +189,14 @@ describe("groupIntentCases", () => {
         throw new Error("registry must not be consulted for zero cases");
       },
     });
-    expect(groupIntentCases([], "playwright", config)).toEqual({ external: [], skipped: [] });
+    expect(groupOwnCases([], "playwright", config)).toEqual({ external: [], skipped: [] });
   });
 
   it("groups every case into one external group carrying the target's own settings", () => {
     const config = ProjectConfigSchema.parse({
       targets: { playwright: { runCommand: "echo {files}" } },
     });
-    const { external, skipped } = groupIntentCases(CASES, "playwright", config);
+    const { external, skipped } = groupOwnCases(CASES, "playwright", config);
     expect(skipped).toEqual([]);
     expect(external).toHaveLength(1);
     const group = external[0]!;
@@ -212,7 +213,7 @@ describe("groupIntentCases", () => {
     const config = ProjectConfigSchema.parse({
       targets: { playwright: { runCommand: "echo {files}", hooks: { stepEvidence: false } } },
     });
-    const { external } = groupIntentCases(CASES, "playwright", config);
+    const { external } = groupOwnCases(CASES, "playwright", config);
     expect(external[0]!.stepEvidence).toEqual({
       supported: false,
       reason: expect.stringContaining(".ccqa/config.yaml"),
@@ -221,23 +222,23 @@ describe("groupIntentCases", () => {
 
   it("skips every case, naming runCommand, when the target's config has none", () => {
     const config = ProjectConfigSchema.parse({});
-    const { external, skipped } = groupIntentCases(CASES, "playwright", config);
+    const { external, skipped } = groupOwnCases(CASES, "playwright", config);
     expect(external).toEqual([]);
     expect(skipped).toHaveLength(2);
     skipped.forEach((s, i) => {
       expect(s.reason).toContain("runCommand");
-      expect(s.title).toBe(CASES[i]!.title);
+      expect(s.caseId).toBe(CASES[i]!.caseId);
       expect(s.targetId).toBe("playwright");
     });
   });
 
   it("skips every case for an unknown target id", () => {
     const config = ProjectConfigSchema.parse({});
-    const { external, skipped } = groupIntentCases(CASES, "no-such-target", config);
+    const { external, skipped } = groupOwnCases(CASES, "no-such-target", config);
     expect(external).toEqual([]);
     expect(skipped).toHaveLength(2);
     skipped.forEach((s, i) => {
-      expect(s.title).toBe(CASES[i]!.title);
+      expect(s.caseId).toBe(CASES[i]!.caseId);
       expect(s.targetId).toBe("no-such-target");
     });
   });
@@ -305,10 +306,10 @@ describe("runExternalSpecs", () => {
     const dispatch: TargetDispatch = {
       ...emptyDispatch(),
       unresolved: [
-        { featureName: "demo", specName: "bad", title: "Bad", reason: 'unknown target "nope"', targetId: "nope" },
+        { featureName: "demo", specName: "bad", caseId: "demo/bad", testCase: null, reason: 'unknown target "nope"', targetId: "nope" },
       ],
       skipped: [
-        { featureName: "demo", specName: "gen", title: "Gen", reason: "target is generate-only", targetId: "gen-only" },
+        { featureName: "demo", specName: "gen", caseId: "demo/gen", testCase: null, reason: "target is generate-only", targetId: "gen-only" },
       ],
     };
     const rows = await runExternalSpecs(dispatch, {
@@ -353,7 +354,7 @@ describe("runExternalSpecs", () => {
       ...emptyDispatch(),
       external: [
         {
-          ...group(wrapped, [{ featureName: "demo", specName: "x", title: "X" }]),
+          ...group(wrapped, [{ featureName: "demo", specName: "x", caseId: "demo/x", testCase: null }]),
           stepEvidence: { supported: true },
         },
       ],
@@ -398,8 +399,8 @@ describe("runExternalSpecs", () => {
       ...emptyDispatch(),
       external: [
         group(runner, [
-          { featureName: "demo", specName: "x", title: null },
-          { featureName: "demo", specName: "y", title: null },
+          { featureName: "demo", specName: "x", caseId: "demo/x", testCase: null },
+          { featureName: "demo", specName: "y", caseId: "demo/y", testCase: null },
         ]),
       ],
     };
@@ -425,7 +426,7 @@ describe("runExternalSpecs", () => {
     });
     const dispatch: TargetDispatch = {
       ...emptyDispatch(),
-      skipped: [{ featureName: "demo", specName: "gen", title: null, reason: "generate-only", targetId: "gen-only" }],
+      skipped: [{ featureName: "demo", specName: "gen", caseId: "demo/gen", testCase: null, reason: "generate-only", targetId: "gen-only" }],
     };
     await runExternalSpecs(dispatch, { cwd, reportDir, concurrency: 1, resources: () => [], report });
     expect(pushed.map((r) => r.spec)).toEqual(["gen"]);

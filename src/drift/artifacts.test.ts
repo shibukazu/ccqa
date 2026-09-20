@@ -104,85 +104,77 @@ describe("collectCaseArtifacts — spec.yaml case", () => {
   });
 });
 
-describe("collectCaseArtifacts — markdown case", () => {
+describe("collectCaseArtifacts — a case from the project's own source", () => {
   const CASE_ID = "todo/add_item";
-  const CASE_MD = `## Title
-
-Adding an item puts it on the list
-
-## Steps
-
-1. Open the todo list
-2. Add "Buy milk"
-
-## Expected
-
-- The item appears on the list
-`;
-  /** External target reading its cases from markdown, one heading mapped to mode. */
+  const DOCUMENT = "Adding an item puts it on the list, however this project writes that down.";
   const CONFIG = `defaultTarget: todo-e2e
 targets:
   todo-e2e:
     kind: external
     framework: playwright
     testPath: specs/{case}.spec.ts
-    intent:
-      kind: markdown
-      root: docs/testcase
-      fields:
-        mode: Mode
+    cases: ./ccqa/cases.mjs
+`;
+  /** `CCQA_TEST_MODE` lets one reader stand in for both a recorded and a live case. */
+  const READER = `export default ({ cwd }) => ({
+  list: () => ["todo/add_item"],
+  load: (id) => ({
+    id,
+    path: \`\${cwd}/docs/testcase/\${id}.md\`,
+    text: ${JSON.stringify(DOCUMENT)},
+    title: "Adding an item puts it on the list",
+    mode: process.env.CCQA_TEST_MODE ?? "deterministic",
+    steps: [{ instruction: "Open the todo list" }],
+  }),
+});
 `;
 
-  let mdCwd: string;
-  let mdCtx: Awaited<ReturnType<typeof loadSpecArtifactsContext>>;
+  let ownCwd: string;
+  let ownCtx: Awaited<ReturnType<typeof loadSpecArtifactsContext>>;
 
   beforeEach(async () => {
-    mdCwd = await mkdtemp(join(tmpdir(), "ccqa-artifacts-md-"));
-    await mkdir(join(mdCwd, ".ccqa"), { recursive: true });
-    await writeFile(join(mdCwd, ".ccqa/config.yaml"), CONFIG, "utf8");
-    await mkdir(join(mdCwd, "docs/testcase/todo"), { recursive: true });
-    mdCtx = await loadSpecArtifactsContext(mdCwd);
+    ownCwd = await mkdtemp(join(tmpdir(), "ccqa-artifacts-own-"));
+    await mkdir(join(ownCwd, ".ccqa"), { recursive: true });
+    await writeFile(join(ownCwd, ".ccqa/config.yaml"), CONFIG, "utf8");
+    await mkdir(join(ownCwd, "ccqa"), { recursive: true });
+    await writeFile(join(ownCwd, "ccqa/cases.mjs"), READER, "utf8");
+    ownCtx = await loadSpecArtifactsContext(ownCwd);
   });
 
   afterEach(async () => {
-    await rm(mdCwd, { recursive: true, force: true });
+    delete process.env["CCQA_TEST_MODE"];
+    await rm(ownCwd, { recursive: true, force: true });
   });
 
   function caseTarget(): SpecTarget {
     return { ...splitCaseId(CASE_ID), caseId: CASE_ID };
   }
 
-  test("reads the case document verbatim into intent.body, with intent.kind markdown", async () => {
-    await writeFile(join(mdCwd, "docs/testcase/todo/add_item.md"), CASE_MD, "utf8");
-
-    const artifacts = await collectCaseArtifacts(caseTarget(), mdCwd, mdCtx);
+  test("reads the case document verbatim, and calls the kind the project's own", async () => {
+    const artifacts = await collectCaseArtifacts(caseTarget(), ownCwd, ownCtx);
     expect(artifacts.intent).toEqual({
-      kind: "markdown",
+      kind: "project",
       path: "docs/testcase/todo/add_item.md",
-      body: CASE_MD,
+      body: DOCUMENT,
     });
   });
 
-  test("the generated test is resolved through the intent target's testPath template", async () => {
-    await writeFile(join(mdCwd, "docs/testcase/todo/add_item.md"), CASE_MD, "utf8");
-    await mkdir(join(mdCwd, "specs/todo"), { recursive: true });
-    await writeFile(join(mdCwd, "specs/todo/add_item.spec.ts"), "test('flow', () => {});\n", "utf8");
+  test("the generated test is resolved through the owning target's testPath template", async () => {
+    await mkdir(join(ownCwd, "specs/todo"), { recursive: true });
+    await writeFile(join(ownCwd, "specs/todo/add_item.spec.ts"), "test('flow', () => {});\n", "utf8");
 
-    const artifacts = await collectCaseArtifacts(caseTarget(), mdCwd, mdCtx);
+    const artifacts = await collectCaseArtifacts(caseTarget(), ownCwd, ownCtx);
     expect(artifacts.live).toBe(false);
     expect(artifacts.generated).toEqual([
       { path: "specs/todo/add_item.spec.ts", content: "test('flow', () => {});\n" },
     ]);
   });
 
-  test("a markdown case whose mode heading says live comes back live, with no generated files", async () => {
-    await writeFile(
-      join(mdCwd, "docs/testcase/todo/add_item.md"),
-      `${CASE_MD}\n## Mode\n\nlive\n`,
-      "utf8",
-    );
+  test("a case the source calls live comes back live, with no generated files", async () => {
+    process.env["CCQA_TEST_MODE"] = "live";
+    const ctx = await loadSpecArtifactsContext(ownCwd);
 
-    const artifacts = await collectCaseArtifacts(caseTarget(), mdCwd, mdCtx);
+    const artifacts = await collectCaseArtifacts(caseTarget(), ownCwd, ctx);
     expect(artifacts.live).toBe(true);
     expect(artifacts.generated).toEqual([]);
     expect(artifacts.unaudited).toEqual([]);

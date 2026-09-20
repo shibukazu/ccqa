@@ -13,14 +13,14 @@ Signed in as a test account
 - URL: https://example.test/sheet
 - No: 42
 
-## 手順
+## Steps
 
 1. Open the todo list page
 2. Fill in the new item field with a unique title
 3. Click the add button
 4. Confirm the new item appears in the list
 
-## 期待結果
+## Expected
 
 - The item appears at the top of the list
 - The item count increases by one

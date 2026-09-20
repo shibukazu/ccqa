@@ -1,4 +1,4 @@
-import { relative, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { driftSeverity, type Format, type SpecResult } from "./types.ts";
 
 /**
@@ -68,7 +68,7 @@ function renderGithub(results: SpecResult[], cwd: string): string {
   const repoRoot = process.env["GITHUB_WORKSPACE"] ?? process.cwd();
   const lines: string[] = [];
   for (const r of results) {
-    const file = githubRelPath(cwd, repoRoot, r.target.featureName, r.target.specName);
+    const file = githubRelPath(cwd, repoRoot, r);
     if (r.error) {
       lines.push(`::error file=${file}::${escapeGhMessage(r.error)}`);
       continue;
@@ -84,8 +84,19 @@ function renderGithub(results: SpecResult[], cwd: string): string {
   return lines.length === 0 ? "" : `${lines.join("\n")}\n`;
 }
 
-function githubRelPath(cwd: string, repoRoot: string, featureName: string, specName: string): string {
-  const abs = resolve(cwd, ".ccqa", "features", featureName, "test-cases", specName, "spec.yaml");
+/**
+ * The file an annotation points at: the document this case is stated in.
+ *
+ * Falls back to the case's directory when the audit never got far enough to
+ * read one — an annotation on a directory still lands a reviewer in the right
+ * place, and one on a `spec.yaml` that a project does not use lands nowhere.
+ */
+function githubRelPath(cwd: string, repoRoot: string, result: SpecResult): string {
+  const abs = resolve(
+    cwd,
+    result.documentPath ??
+      join(".ccqa", "features", result.target.featureName, "test-cases", result.target.specName),
+  );
   const rel = relative(repoRoot, abs);
   return rel.startsWith("..") ? abs : rel;
 }
