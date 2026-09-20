@@ -2,19 +2,22 @@ import { timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 
 /**
- * Constant-time comparison against the hub's bearer token, so response
- * timing can't be used to guess the token character-by-character. Accepts
- * the token either as an `Authorization: Bearer <token>` header or, for
- * read-only GET endpoints only (the artifacts download is a browser `<a>` that can't
- * carry a header), a `?token=` query parameter — see docs/hub-api.md for
- * the security tradeoff that accepts.
+ * Reads the token from `Authorization: Bearer <token>`, or — on GET only —
+ * from `?token=`. A query token leaks through `Referer`, history and proxy
+ * logs, so it is accepted only where a browser `<a>` can't send a header;
+ * see docs/hub-api.md.
  */
 export function extractToken(req: IncomingMessage, url: URL): string | null {
   const header = req.headers.authorization;
   if (header?.startsWith("Bearer ")) return header.slice("Bearer ".length);
+  if (req.method !== "GET") return null;
   return url.searchParams.get("token");
 }
 
+/**
+ * Constant-time comparison against the hub's bearer token, so response
+ * timing can't be used to guess the token character-by-character.
+ */
 export function isValidToken(provided: string | null, expected: string): boolean {
   if (provided === null) return false;
   const a = Buffer.from(provided);
