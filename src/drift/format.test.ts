@@ -43,19 +43,6 @@ describe("renderDrift", () => {
     expect(out).toContain("findings 0 error, 0 warn, 1 clean");
   });
 
-  test("json format produces a parseable single document with the diagnosis as-is", () => {
-    const out = renderDrift(results(), "json", cwd);
-    const parsed = JSON.parse(out);
-    expect(parsed.specs).toHaveLength(1);
-    expect(parsed.specs[0].feature).toBe("tasks");
-    expect(parsed.specs[0].drift).toEqual(results()[0]!.drift);
-  });
-
-  test("json format renders drift: null for a clean spec", () => {
-    const out = renderDrift([{ target, ok: true, drift: null }], "json", cwd);
-    expect(JSON.parse(out).specs[0].drift).toBeNull();
-  });
-
   test("github format emits one error annotation for a TEST_DRIFT/SPEC_CHANGE diagnosis", () => {
     const out = renderDrift(results(), "github", cwd);
     const lines = out.trim().split("\n");
@@ -119,7 +106,6 @@ describe("renderDrift", () => {
   test("spec-level error renders distinctly across formats", () => {
     const r: SpecResult[] = [{ target, ok: false, drift: null, error: "Claude returned an error result" }];
     expect(renderDrift(r, "text", cwd)).toContain("ERROR  Claude returned an error result");
-    expect(renderDrift(r, "json", cwd)).toContain('"error":');
     expect(renderDrift(r, "github", cwd)).toContain("::error file=");
   });
 

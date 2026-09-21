@@ -1,50 +1,61 @@
+/**
+ * What `ccqa audit` leaves behind for a machine.
+ *
+ * The audit has three audiences: the person reading the terminal, the hub's
+ * ledger, and whatever repairs the test. This is the third, and it is one
+ * payload — written to `<report-dir>/audit.json` by every completed sweep and
+ * printed verbatim by `--report-format json` (ADR-0036).
+ */
+
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { caseRefFor, getRecording, matchesGenerationStamp } from "../store/index.ts";
-import {
-  caseRecordingPath,
-  caseTestPath,
-  loadSpecArtifactsContext,
-  type SpecArtifactsContext,
-} from "./artifacts.ts";
+import { caseRecordingPath, caseTestPath, type SpecArtifactsContext } from "./artifacts.ts";
 import { recordingNamesRenamed, type Rename } from "./renames.ts";
-import { caseIdOf, type SpecResult } from "./types.ts";
+import { caseIdOf, type DriftDiagnosis, type SpecResult } from "./types.ts";
+
+/** The file the report is written as, inside the report directory. */
+export const AUDIT_REPORT_FILE = "audit.json";
 
 /**
- * One finding, in the shape something other than a human reads it.
- *
- * `ccqa audit` already prints its findings for a person and pushes them to the
- * hub for a ledger. This is the third audience: whatever fixes the test. It
- * gets the verdict, the citations the audit earned, and — the part it cannot
- * work out for itself — which repair path this case is on.
+ * Why a sweep audited nothing. Carried in the payload because the four are not
+ * interchangeable to a CI job: "every spec is current" is the happy path,
+ * while "no specs found" usually means a wrong `--cwd` or a checkout without
+ * the spec tree, and both looked identical before.
  */
-export interface AuditBrief {
+export type NoSpecsReason = "noSpecsFound" | "allCurrent" | "allHeld" | "noDiffIntersection";
+
+export interface AuditReport {
+  specs: AuditReportRow[];
+  /** Present only when the sweep audited nothing, saying which reason. */
+  skipped?: NoSpecsReason;
+}
+
+/**
+ * One audited case. `feature`, `spec`, `case`, `ok` and `drift` are on every
+ * row; `error` only when the audit itself failed; `test`, `document` and
+ * `repair` only when `drift` is not null, since they exist to repair it.
+ */
+export interface AuditReportRow {
+  feature: string;
+  spec: string;
   /** The id the rest of ccqa cites this case by. */
   case: string;
-  /** The finding's type, in the same vocabulary a failed run is triaged with. */
-  kind: string;
-  surface: string;
-  confidence: number;
-  headline: string;
-  recommendation: string;
-  reasoning: string;
-  /** `file:line` citations backing the finding, product source included. */
-  /**
-   * The finding's citations, each carrying what opening the cited line found
-   * (`citation`). A fix job reads a `corrected` line number as ccqa's and an
-   * `unverified` one as a place the quoted string was not.
-   */
-  evidence: Array<{ file?: string; detail: string; citation?: string }>;
-  /** The generated test this finding is about, project-relative. Null for a live case. */
-  test: string | null;
+  ok: boolean;
+  /** Only when the audit itself failed — a model error, an unreadable case. */
+  error?: string;
+  /** Null when the case still matches the code: an absence, not a verdict. */
+  drift: DriftDiagnosis | null;
+  /** The generated test the finding is about, project-relative. Null for a live case. */
+  test?: string | null;
   /**
    * The document stating this case — the file `repair.rewrite` applies to.
    * Project-relative, or absolute when it lives outside the project. Null when
    * the case could not be read. A fix job cannot derive this: where a project
    * files its cases is answered by the reader module it owns.
    */
-  document: string | null;
-  repair: Repair;
+  document?: string | null;
+  repair?: Repair;
 }
 
 /**
@@ -74,45 +85,44 @@ export interface Repair {
   rewrite: Rename[];
 }
 
-export interface WriteBriefsInput {
-  results: readonly SpecResult[];
-  cwd: string;
-  /** Directory the briefs are written under; created if missing. */
-  dir: string;
-  /** The sweep's own config and aliases, so this does not re-read them. */
-  context?: SpecArtifactsContext;
-}
-
 /**
- * Write one JSON file per finding, named by the case id below `dir`. Returns
- * the paths written, in the order the results came in.
+ * The payload, for both the file and `--report-format json`. Each row's reads
+ * are independent, so they resolve together rather than one case at a time.
  */
-export async function writeAuditBriefs(input: WriteBriefsInput): Promise<string[]> {
-  const findings = input.results.filter((r) => r.drift !== null);
-  if (findings.length === 0) return [];
-
-  const ctx = input.context ?? (await loadSpecArtifactsContext(input.cwd));
-  const dirAbs = resolve(input.cwd, input.dir);
-  // Each brief's reads are independent, and `map` keeps the results in the
-  // order the findings came in without the writes having to be serial.
-  return Promise.all(
-    findings.map(async (result) => {
-      const brief = await buildBrief(result, input.cwd, ctx);
-      const path = join(dirAbs, `${brief.case}.json`);
-      await mkdir(dirname(path), { recursive: true });
-      await writeFile(path, `${JSON.stringify(brief, null, 2)}\n`, "utf8");
-      return path;
-    }),
-  );
+export async function buildAuditReport(
+  results: readonly SpecResult[],
+  cwd: string,
+  ctx: SpecArtifactsContext,
+): Promise<AuditReport> {
+  return { specs: await Promise.all(results.map((r) => buildRow(r, cwd, ctx))) };
 }
 
-async function buildBrief(
+/** Write the report as `<dirAbs>/audit.json`, creating the directory. Returns its path. */
+export async function writeAuditReport(report: AuditReport, dirAbs: string): Promise<string> {
+  await mkdir(dirAbs, { recursive: true });
+  const path = join(dirAbs, AUDIT_REPORT_FILE);
+  await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  return path;
+}
+
+async function buildRow(
   result: SpecResult,
   cwd: string,
   ctx: SpecArtifactsContext,
-): Promise<AuditBrief> {
-  const drift = result.drift!;
-  const id = caseIdOf(result.target);
+): Promise<AuditReportRow> {
+  const drift = result.drift;
+  const row: AuditReportRow = {
+    feature: result.target.featureName,
+    spec: result.target.specName,
+    case: caseIdOf(result.target),
+    ok: result.ok,
+    ...(result.error ? { error: result.error } : {}),
+    drift,
+  };
+  // Only a finding has a repair, and working one out costs a test-path
+  // resolution and a recording read per case.
+  if (drift === null) return row;
+
   const test = result.live ? null : await caseTestPath(result.target, ctx);
   // Independent of the route: editing the document rebuilds nothing and
   // discards nobody's test, so a finding handed to a person carries the pairs
@@ -122,14 +132,7 @@ async function buildBrief(
       ? (result.renames ?? []).filter((r) => r.inDocument).map(({ from, to }) => ({ from, to }))
       : [];
   return {
-    case: id,
-    kind: drift.label,
-    surface: drift.surface,
-    confidence: drift.confidence,
-    headline: drift.headline,
-    recommendation: drift.recommendation,
-    reasoning: drift.reasoning,
-    evidence: drift.evidence,
+    ...row,
     test,
     document: documentOf(result, cwd),
     repair: await buildRepair(result, test, rewrite, cwd, ctx),

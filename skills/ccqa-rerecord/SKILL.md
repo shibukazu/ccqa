@@ -111,12 +111,15 @@ ccqa audit <feature>/<spec>
 
 Four things to settle before acting on any row:
 
-- **Has a brief already decided this?** Where the project runs `ccqa audit
-  --brief`, the finding's `repair.route` names the repair — `rerecord`,
-  `regenerate`, `rewrite` (a live case's document) or `external` — and
-  `repair.rewrite` gives the exact strings to replace in `document`, already
-  checked against that file. Apply those rather than deriving your own, and
-  open a pull request for the edit.
+- **Has the audit already decided this?** Every `ccqa audit` writes
+  `ccqa-report/audit.json`, holding the rows of that invocation and no other —
+  so it carries this case only if the last audit covered it. Where it does,
+  the row's `repair.route` names the repair — `rerecord`, `regenerate`,
+  `rewrite` (a live case's document) or `external` — and `repair.rewrite`
+  gives the exact strings to replace in `document`, already checked against
+  that file. Apply those rather than deriving your own, and open a pull
+  request for the edit. Where it does not, re-audit this case (step 1) rather
+  than reading a row about another one.
 - **Does the product actually do what the spec says?** If the evidence and the
   source disagree, the finding is the thing that is wrong. Say so instead of
   rewriting a spec to match a mistaken reading.

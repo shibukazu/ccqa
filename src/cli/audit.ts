@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { Command } from "commander";
 import { randomUUID } from "node:crypto";
 import {
@@ -27,7 +28,14 @@ import { collectChangedSpecs } from "./changed-specs.ts";
 import { resolveSourceRoots } from "../config/source-roots.ts";
 import { loadSpecArtifactsContext } from "../drift/artifacts.ts";
 import type { CaseReader } from "../cases/reader.ts";
-import { writeAuditBriefs } from "../drift/brief.ts";
+import {
+  AUDIT_REPORT_FILE,
+  buildAuditReport,
+  writeAuditReport,
+  type AuditReport,
+  type NoSpecsReason,
+} from "../drift/audit-report.ts";
+import { DEFAULT_REPORT_DIR } from "../run/report-constants.ts";
 import type { HubClient } from "../hub-client/index.ts";
 import { addLanguageOption, addProfileOption } from "./options.ts";
 import { fetchAuditNeed, fetchStillDrifted, selectSpecsNeedingAudit } from "../drift/audit-selection.ts";
@@ -64,7 +72,7 @@ interface AuditOptions {
   hubProfile?: string;
   language?: string;
   reportToHub?: boolean;
-  brief?: string;
+  reportDir?: string;
   dumpInputs?: string;
   project?: string;
   hubUrl?: string;
@@ -100,7 +108,15 @@ export const auditCommand = addProfileOption(addLanguageOption(
       "Claude model alias ('sonnet'|'opus'|'haiku') or full ID. Overrides CCQA_MODEL.",
     )
     .optionsGroup("What to do with the results:")
-    .option("--report-format <fmt>", "Output format: text | json | github", "text")
+    .option(
+      "--report-dir <dir>",
+      `Directory for the structured audit results (audit.json), which are always written. Default: ${DEFAULT_REPORT_DIR}/.`,
+    )
+    .option(
+      "--report-format <fmt>",
+      "Terminal output format: text | json | github. 'json' prints the same payload audit.json holds, and nothing else.",
+      "text",
+    )
     .option(
       "--report-to-hub",
       "Push the result to a ccqa hub as a run (kind: drift), which is what updates the drift ledger. A spec it finds drifted answers `needsRepair` to `ccqa run --only-hub-rerun-needed`, and is not run until a person repairs it.",
@@ -109,10 +125,6 @@ export const auditCommand = addProfileOption(addLanguageOption(
       "--exit-on <level>",
       "Exit non-zero on this severity or higher: warn | error",
       "error",
-    )
-    .option(
-      "--brief <dir>",
-      "Also write one JSON file per finding under <dir>, named by case id: the verdict, its citations, which repair the case needs (regenerate, re-record, rewrite its document, or a person), and any renamed strings to apply to that document first. What reads them is outside ccqa.",
     )
     .option(
       "--dump-inputs <dir>",
@@ -136,6 +148,12 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   const threshold = parseSeverity(opts.exitOn);
   const concurrency = parseConcurrency(opts.concurrency);
   const cwd = resolveCwd(opts.cwd);
+  const reportDir = resolve(cwd, opts.reportDir ?? DEFAULT_REPORT_DIR);
+  // Cleared before anything can fail, so an invocation that does not finish
+  // leaves no report rather than the last one's, which reads as this one's. A
+  // path that cannot be cleared holds no readable report either, and the write
+  // at the end names the real problem.
+  await rm(join(reportDir, AUDIT_REPORT_FILE), { force: true, recursive: true }).catch(() => {});
 
   await ensureCcqaDir(cwd);
 
@@ -180,7 +198,7 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     hubProject = resolveProject({ project: opts.project, cwd });
   }
 
-  // Read once for the whole invocation: the sweep, the briefs and the case
+  // Read once for the whole invocation: the sweep, the report and the case
   // enumeration all ask the same two questions of the same files.
   const artifactsContext = await loadSpecArtifactsContext(cwd);
   const config = artifactsContext.config;
@@ -191,13 +209,14 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
   let targets = await collectTargets(specPath, cwd, artifactsContext.reader);
   if (targets.length === 0) {
     const where = intent ? intent.module : ".ccqa/features/";
-    exitWithNoSpecs(format, "noSpecsFound", `no test cases found under ${where}`);
+    await exitWithNoSpecs({ format, reportDir }, "noSpecsFound", `no test cases found under ${where}`);
   }
 
   if (format === "text") {
     log.header("audit", specPath ?? `${targets.length} case${targets.length > 1 ? "s" : ""}`);
     if (opts.cwd) log.meta("cwd", cwd);
     for (const root of sourceRoots) log.meta("source", root.abs);
+    if (opts.dumpInputs) log.meta("inputs", resolve(cwd, opts.dumpInputs));
   }
 
   // Ahead of --only-affected-by: the two compose with AND, and this side is
@@ -217,7 +236,11 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
       log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
     }
     if (targets.length === 0) {
-      exitWithNoSpecs(format, "allCurrent", "every spec has been audited since the last deploy that reached it");
+      await exitWithNoSpecs(
+        { format, reportDir },
+        "allCurrent",
+        "every spec has been audited since the last deploy that reached it",
+      );
     }
 
     // Claim what is left, so a second cycle starting while this one runs does
@@ -229,7 +252,11 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     }
     targets = claimed;
     if (targets.length === 0) {
-      exitWithNoSpecs(format, "allHeld", "every spec that needs auditing is already being audited by another job");
+      await exitWithNoSpecs(
+        { format, reportDir },
+        "allHeld",
+        "every spec that needs auditing is already being audited by another job",
+      );
     }
   }
 
@@ -251,7 +278,11 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
       log.meta("scoped", `${targets.length} of ${total} spec${total > 1 ? "s" : ""}`);
     }
     if (targets.length === 0) {
-      exitWithNoSpecs(format, "noDiffIntersection", "no specs intersect the changed file set; nothing to check");
+      await exitWithNoSpecs(
+        { format, reportDir },
+        "noDiffIntersection",
+        "no specs intersect the changed file set; nothing to check",
+      );
     }
   }
 
@@ -303,28 +334,39 @@ async function runAudit(specPath: string | undefined, opts: AuditOptions): Promi
     if (holder) await releaseSpecs(hub!, hubProject!, opts.hubProfile!, holder);
   }
 
-  process.stdout.write(renderDrift(results, format, cwd));
+  const report = await buildAuditReport(results, cwd, artifactsContext);
+  if (format === "json") process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  else process.stdout.write(renderDrift(results, format, cwd));
+
+  // Before the seal, which exits 2 of its own accord when the hub refuses the
+  // run: the file is this command's own output and must not depend on that.
+  const written = await tryWriteReport(report, reportDir, format);
 
   if (push) await sealDriftPush(push, { results, threshold, opts, format, baseRef, promptCtx });
 
-  // After the seal, and survivable: the briefs are a side output, and a sweep
-  // that cannot write them must still close the hub run it opened and report
-  // what it found.
-  if (opts.brief) {
-    try {
-      const written = await writeAuditBriefs({
-        results,
-        cwd,
-        dir: opts.brief,
-        context: artifactsContext,
-      });
-      if (format === "text") log.meta("briefs", `${written.length} written to ${opts.brief}`);
-    } catch (e) {
-      log.error(`could not write briefs to ${opts.brief}: ${errMessage(e)}`);
-    }
-  }
+  // After the seal, so a report that could not be written still leaves the hub
+  // run closed rather than stuck `running`.
+  process.exit(written ? determineExitCode(results, threshold) : 2);
+}
 
-  process.exit(determineExitCode(results, threshold));
+/**
+ * Write the report, saying whether it landed. A sweep whose results never
+ * landed has to fail: the next reader of `audit.json` would otherwise act on
+ * the previous invocation's findings with nothing saying so.
+ */
+async function tryWriteReport(
+  report: AuditReport,
+  dirAbs: string,
+  format: Format,
+): Promise<boolean> {
+  try {
+    const path = await writeAuditReport(report, dirAbs);
+    if (format === "text") log.meta("report", path);
+    return true;
+  } catch (e) {
+    log.error(`could not write the audit report to ${dirAbs}: ${errMessage(e)}`);
+    return false;
+  }
 }
 
 /** Longer than the audit's own timeout, so a sweep cannot outlive its claim. */
@@ -508,16 +550,19 @@ function asHubReadError(err: unknown): never {
 }
 
 /**
- * Nothing to audit. The reason rides in the payload because the four are not
- * interchangeable to a CI job reading the JSON: "every spec is current" is the
- * happy path, while "no specs found" usually means a wrong --cwd or a checkout
- * that did not include the spec tree, and both looked identical before.
+ * Nothing to audit — still a result, and still written. A reader that found
+ * yesterday's `audit.json` where this sweep left none would act on findings
+ * nothing had re-checked.
  */
-type NoSpecsReason = "noSpecsFound" | "allCurrent" | "allHeld" | "noDiffIntersection";
-
-function exitWithNoSpecs(format: Format, reason: NoSpecsReason, message: string): never {
+async function exitWithNoSpecs(
+  ctx: { format: Format; reportDir: string },
+  reason: NoSpecsReason,
+  message: string,
+): Promise<never> {
+  const { format, reportDir } = ctx;
+  const report: AuditReport = { specs: [], skipped: reason };
   if (format === "json") {
-    process.stdout.write(`${JSON.stringify({ specs: [], skipped: reason }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else if (format === "text") {
     log.info(message);
   } else if (format === "github" && reason === "noSpecsFound") {
@@ -525,7 +570,8 @@ function exitWithNoSpecs(format: Format, reason: NoSpecsReason, message: string)
     // leaves no trace at all.
     process.stdout.write(`::warning::${message}\n`);
   }
-  process.exit(0);
+  // No hub run is open on this path, so nothing is left dangling by exiting.
+  process.exit((await tryWriteReport(report, reportDir, format)) ? 0 : 2);
 }
 
 /**

@@ -5,7 +5,15 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { RecordedAction } from "../ir/types.ts";
 import type { DriftDiagnosis } from "../report/schema.ts";
 import { saveRecording, specCase, stampGeneratedTest } from "../store/index.ts";
-import { writeAuditBriefs, type AuditBrief } from "./brief.ts";
+import { loadSpecArtifactsContext } from "./artifacts.ts";
+import {
+  AUDIT_REPORT_FILE,
+  buildAuditReport,
+  writeAuditReport,
+  type AuditReport,
+  type AuditReportRow,
+  type Repair,
+} from "./audit-report.ts";
 import type { AuditedRename } from "./renames.ts";
 import type { SpecResult, SpecTarget } from "./types.ts";
 
@@ -20,7 +28,7 @@ const unheld: AuditedRename = { from: "Submit", to: "Send", inDocument: false };
 let cwd: string;
 
 beforeEach(async () => {
-  cwd = await mkdtemp(join(tmpdir(), "ccqa-brief-"));
+  cwd = await mkdtemp(join(tmpdir(), "ccqa-audit-report-"));
 });
 
 afterEach(async () => {
@@ -84,139 +92,189 @@ async function makeStampedCase(
   return testAbs;
 }
 
-/** The one brief a single-finding sweep writes. */
-async function briefFor(results: SpecResult[]): Promise<AuditBrief> {
-  const [path] = await writeAuditBriefs({ results, cwd, dir: join(cwd, "briefs") });
-  return JSON.parse(await readFile(path!, "utf8")) as AuditBrief;
+async function reportFor(results: SpecResult[]): Promise<AuditReport> {
+  return buildAuditReport(results, cwd, await loadSpecArtifactsContext(cwd));
 }
 
-describe("writeAuditBriefs", () => {
+/** The single row a one-result sweep produced. */
+async function rowFor(results: SpecResult[]): Promise<AuditReportRow> {
+  const [row] = (await reportFor(results)).specs;
+  return row!;
+}
+
+/** The same row's repair, which only a finding has. */
+async function repairFor(results: SpecResult[]): Promise<Repair> {
+  const { repair } = await rowFor(results);
+  if (repair === undefined) throw new Error("expected a finding row to carry a repair");
+  return repair;
+}
+
+describe("buildAuditReport — routing", () => {
   test("a label naming no mechanical repair is external, live case or not", async () => {
     await makeCase("demo", "spec-change");
 
-    const brief = await briefFor([
+    const repair = await repairFor([
       {
         ...result({ featureName: "demo", specName: "spec-change" }, { label: "SPEC_CHANGE" }, [held]),
         live: true,
       },
     ]);
-    expect(brief.repair.route).toBe("external");
-    expect(brief.repair.reason).toContain("SPEC_CHANGE names no repair a machine can make");
-    expect(brief.repair.rewrite).toEqual([]);
+    expect(repair.route).toBe("external");
+    expect(repair.reason).toContain("SPEC_CHANGE names no repair a machine can make");
+    expect(repair.rewrite).toEqual([]);
   });
 
   test("a live case whose document holds the renamed string is repaired by rewriting it", async () => {
     await makeCase("demo", "livecase");
 
-    const brief = await briefFor([
+    const row = await rowFor([
       { ...result({ featureName: "demo", specName: "livecase" }, { surface: "spec" }, [held]), live: true },
     ]);
-    expect(brief.repair.route).toBe("rewrite");
-    expect(brief.repair.rewrite).toEqual([{ from: "Submit", to: "Send" }]);
-    expect(brief.repair.reason).toContain("then run the case to verify");
+    expect(row.repair!.route).toBe("rewrite");
+    expect(row.repair!.rewrite).toEqual([{ from: "Submit", to: "Send" }]);
+    expect(row.repair!.reason).toContain("then run the case to verify");
     // No compiled code to regenerate, so no stamp was ever required.
-    expect(brief.test).toBeNull();
+    expect(row.test).toBeNull();
   });
 
   test("a live case naming nothing its document holds is external", async () => {
     await makeCase("demo", "liveunheld");
 
-    const brief = await briefFor([
+    const repair = await repairFor([
       { ...result({ featureName: "demo", specName: "liveunheld" }, { surface: "spec" }, [unheld]), live: true },
     ]);
-    expect(brief.repair.route).toBe("external");
-    expect(brief.repair.rewrite).toEqual([]);
+    expect(repair.route).toBe("external");
+    expect(repair.rewrite).toEqual([]);
   });
 
   test("a case that resolves to no generated test is external", async () => {
-    const brief = await briefFor([result({ featureName: "demo", specName: "missing" })]);
-    expect(brief.repair.route).toBe("external");
-    expect(brief.test).toBeNull();
+    const row = await rowFor([result({ featureName: "demo", specName: "missing" })]);
+    expect(row.repair!.route).toBe("external");
+    expect(row.test).toBeNull();
   });
 
   test("a case with no recording routes to external", async () => {
     await makeCase("demo", "norecording");
 
-    const brief = await briefFor([result({ featureName: "demo", specName: "norecording" })]);
-    expect(brief.repair.route).toBe("external");
-    expect(brief.repair.reason).toContain("no generation stamp");
+    const repair = await repairFor([result({ featureName: "demo", specName: "norecording" })]);
+    expect(repair.route).toBe("external");
+    expect(repair.reason).toContain("no generation stamp");
   });
 
   test("a stamped test edited afterwards is external, still carrying the pairs", async () => {
     const testAbs = await makeStampedCase("demo", "edited", [NAMES_IT]);
     await writeFile(testAbs, "test('flow', () => { /* edited by hand */ });\n", "utf8");
 
-    const brief = await briefFor([
+    const repair = await repairFor([
       result({ featureName: "demo", specName: "edited" }, { surface: "spec" }, [held]),
     ]);
-    expect(brief.repair.route).toBe("external");
-    expect(brief.repair.reason).toContain("edited since it was generated");
+    expect(repair.route).toBe("external");
+    expect(repair.reason).toContain("edited since it was generated");
     // Rewriting the document rebuilds nothing, so the person taking this over
     // can still use them.
-    expect(brief.repair.rewrite).toEqual([{ from: "Submit", to: "Send" }]);
+    expect(repair.rewrite).toEqual([{ from: "Submit", to: "Send" }]);
   });
 
   test("a recording that names the renamed string has to be recorded again", async () => {
     await makeStampedCase("demo", "recorded", [NAMES_IT]);
 
-    const brief = await briefFor([
+    const repair = await repairFor([
       result({ featureName: "demo", specName: "recorded" }, {}, [unheld]),
     ]);
-    expect(brief.repair.route).toBe("rerecord");
+    expect(repair.route).toBe("rerecord");
     // Nothing to edit first: the document never quoted it.
-    expect(brief.repair.rewrite).toEqual([]);
-    expect(brief.repair.reason).not.toContain("Apply 'rewrite'");
+    expect(repair.rewrite).toEqual([]);
+    expect(repair.reason).not.toContain("Apply 'rewrite'");
   });
 
   test("a string in both the recording and the document is rewritten, then recorded again", async () => {
     await makeStampedCase("demo", "both", [NAMES_IT]);
 
-    const brief = await briefFor([
+    const repair = await repairFor([
       result({ featureName: "demo", specName: "both" }, { surface: "spec" }, [held]),
     ]);
-    expect(brief.repair.route).toBe("rerecord");
-    expect(brief.repair.rewrite).toEqual([{ from: "Submit", to: "Send" }]);
-    expect(brief.repair.reason).toContain("Apply 'rewrite' to 'document' first");
+    expect(repair.route).toBe("rerecord");
+    expect(repair.rewrite).toEqual([{ from: "Submit", to: "Send" }]);
+    expect(repair.reason).toContain("Apply 'rewrite' to 'document' first");
   });
 
   test("a generated-surface finding the recording does not name is regenerated", async () => {
     await makeStampedCase("demo", "regen");
 
-    const brief = await briefFor([result({ featureName: "demo", specName: "regen" })]);
-    expect(brief.repair.route).toBe("regenerate");
-    expect(brief.repair.rewrite).toEqual([]);
-    expect(brief.repair.reason).not.toContain("Apply 'rewrite'");
-    expect(brief.document).toBe(".ccqa/features/demo/test-cases/regen/spec.yaml");
+    const row = await rowFor([result({ featureName: "demo", specName: "regen" })]);
+    expect(row.repair!.route).toBe("regenerate");
+    expect(row.repair!.rewrite).toEqual([]);
+    expect(row.repair!.reason).not.toContain("Apply 'rewrite'");
+    expect(row.document).toBe(".ccqa/features/demo/test-cases/regen/spec.yaml");
   });
 
   test("a document-only rename is regenerated after the rewrite", async () => {
     await makeStampedCase("demo", "on-the-document");
 
-    const brief = await briefFor([
+    const repair = await repairFor([
       result({ featureName: "demo", specName: "on-the-document" }, { surface: "spec" }, [held]),
     ]);
-    expect(brief.repair.route).toBe("regenerate");
-    expect(brief.repair.rewrite).toEqual([{ from: "Submit", to: "Send" }]);
-    expect(brief.repair.reason).toContain("Apply 'rewrite' to 'document' first");
+    expect(repair.route).toBe("regenerate");
+    expect(repair.rewrite).toEqual([{ from: "Submit", to: "Send" }]);
+    expect(repair.reason).toContain("Apply 'rewrite' to 'document' first");
   });
 
   test("a spec-surface finding with nothing to rewrite is external", async () => {
     await makeStampedCase("demo", "imported");
 
-    const brief = await briefFor([
+    const repair = await repairFor([
       result({ featureName: "demo", specName: "imported" }, { surface: "spec" }),
     ]);
-    expect(brief.repair.route).toBe("external");
+    expect(repair.route).toBe("external");
   });
 
-  test("writes to <dir>/<caseId>.json, creating nested directories", async () => {
+});
+
+describe("buildAuditReport — the payload", () => {
+  const target: SpecTarget = { featureName: "demo", specName: "clean" };
+
+  test("a clean row names the case and carries nothing about repairing it", async () => {
+    const row = await rowFor([{ target, ok: true, drift: null }]);
+    expect(row).toEqual({ feature: "demo", spec: "clean", case: "demo/clean", ok: true, drift: null });
+  });
+
+  test("an errored row carries the error and still no repair", async () => {
+    const row = await rowFor([{ target, ok: false, drift: null, error: "Claude returned an error result" }]);
+    expect(row.error).toBe("Claude returned an error result");
+    expect(row.repair).toBeUndefined();
+  });
+
+  test("a finding row adds the test, the document and the repair", async () => {
     await makeStampedCase("demo", "regen");
 
-    const [path] = await writeAuditBriefs({
-      results: [result({ featureName: "demo", specName: "regen" })],
-      cwd,
-      dir: join(cwd, "briefs"),
-    });
-    expect(path).toBe(join(cwd, "briefs", "demo", "regen.json"));
+    const row = await rowFor([result({ featureName: "demo", specName: "regen" })]);
+    expect(row.case).toBe("demo/regen");
+    expect(row.drift?.label).toBe("TEST_DRIFT");
+    expect(row.test).toBe(".ccqa/features/demo/test-cases/regen/test.spec.ts");
+    expect(row.document).toBe(".ccqa/features/demo/test-cases/regen/spec.yaml");
+    expect(row.repair?.route).toBe("regenerate");
+  });
+
+  // A finding row does real work — resolving its test, reading its recording —
+  // while a clean one returns at once, so order has to be kept rather than
+  // falling out of how fast each row happened to finish.
+  test("rows come back in the order the sweep produced them", async () => {
+    await makeStampedCase("demo", "finding");
+
+    const report = await reportFor([
+      result({ featureName: "demo", specName: "finding" }),
+      { target, ok: true, drift: null },
+    ]);
+    expect(report.specs.map((r) => r.spec)).toEqual(["finding", "clean"]);
+  });
+});
+
+describe("writeAuditReport", () => {
+  test("writes the report below the directory, creating it", async () => {
+    const dir = join(cwd, "nested", "report");
+    const path = await writeAuditReport({ specs: [] }, dir);
+
+    expect(path).toBe(join(dir, AUDIT_REPORT_FILE));
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ specs: [] });
   });
 });

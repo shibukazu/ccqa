@@ -51,12 +51,13 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0027](0027-a-row-is-placed-by-its-own-window.md) | A row is placed against the deploy log by its own window | accepted |
 | [0028](0028-a-derived-test-path-and-a-recorded-route.md) | The test path is derived; the recording is the route | accepted |
 | [0029](0029-ccqa-ships-mechanism-the-project-supplies-the-facts.md) | ccqa ships mechanism; the project supplies the facts | accepted (its `intent:` source superseded by 0034) |
-| [0030](0030-the-audit-reads-the-product.md) | The audit reads the product, and may name it | accepted (the document-kind section amended by 0034; routing amended by 0035) |
+| [0030](0030-the-audit-reads-the-product.md) | The audit reads the product, and may name it | accepted (the document-kind section amended by 0034; routing amended by 0035; output replaced by 0036) |
 | [0031](0031-a-recording-carries-references-not-values.md) | A recording carries references, never resolved values | accepted |
 | [0032](0032-ccqa-runs-a-generated-case-only-to-measure-it.md) | ccqa runs a generated case only to measure it | accepted |
 | [0033](0033-a-recording-sits-beside-the-test-it-compiles-into.md) | A recording sits beside the test it compiles into | accepted |
 | [0034](0034-ccqa-reads-one-format-and-is-handed-the-rest.md) | ccqa reads one format and is handed the rest | accepted |
-| [0035](0035-test-drift-is-repairable-wherever-it-is-written.md) | TEST_DRIFT is repairable wherever it is written | accepted |
+| [0035](0035-test-drift-is-repairable-wherever-it-is-written.md) | TEST_DRIFT is repairable wherever it is written | accepted (its output replaced by 0036) |
+| [0036](0036-the-audit-always-writes-its-report.md) | The audit always writes its report | accepted |
 
 ## Template
 

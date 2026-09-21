@@ -269,7 +269,7 @@ export interface Recording {
    * It lives here, on a file the consumer already commits, rather than in a
    * ledger of its own. Two callers read it and both are asking the same
    * question — `ccqa generate`, to decide whether regenerating would discard
-   * someone's edit, and `ccqa audit --brief`, to say which repair path a
+   * someone's edit, and `ccqa audit`'s report, to say which repair path a
    * finding belongs on. No verdict reads it: the generated test belongs to the
    * consumer, and no command's answer may depend on who last wrote it.
    */
