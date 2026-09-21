@@ -171,8 +171,7 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
       locators,
       systemPrompt,
       userPrompt,
-    }).then(
-      (path) => log.meta("inputs", path),
+    }).catch(
       // A side output that cannot be written must not discard a sweep that
       // has already paid for the answers it has.
       (err: Error) => log.warn(`${name}: could not write the audit inputs (${err.message})`),
@@ -221,8 +220,9 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
       // so every consumer downstream — `--report-format json`, the report rows,
       // the hub push — sees a diagnosis that already obeys the label's rules.
       const drift = reply.drift ? normalizeDiagnosis(reply.drift) : null;
-      // Checked before the finding is kept, so nothing downstream — the report,
-      // the hub row, `--brief` — ever carries a line number nobody looked at.
+      // Checked before the finding is kept, so nothing downstream — the
+      // terminal, the hub row, `audit.json` — ever carries a line number
+      // nobody looked at.
       if (drift !== null && drift.evidence.length > 0) {
         drift.evidence = await verifyCitations(drift.evidence, {
           headline: drift.headline,

@@ -479,16 +479,16 @@ ccqa audit --exit-on warn                 # exit non-zero on WARN or higher (def
 ccqa audit --concurrency 5                # parallel spec checks (default: 3)
 ccqa audit --only-affected-by origin/dev  # only specs the PR diff reaches
 ccqa audit --cwd packages/web             # monorepo: pin .ccqa root and codebase scope
-ccqa audit --brief briefs/                # also write one JSON file per finding
+ccqa audit --report-dir out/              # write audit.json somewhere else
 ccqa audit --report-to-hub                # also push the result to a ccqa hub
 ```
 
 `--report-to-hub` uploads the audit result to a hub as a `kind: "drift"` run, shown
 alongside `ccqa run` runs in the hub UI with its own issue counts. It needs
 a hub connection (`--hub-url`/`--hub-token` or `CCQA_HUB_URL`/
-`CCQA_HUB_TOKEN`) and exits 2 without one, before the sweep spends anything —
-the audit writes no local report, so a sweep that cannot publish has nothing
-to show for itself.
+`CCQA_HUB_TOKEN`) and exits 2 without one, before the sweep spends anything:
+a job that asked to publish and cannot reach the hub should not pay for the
+sweep first.
 
 Pushing also advances the hub's per-project **drift ledger**: each spec's
 newest audit (or "no drift found") lands there, so the Perspectives tab shows
@@ -519,8 +519,8 @@ A finding's citations are checked before it is kept: ccqa opens the cited
 it is left as it is. One whose file holds the string on another line is
 `corrected` to that line, so the line number is ccqa's rather than the model's,
 and one whose file holds it nowhere is marked `unverified`. Only those two
-exceptions are recorded, and they ride along in `--brief`, because a fix job
-reading a line number should know when it is not the model's.
+exceptions are recorded, and they ride along in `audit.json`, because a fix
+job reading a line number should know when it is not the model's.
 
 The roots widen what the audit's `Read` and `Grep` may reach, and they are
 what the [`ccqa evidence`](./targets.md#ccqa-evidence--the-table-a-reviewer-reads-instead-of-the-test)
@@ -574,31 +574,64 @@ and nothing was said about it — and from the outside they look identical.
 Nothing else ccqa writes tells them apart. The dump is written before the
 model is called, so a sweep that dies mid-way still leaves it.
 
-### `--brief` — findings for whatever repairs the test
+### `audit.json` — the result, for whatever repairs the test
 
-`ccqa audit --brief <dir>` writes one JSON file per finding, named by case
-id below `<dir>`, alongside the normal output. What reads them is outside
-ccqa — a fix job, a skill, a script.
+Every completed sweep writes `ccqa-report/audit.json`, the same way `ccqa run`
+always writes `report.json`. `--report-dir <dir>` moves it, `--report-format`
+does not affect it, and it is written whether or not anything drifted — an
+empty sweep writes an empty one. What reads it is outside ccqa: a fix job, a
+skill, a script.
+
+The exact contract is worth stating, because a reader cannot tell a stale file
+from a fresh one: **an invocation that fails before it finishes leaves no file
+at all.** The previous one is removed before the sweep starts, so a mistyped
+case id, a bad flag combination or an unreadable `sourceRoots` entry all end
+with nothing there rather than yesterday's findings. And the file holds the
+rows of the last invocation, whatever that was — naming a single case writes a
+one-row file over a sweep's, exactly as `ccqa run <case>` does to
+`report.json`.
+
+`--report-format json` prints the same payload to stdout, so a job can pipe
+it instead of reading the file. Nothing else goes to stdout in that mode.
 
 ```json
 {
-  "case": "todo/add_item",
-  "kind": "TEST_DRIFT",
-  "surface": "spec",
-  "confidence": 0.9,
-  "headline": "the case asks for a button by a label the source no longer renders",
-  "recommendation": "replace the label the case quotes with the one the source renders",
-  "reasoning": "...",
-  "evidence": [{ "file": "src/todo-list.ts:22", "detail": "the button's text is Send" }],
-  "test": "specs/todo/add_item.spec.ts",
-  "document": "docs/testcase/todo/add_item.md",
-  "repair": {
-    "route": "rerecord",
-    "reason": "the saved recording names a renamed string, so a regeneration would compile it back in — re-record and verify. Apply 'rewrite' to 'document' first: a re-recording drives the case as its document states it.",
-    "rewrite": [{ "from": "Submit", "to": "Send" }]
-  }
+  "specs": [
+    {
+      "feature": "todo",
+      "spec": "add_item",
+      "case": "todo/add_item",
+      "ok": true,
+      "drift": {
+        "label": "TEST_DRIFT",
+        "surface": "spec",
+        "confidence": 0.9,
+        "subDiagnosis": "SELECTOR_DRIFT",
+        "headline": "the case asks for a button by a label the source no longer renders",
+        "recommendation": "replace the label the case quotes with the one the source renders",
+        "reasoning": "...",
+        "evidence": [{ "file": "src/todo-list.ts:22", "detail": "the button's text is Send" }]
+      },
+      "test": "specs/todo/add_item.spec.ts",
+      "document": "docs/testcase/todo/add_item.md",
+      "repair": {
+        "route": "rerecord",
+        "reason": "the saved recording names a renamed string, so a regeneration would compile it back in — re-record and verify. Apply 'rewrite' to 'document' first: a re-recording drives the case as its document states it.",
+        "rewrite": [{ "from": "Submit", "to": "Send" }]
+      }
+    }
+  ]
 }
 ```
+
+One row per audited case. `feature`, `spec`, `case`, `ok` and `drift` are on
+every row; `error` appears when the audit itself failed, and `drift` is
+`null` when the case still matches the code — an absence, not a verdict.
+
+**`test`, `document` and `repair` appear only on a row that has a finding**,
+because they are about repairing one. A sweep that audited nothing writes
+`{ "specs": [], "skipped": "<reason>" }`, naming which of `noSpecsFound`,
+`allCurrent`, `allHeld` or `noDiffIntersection` applied.
 
 `repair.route` is the field a caller acts on. It names the repair this case
 needs, and each value is the command that makes it:

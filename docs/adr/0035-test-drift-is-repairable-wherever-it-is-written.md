@@ -1,6 +1,6 @@
 # 0035. TEST_DRIFT is repairable wherever it is written
 
-- Status: accepted
+- Status: accepted (its `--brief` output replaced by `audit.json` in ADR-0036)
 - Date: 2026-09-21
 
 Amends "Routing is not evidence" in
@@ -169,15 +169,17 @@ delimits one, because the format is the project's.
 
 Both checks are pure functions and are tested as such, including a non-ASCII
 pair — the case the rejected prose-parsing option could not serve. The routing
-is tested separately in `src/drift/brief.test.ts`, one case per condition in
-the order they are read, with the renames passed in directly. The loop itself
+is tested separately in `src/drift/brief.test.ts` (now
+`src/drift/audit-report.test.ts`), one case per condition in the order they
+are read, with the renames passed in directly. The loop itself
 was exercised end to end on both repairs: a `rerecord` finding whose document
 edit and re-recording left the case green and the next audit clean, and a
 `rewrite` finding on a live case verified by running it.
 
 ## More information
 
-- Routing: `src/drift/brief.ts` (`buildRepair`)
+- Routing: `src/drift/brief.ts` (`buildRepair`; now
+  `src/drift/audit-report.ts`)
 - The two checks: `auditedRenames` and `recordingNamesRenamed` in
   `src/drift/renames.ts`
 - Reply shape: `RenameSchema` and `DriftReplySchema` in `src/drift/types.ts`

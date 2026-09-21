@@ -752,7 +752,7 @@ compares the test on disk against that stamp:
 Only `ccqa generate` reads that stamp to decide anything. `ccqa run` and the
 audit's verdict never do — the generated test is yours, and neither should
 answer differently because of who last wrote it. The one other reader is
-[`ccqa audit --brief`](./running.md#--brief--findings-for-whatever-repairs-the-test),
+[`ccqa audit`'s report](./running.md#auditjson--the-result-for-whatever-repairs-the-test),
 which needs it to tell a fix job whether regenerating would discard someone's
 work; that is routing, beside the verdict, not part of it.
 

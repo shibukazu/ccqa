@@ -2,12 +2,16 @@ import { join, relative, resolve } from "node:path";
 import { driftSeverity, type Format, type SpecResult } from "./types.ts";
 
 /**
- * Render drift results as a string. The CLI commands and the `run` failure
- * hook are the only callers; both want the formatted output returned so
- * they can prefix / interleave / pipe it as needed.
+ * Render drift results for a terminal. `json` is not one of these: it prints
+ * the same payload the report file holds, which is assembled asynchronously
+ * and so is built once by the caller rather than rendered from results here
+ * (`buildAuditReport`).
  */
-export function renderDrift(results: SpecResult[], format: Format, cwd: string): string {
-  if (format === "json") return renderJson(results);
+export function renderDrift(
+  results: SpecResult[],
+  format: Exclude<Format, "json">,
+  cwd: string,
+): string {
   if (format === "github") return renderGithub(results, cwd);
   return renderText(results);
 }
@@ -49,19 +53,6 @@ function renderText(results: SpecResult[]): string {
   out.push(`  findings ${totals.error} error, ${totals.warn} warn, ${totals.clean} clean`);
   out.push("");
   return out.join("\n");
-}
-
-function renderJson(results: SpecResult[]): string {
-  const payload = {
-    specs: results.map((r) => ({
-      feature: r.target.featureName,
-      spec: r.target.specName,
-      ok: r.ok,
-      ...(r.error ? { error: r.error } : {}),
-      drift: r.drift,
-    })),
-  };
-  return `${JSON.stringify(payload, null, 2)}\n`;
 }
 
 function renderGithub(results: SpecResult[], cwd: string): string {

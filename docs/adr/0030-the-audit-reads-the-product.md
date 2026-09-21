@@ -1,7 +1,8 @@
 # 0030. The audit reads the product, and may name it
 
 - Status: accepted ("The intent is whichever document the project writes"
-  amended by ADR-0034; "Routing is not evidence" amended by ADR-0035)
+  amended by ADR-0034; "Routing is not evidence" amended by ADR-0035, whose
+  output moved to `audit.json` in ADR-0036)
 - Date: 2026-09-11
 
 ## Context and problem statement
@@ -165,7 +166,7 @@ be answering a different question than the one it was asked.
 - Audit input: `src/drift/artifacts.ts` (`collectCaseArtifacts`), prompt in
   `src/prompts/drift.ts` (`DRIFT_PROMPT_VERSION` "8")
 - Severity split: `driftSeverity` in `src/drift/types.ts`
-- Briefs: `src/drift/brief.ts`
+- Briefs: `src/drift/brief.ts` (now `src/drift/audit-report.ts`)
 - Related: ADR-0016 (the audit's answerable subset, widened here), ADR-0028
   (the derived test path and the generation stamp the briefs route on),
   ADR-0029 (mechanism in ccqa, facts in the project's config)

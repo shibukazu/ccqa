@@ -16,7 +16,8 @@ import { writeMockMessages } from "../_helpers/fake-claude.ts";
 // asserts is the wiring around one: that the markdown case is found and
 // audited at all, that a root outside cwd resolves rather than being refused,
 // that a root that is not there stops the sweep instead of quietly clearing
-// it, and that `--brief` writes the finding out for whatever repairs the test.
+// it, and that `audit.json` writes the finding out for whatever repairs the
+// test.
 
 const DRIFT_REPLY = JSON.stringify({
   drift: {
@@ -134,7 +135,7 @@ describe("ccqa audit — markdown cases against a product outside the project", 
     );
   }
 
-  test("audits the markdown case, reads a root outside cwd, and writes a brief", async () => {
+  test("audits the markdown case, reads a root outside cwd, and writes audit.json", async () => {
     project = await setUp((product) => [product]);
 
     // The generated test the audit reads as the case's second surface. Its
@@ -145,40 +146,93 @@ describe("ccqa audit — markdown cases against a product outside the project", 
     await writeFile(testPath, 'test("Adding an item puts it on the list", async () => {});\n', "utf8");
 
     const mockPath = await mockClaude(project.cwd, DRIFT_REPLY);
-    const result = await runCcqa(["audit", "--report-format", "json", "--brief", "briefs"], {
+    const result = await runCcqa(
+      ["audit", "--report-format", "json", "--report-dir", "out", "--dump-inputs", "inputs"],
+      { cwd: project.cwd, env: { ...noColorEnv, CCQA_CLAUDE_MOCK_FILE: mockPath } },
+    );
+
+    // TEST_DRIFT names a repair, so it fails the gate.
+    expect(result.exitCode).toBe(1);
+    // The dump ran, so the purity check below is about a path that narrates
+    // rather than one that quietly did nothing.
+    await expect(
+      readFile(resolve(project.cwd, "inputs", "todo", "add_item.md"), "utf8"),
+    ).resolves.toContain("todo/add_item");
+    // Nothing but the payload: `--dump-inputs` narrates on the text path only,
+    // and a stray `[meta]` line would break the parse below.
+    expect(result.stdout.trimStart().startsWith("{")).toBe(true);
+    const onDisk = await readFile(resolve(project.cwd, "out", "audit.json"), "utf8");
+    // One payload: what a parser reads is what the file holds.
+    expect(JSON.parse(result.stdout)).toEqual(JSON.parse(onDisk));
+
+    const report = JSON.parse(onDisk) as {
+      specs: Array<{
+        feature: string;
+        spec: string;
+        case: string;
+        drift: { label: string } | null;
+        test: string;
+        document: string;
+        repair: { route: string; reason: string; rewrite: unknown[] };
+      }>;
+    };
+    expect(report.specs).toHaveLength(1);
+    const [row] = report.specs;
+    expect(`${row!.feature}/${row!.spec}`).toBe("todo/add_item");
+    expect(row!.case).toBe("todo/add_item");
+    expect(row!.drift?.label).toBe("TEST_DRIFT");
+    expect(row!.test).toBe("specs/todo/add_item.spec.ts");
+    // The file a rewrite would land in, as only the project's own reader can
+    // answer it.
+    expect(row!.document).toBe("docs/testcase/todo/add_item.md");
+    // Nothing recorded this case, so there is no stamp saying ccqa wrote the
+    // test: the repair belongs to whoever owns the file, with no rewrite.
+    expect(row!.repair.route).toBe("external");
+    expect(row!.repair.reason).toContain("no generation stamp");
+    expect(row!.repair.rewrite).toEqual([]);
+  });
+
+  // The claim "always written" is only safe if a run that stops early leaves
+  // nothing: a reader cannot tell a stale file from a fresh one.
+  test("an invocation that fails before auditing removes the previous report", async () => {
+    project = await setUp((product) => [product]);
+    const reportPath = resolve(project.cwd, "ccqa-report", "audit.json");
+    await mkdir(resolve(project.cwd, "ccqa-report"), { recursive: true });
+    await writeFile(reportPath, '{"specs":[{"case":"todo/add_item"}]}\n', "utf8");
+
+    const result = await runCcqa(["audit", "todo/no_such_case"], {
+      cwd: project.cwd,
+      env: { ...noColorEnv },
+    });
+
+    expect(result.exitCode).toBe(1);
+    await expect(readFile(reportPath, "utf8")).rejects.toThrow();
+  });
+
+  test("audit.json is written without being asked for, at the default report dir", async () => {
+    project = await setUp((product) => [product]);
+    await mkdir(join(project.cwd, "specs", "todo"), { recursive: true });
+    await writeFile(
+      join(project.cwd, "specs", "todo", "add_item.spec.ts"),
+      'test("Adding an item puts it on the list", async () => {});\n',
+      "utf8",
+    );
+
+    const mockPath = await mockClaude(project.cwd, NO_DRIFT);
+    const result = await runCcqa(["audit"], {
       cwd: project.cwd,
       env: { ...noColorEnv, CCQA_CLAUDE_MOCK_FILE: mockPath },
     });
 
-    // TEST_DRIFT names a repair, so it fails the gate.
-    expect(result.exitCode).toBe(1);
-    const report = JSON.parse(result.stdout) as {
-      specs: Array<{ feature: string; spec: string; drift: { label: string } | null }>;
-    };
+    expect(result.exitCode).toBe(0);
+    const report = JSON.parse(
+      await readFile(resolve(project.cwd, "ccqa-report", "audit.json"), "utf8"),
+    ) as { specs: Array<{ case: string; drift: unknown; repair?: unknown }> };
     expect(report.specs).toHaveLength(1);
-    expect(`${report.specs[0]!.feature}/${report.specs[0]!.spec}`).toBe("todo/add_item");
-    expect(report.specs[0]!.drift?.label).toBe("TEST_DRIFT");
-
-    const brief = JSON.parse(
-      await readFile(resolve(project.cwd, "briefs", "todo", "add_item.json"), "utf8"),
-    ) as {
-      case: string;
-      kind: string;
-      test: string;
-      document: string;
-      repair: { route: string; reason: string; rewrite: unknown[] };
-    };
-    expect(brief.case).toBe("todo/add_item");
-    expect(brief.kind).toBe("TEST_DRIFT");
-    expect(brief.test).toBe("specs/todo/add_item.spec.ts");
-    // The file a rewrite would land in, as only the project's own reader can
-    // answer it.
-    expect(brief.document).toBe("docs/testcase/todo/add_item.md");
-    // Nothing recorded this case, so there is no stamp saying ccqa wrote the
-    // test: the repair belongs to whoever owns the file, with no rewrite.
-    expect(brief.repair.route).toBe("external");
-    expect(brief.repair.reason).toContain("no generation stamp");
-    expect(brief.repair.rewrite).toEqual([]);
+    expect(report.specs[0]!.case).toBe("todo/add_item");
+    expect(report.specs[0]!.drift).toBeNull();
+    // A clean row has nothing to repair, so it says nothing about repairing it.
+    expect(report.specs[0]!.repair).toBeUndefined();
   });
 
   // The dispute this answers: a class name a support file addresses produced no
