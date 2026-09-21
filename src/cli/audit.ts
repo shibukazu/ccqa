@@ -112,7 +112,7 @@ export const auditCommand = addProfileOption(addLanguageOption(
     )
     .option(
       "--brief <dir>",
-      "Also write one JSON file per finding under <dir>, named by case id: the verdict, its citations, and whether the test can be regenerated or has to be repaired by hand. What reads them is outside ccqa.",
+      "Also write one JSON file per finding under <dir>, named by case id: the verdict, its citations, which repair the case needs (regenerate, re-record, rewrite its document, or a person), and any renamed strings to apply to that document first. What reads them is outside ccqa.",
     )
     .option(
       "--dump-inputs <dir>",

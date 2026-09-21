@@ -99,8 +99,8 @@ ccqa audit <feature>/<spec>
 
 | Finding | What went stale | What you do |
 |---|---|---|
-| `TEST_DRIFT`, `surface: generated` | only the compiled test | re-record; leave `spec.yaml` alone |
-| `TEST_DRIFT`, `surface: spec` | wording in `spec.yaml` that the test compiled from | fix that wording, then re-record |
+| `TEST_DRIFT`, `surface: generated` | only the compiled test | re-record; leave the case's document alone |
+| `TEST_DRIFT`, `surface: spec` | wording in the case's own document that the test compiled from | fix that wording, then re-record |
 | `SPEC_CHANGE`, `BEHAVIOUR_CHANGED` | the behaviour being verified | rewrite the affected steps against the current implementation, then re-record |
 | `SPEC_CHANGE`, `FEATURE_REMOVED` | the feature itself | **stop.** Propose deleting the spec, or replacing it with one covering what the feature became. Re-recording cannot verify something the product no longer does |
 | `SPEC_CHANGE`, no `specChangeKind` | unclear which of those two | stop and ask |
@@ -109,8 +109,14 @@ ccqa audit <feature>/<spec>
 | `UNKNOWN` | the evidence was too weak to call | re-read it yourself; if it stays undetermined, say so rather than guessing |
 | No finding at all | nothing is known to be stale | re-record, and check the result against step 5 — the regenerated test has to verify every `expected` in the spec |
 
-Three things to settle before acting on any row:
+Four things to settle before acting on any row:
 
+- **Has a brief already decided this?** Where the project runs `ccqa audit
+  --brief`, the finding's `repair.route` names the repair — `rerecord`,
+  `regenerate`, `rewrite` (a live case's document) or `external` — and
+  `repair.rewrite` gives the exact strings to replace in `document`, already
+  checked against that file. Apply those rather than deriving your own, and
+  open a pull request for the edit.
 - **Does the product actually do what the spec says?** If the evidence and the
   source disagree, the finding is the thing that is wrong. Say so instead of
   rewriting a spec to match a mistaken reading.

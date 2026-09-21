@@ -14,7 +14,24 @@ describe("buildDriftSystemPrompt", () => {
 
   test("frames TEST_DRIFT vs SPEC_CHANGE by the action each leads to", () => {
     const out = buildDriftSystemPrompt(NO_BLOCKS);
-    expect(out).toMatch(/TEST_DRIFT gets the test re-recorded, SPEC_CHANGE gets a human to rewrite the spec/);
+    expect(out).toMatch(
+      /TEST_DRIFT gets the stale string replaced wherever it is written and the test recompiled, SPEC_CHANGE gets a human to decide what the case should now say/,
+    );
+  });
+
+  // Measured: described only in prose after the example, the key was left out
+  // of a reply whose own headline named both strings. A model copies the shape
+  // it was shown, so the key has to be in the shape.
+  test("shows `renames` in the drift example and ties it to SELECTOR_DRIFT", () => {
+    const out = buildDriftSystemPrompt(NO_BLOCKS);
+    const example = out.slice(out.indexOf("Drift found:"));
+    const shape = example.slice(0, example.indexOf("```", example.indexOf("```json") + 1));
+    expect(shape).toMatch(/"renames": \[/);
+    expect(shape).toMatch(/"from": "<the string as the test case writes it>"/);
+
+    expect(out).toMatch(/`renames`: one entry per renamed string, when the label is `TEST_DRIFT` and `subDiagnosis` is `SELECTOR_DRIFT`/);
+    expect(out).toMatch(/Omit the key otherwise/);
+    expect(out).toMatch(/Give each verbatim/);
   });
 
   test("breaks a TEST_DRIFT / SPEC_CHANGE tie toward the label a repair can check", () => {

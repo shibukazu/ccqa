@@ -6,6 +6,7 @@ import {
   type DriftDiagnosis,
   type DriftLabel,
 } from "../report/schema.ts";
+import { RenameSchema, type AuditedRename, type Rename } from "./renames.ts";
 
 // DriftLabelSchema / DriftSubDiagnosisSchema / DriftDiagnosisSchema live in
 // report/schema.ts (not here): they belong to the failure-cause vocabulary
@@ -54,6 +55,16 @@ export const DriftReplySchema = z.object({
   drift: DriftDiagnosisSchema.nullable(),
   /** Present when the audit was handed locators to check. See `checkLocatorVerdicts`. */
   locators: z.array(LocatorVerdictSchema).default([]),
+  /**
+   * Renamed strings, when the audit found any. Forgiven one element at a time:
+   * these help a repair land, so a malformed pair must cost neither its valid
+   * siblings nor the verdict the sweep already paid for.
+   */
+  renames: z
+    .array(RenameSchema.nullable().catch(null))
+    .transform((rs) => rs.filter((r): r is Rename => r !== null))
+    .default([])
+    .catch([]),
 });
 
 export interface SpecResult {
@@ -78,6 +89,12 @@ export interface SpecResult {
    * nothing. Absent when the case could not be read at all.
    */
   documentPath?: string;
+  /**
+   * Renamed strings the audit named, sanitized and each carrying whether this
+   * case's document holds it (`auditedRenames`). Beside the diagnosis rather
+   * than in it: they are an aid to the repair, not part of the verdict.
+   */
+  renames?: AuditedRename[];
 }
 
 /**

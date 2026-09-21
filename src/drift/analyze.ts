@@ -21,6 +21,7 @@ import { writeAuditInputs } from "./dump-inputs.ts";
 import { buildLocatorInventory, checkLocatorVerdicts } from "./locator-candidates.ts";
 import { correctSurface } from "./write-roots.ts";
 import { verifyCitations } from "./verify-citations.ts";
+import { auditedRenames } from "./renames.ts";
 import { caseIdOf, DriftReplySchema, type SpecResult, type SpecTarget } from "./types.ts";
 import * as log from "../cli/logger.ts";
 
@@ -242,6 +243,9 @@ async function checkSpec(target: SpecTarget, opts: CheckSpecOptions): Promise<Sp
         live: artifacts.live,
         title: artifacts.title,
         documentPath: artifacts.intent.path,
+        // Checked against the document here, beside the citations, because
+        // this is where its text is already in hand.
+        renames: auditedRenames(artifacts.intent.body, reply.renames),
       };
     } catch (e) {
       lastError = `failed to parse drift reply: ${(e as Error).message}`;

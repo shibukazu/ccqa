@@ -50,4 +50,17 @@ describe("DriftReplySchema", () => {
   test("no drift is still no drift", () => {
     expect(DriftReplySchema.parse({ drift: null }).drift).toBeNull();
   });
+
+  // Renames help a repair land; they are not the verdict. Forgiveness is per
+  // element, so one malformed pair does not cost its valid siblings.
+  test("renames default to none, and a malformed pair is dropped without its siblings", () => {
+    expect(DriftReplySchema.parse({ drift: finding }).renames).toEqual([]);
+    expect(DriftReplySchema.parse({ drift: finding, renames: "Submit" }).renames).toEqual([]);
+    expect(
+      DriftReplySchema.parse({
+        drift: finding,
+        renames: [{ from: "Submit", to: "Send" }, { from: "Cancel" }],
+      }).renames,
+    ).toEqual([{ from: "Submit", to: "Send" }]);
+  });
 });

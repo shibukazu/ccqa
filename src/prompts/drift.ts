@@ -22,7 +22,7 @@ import { surfaceAxisAside, surfaceDefinitionBlock } from "./format.ts";
  */
 
 /** Bumped when the drift contract or its decision rules change. */
-export const DRIFT_PROMPT_VERSION = "11";
+export const DRIFT_PROMPT_VERSION = "12";
 
 /**
  * Project guidance injected into the audit, in the same order the run's
@@ -73,7 +73,7 @@ These are the same definitions failure analysis uses on a case that actually fai
 
 ## What separates TEST_DRIFT from SPEC_CHANGE
 
-This is the distinction that matters, because the two lead to different actions: TEST_DRIFT gets the test re-recorded, SPEC_CHANGE gets a human to rewrite the spec.
+This is the distinction that matters, because the two lead to different actions: TEST_DRIFT gets the stale string replaced wherever it is written and the test recompiled, SPEC_CHANGE gets a human to decide what the case should now say.
 
 Ask whether the **intent** the step describes still exists in the product:
 
@@ -168,11 +168,16 @@ Drift found:
     "evidence": [
       { "file": "<path:line>", "detail": "<what this proves>" }
     ]
-  }
+  },
+  "renames": [
+    { "from": "<the string as the test case writes it>", "to": "<what the source renders in its place>" }
+  ]
 }
 \`\`\`
 
 \`subDiagnosis\`: \`SELECTOR_DRIFT\` when a selector or string was renamed, \`OVER_ASSERTION\` when the case asserts something narrower than the product ever promised, \`NONE\` otherwise.
+
+\`renames\`: one entry per renamed string, when the label is \`TEST_DRIFT\` and \`subDiagnosis\` is \`SELECTOR_DRIFT\` — a finding that says a string was renamed and does not name the pair leaves the repair to a person. Omit the key otherwise. It sits beside \`drift\`, and beside \`locators\` where that was asked for. \`from\` is the string as the test case writes it — in the generated code, in the case's own document, or both — and \`to\` is what the source you cited renders in its place. Give each verbatim, with no quotes, ellipses or paraphrase of your own: each pair is looked up character for character in the file it claims to be about, and one that does not match is dropped. Naming a rename neither settles the label nor stands in for the citation the finding still needs.
 
 \`specChangeKind\`: set it only when the label is \`SPEC_CHANGE\`, and omit the field entirely otherwise. It says which repair the case needs — deleting it, or rewriting and re-recording it:
 
