@@ -584,29 +584,94 @@ ccqa — a fix job, a skill, a script.
 {
   "case": "todo/add_item",
   "kind": "TEST_DRIFT",
-  "surface": "generated",
+  "surface": "spec",
   "confidence": 0.9,
-  "headline": "the add button is addressed by a label the source no longer renders",
-  "recommendation": "re-record the case",
+  "headline": "the case asks for a button by a label the source no longer renders",
+  "recommendation": "replace the label the case quotes with the one the source renders",
   "reasoning": "...",
-  "evidence": [{ "file": "src/todo-list.ts:22", "detail": "the button's text is Add" }],
+  "evidence": [{ "file": "src/todo-list.ts:22", "detail": "the button's text is Send" }],
   "test": "specs/todo/add_item.spec.ts",
+  "document": "docs/testcase/todo/add_item.md",
   "repair": {
-    "route": "external",
-    "reason": "the test has been edited since it was generated"
+    "route": "rerecord",
+    "reason": "the saved recording names a renamed string, so a regeneration would compile it back in — re-record and verify. Apply 'rewrite' to 'document' first: a re-recording drives the case as its document states it.",
+    "rewrite": [{ "from": "Submit", "to": "Send" }]
   }
 }
 ```
 
-`repair.route` is the field a caller acts on, and it answers one question:
-may I regenerate this test? `regenerate` takes both a finding a regeneration
-could fix — `TEST_DRIFT` on the `generated` surface, the surface a
-regeneration rewrites — and a test ccqa wrote that nobody has touched since
-(see [Regenerating from a saved
-route](./targets.md#regenerating-from-a-saved-route)). Everything else is
-`external`, with `reason` saying which half failed: a stale document
-recompiles to the same stale test, and someone's edits must not be discarded.
-Only the route reads the generation stamp; the verdict above it never does.
+`repair.route` is the field a caller acts on. It names the repair this case
+needs, and each value is the command that makes it:
+
+| `route` | the repair | what verifies it |
+|---|---|---|
+| `regenerate` | apply `rewrite` to `document` if there is any, then `ccqa generate` | the verification run inside `generate` |
+| `rerecord` | apply `rewrite` to `document` if there is any, then `ccqa record` | the verification run inside `record` |
+| `rewrite` | apply `rewrite` to `document` — that is the whole repair | `ccqa run <case>` |
+| `external` | hand it to a person | — |
+
+A route names a repair the case is **eligible** for, not one that has been
+made. The verification inside `generate` and `record` runs only where the
+target has a `runCommand` and the fix pass was not turned off — with
+`--auto-fix skip`, or `--no-replay` for the replay gate, nothing executes and
+the command can succeed without anything having been checked.
+
+The conditions are read in order, and the first one that answers wins:
+
+1. the label is not `TEST_DRIFT` → `external`. A changed behaviour or a
+   suspected product bug is reproduced faithfully by recompiling or recording
+   the case again, so neither command repairs it.
+2. the case is `mode: live` → `rewrite` when `rewrite` is non-empty, else
+   `external`. A live case has no compiled code, so its document is the whole
+   of it — and no generation stamp gates it, because there is no generated
+   test whose hand edits a repair could lose.
+3. the case resolves to no generated test → `external`.
+4. ccqa did not write that test, or somebody has edited it since →
+   `external`. Both remaining repairs rewrite it (see [Regenerating from a
+   saved route](./targets.md#regenerating-from-a-saved-route)).
+5. the saved recording itself names one of the renamed strings → `rerecord`.
+   A recording holds the strings it drove the browser with, so regenerating
+   from it would compile the old one straight back in.
+6. the drift is in the generated code, or `rewrite` is non-empty →
+   `regenerate`.
+7. otherwise → `external`: the stale string is on a file the test imports,
+   which a regeneration only reads, or the audit named no replacement.
+
+`reason` says which of these answered. Only the route reads the generation
+stamp; the verdict above it never does.
+
+`repair.rewrite` is a list of `{ from, to }` pairs: a string the case still
+uses, and what the source renders in its place. The audit names them; ccqa
+keeps only those whose `from` the case's document contains, dropping any pair
+with a blank side, with both sides equal, or whose `from` the audit answered
+two different ways. They are a fact about the document rather than about the
+route, so a `TEST_DRIFT` carries them **whatever the route says** — including
+`external`, where the person the case was handed to is the one who can use
+them. The route says what a machine may run; `rewrite` says what the document
+needs either way.
+
+Apply them as **one simultaneous replacement** against the document as it
+stands, never re-scanning text a replacement wrote, and where one pair's
+`from` contains another's replace the longer first — and apply them as a
+proposal: the document is human-owned, so a machine may offer the edit and
+may not land it.
+
+**How to apply a rewrite is the caller's.** ccqa guarantees the string occurs
+in the file, not that the file is stale everywhere it occurs: there is no
+length floor, because what counts as too short to be meaningful is a fact
+about a written language rather than about test cases. A short label also
+appears inside ordinary prose. The document's format belongs to the project
+(ADR-0034), so a caller replaces the occurrences its own documents mark as UI
+strings — and when it finds none, the answer depends on the surface: on
+`generated` the document was not stale after all, so run the command without
+touching it; on `spec` the command would rebuild from the same document, so
+hand the case to a person.
+
+One thing about ccqa is worth knowing on this lane: **`ccqa generate`
+refusing at the replay gate is a re-route, not an error.** It replays the
+saved recording first and refuses one the application has outgrown, which is
+the same conclusion `rerecord` reaches from the finding — so treat it as a
+case to record again, not as a failure.
 
 ### Choosing a model for the audit
 
@@ -632,8 +697,11 @@ prompt, same tools (`Read`, `Grep`, `Glob`), same tree, no turn limit.
 Prefer `sonnet` or above for scheduled audits. What the cheaper tier saves is
 small next to what a false `SPEC_CHANGE` costs: it is the label that sends a
 person to rewrite or retire a spec, and where an auto-fix job acts on the
-ledger, it will rewrite a spec that was correct to begin with. Set the model
-per command with `--model`, or once with `CCQA_MODEL`.
+ledger, it will rewrite a spec that was correct to begin with. A false
+`TEST_DRIFT` now reaches the same file by a shorter path — `repair.rewrite`
+proposes the edit — so the model that answers is the one deciding what a
+reviewer is asked to approve. Set the model per command with `--model`, or
+once with `CCQA_MODEL`.
 
 ### Scoping with `--only-affected-by`
 

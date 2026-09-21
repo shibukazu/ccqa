@@ -161,13 +161,24 @@ describe("ccqa audit — markdown cases against a product outside the project", 
 
     const brief = JSON.parse(
       await readFile(resolve(project.cwd, "briefs", "todo", "add_item.json"), "utf8"),
-    ) as { case: string; kind: string; test: string; repair: { route: string } };
+    ) as {
+      case: string;
+      kind: string;
+      test: string;
+      document: string;
+      repair: { route: string; reason: string; rewrite: unknown[] };
+    };
     expect(brief.case).toBe("todo/add_item");
     expect(brief.kind).toBe("TEST_DRIFT");
     expect(brief.test).toBe("specs/todo/add_item.spec.ts");
-    // Nothing recorded this case, so ccqa cannot claim it wrote the test: the
-    // repair belongs to whoever owns the file.
+    // The file a rewrite would land in, as only the project's own reader can
+    // answer it.
+    expect(brief.document).toBe("docs/testcase/todo/add_item.md");
+    // Nothing recorded this case, so there is no stamp saying ccqa wrote the
+    // test: the repair belongs to whoever owns the file, with no rewrite.
     expect(brief.repair.route).toBe("external");
+    expect(brief.repair.reason).toContain("no generation stamp");
+    expect(brief.repair.rewrite).toEqual([]);
   });
 
   // The dispute this answers: a class name a support file addresses produced no
