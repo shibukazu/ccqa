@@ -67,7 +67,6 @@ export function reviewEmittedFiles(input: EmittedReviewInput): EmittedFinding[] 
   const said = input.caseText.join("\n");
   return [
     ...decidesNothing(input),
-    ...unassertedPath(input),
     ...[...input.files].flatMap(([file, source]) => [
       ...toolIdentifiers(file, source),
       ...containerOfPageText(file, source),
@@ -78,44 +77,6 @@ export function reviewEmittedFiles(input: EmittedReviewInput): EmittedFinding[] 
       ...unreached(file, source, input),
     ]),
   ];
-}
-
-/**
- * A path with a placeholder segment in it — `/orders/{orderId}`. Writing one
- * in prose is a statement about the address, not about the page's contents:
- * there is no other reason to name the part that changes per run.
- */
-const PLACEHOLDER_PATH = /\/[A-Za-z0-9_\-]+(?:\/[A-Za-z0-9_\-]+)*\/\{[A-Za-z0-9_]+\}/;
-
-/**
- * A case that says where the run must end up, and a test that never looks at
- * the address.
- *
- * The row being on screen is not the same claim as being on the screen that
- * shows it — a product that rendered the row without navigating passes, and
- * that is the failure the expectation was written to catch. Scoped to
- * placeholder paths because those are unambiguous; a path mentioned as scenery
- * ("on /settings, the button is shown") is not a claim about the address.
- *
- * Calibrated against a small set of hand-written case definitions: a few
- * name a placeholder path in their expectations, most of those already
- * assert on the URL, and the one that does not is the defect this was
- * written for.
- */
-function unassertedPath(input: EmittedReviewInput): EmittedFinding[] {
-  const source = input.files.get(input.testPath);
-  if (source === undefined) return [];
-  const stated = input.caseText.find((text) => PLACEHOLDER_PATH.test(text));
-  if (stated === undefined || /\btoHaveURL\b/.test(source)) return [];
-  return [{
-    file: input.testPath,
-    line: 1,
-    rule: "unasserted-path",
-    message:
-      `the case says where the run ends up — "${PLACEHOLDER_PATH.exec(stated)?.[0]}" — and nothing ` +
-      "here looks at the address. What the screen shows can be right while the screen is wrong. " +
-      "Assert the URL where the case says it changes",
-  }];
 }
 
 /** `readonly name =`, `name(...): Locator {`, and `export … name`. */

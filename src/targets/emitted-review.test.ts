@@ -156,28 +156,6 @@ readonly unusedLabel = this.page.getByText("Title");`;
     expect(rules(found)).toEqual([]);
   });
 
-  // A placeholder path in an expectation is a claim about the address. What
-  // the screen shows can be right while the screen is wrong.
-  test("a case that says where the run ends up, and a test that never looks", () => {
-    const spec = `await expect(todoList.row("Buy milk")).toBeVisible();`;
-    const said = ["Open the list", "The item is shown on /lists/{listId}"];
-    expect(rules(review(spec, "", said))).toContain("unasserted-path");
-  });
-
-  test("says nothing once the address is asserted", () => {
-    const spec = `await expect(page).toHaveURL(/\\/lists\\/[^/]+/);
-await expect(todoList.row("Buy milk")).toBeVisible();`;
-    const said = ["Open the list", "The item is shown on /lists/{listId}"];
-    expect(rules(review(spec, "", said))).not.toContain("unasserted-path");
-  });
-
-  // A path named as scenery is not a claim about where the run ends up.
-  test("says nothing about a path with no placeholder in it", () => {
-    const spec = `await expect(todoList.row("Buy milk")).toBeVisible();`;
-    const said = ["Open the list", "On /lists the add button is shown"];
-    expect(rules(review(spec, "", said))).not.toContain("unasserted-path");
-  });
-
   // Property names are not unique across a suite: unrelated page objects can
   // both declare an `archiveSuccessBanner`. A flat set of every identifier in
   // the project answers "somebody uses that word", which is not the
