@@ -131,6 +131,25 @@ describe("a project whose cases are its own documents", () => {
     ]);
   }, 120_000);
 
+  // The recording sits beside the test, so a fresh checkout has no directory
+  // under `.ccqa/` for the case at all — the table's default home included.
+  test("ccqa evidence writes its table on a fresh checkout", async () => {
+    await writeFile(
+      join(project.cwd, "specs/todo/add_item.spec.ccqa.ir.json"),
+      JSON.stringify([{ action: "navigate", value: "${APP_URL}", stepId: "step-01" }]),
+      "utf8",
+    );
+
+    const result = await runCcqa(["evidence", "todo/add_item"], {
+      cwd: project.cwd,
+      env: noColorEnv(),
+      timeoutMs: 60_000,
+    });
+    expect(result.exitCode, stripAnsi(result.stdout + result.stderr)).toBe(0);
+    const written = join(project.cwd, ".ccqa/cases/todo/add_item/evidence.md");
+    expect(await readFile(written, "utf8")).toContain("Open the todo list");
+  }, 120_000);
+
   test("ccqa perspectives writes a document the hub can answer from", async () => {
     const hub: TestHub = await startTestHub({ token: TOKEN });
     try {

@@ -60,12 +60,12 @@ function trace(extra: { after?: Record<string, unknown> }): string {
   return [
     { type: "screencast-frame", sha1: "frame-a", timestamp: 100 },
     { type: "before", callId: "c1", startTime: 110, apiName: "step 1: Open the list" },
-    { type: "screencast-frame", sha1: "frame-b", timestamp: 120 },
-    { type: "after", callId: "c1", endTime: 130, ...extra.after },
+    { type: "screencast-frame", sha1: "frame-b", timestamp: 150 },
+    { type: "after", callId: "c1", endTime: 200, ...extra.after },
     // Playwright records its own API calls as steps too; only the ones the case
     // named have evidence rows, so the rest are passed over rather than filtered
     // upstream where a version's naming could quietly exclude a real step.
-    { type: "action", callId: "c2", startTime: 140, endTime: 150, title: "page.goto" },
+    { type: "action", callId: "c2", startTime: 240, endTime: 250, title: "page.goto" },
   ]
     .map((e) => JSON.stringify(e))
     .join("\n");
@@ -128,6 +128,47 @@ describe("captureStepEvidence", () => {
       unknown
     >;
     expect(meta.failureSummary).toBe("expected the banner to be visible");
+  });
+
+  // A step that ends on an assertion passing at once, with a hook starting
+  // right after, gets the frame of its result only after the hook has begun —
+  // though that frame was painted before the step ended.
+  it("places each frame at its paint time, not when it reached the trace", async () => {
+    const artifactsDir = await tempDir();
+    const evidenceDir = await tempDir();
+    const events = [
+      { type: "context-options", origin: "testRunner", wallTime: 10_000, monotonicTime: 0 },
+      { type: "screencast-frame", sha1: "list", timestamp: 1000, frameSwapWallTime: 10_995 },
+      { type: "before", callId: "s7", startTime: 900, title: "step 7: Search the list" },
+      { type: "after", callId: "s7", endTime: 1005 },
+      { type: "before", callId: "h1", startTime: 1006, title: "cleanup 1: Delete the item" },
+      { type: "screencast-frame", sha1: "search-result", timestamp: 1030, frameSwapWallTime: 11_003 },
+      { type: "screencast-frame", sha1: "reopened", timestamp: 1110, frameSwapWallTime: 11_100 },
+      { type: "after", callId: "h1", endTime: 1200 },
+    ];
+    const nested = join(artifactsDir, "todos-search");
+    await mkdir(nested, { recursive: true });
+    await writeFile(
+      join(nested, "trace.zip"),
+      buildZip([
+        {
+          name: "test.trace",
+          data: Buffer.from(events.map((e) => JSON.stringify(e)).join("\n")),
+          method: "deflate",
+        },
+        ...["list", "search-result", "reopened"].map((sha1) => ({
+          name: `resources/${sha1}`,
+          data: Buffer.from(sha1),
+          method: "stored" as const,
+        })),
+      ]),
+    );
+
+    expect(await captureStepEvidence({ artifactsDir, evidenceDir })).toBeNull();
+    const frame = (file: string) => readFile(join(evidenceDir, file), "utf8");
+    expect(await frame("step-07.jpeg")).toBe("search-result");
+    expect(await frame("cleanup-01.before.jpeg")).toBe("search-result");
+    expect(await frame("cleanup-01.jpeg")).toBe("reopened");
   });
 
   // The report renders the reason instead of an empty section, so it has to say

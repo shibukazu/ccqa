@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { withUsageErrors } from "./usage-errors.ts";
 import { RunUsageError } from "../run/errors.ts";
@@ -158,6 +158,9 @@ export const evidenceCommand = addLanguageOption(
         ...(review ? { review } : {}),
         ...(anchors ? { anchors } : {}),
       });
+      // The recording lives beside the test, so on a fresh checkout nothing may
+      // have created the case's own directory yet.
+      await mkdir(dirname(out), { recursive: true });
       // The last thing between a recording and a pull request. The route is
       // scrubbed when it is recorded, but a route recorded before this project
       // named its env files still holds the values — and this table is written
