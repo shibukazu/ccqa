@@ -114,6 +114,7 @@ function readLocalEntryData(
 /** A frame the trace's screencast captured. */
 export interface TraceFrame {
   sha1: string;
+  /** When it was painted, on the steps' clock; when it arrived if the trace does not say. */
   timestamp: number;
 }
 
@@ -146,9 +147,10 @@ interface PendingStep {
  * the version skew.
  */
 export function parseTraceEvents(jsonl: string): { frames: TraceFrame[]; steps: TraceStep[] } {
-  const frames: TraceFrame[] = [];
+  const frames: (TraceFrame & { swapWallTime?: number })[] = [];
   const steps: TraceStep[] = [];
   const pendingByCallId = new Map<string, PendingStep>();
+  const wallOffsets = new Map<unknown, number>();
   let maxTimestamp = -Infinity;
 
   for (const line of jsonl.split("\n")) {
@@ -170,7 +172,19 @@ export function parseTraceEvents(jsonl: string): { frames: TraceFrame[]; steps: 
     const type = event.type;
     if (type === "screencast-frame") {
       if (typeof event.sha1 === "string" && typeof event.timestamp === "number") {
-        frames.push({ sha1: event.sha1, timestamp: event.timestamp });
+        frames.push({
+          sha1: event.sha1,
+          timestamp: event.timestamp,
+          ...(typeof event.frameSwapWallTime === "number"
+            ? { swapWallTime: event.frameSwapWallTime }
+            : {}),
+        });
+      }
+    } else if (type === "context-options") {
+      if (typeof event.wallTime === "number" && typeof event.monotonicTime === "number") {
+        if (!wallOffsets.has(event.origin)) {
+          wallOffsets.set(event.origin, event.wallTime - event.monotonicTime);
+        }
       }
     } else if (type === "action") {
       if (
@@ -206,11 +220,21 @@ export function parseTraceEvents(jsonl: string): { frames: TraceFrame[]; steps: 
     steps.push({ ...pending, endTime: maxTimestamp });
   }
 
+  // A frame arrives after the page it shows was painted, so it is placed at its
+  // paint time on the steps' clock (the test runner's). All frames or none:
+  // paint and arrival times are on different clocks and cannot be sorted together.
+  const offset = wallOffsets.get("testRunner") ?? wallOffsets.values().next().value;
+  const painted = offset !== undefined && frames.every((f) => f.swapWallTime !== undefined);
+  const placed: TraceFrame[] = frames.map(({ sha1, timestamp, swapWallTime }) => ({
+    sha1,
+    timestamp: painted ? swapWallTime! - offset : timestamp,
+  }));
+
   // Both sorted here, once, rather than searched in order by each caller: a
   // trace merged from several `.trace` members arrives interleaved.
-  frames.sort((a, b) => a.timestamp - b.timestamp);
+  placed.sort((a, b) => a.timestamp - b.timestamp);
   steps.sort((a, b) => a.startTime - b.startTime);
-  return { frames, steps };
+  return { frames: placed, steps };
 }
 
 /** The step's failure message, in whichever shape the trace recorded it. */
@@ -231,11 +255,21 @@ function titleOf(event: Record<string, unknown>): string {
 }
 
 /**
- * The frame on screen at `time`: the last one captured at or before it, or —
- * when the step began before any frame was captured — the first frame after.
- * Null when the trace holds no frames at all. `frames` comes from
- * {@link parseTraceEvents}, which sorts them by timestamp.
+ * One paint interval at 60fps. An assertion passes on the DOM, so a step can
+ * end before the frame showing that DOM is painted — at most one interval later.
+ */
+const ONE_FRAME_MS = 17;
+
+/**
+ * The frame showing the page as it was at `time`: the last one painted within
+ * a frame interval of it, or — when the step began before any frame was
+ * captured — the first frame after. Null when the trace holds no frames at
+ * all. `frames` comes from {@link parseTraceEvents}, sorted by paint time.
+ *
+ * A step's start takes the same allowance as its end: it is the same boundary
+ * as the previous step's end, and would otherwise show that step unfinished.
  */
 export function frameAt(frames: readonly TraceFrame[], time: number): TraceFrame | null {
-  return frames.findLast((f) => f.timestamp <= time) ?? frames[0] ?? null;
+  const painted = time + ONE_FRAME_MS;
+  return frames.findLast((f) => f.timestamp <= painted) ?? frames[0] ?? null;
 }

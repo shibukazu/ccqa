@@ -83,6 +83,46 @@ describe("parseTraceEvents", () => {
     ]);
   });
 
+  it("places a frame at its paint time on the test runner's clock", () => {
+    const jsonl = [
+      JSON.stringify({ type: "context-options", origin: "library", wallTime: 5_000, monotonicTime: 0 }),
+      JSON.stringify({ type: "context-options", origin: "testRunner", wallTime: 10_000, monotonicTime: 0 }),
+      JSON.stringify({ type: "screencast-frame", sha1: "late", timestamp: 50, frameSwapWallTime: 10_020 }),
+      JSON.stringify({ type: "screencast-frame", sha1: "early", timestamp: 40, frameSwapWallTime: 10_030 }),
+    ].join("\n");
+
+    expect(parseTraceEvents(jsonl).frames).toEqual([
+      { sha1: "late", timestamp: 20 },
+      { sha1: "early", timestamp: 30 },
+    ]);
+  });
+
+  // Without a clock to map it onto, a paint time would be compared against
+  // step times it has nothing in common with.
+  it("keeps the arrival time when the trace has no clock mapping", () => {
+    const jsonl = JSON.stringify({
+      type: "screencast-frame",
+      sha1: "a",
+      timestamp: 50,
+      frameSwapWallTime: 10_020,
+    });
+
+    expect(parseTraceEvents(jsonl).frames).toEqual([{ sha1: "a", timestamp: 50 }]);
+  });
+
+  it("keeps every frame's arrival time when only some carry a paint time", () => {
+    const jsonl = [
+      JSON.stringify({ type: "context-options", origin: "testRunner", wallTime: 10_000, monotonicTime: 0 }),
+      JSON.stringify({ type: "screencast-frame", sha1: "a", timestamp: 50, frameSwapWallTime: 10_020 }),
+      JSON.stringify({ type: "screencast-frame", sha1: "b", timestamp: 40 }),
+    ].join("\n");
+
+    expect(parseTraceEvents(jsonl).frames).toEqual([
+      { sha1: "b", timestamp: 40 },
+      { sha1: "a", timestamp: 50 },
+    ]);
+  });
+
   it("closes an unterminated before at the last timestamp in the file", () => {
     const jsonl = [
       JSON.stringify({ type: "before", callId: "1", startTime: 5, apiName: "wait" }),
@@ -97,19 +137,25 @@ describe("parseTraceEvents", () => {
 
 describe("frameAt", () => {
   const frames = [
-    { sha1: "a", timestamp: 10 },
-    { sha1: "b", timestamp: 20 },
-    { sha1: "c", timestamp: 30 },
+    { sha1: "a", timestamp: 100 },
+    { sha1: "b", timestamp: 200 },
+    { sha1: "c", timestamp: 300 },
   ];
 
   it("picks the last frame at or before the time", () => {
-    expect(frameAt(frames, 25)).toEqual({ sha1: "b", timestamp: 20 });
+    expect(frameAt(frames, 250)).toEqual({ sha1: "b", timestamp: 200 });
+  });
+
+  // An assertion passes on the DOM, and the frame showing it is painted up to
+  // one frame interval later.
+  it("takes a frame painted within one frame interval after the time", () => {
+    expect(frameAt(frames, 190)).toEqual({ sha1: "b", timestamp: 200 });
   });
 
   // The step began before the screencast captured anything — the earliest
   // available frame is the closest evidence there is.
   it("falls back to the first later frame when nothing is captured yet", () => {
-    expect(frameAt(frames, 5)).toEqual({ sha1: "a", timestamp: 10 });
+    expect(frameAt(frames, 50)).toEqual({ sha1: "a", timestamp: 100 });
   });
 
   it("returns null when there are no frames at all", () => {
