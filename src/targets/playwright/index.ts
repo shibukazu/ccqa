@@ -68,7 +68,7 @@ export const playwrightTarget: TargetPlugin = {
   runner: runCommandRunner,
   // The generated test carries no capture code. `ccqa run` asks Playwright for
   // a trace instead and recovers the same per-step before/after screenshots
-  // agent-browser produces from it — see `trace-evidence.ts`. Whether a run
+  // agent-browser produces from it — see `trace-capture.ts`. Whether a run
   // takes them is the project's setting, ANDed in by `resolveStepEvidence`.
   stepEvidence: { supported: true },
   judgeSteps: { supported: true },

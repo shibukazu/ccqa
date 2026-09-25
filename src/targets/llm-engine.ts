@@ -771,7 +771,13 @@ async function verifyRun(
     // evidence again, so reading it would be work nobody keeps.
     if (evidenceDir && result.exitCode === 0) {
       const unavailable =
-        traceUnavailable ?? (await captureStepEvidence({ artifactsDir, evidenceDir }));
+        traceUnavailable ??
+        (await captureStepEvidence({
+          artifactsDir,
+          evidenceDir,
+          playwrightFrom: [...testFiles.map((f) => dirname(join(p.ctx.cwd, f))), p.ctx.cwd],
+          warn: (message) => log.warn(`${p.ctx.ref.id}: ${message}`),
+        }));
       if (unavailable) log.warn(unavailable);
     }
     return { ...result, command };

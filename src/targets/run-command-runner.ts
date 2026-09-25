@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, type WriteStream } from "node:fs";
 import { mkdir, rename, rm, stat } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type { Readable } from "node:stream";
 import { resolveCaseTestPath } from "./test-path.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
@@ -150,8 +150,8 @@ async function runOneSpec(ref: RunnableCase, opts: RunnerOptions): Promise<Repor
   // Step screenshots go to the same per-spec directory the deterministic path
   // uses, so one loader serves both. Two producers fill it: a test generated
   // before the capture calls left the committed file writes into it directly
-  // through `CCQA_EVIDENCE_DIR`, and everything else has its frames read out
-  // of the run's Playwright trace once the command has exited.
+  // through `CCQA_EVIDENCE_DIR`, and everything else has its screenshots
+  // rendered from the run's Playwright trace once the command has exited.
   const evidence: StepEvidenceTarget = opts.stepEvidence.supported
     ? { dir: specEvidenceDir(opts.reportDir, featureName, specName) }
     : { reason: opts.stepEvidence.reason };
@@ -290,6 +290,8 @@ async function runOneSpec(ref: RunnableCase, opts: RunnerOptions): Promise<Repor
     evidence,
     artifactsDir,
     testCase,
+    caseKey: `${featureName}/${specName}`,
+    playwrightFrom: [dirname(resolve(opts.cwd, testFile)), opts.cwd],
     ...(traceUnavailable !== undefined ? { traceUnavailable } : {}),
   });
 
@@ -360,6 +362,8 @@ async function loadStepEvidence(args: {
   evidence: StepEvidenceTarget;
   artifactsDir: string;
   testCase: TestCase | null;
+  caseKey: string;
+  playwrightFrom: readonly string[];
   traceUnavailable?: string;
 }): Promise<Pick<ReportSpecResult, "evidence" | "evidenceUnavailable">> {
   const { opts } = args;
@@ -369,7 +373,12 @@ async function loadStepEvidence(args: {
   const evidenceDir = args.evidence.dir;
   const reason =
     args.traceUnavailable ??
-    (await captureStepEvidence({ artifactsDir: args.artifactsDir, evidenceDir }));
+    (await captureStepEvidence({
+      artifactsDir: args.artifactsDir,
+      evidenceDir,
+      playwrightFrom: args.playwrightFrom,
+      warn: (message) => log.warn(`${args.caseKey}: ${message}`),
+    }));
   const descriptions = stepCaptions(args.testCase);
   const evidence = await loadEvidenceForSpec(evidenceDir, opts.reportDir, descriptions);
   if (evidence) return { evidence };

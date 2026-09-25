@@ -4,8 +4,8 @@
  *
  * Several producers write the `<id>.png` + `<id>.json` pairs —
  * `abStepEvidence()` / `captureFailureEvidence()` in `test-helpers.ts`
- * (agent-browser replays), `targets/playwright/trace-capture.ts` (frames read
- * out of a run's Playwright trace), and `ccqaStepBefore`/`ccqaStepAfter` in
+ * (agent-browser replays), `targets/playwright/trace-capture.ts` (snapshots
+ * rendered from a run's Playwright trace), and `ccqaStepBefore`/`ccqaStepAfter` in
  * `step-evidence.ts` for tests generated before the capture calls left the
  * committed file — and one consumer reads them back (`loadEvidenceForSpec` in
  * `report/evidence.ts`). They agree only on the contract here, so it is kept
