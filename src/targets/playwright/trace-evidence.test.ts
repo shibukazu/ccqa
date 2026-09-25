@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { frameAt, parseTraceEvents, readZip } from "./trace-evidence.ts";
+import { parseTraceSteps, readZip } from "./trace-evidence.ts";
 import { buildZip } from "./zip-fixture.ts";
 
 const dirs: string[] = [];
@@ -43,122 +43,84 @@ describe("readZip", () => {
   });
 });
 
-describe("parseTraceEvents", () => {
-  // Merged `.trace` members arrive interleaved, so the frames are sorted here
-  // rather than by every caller that searches them.
-  it("reads screencast frames in timestamp order and skips a malformed line", () => {
-    const jsonl = [
-      JSON.stringify({ type: "screencast-frame", sha1: "b", timestamp: 20 }),
-      "{not valid json",
-      JSON.stringify({ type: "screencast-frame", sha1: "a", timestamp: 10 }),
-    ].join("\n");
-
-    const { frames } = parseTraceEvents(jsonl);
-
-    expect(frames).toEqual([
-      { sha1: "a", timestamp: 10 },
-      { sha1: "b", timestamp: 20 },
-    ]);
-  });
-
-  it("pairs before/after by callId and accepts a merged action entry, sorted by startTime", () => {
-    const jsonl = [
-      JSON.stringify({ type: "before", callId: "1", startTime: 5, apiName: "click" }),
-      JSON.stringify({ type: "after", callId: "1", endTime: 15 }),
-      JSON.stringify({
-        type: "action",
-        callId: "2",
-        startTime: 1,
-        endTime: 3,
-        title: "goto",
-        apiName: "goto",
-      }),
-    ].join("\n");
-
-    const { steps } = parseTraceEvents(jsonl);
-
-    expect(steps).toEqual([
-      { title: "goto", startTime: 1, endTime: 3 },
-      { title: "click", startTime: 5, endTime: 15 },
-    ]);
-  });
-
-  it("places a frame at its paint time on the test runner's clock", () => {
-    const jsonl = [
-      JSON.stringify({ type: "context-options", origin: "library", wallTime: 5_000, monotonicTime: 0 }),
-      JSON.stringify({ type: "context-options", origin: "testRunner", wallTime: 10_000, monotonicTime: 0 }),
-      JSON.stringify({ type: "screencast-frame", sha1: "late", timestamp: 50, frameSwapWallTime: 10_020 }),
-      JSON.stringify({ type: "screencast-frame", sha1: "early", timestamp: 40, frameSwapWallTime: 10_030 }),
-    ].join("\n");
-
-    expect(parseTraceEvents(jsonl).frames).toEqual([
-      { sha1: "late", timestamp: 20 },
-      { sha1: "early", timestamp: 30 },
-    ]);
-  });
-
-  // Without a clock to map it onto, a paint time would be compared against
-  // step times it has nothing in common with.
-  it("keeps the arrival time when the trace has no clock mapping", () => {
-    const jsonl = JSON.stringify({
-      type: "screencast-frame",
-      sha1: "a",
-      timestamp: 50,
-      frameSwapWallTime: 10_020,
-    });
-
-    expect(parseTraceEvents(jsonl).frames).toEqual([{ sha1: "a", timestamp: 50 }]);
-  });
-
-  it("keeps every frame's arrival time when only some carry a paint time", () => {
-    const jsonl = [
-      JSON.stringify({ type: "context-options", origin: "testRunner", wallTime: 10_000, monotonicTime: 0 }),
-      JSON.stringify({ type: "screencast-frame", sha1: "a", timestamp: 50, frameSwapWallTime: 10_020 }),
-      JSON.stringify({ type: "screencast-frame", sha1: "b", timestamp: 40 }),
-    ].join("\n");
-
-    expect(parseTraceEvents(jsonl).frames).toEqual([
-      { sha1: "b", timestamp: 40 },
-      { sha1: "a", timestamp: 50 },
-    ]);
-  });
-
-  it("closes an unterminated before at the last timestamp in the file", () => {
-    const jsonl = [
-      JSON.stringify({ type: "before", callId: "1", startTime: 5, apiName: "wait" }),
-      JSON.stringify({ type: "screencast-frame", sha1: "z", timestamp: 42 }),
-    ].join("\n");
-
-    const { steps } = parseTraceEvents(jsonl);
-
-    expect(steps).toEqual([{ title: "wait", startTime: 5, endTime: 42 }]);
-  });
-});
-
-describe("frameAt", () => {
-  const frames = [
-    { sha1: "a", timestamp: 100 },
-    { sha1: "b", timestamp: 200 },
-    { sha1: "c", timestamp: 300 },
+/** The runner's side of a call: a step, or an API call made inside one. */
+function runner(callId: string, title: string, start: number, end: number, parentId?: string) {
+  return [
+    { type: "before", callId, stepId: callId, startTime: start, title, ...(parentId ? { parentId } : {}) },
+    { type: "after", callId, endTime: end },
   ];
+}
 
-  it("picks the last frame at or before the time", () => {
-    expect(frameAt(frames, 250)).toEqual({ sha1: "b", timestamp: 200 });
+/** The browser's side of a call, pointing at the runner call it ran in. */
+function browser(callId: string, stepId: string, start: number, end: number) {
+  return [
+    {
+      type: "before",
+      callId,
+      stepId,
+      pageId: "page@1",
+      startTime: start,
+      beforeSnapshot: `before@${callId}`,
+    },
+    {
+      type: "frame-snapshot",
+      snapshot: { snapshotName: `before@${callId}`, isMainFrame: true, viewport: { width: 1280, height: 720 } },
+    },
+    { type: "after", callId, endTime: end, afterSnapshot: `after@${callId}` },
+  ];
+}
+
+const jsonl = (events: object[]) => events.map((e) => JSON.stringify(e)).join("\n");
+
+describe("parseTraceSteps", () => {
+  it("brackets a step with its first call's before and its last call's after, nested steps included", () => {
+    const steps = parseTraceSteps(
+      jsonl([
+        ...runner("s1", "step 1: Add an item", 0, 100),
+        ...runner("inner", "fill the form", 5, 60, "s1"),
+        ...runner("api1", "Fill", 10, 20, "inner"),
+        ...browser("call@1", "api1", 11, 19),
+        ...runner("exp1", "Expect toBeVisible", 70, 90, "s1"),
+        ...browser("call@2", "exp1", 71, 89),
+      ]),
+    );
+
+    expect(steps.find((s) => s.title === "step 1: Add an item")).toEqual({
+      title: "step 1: Add an item",
+      before: { pageId: "page@1", name: "before@call@1", viewport: { width: 1280, height: 720 } },
+      after: { pageId: "page@1", name: "after@call@2" },
+    });
+    expect(steps.find((s) => s.title === "fill the form")?.after?.name).toBe("after@call@1");
   });
 
-  // An assertion passes on the DOM, and the frame showing it is painted up to
-  // one frame interval later.
-  it("takes a frame painted within one frame interval after the time", () => {
-    expect(frameAt(frames, 190)).toEqual({ sha1: "b", timestamp: 200 });
+  // A cleanup hook runs right after the last step; what it opens must not
+  // become that step's result.
+  it("keeps a hook step's calls out of the step before it", () => {
+    const steps = parseTraceSteps(
+      jsonl([
+        ...runner("s7", "step 7: Search the list", 0, 50),
+        ...runner("exp", "Expect toBeVisible", 10, 40, "s7"),
+        ...browser("call@1", "exp", 11, 39),
+        ...runner("hook", "After Hooks", 51, 200),
+        ...runner("c1", "cleanup 1: Delete the item", 52, 150, "hook"),
+        ...runner("click", "Click", 60, 140, "c1"),
+        ...browser("call@2", "click", 61, 139),
+      ]),
+    );
+
+    expect(steps.find((s) => s.title.startsWith("step 7"))?.after?.name).toBe("after@call@1");
+    expect(steps.find((s) => s.title.startsWith("cleanup 1"))?.before?.name).toBe("before@call@2");
   });
 
-  // The step began before the screencast captured anything — the earliest
-  // available frame is the closest evidence there is.
-  it("falls back to the first later frame when nothing is captured yet", () => {
-    expect(frameAt(frames, 50)).toEqual({ sha1: "a", timestamp: 100 });
-  });
+  it("leaves a step with no browser call without snapshots, and carries its error", () => {
+    const steps = parseTraceSteps(
+      [
+        JSON.stringify({ type: "before", callId: "s1", startTime: 0, title: "step 1: Wait" }),
+        "{not valid json",
+        JSON.stringify({ type: "after", callId: "s1", endTime: 5, error: { message: "boom" } }),
+      ].join("\n"),
+    );
 
-  it("returns null when there are no frames at all", () => {
-    expect(frameAt([], 10)).toBeNull();
+    expect(steps).toEqual([{ title: "step 1: Wait", error: "boom" }]);
   });
 });

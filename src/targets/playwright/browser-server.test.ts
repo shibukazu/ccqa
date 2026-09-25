@@ -22,11 +22,11 @@ async function acquireInto(cwd: string) {
 }
 
 function fakePlaywright(cwd: string): void {
-  // A resolvable "playwright" whose launchServer needs no browser.
-  const dir = join(cwd, "node_modules", "playwright");
+  // A resolvable Playwright whose launchServer needs no browser.
+  const dir = join(cwd, "node_modules", "playwright-core");
   writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "consumer" }));
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "playwright", main: "./index.js" }));
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "playwright-core", main: "./index.js" }));
   writeFileSync(
     join(dir, "index.js"),
     [
@@ -86,7 +86,7 @@ describe("acquirePlaywrightBrowser", () => {
     const cwd = mkdtempSync(join(tmpdir(), "ccqa-pw-"));
     dirs.push(cwd);
     writeFileSync(join(cwd, "package.json"), JSON.stringify({ name: "consumer" }));
-    await expect(acquireInto(cwd)).rejects.toThrow(/could not resolve Playwright/);
+    await expect(acquireInto(cwd)).rejects.toThrow(/Playwright is not installed/);
   });
 });
 

@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { inflateRawSync } from "node:zlib";
 
 /**
- * Recovers per-step screenshots from a Playwright `trace.zip` after ccqa has
- * run a generated Playwright test with `--trace on`. The trace format is
+ * Reads the steps of a Playwright `trace.zip` after ccqa has run a generated
+ * Playwright test with `--trace on`. The trace format is
  * public but Playwright ships no reader library for it outside the `show
  * trace` UI, and pulling in a zip dependency for one consumer-side artefact
  * is not worth the supply-chain surface — the format is small enough (local
@@ -13,9 +13,8 @@ import { inflateRawSync } from "node:zlib";
  * a streaming zip writer (which is what Playwright's tracing uses) often
  * leaves the local header's size fields zeroed and appends a data
  * descriptor instead, so the central directory is the only place sizes are
- * guaranteed correct. It decompresses nothing until an entry is read: almost
- * every member of a trace archive is a screencast frame, and a capture reads
- * the `.trace` members plus the two frames that bracket each step.
+ * guaranteed correct. It decompresses nothing until an entry is read: a
+ * capture needs only the `.trace` members.
  */
 
 /** A zip archive's entries, each decompressed when it is read. */
@@ -111,47 +110,58 @@ function readLocalEntryData(
   return null; // an exotic method (e.g. bzip2) — skip rather than fail the whole archive
 }
 
-/** A frame the trace's screencast captured. */
-export interface TraceFrame {
-  sha1: string;
-  /** When it was painted, on the steps' clock; when it arrived if the trace does not say. */
-  timestamp: number;
+/** A DOM snapshot the trace recorded around one browser call. */
+export interface SnapshotRef {
+  pageId: string;
+  /** `before@<callId>` / `after@<callId>`, as the trace names it. */
+  name: string;
+  viewport?: { width: number; height: number };
 }
 
-/** A step the trace recorded, with the frames that bracket it. */
+/** A call the test runner recorded, with the snapshots that show its two ends. */
 export interface TraceStep {
   title: string;
-  startTime: number;
-  endTime: number;
   /**
    * What went wrong inside the step, when something did. Carried because it is
    * the only thing that tells an evidence table which step of a failed run was
-   * the one that failed — the frames alone read as a run that went fine.
+   * the one that failed.
    */
   error?: string;
+  /** Before its first browser call inside it. */
+  before?: SnapshotRef;
+  /** After its last browser call inside it — the page its assertions saw. */
+  after?: SnapshotRef;
 }
 
-interface PendingStep {
+interface TraceCall {
   title: string;
   startTime: number;
+  endTime?: number;
+  /** The enclosing call: a step's parent step, or the step a browser call ran in. */
+  parent?: string;
+  error?: string;
+  /** Set only on browser calls; the test runner's own calls have none. */
+  pageId?: string;
+  beforeSnapshot?: string;
+  afterSnapshot?: string;
 }
 
 /**
- * The screencast frames and the `test.step` calls one trace file holds.
+ * The calls one trace holds, each runner-side call with the DOM at its two
+ * boundaries: the before-snapshot of the first Playwright call inside it and the
+ * after-snapshot of the last, whatever kind of call (action, wait, assertion).
+ * Nothing the test did not itself wait for is shown — a step ending in a click
+ * shows the DOM right after the click. Calls count at any depth, so a step
+ * nested in another counts toward both.
  *
- * A trace is JSON Lines, one event object per line; a corrupt or truncated
- * line must not sink the whole read, so parsing is best-effort per line.
- * Step events come in two shapes across Playwright versions — a `before`/
- * `after` pair sharing a `callId`, or a single merged `action` event — and
- * both are folded into the same `TraceStep` shape here so callers never see
- * the version skew.
+ * A trace is JSON Lines; a corrupt or truncated line must not sink the whole
+ * read, so parsing is best-effort per line. A browser call points at the
+ * runner call it ran in through `stepId`; the runner calls chain through
+ * `parentId`.
  */
-export function parseTraceEvents(jsonl: string): { frames: TraceFrame[]; steps: TraceStep[] } {
-  const frames: (TraceFrame & { swapWallTime?: number })[] = [];
-  const steps: TraceStep[] = [];
-  const pendingByCallId = new Map<string, PendingStep>();
-  const wallOffsets = new Map<unknown, number>();
-  let maxTimestamp = -Infinity;
+export function parseTraceSteps(jsonl: string): TraceStep[] {
+  const calls = new Map<string, TraceCall>();
+  const viewports = new Map<string, { width: number; height: number }>();
 
   for (const line of jsonl.split("\n")) {
     if (line.trim() === "") continue;
@@ -163,81 +173,89 @@ export function parseTraceEvents(jsonl: string): { frames: TraceFrame[]; steps: 
     }
     if (typeof parsed !== "object" || parsed === null) continue;
     const event = parsed as Record<string, unknown>;
+    const callId = event.callId;
 
-    for (const field of ["timestamp", "startTime", "endTime"]) {
-      const value = event[field];
-      if (typeof value === "number") maxTimestamp = Math.max(maxTimestamp, value);
-    }
-
-    const type = event.type;
-    if (type === "screencast-frame") {
-      if (typeof event.sha1 === "string" && typeof event.timestamp === "number") {
-        frames.push({
-          sha1: event.sha1,
-          timestamp: event.timestamp,
-          ...(typeof event.frameSwapWallTime === "number"
-            ? { swapWallTime: event.frameSwapWallTime }
-            : {}),
-        });
-      }
-    } else if (type === "context-options") {
-      if (typeof event.wallTime === "number" && typeof event.monotonicTime === "number") {
-        if (!wallOffsets.has(event.origin)) {
-          wallOffsets.set(event.origin, event.wallTime - event.monotonicTime);
-        }
-      }
-    } else if (type === "action") {
+    if (event.type === "frame-snapshot") {
+      const snapshot = event.snapshot as Record<string, unknown> | undefined;
+      const viewport = snapshot?.viewport as { width?: unknown; height?: unknown } | undefined;
       if (
-        typeof event.callId === "string" &&
-        typeof event.startTime === "number" &&
-        typeof event.endTime === "number"
+        typeof snapshot?.snapshotName === "string" &&
+        snapshot.isMainFrame !== false &&
+        typeof viewport?.width === "number" &&
+        typeof viewport.height === "number" &&
+        !viewports.has(snapshot.snapshotName)
       ) {
-        steps.push({
-          title: titleOf(event),
-          startTime: event.startTime,
-          endTime: event.endTime,
-          ...errorOf(event),
-        });
+        viewports.set(snapshot.snapshotName, { width: viewport.width, height: viewport.height });
       }
-    } else if (type === "before") {
-      if (typeof event.callId === "string" && typeof event.startTime === "number") {
-        pendingByCallId.set(event.callId, { title: titleOf(event), startTime: event.startTime });
+    } else if ((event.type === "before" || event.type === "action") && typeof callId === "string") {
+      if (typeof event.startTime !== "number") continue;
+      const stepId = typeof event.stepId === "string" && event.stepId !== callId ? event.stepId : undefined;
+      const parent = stepId ?? (typeof event.parentId === "string" ? event.parentId : undefined);
+      calls.set(callId, {
+        title: titleOf(event),
+        startTime: event.startTime,
+        ...(parent !== undefined ? { parent } : {}),
+        ...(typeof event.pageId === "string" ? { pageId: event.pageId } : {}),
+        ...(typeof event.beforeSnapshot === "string" ? { beforeSnapshot: event.beforeSnapshot } : {}),
+      });
+    }
+    if ((event.type === "after" || event.type === "action") && typeof callId === "string") {
+      const call = calls.get(callId);
+      if (call === undefined) continue;
+      if (typeof event.endTime === "number") call.endTime = event.endTime;
+      if (typeof event.afterSnapshot === "string") call.afterSnapshot = event.afterSnapshot;
+      Object.assign(call, errorOf(event));
+    }
+  }
+
+  const steps = new Map<TraceCall, TraceStep & { first?: TraceCall; last?: TraceCall }>();
+  for (const call of calls.values()) {
+    if (call.pageId !== undefined) continue;
+    steps.set(call, { title: call.title, ...(call.error !== undefined ? { error: call.error } : {}) });
+  }
+  for (const call of calls.values()) {
+    if (call.pageId === undefined) continue;
+    const seen = new Set<string>();
+    for (let id = call.parent; id !== undefined && !seen.has(id); id = calls.get(id)?.parent) {
+      seen.add(id);
+      const step = steps.get(calls.get(id)!);
+      if (step === undefined) continue;
+      if (call.beforeSnapshot !== undefined && (!step.first || call.startTime < step.first.startTime)) {
+        step.first = call;
       }
-    } else if (type === "after") {
-      if (typeof event.callId === "string" && typeof event.endTime === "number") {
-        const pending = pendingByCallId.get(event.callId);
-        if (pending !== undefined) {
-          pendingByCallId.delete(event.callId);
-          steps.push({ ...pending, endTime: event.endTime, ...errorOf(event) });
-        }
+      if (
+        call.afterSnapshot !== undefined &&
+        call.endTime !== undefined &&
+        (!step.last || call.endTime > step.last.endTime!)
+      ) {
+        step.last = call;
       }
     }
   }
 
-  // A `before` whose `after` never arrived (truncated trace, crashed run) —
-  // close it at the last timestamp on record so it still has an evidence window.
-  for (const pending of pendingByCallId.values()) {
-    steps.push({ ...pending, endTime: maxTimestamp });
-  }
-
-  // A frame arrives after the page it shows was painted, so it is placed at its
-  // paint time on the steps' clock (the test runner's). All frames or none:
-  // paint and arrival times are on different clocks and cannot be sorted together.
-  const offset = wallOffsets.get("testRunner") ?? wallOffsets.values().next().value;
-  const painted = offset !== undefined && frames.every((f) => f.swapWallTime !== undefined);
-  const placed: TraceFrame[] = frames.map(({ sha1, timestamp, swapWallTime }) => ({
-    sha1,
-    timestamp: painted ? swapWallTime! - offset : timestamp,
-  }));
-
-  // Both sorted here, once, rather than searched in order by each caller: a
-  // trace merged from several `.trace` members arrives interleaved.
-  placed.sort((a, b) => a.timestamp - b.timestamp);
-  steps.sort((a, b) => a.startTime - b.startTime);
-  return { frames: placed, steps };
+  const ref = (call: TraceCall, name: string): SnapshotRef => {
+    const viewport = viewports.get(name);
+    return { pageId: call.pageId!, name, ...(viewport ? { viewport } : {}) };
+  };
+  return [...steps.entries()]
+    .sort(([a], [b]) => a.startTime - b.startTime)
+    .map(([, { first, last, ...step }]) => ({
+      ...step,
+      ...(first ? { before: ref(first, first.beforeSnapshot!) } : {}),
+      ...(last ? { after: ref(last, last.afterSnapshot!) } : {}),
+    }));
 }
 
-/** The step's failure message, in whichever shape the trace recorded it. */
+/** The joined `.trace` members of an archive: the runner's steps and the browser's calls are separate files. */
+export async function readTraceJsonl(archive: string): Promise<string> {
+  const entries = await readZip(archive);
+  return entries.names
+    .filter((name) => name.endsWith(".trace"))
+    .map((name) => entries.read(name)?.toString("utf8") ?? "")
+    .join("\n");
+}
+
+/** The call's failure message, in whichever shape the trace recorded it. */
 function errorOf(event: Record<string, unknown>): { error?: string } {
   const error = event.error;
   if (typeof error === "string") return { error };
@@ -252,24 +270,4 @@ function titleOf(event: Record<string, unknown>): string {
   if (typeof event.apiName === "string") return event.apiName;
   if (typeof event.title === "string") return event.title;
   return "";
-}
-
-/**
- * One paint interval at 60fps. An assertion passes on the DOM, so a step can
- * end before the frame showing that DOM is painted — at most one interval later.
- */
-const ONE_FRAME_MS = 17;
-
-/**
- * The frame showing the page as it was at `time`: the last one painted within
- * a frame interval of it, or — when the step began before any frame was
- * captured — the first frame after. Null when the trace holds no frames at
- * all. `frames` comes from {@link parseTraceEvents}, sorted by paint time.
- *
- * A step's start takes the same allowance as its end: it is the same boundary
- * as the previous step's end, and would otherwise show that step unfinished.
- */
-export function frameAt(frames: readonly TraceFrame[], time: number): TraceFrame | null {
-  const painted = time + ONE_FRAME_MS;
-  return frames.findLast((f) => f.timestamp <= painted) ?? frames[0] ?? null;
 }

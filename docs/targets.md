@@ -881,9 +881,21 @@ refuses to amend a command that uses shell operators or already directs
 `--output` somewhere else. When it cannot, the row says so instead of showing an
 empty section.
 
-The frames are the trace's screencast — the filmstrip the trace viewer
-shows — so they are downscaled JPEGs rather than full-page captures. That is
-the price of keeping the capture code out of the file you commit.
+Each screenshot is a DOM snapshot from the trace, rendered by the trace viewer
+of the Playwright your project has installed. A step's images are the DOM at its
+boundaries: the before-snapshot of the first Playwright call inside the step and
+the after-snapshot of the last one, whatever kind of call it is (action, wait,
+or assertion), with an asserted element highlighted. Nothing is taken that the
+test did not itself wait for, so a step ending in a click shows the DOM right
+after the click. Rendering launches Playwright's bundled Chromium once per
+trace after the run, from the Playwright nearest the generated test. A canvas
+has no DOM, so it shows as a checkered placeholder rather than its content. A
+step with no browser call, or whose snapshot cannot be rendered or renders
+blank, gets no screenshot and a warning naming it; a test's first step has no
+"before" when it starts on the blank initial page. The viewer's files and
+routes are not Playwright's public API (they are present from Playwright 1.48
+and verified with 1.62), so a Playwright release that moves them costs the
+report its screenshots, never the run.
 
 A step's screenshots are matched to the case by the `test.step` title, which is
 the same label the draft writes. A rewrite pass that reshapes a title is

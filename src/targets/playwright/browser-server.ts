@@ -1,11 +1,10 @@
 import { existsSync } from "node:fs";
 import { readdir, unlink, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import type { CdpBrowserHandle, CdpEndpointContext } from "../types.ts";
+import { loadPlaywright } from "./resolve-playwright.ts";
 
 /**
  * Where the playwright target's browser comes from under `--coverage`.
@@ -50,7 +49,7 @@ export async function acquirePlaywrightBrowser(
   ctx: CdpEndpointContext,
 ): Promise<CdpBrowserHandle> {
   await sweepStaleWrappersOnce(ctx.cwd);
-  const chromium = await resolveChromium(ctx.cwd);
+  const { chromium } = await loadPlaywright<PlaywrightChromium>([ctx.cwd]);
   const port = await freePort();
   const server = await chromium.launchServer({ args: [`--remote-debugging-port=${port}`] });
   let wrapperPath: string | undefined;
@@ -134,42 +133,6 @@ async function sweepStaleWrappers(cwd: string): Promise<void> {
 /** Single quotes survive every shell metacharacter except themselves. */
 function shellQuote(s: string): string {
   return `'${s.replaceAll("'", `'\\''`)}'`;
-}
-
-/**
- * The consumer's Playwright, not a dependency of ccqa's: their tests speak
- * their version's protocol, and the server has to be the same animal. Their
- * `runCommand` runs `playwright test`, so the package is present — but under
- * pnpm's isolation it may only be resolvable through `@playwright/test`.
- */
-async function resolveChromium(cwd: string): Promise<PlaywrightChromium> {
-  const fromProject = createRequire(join(cwd, "package.json"));
-  const origins: string[] = [];
-  try {
-    origins.push(fromProject.resolve("@playwright/test/package.json"));
-  } catch {
-    // Fine — the direct names below may still resolve.
-  }
-  for (const name of ["playwright", "playwright-core"]) {
-    for (const origin of [null, ...origins]) {
-      try {
-        const req = origin === null ? fromProject : createRequire(origin);
-        const modPath = req.resolve(name);
-        const mod = (await import(pathToFileURL(modPath).href)) as {
-          chromium?: PlaywrightChromium;
-          default?: { chromium?: PlaywrightChromium };
-        };
-        const chromium = mod.chromium ?? mod.default?.chromium;
-        if (chromium !== undefined) return chromium;
-      } catch {
-        // Try the next resolution origin.
-      }
-    }
-  }
-  throw new Error(
-    `could not resolve Playwright from ${cwd} — the playwright target's --coverage launches ` +
-      "the browser with the project's own Playwright, which must be installed",
-  );
 }
 
 async function writeWrapperConfig(ctx: CdpEndpointContext): Promise<string> {

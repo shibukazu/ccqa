@@ -13,10 +13,10 @@ import { ReportEvidenceSchema, type ReportEvidence } from "./schema.ts";
  *
  * Producer-agnostic on purpose. Very different writers fill these directories
  * — `abStepEvidence()` during an agent-browser replay, and, for a Playwright
- * target, frames read back out of the run's trace once the command has exited
+ * target, snapshots rendered from the run's trace once the command has exited
  * — and they only have to agree on the file-pair convention documented here,
  * not on how or when the screenshot was taken. `pngFile` names the image
- * whatever its format: a trace's screencast frames are JPEG.
+ * whatever its format: the ones rendered from a trace are JPEG.
  */
 
 /** `<reportDir>/evidence/<feature>/<spec>` — one directory per spec. */
