@@ -566,6 +566,32 @@ describe("computeRerun: a manual attestation overriding the verdict", () => {
     expect(verdict.manualLapsed?.because).toBe("newerRed");
   });
 
+  test("a later red keeps the spec parked even when a deploy has also reached it", () => {
+    const verdict = compute({
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1),
+      ledger: ledgerWithFailedRun(ranAt("sha-1", { at: "2026-07-26T18:00:00Z" })),
+      attestations: attested("sha-0"),
+    });
+    expect(verdict.verdict).toBe("needsRepair");
+    expect(verdict.execution).toBe("failed");
+    expect(verdict.manualLapsed?.because).toBe("newerRed");
+    expect(verdict.manualLapsedByDeploy).toBeUndefined();
+  });
+
+  test("a later red that a green run has replaced does not hide the deploy that ended it", () => {
+    const red = ranAt("sha-0", { runId: "run-1", at: "2026-07-26T18:00:00Z" });
+    const green = ranAt("sha-0", { runId: "run-2", at: "2026-07-26T20:00:00Z" });
+    const verdict = compute({
+      log: log(deploy(0), deploy(1)),
+      touchIndex: touchedAt(1),
+      ledger: { green: { "f/s": green }, run: { "f/s": green }, red: { "f/s": red } },
+      attestations: attested("sha-0"),
+    });
+    expect(verdict.manualLapsed?.because).toBe("deployReached");
+    expect(verdict.manualLapsedByDeploy).toMatchObject({ sha: "sha-1" });
+  });
+
   test("lapses when the spec itself is edited after the attestation", () => {
     // The edit also re-opens the audit axis, so the verdict is the axes' own
     // answer (inProgress) rather than needsRepair — the point here is that
