@@ -497,14 +497,14 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
     { action: "fill", locator: { by: "label", value: "Title" }, value: "item-${CCQA_RUN_ID}" },
   ] as const;
 
-  it("opens with the project's header and tags the test's name", () => {
+  it("puts the project's header after the imports and tags the test's name", () => {
     const script = emitPlaywrightDraft({
       actions: [...recorded],
       testName: "Add a todo item",
       header: "// sheet: https://example.test/sheet row 1030",
       titleSuffix: " @high",
     });
-    expect(script.startsWith("// sheet: https://example.test/sheet row 1030\n\nimport")).toBe(true);
+    expect(script.startsWith(`import { test, expect } from "@playwright/test";\n\n// sheet: https://example.test/sheet row 1030\n`)).toBe(true);
     expect(script).toContain(`test("Add a todo item @high", async ({ page }) => {`);
   });
 

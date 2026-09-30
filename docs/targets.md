@@ -198,11 +198,11 @@ The keys not already covered elsewhere in this document:
   says which it is. Turning it off emits the undo's actions and nothing else —
   and `ccqa evidence` then names the cleanup expectations that nothing checks,
   so the trade is visible to whoever reads the table.
-- **`header`** — the comment block the generated test opens with, as a
-  template. `{case}` and `{title}` are always available, and every name your
-  case source puts in `fields` besides; a line whose placeholders are all
-  empty is dropped, so a case with no sheet link ships no empty `// sheet:`
-  comment.
+- **`header`** — the comment block placed right after the generated test's
+  imports, as a template. `{case}` and `{title}` are always available, and
+  every name your case source puts in `fields` besides; a line whose
+  placeholders are all empty is dropped, so a case with no sheet link ships no
+  empty `// sheet:` comment.
 - **`titleTags`** — a tag the test's title ends with, taken from one of the
   case's `fields`. `field` names which one; `map` says which field values
   become which tags — a value the map does not name emits no tag; `format`
