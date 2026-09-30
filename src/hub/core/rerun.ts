@@ -149,7 +149,7 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
     const manualState = readAttestation(
       attestations.specs[spec.key],
       spec,
-      coords.lastRed,
+      coords,
       range,
       log,
       deployTimes,
@@ -216,25 +216,26 @@ type ManualState =
 
 /**
  * Does the attestation still speak for what is deployed? A red run recorded
- * after the person looked is checked first: it is the only lapse that keeps the
- * spec parked, so naming another reason would send it back into the cycle to
- * fail again. Then deploy coverage (a sha the log cannot place reads as
- * reached, ADR-0014, with the hole kept as an annotation), then the spec's own
- * edits — compared against when the person looked, because they read the spec
- * as it stood that moment, which `specMovedSince` covers via a null baseline
- * sha. The null-sha case is the profile that had no deploy log when they
- * checked: their word covers exactly as long as that stays true.
+ * after the person looked and still the latest run is checked first, since it
+ * alone keeps the spec parked (see the caller). Then deploy coverage (a sha the
+ * log cannot place reads as reached, ADR-0014, with the hole kept as an
+ * annotation), then the spec's own edits — compared against when the person
+ * looked, because they read the spec as it stood that moment, which
+ * `specMovedSince` covers via a null baseline sha — then a later red a green
+ * run has since replaced. The null-sha case is the profile that had no deploy
+ * log when they checked: their word covers exactly as long as that stays true.
  */
 function readAttestation(
   attest: Attestation | undefined,
   spec: SpecTarget,
-  lastRed: SpecLedgerEntry | null,
+  { lastRun, lastRed }: { lastRun: SpecLedgerEntry | null; lastRed: SpecLedgerEntry | null },
   range: RangeLookup,
   log: DeployLog,
   deployTimes: Map<string, string>,
 ): ManualState | null {
   if (!attest) return null;
-  if (lastRed !== null && lastRed.at > attest.at) {
+  const newerRed = lastRed !== null && lastRed.at > attest.at;
+  if (newerRed && lastRed.runId === lastRun?.runId) {
     return { kind: "lapsed", attest, because: "newerRed" };
   }
 
@@ -259,6 +260,7 @@ function readAttestation(
   if (specMovedSince(spec.changedAt, null, attest.at, deployTimes)) {
     return { kind: "lapsed", attest, because: "specEdited" };
   }
+  if (newerRed) return { kind: "lapsed", attest, because: "newerRed" };
   return { kind: "covers", attest };
 }
 

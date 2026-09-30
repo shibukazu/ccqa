@@ -666,8 +666,9 @@ export type Attestations = z.infer<typeof AttestationsSchema>;
 
 /**
  * Why an attestation stopped covering the spec. One reason is named even when
- * several hold, in the order the checks run (a later red run, then coverage,
- * then the spec's own edits) — enough for a reader to see what to verify
+ * several hold, in the order the checks run (a later red that is still the
+ * latest run, then coverage, then the spec's own edits, then a later red since
+ * replaced by a green) — enough for a reader to see what to verify
  * before attesting again.
  */
 export const AttestationLapseSchema = z.enum([
