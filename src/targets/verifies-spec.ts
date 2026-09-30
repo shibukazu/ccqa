@@ -131,8 +131,8 @@ export function formatFinding(finding: SpecCoverageFinding, labels: EvidenceLabe
 
 /**
  * The warning a rule violation becomes: the file, the rule in the words it was
- * judged by, and where that came from. The offending code is left out: it is what the fix pass needs, not what a reader
- * scanning a log does.
+ * judged by, and where that came from. The offending code is left out: it is
+ * what the fix pass needs, not what a reader scanning a log does.
  */
 export function formatViolation(violation: GuideViolation): string {
   return `${violation.file}: ${violation.rule} (${violation.guide})`;
