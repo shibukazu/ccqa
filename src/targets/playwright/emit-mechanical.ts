@@ -153,7 +153,7 @@ export const JUDGE_CALL = "judgeByLlm";
  */
 export function headerPreserveRule(header: string, titleSuffix: string): string {
   const parts = [
-    header ? `the comment block at the top of the draft, verbatim` : "",
+    header ? `the comment block right below the draft's imports, verbatim` : "",
     titleSuffix ? `the \`${titleSuffix.trim()}\` suffix on the test's name` : "",
   ].filter(Boolean);
   return `**Keep ${parts.join(" and ")}.** Written from the case's own record, not decided per test; do not reword, move, or drop ${parts.length > 1 ? "either" : "it"}.`;
@@ -308,11 +308,12 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   ];
 
   const source = [
-    ...(input.header ? [input.header.trimEnd(), ""] : []),
     `import { test, expect } from "@playwright/test";`,
     ...(judgements.length > 0 ? [`import { ${JUDGE_CALL} } from ${j(JUDGE_MODULE)};`] : []),
     ...(runId ? [runId.import] : []),
     "",
+    // After the imports, where a formatter's import sorting leaves it in place.
+    ...(input.header ? [input.header.trimEnd(), ""] : []),
     ...declaration,
     "",
   ].join("\n");

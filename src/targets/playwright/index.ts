@@ -397,7 +397,7 @@ export function injectedCallGaps(
   const firstHeaderLine = stamped.header.split("\n")[0]?.trim() ?? "";
   if (firstHeaderLine && !corpus.includes(firstHeaderLine)) {
     warnings.push(
-      `the generated test no longer opens with the configured header — a rewrite pass dropped it, ` +
+      `the generated test no longer carries the configured header — a rewrite pass dropped it, ` +
         `so the file does not say which case it came from`,
     );
   }
