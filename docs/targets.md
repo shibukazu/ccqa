@@ -236,10 +236,10 @@ the draft ships as-is — no LLM involved for the playwright target.
   wrote them or reused them, and whatever else in the repository it needs.
   A rule one of the guides states in its own words is quoted back; so is a
   convention no document states but the suite follows everywhere, reported
-  with the count that shows it. What that reader would hold the change for
-  spends a fix round, and what it would mention and approve anyway is only
-  reported. A generation with no fix round to spend (`--auto-fix skip`) does
-  not ask that reader at all; what ccqa reads out of the file itself still is.
+  with the count that shows it. Every one it reports spends a fix round, once:
+  a violation that comes back unchanged is not asked again. A generation with
+  no fix round to spend (`--auto-fix skip`) does not ask that reader at all;
+  what ccqa reads out of the file itself still is.
   `examples` are not read this way, because a file that shows a shape states
   no rule to quote.
 - `operate` — documents read by both `ccqa record` and a live `ccqa run`: how

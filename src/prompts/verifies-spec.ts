@@ -250,16 +250,14 @@ function rulesReview(guides: readonly { path: string; body: string }[]): {
     ],
     answerShape:
       '{ "findings": [ { "stepId": "step-05", "problem": "…" } ], "ruleViolations": [ ' +
-      '{ "file": "…", "guide": "…", "rule": "…", "code": "…", "severity": "blocking" } ] }',
+      '{ "file": "…", "guide": "…", "rule": "…", "code": "…" } ] }',
     answerNote: [
       "",
       "In `ruleViolations`: `file` is the file's path in this repository, and `code`",
       "the lines that break the rule. `guide` and `rule` are where the rule comes",
       "from and what it says — the document's path and its own words when you can",
       "quote one; otherwise the path of a file you read that shows the convention,",
-      "and what you counted (\"N of M files under <dir> do X\"). `severity` is",
-      '"blocking" when you would hold the change until it is fixed, and "advisory"',
-      "when it is worth saying but you would approve anyway. An empty",
+      "and what you counted (\"N of M files under <dir> do X\"). An empty",
       "`ruleViolations` means every file follows every rule you could quote or",
       "count — write the key either way.",
     ],

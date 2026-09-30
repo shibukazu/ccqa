@@ -96,7 +96,6 @@ describe("verifiesSpecPrompt", () => {
     // A convention the documents never state is still one the suite follows,
     // and the evidence for it is a count nobody can produce from two files.
     expect(prompt).toContain("Search the repository before you claim one");
-    expect(prompt).toContain("advisory");
   });
 
   // Guides are markdown and carry fences of their own. A three-backtick
@@ -177,34 +176,16 @@ describe("reviewGeneratedTest", () => {
       cwd: ".",
       invoke: answering(
         '{"findings":[],"ruleViolations":[' +
-          '{"file":"e2e/add-item.spec.ts","guide":"docs/e2e-guide.md","rule":"Locators are declared before methods.","code":"const row = …","severity":"blocking"},' +
-          '{"file":"e2e/pages/list.ts","guide":"e2e/pages/todo_list.ts","rule":"12 of 14 page objects take the fixture","code":"async open() {}","severity":"advisory"}' +
+          '{"file":"e2e/add-item.spec.ts","guide":"docs/e2e-guide.md","rule":"Locators are declared before methods.","code":"const row = …"},' +
+          '{"file":"e2e/pages/list.ts","guide":"e2e/pages/todo_list.ts","rule":"12 of 14 page objects take the fixture","code":"async open() {}"}' +
           "]}",
       ),
     });
-    expect(ruleViolations?.map((v) => v.severity)).toEqual(["blocking", "advisory"]);
+    expect(ruleViolations?.map((v) => v.file)).toEqual(["e2e/add-item.spec.ts", "e2e/pages/list.ts"]);
     expect(warnings).toEqual([
       "e2e/add-item.spec.ts: Locators are declared before methods. (docs/e2e-guide.md)",
-      // Marked, so a reader can tell a line that bought a fix round from one
-      // the reviewer would have approved anyway.
-      "e2e/pages/list.ts: 12 of 14 page objects take the fixture (e2e/pages/todo_list.ts, advisory)",
+      "e2e/pages/list.ts: 12 of 14 page objects take the fixture (e2e/pages/todo_list.ts)",
     ]);
-  });
-
-  // A severity nobody stated must not be the way a violation stops costing
-  // anything: unsaid reads as blocking, which is what they all used to be.
-  test("treats a violation with no severity as blocking", async () => {
-    const { ruleViolations } = await reviewGeneratedTest({
-      files: submitted(),
-      guides: [{ path: "docs/e2e-guide.md", body: "Locators are declared before methods." }],
-      steps,
-      language: "ja",
-      cwd: ".",
-      invoke: answering(
-        '{"findings":[],"ruleViolations":[{"file":"e2e/add-item.spec.ts","guide":"docs/e2e-guide.md","rule":"Locators are declared before methods.","code":"const row = …"}]}',
-      ),
-    });
-    expect(ruleViolations?.[0]?.severity).toBe("blocking");
   });
 
   // A strict array is all-or-nothing: one violation the model shaped wrong
@@ -220,7 +201,7 @@ describe("reviewGeneratedTest", () => {
       invoke: answering(
         '{"findings":[],"ruleViolations":[' +
           '{"file":"e2e/pages/list.ts","rule":"guide も code も無い"},' +
-          '{"file":"e2e/add-item.spec.ts","guide":"docs/e2e-guide.md","rule":"Locators are declared before methods.","code":"const row = …","severity":"blocking"}' +
+          '{"file":"e2e/add-item.spec.ts","guide":"docs/e2e-guide.md","rule":"Locators are declared before methods.","code":"const row = …"}' +
           "]}",
       ),
     });

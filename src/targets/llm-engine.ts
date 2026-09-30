@@ -948,17 +948,16 @@ export function uncheckedSteps(
  * arrived. Absent violations are absent either way — there is nothing here to
  * act on when that half never came.
  *
- * Only what the reviewer would hold the change for. It is asked to sort its
- * own violations, because the alternative is a round spent on a line it would
- * have approved anyway. Every violation is still reported: `warnings` carries
- * the advisory ones too, marked as such.
+ * Every violation the reviewer reports: a rule the project wrote down, or a
+ * convention its files share, is the project's decision, not the reviewer's to
+ * waive.
  */
 export function guideViolations(
   review: SpecCoverageReview | undefined,
   alreadyAsked: ReadonlySet<string> = new Set(),
 ): { exitCode: number; output: string; command: string; asked: string[] } | null {
   const violations = (review?.ruleViolations ?? []).filter(
-    (v) => v.severity === "blocking" && !alreadyAsked.has(violationKey(v)),
+    (v) => !alreadyAsked.has(violationKey(v)),
   );
   if (violations.length === 0) return null;
   return {

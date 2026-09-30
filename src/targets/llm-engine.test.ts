@@ -140,23 +140,6 @@ const breaksARule: SpecCoverageReview = {
       guide: "docs/e2e-guide.md",
       rule: "Locators are declared before methods.",
       code: "async open() {}",
-      severity: "blocking",
-    },
-  ],
-};
-
-/** One the reviewer would mention and approve anyway. */
-const worthSaying: SpecCoverageReview = {
-  findings: [],
-  complete: true,
-  warnings: ["e2e/pages/list.ts: 12 of 14 page objects take the fixture (e2e/pages/todo_list.ts, advisory)"],
-  ruleViolations: [
-    {
-      file: "e2e/pages/list.ts",
-      guide: "e2e/pages/todo_list.ts",
-      rule: "12 of 14 page objects take the fixture",
-      code: "async open() {}",
-      severity: "advisory",
     },
   ],
 };
@@ -511,26 +494,6 @@ describe("generateWithLlmEngine", () => {
     expect(await readFile(resolve(cwd, "ran.log"), "utf8")).toBe("x");
   });
 
-  // A line the reviewer would raise and approve anyway. Spending a round on
-  // it takes the round from the finding that would have been rejected.
-  it("does not spend a round on a violation the review marked advisory", async () => {
-    await makeProject();
-    const { invoke, prompts } = fakeInvoke([okOutput()]);
-    const { reading } = fakeReading([worthSaying]);
-    const result = await generateWithLlmEngine({
-      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
-      target: "playwright",
-      steps: [],
-      taskInstructions: "Generate the test.",
-      invoke,
-      reading,
-    });
-    expect(result.passed).toBe(true);
-    expect(prompts).toHaveLength(1);
-    // Reported all the same: the record and the log carry it either way.
-    expect(result.review).toEqual(worthSaying);
-  });
-
   // The fix pass may decline a file it is not allowed to write, and the next
   // reading reports the same line again. Asking a second time can only be
   // declined a second time, so the round is kept for something else.
@@ -574,42 +537,6 @@ describe("generateWithLlmEngine", () => {
     });
     expect(result.passed).toBe(true);
     expect(prompts).toHaveLength(2);
-  });
-
-  // A line the reviewer mentioned in passing, and then — reading the rewrite —
-  // held the change for. A round that never put it to the model must not be
-  // the reason it is never asked.
-  it("spends a round on a violation an earlier round only passed over as advisory", async () => {
-    await makeProject();
-    const { invoke, prompts } = fakeInvoke([okOutput(), okOutput(), okOutput(), okOutput()]);
-    const line = (severity: "blocking" | "advisory") => ({
-      file: "e2e/pages/list.ts",
-      guide: "docs/e2e-guide.md",
-      rule: "Locators are declared before methods.",
-      code: "async open() {}",
-      severity,
-    });
-    const { reading } = fakeReading([
-      // The round goes to the step finding; the advisory line rides along
-      // without ever reaching the fix prompt.
-      { ...undecided, ruleViolations: [line("advisory")] },
-      { findings: [], complete: true, warnings: [], ruleViolations: [line("blocking")] },
-      clean,
-    ]);
-    const result = await generateWithLlmEngine({
-      ctx: makeContext({
-        fix: { maxRetries: 3, mode: "auto", useSnapshot: false },
-        targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }),
-      }),
-      target: "playwright",
-      steps: [],
-      taskInstructions: "Generate the test.",
-      invoke,
-      reading,
-    });
-    expect(result.passed).toBe(true);
-    expect(prompts).toHaveLength(3);
-    expect(prompts[2]).toContain("Locators are declared before methods.");
   });
 
   // One answer carries two reviews. A steps half that came back unreadable

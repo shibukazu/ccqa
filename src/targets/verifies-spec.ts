@@ -19,16 +19,11 @@ const FindingsSchema = z.object({
 // it is judged by — the guide's own line, or what the reviewer counted in the
 // repository — the next reader cannot tell a rule from a preference, and
 // without the offending code the fix pass has to go looking for it.
-//
-// A severity the reviewer did not state reads as blocking: it is what every
-// violation used to be, and a malformed answer must not be the way a finding
-// stops costing anything.
 const ViolationSchema = z.object({
   file: z.string(),
   guide: z.string(),
   rule: z.string(),
   code: z.string(),
-  severity: z.enum(["blocking", "advisory"]).catch("blocking"),
 });
 
 // Read one entry at a time. A strict array is all-or-nothing, so one violation
@@ -136,14 +131,11 @@ export function formatFinding(finding: SpecCoverageFinding, labels: EvidenceLabe
 
 /**
  * The warning a rule violation becomes: the file, the rule in the words it was
- * judged by, and where that came from. An advisory one says so — a reader must
- * be able to tell a line that was worth a fix round from one that was not. The
- * offending code is left out: it is what the fix pass needs, not what a reader
+ * judged by, and where that came from. The offending code is left out: it is what the fix pass needs, not what a reader
  * scanning a log does.
  */
 export function formatViolation(violation: GuideViolation): string {
-  const advisory = violation.severity === "advisory" ? ", advisory" : "";
-  return `${violation.file}: ${violation.rule} (${violation.guide}${advisory})`;
+  return `${violation.file}: ${violation.rule} (${violation.guide})`;
 }
 
 /**
