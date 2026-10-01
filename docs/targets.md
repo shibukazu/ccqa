@@ -341,7 +341,7 @@ A `Case` is a plain object:
 | `cleanup` | no | the same, run after the case whatever its outcome |
 | `expectations` | no | what must hold for the case as a whole, unattached to a step |
 | `cleanupExpectations` | no | what the undo must make true; asserted inside `afterEach` |
-| `context` | no | `{ heading, body }` sections ccqa does not act on, handed to the recorder |
+| `context` | no | `{ heading, body }` sections ccqa does not act on, handed to the recorder and to generation |
 | `fields` | no | values `header` and `titleTags.field` refer to, by your own names |
 | `disabled` | no | in the source, but out of runs and audits |
 

@@ -185,7 +185,7 @@ function weakerTwin(file: string, source: string): EmittedFinding[] {
 function decidesNothing(input: EmittedReviewInput): EmittedFinding[] {
   const source = input.files.get(input.testPath);
   if (source === undefined || input.caseText.join("").trim().length === 0) return [];
-  if (/\bexpect\(|\bjudgeByLlm\b/.test(source)) return [];
+  if (/\bexpect(?:\.soft)?\(|\bjudgeByLlm\b/.test(source)) return [];
   return [{
     file: input.testPath,
     line: 1,
@@ -272,7 +272,7 @@ function containerOfPageText(file: string, source: string): EmittedFinding[] {
  */
 function explained(all: readonly string[], i: number): boolean {
   let above = i - 1;
-  while (above >= 0 && /\bexpect\(|^\s*$|^\s*\)/.test(all[above] ?? "")) above -= 1;
+  while (above >= 0 && /\bexpect(?:\.soft)?\(|^\s*$|^\s*\)/.test(all[above] ?? "")) above -= 1;
   return /^\s*\/\//.test(all[above] ?? "");
 }
 
@@ -288,7 +288,7 @@ function explained(all: readonly string[], i: number): boolean {
 function unjustifiedFirst(file: string, source: string): EmittedFinding[] {
   const all = lines(source);
   return all.flatMap((text, i) => {
-    if (!/\bexpect\(/.test(text) || !/\.first\(\)/.test(text)) return [];
+    if (!/\bexpect(?:\.soft)?\(/.test(text) || !/\.first\(\)/.test(text)) return [];
     if (explained(all, i)) return [];
     return [{
       file,
@@ -383,7 +383,7 @@ function unaskedAssertions(
 ): EmittedFinding[] {
   const all = lines(source);
   return all.flatMap((text, i) => {
-    if (!/\bexpect\(/.test(text)) return [];
+    if (!/\bexpect(?:\.soft)?\(/.test(text)) return [];
     const strings = assertedStrings(text, locators);
     if (strings.length === 0 || strings.some((s) => said.includes(s))) return [];
     if (explained(all, i)) return [];

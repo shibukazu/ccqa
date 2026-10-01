@@ -100,6 +100,14 @@ describe("reviewEmittedFiles", () => {
     expect(rules(review(spec))).toEqual(["decides-nothing"]);
   });
 
+  test("a soft assertion decides the test as well as a hard one", () => {
+    const spec = `test("Adding an item puts it on the list @high", async ({ page }) => {
+  await todoList.addItem("Buy milk");
+  await expect.soft(todoList.row("Buy milk")).toBeVisible();
+});`;
+    expect(rules(review(spec))).toEqual([]);
+  });
+
   test("a case that states nothing has nothing to be checked against", () => {
     const spec = `test("x", async ({ page }) => { await todoList.load(); });`;
     expect(review(spec, "", [])).toEqual([]);

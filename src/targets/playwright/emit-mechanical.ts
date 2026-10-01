@@ -173,8 +173,8 @@ export function stepCommentPreserveRule(): string {
     "step then reads as deciding nothing. Keep the wording, the numbering and the punctuation, and " +
     "keep each step's actions inside its own block — a step's call to a page-object method belongs " +
     "in the block, not outside it. Do not merge, split or reorder the blocks. A test already at " +
-    "this path may have been written by an older ccqa in a different shape: the draft is what this " +
-    "file must look like, not that one."
+    "this path may have been written by an older ccqa in a different shape: the draft's step " +
+    "blocks are what this file must keep, not that one's."
   );
 }
 
