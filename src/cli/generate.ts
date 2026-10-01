@@ -242,6 +242,7 @@ async function runGenerateLocked(
     cleanup: testCase.cleanup,
     expectations: testCase.expectations,
     cleanupExpectations: testCase.cleanupExpectations,
+    ...(testCase.context.length > 0 ? { context: testCase.context } : {}),
     fields: testCase.fields,
     cwd,
     testPath,

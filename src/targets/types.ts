@@ -230,6 +230,8 @@ export interface GenerateContext {
    */
   expectations: string[];
   cleanupExpectations: string[];
+  /** Sections of the case ccqa does not interpret (preconditions, notes). */
+  context?: Array<{ heading: string; body: string }>;
   /**
    * Values a header or a title tag is written from, by the names the project's
    * own config uses. Empty for a case ccqa's own `spec.yaml` states, which has

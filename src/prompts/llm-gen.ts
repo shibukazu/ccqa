@@ -43,6 +43,13 @@ export interface LlmGenPromptInput {
    * the exact text so prompt, emitter, and gate agree.
    */
   draftInvariant?: string;
+  /** The case's expected results for the flow as a whole (not per step). */
+  expectations?: string[];
+  /** The case's cleanup steps. */
+  cleanup?: ExpandedStep[];
+  cleanupExpectations?: string[];
+  /** Sections of the case ccqa does not interpret (preconditions, notes). */
+  context?: Array<{ heading: string; body: string }>;
   resources: PromptResource[];
   conventionSections: PromptConventionSection[];
   /** Hub prompt bundle (project guidance + agent learnings), pre-concatenated. */
@@ -83,10 +90,14 @@ export function reuseFirstContract(hasDraft: boolean, draftInvariant?: string): 
   ];
   if (hasDraft) {
     rules.push(
-      `4. **The draft is ground truth.** The mechanical draft below encodes the recorded ` +
-        `route. Do not change the meaning of its operation sequence or its assertions — ` +
-        `no reordering, dropping, or weakening. You may rewrite locators when the ` +
-        `conventions or the sources you read justify a better one.`,
+      `4. **The draft is ground truth for the route, not for the form of its checks.** Keep ` +
+        `its operation sequence: no reordering or dropping of the actions the case needs. Its ` +
+        `\`expect\` lines are what the recorder observed on the way, written in one fixed form ` +
+        `(\`await expect(...)\`, one per observation). Which of them the test keeps, and in which ` +
+        `form — hard or soft, where the check lives, how the locator is scoped — is decided by the ` +
+        `case's expected results and the project's conventions, never by the draft. Where the ` +
+        `conventions and the draft disagree, follow the conventions. What an expected result ` +
+        `claims must still be checked: never loosen the value it states.`,
     );
     if (draftInvariant) rules.push(`5. ${draftInvariant}`);
   }
@@ -149,6 +160,9 @@ export function buildLlmGenPrompt(input: LlmGenPromptInput): string {
   const steps = input.steps.map(formatStep).join("\n");
   sections.push(`## Test spec\n\nTitle: ${input.specTitle}\n\nSteps:\n${steps}`);
 
+  const facts = caseFacts(input);
+  if (facts) sections.push(facts);
+
   if (input.draft) {
     sections.push(
       `## Mechanical draft (recorded ground truth)\n\nPath: ${input.draft.path}\n\n` +
@@ -189,6 +203,31 @@ export function buildLlmGenPrompt(input: LlmGenPromptInput): string {
   sections.push(outputContract(input.testPath, input.writeRoots));
 
   return sections.join("\n\n") + languageDirective(input.language);
+}
+
+/**
+ * What the case states beyond its steps. Project conventions key rules on
+ * these (which checks are the case's, where it may run), and the review that
+ * follows already reads them — a rewrite without them can only guess.
+ */
+function caseFacts(input: LlmGenPromptInput): string {
+  const parts: string[] = [];
+  if (input.expectations && input.expectations.length > 0) {
+    parts.push(
+      `### Expected results\n\nThe case states these for the flow as a whole. They are the ` +
+        `checks the test exists for:\n\n${input.expectations.map((e) => `- ${body(e)}`).join("\n")}`,
+    );
+  }
+  if (input.cleanup && input.cleanup.length > 0) {
+    parts.push(`### Cleanup steps\n\n${input.cleanup.map(formatStep).join("\n")}`);
+  }
+  if (input.cleanupExpectations && input.cleanupExpectations.length > 0) {
+    parts.push(
+      `### Expected results of the cleanup\n\n${input.cleanupExpectations.map((e) => `- ${body(e)}`).join("\n")}`,
+    );
+  }
+  for (const c of input.context ?? []) parts.push(`### ${c.heading}\n\n${c.body.trim()}`);
+  return parts.length === 0 ? "" : `## About this case\n\n${parts.join("\n\n")}`;
 }
 
 export interface LlmFixPromptInput {
