@@ -609,6 +609,35 @@ function runValidationAction(
   };
 }
 
+/**
+ * Replay actions in order against a live session and stop at the first that
+ * fails. Unlike `validateActions` there is no cascade or rescue: the caller
+ * hands what is left to someone who can look at the page. A wait this cannot
+ * reproduce still settles the page, since the next action may depend on it;
+ * a check it cannot run is returned as `unchecked`, never as passed.
+ */
+export function replayUntilFailure(
+  actions: readonly RecordedAction[],
+  opts: { sessionName: string; envOverrides?: Record<string, string> },
+): { passed: RecordedAction[]; unchecked: RecordedAction[]; failed?: { action: RecordedAction; reason: string } } {
+  const patience: Patience = { spent: false };
+  const passed: RecordedAction[] = [];
+  const unchecked: RecordedAction[] = [];
+  for (const action of actions) {
+    const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides, patience);
+    if (outcome.skipped && action.action === "wait") {
+      spawnAB(["--session", opts.sessionName, "wait", "--load", "networkidle"]);
+    } else if (outcome.skipped && action.action === "assert") {
+      unchecked.push(action);
+      continue;
+    } else if (!outcome.skipped && !outcome.ok) {
+      return { passed, unchecked, failed: { action, reason: outcome.reason } };
+    }
+    passed.push(action);
+  }
+  return { passed, unchecked };
+}
+
 export function validateActions(
   actions: RecordedAction[],
   opts: ValidateOptions,

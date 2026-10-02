@@ -41,21 +41,23 @@ map.**
 For a step listed here, this replaces the snapshot-first routine of the
 Execution Workflow:
 
-1. While they still do what the step's instruction says, run the step's
-   previous commands as written, one per Bash call, with its
-   \`CCQA_STEP\`/\`CCQA_ASSERT\` prefixes. Do not snapshot first to find what a
-   command already names.
-2. A command that succeeds is recorded like any other. When the step's
-   commands all succeed, its \`CCQA_ASSERT\` checks passing are your signals:
-   emit \`STEP_DONE\` and go to the next step without a confirming snapshot.
-3. When a command fails, or the step's instruction or \`Expected\` asks for
-   something these commands do not do, switch to the Execution Workflow for
-   that step alone — snapshot, find what works, record it. Commands of the
-   step that do not fit are simply not run. The next step goes back to its
-   previous commands.
-4. Assertions follow the step's current \`Expected\`. Keep a previous check
-   only while it verifies what \`Expected\` says now, and add the ones it asks
-   for that are missing.
+1. While a step's previous commands still do what its instruction and
+   \`Expected\` say, call the \`replay_step\` tool with the step id instead of
+   running them yourself. It runs and records them in this session, checks
+   included, and stops at the first that fails. Do not snapshot first.
+2. When it reports they all ran, emit \`STEP_DONE\` and go to the next step
+   without a confirming snapshot.
+3. When it reports a failure, the commands before it are recorded and the
+   page is where they left it: finish that step with the Execution Workflow —
+   snapshot, find what works, record it — without re-running what was
+   recorded. A step whose instruction or \`Expected\` asks for something these
+   commands do not do skips \`replay_step\` and uses the Execution Workflow
+   from the start. The next step goes back to \`replay_step\`.
+4. A step you record yourself takes its assertions from its current
+   \`Expected\`: keep a previous check only while it verifies what
+   \`Expected\` says now. A step whose \`Expected\` has changed is one to
+   record yourself, since \`replay_step\` records the previous checks as
+   they are.
 5. A command marked \`# did not replay last time\` is where the previous
    recording's own validation found the route broken: expect that step to
    need the Execution Workflow, and do not keep a form that only half works.

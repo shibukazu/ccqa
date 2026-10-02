@@ -24,6 +24,7 @@ import {
   type ExpandedActionStep,
 } from "../spec/expand.ts";
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
+import { buildReplayStepServer, REPLAY_STEP_SERVER } from "./replay-step-tool.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
 import {
   formatPromotion,
@@ -220,6 +221,7 @@ export async function runTrace(
   if (previousActions.length > 0) {
     log.meta("previous", opts.freshIr ? "ignored (--fresh-ir)" : `${previousActions.length} action(s) offered as a map`);
   }
+  const offersMap = !opts.freshIr && previousActions.length > 0;
 
   const baseSystemPrompt = buildTraceSystemPrompt({
     title: testCase.title,
@@ -234,7 +236,7 @@ export async function runTrace(
       : {}),
     ...(testCase.context.length > 0 ? { context: testCase.context } : {}),
     ...(opts.instruction ? { instruction: opts.instruction } : {}),
-    ...(opts.freshIr ? {} : { previousRecording: previousActions }),
+    ...(offersMap ? { previousRecording: previousActions } : {}),
   });
   const promptBundle = await loadPromptBundle(opts.hubContext ?? null, "record", opts.cwd ?? process.cwd());
   if (promptBundle !== null) log.meta("prompt", promptBundle.loaded.join(" + "));
@@ -267,11 +269,31 @@ export async function runTrace(
   // `url_contains:` marker pushes two actions, an unparseable command none.
   let lastCommandPushCount = 0;
 
+  const invokeBase = agentBrowserInvokeBase({ sessionName, runId: sessionName });
+  const replayStep = offersMap
+    ? buildReplayStepServer({
+        previous: previousActions,
+        sessionName,
+        envOverrides: { CCQA_RUN_ID: sessionName },
+        onReplayed: (stepId, passed) => {
+          stepTracker.fromCommand(stepId);
+          for (const action of passed) traceActions.push({ ...action, stepId });
+          lastCommandPushCount = 0;
+        },
+      })
+    : null;
+
   const { isError, errorDetail } = await invokeClaudeStreaming(
     {
       prompt,
       systemPrompt,
-      ...agentBrowserInvokeBase({ sessionName, runId: sessionName }),
+      ...invokeBase,
+      ...(replayStep
+        ? {
+            allowedTools: [...invokeBase.allowedTools, `mcp__${REPLAY_STEP_SERVER}__replay_step`],
+            mcpServers: { [REPLAY_STEP_SERVER]: replayStep },
+          }
+        : {}),
       model,
       envScrubMap,
       onAbAction: ({ abAction, stepId, assertMarker, secret }) => {
@@ -368,10 +390,14 @@ export async function runTrace(
   // `validateFailedTrace` when learning is on. The replay resolves
   // `${CCQA_RUN_ID}` to the trace's own value, so it hits the same DOM
   // state the trace recorded against.
+  const validationStart = Date.now();
   const validatedActions =
     overallStatus === "passed" || opts.validateFailedTrace === true
       ? validateAndReport(dedupedActions, validationMode, { CCQA_RUN_ID: sessionName }, opts.teardown)
       : dedupedActions;
+  if (validatedActions !== dedupedActions) {
+    log.meta("validation time", `${((Date.now() - validationStart) / 1000).toFixed(1)}s`);
+  }
 
   // The trace session is done with the browser — close it now (best-effort,
   // no need to wait) rather than at process end, so no Chrome lingers

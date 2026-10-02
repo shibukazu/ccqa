@@ -40,15 +40,22 @@ later steps are not, since the validator replays them on whatever page the
 broken step left. On by default whenever a recording exists; `--fresh-ir`
 records from nothing.
 
+The recorder also gets a `replay_step` tool: ccqa runs one step's previous
+commands in the trace's own session through the replay validator's action
+runner, records those that pass, and stops at the first that fails. The
+recorder decides which steps to hand it and finishes a failed one itself, so
+a step that still works costs one turn rather than one per command.
+
 ### Consequences
 
-- Good: a step whose previous commands still work costs about one turn per
-  action.
+- Good: a step whose previous commands still work costs one turn.
 - Bad / cost: a previous route that is itself the problem can lead the
   recorder back onto it — `--fresh-ir` is the way out, and the rerecord skill
   says when to use it.
 - Bad / cost: steps the previous recording never got right are explored as
-  before; the map only helps where it was correct.
+  before; the map only helps where it was correct. A step `replay_step`
+  completes is not looked at, so a case whose steps are ordered differently
+  from the application can be walked past the point a later step needed.
 
 ### Confirmation
 
@@ -56,4 +63,8 @@ On the eight-step case above, one trace each, same model and environment:
 the default took 787 s, 144 turns and $7.34; `--fresh-ir` took 1700 s, 214
 turns and $10.25. The form-filling step fell from 74 commands to 18. That
 previous recording was itself broken after the moved step; re-recording again
-from the clean recording the default produced took 357 s, 90 turns and $2.54.
+from the clean recording the default produced took 357 s, 90 turns and $2.54
+with commands run one by one, and 210 s, 21 turns and $0.60 with
+`replay_step`. On the broken recording `replay_step` took 1608 s: one step it
+completed submitted a form the next step needed open, and the recorder spent
+72 commands getting back — the same two steps cost `--fresh-ir` 53.
