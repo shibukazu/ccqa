@@ -54,6 +54,13 @@ export interface ClaudeInvokeOptions {
    * tasks should set this; tool-driven flows keep thinking on.
    */
   disableThinking?: boolean;
+  /** How much the model reasons per turn; omitted, the model's own default. */
+  effort?: Options["effort"];
+  /**
+   * Refuse Bash commands other than agent-browser ones. Source lookups have
+   * Read/Grep/Glob; a shell lets the model scan the disk or sleep instead.
+   */
+  bashOnlyAgentBrowser?: boolean;
   /**
    * In-process MCP servers (`createSdkMcpServer`) exposing caller-defined
    * tools to this invocation. Tool names surface as
@@ -257,6 +264,8 @@ export async function invokeClaudeStreaming(
     systemPrompt,
     allowedTools,
     disableThinking = false,
+    effort,
+    bashOnlyAgentBrowser = false,
     mcpServers,
     maxTurns,
     timeoutMs,
@@ -314,6 +323,7 @@ export async function invokeClaudeStreaming(
     env: mergedEnv,
     ...(mcpServers ? { mcpServers } : {}),
     ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
+    ...(effort ? { effort } : {}),
     hooks:
       onAbAction || onAbActionFailed
         ? {
@@ -326,6 +336,13 @@ export async function invokeClaudeStreaming(
                     const cmd = (input.tool_input as Record<string, unknown>)?.["command"];
                     if (typeof cmd !== "string") return {};
 
+                    if (bashOnlyAgentBrowser && !/(^|\s)agent-browser\s/.test(cmd)) {
+                      return {
+                        decision: "block",
+                        reason:
+                          "Bash here runs agent-browser commands only. Read, search and list the source with the Read, Grep and Glob tools; wait for the page with agent-browser wait, not sleep.",
+                      };
+                    }
                     if (!relaxAbConstraints) {
                       const reason = abCommandBlockReason(cmd, envScrubMap);
                       if (reason !== null) return { decision: "block", reason };

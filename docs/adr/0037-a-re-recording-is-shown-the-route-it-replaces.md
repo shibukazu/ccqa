@@ -57,6 +57,14 @@ recording carries. Working around a step the application contradicts is what
 spent most of the turns measured below, and the recording it produces hides
 the mismatch.
 
+The recorder runs at `effort: low`. Transcripts showed four fifths of its
+output was reasoning, mostly before calls the map or a planned batch already
+decided. At low effort it stopped questioning the spec, so the prompt names
+the workaround outright — redoing an earlier step's work is one — and the
+checkpoint comes every 20 commands. Bash is limited to agent-browser: source
+is read with Read/Grep/Glob, and an unrestricted shell had been used to
+search the whole disk.
+
 ### Consequences
 
 - Good: a step whose previous commands still work costs one turn.
@@ -85,3 +93,8 @@ snapshot: `--fresh-ir` took 856 s and 89 turns; the clean recording 303 s and
 32 turns; the broken recording stopped after 743 s and 83 turns with a
 `spec-mismatch` on the step whose order differs from the application, naming
 the component that shows the result and suggesting the two steps swap.
+
+At `effort: low`, with Bash limited and the checkpoint at 20: the broken
+recording stopped with the same `spec-mismatch` after 274 s and 50 turns; the
+clean recording took 138 s and 22 turns; `--fresh-ir` stopped with the
+`spec-mismatch` after 605 s and 146 turns.

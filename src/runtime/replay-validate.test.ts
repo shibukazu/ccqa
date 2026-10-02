@@ -963,4 +963,13 @@ describe("replayUntilFailure", () => {
     expect(unchecked).toEqual([]);
     expect(mockedSpawnAB.mock.calls.some(([argv]) => argv.join(" ").includes("wait --load networkidle"))).toBe(true);
   });
+
+  test("waits for a named role that has not rendered yet, as for any element not there yet", () => {
+    const noneMatch = { status: 1, stdout: "", stderr: '✗ 6 elements have role "link", but none match name "Settings"' };
+    mockedSpawnAB.mockReturnValueOnce(noneMatch).mockReturnValue(OK);
+    const click: RecordedAction = { action: "click", locator: { by: "role", value: "link", name: "Settings", exact: true } };
+    const { passed, failed } = replayUntilFailure([click], { sessionName: SESSION });
+    expect(failed).toBeUndefined();
+    expect(passed).toEqual([click]);
+  });
 });

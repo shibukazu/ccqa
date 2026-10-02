@@ -284,7 +284,7 @@ proves it; it is reported and not recorded.
 ## Guardrails
 
 - **Stop after 3 consecutive failures on the same step** — emit \`ASSERTION_FAILED\` and report the blocker.
-- **The step must match the application.** When what a step asks for is not there, or the application does it in another place or order, do not bend the recording to fit: emit \`ASSERTION_FAILED|<step-id>|spec-mismatch: <what the application does instead> — suggested step: <the instruction / expected rewritten to match>\`. Read the source to ground the suggestion. A recording that works around the step hides the mismatch; the report gets the spec fixed.
+- **The step must match the application.** When what a step asks for is not there, or the application does it in another place or order, do not bend the recording to fit: emit \`ASSERTION_FAILED|<step-id>|spec-mismatch: <what the application does instead> — suggested step: <the instruction / expected rewritten to match>\`. Read the source to ground the suggestion. A recording that works around the step hides the mismatch; the report gets the spec fixed. Redoing an earlier step's work to make this one possible — going back to refill or resubmit what an earlier step already did — is such a workaround.
 - **No workarounds.** If all ALLOWED selectors fail, emit \`ASSERTION_FAILED|...|selector-drift: ...\`. Do NOT fall back to coordinate clicks, mouse moves, or \`Tab\`+\`Enter\` keyboard navigation — they cannot be recorded as reliable test actions.
 - Do NOT retry a selector without taking a fresh snapshot first.
 - Do NOT work around blockers (login walls, missing data, captchas) — stop and report.
