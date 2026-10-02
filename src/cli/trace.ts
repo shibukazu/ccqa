@@ -49,6 +49,12 @@ import * as log from "./logger.ts";
  * 2+ selectors that BOTH survived. Both signal steps the record playbook should
  * learn to skip.
  */
+/** The recorder's Bash runs agent-browser only: source is read with Read/Grep/Glob. */
+export function traceBashGuard(cmd: string): string | null {
+  if (/(^|\s)agent-browser\s/.test(cmd)) return null;
+  return "Bash here runs agent-browser commands only. Read, search and list the source with the Read, Grep and Glob tools; wait for the page with agent-browser wait, not sleep.";
+}
+
 /** Browser commands in one step between spec-mismatch checkpoints (see `beforeAbCommand`). */
 const STEP_CHECKPOINT = 20;
 
@@ -347,7 +353,7 @@ export async function runTrace(
       // Most turns follow a map or a batch the model already planned; at the
       // default effort it spent most of its output deliberating over them.
       effort: "low",
-      bashOnlyAgentBrowser: true,
+      bashGuard: traceBashGuard,
       onAbActionFailed: () => {
         if (lastCommandPushCount > 0) traceActions.splice(-lastCommandPushCount);
         lastCommandPushCount = 0;
