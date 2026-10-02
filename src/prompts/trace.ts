@@ -1,5 +1,6 @@
 import { buildRunId } from "../runtime/live-artifacts.ts";
-import { SETUP_STEP_ID } from "../ir/types.ts";
+import { SETUP_STEP_ID, type RecordedAction } from "../ir/types.ts";
+import { renderPreviousRecording } from "./previous-recording.ts";
 
 export function generateSessionName(): string {
   return `ccqa-trace-${buildRunId()}`;
@@ -44,6 +45,8 @@ export interface TraceSystemPromptInput {
    * does not faithfully reproduce the mistake the audit flagged.
    */
   instruction?: string;
+  /** The recording this trace replaces, offered as a map of the route (see `renderPreviousRecording`). */
+  previousRecording?: readonly RecordedAction[];
 }
 
 /**
@@ -89,6 +92,11 @@ ${input.instruction}
     renderCleanupExpectations(input.cleanupExpectations ?? []);
   const contextText = renderContext(input.context ?? []);
   const conventionsText = renderConventions(input.conventions ?? []);
+  const previousText = renderPreviousRecording(
+    input.previousRecording ?? [],
+    sessionName,
+    input.steps.map((s) => s.id),
+  );
 
   return `You are an expert QA engineer executing a browser E2E test. Execute each step precisely and record every browser action as a structured log line.
 
@@ -138,7 +146,8 @@ dropped along with its command.
 
 \`\`\`
 CCQA_STEP=<step-id> agent-browser --session SESSION open <url>
-CCQA_STEP=<step-id> agent-browser --session SESSION snapshot
+CCQA_STEP=<step-id> agent-browser --session SESSION snapshot -i -c          # interactive elements only — the default for finding controls
+CCQA_STEP=<step-id> agent-browser --session SESSION snapshot -c -s "<css>"  # the page's text, scoped to one region
 CCQA_STEP=<step-id> agent-browser --session SESSION click "<selector>"
 CCQA_STEP=<step-id> agent-browser --session SESSION fill "<selector>" "<value>"
 CCQA_STEP=<step-id> agent-browser --session SESSION check "<selector>"
@@ -247,15 +256,15 @@ Each step's instruction names the URL to open directly (or via \`\${ENV_VAR}\`).
 ## Steps
 
 ${stepsText}
-${expectationsText}${contextText}${conventionsText}
+${expectationsText}${contextText}${conventionsText}${previousText}
 ## Execution Workflow
 
 For each step:
 1. Emit \`STEP_START|<step-id>|<short description>\`.
-2. Run \`snapshot\` and identify selectors from the ARIA tree.
-3. Execute the action using an ALLOWED selector (see Selector Rules), prefixing the command with \`CCQA_STEP=<step-id>\` like every agent-browser command in the step.
+2. Run \`snapshot -i -c\` and identify selectors from the ARIA tree. A full \`snapshot\` is large; when you need the page's text, scope it with \`snapshot -c -s "<css>"\`.
+3. Execute the step's actions using ALLOWED selectors (see Selector Rules), prefixing each command with \`CCQA_STEP=<step-id>\` like every agent-browser command in the step. **Batch them:** put every command you can already write — the actions, their waits, the \`CCQA_ASSERT\` checks, and a closing \`snapshot -i -c\` when you need to see the result — into one \`run_commands\` call. Each turn costs far more than a command; use a single Bash call only when you must see one answer before you can write the next command.
 4. Emit \`AB_ACTION|...\` for every browser action (see AB_ACTION Protocol).
-5. Run \`snapshot\` again to verify the outcome.
+5. Verify the outcome from the batch's output. When a batch stops at a failure, everything before it is recorded: look at the page and continue from there.
 6. Confirm at least **two independent signals** (URL change, element appearance, text change, ...). This is how *you* decide the step worked and it is safe to continue. It is not what gets recorded.
 7. Record as assertions only the signals the step's own \`expected\` asks about, by putting a \`CCQA_ASSERT=<marker>\` prefix on the verification command itself (see Assertion Protocol). Every assert type has a marker form; a printed \`AB_ACTION|assert|...\` line records nothing.
 8. Emit \`STEP_DONE\`, \`ASSERTION_FAILED\`, or \`STEP_SKIPPED\`.
@@ -275,6 +284,9 @@ proves it; it is reported and not recorded.
 ## Guardrails
 
 - **Stop after 3 consecutive failures on the same step** — emit \`ASSERTION_FAILED\` and report the blocker.
+- **Stay on a flow you have started.** Once a step is inside something whose state lives on the page — a conversation, a multi-step dialog, a form not yet saved — do not navigate away to investigate; that state does not come back. Look things up in the source with Read, Grep and Glob instead.
+- **Clean up before you stop.** When you end the run with \`ASSERTION_FAILED\` after the case has created something, still perform its cleanup steps, then emit \`RUN_COMPLETED|failed\`. What a failed recording leaves behind breaks the next run of every case that lists the same things.
+- **The step must match the application.** When what a step asks for is not there, or the application does it in another place or order, do not bend the recording to fit: emit \`ASSERTION_FAILED|<step-id>|spec-mismatch: <what the application does instead> — suggested step: <the instruction / expected rewritten to match>\`. Read the source to ground the suggestion. A recording that works around the step hides the mismatch; the report gets the spec fixed. Redoing an earlier step's work to make this one possible — going back to refill or resubmit what an earlier step already did — is such a workaround.
 - **No workarounds.** If all ALLOWED selectors fail, emit \`ASSERTION_FAILED|...|selector-drift: ...\`. Do NOT fall back to coordinate clicks, mouse moves, or \`Tab\`+\`Enter\` keyboard navigation — they cannot be recorded as reliable test actions.
 - Do NOT retry a selector without taking a fresh snapshot first.
 - Do NOT work around blockers (login walls, missing data, captchas) — stop and report.
@@ -472,7 +484,7 @@ Emit exactly one status line per step (outside any code block):
 \`\`\`
 STEP_START|<step-id>|<short description>
 STEP_DONE|<step-id>|<what was verified>
-ASSERTION_FAILED|<step-id>|<category: app-bug|env-issue|auth-blocked|missing-test-data|selector-drift|agent-misread>: <reason>
+ASSERTION_FAILED|<step-id>|<category: spec-mismatch|app-bug|env-issue|auth-blocked|missing-test-data|selector-drift|agent-misread>: <reason>
 STEP_SKIPPED|<step-id>|<reason>
 RUN_COMPLETED|passed|<summary>
 RUN_COMPLETED|failed|<summary>

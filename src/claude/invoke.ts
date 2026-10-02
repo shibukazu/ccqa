@@ -54,6 +54,10 @@ export interface ClaudeInvokeOptions {
    * tasks should set this; tool-driven flows keep thinking on.
    */
   disableThinking?: boolean;
+  /** How much the model reasons per turn; omitted, the model's own default. */
+  effort?: Options["effort"];
+  /** Asked before every Bash command; a string blocks it and is shown to the model as the reason. */
+  bashGuard?: (cmd: string) => string | null;
   /**
    * In-process MCP servers (`createSdkMcpServer`) exposing caller-defined
    * tools to this invocation. Tool names surface as
@@ -92,6 +96,11 @@ export interface ClaudeInvokeOptions {
   onAbAction?: (event: AbActionEvent) => void;
   /** Called when an agent-browser command fails (exit non-zero); allows rolling back the last AB_ACTION. */
   onAbActionFailed?: () => void;
+  /**
+   * Asked before each agent-browser command with its `CCQA_STEP`; a string
+   * blocks that one command and is shown to the model as the reason.
+   */
+  beforeAbCommand?: (stepId: string | undefined) => string | null;
   /** When true, suppresses the default per-Bash-tool-call log line. Callers that
    * want a summary view (e.g. `ccqa draft`) can opt out and tally tool usage
    * themselves via `onEvent`. */
@@ -252,6 +261,8 @@ export async function invokeClaudeStreaming(
     systemPrompt,
     allowedTools,
     disableThinking = false,
+    effort,
+    bashGuard,
     mcpServers,
     maxTurns,
     timeoutMs,
@@ -260,6 +271,7 @@ export async function invokeClaudeStreaming(
     cwd,
     onAbAction,
     onAbActionFailed,
+    beforeAbCommand,
     silenceBashLog = false,
     envScrubMap = [],
     relaxAbConstraints = false,
@@ -308,8 +320,9 @@ export async function invokeClaudeStreaming(
     env: mergedEnv,
     ...(mcpServers ? { mcpServers } : {}),
     ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
+    ...(effort ? { effort } : {}),
     hooks:
-      onAbAction || onAbActionFailed
+      onAbAction || onAbActionFailed || bashGuard || beforeAbCommand
         ? {
             PreToolUse: [
               {
@@ -320,82 +333,20 @@ export async function invokeClaudeStreaming(
                     const cmd = (input.tool_input as Record<string, unknown>)?.["command"];
                     if (typeof cmd !== "string") return {};
 
+                    const guarded = bashGuard?.(cmd);
+                    if (guarded) return { decision: "block", reason: guarded };
                     if (!relaxAbConstraints) {
-                      // Block eval/js/find/etc — they bypass structured action recording
-                      if (isBlockedAbSubcommand(cmd)) {
-                        return {
-                          decision: "block",
-                          reason: "This agent-browser subcommand is not allowed because it cannot be recorded as a structured test action. Use only the standard commands: click, check, fill, select, hover, press, wait, find (with role/text/label/placeholder/alt/title/testid/first/last/nth). Take a fresh snapshot to find the correct selector.",
-                        };
-                      }
-
-                      // Block @ref selectors — they are session-specific and not replayable
-                      if (hasRefSelector(cmd)) {
-                        return {
-                          decision: "block",
-                          reason: "@ref selectors (like @e14) are session-specific and change every run. They cannot be used in generated tests. Use one of the allowed selector formats instead: [aria-label='...'], text=..., [placeholder='...'], or [type='password']. Take a fresh snapshot and find the element's aria-label or visible text. If an allowed selector already clicks the element but nothing happens, the element is clipped by an inner scroll container: `scrollintoview` it (addressed by a CSS selector, not `text=`) and click again — a @ref would not have fixed that either.",
-                        };
-                      }
-
-                      const bareTag = findPositionalBareTag(cmd);
-                      if (bareTag !== null) {
-                        return {
-                          decision: "block",
-                          reason: `\`find ${bareTag.locator}\` with a bare tag selector (\`${bareTag.selector}\`) is rejected: it matches every <${bareTag.selector}> on the page and is non-deterministic on replay. Pass a specific attribute selector instead, e.g. \`find ${bareTag.locator} "[aria-label='...']" ${bareTag.action}\` or \`find ${bareTag.locator} "[data-qa='...']" ${bareTag.action}\`. Take a fresh snapshot to find the right attribute.`,
-                        };
-                      }
-
-                      // Block compound `agent-browser` invocations — a single Bash
-                      // call may only run one agent-browser command. Without this
-                      // the PreToolUse hook records a single AB_ACTION while the
-                      // shell runs several, and a failed attempt slipped inside
-                      // the chain can't be rolled back via PostToolUse.
-                      if (hasMultipleAbInvocations(cmd)) {
-                        return {
-                          decision: "block",
-                          reason: "Run each `agent-browser` call as its own Bash command. Chaining multiple invocations with &&, ;, |, or || prevents ccqa from recording them as discrete steps and lets failed attempts leak into the trace. Issue one Bash tool call per agent-browser command.",
-                        };
-                      }
-
-                      // Block error-suppression decorators on agent-browser
-                      // commands — they hide non-zero exits from PostToolUse and
-                      // let failed attempts get baked into ir.json.
-                      if (hasErrorSuppression(cmd)) {
-                        return {
-                          decision: "block",
-                          reason: "Do not suppress errors on `agent-browser` commands. Remove `|| true`, `|| :`, `2>/dev/null`, `; true`, and similar redirects so ccqa can detect failures and roll back unsuccessful attempts. Run the command standalone and let it surface its exit code.",
-                        };
-                      }
-
-                      const runProducedUrl = findRunProducedOpenUrl(cmd, envScrubMap);
-                      if (runProducedUrl !== null) {
-                        return {
-                          decision: "block",
-                          reason: `Do not open ${runProducedUrl} — that address was produced by this run (the id in it belongs to a record this run created), so the generated test would open a record later runs do not have. Reach the page the way a person does: click through from where the run already is. If the spec's instruction really names this exact address, put the id in a profile variable so it survives replay.`,
-                        };
-                      }
+                      const reason = abCommandBlockReason(cmd, envScrubMap);
+                      if (reason !== null) return { decision: "block", reason };
+                      const checkpoint = beforeAbCommand?.(extractCcqaStepFromBashCommand(cmd) ?? undefined);
+                      if (checkpoint) return { decision: "block", reason: checkpoint };
                     }
 
-                    const assertMarker = relaxAbConstraints ? null : extractCcqaAssertFromBashCommand(cmd);
-                    // Observation commands (`get count` / `get url`) record
-                    // nothing by themselves, but when a CCQA_ASSERT marker
-                    // declares them a verification they must surface so the
-                    // trace can promote them to asserts.
-                    const ab = relaxAbConstraints
-                      ? null
-                      : extractAbActionFromBashCommand(cmd) ??
-                        (assertMarker !== null ? extractObservationAbAction(cmd) : null);
-                    if ((ab !== null || assertMarker !== null) && onAbAction) {
+                    const recorded = relaxAbConstraints ? null : abActionEventFromCommand(cmd);
+                    if (recorded !== null && onAbAction) {
                       lastAbToolUseId = input.tool_use_id;
-                      lastAbAnswerHolds =
-                        assertMarker === null ? null : markerHolds(assertMarker, ab);
-                      const stepId = extractCcqaStepFromBashCommand(cmd);
-                      onAbAction({
-                        ...(ab !== null ? { abAction: ab } : {}),
-                        ...(stepId ? { stepId } : {}),
-                        ...(assertMarker !== null ? { assertMarker } : {}),
-                        ...(hasCcqaSecretPrefix(cmd) ? { secret: true } : {}),
-                      });
+                      lastAbAnswerHolds = recorded.holds;
+                      onAbAction(recorded.event);
                     } else {
                       lastAbToolUseId = null;
                     }
@@ -1137,3 +1088,72 @@ async function fireMockPreToolUseHooks(msg: SDKMessage, options: Options): Promi
   }
 }
 
+/**
+ * Why the trace refuses this agent-browser command, or null when it may run.
+ * Shared by the Bash hook and the trace's own batch tool, so both enforce the
+ * same replayability contract.
+ */
+export function abCommandBlockReason(
+  cmd: string,
+  envScrubMap: Array<[string, string]> = [],
+): string | null {
+  if (isBlockedAbSubcommand(cmd)) {
+    return "This agent-browser subcommand is not allowed because it cannot be recorded as a structured test action. Use only the standard commands: click, check, fill, select, hover, press, wait, find (with role/text/label/placeholder/alt/title/testid/first/last/nth). Take a fresh snapshot to find the correct selector.";
+  }
+
+  if (hasRefSelector(cmd)) {
+    return "@ref selectors (like @e14) are session-specific and change every run. They cannot be used in generated tests. Use one of the allowed selector formats instead: [aria-label='...'], text=..., [placeholder='...'], or [type='password']. Take a fresh snapshot and find the element's aria-label or visible text. If an allowed selector already clicks the element but nothing happens, the element is clipped by an inner scroll container: `scrollintoview` it (addressed by a CSS selector, not `text=`) and click again — a @ref would not have fixed that either.";
+  }
+
+  const bareTag = findPositionalBareTag(cmd);
+  if (bareTag !== null) {
+    return `\`find ${bareTag.locator}\` with a bare tag selector (\`${bareTag.selector}\`) is rejected: it matches every <${bareTag.selector}> on the page and is non-deterministic on replay. Pass a specific attribute selector instead, e.g. \`find ${bareTag.locator} "[aria-label='...']" ${bareTag.action}\` or \`find ${bareTag.locator} "[data-qa='...']" ${bareTag.action}\`. Take a fresh snapshot to find the right attribute.`;
+  }
+
+  // One recorded action per command, or a failed one inside a chain cannot be rolled back.
+  if (hasMultipleAbInvocations(cmd)) {
+    return "Run each `agent-browser` call as its own Bash command. Chaining multiple invocations with &&, ;, |, or || prevents ccqa from recording them as discrete steps and lets failed attempts leak into the trace. Issue one Bash tool call per agent-browser command.";
+  }
+
+  // A hidden exit code lets a failed attempt into the recording.
+  if (hasErrorSuppression(cmd)) {
+    return "Do not suppress errors on `agent-browser` commands. Remove `|| true`, `|| :`, `2>/dev/null`, `; true`, and similar redirects so ccqa can detect failures and roll back unsuccessful attempts. Run the command standalone and let it surface its exit code.";
+  }
+
+  const runProducedUrl = findRunProducedOpenUrl(cmd, envScrubMap);
+  if (runProducedUrl !== null) {
+    return `Do not open ${runProducedUrl} — that address was produced by this run (the id in it belongs to a record this run created), so the generated test would open a record later runs do not have. Reach the page the way a person does: click through from where the run already is. If the spec's instruction really names this exact address, put the id in a profile variable so it survives replay.`;
+  }
+  return null;
+}
+
+/**
+ * What recording this command produces, and — for a marked probe — what its
+ * output must say for the check to hold. Null when it records nothing.
+ */
+export function abActionEventFromCommand(
+  cmd: string,
+): { event: AbActionEvent; holds: ((stdout: string) => boolean) | null } | null {
+  const assertMarker = extractCcqaAssertFromBashCommand(cmd);
+  // Observation commands (`get count` / `get url`) record nothing by
+  // themselves, but a CCQA_ASSERT marker makes them a verification.
+  const ab =
+    extractAbActionFromBashCommand(cmd) ??
+    (assertMarker !== null ? extractObservationAbAction(cmd) : null);
+  if (ab === null && assertMarker === null) return null;
+  const stepId = extractCcqaStepFromBashCommand(cmd);
+  return {
+    event: {
+      ...(ab !== null ? { abAction: ab } : {}),
+      ...(stepId ? { stepId } : {}),
+      ...(assertMarker !== null ? { assertMarker } : {}),
+      ...(hasCcqaSecretPrefix(cmd) ? { secret: true } : {}),
+    },
+    holds: assertMarker === null ? null : markerHolds(assertMarker, ab),
+  };
+}
+
+/** Whether a shell line runs agent-browser as a command (env prefixes allowed), not just mentions it. */
+export function isAgentBrowserCommand(cmd: string): boolean {
+  return splitShellStatements(cmd).some((st) => isAgentBrowserHead(splitLeadingEnvAssignments(st).command));
+}

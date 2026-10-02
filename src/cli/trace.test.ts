@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { createStepTracker, parseStatusLine, countRedundantByStep, stepsWithoutAsserts, traceFailureReason } from "./trace.ts";
+import { createStepTracker, parseStatusLine, countRedundantByStep, stepsWithoutAsserts, traceFailureReason, traceBashGuard } from "./trace.ts";
 import type { RecordedAction } from "../types.ts";
 
 describe("createStepTracker", () => {
@@ -180,7 +180,7 @@ describe("traceFailureReason", () => {
       isError: true,
       errorDetail: "SDK reported error_max_turns",
     });
-    expect(reason).toBe("step-01 reported ASSERTION_FAILED");
+    expect(reason).toBe("step-01 reported ASSERTION_FAILED: app-bug: the panel never appeared");
   });
 
   // A cosmetically odd verdict line must not cost the recording the run paid
@@ -200,5 +200,14 @@ describe("traceFailureReason", () => {
     expect(traceFailureReason([line("RUN_COMPLETED|partial|some steps done")], ok)).toBe(
       "the model reported RUN_COMPLETED|partial",
     );
+  });
+});
+
+describe("traceBashGuard", () => {
+  test("lets Bash run agent-browser, and sends anything else to the source tools", () => {
+    expect(traceBashGuard("CCQA_STEP=step-01 agent-browser --session s snapshot -i -c")).toBeNull();
+    expect(traceBashGuard("CCQA_STEP=step-01 agent-browser --session s get url")).toBeNull();
+    expect(traceBashGuard('CCQA_STEP=step-01 agent-browser --session s click "#a"')).toBeNull();
+    expect(traceBashGuard("find / -name x")).toContain("Grep");
   });
 });

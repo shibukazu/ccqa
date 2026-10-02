@@ -94,7 +94,8 @@ export function toAgentBrowserArgs(action: RecordedAction): AbToken[] | null {
     }
     case "wait": {
       const loc = action.locator;
-      if (!loc) return null;
+      // A flag-form wait (`--load networkidle`) kept only its flag; the argument does not round-trip.
+      if (!loc || loc.value.startsWith("--")) return null;
       if (loc.by === "text") return [lit("wait"), lit("--text"), val(loc.value)];
       return [lit("wait"), val(locatorToSelector(loc))];
     }
@@ -158,4 +159,33 @@ function interactionToArgs(action: RecordedAction): AbToken[] | null {
   if (loc.by === "role" && loc.name) out.push(lit("--name"), val(loc.name));
   if (loc.by !== "css" && loc.exact) out.push(lit("--exact"));
   return out;
+}
+
+/**
+ * The marked probe that records an assert during a trace — the inverse of
+ * `promoteMarkedAssert`, as the trace prompt's Assertion Protocol spells it.
+ */
+export function markedAssertArgs(action: RecordedAction): { marker: string; tokens: AbToken[] } | null {
+  const loc = action.locator;
+  const sel = loc ? [val(locatorToSelector(loc))] : null;
+  switch (action.assert) {
+    case "text_visible":
+      return action.value ? { marker: "1", tokens: [lit("wait"), lit("--text"), val(action.value)] } : null;
+    case "url_contains":
+      return action.value ? { marker: `url_contains:${action.value}`, tokens: [lit("get"), lit("url")] } : null;
+    case "element_visible":
+    case "element_not_visible":
+      if (loc?.by === "role") {
+        return loc.name ? { marker: action.assert, tokens: roleProbeTokens(loc.value, loc.name, loc.exact === true) } : null;
+      }
+      return sel ? { marker: action.assert, tokens: [lit("get"), lit("count"), ...sel] } : null;
+    case "element_enabled":
+    case "element_disabled":
+      return sel ? { marker: action.assert, tokens: [lit("is"), lit("enabled"), ...sel] } : null;
+    case "element_checked":
+    case "element_unchecked":
+      return sel ? { marker: action.assert, tokens: [lit("is"), lit("checked"), ...sel] } : null;
+    default:
+      return null;
+  }
 }

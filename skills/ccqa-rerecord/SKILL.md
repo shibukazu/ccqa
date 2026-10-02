@@ -159,6 +159,10 @@ ccqa record <feature>/<spec> --hub-profile <profile> --auto-fix auto \
   decides which account the recording drives. Every `${VAR}` the spec
   references must resolve at record time — ccqa warns when one is unset,
   because its concrete trace-time value would bake into the test.
+- The recorder is shown the previous `ir.json` as a map and re-runs the steps
+  that still work rather than rediscovering them. Add `--fresh-ir` when the
+  finding is about the route itself — the path it took is what went wrong —
+  so the map does not lead the recorder back onto it.
 
 A recording drives a real browser against a real environment, step by step, and
 creates whatever the spec creates — which is why the cleanup step matters, and

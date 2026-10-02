@@ -1,5 +1,5 @@
 import { describe, expect, test, afterEach, beforeEach, vi } from "vitest";
-import { actionToAbArgs, isCascadeReason, validateActions } from "./replay-validate.ts";
+import { actionToAbArgs, isCascadeReason, replayUntilFailure, validateActions } from "./replay-validate.ts";
 import { spawnAB, type Result } from "./spawn-ab.ts";
 import { judgeReplayedRoute } from "../cli/replay-gate.ts";
 import type { RecordedAction } from "../types.ts";
@@ -938,5 +938,38 @@ describe("validateActions (lenient mode)", () => {
     expect(kept).toHaveLength(2);
     expect(unstable).toEqual([]);
     expect(dropped).toEqual([]);
+  });
+});
+
+describe("replayUntilFailure", () => {
+  test("stops at the first failing action and does not run the rest", () => {
+    mockedSpawnAB.mockReturnValueOnce(OK).mockReturnValue(FAIL);
+    const actions: RecordedAction[] = [
+      { action: "click", locator: css("#a") },
+      { action: "click", locator: css("#moved") },
+      { action: "click", locator: css("#c") },
+    ];
+    const { passed, failed } = replayUntilFailure(actions, { sessionName: SESSION });
+    expect(passed).toEqual([actions[0]]);
+    expect(failed?.action).toBe(actions[1]);
+    expect(mockedSpawnAB.mock.calls.some(([argv]) => argv.includes("#c"))).toBe(false);
+  });
+
+  test("settles the page on a wait it cannot reproduce, rather than skipping it", () => {
+    mockedSpawnAB.mockReturnValue(OK);
+    const wait: RecordedAction = { action: "wait", locator: css("--load"), label: "networkidle" };
+    const { passed, unchecked } = replayUntilFailure([wait], { sessionName: SESSION });
+    expect(passed).toEqual([wait]);
+    expect(unchecked).toEqual([]);
+    expect(mockedSpawnAB.mock.calls.some(([argv]) => argv.join(" ").includes("wait --load networkidle"))).toBe(true);
+  });
+
+  test("waits for a named role that has not rendered yet, as for any element not there yet", () => {
+    const noneMatch = { status: 1, stdout: "", stderr: '✗ 6 elements have role "link", but none match name "Settings"' };
+    mockedSpawnAB.mockReturnValueOnce(noneMatch).mockReturnValue(OK);
+    const click: RecordedAction = { action: "click", locator: { by: "role", value: "link", name: "Settings", exact: true } };
+    const { passed, failed } = replayUntilFailure([click], { sessionName: SESSION });
+    expect(failed).toBeUndefined();
+    expect(passed).toEqual([click]);
   });
 });

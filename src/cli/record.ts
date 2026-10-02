@@ -45,6 +45,7 @@ interface RecordOptions {
   timeout?: number;
   sessionPin?: boolean;
   traceOnly?: boolean;
+  freshIr?: boolean;
   learnHubTracePrompt?: boolean;
   reportToHub?: boolean;
   cwd?: string;
@@ -96,6 +97,10 @@ export const recordCommand = addHubOptions(addProfileOption(addLanguageOption(
       "--timeout <seconds>",
       "Abort the recording after this many seconds, wherever it is (trace, generate, auto-fix): reap the browser session, seal the open hub run (--report-to-hub) with a 'timed out' note, and exit 124. Prefer this over wrapping the command in an external `timeout`, whose SIGTERM may never reach this process.",
       parseTimeoutSeconds,
+    )
+    .option(
+      "--fresh-ir",
+      "Record from scratch. By default an existing ir.json is shown to the recorder as a map of the route, so steps that still work are not rediscovered.",
     )
     .option("--trace-only", "Stop after the trace step; do not generate test code")
     .option(
@@ -307,6 +312,7 @@ async function runRecord(caseArgument: string, opts: RecordOptions): Promise<voi
           ? { conventions: resolved.targetConfig.conventions.operate }
           : {}),
         ...(opts.instruction ? { instruction: opts.instruction } : {}),
+        ...(opts.freshIr ? { freshIr: true } : {}),
         onStep: (stepId: string) => {
           tracingStep = stepId;
         },
