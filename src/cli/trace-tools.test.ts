@@ -23,7 +23,6 @@ async function run(commands: string[]) {
     previous: [],
     sessionName: "S",
     env: { PATH: `${fakeAgentBrowser()}:${process.env["PATH"]}` },
-    envOverrides: {},
     envScrubMap: [],
     onReplayed: () => {},
     onAbAction: (e) => recorded.push(e),

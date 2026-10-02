@@ -5,6 +5,7 @@ import {
   abActionEventFromCommand,
   abCommandBlockReason,
   extractCcqaStepFromBashCommand,
+  isAgentBrowserCommand,
   type AbActionEvent,
 } from "../claude/invoke.ts";
 import { describeStepAction } from "../ir/route-diff.ts";
@@ -14,8 +15,6 @@ import { replayUntilFailure } from "../runtime/replay-validate.ts";
 import * as log from "./logger.ts";
 
 export const TRACE_TOOLS_SERVER = "ccqa";
-export const RUN_COMMANDS_TOOL = `mcp__${TRACE_TOOLS_SERVER}__run_commands`;
-export const REPLAY_STEP_TOOL = `mcp__${TRACE_TOOLS_SERVER}__replay_step`;
 
 /** A wedged command must not hold the whole trace; agent-browser's own waits are far shorter. */
 const COMMAND_TIMEOUT_MS = 120_000;
@@ -28,7 +27,6 @@ export interface TraceToolsInput {
   sessionName: string;
   /** What the recorder's own Bash sees, so a batch runs against the same session and values. */
   env: Record<string, string>;
-  envOverrides: Record<string, string>;
   envScrubMap: Array<[string, string]>;
   onReplayed: (stepId: string, passed: RecordedAction[]) => void;
   /** The same recording path the Bash hook feeds. */
@@ -68,7 +66,7 @@ export function buildTraceTools(input: TraceToolsInput): {
   ];
   return {
     server: createSdkMcpServer({ name: TRACE_TOOLS_SERVER, version: "1.0.0", tools }),
-    allowedTools: [RUN_COMMANDS_TOOL, ...(offersReplay ? [REPLAY_STEP_TOOL] : [])],
+    allowedTools: ["run_commands", ...(offersReplay ? ["replay_step"] : [])].map((t) => `mcp__${TRACE_TOOLS_SERVER}__${t}`),
   };
 }
 
@@ -77,7 +75,7 @@ export async function runCommands(commands: string[], input: TraceToolsInput): P
   for (const [i, cmd] of commands.entries()) {
     const stop = (why: string): string =>
       [...report, `✗ ${cmd}\n${why}`, ...(i + 1 < commands.length ? [`The ${commands.length - i - 1} command(s) after it were not run.`] : [])].join("\n");
-    if (!/(^|\s)agent-browser\s/.test(cmd)) return stop("Only agent-browser commands can be batched; run anything else with Bash.");
+    if (!isAgentBrowserCommand(cmd)) return stop("Only agent-browser commands can be batched; run anything else with Bash.");
     const blocked = abCommandBlockReason(cmd, input.envScrubMap);
     if (blocked !== null) return stop(blocked);
     const recorded = abActionEventFromCommand(cmd);
@@ -98,7 +96,10 @@ export async function runCommands(commands: string[], input: TraceToolsInput): P
   return report.join("\n");
 }
 
-/** Async, so the trace's deadline and signal teardown still run while a batch does. */
+/**
+ * Async, so the trace's deadline and signal teardown still run while a batch
+ * does. Settles on `exit` too: a daemon the command started may hold the pipes open.
+ */
 function runShell(
   cmd: string,
   env: NodeJS.ProcessEnv,
@@ -107,10 +108,12 @@ function runShell(
     const child = spawn("bash", ["-c", cmd], { env, timeout: COMMAND_TIMEOUT_MS });
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
-    child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
-    child.on("error", (e) => resolve({ status: null, stdout, stderr: stderr || e.message }));
-    child.on("close", (status) => resolve({ status, stdout, stderr }));
+    child.stdout.setEncoding("utf8").on("data", (d: string) => (stdout += d));
+    child.stderr.setEncoding("utf8").on("data", (d: string) => (stderr += d));
+    const done = (status: number | null, err?: string) => resolve({ status, stdout, stderr: stderr || (err ?? "") });
+    child.on("error", (e) => done(null, e.message));
+    child.on("close", (status) => done(status));
+    child.on("exit", (status) => setTimeout(() => done(status), 1_000).unref());
   });
 }
 
@@ -128,7 +131,7 @@ function replayStep(step: string, input: TraceToolsInput): string {
   }
   const { passed, unchecked, failed } = replayUntilFailure(actions, {
     sessionName: input.sessionName,
-    envOverrides: input.envOverrides,
+    envOverrides: { CCQA_RUN_ID: input.env["CCQA_RUN_ID"] ?? input.sessionName },
   });
   input.onReplayed(step, passed);
   log.info(`replay_step ${step}: ${passed.length}/${actions.length} replayed${failed ? "" : " — all passed"}`);

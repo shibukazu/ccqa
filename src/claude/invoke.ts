@@ -322,7 +322,7 @@ export async function invokeClaudeStreaming(
     ...(disableThinking ? { thinking: { type: "disabled" as const } } : {}),
     ...(effort ? { effort } : {}),
     hooks:
-      onAbAction || onAbActionFailed
+      onAbAction || onAbActionFailed || bashGuard || beforeAbCommand
         ? {
             PreToolUse: [
               {
@@ -1097,12 +1097,10 @@ export function abCommandBlockReason(
   cmd: string,
   envScrubMap: Array<[string, string]> = [],
 ): string | null {
-  // Block eval/js/find/etc — they bypass structured action recording
   if (isBlockedAbSubcommand(cmd)) {
     return "This agent-browser subcommand is not allowed because it cannot be recorded as a structured test action. Use only the standard commands: click, check, fill, select, hover, press, wait, find (with role/text/label/placeholder/alt/title/testid/first/last/nth). Take a fresh snapshot to find the correct selector.";
   }
 
-  // Block @ref selectors — they are session-specific and not replayable
   if (hasRefSelector(cmd)) {
     return "@ref selectors (like @e14) are session-specific and change every run. They cannot be used in generated tests. Use one of the allowed selector formats instead: [aria-label='...'], text=..., [placeholder='...'], or [type='password']. Take a fresh snapshot and find the element's aria-label or visible text. If an allowed selector already clicks the element but nothing happens, the element is clipped by an inner scroll container: `scrollintoview` it (addressed by a CSS selector, not `text=`) and click again — a @ref would not have fixed that either.";
   }
@@ -1112,18 +1110,12 @@ export function abCommandBlockReason(
     return `\`find ${bareTag.locator}\` with a bare tag selector (\`${bareTag.selector}\`) is rejected: it matches every <${bareTag.selector}> on the page and is non-deterministic on replay. Pass a specific attribute selector instead, e.g. \`find ${bareTag.locator} "[aria-label='...']" ${bareTag.action}\` or \`find ${bareTag.locator} "[data-qa='...']" ${bareTag.action}\`. Take a fresh snapshot to find the right attribute.`;
   }
 
-  // Block compound `agent-browser` invocations — a single Bash
-  // call may only run one agent-browser command. Without this
-  // the PreToolUse hook records a single AB_ACTION while the
-  // shell runs several, and a failed attempt slipped inside
-  // the chain can't be rolled back via PostToolUse.
+  // One recorded action per command, or a failed one inside a chain cannot be rolled back.
   if (hasMultipleAbInvocations(cmd)) {
     return "Run each `agent-browser` call as its own Bash command. Chaining multiple invocations with &&, ;, |, or || prevents ccqa from recording them as discrete steps and lets failed attempts leak into the trace. Issue one Bash tool call per agent-browser command.";
   }
 
-  // Block error-suppression decorators on agent-browser
-  // commands — they hide non-zero exits from PostToolUse and
-  // let failed attempts get baked into ir.json.
+  // A hidden exit code lets a failed attempt into the recording.
   if (hasErrorSuppression(cmd)) {
     return "Do not suppress errors on `agent-browser` commands. Remove `|| true`, `|| :`, `2>/dev/null`, `; true`, and similar redirects so ccqa can detect failures and roll back unsuccessful attempts. Run the command standalone and let it surface its exit code.";
   }
@@ -1159,4 +1151,9 @@ export function abActionEventFromCommand(
     },
     holds: assertMarker === null ? null : markerHolds(assertMarker, ab),
   };
+}
+
+/** Whether a shell line runs agent-browser as a command (env prefixes allowed), not just mentions it. */
+export function isAgentBrowserCommand(cmd: string): boolean {
+  return splitShellStatements(cmd).some((st) => isAgentBrowserHead(splitLeadingEnvAssignments(st).command));
 }

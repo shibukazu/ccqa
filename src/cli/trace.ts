@@ -1,5 +1,5 @@
 import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from "../prompts/trace.ts";
-import { invokeClaudeStreaming, type AbActionEvent } from "../claude/invoke.ts";
+import { invokeClaudeStreaming, isAgentBrowserCommand, type AbActionEvent } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   loadPromptBundle,
@@ -49,20 +49,20 @@ import * as log from "./logger.ts";
  * 2+ selectors that BOTH survived. Both signal steps the record playbook should
  * learn to skip.
  */
-/** The recorder's Bash runs agent-browser only: source is read with Read/Grep/Glob. */
-export function traceBashGuard(cmd: string): string | null {
-  if (/(^|\s)agent-browser\s/.test(cmd)) return null;
-  return "Bash here runs agent-browser commands only. Read, search and list the source with the Read, Grep and Glob tools; wait for the page with agent-browser wait, not sleep.";
-}
-
-/** Browser commands in one step between spec-mismatch checkpoints (see `beforeAbCommand`). */
-const STEP_CHECKPOINT = 20;
-
 export interface StepChurn {
   recorded: number;
   kept: number;
   redundant: number;
 }
+
+/** The recorder's Bash runs agent-browser only: source is read with Read/Grep/Glob. */
+export function traceBashGuard(cmd: string): string | null {
+  if (isAgentBrowserCommand(cmd)) return null;
+  return "Bash here runs agent-browser commands only. Read, search and list the source with the Read, Grep and Glob tools; wait for the page with agent-browser wait, not sleep.";
+}
+
+/** Browser commands in one step between spec-mismatch checkpoints (see `beforeAbCommand`). */
+const STEP_CHECKPOINT = 20;
 
 export interface RunTraceResult {
   /** Overall run status, derived from the status-line protocol. */
@@ -305,9 +305,8 @@ export async function runTrace(
     lastCommandPushCount = pushed;
   };
 
-  // Every so many browser commands in one step, the next one is held back with
-  // a question: a step that keeps needing more is usually a spec the
-  // application does not match, and working around it only buries that.
+  // A step that keeps needing more commands is usually one the application
+  // does not match: ask, rather than let the recorder work around it.
   const commandsByStep = new Map<string, number>();
   const beforeAbCommand = (stepId: string | undefined): string | null => {
     if (stepId === undefined) return null;
@@ -328,7 +327,6 @@ export async function runTrace(
     previous: offersMap ? previousActions : [],
     sessionName,
     env: invokeBase.env ?? {},
-    envOverrides: { CCQA_RUN_ID: sessionName },
     envScrubMap,
     onReplayed: (stepId, passed) => {
       stepTracker.fromCommand(stepId);
@@ -350,8 +348,7 @@ export async function runTrace(
       envScrubMap,
       onAbAction,
       beforeAbCommand,
-      // Most turns follow a map or a batch the model already planned; at the
-      // default effort it spent most of its output deliberating over them.
+      // Most turns follow a map or a planned batch; deliberation there is waste.
       effort: "low",
       bashGuard: traceBashGuard,
       onAbActionFailed: () => {
@@ -508,8 +505,7 @@ export function traceFailureReason(
 ): string | null {
   const assertionFailed = lines.find((l) => l.type === "ASSERTION_FAILED");
   if (assertionFailed) {
-    // The detail carries a spec-mismatch's suggested rewrite — the one thing a
-    // caller fixing the spec needs from a failed recording.
+    // The detail carries a spec-mismatch's suggested rewrite of the step.
     const detail = assertionFailed.detail.trim();
     return `${assertionFailed.stepId || "(unnamed step)"} reported ASSERTION_FAILED${detail ? `: ${detail}` : ""}`;
   }

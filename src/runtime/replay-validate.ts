@@ -395,9 +395,8 @@ const LABEL_FALLBACK_ROLE: Partial<Record<RecordedAction["action"], string>> = {
 
 /** Whether agent-browser's failure was "no element", the one the fallback answers. */
 function notFound(result: { stderr: string; stdout: string }): boolean {
-  // `none match name` is agent-browser's answer for a role whose named element
-  // has not rendered yet — the same "not there yet" as the others.
-  return /not\s+found|no\s+element|no\s+such\s+element|none\s+match/i.test(`${result.stderr} ${result.stdout}`);
+  // `none match name`: agent-browser's answer for a role whose named element has not rendered yet.
+  return /not\s+found|no\s+element|no\s+such\s+element|none\s+match\s+name/i.test(`${result.stderr} ${result.stdout}`);
 }
 
 /** Whether this argv navigates — the only action safe to repeat wholesale. */
