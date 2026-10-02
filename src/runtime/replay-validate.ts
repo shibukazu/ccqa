@@ -630,7 +630,9 @@ export function replayUntilFailure(
     } else if (outcome.skipped && action.action === "assert") {
       unchecked.push(action);
       continue;
-    } else if (!outcome.skipped && !outcome.ok) {
+    } else if (outcome.skipped) {
+      return { passed, unchecked, failed: { action, reason: "the recording does not say how to replay it" } };
+    } else if (!outcome.ok) {
       return { passed, unchecked, failed: { action, reason: outcome.reason } };
     }
     passed.push(action);

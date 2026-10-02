@@ -46,6 +46,17 @@ runner, records those that pass, and stops at the first that fails. The
 recorder decides which steps to hand it and finishes a failed one itself, so
 a step that still works costs one turn rather than one per command.
 
+Two changes apply to every recording, with or without a map. A
+`run_commands` tool runs a batch of commands the recorder wrote, through the
+same refusals and the same recording path as its Bash calls, and stops at the
+first that fails: exploring a step costs a few turns instead of one per
+command. And the recorder is held back once every 30 commands in one step and
+asked whether the application matches the step at all; when it does not, it
+reports `spec-mismatch` with a rewrite of the step, which the failed
+recording carries. Working around a step the application contradicts is what
+spent most of the turns measured below, and the recording it produces hides
+the mismatch.
+
 ### Consequences
 
 - Good: a step whose previous commands still work costs one turn.
@@ -68,3 +79,9 @@ with commands run one by one, and 210 s, 21 turns and $0.60 with
 `replay_step`. On the broken recording `replay_step` took 1608 s: one step it
 completed submitted a form the next step needed open, and the recorder spent
 72 commands getting back — the same two steps cost `--fresh-ir` 53.
+
+With `run_commands`, the checkpoint and `snapshot -i -c` as the default
+snapshot: `--fresh-ir` took 856 s and 89 turns; the clean recording 303 s and
+32 turns; the broken recording stopped after 743 s and 83 turns with a
+`spec-mismatch` on the step whose order differs from the application, naming
+the component that shows the result and suggesting the two steps swap.

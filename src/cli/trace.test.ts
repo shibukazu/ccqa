@@ -180,7 +180,7 @@ describe("traceFailureReason", () => {
       isError: true,
       errorDetail: "SDK reported error_max_turns",
     });
-    expect(reason).toBe("step-01 reported ASSERTION_FAILED");
+    expect(reason).toBe("step-01 reported ASSERTION_FAILED: app-bug: the panel never appeared");
   });
 
   // A cosmetically odd verdict line must not cost the recording the run paid

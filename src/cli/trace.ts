@@ -1,5 +1,5 @@
 import { buildTraceSystemPrompt, buildTracePrompt, generateSessionName } from "../prompts/trace.ts";
-import { invokeClaudeStreaming } from "../claude/invoke.ts";
+import { invokeClaudeStreaming, type AbActionEvent } from "../claude/invoke.ts";
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import {
   loadPromptBundle,
@@ -24,7 +24,7 @@ import {
   type ExpandedActionStep,
 } from "../spec/expand.ts";
 import { agentBrowserInvokeBase } from "../claude/agent-browser-invoke.ts";
-import { buildReplayStepServer, REPLAY_STEP_SERVER } from "./replay-step-tool.ts";
+import { buildTraceTools, TRACE_TOOLS_SERVER } from "./trace-tools.ts";
 import { preflightAgentBrowserCommand } from "./preflight.ts";
 import {
   formatPromotion,
@@ -49,6 +49,9 @@ import * as log from "./logger.ts";
  * 2+ selectors that BOTH survived. Both signal steps the record playbook should
  * learn to skip.
  */
+/** Browser commands in one step between spec-mismatch checkpoints (see `beforeAbCommand`). */
+const STEP_CHECKPOINT = 30;
+
 export interface StepChurn {
   recorded: number;
   kept: number;
@@ -269,59 +272,78 @@ export async function runTrace(
   // `url_contains:` marker pushes two actions, an unparseable command none.
   let lastCommandPushCount = 0;
 
+  const onAbAction = ({ abAction, stepId, assertMarker, secret }: AbActionEvent): void => {
+    const stepForCommand = stepTracker.fromCommand(stepId);
+    const line = abAction === undefined ? null : scrubEnvValues(abAction, envScrubMap);
+    let recorded: RecordedAction[] | null = null;
+    if (assertMarker !== undefined) {
+      recorded = promoteMarkedAssert(line, scrubEnvValues(assertMarker, envScrubMap));
+      if (recorded === null) {
+        log.warn(
+          `CCQA_ASSERT=${assertMarker} does not match a promotable command (wait --text / get count / url_contains:<substring>) — recording the command without an assert`,
+        );
+      }
+    }
+    if (recorded === null) {
+      const parsed = line === null ? null : parseAbActionLine(line);
+      recorded = parsed === null ? [] : [parsed];
+    }
+    let pushed = 0;
+    for (const action of recorded) {
+      const stamped = withStepId(action, stepForCommand);
+      if (stamped) {
+        traceActions.push(secret ? { ...stamped, secret: true } : stamped);
+        pushed += 1;
+      }
+    }
+    lastCommandPushCount = pushed;
+  };
+
+  // Every so many browser commands in one step, the next one is held back with
+  // a question: a step that keeps needing more is usually a spec the
+  // application does not match, and working around it only buries that.
+  const commandsByStep = new Map<string, number>();
+  const beforeAbCommand = (stepId: string | undefined): string | null => {
+    if (stepId === undefined) return null;
+    const n = (commandsByStep.get(stepId) ?? 0) + 1;
+    commandsByStep.set(stepId, n);
+    if (n % STEP_CHECKPOINT !== 0) return null;
+    return (
+      `${stepId} has taken ${n - 1} browser commands. If the application does not do what this step ` +
+      `says — the control is somewhere else, things happen in a different order, the result never ` +
+      `appears — stop working around it and report it: ASSERTION_FAILED|${stepId}|spec-mismatch: ` +
+      `<what the application does instead> — suggested step: <the instruction / expected rewritten ` +
+      `to match>. If the step does match and you are close, run this command again to continue.`
+    );
+  };
+
   const invokeBase = agentBrowserInvokeBase({ sessionName, runId: sessionName });
-  const replayStep = offersMap
-    ? buildReplayStepServer({
-        previous: previousActions,
-        sessionName,
-        envOverrides: { CCQA_RUN_ID: sessionName },
-        onReplayed: (stepId, passed) => {
-          stepTracker.fromCommand(stepId);
-          for (const action of passed) traceActions.push({ ...action, stepId });
-          lastCommandPushCount = 0;
-        },
-      })
-    : null;
+  const traceTools = buildTraceTools({
+    previous: offersMap ? previousActions : [],
+    sessionName,
+    env: invokeBase.env ?? {},
+    envOverrides: { CCQA_RUN_ID: sessionName },
+    envScrubMap,
+    onReplayed: (stepId, passed) => {
+      stepTracker.fromCommand(stepId);
+      for (const action of passed) traceActions.push({ ...action, stepId });
+      lastCommandPushCount = 0;
+    },
+    onAbAction,
+    beforeAbCommand,
+  });
 
   const { isError, errorDetail } = await invokeClaudeStreaming(
     {
       prompt,
       systemPrompt,
       ...invokeBase,
-      ...(replayStep
-        ? {
-            allowedTools: [...invokeBase.allowedTools, `mcp__${REPLAY_STEP_SERVER}__replay_step`],
-            mcpServers: { [REPLAY_STEP_SERVER]: replayStep },
-          }
-        : {}),
+      allowedTools: [...invokeBase.allowedTools, ...traceTools.allowedTools],
+      mcpServers: { [TRACE_TOOLS_SERVER]: traceTools.server },
       model,
       envScrubMap,
-      onAbAction: ({ abAction, stepId, assertMarker, secret }) => {
-        const stepForCommand = stepTracker.fromCommand(stepId);
-        const line = abAction === undefined ? null : scrubEnvValues(abAction, envScrubMap);
-        let recorded: RecordedAction[] | null = null;
-        if (assertMarker !== undefined) {
-          recorded = promoteMarkedAssert(line, scrubEnvValues(assertMarker, envScrubMap));
-          if (recorded === null) {
-            log.warn(
-              `CCQA_ASSERT=${assertMarker} does not match a promotable command (wait --text / get count / url_contains:<substring>) — recording the command without an assert`,
-            );
-          }
-        }
-        if (recorded === null) {
-          const parsed = line === null ? null : parseAbActionLine(line);
-          recorded = parsed === null ? [] : [parsed];
-        }
-        let pushed = 0;
-        for (const action of recorded) {
-          const stamped = withStepId(action, stepForCommand);
-          if (stamped) {
-            traceActions.push(secret ? { ...stamped, secret: true } : stamped);
-            pushed += 1;
-          }
-        }
-        lastCommandPushCount = pushed;
-      },
+      onAbAction,
+      beforeAbCommand,
       onAbActionFailed: () => {
         if (lastCommandPushCount > 0) traceActions.splice(-lastCommandPushCount);
         lastCommandPushCount = 0;
@@ -476,7 +498,10 @@ export function traceFailureReason(
 ): string | null {
   const assertionFailed = lines.find((l) => l.type === "ASSERTION_FAILED");
   if (assertionFailed) {
-    return `${assertionFailed.stepId || "(unnamed step)"} reported ASSERTION_FAILED`;
+    // The detail carries a spec-mismatch's suggested rewrite — the one thing a
+    // caller fixing the spec needs from a failed recording.
+    const detail = assertionFailed.detail.trim();
+    return `${assertionFailed.stepId || "(unnamed step)"} reported ASSERTION_FAILED${detail ? `: ${detail}` : ""}`;
   }
   if (session.isError) {
     return `the Claude session ended in an error: ${session.errorDetail ?? "no detail reported"}`;
