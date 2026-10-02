@@ -98,3 +98,14 @@ At `effort: low`, with Bash limited and the checkpoint at 20: the broken
 recording stopped with the same `spec-mismatch` after 274 s and 50 turns; the
 clean recording took 138 s and 22 turns; `--fresh-ir` stopped with the
 `spec-mismatch` after 605 s and 146 turns.
+
+Across ten other cases of the same application — permission denials, a
+select, create/edit/toggle forms with cleanup, search, a dashboard, a
+multi-party workflow, an asynchronous chat answer — the map took 1971 s in
+total against 5202 s for `--fresh-ir`, faster on every case; each passing
+case took 39 to 135 s with the map. The map passed eight cases and
+`--fresh-ir` seven. Of the failures, three were agent-browser becoming
+unresponsive with three traces in parallel on one heavy page (the same case
+passed run alone), one was the recorder leaving a conversation to look
+something up — now forbidden — and one was `--fresh-ir` picking a default
+the previous recording knew to avoid.
