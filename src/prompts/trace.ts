@@ -1,5 +1,6 @@
 import { buildRunId } from "../runtime/live-artifacts.ts";
-import { SETUP_STEP_ID } from "../ir/types.ts";
+import { SETUP_STEP_ID, type RecordedAction } from "../ir/types.ts";
+import { renderPreviousRecording } from "./previous-recording.ts";
 
 export function generateSessionName(): string {
   return `ccqa-trace-${buildRunId()}`;
@@ -44,6 +45,8 @@ export interface TraceSystemPromptInput {
    * does not faithfully reproduce the mistake the audit flagged.
    */
   instruction?: string;
+  /** The recording this trace replaces, offered as a map of the route (see `renderPreviousRecording`). */
+  previousRecording?: readonly RecordedAction[];
 }
 
 /**
@@ -89,6 +92,11 @@ ${input.instruction}
     renderCleanupExpectations(input.cleanupExpectations ?? []);
   const contextText = renderContext(input.context ?? []);
   const conventionsText = renderConventions(input.conventions ?? []);
+  const previousText = renderPreviousRecording(
+    input.previousRecording ?? [],
+    sessionName,
+    input.steps.map((s) => s.id),
+  );
 
   return `You are an expert QA engineer executing a browser E2E test. Execute each step precisely and record every browser action as a structured log line.
 
@@ -247,7 +255,7 @@ Each step's instruction names the URL to open directly (or via \`\${ENV_VAR}\`).
 ## Steps
 
 ${stepsText}
-${expectationsText}${contextText}${conventionsText}
+${expectationsText}${contextText}${conventionsText}${previousText}
 ## Execution Workflow
 
 For each step:

@@ -113,6 +113,8 @@ export interface RunTraceOptions {
   sessionState?: string;
   /** Documents telling the recorder how this project is driven. */
   conventions?: string[];
+  /** Trace without showing the recorder the recording it replaces (`--fresh-ir`). */
+  freshIr?: boolean;
 }
 
 /**
@@ -210,6 +212,15 @@ export async function runTrace(
   });
   for (const w of conventions.warnings) log.warn(w);
 
+  // Read before the trace, not after: it is also the only thing that can say
+  // what this re-recording changed once the new one is saved.
+  const caseRef = testCase.ref;
+  const previous = await tryGetRecording(caseRef);
+  const previousActions = previous ? [...previous.actions, ...(previous.cleanup ?? [])] : [];
+  if (previousActions.length > 0) {
+    log.meta("previous", opts.freshIr ? "ignored (--fresh-ir)" : `${previousActions.length} action(s) offered as a map`);
+  }
+
   const baseSystemPrompt = buildTraceSystemPrompt({
     title: testCase.title,
     steps,
@@ -223,6 +234,7 @@ export async function runTrace(
       : {}),
     ...(testCase.context.length > 0 ? { context: testCase.context } : {}),
     ...(opts.instruction ? { instruction: opts.instruction } : {}),
+    ...(opts.freshIr ? {} : { previousRecording: previousActions }),
   });
   const promptBundle = await loadPromptBundle(opts.hubContext ?? null, "record", opts.cwd ?? process.cwd());
   if (promptBundle !== null) log.meta("prompt", promptBundle.loaded.join(" + "));
@@ -370,11 +382,6 @@ export async function runTrace(
   // A FAILED trace did not demonstrate the spec, so its actions must never
   // replace a recording that did. They go to a side file for diagnosis;
   // ir.json (and therefore the generated test) is left untouched.
-  //
-  // Read the recording being replaced before the write, not after: it is the
-  // only thing that can say what this re-recording changed.
-  const caseRef = testCase.ref;
-  const previous = overallStatus === "passed" ? await tryGetRecording(caseRef) : null;
   let recordingPath: string;
   // The undo was recorded in the same session, and is told apart by the step
   // ids the case gave it — the one place that knows which actions were which.

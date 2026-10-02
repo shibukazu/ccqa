@@ -58,6 +58,7 @@ flip the old one's status to `superseded by ADR-NNNN`.
 | [0034](0034-ccqa-reads-one-format-and-is-handed-the-rest.md) | ccqa reads one format and is handed the rest | accepted |
 | [0035](0035-test-drift-is-repairable-wherever-it-is-written.md) | TEST_DRIFT is repairable wherever it is written | accepted (its output replaced by 0036) |
 | [0036](0036-the-audit-always-writes-its-report.md) | The audit always writes its report | accepted |
+| [0037](0037-a-re-recording-is-shown-the-route-it-replaces.md) | A re-recording is shown the route it replaces | accepted |
 
 ## Template
 
