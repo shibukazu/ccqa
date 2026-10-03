@@ -24,6 +24,8 @@
  * here.
  */
 
+import { parseStepComment, stepLines } from "../codegen/step-comment.ts";
+
 export interface EmittedFinding {
   /** Project-relative path of the file the finding is in. */
   file: string;
@@ -43,6 +45,12 @@ export interface EmittedReviewInput {
    * asked for.
    */
   caseText: readonly string[];
+  /**
+   * Ids of the steps an `include:` brought in. A block states its outcome once
+   * for every case that shares it ("the login succeeds"), so what its recording
+   * checks on screen is in no case's words, and no fix to this case changes it.
+   */
+  blockSteps?: ReadonlySet<string>;
   /** The case's own generated test, by the path the project configured for it. */
   testPath: string;
   /**
@@ -72,7 +80,7 @@ export function reviewEmittedFiles(input: EmittedReviewInput): EmittedFinding[] 
       ...containerOfPageText(file, source),
       ...unjustifiedFirst(file, source),
       ...describeEcho(file, source),
-      ...unaskedAssertions(file, source, locators, said),
+      ...unaskedAssertions(file, source, locators, said, input.blockSteps),
       ...weakerTwin(file, source),
       ...unreached(file, source, input),
     ]),
@@ -380,9 +388,29 @@ function unaskedAssertions(
   source: string,
   locators: ReadonlyMap<string, string>,
   said: string,
+  blockSteps: ReadonlySet<string> = new Set(),
 ): EmittedFinding[] {
   const all = lines(source);
+  const boundaries = stepLines(source);
+  let step: string | null = null;
+  // Braces still open in the current `test.step` callback; an assertion after
+  // it closes is the test's own, not the step's. The comment form has no end.
+  let depth: number | null = null;
   return all.flatMap((text, i) => {
+    const opened = parseStepComment(boundaries[i] ?? "");
+    if (opened !== null) {
+      step = opened;
+      depth = boundaries[i]!.includes("test.step(") ? 0 : null;
+    }
+    if (depth !== null) {
+      const before = depth;
+      depth += (text.match(/\{/g)?.length ?? 0) - (text.match(/\}/g)?.length ?? 0);
+      if (before > 0 && depth <= 0) {
+        step = null;
+        depth = null;
+      }
+    }
+    if (step !== null && blockSteps.has(step)) return [];
     if (!/\bexpect(?:\.soft)?\(/.test(text)) return [];
     const strings = assertedStrings(text, locators);
     if (strings.length === 0 || strings.some((s) => said.includes(s))) return [];

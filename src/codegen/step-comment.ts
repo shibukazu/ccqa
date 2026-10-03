@@ -103,7 +103,11 @@ export function parseStepComment(line: string): string | null {
  * every step then reads as deciding nothing and every rewrite is rejected.
  */
 export function stepLines(source: string): string[] {
-  return source.replace(STEP_CALL, (call) => call.replace(/\s*\n\s*/g, " ")).split("\n");
+  // The folded breaks go back in front of the call, so line i is still line i
+  // for a reader that reports where it found something.
+  return source
+    .replace(STEP_CALL, (call) => "\n".repeat(call.split("\n").length - 1) + call.replace(/\s*\n\s*/g, " "))
+    .split("\n");
 }
 
 /**
