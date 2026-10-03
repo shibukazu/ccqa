@@ -552,7 +552,7 @@ export function shellTokenize(s: string): string[] {
  * command string, value-taking flags dropped. Empty when `cmd` is not an
  * agent-browser call.
  */
-function abPositionalTokens(cmd: string): string[] {
+export function abPositionalTokens(cmd: string): string[] {
   const abIdx = cmd.indexOf("agent-browser");
   if (abIdx === -1) return [];
   const parts = shellTokenize(cmd.slice(abIdx + "agent-browser".length).trim());

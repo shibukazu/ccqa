@@ -3,6 +3,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import {
   abActionEventFromCommand,
+  abPositionalTokens,
   abCommandBlockReason,
   extractCcqaStepFromBashCommand,
   isAgentBrowserCommand,
@@ -12,6 +13,7 @@ import { describeStepAction } from "../ir/route-diff.ts";
 import type { RecordedAction } from "../ir/types.ts";
 import { scrubEnvValues } from "../runtime/env-scrub.ts";
 import { replayUntilFailure } from "../runtime/replay-validate.ts";
+import { scrollCoveredIntoView } from "../runtime/spawn-ab.ts";
 import * as log from "./logger.ts";
 
 export const TRACE_TOOLS_SERVER = "ccqa";
@@ -82,7 +84,11 @@ export async function runCommands(commands: string[], input: TraceToolsInput): P
     const checkpoint = input.beforeAbCommand(extractCcqaStepFromBashCommand(cmd) ?? undefined);
     if (checkpoint) return stop(checkpoint);
     log.info(`$ ${scrubEnvValues(cmd, input.envScrubMap)}`);
-    const result = await runShell(cmd, { ...process.env, ...input.env });
+    const env = { ...process.env, ...input.env };
+    let result = await runShell(cmd, env);
+    if (result.status !== 0 && scrollCoveredIntoView(["--session", input.sessionName], abPositionalTokens(cmd), result)) {
+      result = await runShell(cmd, env);
+    }
     const out = result.stdout.trim();
     const ok = result.status === 0 && (recorded?.holds ? recorded.holds(out) : true);
     if (!ok) {

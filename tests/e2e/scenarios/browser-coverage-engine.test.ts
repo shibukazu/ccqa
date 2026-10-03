@@ -1,6 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 
@@ -11,6 +11,7 @@ import { startBrowserCoverage } from "../../../src/coverage/browser/engine.ts";
 import { resolveAgentBrowserBin } from "../../../src/runtime/agent-browser-bin.ts";
 import { spawnAB } from "../../../src/runtime/spawn-ab.ts";
 import { acquireAgentBrowserEndpoint } from "../../../src/targets/agent-browser/browser-endpoint.ts";
+import { realBrowserAvailable } from "../_helpers/real-browser.ts";
 
 /**
  * The acquisition engine against a real browser — the one thing no fake can
@@ -38,15 +39,6 @@ const execFileAsync = promisify(execFile);
 
 const SPEC_ID = "e2etest.coverage-check/browser";
 const SESSION = `ccqa-e2e-coverage-${process.pid}`;
-
-function realBrowserAvailable(): boolean {
-  try {
-    resolveAgentBrowserBin();
-  } catch {
-    return false;
-  }
-  return existsSync(join(homedir(), ".agent-browser", "browsers"));
-}
 
 const MAP = Buffer.from(
   JSON.stringify({
