@@ -81,7 +81,10 @@ async function readChunk(
   let when = "";
   for (const line of stdout.split("\n")) {
     if (line.startsWith("\0")) {
-      when = line.slice(1).trim();
+      // `%cI` keeps the committer's offset; the hub compares against UTC
+      // deploy times, so normalize to the same form.
+      const ms = Date.parse(line.slice(1).trim());
+      when = Number.isNaN(ms) ? "" : new Date(ms).toISOString();
       continue;
     }
     const abs = byRelPath.get(line.trim());

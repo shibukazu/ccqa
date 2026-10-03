@@ -18,7 +18,7 @@ import type {
   SpecVerdict,
 } from "../contract/schema.ts";
 import type { DriftLabel } from "../../report/schema.ts";
-import { auditNeed } from "./audit-need.ts";
+import { auditNeed, deployedAt, isLater, specMovedSince } from "./audit-need.ts";
 import { buildRange, freshness, type Freshness, type RangeLookup } from "./deploy-range.ts";
 import { heldBy } from "./locks.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
@@ -50,44 +50,6 @@ export interface RerunInput {
   now: Date;
 }
 
-/**
- * When each deployed commit reached the environment. A baseline read at that
- * commit cannot have seen anything committed after it was deployed.
- */
-function deployedAt(log: DeployLog): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const entry of log.entries) out.set(entry.sha, entry.at);
-  return out;
-}
-
-/**
- * Has the spec moved since the baseline was taken?
- *
- * A verdict is a claim about a (spec, product) pair, so either side moving
- * invalidates it. The deploy log covers the product side; this covers the
- * other one. Without it a spec repaired and merged stays `needsRepair` until
- * a deploy happens to reach it, and a run that passed against the previous
- * spec keeps answering `verified` for the new one.
- *
- * Compared against when the baseline commit was *deployed*, not when the audit
- * or run happened: the tree read at that commit predates its deployment, so an
- * edit after it is definitely not in it. Falls back to the baseline's own
- * timestamp when the log cannot place the commit.
- *
- * One-directional. A later edit time proves the baseline is stale; an earlier
- * one proves nothing, and this answers false rather than guessing.
- */
-function specMovedSince(
-  changedAt: string | undefined,
-  baselineSha: string | null,
-  baselineAt: string,
-  deployTimes: Map<string, string>,
-): string | null {
-  if (!changedAt) return null;
-  const cutoff = (baselineSha && deployTimes.get(baselineSha)) || baselineAt;
-  return changedAt > cutoff ? changedAt : null;
-}
-
 export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
   const { specs, ledger, log, touchIndex, drift, locks, attestations, dismissals, now } = input;
   const range = buildRange(log, touchIndex);
@@ -100,7 +62,7 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       lastGreen: ledger.green[spec.key] ?? null,
       lastRed: ledger.red[spec.key] ?? null,
     };
-    let audit = auditState(drift, spec.key, range);
+    let audit = auditState(drift, spec, range, deployTimes);
     let execution = executionState(coords, (sha) => freshness(sha, spec.key, range));
 
     const driftEntry = drift.specs[spec.key];
@@ -121,9 +83,9 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       (audit.audit === "drifted" || audit.audit === "undecided");
     if (dismissed) audit = { audit: "clean" };
 
-    // The spec's own edits, applied to both axes. `due`/`stale` already mean
-    // "the baseline no longer answers for what is here now", so an edit lands
-    // in the existing vocabulary rather than adding a state.
+    // The spec's own edits. The audit axis already took them from `auditNeed`,
+    // so `/audit-needed` and this never disagree; here they stale a passed run
+    // and are reported as `specChangedSince`.
     const auditMoved = specMovedSince(
       spec.changedAt,
       driftEntry?.gitHead ?? null,
@@ -136,7 +98,6 @@ export function computeRerun(input: RerunInput): Record<string, SpecRerun> {
       coords.lastRun?.at ?? "",
       deployTimes,
     );
-    if (auditMoved && audit.audit !== "due") audit = { audit: "due" };
     // A spec edit does not touch `failed`: a red is current information about
     // the product whatever the spec has done since.
     if (runMoved && execution.execution === "passed") execution = { execution: "stale" };
@@ -234,7 +195,7 @@ function readAttestation(
   deployTimes: Map<string, string>,
 ): ManualState | null {
   if (!attest) return null;
-  const newerRed = lastRed !== null && lastRed.at > attest.at;
+  const newerRed = lastRed !== null && isLater(lastRed.at, attest.at);
   if (newerRed && lastRed.runId === lastRun?.runId) {
     return { kind: "lapsed", attest, because: "newerRed" };
   }
@@ -275,14 +236,15 @@ function readAttestation(
  */
 function auditState(
   drift: DriftLedger,
-  key: string,
+  spec: SpecTarget,
   range: RangeLookup,
+  deployTimes: Map<string, string>,
 ): {
   audit: AuditState;
   driftLabel?: Extract<DriftLabel, "TEST_DRIFT" | "SPEC_CHANGE">;
   auditAssumedReached?: RerunUnknownReason;
 } {
-  const need = auditNeed(drift, key, range);
+  const need = auditNeed(drift, spec, range, deployTimes);
   switch (need.because) {
     case "neverAudited":
     case "deployReached":
@@ -290,7 +252,7 @@ function auditState(
     case "cannotTell":
       return { audit: "due", ...(need.reason ? { auditAssumedReached: need.reason } : {}) };
     case "current": {
-      const label = drift.specs[key]!.label;
+      const label = drift.specs[spec.key]!.label;
       if (label === null) return { audit: "clean" };
       if (label === "UNKNOWN") return { audit: "undecided" };
       // A finding about the product or the environment is not a finding about

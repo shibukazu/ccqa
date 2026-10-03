@@ -486,6 +486,15 @@ describe("computeRerun: the spec's own edits", () => {
     expect(verdict.specChangedSince).toBeUndefined();
   });
 
+  test("edit times are compared as instants, not as strings", () => {
+    // The deploy reached at 2026-07-20T00:00Z. A committer offset makes both
+    // edits sort after it as text; only the second is later in time.
+    const at = (changedAt: string) =>
+      compute({ specs: [{ key: "f/s", changedAt }], log: log(deploy(0)), drift: auditedAt("TEST_DRIFT", "sha-0") });
+    expect(at("2026-07-20T08:00:00+09:00").audit).toBe("drifted");
+    expect(at("2026-07-20T10:00:00+09:00").audit).toBe("due");
+  });
+
   test("an inventory with no edit time leaves the deploy-only answer alone", () => {
     const verdict = compute({
       specs: [{ key: "f/s" }],
