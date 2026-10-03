@@ -474,15 +474,24 @@ describe("generateWithLlmEngine", () => {
     expect(result.review).toEqual(clean);
   });
 
-  // The run is the expensive half of a round — a browser against a live
-  // product — and code the reviewer would send back is not worth running.
-  it("does not run the verification in a round the review would block", async () => {
+  // A rewrite answering a finding can break what ran. The version a run has
+  // already passed must not be lost to it.
+  it("goes back to the last version that passed when a later rewrite fails its run", async () => {
     await makeProject();
-    const { invoke } = fakeInvoke([okOutput(), okOutput()]);
-    const { reading } = fakeReading([breaksARule, clean]);
+    const broken = JSON.stringify({
+      files: [
+        { path: "e2e/todos/add-item.spec.ts", contents: "// broken\n", kind: "test" },
+        { path: "e2e/todos/helper.ts", contents: "// new\n", kind: "support" },
+      ],
+      summary: "strengthened",
+    });
+    const { invoke, prompts } = fakeInvoke([okOutput(), broken]);
+    const { reading } = fakeReading([undecided, clean]);
     const result = await generateWithLlmEngine({
       ctx: makeContext({
-        targetConfig: TargetConfigSchema.parse({ runCommand: "printf x >> ran.log" }),
+        targetConfig: TargetConfigSchema.parse({
+          runCommand: "! grep -q broken e2e/todos/add-item.spec.ts",
+        }),
       }),
       target: "playwright",
       steps: [],
@@ -491,8 +500,34 @@ describe("generateWithLlmEngine", () => {
       reading,
     });
     expect(result.passed).toBe(true);
-    // Once, in the round whose review came back clean.
-    expect(await readFile(resolve(cwd, "ran.log"), "utf8")).toBe("x");
+    expect(prompts).toHaveLength(2);
+    expect(await readFile(resolve(cwd, "e2e/todos/add-item.spec.ts"), "utf8")).toBe("// generated test\n");
+    await expect(stat(resolve(cwd, "e2e/todos/helper.ts"))).rejects.toThrow();
+    // The reading of the files that are back, not of the ones that failed.
+    expect(result.review).toEqual(undecided);
+  });
+
+  // The mechanical read needs no model, so a reviewer's failure does not void it.
+  it("rewrites on the mechanical read, not the reviewer, in a round whose reviewer failed", async () => {
+    await makeProject();
+    const named = JSON.stringify({
+      files: [{ path: "e2e/todos/add-item.spec.ts", contents: "const ccqaItem = 1;\n", kind: "test" }],
+      summary: "one spec generated",
+    });
+    const { invoke, prompts } = fakeInvoke([named, okOutput()]);
+    const { reading } = fakeReading([{ ...breaksARule, reviewerFailed: true }, clean]);
+    const result = await generateWithLlmEngine({
+      ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
+      target: "playwright",
+      steps: [],
+      taskInstructions: "Generate the test.",
+      invoke,
+      reading,
+    });
+    expect(result.passed).toBe(true);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("ccqaItem");
+    expect(prompts[1]).not.toContain("Locators are declared before methods.");
   });
 
   // The fix pass may decline a file it is not allowed to write, and the next
