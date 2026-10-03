@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import { z } from "zod";
@@ -512,12 +512,17 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
   };
 }
 
+const FINDINGS_LEFT_OPEN =
+  "generated with review findings still open — the files are kept and the findings " +
+  "are recorded against the case, but nothing acted on them";
+
 /**
  * The runCommand verification loop. One round asks the project's own commands,
- * then the review, then the run — and a round is over when all three are
- * clean. On anything else the output goes to Claude for a corrected set and
+ * then the review and the run together — and a round is over when all three
+ * are clean. On anything else the output goes to Claude for a corrected set and
  * the next round asks all three again: a fix written for a failing run can
- * break a rule the round before it cleared.
+ * break a rule the round before it cleared, and one written for a finding can
+ * break the run.
  *
  * `fix.mode` mirrors the agent-browser target's fix UX (which only ever
  * prompts inside its own fix loop, never for the first write):
@@ -529,8 +534,9 @@ async function finalizeAndVerify(p: FinalizeParams): Promise<GenerateResult> {
  *     verify decides pass/fail.
  *
  * Exhaustion (or a declined / skipped fix) keeps the files on disk and reports
- * `passed: false`. Targets without a runCommand are generate-only here and
- * pass trivially.
+ * `passed: false` — unless an earlier round's files passed their run: those
+ * are put back and the generate passes with the findings open. Targets without
+ * a runCommand are generate-only here and pass trivially.
  */
 async function runVerificationLoop(
   p: FinalizeParams,
@@ -589,12 +595,33 @@ async function runVerificationLoop(
   if (!askReviewer && p.reading) {
     log.info("no fix round could act on a review — the reviewer is not asked; the mechanical read still runs");
   }
+  // The newest files a run has passed, with the reading of them. A rewrite can
+  // break what ran, and a later finding is a judgement: it must not cost a
+  // version the product has already been seen to pass.
+  let passing: { files: FileState; review?: SpecCoverageReview; attempt: number } | null = null;
+  // What a path held before the loop first wrote it, so going back to
+  // `passing` also undoes a file only a later round touched.
+  const original = new Map<string, string | null>();
+  // The way out once no round is left to spend: back to what last ran green,
+  // or failed when nothing did.
+  const settle = async (attempt: number): Promise<{ passed: boolean; review?: SpecCoverageReview }> => {
+    if (passing === null) {
+      await clearCaseRun(p.ctx.ref);
+      return finish(false);
+    }
+    if (passing.attempt !== attempt) {
+      await restoreFiles(state, passing.files, original);
+      review = passing.review;
+      log.warn("the last rewrite did not pass — restored the last version that did");
+    }
+    log.warn(FINDINGS_LEFT_OPEN);
+    return finish(true);
+  };
+  // A previous generation's pictures are of files this one is replacing.
+  if (captures) await clearCaseRun(p.ctx.ref);
   for (let attempt = 0; ; attempt++) {
-    // Cheapest question first, most expensive last. The project's own commands
-    // decide for themselves and cost nothing; the review is one model call;
-    // the run is a browser against a live product. Code a reviewer would send
-    // back is not worth running, and code that does not compile is not worth
-    // reviewing.
+    // The project's own commands first: they cost nothing, and code that does
+    // not compile is not worth reviewing or running.
     let failing = await runCheckCommands(p.ctx);
     // What this round's fix prompt asks for, registered only once the model
     // has answered it: a round that never reached one asked for nothing.
@@ -603,39 +630,35 @@ async function runVerificationLoop(
       // The checks may have rewritten what they checked. From here the files
       // are read three ways, and they must all read the same file.
       await refreshFromDisk(state);
-      // How the code reads, asked three ways — mechanically, against the case,
-      // and against the project's own rules. All at once: they are the same
-      // kind of question, and answering them in turn spends a whole round on
-      // the cheaper one while the others wait for a budget that may be gone.
-      // (Observed: three rounds went to two failures and one mechanical
-      // finding, and the reading first spoke with nothing left to act on.)
-      // Issued together as well: one is a model call and the other walks the
-      // project's test roots, and neither reads what the other writes.
-      const [reading, mechanical] = await Promise.all([
+      // How the code reads (mechanically, against the case, against the
+      // project's rules) and whether it runs, all at once. Every round runs:
+      // a rewrite answering a finding can break the test, and only a run says
+      // so. Alongside the reading, the run costs the round no wall-clock time.
+      const [reading, mechanical, run] = await Promise.all([
         readingOfEmitted(p, state, askReviewer && !reviewerGone),
         reviewOfEmitted(p.ctx, state, p.writeRoots),
+        verifyRun(p, state, runCommand, attempt, captures),
       ]);
       review = reading;
-      if (review?.reviewerFailed) reviewerGone = true;
-      const unchecked = uncheckedSteps(review, spent);
-      const violations = guideViolations(review, spent);
-      const reads = allReadings(mechanical, unchecked, violations);
-      if (reads !== null && attempt < maxRetries) {
+      if (run.exitCode === 0) passing = { files: new Map(state), review, attempt };
+      // A reviewer that errored said nothing about these files, and a rewrite
+      // on that round's word alone is what once gutted a passing test.
+      let reads: ReturnType<typeof allReadings> = null;
+      if (review?.reviewerFailed) {
+        reviewerGone = true;
+      } else {
+        const unchecked = uncheckedSteps(review, spent);
+        const violations = guideViolations(review, spent);
+        reads = allReadings(mechanical, unchecked, violations);
         asked = [...(unchecked?.asked ?? []), ...(violations?.asked ?? [])];
+      }
+      if (run.exitCode !== 0) {
+        failing = reads === null ? run : (allReadings(run, reads) ?? run);
+      } else if (reads !== null && attempt < maxRetries) {
         failing = reads;
       } else {
-        if (reads !== null) {
-          // Run all the same: the review is a judgement, and a generate that
-          // reported failed without ever running the test would let one
-          // decide the verdict.
-          log.warn(
-            "generated with review findings still open — the files are kept and the findings " +
-              "are recorded against the case, but nothing acted on them",
-          );
-        }
-        const run = await verifyRun(p, state, runCommand, attempt, captures);
-        if (run.exitCode === 0) return finish(true);
-        failing = run;
+        if ((reads ?? mechanical) !== null) log.warn(FINDINGS_LEFT_OPEN);
+        return finish(true);
       }
     }
     // The command's own output can echo a value the test resolved (a URL,
@@ -643,12 +666,9 @@ async function runVerificationLoop(
     // the leak above happened, so it is symbolised before it goes.
     const outputTail = scrubEnvValues(tail(failing.output), outputScrub);
     if (attempt >= maxRetries) {
-      log.warn(
-        `verification still failing after ${maxRetries} fix attempt(s) — generated files kept`,
-      );
+      log.warn(`verification still failing after ${maxRetries} fix attempt(s)`);
       logOutputTail(outputTail, log.warn);
-      await clearCaseRun(p.ctx.ref);
-      return finish(false);
+      return settle(attempt);
     }
 
     log.fix(`verification failed (exit ${failing.exitCode}) — requesting a fix (${attempt + 1}/${maxRetries})`);
@@ -709,9 +729,14 @@ async function runVerificationLoop(
     // (wherever `testPath` puts them), so show what changes and ask before
     // writing. Declining keeps the current files and ends the loop.
     if (p.ctx.fix.mode === "interactive" && !(await confirmFixWrite(output.files, p.ctx.cwd))) {
-      log.info("fix not applied (declined) — keeping current files");
-      await clearCaseRun(p.ctx.ref);
-      return finish(false);
+      log.info("fix not applied (declined)");
+      return settle(attempt);
+    }
+    for (const f of output.files) {
+      const rel = relative(p.ctx.cwd, resolve(p.ctx.cwd, f.path));
+      if (!state.has(rel) && !original.has(rel)) {
+        original.set(rel, await readFile(resolve(p.ctx.cwd, f.path), "utf8").catch(() => null));
+      }
     }
     await writeGeneratedFiles(p.ctx.cwd, output.files, state);
     // The reading described the files as they were before this write. It is
@@ -724,8 +749,7 @@ async function runVerificationLoop(
 
 /**
  * One verification run of the files as they are now, in the shape the fix loop
- * consumes. The round's last question and its most expensive: it is asked only
- * of files the project's own commands and the review have already cleared.
+ * consumes. Asked only of files the project's own commands have cleared.
  */
 async function verifyRun(
   p: FinalizeParams,
@@ -744,12 +768,9 @@ async function verifyRun(
   // The step screenshots this run takes, kept when it passes. A project whose
   // tests belong to its own runner never calls `ccqa run`, so this is the only
   // time ccqa sees the case executed — and `ccqa evidence` has no pictures at
-  // all without it. Cleared first: what is here is one run's.
-  const evidenceDir = captures ? caseRunDir(p.ctx.ref) : null;
-  if (evidenceDir) {
-    await clearCaseRun(p.ctx.ref);
-    await mkdir(evidenceDir, { recursive: true });
-  }
+  // all without it. Taken aside and kept only on a pass: a later red run must
+  // not take the pictures of the version the loop may go back to.
+  const evidenceDir = captures ? await mkdtemp(join(tmpdir(), "ccqa-verify-evidence-")) : null;
   let command = substituteArtifactsDir(
     substituteRunCommandFiles(runCommand, testFiles),
     artifactsDir,
@@ -781,9 +802,8 @@ async function verifyRun(
       "run",
     );
     // Read before the artifacts dir goes: the trace lives in it, and the
-    // `finally` below removes it. Only a green run's is read — every other
-    // outcome ends in a fix round or a give-up, both of which clear the case's
-    // evidence again, so reading it would be work nobody keeps.
+    // `finally` below removes it. Only a green run's is read: a red one's is
+    // never kept.
     if (evidenceDir && result.exitCode === 0) {
       const unavailable =
         traceUnavailable ??
@@ -794,10 +814,13 @@ async function verifyRun(
           warn: (message) => log.warn(`${p.ctx.ref.id}: ${message}`),
         }));
       if (unavailable) log.warn(unavailable);
+      await clearCaseRun(p.ctx.ref);
+      await cp(evidenceDir, caseRunDir(p.ctx.ref), { recursive: true });
     }
     return { ...result, command };
   } finally {
     await rm(artifactsDir, { recursive: true, force: true });
+    if (evidenceDir) await rm(evidenceDir, { recursive: true, force: true });
   }
 }
 
@@ -893,6 +916,28 @@ async function refreshFromDisk(state: FileState): Promise<void> {
 }
 
 /**
+ * Put the files back as `to` holds them. A path written after `to` was taken
+ * goes back to what it held before the loop wrote it, or away if it was new.
+ */
+async function restoreFiles(
+  state: FileState,
+  to: FileState,
+  original: ReadonlyMap<string, string | null>,
+): Promise<void> {
+  for (const [rel, f] of state) {
+    if (to.has(rel)) continue;
+    const was = original.get(rel) ?? null;
+    if (was === null) await rm(f.abs, { force: true });
+    else await writeFile(f.abs, was, "utf8");
+  }
+  state.clear();
+  for (const [rel, f] of to) {
+    await writeFile(f.abs, f.contents, "utf8");
+    state.set(rel, f);
+  }
+}
+
+/**
  * The reading's findings, shaped like a failed check so the fix loop carries
  * them the same way — or null when there is nothing to act on.
  *
@@ -905,9 +950,8 @@ async function refreshFromDisk(state: FileState): Promise<void> {
  *
  * What the round asks for is verified like any other rewrite, and that can
  * end red: an assertion strengthened to check what the case claims may simply
- * not hold. The generate then reports failed — on the test run, not on this —
- * and the files are kept. That is the honest outcome, and the alternative
- * (restoring what passed weakly) would hide a case the product does not meet.
+ * not hold. The loop then goes back to the last version that passed, and the
+ * finding stays open on the record rather than hidden.
  *
  * A review that could not be obtained is not acted on either: spending a round
  * answering a question nobody asked is worse than leaving it unanswered. Nor

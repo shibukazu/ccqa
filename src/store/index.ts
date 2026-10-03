@@ -381,10 +381,10 @@ export async function saveRecording(
  *
  * One directory, not one per attempt: a project whose tests belong to its own
  * runner never calls `ccqa run`, so this stands in for the run report the
- * evidence table reads — and what stands in for it is the attempt that passed,
- * which there is only ever one of. `ccqa generate` clears it before each
- * attempt and removes it when none passed, because screenshots of a failing
- * run are a debugging aid and this table presents them as the case working.
+ * evidence table reads — and what stands in for it is the attempt that passed
+ * last, the version generation keeps. `ccqa generate` replaces it only on a
+ * pass and removes it when none passed, because screenshots of a failing run
+ * are a debugging aid and this table presents them as the case working.
  */
 export function caseRunDir(ref: CaseRef): string {
   return join(ref.dir, EVIDENCE_DIR);
