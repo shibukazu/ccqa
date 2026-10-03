@@ -8,6 +8,7 @@ import type {
 import type { DriftLabel } from "../../report/schema.ts";
 import { computeAuditNeed, type AuditNeedInput } from "./audit-need.ts";
 import { emptyLocks } from "./locks.ts";
+import { computeRerun } from "./rerun.ts";
 import type { SpecTarget } from "./perspectives-specs.ts";
 
 const SPEC: SpecTarget = { key: "f/s" };
@@ -118,5 +119,31 @@ describe("computeAuditNeed", () => {
       because: "cannotTell",
       reason: "noDeployLog",
     });
+  });
+});
+
+describe("computeAuditNeed agrees with computeRerun", () => {
+  test("a spec the re-run verdict holds for audit is never answered current", () => {
+    // The cycle audits from one answer and runs from the other. If the re-run
+    // side waits on an audit this side will not offer, the spec waits forever.
+    const changedAts = [undefined, "2026-07-21T08:00:00+09:00", "2026-07-21T10:00:00+09:00", "2026-07-27T00:00:00Z"];
+    const drifts = [{ specs: {} }, auditedAt(null, "sha-0"), auditedAt("TEST_DRIFT", "sha-0"), auditedAt(null, "sha-1")];
+    const touchIndexes = [{}, touchedAt(1)];
+    for (const changedAt of changedAts) {
+      for (const drift of drifts) {
+        for (const touchIndex of touchIndexes) {
+          const specs = [{ key: "f/s", ...(changedAt ? { changedAt } : {}) }];
+          const shared = { specs, log: log(deploy(0), deploy(1)), touchIndex, drift, locks: emptyLocks(), now: NOW };
+          const rerun = computeRerun({
+            ...shared,
+            ledger: { green: {}, run: {}, red: {} },
+            attestations: { specs: {} },
+            dismissals: { specs: {} },
+          })["f/s"]!;
+          const need = computeAuditNeed(shared)["f/s"]!;
+          if (rerun.audit === "due") expect(need.because, JSON.stringify({ changedAt, drift, touchIndex })).not.toBe("current");
+        }
+      }
+    }
   });
 });

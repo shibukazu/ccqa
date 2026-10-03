@@ -46,7 +46,7 @@ describe("readCaseChangedAt", () => {
       await write(specDoc("f", "new"), "b");
       await write(caseDoc, "## Steps\n\n1. Open it twice\n");
       await git("add", "-A");
-      await gitAt("2021-01-01T00:00:00Z", "commit", "-m", "only new", "--no-gpg-sign");
+      await gitAt("2021-01-01T09:00:00+09:00", "commit", "-m", "only new", "--no-gpg-sign");
 
       const got = await readCaseChangedAt(dir, docs);
       expect(got.has(specDoc("f", "old"))).toBe(true);
@@ -56,6 +56,8 @@ describe("readCaseChangedAt", () => {
       // The second commit touched only two of the three, so they must differ.
       expect(got.get(specDoc("f", "new"))! > got.get(specDoc("f", "old"))!).toBe(true);
       expect(got.get(caseDoc)! > got.get(specDoc("f", "old"))!).toBe(true);
+      // Normalized to UTC whatever the committer's offset.
+      expect(got.get(caseDoc)).toBe("2021-01-01T00:00:00.000Z");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

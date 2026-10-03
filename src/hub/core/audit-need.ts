@@ -33,14 +33,24 @@ export type AuditFreshness = AuditNeed & {
   because: Exclude<AuditNeed["because"], "held">;
 };
 
-export function auditNeed(drift: DriftLedger, key: string, range: RangeLookup): AuditFreshness {
-  const entry = drift.specs[key];
+export function auditNeed(
+  drift: DriftLedger,
+  spec: SpecTarget,
+  range: RangeLookup,
+  deployTimes: Map<string, string>,
+): AuditFreshness {
+  const entry = drift.specs[spec.key];
   if (!entry) return { because: "neverAudited" };
 
-  const since = freshness(entry.gitHead, key, range);
+  const since = freshness(entry.gitHead, spec.key, range);
   switch (since.kind) {
     case "current":
-      return { because: "current" };
+      // A spec edited after the audit's baseline is due like one a deploy
+      // reached. `deployReached` rather than a new value: clients parse
+      // `because` as a closed enum, and an unknown one fails the whole answer.
+      return specMovedSince(spec.changedAt, entry.gitHead, entry.at, deployTimes)
+        ? { because: "deployReached" }
+        : { because: "current" };
     case "touched":
       return { because: "deployReached" };
     case "unanswerable":
@@ -50,6 +60,53 @@ export function auditNeed(drift: DriftLedger, key: string, range: RangeLookup): 
       throw new Error(`unhandled freshness: ${String(unreachable)}`);
     }
   }
+}
+
+/**
+ * When each deployed commit reached the environment. A baseline read at that
+ * commit cannot have seen anything committed after it was deployed.
+ */
+export function deployedAt(log: DeployLog): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const entry of log.entries) out.set(entry.sha, entry.at);
+  return out;
+}
+
+/**
+ * Has the spec moved since the baseline was taken?
+ *
+ * A verdict is a claim about a (spec, product) pair, so either side moving
+ * invalidates it. The deploy log covers the product side; this covers the
+ * other one. Without it a spec repaired and merged stays `needsRepair` until
+ * a deploy happens to reach it, and a run that passed against the previous
+ * spec keeps answering `verified` for the new one.
+ *
+ * Compared against when the baseline commit was *deployed*, not when the audit
+ * or run happened: the tree read at that commit predates its deployment, so an
+ * edit after it is definitely not in it. Falls back to the baseline's own
+ * timestamp when the log cannot place the commit.
+ *
+ * One-directional. A later edit time proves the baseline is stale; an earlier
+ * one proves nothing, and this answers false rather than guessing.
+ */
+export function specMovedSince(
+  changedAt: string | undefined,
+  baselineSha: string | null,
+  baselineAt: string,
+  deployTimes: Map<string, string>,
+): string | null {
+  if (!changedAt) return null;
+  const cutoff = (baselineSha && deployTimes.get(baselineSha)) || baselineAt;
+  return isLater(changedAt, cutoff) ? changedAt : null;
+}
+
+/**
+ * Compared as instants, never as strings: a spec's edit time carries its
+ * committer's offset, and `+09:00` sorts after `Z` for an earlier moment.
+ * An unparseable side answers false, the same as a missing one.
+ */
+export function isLater(a: string, b: string): boolean {
+  return Date.parse(a) > Date.parse(b);
 }
 
 /** True for every answer but `current`. */
@@ -71,6 +128,7 @@ export interface AuditNeedInput {
 
 export function computeAuditNeed(input: AuditNeedInput): Record<string, AuditNeed> {
   const range = buildRange(input.log, input.touchIndex);
+  const deployTimes = deployedAt(input.log);
   return Object.fromEntries(
     input.specs.map((spec) => [
       spec.key,
@@ -78,7 +136,7 @@ export function computeAuditNeed(input: AuditNeedInput): Record<string, AuditNee
       // have two audits writing the same ledger entry.
       heldBy(input.locks, spec.key, input.now)
         ? ({ because: "held" } satisfies AuditNeed)
-        : auditNeed(input.drift, spec.key, range),
+        : auditNeed(input.drift, spec, range, deployTimes),
     ]),
   );
 }
