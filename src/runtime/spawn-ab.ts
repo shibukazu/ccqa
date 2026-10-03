@@ -93,6 +93,70 @@ function subcommand(args: readonly string[]): string {
  */
 export function spawnAB(args: string[], opts?: { timeoutMs?: number }): Result {
   const timeoutMs = opts?.timeoutMs ?? PROCESS_HARD_TIMEOUT_MS;
+  const result = spawnABRetrying(args, timeoutMs);
+  if (result.status === 0) return result;
+  const session = args[0] === "--session" ? args.slice(0, 2) : [];
+  return scrollCoveredIntoView(session, args.slice(session.length), result) ? spawnABRetrying(args, timeoutMs) : result;
+}
+
+const COVERED_PATTERN = /Element '(.+?)' is covered by /;
+
+/**
+ * When agent-browser refused `command` because another element (a sticky
+ * footer, a banner) covers the target's click point, scroll the target to the
+ * centre and say whether the command is worth running again. The refusal comes
+ * before any input is dispatched, so running it again cannot act twice.
+ */
+export function scrollCoveredIntoView(
+  session: readonly string[],
+  command: readonly string[],
+  failed: Pick<Result, "stdout" | "stderr">,
+): boolean {
+  const covered = COVERED_PATTERN.exec(`${failed.stdout}\n${failed.stderr}`)?.[1];
+  if (covered === undefined) return false;
+  // `find` names the element by a ref or marker it has already discarded.
+  const scroll = command[0] === "find" ? scrollToFound(command, session) : ["scrollintoview", covered];
+  return scroll !== null && spawnABOnce([...session, ...scroll], PROCESS_HARD_TIMEOUT_MS).status === 0;
+}
+
+/** The `find` forms whose element can be addressed again; the rest stay refused. */
+function scrollToFound(find: readonly string[], session: readonly string[]): string[] | null {
+  const [, by = "", value = ""] = find;
+  switch (by) {
+    case "testid":
+      return ["scrollintoview", `[data-testid=${JSON.stringify(value)}]`];
+    case "first":
+      return scrollToNth(value, "0");
+    case "last":
+      return scrollToNth(value, "els.length - 1");
+    case "nth":
+      return scrollToNth(find[3] ?? "", String(Number(value)));
+    case "role":
+      return scrollToRole(find, session);
+    default:
+      return null;
+  }
+}
+
+function scrollToNth(css: string, index: string): string[] {
+  return ["eval", `{ const els = document.querySelectorAll(${JSON.stringify(css)}); els[${index}]?.scrollIntoView({ block: "center" }); }`];
+}
+
+/** The snapshot's ref for the element `find role` matches: same role, name by `--exact` or case-insensitive substring. */
+function scrollToRole(find: readonly string[], session: readonly string[]): string[] | null {
+  const role = (find[2] ?? "").toLowerCase();
+  const flag = find.indexOf("--name");
+  const name = flag === -1 ? null : find[flag + 1] ?? "";
+  const named = (label: string): boolean =>
+    name === null || (find.includes("--exact") ? label === name : label.toLowerCase().includes(name.toLowerCase()));
+  const snapshot = spawnABOnce([...session, "snapshot", "-i"], PROCESS_HARD_TIMEOUT_MS);
+  for (const [, r, label = "", ref] of snapshot.stdout.matchAll(/^\s*- (\S+)(?: "(.*)")?.*\bref=(e\d+)/gm)) {
+    if (r!.toLowerCase() === role && named(label)) return ["scrollintoview", `@${ref}`];
+  }
+  return null;
+}
+
+function spawnABRetrying(args: string[], timeoutMs: number): Result {
   let result = spawnABOnce(args, timeoutMs);
   let elapsed = 0;
   let attempt = 0;
