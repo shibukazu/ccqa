@@ -77,6 +77,24 @@ describe("reviewEmittedFiles", () => {
     });
   });
 
+  test("an included block's checks are its own; the case's are still read", () => {
+    // The title is wrapped the way a formatter leaves it.
+    const spec = `await test.step(
+  "step: step-01 [sign-in]",
+  async () => {
+    await expect(page.getByText("Welcome back")).toBeVisible();
+  },
+);
+await expect(page.getByText("Manage your items here.")).toBeVisible();`;
+    const found = reviewEmittedFiles({
+      files: new Map([[SPEC, spec]]),
+      caseText: ["Sign in", "The sign-in succeeds", "Open the list"],
+      blockSteps: new Set(["step-01"]),
+      testPath: SPEC,
+    });
+    expect(found.map((f) => [f.rule, f.line])).toEqual([["unasked-assertion", 7]]);
+  });
+
   test("the case's own words are found through the page object that holds them", () => {
     const page = `readonly done = this.page.getByText("The item appears on the list");`;
     expect(review(`await expect(todoList.done).toBeVisible();`, page)).toEqual([]);

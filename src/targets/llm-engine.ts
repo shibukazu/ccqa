@@ -14,7 +14,7 @@ import {
   type SpecCoverageFinding,
   type SpecCoverageReview,
 } from "./verifies-spec.ts";
-import { isExpandedActionStep } from "../spec/expand.ts";
+import { collectIncludedBlockNames, isExpandedActionStep } from "../spec/expand.ts";
 import { EVIDENCE_DIR_ENV } from "../runtime/evidence-constants.ts";
 import {
   buildLlmFixPrompt,
@@ -846,6 +846,11 @@ async function runCheckCommands(
   return null;
 }
 
+function blockStepIds(ctx: GenerateContext): Set<string> {
+  const included = new Set(collectIncludedBlockNames(ctx.spec));
+  return new Set(ctx.steps.filter((s) => included.has(s.source)).map((s) => s.id));
+}
+
 /**
  * The mechanical read of what this attempt wrote, shaped like a failed check
  * so the fix loop carries it the same way.
@@ -873,6 +878,7 @@ async function reviewOfEmitted(
       ...ctx.expectations,
       ...ctx.cleanupExpectations,
     ],
+    blockSteps: blockStepIds(ctx),
     testPath: ctx.testPath,
   });
   if (findings.length === 0) return null;
