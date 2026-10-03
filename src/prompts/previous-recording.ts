@@ -1,5 +1,5 @@
 import { markedAssertArgs, toAgentBrowserArgs, type AbToken } from "../ir/to-agent-browser.ts";
-import { SETUP_STEP_ID, type RecordedAction } from "../ir/types.ts";
+import type { RecordedAction } from "../ir/types.ts";
 import { isCascadeReason } from "../runtime/replay-validate.ts";
 
 /**
@@ -9,17 +9,16 @@ import { isCascadeReason } from "../runtime/replay-validate.ts";
 export function renderPreviousRecording(
   actions: readonly RecordedAction[],
   sessionName: string,
-  currentStepIds: readonly string[],
+  replayable: ReadonlySet<string>,
 ): string {
-  // Commands of a step the case no longer has would be run under whatever now holds its id.
-  const current = new Set([SETUP_STEP_ID, ...currentStepIds]);
   // The validator replays every step even after one breaks, so failures after
-  // the first broken step are mostly the wrong page, not the action.
+  // the first broken step are mostly the wrong page, not the action. Found over
+  // the whole recording: a step left off the map can still be the one that broke.
   const brokenStep = actions.find(failedToReplay)?.stepId;
   const byStep = new Map<string, string[]>();
   for (const action of actions) {
     // The unattributed preamble (cookies clear) is already in the prompt's Start section.
-    if (action.stepId === undefined || !current.has(action.stepId)) continue;
+    if (action.stepId === undefined || !replayable.has(action.stepId)) continue;
     const command = previousCommand(action, sessionName, action.stepId === brokenStep);
     if (command === null) continue;
     const lines = byStep.get(action.stepId) ?? [];
@@ -34,9 +33,9 @@ export function renderPreviousRecording(
 ## Previous recording
 
 This case was recorded before. Below is what that recording did, step by step,
-as the commands that perform it. The application may have moved since, and the
-steps above may have been edited: **the steps above are the contract, this is a
-map.**
+as the commands that perform it, for the steps whose text has not changed since.
+The application may have moved since: **the steps above are the contract, this
+is a map.**
 
 For a step listed here, this replaces the snapshot-first routine of the
 Execution Workflow:
@@ -50,19 +49,16 @@ Execution Workflow:
 3. When it reports a failure, the commands before it are recorded and the
    page is where they left it: finish that step with the Execution Workflow —
    snapshot, find what works, record it — without re-running what was
-   recorded. A step whose instruction or \`Expected\` asks for something these
-   commands do not do skips \`replay_step\` and uses the Execution Workflow
-   from the start. The next step goes back to \`replay_step\`.
-4. A step you record yourself takes its assertions from its current
+   recorded. The next step goes back to \`replay_step\`.
+4. A step you finish yourself takes its assertions from its current
    \`Expected\`: keep a previous check only while it verifies what
-   \`Expected\` says now. A step whose \`Expected\` has changed is one to
-   record yourself, since \`replay_step\` records the previous checks as
-   they are.
+   \`Expected\` says now.
 5. A command marked \`# did not replay last time\` is where the previous
    recording's own validation found the route broken: expect that step to
    need the Execution Workflow, and do not keep a form that only half works.
 
-A step with no section here is recorded the usual way.
+A step with no section here — new, or edited since that recording — is
+recorded the usual way.
 
 ${blocks.join("\n\n")}
 `;

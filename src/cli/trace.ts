@@ -10,6 +10,7 @@ import {
   tryGetRecording,
 } from "../store/index.ts";
 import { describeStepAction, diffRoutes, renderRouteDiff } from "../ir/route-diff.ts";
+import { stepDigests, unchangedSteps } from "../ir/step-digests.ts";
 import { closeSession } from "../diagnose/snapshot.ts";
 import { RunUsageError } from "../run/errors.ts";
 import { loadStateIntoSession } from "../runtime/session-state.ts";
@@ -37,7 +38,7 @@ import { formatUnstableDrop, scrubUnstableActions } from "../runtime/literal-scr
 import { languageDirective } from "../prompts/language.ts";
 import { parseAbActionLine, promoteMarkedAssert } from "../ir/from-agent-browser.ts";
 import { describeLocator, locatorToSelector } from "../ir/to-agent-browser.ts";
-import type { Locator, RecordedAction } from "../ir/types.ts";
+import { SETUP_STEP_ID, type Locator, type RecordedAction } from "../ir/types.ts";
 import type { CaseRef, Recording } from "../store/index.ts";
 import type { TestCase } from "../cases/case.ts";
 import type { ParsedStatusLine } from "../types.ts";
@@ -226,11 +227,21 @@ export async function runTrace(
   // what this re-recording changed once the new one is saved.
   const caseRef = testCase.ref;
   const previous = await tryGetRecording(caseRef);
+  const digests = stepDigests(testCase);
+  const replayable = unchangedSteps(previous?.stepDigests, digests);
   const previousActions = previous ? [...previous.actions, ...(previous.cleanup ?? [])] : [];
-  if (previousActions.length > 0) {
-    log.meta("previous", opts.freshIr ? "ignored (--fresh-ir)" : `${previousActions.length} action(s) offered as a map`);
+  const replayableActions = previousActions.filter((a) => a.stepId !== undefined && replayable.has(a.stepId));
+  if (previous) {
+    log.meta(
+      "previous",
+      opts.freshIr
+        ? "ignored (--fresh-ir)"
+        : previous.stepDigests
+          ? `${[...replayable].filter((id) => id !== SETUP_STEP_ID).length} unchanged step(s) offered as a map`
+          : "not offered (recorded before step digests)",
+    );
   }
-  const offersMap = !opts.freshIr && previousActions.length > 0;
+  const offersMap = !opts.freshIr && replayableActions.length > 0;
 
   const baseSystemPrompt = buildTraceSystemPrompt({
     title: testCase.title,
@@ -245,7 +256,7 @@ export async function runTrace(
       : {}),
     ...(testCase.context.length > 0 ? { context: testCase.context } : {}),
     ...(opts.instruction ? { instruction: opts.instruction } : {}),
-    ...(offersMap ? { previousRecording: previousActions } : {}),
+    ...(offersMap ? { previousRecording: { actions: previousActions, replayable } } : {}),
   });
   const promptBundle = await loadPromptBundle(opts.hubContext ?? null, "record", opts.cwd ?? process.cwd());
   if (promptBundle !== null) log.meta("prompt", promptBundle.loaded.join(" + "));
@@ -324,7 +335,7 @@ export async function runTrace(
 
   const invokeBase = agentBrowserInvokeBase({ sessionName, runId: sessionName });
   const traceTools = buildTraceTools({
-    previous: offersMap ? previousActions : [],
+    previous: offersMap ? replayableActions : [],
     sessionName,
     env: invokeBase.env ?? {},
     envScrubMap,
@@ -444,7 +455,7 @@ export async function runTrace(
   const routeActions = validatedActions.filter((a) => !cleanupIds.has(a.stepId ?? ""));
   const cleanupActions = validatedActions.filter((a) => cleanupIds.has(a.stepId ?? ""));
   if (overallStatus === "passed") {
-    const saved = await saveRecording(caseRef, routeActions, cleanupActions);
+    const saved = await saveRecording(caseRef, routeActions, cleanupActions, digests);
     recordingPath = saved.path;
     if (previous) {
       await reportRouteDiff(caseRef, previous, saved.recording, steps);

@@ -22,7 +22,7 @@ const COMMAND_TIMEOUT_MS = 120_000;
 const OUTPUT_CAP = 6_000;
 
 export interface TraceToolsInput {
-  /** The recording being replaced; `replay_step` is offered only when there is one. */
+  /** The replaced recording's steps whose text is unchanged; `replay_step` runs only these. */
   previous: readonly RecordedAction[];
   sessionName: string;
   /** What the recorder's own Bash sees, so a batch runs against the same session and values. */
@@ -127,7 +127,7 @@ function replayStep(step: string, input: TraceToolsInput): string {
     .filter((a) => a.stepId === step && a.action !== "snapshot")
     .map(({ replayUnstable: _u, replayReason: _r, ...a }) => a);
   if (actions.length === 0) {
-    return `No previous commands for ${step}. Record it with the Execution Workflow.`;
+    return `No previous commands for ${step}: it is new or its text changed since the last recording. Record it with the Execution Workflow.`;
   }
   const { passed, unchecked, failed } = replayUntilFailure(actions, {
     sessionName: input.sessionName,

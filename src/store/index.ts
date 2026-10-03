@@ -262,6 +262,11 @@ export interface Recording {
    */
   cleanup?: RecordedAction[];
   /**
+   * Each step's text as it read when this route was recorded, by step id (see
+   * `stepDigests`). A re-record replays only the steps whose text still matches.
+   */
+  stepDigests?: Record<string, string>;
+  /**
    * What the last `ccqa generate` wrote from this route. The one thing that
    * can tell a hand edit from a regeneration: `ccqa generate` re-stamps it, so
    * a test it produced still matches, and only someone else's edit does not.
@@ -323,13 +328,18 @@ export async function stampGeneratedTest(
   return writeRecording(ref, found.recording);
 }
 
-function buildRecording(actions: RecordedAction[], cleanup: RecordedAction[] = []): Recording {
+function buildRecording(
+  actions: RecordedAction[],
+  cleanup: RecordedAction[] = [],
+  stepDigests?: Record<string, string>,
+): Recording {
   const origin = actions.find((a) => a.action === "navigate")?.value;
   return {
     recordedAt: new Date().toISOString(),
     ...(origin ? { origin } : {}),
     actions,
     ...(cleanup.length > 0 ? { cleanup } : {}),
+    ...(stepDigests ? { stepDigests } : {}),
   };
 }
 
@@ -358,12 +368,13 @@ export async function saveRecording(
   ref: CaseRef,
   actions: RecordedAction[],
   cleanup: RecordedAction[] = [],
+  stepDigests?: Record<string, string>,
 ): Promise<{ path: string; recording: Recording }> {
   // The case's own directory holds the route diff and the evidence this
   // recording is about to be described by, whether or not the recording
   // itself lands there.
   await mkdir(ref.dir, { recursive: true });
-  const recording = buildRecording(actions, cleanup);
+  const recording = buildRecording(actions, cleanup, stepDigests);
   const recordingPath = await writeRecording(ref, recording);
   await Promise.all(
     // A successful save also removes a leftover failed-trace file: it
