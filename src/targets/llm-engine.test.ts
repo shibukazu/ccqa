@@ -507,16 +507,15 @@ describe("generateWithLlmEngine", () => {
     expect(result.review).toEqual(undecided);
   });
 
-  // A reviewer that errored said nothing about the files, and a rewrite on that
-  // round's word alone has gutted a test that ran green.
-  it("does not rewrite on the word of a round whose reviewer failed", async () => {
+  // The mechanical read needs no model, so a reviewer's failure does not void it.
+  it("rewrites on the mechanical read, not the reviewer, in a round whose reviewer failed", async () => {
     await makeProject();
     const named = JSON.stringify({
       files: [{ path: "e2e/todos/add-item.spec.ts", contents: "const ccqaItem = 1;\n", kind: "test" }],
       summary: "one spec generated",
     });
-    const { invoke, prompts } = fakeInvoke([named]);
-    const { reading } = fakeReading([{ findings: [], complete: false, reviewerFailed: true, warnings: [] }]);
+    const { invoke, prompts } = fakeInvoke([named, okOutput()]);
+    const { reading } = fakeReading([{ ...breaksARule, reviewerFailed: true }, clean]);
     const result = await generateWithLlmEngine({
       ctx: makeContext({ targetConfig: TargetConfigSchema.parse({ runCommand: "exit 0" }) }),
       target: "playwright",
@@ -526,7 +525,9 @@ describe("generateWithLlmEngine", () => {
       reading,
     });
     expect(result.passed).toBe(true);
-    expect(prompts).toHaveLength(1);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("ccqaItem");
+    expect(prompts[1]).not.toContain("Locators are declared before methods.");
   });
 
   // The fix pass may decline a file it is not allowed to write, and the next

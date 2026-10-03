@@ -612,7 +612,7 @@ async function runVerificationLoop(
     if (passing.attempt !== attempt) {
       await restoreFiles(state, passing.files, original);
       review = passing.review;
-      log.warn("the last rewrite did not pass — restored the last version that did");
+      log.warn("the final round did not pass — restored the files of the last round that did");
     }
     log.warn(FINDINGS_LEFT_OPEN);
     return finish(true);
@@ -634,30 +634,34 @@ async function runVerificationLoop(
       // project's rules) and whether it runs, all at once. Every round runs:
       // a rewrite answering a finding can break the test, and only a run says
       // so. Alongside the reading, the run costs the round no wall-clock time.
-      const [reading, mechanical, run] = await Promise.all([
+      const questions = [
         readingOfEmitted(p, state, askReviewer && !reviewerGone),
         reviewOfEmitted(p.ctx, state, p.writeRoots),
         verifyRun(p, state, runCommand, attempt, captures),
-      ]);
+      ] as const;
+      // Not raced: a run left going after another threw would keep its
+      // pictures for a generate that failed.
+      const [reading, mechanical, run] = await Promise.all(questions).catch(async (err: unknown) => {
+        await Promise.allSettled(questions);
+        await clearCaseRun(p.ctx.ref);
+        throw err;
+      });
       review = reading;
       if (run.exitCode === 0) passing = { files: new Map(state), review, attempt };
-      // A reviewer that errored said nothing about these files, and a rewrite
-      // on that round's word alone is what once gutted a passing test.
-      let reads: ReturnType<typeof allReadings> = null;
-      if (review?.reviewerFailed) {
-        reviewerGone = true;
-      } else {
-        const unchecked = uncheckedSteps(review, spent);
-        const violations = guideViolations(review, spent);
-        reads = allReadings(mechanical, unchecked, violations);
-        asked = [...(unchecked?.asked ?? []), ...(violations?.asked ?? [])];
-      }
+      // A reviewer that errored said nothing about these files, so nothing it
+      // returned drives a rewrite. The mechanical read needs no model and counts.
+      const heard = review?.reviewerFailed ? undefined : review;
+      if (review && !heard) reviewerGone = true;
+      const unchecked = uncheckedSteps(heard, spent);
+      const violations = guideViolations(heard, spent);
+      const reads = allReadings(mechanical, unchecked, violations);
+      asked = [...(unchecked?.asked ?? []), ...(violations?.asked ?? [])];
       if (run.exitCode !== 0) {
         failing = reads === null ? run : (allReadings(run, reads) ?? run);
       } else if (reads !== null && attempt < maxRetries) {
         failing = reads;
       } else {
-        if ((reads ?? mechanical) !== null) log.warn(FINDINGS_LEFT_OPEN);
+        if (reads !== null) log.warn(FINDINGS_LEFT_OPEN);
         return finish(true);
       }
     }
@@ -1119,7 +1123,8 @@ function allReadings(
   const found = reports.filter((r) => r !== null);
   if (found.length === 0) return null;
   return {
-    exitCode: 1,
+    // The first report's: a failed run, when there is one, keeps its own code.
+    exitCode: found[0]!.exitCode,
     command: found.map((r) => r.command).join(" + "),
     output: found.map((r) => `${r.command}\n\n${r.output}`).join("\n\n"),
   };
