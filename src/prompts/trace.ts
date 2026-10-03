@@ -46,7 +46,7 @@ export interface TraceSystemPromptInput {
    */
   instruction?: string;
   /** The recording this trace replaces, offered as a map of the route (see `renderPreviousRecording`). */
-  previousRecording?: readonly RecordedAction[];
+  previousRecording?: { actions: readonly RecordedAction[]; replayable: ReadonlySet<string> };
 }
 
 /**
@@ -92,11 +92,9 @@ ${input.instruction}
     renderCleanupExpectations(input.cleanupExpectations ?? []);
   const contextText = renderContext(input.context ?? []);
   const conventionsText = renderConventions(input.conventions ?? []);
-  const previousText = renderPreviousRecording(
-    input.previousRecording ?? [],
-    sessionName,
-    input.steps.map((s) => s.id),
-  );
+  const previousText = input.previousRecording
+    ? renderPreviousRecording(input.previousRecording.actions, sessionName, input.previousRecording.replayable)
+    : "";
 
   return `You are an expert QA engineer executing a browser E2E test. Execute each step precisely and record every browser action as a structured log line.
 

@@ -46,6 +46,15 @@ runner, records those that pass, and stops at the first that fails. The
 recorder decides which steps to hand it and finishes a failed one itself, so
 a step that still works costs one turn rather than one per command.
 
+Which steps are on the map is ccqa's call, not the recorder's. `ir.json`
+keeps a digest of each step's instruction and `expected` as recorded, with the
+case-level checks in every step's since any step may carry them (setup's
+stands for the case's context), and only steps whose digest still matches are
+shown or accepted by `replay_step`. An edited, added or renumbered step is
+recorded from scratch: left to the recorder, a reordered case replayed an old
+step's commands under a new step's id. A recording without digests offers no
+steps.
+
 Two changes apply to every recording, with or without a map. A
 `run_commands` tool runs a batch of commands the recorder wrote, through the
 same refusals and the same recording path as its Bash calls, and stops at the

@@ -22,7 +22,7 @@ describe("renderPreviousRecording", () => {
         { action: "click", locator: css("#gone"), stepId: "step-99" },
       ],
       "S",
-      ["step-01", "step-02"],
+      new Set(["step-01", "step-02"]),
     );
     expect(out).toContain('CCQA_STEP=step-01 agent-browser --session S open "${APP_URL}/login"');
     expect(out).toContain(`CCQA_STEP=step-01 CCQA_SECRET=1 agent-browser --session S fill "[type='password']" "\${PASSWORD}"`);
@@ -31,7 +31,7 @@ describe("renderPreviousRecording", () => {
     expect(out).not.toContain("cookies clear");
     expect(out).not.toContain("--load");
     expect(out).not.toContain("snapshot\n");
-    // A selector wait blocks the daemon; a step the case no longer has is not shown.
+    // A selector wait blocks the daemon; a step not offered for replay is not shown.
     expect(out).not.toContain(".panel");
     expect(out).not.toContain("#gone");
     expect(out).toContain('wait --text "Total \\$5"');
@@ -54,21 +54,24 @@ describe("renderPreviousRecording", () => {
         failed("step-03", "#later"),
       ],
       "S",
-      ["step-01", "step-02", "step-03"],
+      new Set(["step-01", "step-02", "step-03"]),
     );
     const marked = out.split("\n").filter((l) => l.includes("# did not replay last time") && l.startsWith("CCQA_STEP"));
     expect(marked).toEqual([expect.stringContaining('"#moved"')]);
   });
 
   it("is empty with nothing to show, and the trace prompt then has no such section", () => {
-    expect(renderPreviousRecording([{ action: "cookies_clear" }], "S", [])).toBe("");
+    expect(renderPreviousRecording([{ action: "cookies_clear" }], "S", new Set())).toBe("");
     const steps = [{ id: "step-01", source: "spec", instruction: "open it", expected: "" }];
     expect(buildTraceSystemPrompt({ title: "t", steps })).not.toContain("## Previous recording");
     expect(
       buildTraceSystemPrompt({
         title: "t",
         steps,
-        previousRecording: [{ action: "navigate", value: "/", stepId: "step-01" }],
+        previousRecording: {
+          actions: [{ action: "navigate", value: "/", stepId: "step-01" }],
+          replayable: new Set(["step-01"]),
+        },
       }),
     ).toContain("## Previous recording");
   });
