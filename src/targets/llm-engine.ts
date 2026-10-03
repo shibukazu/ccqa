@@ -306,6 +306,14 @@ function tail(output: string): string {
   return trimmed.length <= OUTPUT_TAIL_CHARS ? trimmed : trimmed.slice(-OUTPUT_TAIL_CHARS);
 }
 
+const LOGGED_TAIL_LINES = 40;
+
+/** The end of an output tail that is already scrubbed, one log line per line. */
+function logOutputTail(scrubbed: string, write: (message: string) => void): void {
+  if (scrubbed === "") return;
+  for (const line of scrubbed.split("\n").slice(-LOGGED_TAIL_LINES)) write(`  | ${line}`);
+}
+
 // --- engine entry points ---
 
 export interface LlmEngineRequest {
@@ -630,22 +638,25 @@ async function runVerificationLoop(
         failing = run;
       }
     }
+    // The command's own output can echo a value the test resolved (a URL,
+    // an account). It reaches the model and the log as prose, which is how
+    // the leak above happened, so it is symbolised before it goes.
+    const outputTail = scrubEnvValues(tail(failing.output), outputScrub);
     if (attempt >= maxRetries) {
       log.warn(
         `verification still failing after ${maxRetries} fix attempt(s) — generated files kept`,
       );
+      logOutputTail(outputTail, log.warn);
       await clearCaseRun(p.ctx.ref);
       return finish(false);
     }
 
     log.fix(`verification failed (exit ${failing.exitCode}) — requesting a fix (${attempt + 1}/${maxRetries})`);
+    logOutputTail(outputTail, log.fix);
     const fixPrompt = buildLlmFixPrompt({
       targetId: p.target,
       command: failing.command,
-      // The command's own output can echo a value the test resolved (a URL,
-      // an account). It reaches the model as prose, which is how the leak
-      // above happened, so it is symbolised before it goes.
-      outputTail: scrubEnvValues(tail(failing.output), outputScrub),
+      outputTail,
       files: [...state.entries()].map(([path, f]) => ({
         path,
         contents: f.contents,

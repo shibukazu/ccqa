@@ -26,6 +26,7 @@ import { TargetConfigSchema } from "../config/project-config.ts";
 import { TestSpecSchema } from "../spec/yaml-schema.ts";
 import { forgetLoadedEnv, rememberLoadedEnv } from "../runtime/profile-env.ts";
 import type { GenerateContext } from "./types.ts";
+import * as log from "../cli/logger.ts";
 
 let cwd: string;
 
@@ -902,6 +903,32 @@ describe("generated-code leak gate", () => {
     expect(prompts[1]).toContain("Previous attempt rejected");
     expect(prompts[1]).toContain(LEAK_VAR);
     for (const p of prompts) expect(p).not.toContain(LEAK_VALUE);
+  });
+
+  it("logs each failed verification's output tail with the loaded value symbolised", async () => {
+    await makeProject();
+    process.env[LEAK_VAR] = LEAK_VALUE;
+    rememberLoadedEnv([LEAK_VAR]);
+    const { invoke } = fakeInvoke([okOutput()]);
+    let logged = "";
+    const result = await log.withSink({ write: (text) => (logged += text) }, () =>
+      generateWithLlmEngine({
+        ctx: makeContext({
+          targetConfig: TargetConfigSchema.parse({ runCommand: `echo "token=$${LEAK_VAR}"; exit 1` }),
+        }),
+        target: "playwright",
+        steps: [],
+        taskInstructions: "Generate the test.",
+        invoke,
+      }),
+    );
+    expect(result.passed).toBe(false);
+    // The command's own output is teed raw as it runs; only the tail lines are ours.
+    const tails = logged.split("\n").filter((l) => l.includes("  | "));
+    expect(tails).toEqual([
+      `[fix]   | token=\${${LEAK_VAR}}`,
+      `[warn]   | token=\${${LEAK_VAR}}`,
+    ]);
   });
 
   it("passes normally when the reply never repeats the loaded value", async () => {
