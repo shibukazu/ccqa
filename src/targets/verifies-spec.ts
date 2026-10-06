@@ -48,8 +48,12 @@ export type GuideViolation = z.infer<typeof ViolationSchema>;
  */
 const MAX_REVIEW_TURNS = 80;
 
-/** A wedged call, not a slow one: a review still silent after this is stuck. */
-const REVIEW_TIMEOUT_MS = 10 * 60_000;
+/**
+ * A wedged call, not a slow one. A review of a real suite reads the test, its
+ * page objects and many of the suite's files to count conventions, which runs
+ * past ten minutes; one that is still going after twenty is stuck.
+ */
+const REVIEW_TIMEOUT_MS = 20 * 60_000;
 
 /** Read-only: a reviewer reads the repository and changes nothing in it. */
 const REVIEW_TOOLS = ["Read", "Grep", "Glob"];
