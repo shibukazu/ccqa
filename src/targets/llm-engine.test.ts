@@ -15,6 +15,7 @@ import {
   finalizePreparedFiles,
   generateWithLlmEngine,
   leakMessage,
+  kindByPath,
   parseLlmGenOutput,
   substituteRunCommandFiles,
   validateOutputPath,
@@ -178,19 +179,18 @@ describe("parseLlmGenOutput", () => {
     expect(out.summary).toBe("environment issue");
   });
 
-  it("coerces an unknown or missing kind to \"test\" with a warning", () => {
+  // A model may label every file "test", page objects included. The path
+  // already says which file is the test, so the label decides nothing.
+  it("takes the test from the configured path, whatever the reply labelled", () => {
     const raw = JSON.stringify({
       files: [
-        { path: "runbooks/a.yaml", contents: "desc: x\n", kind: "runbook" },
-        { path: "runbooks/b.yaml", contents: "desc: y\n" },
-        { path: "pages/p.ts", contents: "// helper\n", kind: "support" },
+        { path: "e2e/add-item.spec.ts", contents: "// test\n", kind: "runbook" },
+        { path: "e2e/pages/list.ts", contents: "// helper\n", kind: "test" },
       ],
       summary: "s",
     });
-    const out = parseLlmGenOutput(raw);
-    expect(out.files.map((f) => f.kind)).toEqual(["test", "test", "support"]);
-    expect(out.kindWarnings).toHaveLength(1);
-    expect(out.kindWarnings[0]).toMatch(/runbook/);
+    const out = kindByPath(parseLlmGenOutput(raw), { cwd: "/p", testPath: "e2e/add-item.spec.ts", writeRootsAbs: [] });
+    expect(out.files.map((f) => f.kind)).toEqual(["test", "support"]);
   });
 });
 
@@ -328,7 +328,7 @@ describe("generateWithLlmEngine", () => {
         taskInstructions: "Generate the test.",
         invoke,
       }),
-    ).rejects.toThrow(/no "kind": "test" file/);
+    ).rejects.toThrow(/the reply has no file there/);
   });
 
   it("rejects a test-kind file written anywhere other than the configured testPath", async () => {

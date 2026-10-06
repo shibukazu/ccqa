@@ -88,13 +88,8 @@ export type Reading = (
 const LlmFileSchema = z.object({
   path: z.string().min(1),
   contents: z.string(),
-  // `kind` is advisory metadata: only "support" changes behavior (support
-  // files are excluded from the runCommand {files} list). Models sometimes
-  // label the test with a free-form word ("runbook", "spec", ...); failing a
-  // multi-minute generation over that label is not worth it, so anything
-  // other than "support" is coerced to "test" by `parseLlmGenOutput` and
-  // surfaced as a warning instead.
-  kind: z.string().default("test"),
+  // Ignored: `kindByPath` decides from the path.
+  kind: z.string().optional(),
 });
 
 export interface LlmGeneratedFile {
@@ -114,8 +109,6 @@ const LlmOutputSchema = z.object({
 export interface LlmGenOutput {
   files: LlmGeneratedFile[];
   summary: string;
-  /** One entry per file whose non-enum `kind` label was coerced to "test". */
-  kindWarnings: string[];
 }
 
 /**
@@ -149,13 +142,29 @@ export function parseLlmGenOutput(raw: string): LlmGenOutput {
       `reply JSON does not match {files:[{path,contents,kind}],summary}: ${issues.join("; ")}`,
     );
   }
-  const kindWarnings: string[] = [];
-  const files: LlmGeneratedFile[] = res.data.files.map((f) => {
-    if (f.kind === "test" || f.kind === "support") return { ...f, kind: f.kind };
-    kindWarnings.push(`file "${f.path}": unknown kind "${f.kind}" coerced to "test"`);
-    return { ...f, kind: "test" as const };
-  });
-  return { files, summary: res.data.summary, kindWarnings };
+  const files: LlmGeneratedFile[] = res.data.files.map((f) => ({
+    path: f.path,
+    contents: f.contents,
+    kind: f.kind === "support" ? "support" : "test",
+  }));
+  return { files, summary: res.data.summary };
+}
+
+/**
+ * The file at the configured test path is the test and every other file is
+ * support — whatever the reply labelled them. The path already says which one
+ * a file is, and a model that labels a page object "test" would otherwise fail
+ * the whole generation over a word.
+ */
+export function kindByPath(output: LlmGenOutput, policy: OutputPathPolicy): LlmGenOutput {
+  const testAbs = resolve(policy.cwd, policy.testPath);
+  return {
+    ...output,
+    files: output.files.map((f) => ({
+      ...f,
+      kind: resolve(policy.cwd, f.path) === testAbs ? "test" : "support",
+    })),
+  };
 }
 
 export interface OutputPathPolicy {
@@ -416,8 +425,6 @@ export async function generateWithLlmEngine(req: LlmEngineRequest): Promise<Gene
       }),
     "run",
   );
-
-  warnings.push(...output.kindWarnings);
 
   return finalizeAndVerify({
     ctx,
@@ -1194,8 +1201,7 @@ async function invokeForFiles(p: InvokeForFilesParams): Promise<LlmGenOutput> {
       () => {},
     );
     if (isError) throw new Error(`Claude invocation failed: ${tail(result)}`);
-    const output = parseLlmGenOutput(result);
-    for (const w of output.kindWarnings) log.warn(w);
+    const output = kindByPath(parseLlmGenOutput(result), p.policy);
     const errors = validateOutput(output, p);
     if (errors.length > 0) throw new Error(errors.join("; "));
     return output;
@@ -1248,13 +1254,7 @@ function validateOutput(output: LlmGenOutput, p: InvokeForFilesParams): string[]
   }
   const tests = output.files.filter((f) => f.kind === "test");
   if (p.requireTestFile && tests.length === 0) {
-    errors.push('output contains no "kind": "test" file');
-  }
-  // Two test files would mean one of them is not the spec's test — and the
-  // path check above already fails for whichever one is not at `testPath`, so
-  // this only makes the reason legible in the retry note.
-  if (tests.length > 1) {
-    errors.push(`output contains ${tests.length} "kind": "test" files; a spec has exactly one`);
+    errors.push(`the test file must be written to ${p.policy.testPath}; the reply has no file there`);
   }
   return errors;
 }
