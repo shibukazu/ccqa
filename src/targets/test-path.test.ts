@@ -4,8 +4,18 @@ import {
   recordingPathTemplate,
   resolveCaseRecordingPath,
   resolveTestPath,
+  testPathRoot,
   validateTestPathTemplate,
 } from "./test-path.ts";
+
+describe("testPathRoot", () => {
+  it("is the directory above the first placeholder", () => {
+    expect(testPathRoot("e2e/specs/{case}.spec.ts")).toBe("e2e/specs");
+    expect(testPathRoot("e2e/{feature}/{spec}.spec.ts")).toBe("e2e");
+    expect(testPathRoot("tests/case-{case}.spec.ts")).toBe("tests");
+    expect(testPathRoot("{case}.spec.ts")).toBe("");
+  });
+});
 
 describe("expandPathTemplate", () => {
   it("fills the placeholders it is given", () => {

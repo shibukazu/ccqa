@@ -74,6 +74,15 @@ export function validateTestPathTemplate(template: string): string | null {
   return null;
 }
 
+/**
+ * The directory every test the template names sits under: its path up to the
+ * first placeholder's directory. Empty when the template opens with one.
+ */
+export function testPathRoot(template: string): string {
+  const head = template.split("{")[0]!;
+  return head.slice(0, head.lastIndexOf("/") + 1).replace(/\/$/, "");
+}
+
 /** What a recording beside its test is called: whose file it is, and what it is. */
 const RECORDING_EXTENSION = ".ccqa.ir.json";
 

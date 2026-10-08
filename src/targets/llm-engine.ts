@@ -31,6 +31,7 @@ import {
 } from "./resources.ts";
 import { printUnifiedDiff, prompt } from "../cli/draft.ts";
 import { substituteRunCommandFiles } from "./run-command-runner.ts";
+import { testPathRoot } from "./test-path.ts";
 import { amendForTrace, captureStepEvidence } from "./playwright/trace-capture.ts";
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { ARTIFACTS_DIR_ENV, substituteArtifactsDir } from "./run-artifacts.ts";
@@ -1092,8 +1093,11 @@ async function identifiersInProject(
       .map((m) => m[1]!);
     owners.set(rel, names);
   }
+  // Every test the project's template places, not only this case's directory:
+  // a page object shared by cases in two directories is used by both.
+  const testsRoot = ctx.targetConfig.testPath ? testPathRoot(ctx.targetConfig.testPath) : "";
   const roots = new Set(
-    [...writeRoots, ...ctx.resources.map((r) => ("path" in r ? r.path : "")), dirname(ctx.testPath)]
+    [...writeRoots, ...ctx.resources.map((r) => ("path" in r ? r.path : "")), dirname(ctx.testPath), testsRoot]
       .filter((r) => r.length > 0)
       .map((r) => resolve(ctx.cwd, r)),
   );
