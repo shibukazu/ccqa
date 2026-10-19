@@ -55,7 +55,10 @@ mode under `--report-to-hub` — so ambient hub credentials alone cannot let a
 stray local run replace the project's measured edges with its own partial
 tree. And a run whose application half never reported records nothing: its
 rows hold only the browser's reach, and merging them would shadow a fuller
-earlier measurement for good.
+earlier measurement for good. The browser half is held to the same rule: a
+run for which no stored source map answered, as when the environment serves
+a newer build than the deploy the hub recorded, has its browser files
+missing and records nothing either.
 
 With edges durable, the two compensating mechanisms fall away, and the
 absent-edge conflation is split into verdicts that state what is actually

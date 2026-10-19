@@ -1133,15 +1133,16 @@ export async function executeRun(
   // instead — otherwise an empty measurement is invisible: no ledger entry
   // lands and the spec keeps selecting as needed with nothing saying why.
   let streamedEdges: CoverageEdgesUpsert["specs"] = {};
+  let browserUnresolved = false;
   if (coverage && !coverage.streamsToHub) {
-    reportCoverageHealth(coverage, [...externalRows, ...live.reportResults], storedMaps);
+    browserUnresolved = reportCoverageHealth(coverage, [...externalRows, ...live.reportResults], storedMaps);
   } else if (coverage && hubCtx != null) {
     streamedEdges = await reportStreamedCoverageHealth(coverage, hubCtx);
     // Ungated here: the streamed resolve reports one file set per spec with
     // both halves already merged, so there is no frontend-only count to ask
     // whether the browser resolved anything. The warning gates itself on
     // having asked and been answered for nothing, which is the same question.
-    storedMaps?.warnIfNothingAnswered();
+    browserUnresolved = storedMaps?.warnIfNothingAnswered() ?? false;
   }
 
   let overallExitCode: 0 | 1 = det.exitCode !== 0 ? 1 : 0;
@@ -1217,10 +1218,11 @@ export async function executeRun(
     // let a stray local run replace the project's measured edges. And a run
     // whose application half never reported records nothing: its rows hold
     // only the browser's reach, and now that entries never expire, merging
-    // them would shadow a fuller earlier measurement for good.
+    // them would shadow a fuller earlier measurement for good. The same holds
+    // for a run whose browser half no stored map answered for.
     // Passing specs only: a spec that failed reached a prefix of its route,
     // and stored as its reach that clears it against all the rest.
-    if (coverage && hubCtx != null) {
+    if (coverage && hubCtx != null && !browserUnresolved) {
       if (coverage.streamsToHub) {
         const passed = new Set(
           report.results
@@ -1385,8 +1387,9 @@ export interface StoredSourceMaps {
    * A store that answered for nothing reads as a build that pushed no maps —
    * but the commit came from the hub's deploy log, so it is equally what a log
    * lagging behind the environment looks like. Naming the commit tells them apart.
+   * True when it warned: the run's reach then lacks its browser half.
    */
-  warnIfNothingAnswered(): void;
+  warnIfNothingAnswered(): boolean;
 }
 
 /**
@@ -1406,12 +1409,14 @@ export function createStoredSourceMaps(hubCtx: HubContext, deployedSha: string):
     },
     warnIfNothingAnswered() {
       const answered = [...seen.values()].some((map) => map !== undefined);
-      if (seen.size === 0 || answered) return;
+      if (seen.size === 0 || answered) return false;
       log.warn(
         `coverage: no stored source map answered for any of the ${seen.size} script(s) this run ` +
           `asked about, under commit ${deployedSha.slice(0, 12)}. Either that deploy pushed ` +
-          "none, or the hub's deploy log names a commit the environment is no longer serving",
+          "none, or the hub's deploy log names a commit the environment is no longer serving. " +
+          "The run's reach is kept off the coverage-edge ledger",
       );
+      return true;
     },
   };
 }
@@ -1564,12 +1569,15 @@ export function noFrontendResolved(rows: readonly ReportSpecResult[]): boolean {
   return rows.every((row) => (row.coverage?.frontendFiles ?? 0) === 0);
 }
 
-/** Everything the measurement could not place; silence here reads as "never reached". */
+/**
+ * Everything the measurement could not place; silence here reads as "never reached".
+ * Returns whether the browser half resolved nothing for want of a stored map.
+ */
 function reportCoverageHealth(
   coverage: CoverageSession,
   rows: readonly ReportSpecResult[],
   storedMaps: StoredSourceMaps | undefined,
-): void {
+): boolean {
   if (!coverage.heardFromApplication()) {
     log.warn(
       "no instrumented application process reported — only the browser half was measured. The " +
@@ -1632,7 +1640,7 @@ function reportCoverageHealth(
   }
   // Only when the browser resolved nothing at all: a run that read its maps
   // from the served copies has no gap for the stored ones to fill.
-  if (noFrontendResolved(rows)) storedMaps?.warnIfNothingAnswered();
+  return noFrontendResolved(rows) && (storedMaps?.warnIfNothingAnswered() ?? false);
 }
 
 export function buildLiveRunSummary(results: readonly ReportSpecResult[]): string {
