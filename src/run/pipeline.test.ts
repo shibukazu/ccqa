@@ -222,7 +222,8 @@ describe("stored source maps", () => {
       // asks the hub once per asset however many specs walk the same script.
       expect(await maps.read("a.js.map")).toBeUndefined();
       expect(await maps.read("b.js.map")).toBeUndefined();
-      maps.warnIfNothingAnswered();
+      // True keeps the run's reach off the ledger: it lacks the browser half.
+      expect(maps.warnIfNothingAnswered()).toBe(true);
     });
     expect(asked).toEqual(["a.js.map", "b.js.map"]);
     expect(output).toContain("2 script(s)");
@@ -237,9 +238,14 @@ describe("stored source maps", () => {
     const output = await capture(async () => {
       await maps.read("a.js.map");
       await maps.read("b.js.map");
-      maps.warnIfNothingAnswered();
+      expect(maps.warnIfNothingAnswered()).toBe(false);
     });
     expect(output).toBe("");
+  });
+
+  test("a run that asked about no script still merges", () => {
+    const maps = createStoredSourceMaps(hubCtx(async () => null), "abc");
+    expect(maps.warnIfNothingAnswered()).toBe(false);
   });
 });
 
