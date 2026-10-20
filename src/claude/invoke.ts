@@ -186,6 +186,9 @@ export function buildInvocationEnv(
   // Auto memory is the operator's private notebook for their own sessions;
   // `settingSources: []` does not keep Claude Code from loading its index.
   merged["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1";
+  // A one-shot run waits for background tasks after its final result, so one
+  // left running holds the invocation open until it ends or the time limit hits.
+  merged["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] = "1";
   return merged;
 }
 

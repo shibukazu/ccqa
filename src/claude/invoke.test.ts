@@ -785,11 +785,12 @@ describe("buildInvocationEnv", () => {
     expect("CLAUDE_CODE_OAUTH_TOKEN" in env!).toBe(false);
   });
 
-  test("always hands the SDK an env with auto memory off, even with nothing else set", () => {
+  test("always hands the SDK an env with auto memory and background tasks off, even with nothing else set", () => {
     delete process.env["ANTHROPIC_API_KEY"];
     delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
     const env = buildInvocationEnv();
     expect(env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"]).toBe("1");
+    expect(env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"]).toBe("1");
     expect(env["PATH"]).toBe(process.env["PATH"]);
   });
 });
