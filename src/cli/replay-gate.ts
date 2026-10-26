@@ -54,6 +54,8 @@ export interface ReplayGateInput {
    * gate refuses a route that is perfectly good.
    */
   sessionState?: string;
+  /** stepId → the case's time limit for that step, which its waits are given on replay. */
+  stepTimeLimits?: ReadonlyMap<string, number>;
   teardown?: RunTeardown;
 }
 
@@ -101,6 +103,7 @@ export async function checkRecordedRouteReplays(
       sessionName,
       mode: "strict",
       envOverrides,
+      stepTimeLimits: input.stepTimeLimits,
       onProgress: (i, total, action) => log.progress(i, total, action.action),
     });
   // A route that names a thing after this run is a route that makes one, and

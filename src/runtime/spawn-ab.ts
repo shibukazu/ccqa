@@ -53,6 +53,16 @@ const EAGAIN_BACKOFF_MS = [
 // hung daemon stall the whole run for a minute and a half.
 const PROCESS_HARD_TIMEOUT_MS = 35_000;
 
+/**
+ * The ceiling, raised past a `--timeout` longer than it: a wait the case
+ * allows 40s must not be killed as wedged at 35s.
+ */
+function hardTimeoutFor(args: readonly string[]): number {
+  const i = args.indexOf("--timeout");
+  const asked = i === -1 ? NaN : Number(args[i + 1]);
+  return Number.isFinite(asked) ? Math.max(PROCESS_HARD_TIMEOUT_MS, asked + 5_000) : PROCESS_HARD_TIMEOUT_MS;
+}
+
 export function sleepSync(ms: number): void {
   const buf = new SharedArrayBuffer(4);
   Atomics.wait(new Int32Array(buf), 0, 0, ms);
@@ -92,7 +102,7 @@ function subcommand(args: readonly string[]): string {
  * the raw spawner there would widen the contract for end users.
  */
 export function spawnAB(args: string[], opts?: { timeoutMs?: number }): Result {
-  const timeoutMs = opts?.timeoutMs ?? PROCESS_HARD_TIMEOUT_MS;
+  const timeoutMs = opts?.timeoutMs ?? hardTimeoutFor(args);
   const result = spawnABRetrying(args, timeoutMs);
   if (result.status === 0) return result;
   const session = args[0] === "--session" ? args.slice(0, 2) : [];

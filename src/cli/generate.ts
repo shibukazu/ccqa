@@ -18,6 +18,7 @@ import {
 type GenerationStamp = NonNullable<Recording["generated"]>;
 import { resolveTestPath } from "../targets/test-path.ts";
 import { checkRecordedRouteReplays } from "./replay-gate.ts";
+import { stepTimeLimits } from "../spec/time-limit.ts";
 import { resolveCase, type ResolvedCase } from "./resolve-case.ts";
 import { loadEnvFiles } from "./env-files.ts";
 import { acquireSpecLock, SpecLockedError } from "../store/spec-lock.ts";
@@ -221,6 +222,7 @@ async function runGenerateLocked(
       recording,
       ...(cleanupRecording ? { cleanup: cleanupRecording } : {}),
       ...(sessionState ? { sessionState } : {}),
+      stepTimeLimits: stepTimeLimits([...testCase.steps, ...testCase.cleanup]),
       ...(opts.teardown ? { teardown: opts.teardown } : {}),
     });
     if (dead) throw new RunUsageError(dead);

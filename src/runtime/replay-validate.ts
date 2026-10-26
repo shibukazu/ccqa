@@ -36,6 +36,7 @@ export interface StateCheck {
   state: "enabled" | "checked";
   selector: string;
   expected: boolean;
+  timeoutMs: number;
 }
 
 export type Probe = PollCheck | StateCheck;
@@ -53,7 +54,7 @@ function runStateCheck(check: StateCheck, sessionName: string): { ok: boolean; r
   // route just acted on settles into its state a moment later, and one
   // question at the wrong moment would drop a route that is fine.
   let answer = "";
-  const rounds = attemptsFor(ASSERT_TIMEOUT_MS, SELECTOR_POLL_INTERVAL_MS) + 1;
+  const rounds = attemptsFor(check.timeoutMs, SELECTOR_POLL_INTERVAL_MS) + 1;
   for (let round = 0; round < rounds; round++) {
     const r = spawnAB(["--session", sessionName, "is", check.state, check.selector]);
     answer = r.status === 0 ? r.stdout.trim() : "";
@@ -191,13 +192,20 @@ function attemptsFor(timeoutMs: number, intervalMs: number): number {
  * skips). Returns `null` for actions that should not be validated (snapshot
  * has no side effect; assert types whose codegen forms aren't directly
  * verifiable here fall through to the caller's `unverifiable` fallback).
+ *
+ * `limitMs` is the time limit the case gives the action's step: its waits and
+ * checks wait at least that long, so a step the case allows 40s is not judged
+ * unstable at 5s.
  */
 export function actionToAbArgs(
   action: RecordedAction,
   sessionName: string,
   envOverrides: Record<string, string> = {},
+  limitMs = 0,
 ): string[] | Probe | null {
   const base = ["--session", sessionName];
+  const shortMs = Math.max(SHORT_TIMEOUT_MS, limitMs);
+  const assertMs = Math.max(ASSERT_TIMEOUT_MS, limitMs);
 
   // Resolve env refs in any value/selector positions so the validation
   // hits the same DOM the test will. `envOverrides` carries the values the
@@ -212,12 +220,12 @@ export function actionToAbArgs(
     case "snapshot":
       return null;
     case "assert":
-      return assertToAbArgs(action, sub, sessionName);
+      return assertToAbArgs(action, sub, sessionName, assertMs);
     case "wait": {
       const loc = action.locator;
       if (!loc) return null; // selector omitted entirely — treat as unverifiable rather than failing the drop cascade.
       if (loc.by === "text") {
-        return [...base, "wait", "--text", sub(loc.value), "--timeout", String(SHORT_TIMEOUT_MS)];
+        return [...base, "wait", "--text", sub(loc.value), "--timeout", String(shortMs)];
       }
       const raw = sub(locatorToSelector(loc));
       if (!raw) return null;
@@ -228,10 +236,10 @@ export function actionToAbArgs(
       // session, so treat them as unverifiable (skip).
       if (raw.startsWith("--")) return null;
       if (raw.startsWith("text=")) {
-        return [...base, "wait", "--text", raw.slice(5), "--timeout", String(SHORT_TIMEOUT_MS)];
+        return [...base, "wait", "--text", raw.slice(5), "--timeout", String(shortMs)];
       }
       // `wait <css-selector>` ignores --timeout and blocks the daemon; poll instead.
-      return { kind: "poll-present", selector: raw, timeoutMs: SHORT_TIMEOUT_MS };
+      return { kind: "poll-present", selector: raw, timeoutMs: shortMs };
     }
     default: {
       const tokens = toAgentBrowserArgs(action);
@@ -262,9 +270,10 @@ function presenceCheck(
   selector: string,
   sub: (s: string | undefined) => string,
   base: string[],
+  timeoutMs: number,
 ): string[] | Probe | null {
   if (locator?.by === "text") {
-    return [...base, "wait", "--text", sub(locator.value), "--timeout", String(ASSERT_TIMEOUT_MS)];
+    return [...base, "wait", "--text", sub(locator.value), "--timeout", String(timeoutMs)];
   }
   if (locator?.by === "role" && locator.name) {
     return roleProbe(base, sub(locator.value), sub(locator.name));
@@ -279,13 +288,14 @@ function presenceCheck(
   }
   if (named !== null) return null;
   // `wait <css-selector>` ignores --timeout and blocks; poll instead.
-  return { kind: "poll-present", selector, timeoutMs: ASSERT_TIMEOUT_MS };
+  return { kind: "poll-present", selector, timeoutMs };
 }
 
 function assertToAbArgs(
   action: RecordedAction,
   sub: (s: string | undefined) => string,
   sessionName: string,
+  timeoutMs: number,
 ): string[] | Probe | null {
   const base = ["--session", sessionName];
   const val = sub(action.value ?? action.observation);
@@ -295,7 +305,7 @@ function assertToAbArgs(
   switch (action.assert) {
     case "text_visible":
       if (!val) return null;
-      return [...base, "wait", "--text", val, "--timeout", String(ASSERT_TIMEOUT_MS)];
+      return [...base, "wait", "--text", val, "--timeout", String(timeoutMs)];
     case "text_not_visible":
       // Skipping at validation time: a freshly-opened replay session has the
       // text initially absent, so the assertion is vacuously true here even
@@ -303,7 +313,7 @@ function assertToAbArgs(
       // after a click. Trust the codegen output for this case.
       return null;
     case "element_visible":
-      return sel ? presenceCheck(action.locator, sel, sub, base) : null;
+      return sel ? presenceCheck(action.locator, sel, sub, base, timeoutMs) : null;
     case "element_not_visible":
       // Same vacuous-truth concern as text_not_visible.
       return null;
@@ -326,7 +336,7 @@ function assertToAbArgs(
         ? "checked"
         : "enabled";
       const expected = action.assert === "element_enabled" || action.assert === "element_checked";
-      return { kind: "state", state, selector: sel, expected };
+      return { kind: "state", state, selector: sel, expected, timeoutMs };
     }
     default:
       return null;
@@ -355,6 +365,8 @@ export interface ValidateOptions {
    * same concrete values the trace recorded against.
    */
   envOverrides?: Record<string, string>;
+  /** stepId → the case's time limit for that step (`stepTimeLimits`); see `actionToAbArgs`. */
+  stepTimeLimits?: ReadonlyMap<string, number>;
 }
 
 // Sentinel for actions that carry no stepId (older traces, or commands
@@ -563,6 +575,7 @@ function runValidationAction(
   sessionName: string,
   envOverrides: Record<string, string> = {},
   patience: Patience,
+  limitMs = 0,
 ): ActionOutcome {
   // Before the argv is built: a `by: "css"` value that is not CSS would go to
   // `get count`, which answers 0 for it rather than failing. Here rather than
@@ -573,7 +586,7 @@ function runValidationAction(
   const withName = (outcome: ActionOutcome): ActionOutcome =>
     named === null || !outcome.ok ? outcome : { ...outcome, promoted: outcome.promoted ?? named };
 
-  const built = actionToAbArgs(action, sessionName, envOverrides);
+  const built = actionToAbArgs(action, sessionName, envOverrides, limitMs);
   if (built === null) return { skipped: true, ok: false, reason: "" };
   if (isProbe(built)) {
     const { ok, reason } = runProbe(built, sessionName);
@@ -676,7 +689,7 @@ export function validateActions(
       dropped.push({ index: i, action, reason: CASCADE_REASON });
       continue;
     }
-    const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides, patience);
+    const outcome = runValidationAction(action, opts.sessionName, opts.envOverrides, patience, limitOf(opts, action));
     if (outcome.promoted) promoted.push(outcome.promoted);
     if (outcome.skipped) {
       kept.push(action);
@@ -810,7 +823,7 @@ function rescueLostSteps(
     const unverifiable: number[] = [];
     let stillFailing = false;
     for (const d of drops) {
-      const outcome = runValidationAction(d.action, opts.sessionName, opts.envOverrides, patience);
+      const outcome = runValidationAction(d.action, opts.sessionName, opts.envOverrides, patience, limitOf(opts, d.action));
       if (outcome.promoted) promoted.push(outcome.promoted);
       if (outcome.skipped) {
         unverifiable.push(d.index);
@@ -848,6 +861,10 @@ function rescueLostSteps(
   return { kept: newKept, dropped: newDropped, rescuedSteps, promoted };
 }
 
+
+function limitOf(opts: ValidateOptions, action: RecordedAction): number {
+  return opts.stepTimeLimits?.get(action.stepId ?? "") ?? 0;
+}
 
 /**
  * Passive (read-only) actions whose only effect is observation. When a
