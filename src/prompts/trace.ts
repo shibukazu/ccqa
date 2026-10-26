@@ -1,6 +1,7 @@
 import { buildRunId } from "../runtime/live-artifacts.ts";
 import { SETUP_STEP_ID, type RecordedAction } from "../ir/types.ts";
 import { renderPreviousRecording } from "./previous-recording.ts";
+import { stepTimeLimitMs } from "../spec/time-limit.ts";
 
 export function generateSessionName(): string {
   return `ccqa-trace-${buildRunId()}`;
@@ -50,6 +51,17 @@ export interface TraceSystemPromptInput {
 }
 
 /**
+ * Stated as a number because a recorder that waits its usual few seconds
+ * gives up on a step the case allows far longer, and records that as a failure.
+ */
+function timeLimitLine(step: TracePromptStep): string[] {
+  const ms = stepTimeLimitMs(`${step.instruction}\n${step.expected}`);
+  return ms === undefined
+    ? []
+    : [`- **Time limit**: ${ms}ms — pass \`--timeout ${ms}\` to this step's waits and do not give up sooner.`];
+}
+
+/**
  * Build the trace system prompt. `input.steps` is a flat list with includes
  * already expanded (each step carries id / source / instruction / expected).
  * The spec opens URLs via explicit step instructions (e.g.
@@ -84,6 +96,7 @@ ${input.instruction}
         `### ${step.id} [${step.source}]`,
         `- **Instruction**: ${step.instruction}`,
         ...(step.expected ? [`- **Expected**: ${step.expected}`] : []),
+        ...timeLimitLine(step),
       ].join("\n"),
     )
     .join("\n\n");

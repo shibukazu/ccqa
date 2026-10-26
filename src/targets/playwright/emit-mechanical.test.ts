@@ -112,35 +112,35 @@ describe("emitPlaywrightDraft — actions", () => {
       `await page.goto("https://example.test/");`,
     );
     expect(line({ action: "click", locator: btn })).toBe(
-      `await page.getByRole("button", { name: "Submit" }).first().click();`,
+      `await page.getByRole("button", { name: "Submit" }).locator("visible=true").first().click();`,
     );
     expect(line({ action: "dblclick", locator: { by: "css", value: ".card" } })).toBe(
-      `await page.locator(".card").first().dblclick();`,
+      `await page.locator(".card").locator("visible=true").first().dblclick();`,
     );
     expect(line({ action: "fill", locator: { by: "label", value: "Email" }, value: "a@example.test" })).toBe(
-      `await page.getByLabel("Email").first().fill("a@example.test");`,
+      `await page.getByLabel("Email").locator("visible=true").first().fill("a@example.test");`,
     );
     // `type` is an alias of fill.
     expect(line({ action: "type", locator: { by: "css", value: "#name" }, value: "hello" })).toBe(
-      `await page.locator("#name").first().fill("hello");`,
+      `await page.locator("#name").locator("visible=true").first().fill("hello");`,
     );
     expect(line({ action: "press", value: "Enter" })).toBe(
       `await page.keyboard.press("Enter");`,
     );
     expect(line({ action: "check", locator: { by: "css", value: "[type='checkbox']" } })).toBe(
-      `await page.locator("[type='checkbox']").first().check();`,
+      `await page.locator("[type='checkbox']").locator("visible=true").first().check();`,
     );
     expect(line({ action: "uncheck", locator: { by: "css", value: "[type='checkbox']" } })).toBe(
-      `await page.locator("[type='checkbox']").first().uncheck();`,
+      `await page.locator("[type='checkbox']").locator("visible=true").first().uncheck();`,
     );
     expect(line({ action: "select", locator: { by: "css", value: "select#lang" }, value: "en" })).toBe(
-      `await page.locator("select#lang").first().selectOption("en");`,
+      `await page.locator("select#lang").locator("visible=true").first().selectOption("en");`,
     );
     expect(line({ action: "hover", locator: { by: "text", value: "Menu" } })).toBe(
-      `await page.getByText("Menu").first().hover();`,
+      `await page.getByText("Menu").locator("visible=true").first().hover();`,
     );
     expect(line({ action: "focus", locator: { by: "placeholder", value: "Search" } })).toBe(
-      `await page.getByPlaceholder("Search").first().focus();`,
+      `await page.getByPlaceholder("Search").locator("visible=true").first().focus();`,
     );
     expect(
       line({
@@ -148,7 +148,7 @@ describe("emitPlaywrightDraft — actions", () => {
         locator: { by: "css", value: "#src" },
         target: { by: "css", value: "#dst" },
       }),
-    ).toBe(`await page.locator("#src").first().dragTo(page.locator("#dst").first());`);
+    ).toBe(`await page.locator("#src").locator("visible=true").first().dragTo(page.locator("#dst").locator("visible=true").first());`);
     expect(
       line({ action: "upload", locator: { by: "css", value: "input[type='file']" }, files: ["a.pdf", "b.pdf"] }),
     ).toBe(`await page.locator("input[type='file']").first().setInputFiles(["a.pdf", "b.pdf"]);`);
@@ -174,15 +174,35 @@ describe("emitPlaywrightDraft — actions", () => {
 
   it("maps waits: selector waitFor, numeric sleep, skipped flag-forms", () => {
     expect(line({ action: "wait", locator: { by: "css", value: "[role='dialog']" } })).toBe(
-      `await page.locator("[role='dialog']").first().waitFor();`,
+      `await page.locator("[role='dialog']").locator("visible=true").first().waitFor();`,
     );
     expect(line({ action: "wait", locator: { by: "text", value: "Loaded" } })).toBe(
-      `await page.getByText("Loaded").first().waitFor();`,
+      `await page.getByText("Loaded").locator("visible=true").first().waitFor();`,
     );
     expect(line({ action: "wait", locator: { by: "css", value: "3" } })).toBe(
       `await page.waitForTimeout(3000);`,
     );
     expect(bodyLines([{ action: "wait", locator: { by: "css", value: "--load" } }])).toEqual([]);
+  });
+
+  it("gives a step's waits and checks the case's time limit, and the test the budget for it", () => {
+    const script = emitPlaywrightDraft({
+      actions: [
+        { action: "click", locator: { by: "text", value: "Start" }, stepId: "step-01" },
+        { action: "wait", locator: { by: "text", value: "Ready" }, stepId: "step-01" },
+        { action: "assert", assert: "text_visible", value: "Ready", stepId: "step-01" },
+        { action: "assert", assert: "text_visible", value: "Saved", stepId: "step-02" },
+      ],
+      testName: "sample",
+      timeLimits: new Map([["step-01", 40_000], ["step-02", 3_000]]),
+    });
+    expect(script).toContain("test.setTimeout(test.info().timeout + 40000);");
+    expect(script).toContain(
+      `await page.getByText("Ready").locator("visible=true").first().waitFor({ timeout: 40000 });`,
+    );
+    expect(script).toContain(`await expect(page.getByText("Ready")).toBeVisible({ timeout: 40000 });`);
+    // Under Playwright's own expect timeout: written out it could only shorten the config's.
+    expect(script).toContain(`await expect(page.getByText("Saved")).toBeVisible();`);
   });
 
   // A file whose steps read in one language and whose assertions are
@@ -245,7 +265,7 @@ describe("emitPlaywrightDraft — actions", () => {
 
   it("expands env refs in values into process.env template literals", () => {
     expect(line({ action: "fill", locator: { by: "label", value: "Password" }, value: "${PASSWORD}" })).toBe(
-      'await page.getByLabel("Password").first().fill(`${process.env.PASSWORD ?? ""}`);',
+      'await page.getByLabel("Password").locator("visible=true").first().fill(`${process.env.PASSWORD ?? ""}`);',
     );
     expect(line({ action: "assert", assert: "url_contains", value: "/runs/${RUN_ID}" })).toBe(
       'await expect.poll(() => page.url()).toContain(`/runs/${process.env.RUN_ID ?? ""}`);',
@@ -291,7 +311,7 @@ describe("emitPlaywrightDraft — actions", () => {
       'await test.step("step: step-01 [spec]", async () => {\n    await page.goto("https://example.test/");\n  });',
     );
     expect(script).toContain(
-      'await test.step("step: step-02 [spec]", async () => {\n    await page.getByText("Submit").first().click();\n  });',
+      'await test.step("step: step-02 [spec]", async () => {\n    await page.getByText("Submit").locator("visible=true").first().click();\n  });',
     );
     // Exactly one block per step — a rewrite that merged or split them would
     // change this count.
@@ -534,7 +554,7 @@ describe("emitPlaywrightDraft — a project's own conventions", () => {
     });
     expect(script).toContain("test.afterEach(");
     expect(script).toContain("if (!createdSomething) return;");
-    expect(script).toContain(`await page.getByRole("button", { name: "Delete" }).first().click();`);
+    expect(script).toContain(`await page.getByRole("button", { name: "Delete" }).locator("visible=true").first().click();`);
   });
 
   // The guard is only worth anything if it is still undefined while the route

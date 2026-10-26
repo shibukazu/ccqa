@@ -43,6 +43,7 @@ import type { CaseRef, Recording } from "../store/index.ts";
 import type { TestCase } from "../cases/case.ts";
 import type { ParsedStatusLine } from "../types.ts";
 import * as log from "./logger.ts";
+import { stepTimeLimits } from "../spec/time-limit.ts";
 
 /**
  * Per-step churn counts. `recorded` vs `kept` is emit-then-drop waste (a
@@ -433,7 +434,13 @@ export async function runTrace(
   const validationStart = Date.now();
   const validatedActions =
     overallStatus === "passed" || opts.validateFailedTrace === true
-      ? validateAndReport(dedupedActions, validationMode, { CCQA_RUN_ID: sessionName }, opts.teardown)
+      ? validateAndReport(
+          dedupedActions,
+          validationMode,
+          { CCQA_RUN_ID: sessionName },
+          stepTimeLimits(steps),
+          opts.teardown,
+        )
       : dedupedActions;
   if (validatedActions !== dedupedActions) {
     log.meta("validation time", `${((Date.now() - validationStart) / 1000).toFixed(1)}s`);
@@ -722,6 +729,7 @@ function validateAndReport(
   actions: RecordedAction[],
   mode: ValidationMode,
   envOverrides: Record<string, string>,
+  limits: ReadonlyMap<string, number>,
   teardown?: RunTeardown,
 ): RecordedAction[] {
   if (actions.length === 0) return actions;
@@ -733,6 +741,7 @@ function validateAndReport(
     sessionName,
     mode,
     envOverrides,
+    stepTimeLimits: limits,
     onProgress: (i, total, action) => {
       log.progress(i, total, validationProgressLabel(action));
     },

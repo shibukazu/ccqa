@@ -54,7 +54,15 @@ export interface PlaywrightEmitInput {
   runId?: { import: string; expression: string };
   /** Write the step comments in Japanese (the CLI's `--language`). */
   japanese?: boolean;
+  /** stepId → the longest wait the case's own step allows, in ms (`stepTimeLimits`). */
+  timeLimits?: ReadonlyMap<string, number>;
 }
+
+/**
+ * Playwright's own `expect` timeout. A limit at or under it is left to the
+ * project's config: written out, it could only shorten what the config gives.
+ */
+const DEFAULT_EXPECT_TIMEOUT_MS = 5_000;
 
 /**
  * Names the emitted test declares. The project maintains this file from here
@@ -224,6 +232,11 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     }
   };
 
+  const limits = new Map(
+    [...(input.timeLimits ?? [])].filter(([, ms]) => ms > DEFAULT_EXPECT_TIMEOUT_MS),
+  );
+  const limitOf = (a: RecordedAction): number | undefined => limits.get(a.stepId ?? "");
+
   const creationIndex = creationActionIndex(actions, stepMarkers);
   let createdAt: { block: Body; index: number } = { block: body, index: 0 };
 
@@ -232,7 +245,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
     openStep(markerByIndex.get(i));
     const action = actions[i]!;
     if (overwrittenByNext(action, actions[i + 1])) continue;
-    const line = actionToLine(action, japanese);
+    const line = actionToLine(action, japanese, limitOf(action));
     if (line !== null && line !== prevLine) {
       if (action.replayUnstable) {
         target().push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
@@ -248,7 +261,7 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   // to the browser from outside (see the target's `browserCoverage`), so the
   // generated test carries no measurement code an LLM rewrite could drop.
 
-  const cleanupBody = emitCleanup(input.cleanup, japanese, input.allowExpectInCleanup ?? true);
+  const cleanupBody = emitCleanup(input.cleanup, japanese, input.allowExpectInCleanup ?? true, limitOf);
   const title = `${testName}${input.titleSuffix ?? ""}`;
   // Only when the route actually created something unique: a declared value
   // nothing reads is an unused variable, and the project's own type check or
@@ -265,6 +278,12 @@ export function emitPlaywrightDraft(input: PlaywrightEmitInput): string {
   // A claim costs a model round trip, which the default per-test budget was
   // not sized for. Relative to the project's own timeout rather than absolute,
   // so a consumer that already raised it keeps the raise.
+  //
+  // The case's own limits are added the same way. Summed, since each limited
+  // step may spend its whole limit in turn; emitted after `test.slow()` so it
+  // adds to the slowed budget.
+  const limitBudget = [...limits.values()].reduce((a, b) => a + b, 0);
+  if (limitBudget > 0) body.unshift(`test.setTimeout(test.info().timeout + ${limitBudget});`, "");
   if (judgements.length > 0) body.unshift("test.slow();", "");
   const testLines: Body = [
     ...(runId ? [`${RUN_ID_VAR} = ${runId.expression};`, ""] : []),
@@ -382,6 +401,7 @@ function emitCleanup(
   cleanup: PlaywrightEmitInput["cleanup"],
   japanese: boolean,
   allowExpect: boolean,
+  limitOf: (a: RecordedAction) => number | undefined,
 ): Body {
   if (!cleanup || cleanup.actions.length === 0) return [];
   const body: Body = [];
@@ -400,7 +420,7 @@ function emitCleanup(
     if (action.replayUnstable) {
       target().push(`// [warn] replay-unstable: ${action.replayReason ?? "(no reason recorded)"}`);
     }
-    const line = actionToLine(action, japanese);
+    const line = actionToLine(action, japanese, limitOf(action));
     if (line !== null) target().push(...line.split("\n"));
   }
   return body;
@@ -461,7 +481,7 @@ function exactArg(exact: boolean | undefined): string {
 /** Default wheel delta for scrolls recorded without an explicit pixel count. */
 const DEFAULT_SCROLL_PIXELS = 400;
 
-function actionToLine(action: RecordedAction, japanese = false): string | null {
+function actionToLine(action: RecordedAction, japanese = false, limitMs?: number): string | null {
   // Same rule as the agent-browser emitter: an element assert whose selector
   // the post-trace validator could not even find (`get count` returned 0)
   // fails on every run — emit a breadcrumb comment instead of a runnable line.
@@ -490,10 +510,11 @@ function actionToLine(action: RecordedAction, japanese = false): string | null {
   }
 
   const locator = action.locator ? locatorToPlaywright(action.locator, action.index) : null;
-  // agent-browser acts on the first element its locator matches. `.first()` keeps
-  // that semantic under Playwright's strict mode, which fails the whole step when
-  // several match (unless an explicit index pick already narrowed it).
-  const subject = locator !== null && action.index === undefined ? `${locator}.first()` : locator;
+  // agent-browser acts on the first element its locator matches. Keeping that
+  // under Playwright's strict mode (unless an explicit index pick already
+  // narrowed it) takes the first *visible* match: a closed menu or a template
+  // row carrying the same text is what a bare `.first()` lands on.
+  const subject = locator !== null && action.index === undefined ? `${locator}${FIRST_VISIBLE}` : locator;
 
   switch (action.action) {
     case "navigate":
@@ -526,19 +547,22 @@ function actionToLine(action: RecordedAction, japanese = false): string | null {
       return subject ? `await ${subject}.focus();` : droppedActionMarker(action);
     case "drag": {
       if (!subject || !action.target) return droppedActionMarker(action);
-      return `await ${subject}.dragTo(${locatorToPlaywright(action.target)}.first());`;
+      return `await ${subject}.dragTo(${locatorToPlaywright(action.target)}${FIRST_VISIBLE});`;
     }
     case "upload": {
+      // Plain `.first()`: a file input is usually hidden behind a styled
+      // control, and `setInputFiles` does not need it visible.
       const files = action.files ?? [];
-      if (!subject || files.length === 0) return droppedActionMarker(action);
-      return `await ${subject}.setInputFiles([${files.map(jExpr).join(", ")}]);`;
+      if (!locator || files.length === 0) return droppedActionMarker(action);
+      const input = action.index === undefined ? `${locator}.first()` : locator;
+      return `await ${input}.setInputFiles([${files.map(jExpr).join(", ")}]);`;
     }
     case "scroll":
       return scrollToLine(action);
     case "wait":
-      return waitToLine(action, locator);
+      return waitToLine(action, locator, limitMs);
     case "assert":
-      return assertToLine(action, locator, japanese);
+      return assertToLine(action, locator, japanese, limitMs);
     case "snapshot":
       return action.observation ? `// ${action.observation}` : null;
     case "cookies_clear":
@@ -562,7 +586,7 @@ function scrollToLine(action: RecordedAction): string {
   }
 }
 
-function waitToLine(action: RecordedAction, locator: string | null): string | null {
+function waitToLine(action: RecordedAction, locator: string | null, limitMs?: number): string | null {
   const loc = action.locator;
   if (!loc || !locator) return null;
   if (loc.by === "css") {
@@ -574,10 +598,21 @@ function waitToLine(action: RecordedAction, locator: string | null): string | nu
     // argument doesn't round-trip — skip, like the agent-browser emitter.
     if (loc.value.startsWith("--")) return null;
   }
-  // agent-browser `wait` means "appears anywhere"; `.first()` keeps that
-  // semantic under Playwright's strict mode (unless a pick already applied).
-  const pick = action.index === undefined ? ".first()" : "";
-  return `await ${locator}${pick}.waitFor();`;
+  // agent-browser `wait` means "appears anywhere"; the first visible match
+  // keeps that under Playwright's strict mode (unless a pick already applied).
+  const pick = action.index === undefined ? FIRST_VISIBLE : "";
+  return `await ${locator}${pick}.waitFor(${timeoutArg(limitMs)});`;
+}
+
+/**
+ * The visible-only filter as a chained selector rather than `filter({ visible })`,
+ * which Playwright versions before 1.51 do not have.
+ */
+const FIRST_VISIBLE = `.locator("visible=true").first()`;
+
+/** `{ timeout: N }` for a step the case gives a limit, nothing otherwise. */
+function timeoutArg(limitMs: number | undefined): string {
+  return limitMs === undefined ? "" : `{ timeout: ${limitMs} }`;
 }
 
 /**
@@ -595,6 +630,7 @@ function assertToLine(
   action: RecordedAction,
   locator: string | null,
   japanese: boolean,
+  limitMs?: number,
 ): string | null {
   // Like the agent-browser emitter: the LLM may put the expectation text in
   // `observation` instead of `value`.
@@ -614,36 +650,39 @@ function assertToLine(
   // scoping and the fix pass can scope it. An explicit index pick is a
   // decision the recording made and stays.
   const pick = action.index === undefined ? "" : "";
+  const t = timeoutArg(limitMs);
+  // The matchers that already take an argument get the timeout after it.
+  const tAfter = t ? `, ${t}` : "";
 
   let assertLine: string | null = null;
   switch (action.assert) {
     case "text_visible":
-      if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toBeVisible();`;
+      if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toBeVisible(${t});`;
       break;
     case "text_not_visible":
-      if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toHaveCount(0);`;
+      if (value) assertLine = `await expect(page.getByText(${jExpr(value)})).toHaveCount(0${tAfter});`;
       break;
     case "element_visible":
-      if (locator) assertLine = `await expect(${locator}${pick}).toBeVisible();`;
+      if (locator) assertLine = `await expect(${locator}${pick}).toBeVisible(${t});`;
       break;
     case "element_not_visible":
       // `get count` == 0 — same idiom as text_not_visible, strict-mode safe.
-      if (locator) assertLine = `await expect(${locator}).toHaveCount(0);`;
+      if (locator) assertLine = `await expect(${locator}).toHaveCount(0${tAfter});`;
       break;
     case "url_contains":
-      if (value) assertLine = urlContainsAssert(value);
+      if (value) assertLine = urlContainsAssert(value, tAfter);
       break;
     case "element_enabled":
-      if (locator) assertLine = `await expect(${locator}).toBeEnabled();`;
+      if (locator) assertLine = `await expect(${locator}).toBeEnabled(${t});`;
       break;
     case "element_disabled":
-      if (locator) assertLine = `await expect(${locator}).toBeDisabled();`;
+      if (locator) assertLine = `await expect(${locator}).toBeDisabled(${t});`;
       break;
     case "element_checked":
-      if (locator) assertLine = `await expect(${locator}).toBeChecked();`;
+      if (locator) assertLine = `await expect(${locator}).toBeChecked(${t});`;
       break;
     case "element_unchecked":
-      if (locator) assertLine = `await expect(${locator}).not.toBeChecked();`;
+      if (locator) assertLine = `await expect(${locator}).not.toBeChecked(${t});`;
       break;
     case undefined:
       break;
@@ -662,12 +701,12 @@ function assertToLine(
  * absolute one never matches. Polling `page.url()` keeps the substring
  * semantic and the resolved value.
  */
-function urlContainsAssert(value: string): string {
+function urlContainsAssert(value: string, timeoutAfter: string): string {
   const expr = jExpr(value);
   if (expr.startsWith("`")) {
-    return `await expect.poll(() => page.url()).toContain(${expr});`;
+    return `await expect.poll(() => page.url()${timeoutAfter}).toContain(${expr});`;
   }
-  return `await expect(page).toHaveURL(new RegExp(${j(escapeRegExp(value))}));`;
+  return `await expect(page).toHaveURL(new RegExp(${j(escapeRegExp(value))})${timeoutAfter});`;
 }
 
 function escapeRegExp(s: string): string {

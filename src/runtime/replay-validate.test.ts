@@ -83,6 +83,16 @@ describe("actionToAbArgs", () => {
     });
   });
 
+  test("a step's time limit raises its waits and checks, never lowers them", () => {
+    const wait = { action: "wait", locator: { by: "text", value: "Ready" } } as const;
+    expect(actionToAbArgs(wait, SESSION, {}, 40_000)).toEqual([
+      "--session", SESSION, "wait", "--text", "Ready", "--timeout", "40000",
+    ]);
+    expect(actionToAbArgs({ action: "assert", assert: "element_visible", locator: css(".done") }, SESSION, {}, 40_000))
+      .toEqual({ kind: "poll-present", selector: ".done", timeoutMs: 40_000 });
+    expect(actionToAbArgs(wait, SESSION, {}, 1_000)).toContain("5000");
+  });
+
   test("flag-form waits (--load / --fn / --url) are unverifiable and return null", () => {
     // These land in the locator with the flag text (the wire format puts the
     // flag in the selector slot and its arg in the label). They are
@@ -128,10 +138,10 @@ describe("actionToAbArgs", () => {
     expect(actionToAbArgs({ action: "assert", assert: "element_enabled", locator: css("text=Submit") }, SESSION)).toBeNull();
     expect(actionToAbArgs({ action: "assert", assert: "element_enabled", locator: css("[aria-label='Submit']") }, SESSION)).toBeNull();
     expect(actionToAbArgs({ action: "assert", assert: "element_unchecked", locator: css("#opt") }, SESSION)).toEqual({
-      kind: "state", state: "checked", selector: "#opt", expected: false,
+      kind: "state", state: "checked", selector: "#opt", expected: false, timeoutMs: 10_000,
     });
     expect(actionToAbArgs({ action: "assert", assert: "element_enabled", locator: css(".btn-submit") }, SESSION)).toEqual({
-      kind: "state", state: "enabled", selector: ".btn-submit", expected: true,
+      kind: "state", state: "enabled", selector: ".btn-submit", expected: true, timeoutMs: 10_000,
     });
   });
 

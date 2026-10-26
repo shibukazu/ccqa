@@ -42,6 +42,7 @@ import {
 import * as log from "../../cli/logger.ts";
 import { useJapanesePrompts } from "../../prompts/language.ts";
 import { reviewGeneratedTest } from "../verifies-spec.ts";
+import { stepTimeLimits } from "../../spec/time-limit.ts";
 
 const PLAYWRIGHT_TARGET = "playwright";
 
@@ -167,6 +168,7 @@ export async function compileRecording(
     ...(ctx.targetConfig.runId ? { runId: ctx.targetConfig.runId } : {}),
     allowExpectInCleanup: ctx.targetConfig.allowExpectInCleanup,
     japanese: useJapanesePrompts(ctx.language),
+    timeLimits: stepTimeLimits([...expanded, ...cleanup]),
   });
 
   log.meta("actions", actions.length);
