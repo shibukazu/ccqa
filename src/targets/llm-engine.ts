@@ -989,13 +989,14 @@ export function uncheckedSteps(
     command: "ccqa: reading of the generated test",
     asked: findings.map(findingKey),
     output: [
-      "These steps pass without deciding what the case says they must:",
+      "These steps do not decide what the case says they must:",
       "",
       ...findings.map((f) => `- ${formatFinding(f)}`),
       "",
       "Strengthen the assertions (and the locators they resolve through) so each",
-      "step fails when its expectation stops holding. Do not weaken or delete a",
-      "step to silence this.",
+      "step fails when its expectation stops holding, and only then: a wait gets",
+      "the time the case allows, and a locator is scoped to what the step means.",
+      "Do not weaken or delete a step to silence this.",
     ].join("\n"),
   };
 }
