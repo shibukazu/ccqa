@@ -83,6 +83,9 @@ Key flags (see `ccqa run --help` for the rest):
   Uncapped by default.
 - `--report-format <fmt>` — `text` (default), `json` (print report.json), `github`
   (GitHub Actions annotations).
+- `--live-override` — run every selected spec live, whatever its `target:`
+  and `mode:`; spec.yaml is not changed. See [Running any spec
+  live](./live.md#running-any-spec-live).
 - `--live-step-retry <n>` — live specs only: retry each failing step up to N times.
 - `--learn-hub-live-prompt` — live specs only: refresh the hub-stored
   `live.agent` learning notes from this run.

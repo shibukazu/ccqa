@@ -3,8 +3,10 @@ import { resolve } from "node:path";
 import type { TestCase } from "../cases/case.ts";
 import {
   collectIncludedBlockNames,
+  isExpandedJudgeByLlmStep,
   requireActionSteps,
   type ExpandedActionStep,
+  type ExpandedStep,
 } from "../spec/expand.ts";
 import { AGENT_BROWSER_TARGET } from "../spec/yaml-schema.ts";
 import { buildProseEnvScrubMap } from "../runtime/env-scrub.ts";
@@ -112,6 +114,31 @@ export function liveCaseFrom(testCase: TestCase, opts: LiveCaseOptions = {}): Li
     // An include's `params:` may name refs no expanded step repeats, so the
     // document's own steps are walked alongside the expanded ones.
     envScrubMap: (overrides) => buildProseEnvScrubMap(spec?.steps ?? [], steps, overrides),
+  };
+}
+
+/**
+ * The case as `ccqa run --live-override` runs it. A `mode: live` spec without
+ * the flag keeps refusing `judgeByLlm`, so the claim stays one its target can emit.
+ */
+export function asLiveCase(testCase: TestCase): TestCase {
+  return {
+    ...testCase,
+    mode: "live",
+    steps: testCase.steps.map(asLiveStep),
+    spec: testCase.spec && { ...testCase.spec, mode: "live", target: AGENT_BROWSER_TARGET },
+  };
+}
+
+/** A claim becomes a step that changes nothing and expects the claim to hold. */
+function asLiveStep(step: ExpandedStep): ExpandedActionStep {
+  if (!isExpandedJudgeByLlmStep(step)) return step;
+  const subject = step.from === undefined ? "the page" : `the first element matching ${JSON.stringify(step.from)}`;
+  return {
+    id: step.id,
+    source: step.source,
+    instruction: `Do not change the page. Read ${subject} as it stands.`,
+    expected: step.judgeByLlm,
   };
 }
 

@@ -81,6 +81,10 @@ export const runCommand = addHubOptions(addProfileOption(addLanguageOption(
       0,
     )
     .option(
+      "--live-override",
+      "Run every selected spec live, whatever its spec.yaml `target:` and `mode:`; the file is not changed. A `judgeByLlm` step is judged as that step's expected outcome.",
+    )
+    .option(
       "--live-artifacts-dir <dir>",
       "(live only) Override the per-spec artifact directory. Default: <specDir>/runs/<runId>. Ignored when running multiple specs.",
     )

@@ -336,6 +336,16 @@ export default ({ cwd }) => ({
     await rm(root, { recursive: true, force: true });
   });
 
+  test("--live-override runs every selected case live", async () => {
+    const root = await project({ "todo/add_item": "deterministic" });
+    const lines: string[] = [];
+    await withSink({ write: (t) => lines.push(t) }, () =>
+      executeRun([], { dryRun: true, liveOverride: true, cwd: root }),
+    );
+    expect(lines.join("")).toMatch(/todo\/add_item\s+live/);
+    await rm(root, { recursive: true, force: true });
+  });
+
   test("a sweep leaves a disabled case alone, and naming it still runs it", async () => {
     const root = await project({
       "todo/add_item": "live",
@@ -366,6 +376,28 @@ export default ({ cwd }) => ({
     expect(result).toEqual({ exitCode: 0, report: null, reportDir: null });
     expect(lines.join("")).toContain("./ccqa/cases.mjs lists 1 test case(s), none of them live");
     expect(lines.join("")).toContain("the project's own test command");
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe("--live-override", () => {
+  test("routes a spec on another target to live", async () => {
+    const root = await mkdtemp(join(tmpdir(), "ccqa-live-override-"));
+    const specDir = join(root, ".ccqa", "features", "todo", "test-cases", "add_item");
+    await mkdir(specDir, { recursive: true });
+    await writeFile(
+      join(root, ".ccqa/config.yaml"),
+      "targets:\n  playwright:\n    runCommand: npx playwright test {files}\n",
+    );
+    await writeFile(
+      join(specDir, "spec.yaml"),
+      "title: t\ntarget: playwright\nsteps:\n  - judgeByLlm: the list reads sensibly\n",
+    );
+    const lines: string[] = [];
+    await withSink({ write: (t) => lines.push(t) }, () =>
+      executeRun([], { dryRun: true, liveOverride: true, cwd: root }),
+    );
+    expect(lines.join("")).toMatch(/todo\/add_item\s+live/);
     await rm(root, { recursive: true, force: true });
   });
 });

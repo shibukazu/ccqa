@@ -284,7 +284,9 @@ where a shared flow that ends in a generated answer puts its claim.
 Only targets that emit the call can carry one — `playwright` today. The
 agent-browser target decides each step through its own `expected`, and runn
 has no page to read; a claim reaching either is refused by name rather than
-dropped.
+dropped. The one exception is `ccqa run --live-override`, which hands the
+claim to the live judge as that step's expected outcome (see [Running any
+spec live](./live.md#running-any-spec-live)).
 
 ### Running a judged test outside `ccqa run`
 
