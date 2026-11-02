@@ -72,6 +72,8 @@ spec の実行のしかたは 2 通りあります。
 
 **Live（`mode: live`）。** コード生成をせず、毎回 Claude がブラウザを操作して
 各 step の `expected` を判定します。固定の記録では壊れてしまう UI 向けです。
+`ccqa run --live-override` はどの spec もこの方法で実行します
+（[Live specs](./live.md#running-any-spec-live)）。
 
 vitest と agent-browser は既定ターゲットの peer dependency です。外部ターゲット
 だけを使うプロジェクトは `ccqa` とそのツールだけで足ります。ターゲットは ccqa

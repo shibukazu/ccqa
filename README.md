@@ -73,6 +73,8 @@ what it compiles into:
 
 **Live (`mode: live`).** No codegen: Claude drives every run and judges
 each step's `expected` — for UIs a fixed recording would break on.
+`ccqa run --live-override` runs any spec this way
+([Live specs](./docs/live.md#running-any-spec-live)).
 
 vitest and agent-browser are peer dependencies of the default target; a
 project on an external target alone needs just `ccqa` and that tool. A

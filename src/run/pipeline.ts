@@ -70,7 +70,7 @@ import {
   type SpecWithMode,
 } from "./spec-catalog.ts";
 import { runLiveSpecs, type RunLiveOptions } from "../cli/run-live.ts";
-import { liveCaseFrom, runsLive, type LiveCase, type LiveCaseOptions } from "../cli/live-case.ts";
+import { asLiveCase, liveCaseFrom, runsLive, type LiveCase, type LiveCaseOptions } from "../cli/live-case.ts";
 import type { TestCase } from "../cases/case.ts";
 import { openCaseReader, type CaseReader } from "../cases/reader.ts";
 import {
@@ -188,6 +188,8 @@ export interface RunOptions {
   replaySkipEvidence?: boolean;
   liveStepRetry?: number;
   liveArtifactsDir?: string;
+  /** Run every selected spec live, whatever its target and mode. See `--live-override`. */
+  liveOverride?: boolean;
   /** Take only the specs a diff against this ref reaches. */
   onlyAffectedBy?: string;
   /** Take only the specs the hub answers `rerunNeeded` for. */
@@ -400,6 +402,7 @@ export async function executeRun(
   const forExecution = opts.dryRun !== true;
 
   const cwd = opts.cwd ?? process.cwd();
+  const liveOverride = opts.liveOverride === true;
 
   // Resolve git coordinates before anything else runs: `head` is recorded in
   // the report unconditionally, and an unresolvable --on-fail-explain-base
@@ -711,8 +714,9 @@ export async function executeRun(
   // filters above narrowed `specs`, and a run that reports "selected 1 of 12"
   // and then executes twelve is worse than one that never filtered.
   const selectedKeys = new Set(specs.map(specKey));
-  const selectedCases =
+  const ownSelected =
     ownRun?.cases.filter((c) => selectedKeys.has(specKey(splitCaseId(c.ref.id)))) ?? [];
+  const selectedCases = liveOverride ? ownSelected.map(asLiveCase) : ownSelected;
   const liveCaseCount = selectedCases.filter(runsLive).length;
   // A generated case's test belongs to the project's own runner, so an ordinary
   // `ccqa run` leaves it alone. Two things ask ccqa to run it anyway: a
@@ -758,7 +762,10 @@ export async function executeRun(
 
   // Skipped for a markdown case: there is no `.ccqa/features/<feature>/…/spec.yaml`
   // to read, and every consumer of the catalog below is asking about one.
-  const catalog = await readSpecs(ownRun ? [] : specs, reader);
+  const read = await readSpecs(ownRun ? [] : specs, reader);
+  const catalog: SpecCatalog = liveOverride
+    ? new Map([...read].map(([key, e]) => [key, e.case ? { ...e, case: asLiveCase(e.case) } : e]))
+    : read;
   // Only under --coverage: an identity's turn has to be exclusive for the
   // attribution to mean anything, but that is a cost the measurement asks for
   // and an ordinary run must not pay.

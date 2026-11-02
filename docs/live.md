@@ -22,6 +22,25 @@ ccqa run
 ccqa run --live-step-retry 2 tasks/create-and-complete
 ```
 
+## Running any spec live
+
+`--live-override` runs every spec the invocation selects as if it said
+`mode: live`, whatever its `target:` and `mode:` — the file is not changed.
+The use it exists for: CI runs its Playwright tests, then hands only the
+failures to a live run, so a test that failed because it was unstable can
+still pass on a model's reading of the page.
+
+```bash
+ccqa run --live-override todo/add_item todo/remove_item
+```
+
+Everything a live spec gets applies: a `session:` or `sessionState` is
+restored, `--live-*` and `--learn-hub-live-prompt` take effect, and the
+results are reported as live rows. Sign-in a target sets up itself, such as
+a Playwright `storageState`, is not restored. A `judgeByLlm` step is handed
+to the judge as a step that changes nothing and expects the claim to hold,
+which is what a live step decides anyway.
+
 ## Live cases from a project's own case source
 
 A project that reads its cases through [a module of its

@@ -2037,15 +2037,19 @@ describe("hub API server", () => {
     }
 
     test("two reported batches add up over the window they fall in", async () => {
-      const first = await recordSpend({ costUsd: 1.25, label: "nightly", at: "2026-08-01T02:00:00.000Z" });
+      // Days relative to now: the hub drops spend older than its retention window.
+      const dayMs = 24 * 60 * 60 * 1000;
+      const day = new Date(Math.floor(Date.now() / dayMs) * dayMs - 2 * dayMs);
+      const at = (offsetMs: number) => new Date(day.getTime() + offsetMs).toISOString();
+      const first = await recordSpend({ costUsd: 1.25, label: "nightly", at: at(2 * 60 * 60 * 1000) });
       expect(first.status).toBe(201);
       expect(await json(first)).toMatchObject({ costUsd: 1.25, label: "nightly", id: expect.any(String) });
-      await recordSpend({ costUsd: 0.75, label: "pr-check", at: "2026-08-01T09:00:00.000Z" });
+      await recordSpend({ costUsd: 0.75, label: "pr-check", at: at(9 * 60 * 60 * 1000) });
       // Outside the window asked for below, so it must not reach the total.
-      await recordSpend({ costUsd: 40, label: "next-day", at: "2026-08-02T01:00:00.000Z" });
+      await recordSpend({ costUsd: 40, label: "next-day", at: at(dayMs + 60 * 60 * 1000) });
 
       const res = await fetch(
-        `${baseUrl}/api/v1/projects/demo/spend?since=2026-08-01T00:00:00.000Z&until=2026-08-02T00:00:00.000Z`,
+        `${baseUrl}/api/v1/projects/demo/spend?since=${at(0)}&until=${at(dayMs)}`,
         authed(),
       );
       const body = await json(res);

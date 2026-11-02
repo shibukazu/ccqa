@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { caseFromDocument, caseFromSpec, type TestCase } from "../cases/case.ts";
-import { liveCaseFrom, runsLive } from "./live-case.ts";
+import { asLiveCase, liveCaseFrom, runsLive } from "./live-case.ts";
 
 const cwd = "/repo";
 
@@ -77,6 +77,19 @@ describe("liveCaseFrom", () => {
       cwd,
     );
     expect(() => liveCaseFrom(spec)).toThrow(/judgeByLlm/);
+  });
+
+  it("judges a claim as the step's expected outcome under --live-override", () => {
+    const spec = caseFromSpec(
+      "todo",
+      "add_item",
+      "title: t\nsteps:\n  - judgeByLlm: the list reads sensibly\n    from: \".list\"\n",
+      new Map(),
+      cwd,
+    );
+    const [step] = liveCaseFrom(asLiveCase(spec)).steps;
+    expect(step!.expected).toBe("the list reads sensibly");
+    expect(step!.instruction).toContain('".list"');
   });
 });
 
